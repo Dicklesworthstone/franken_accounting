@@ -74,6 +74,7 @@ fn setup_book() -> (
         entities: vec![LegalEntitySpec {
             code: "HOLDCO".into(),
             name: "HoldCo Inc.".into(),
+            functional_unit: usd,
         }],
         opening_date: None,
     };
@@ -393,6 +394,57 @@ fn rea_objects_party_dimensions_instruments_and_temporal_closure() {
         .expect("create_legal_entity sub db")
         .expect("create_legal_entity sub ok");
     assert_eq!(sub_rec.target_vid, legal_entity_vid(book.book_id, "SUB-US"));
+
+    // Planted functional-currency mismatch: a legal entity whose functional_unit (EUR)
+    // differs from the book's base_unit (USD) is refused with FA-REF-003 (exit 3) naming
+    // the Concordat fix, matching fa_reference::rea::validate_legal_entity.
+    let eur = book.units.lookup("EUR").unwrap();
+    let sub_eu = LegalEntityFullSpec {
+        code: "SUB-EU".into(),
+        name: "Sub EU GmbH".into(),
+        jurisdiction: "DE-BE".into(),
+        functional_unit: eur,
+        formed: Some(DateDay::from_ymd(2025, 1, 1).unwrap()),
+        dissolved: None,
+        external_ids: Vec::new(),
+    };
+    let eu_err = rt
+        .block_on(create_legal_entity(
+            &mut db,
+            &ctx,
+            &book,
+            &sub_eu,
+            controller,
+            d_jan1,
+            b"le-sub-eu-mismatch",
+            seal_str("create sub-eu", &book.seal_key, 250),
+            &cap,
+        ))
+        .expect("create_legal_entity eu db")
+        .expect_err("entity functional_unit != book.base_unit must be refused");
+    assert_eq!(eu_err.code, "FA-REF-003");
+    assert_eq!(eu_err.exit, fa_journal::exit::REFUSAL);
+    assert!(
+        eu_err.fix.contains("Concordat") && eu_err.fix.contains("--base-unit EUR"),
+        "expected refusal fix to name Concordat fix, got: {}",
+        eu_err.fix
+    );
+    assert_eq!(
+        fa_reference::rea::validate_legal_entity(
+            &fa_reference::rea::RefLegalEntitySpec {
+                code: "SUB-EU".into(),
+                name: "Sub EU GmbH".into(),
+                jurisdiction: "DE-BE".into(),
+                functional_unit: eur.0,
+                formed: Some(DateDay::from_ymd(2025, 1, 1).unwrap()),
+                dissolved: None,
+            },
+            usd.0,
+            &[usd.0, eur.0].into_iter().collect(),
+            false,
+        ),
+        Err((eu_err.code, eu_err.exit))
+    );
 
     // Bind an additional ExternalId to VEND-ACME.
     let extra_binding = ExternalIdBinding {
@@ -1000,7 +1052,10 @@ fn rea_event_recording_and_post_derived_from_linkage_match_oracle() {
         .unwrap()
         .unwrap();
     assert!(!ev_rec.already_recorded);
-    assert_eq!(ev_rec.target_vid, fa_model::event_vid(book.book_id, "EV-1001"));
+    assert_eq!(
+        ev_rec.target_vid,
+        fa_model::event_vid(book.book_id, "EV-1001")
+    );
 
     // Idempotent retry returns already_recorded = true.
     let ev_retry = rt
@@ -1124,7 +1179,10 @@ fn rea_event_recording_and_post_derived_from_linkage_match_oracle() {
 
     let head = db.frontier().unwrap();
     let rea_snap = read_rea_at(&db, &book, head).unwrap();
-    let ev_row = rea_snap.events.get(&ev_rec.target_vid).expect("event in rea_snap");
+    let ev_row = rea_snap
+        .events
+        .get(&ev_rec.target_vid)
+        .expect("event in rea_snap");
     assert_eq!(ev_row.spec.code, "EV-1001");
     assert_eq!(ev_row.event_digest, ev_digest);
 }

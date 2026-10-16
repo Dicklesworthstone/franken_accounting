@@ -1104,6 +1104,7 @@ fn setup_entities(rows: &[ChartRow], entities: &[&str]) -> (Kernel, Oracle, Vec<
             .map(|code| LegalEntitySpec {
                 code: (*code).into(),
                 name: format!("{code} entity"),
+                functional_unit: usd,
             })
             .collect(),
         opening_date: None,

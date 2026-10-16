@@ -5542,6 +5542,7 @@ fn dimension_edges_are_published_with_legs_and_their_metadata_is_verified() {
     let mut h = harness_with_entities(vec![LegalEntitySpec {
         code: "co".into(),
         name: "Test legal entity".into(),
+        functional_unit: UnitId(0),
     }]);
     let entity = fa_model::entity_value_vid(h.book.book_id, "co");
     let mut p = h.proposal(h.rent_legs(100), b"projection-entity", EntryClass::ORIGINAL);

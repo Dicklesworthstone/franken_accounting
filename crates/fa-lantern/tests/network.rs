@@ -67,10 +67,12 @@ impl Fixture {
                 genesis::LegalEntitySpec {
                     code: "A".into(),
                     name: "Entity A".into(),
+                    functional_unit: usd,
                 },
                 genesis::LegalEntitySpec {
                     code: "B".into(),
                     name: "Entity B".into(),
+                    functional_unit: usd,
                 },
             ],
         };
@@ -600,8 +602,19 @@ fn commingled_journal_network_distinguishes_all_four_laws_exactly() {
     ] {
         let r = f.run(id, source, 31, None, &[]).unwrap();
         assert_eq!(f.amount(&r, "1000", "held_mantissa"), at_source, "{id}");
-        assert_eq!(f.amount(&r, "1010", "held_mantissa"), at_destination, "{id}");
+        assert_eq!(
+            f.amount(&r, "1010", "held_mantissa"),
+            at_destination,
+            "{id}"
+        );
         assert_eq!(f.amount(&r, "6000", "spent_mantissa"), spent, "{id}");
-        assert_eq!(r.findings.iter().map(|finding| finding.statistic.value).sum::<i128>(), 100, "{id}");
+        assert_eq!(
+            r.findings
+                .iter()
+                .map(|finding| finding.statistic.value)
+                .sum::<i128>(),
+            100,
+            "{id}"
+        );
     }
 }

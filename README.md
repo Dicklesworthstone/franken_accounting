@@ -537,8 +537,12 @@ an existing version; historical amounts retain their original scale.
 Valuation checks native balance before absorbing a law-bounded rounding
 residual. Tests compare conversions under all nine rounding laws against
 `fgdb-bigint`; the reference engine retains its own arithmetic and imports
-only registry data and calendar primitives. Journaled unit evolution and
-complete FX-law integration remain unfinished (`fa-p7r`).
+only registry data and calendar primitives. Every `LegalEntity` in a `Book`
+must share `functional_unit == book.base_unit` (plan §0.4 decision 1, `fa-viui`);
+genesis (`create_book` / `fa book create --entity`) and schema evolution
+(`create_legal_entity`) refuse a mismatched entity functional currency with
+`FA-REF-003` (exit 3) naming the Concordat fix (maintain a separate `Book`
+in that entity's functional currency and consolidate via Concordat).
 
 **FrankenSymPy assessment (2026-10-10, corrected after the owner's clarification).**
 The owner's own Rust projects — Franken-named or not — are eligible dependencies,

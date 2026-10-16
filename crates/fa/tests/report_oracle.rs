@@ -358,6 +358,7 @@ fn report_families_match_reference_oracle_across_multiseed_campaign_and_kill_pla
             .map(|e_idx| LegalEntitySpec {
                 code: format!("E{e_idx}"),
                 name: format!("Entity {e_idx}"),
+                functional_unit: usd,
             })
             .collect();
 

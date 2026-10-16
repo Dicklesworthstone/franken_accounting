@@ -316,11 +316,7 @@ pub fn validate_event(
     if !EVENT_KINDS.iter().any(|(tag, _)| *tag == event.kind_tag) {
         return Err(("FA-REF-100", 2));
     }
-    if event.participants.len() > 32
-        || event
-            .participants
-            .windows(2)
-            .any(|pair| pair[0] >= pair[1])
+    if event.participants.len() > 32 || event.participants.windows(2).any(|pair| pair[0] >= pair[1])
     {
         return Err(("FA-REF-100", 2));
     }
@@ -332,7 +328,7 @@ pub fn validate_event(
             return Err(("FA-REF-100", 2));
         }
         if !known_units.contains(&res.unit_id) {
-            return Err(("FA-REF-006", 3));
+            return Err(("FA-REF-154", 3));
         }
         if res.mantissa <= 0 {
             return Err(("FA-REF-100", 2));
@@ -341,9 +337,7 @@ pub fn validate_event(
     if event.evidence.is_empty() {
         return Err(("FA-REF-080", 3));
     }
-    if event.evidence.len() > 32
-        || event.evidence.windows(2).any(|pair| pair[0] >= pair[1])
-    {
+    if event.evidence.len() > 32 || event.evidence.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(("FA-REF-100", 2));
     }
     if existing_events.contains_key(&event.vid) {
@@ -407,6 +401,77 @@ pub fn validate_rule_reproduction(
     validate_event_citation(event_vid, None, existing_events)?;
     if expected_proposal_digest != recomputed_proposal_digest {
         return Err(("FA-REF-100", 2));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefLegalEntitySpec {
+    pub code: String,
+    pub name: String,
+    pub jurisdiction: String,
+    pub functional_unit: u32,
+    pub formed: Option<DateDay>,
+    pub dissolved: Option<DateDay>,
+}
+
+/// Independent admission check for a `LegalEntity` creation against
+/// `book_base_unit` and `registered_units` (plan §0.4 decision 1, §4.1,
+/// bead `fa-viui`). Returns `Err((refusal_code, exit_class))` on refusal.
+pub fn validate_legal_entity(
+    spec: &RefLegalEntitySpec,
+    book_base_unit: u32,
+    registered_units: &BTreeSet<u32>,
+    is_agent_on_trunk: bool,
+) -> Result<(), (&'static str, u8)> {
+    if is_agent_on_trunk {
+        return Err(("FA-REF-013", 7));
+    }
+    if spec.code.is_empty() || spec.code.len() > 64 {
+        return Err(("FA-REF-100", 2));
+    }
+    if spec.name.is_empty() || spec.name.len() > 256 {
+        return Err(("FA-REF-100", 2));
+    }
+    if spec.jurisdiction.is_empty() || spec.jurisdiction.len() > 32 {
+        return Err(("FA-REF-100", 2));
+    }
+    if let (Some(formed), Some(dissolved)) = (spec.formed, spec.dissolved)
+        && formed >= dissolved
+    {
+        return Err(("FA-REF-100", 2));
+    }
+    if !registered_units.contains(&spec.functional_unit) {
+        return Err(("FA-REF-154", 3));
+    }
+    if spec.functional_unit != book_base_unit {
+        return Err(("FA-REF-003", 3));
+    }
+    Ok(())
+}
+
+/// Independent admission check for genesis `BookSpec.entities` against
+/// `book_base_unit` and `registered_units` (plan §0.4 decision 1, §4.1,
+/// bead `fa-viui`). Each entry is `(code, name, functional_unit)`.
+pub fn validate_book_entities(
+    entities: &[(&str, &str, u32)],
+    book_base_unit: u32,
+    registered_units: &BTreeSet<u32>,
+) -> Result<(), (&'static str, u8)> {
+    if entities.len() > 256 {
+        return Err(("FA-REF-100", 2));
+    }
+    let mut seen = BTreeSet::new();
+    for &(code, name, functional_unit) in entities {
+        if code.is_empty() || code.len() > 32 || name.len() > 256 || !seen.insert(code) {
+            return Err(("FA-REF-100", 2));
+        }
+        if !registered_units.contains(&functional_unit) {
+            return Err(("FA-REF-154", 3));
+        }
+        if functional_unit != book_base_unit {
+            return Err(("FA-REF-003", 3));
+        }
     }
     Ok(())
 }

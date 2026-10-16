@@ -79,11 +79,11 @@ name = "book"
 summary = "Create a book directory (store + key file), or describe one."
 writes = true
 subcommands = ["create", "info"]
-flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods", "--time-zone", "--opening-date"]
+flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods", "--time-zone", "--opening-date", "--entity"]
 switches = []
 events = ["book_created", "book"]
-exits = [0, 2, 4, 5]
-usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]]] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC] [--opening-date YYYY-MM-DD]", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info"]
+exits = [0, 2, 3, 4, 5]
+usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]]] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC] [--opening-date YYYY-MM-DD] [--entity <code>[:<name>][:<functional_unit>]]...", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info"]
 example = "fa book create --book ./books/myco --name \"My Co\" --json"
 
 [[verb]]
@@ -1763,7 +1763,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed"]
 

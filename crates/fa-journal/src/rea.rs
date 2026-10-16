@@ -18,13 +18,12 @@ use fa_model::rea::{
 };
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable,
-    EventSpec, ExternalId, ExternalIdBinding, Id128, InstrumentKind, InstrumentSpec,
-    LEGAL_ENTITY_DIMENSION, LEGAL_ENTITY_DIMENSION_CODE, LegalEntityFullSpec, OwnershipPct,
-    PARTY_DIMENSION, PARTY_DIMENSION_CODE, PartyIdentifierUpdate, PartyKind, PartySpec,
-    ReaControlOp, RelationshipKind, RelationshipSpec, dimension_vid, entity_value_vid,
-    entry_mirrors, entry_vid, event_vid, external_id_vid, instrument_vid, legal_entity_vid,
-    party_value_vid, party_vid,
+    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, EventSpec,
+    ExternalId, ExternalIdBinding, Id128, InstrumentKind, InstrumentSpec, LEGAL_ENTITY_DIMENSION,
+    LEGAL_ENTITY_DIMENSION_CODE, LegalEntityFullSpec, OwnershipPct, PARTY_DIMENSION,
+    PARTY_DIMENSION_CODE, PartyIdentifierUpdate, PartyKind, PartySpec, ReaControlOp,
+    RelationshipKind, RelationshipSpec, dimension_vid, entity_value_vid, entry_mirrors, entry_vid,
+    event_vid, external_id_vid, instrument_vid, legal_entity_vid, party_value_vid, party_vid,
 };
 use fa_money::UnitId;
 use fa_policy::Capability;
@@ -1074,17 +1073,26 @@ pub async fn create_legal_entity<V: asupersync::fs::Vfs + Clone>(
             "set dissolved to None or a date strictly after formed",
         )));
     }
-    if book.units.get(spec.functional_unit).is_none() {
-        return Ok(Err(Refusal::new(
-            code::UNIT_UNREGISTERED,
-            exit::REFUSAL,
-            format!(
-                "legal entity `{}` names unregistered functional_unit {}",
-                spec.code, spec.functional_unit.0
-            ),
-            "plan §4.1, §4.4",
-            "use a unit registered in the book",
-        )));
+    let base_unit = match db
+        .vertex(book_root())?
+        .and_then(|r| prop(&r, property::BASE_UNIT).cloned())
+    {
+        Some(CanonicalScalar::Int(u)) => u32::try_from(u)
+            .map(fa_money::UnitId)
+            .map_err(|_| KernelError::Corrupt(format!("book.base_unit {u} out of u32 range")))?,
+        other => {
+            return Err(KernelError::Corrupt(format!(
+                "book.base_unit missing or invalid on book root: {other:?}"
+            )));
+        }
+    };
+    if let Err(refusal) = crate::genesis::check_entity_functional_unit(
+        &spec.code,
+        spec.functional_unit,
+        base_unit,
+        &book.units,
+    ) {
+        return Ok(Err(refusal));
     }
     let resolved_ext = match open_external_ids(book, &spec.external_ids)? {
         Ok(v) => v,
@@ -1205,6 +1213,10 @@ pub async fn create_legal_entity<V: asupersync::fs::Vfs + Clone>(
             (property::BOOK_ID, book_id_scalar.clone()),
             (property::CODE, scalar_text("code", &spec.code)?),
             (property::NAME, scalar_text("name", &spec.name)?),
+            (
+                property::UNIT_ID,
+                CanonicalScalar::Int(i64::from(spec.functional_unit.0)),
+            ),
         ];
         le_props.sort_by_key(|(k, _)| k.0);
         in_book.create_vertex(levid, vec![label::LEGAL_ENTITY], le_props);
@@ -2146,6 +2158,12 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
 
     let mut legal_entities: BTreeMap<VId, LegalEntityRow> = BTreeMap::new();
     for e in &book_spec.entities {
+        if e.functional_unit != book_spec.base_unit {
+            return Err(corrupt(format!(
+                "genesis legal entity `{}` has functional_unit {} != book base_unit {}",
+                e.code, e.functional_unit.0, book_spec.base_unit.0
+            )));
+        }
         let vid = legal_entity_vid(book.book_id, &e.code);
         let dval = entity_value_vid(book.book_id, &e.code);
         let created_at = vertices_by_vid
@@ -2159,7 +2177,7 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
                 code: e.code.clone(),
                 name: e.name.clone(),
                 jurisdiction: String::new(),
-                functional_unit: book_spec.base_unit,
+                functional_unit: e.functional_unit,
                 formed: None,
                 dissolved: None,
                 external_ids: Vec::new(),
@@ -2296,6 +2314,12 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
                 }
             }
             ReaControlOp::CreateLegalEntity(spec) => {
+                if spec.functional_unit != book_spec.base_unit {
+                    return Err(corrupt(format!(
+                        "journaled LegalEntity `{}` has functional_unit {} != book base_unit {}",
+                        spec.code, spec.functional_unit.0, book_spec.base_unit.0
+                    )));
+                }
                 let vid = legal_entity_vid(book.book_id, &spec.code);
                 let dval = entity_value_vid(book.book_id, &spec.code);
                 for ext in &spec.external_ids {
@@ -2327,7 +2351,11 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
                             .map(|le| le.code.clone())
                     })
                     .or_else(|| instruments.get(&binding.target_vid).map(|i| i.code.clone()))
-                    .or_else(|| events.get(&binding.target_vid).map(|ev| ev.spec.code.clone()))
+                    .or_else(|| {
+                        events
+                            .get(&binding.target_vid)
+                            .map(|ev| ev.spec.code.clone())
+                    })
                     .ok_or_else(|| {
                         corrupt(format!(
                             "BindExternalId references absent target {:032x}",

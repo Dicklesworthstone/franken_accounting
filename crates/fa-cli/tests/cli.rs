@@ -10167,3 +10167,69 @@ fn rea_event_cli_record_show_list_and_post_provenance() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn book_create_entity_functional_unit_guard_e2e() -> std::io::Result<()> {
+    let dir = tmp("book-entity-functional-unit")?;
+    let bad_book = dir.join("bad-book");
+
+    // 1. `fa book create` with an entity whose functional unit differs from base_unit exits 3
+    // with FA-REF-003 naming the Concordat fix and creates no directory or key file.
+    let (code, out, _) = fa(
+        Some(&bad_book),
+        &[
+            "book",
+            "create",
+            "--name",
+            "Multi Currency Attempt",
+            "--base-unit",
+            "USD",
+            "--entity",
+            "HOLDCO:HoldCo Inc.:USD",
+            "--entity",
+            "SUB-EU:Sub EU GmbH:EUR",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 3, "{out}");
+    let err = doc(&out);
+    assert_eq!(text(&err, "refusal_id"), "FA-REF-003", "{out}");
+    assert_eq!(text(&err, "class"), "refusal", "{out}");
+    let fix = text(&err, "fix");
+    assert!(
+        fix.contains("Concordat") && fix.contains("--base-unit EUR"),
+        "expected fix to name Concordat and --base-unit EUR, got: {fix}"
+    );
+    assert!(
+        !bad_book.exists(),
+        "refused book create must not leave a book directory behind"
+    );
+
+    // 2. `fa book create` with entities sharing the book's base_unit succeeds and `book info`
+    // lists the registered legal entity codes.
+    let good_book = dir.join("good-book");
+    let (ok_code, ok_out, _) = fa(
+        Some(&good_book),
+        &[
+            "book",
+            "create",
+            "--name",
+            "Single Functional Currency Group",
+            "--base-unit",
+            "USD",
+            "--entity",
+            "HOLDCO:HoldCo Inc.:USD",
+            "--entity",
+            "SUB-US:Sub US LLC",
+            "--json",
+        ],
+    );
+    assert_eq!(ok_code, 0, "{ok_out}");
+    let (info_code, info_out, _) = fa(Some(&good_book), &["book", "info", "--json"]);
+    assert_eq!(info_code, 0, "{info_out}");
+    let info = doc(&info_out);
+    let entities = arr(&info, "entities");
+    assert_eq!(entities.len(), 2, "{info_out}");
+
+    Ok(())
+}

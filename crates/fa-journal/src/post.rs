@@ -1635,7 +1635,8 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             )));
         }
         if let Some(expected_digest) = maybe_digest {
-            let stored_digest = crate::rows::bytes(&ev_row, property::FA_DIGEST, "event._fa_digest")?;
+            let stored_digest =
+                crate::rows::bytes(&ev_row, property::FA_DIGEST, "event._fa_digest")?;
             if stored_digest.as_slice() != expected_digest.as_slice() {
                 txn.abort();
                 return Ok(Err(Refusal::new(

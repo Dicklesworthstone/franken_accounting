@@ -72,7 +72,7 @@ pub use fx::{
 };
 pub use genesis::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, LegalEntitySpec, TimeZonePolicy,
-    UnitPolicy, create_book, create_periods, install_chart,
+    UnitPolicy, check_entity_functional_unit, create_book, create_periods, install_chart,
 };
 pub use import::{
     ImportRecorded, ImportRequest, RunReceipt, import_run, verify_receipt, verify_receipt_in,

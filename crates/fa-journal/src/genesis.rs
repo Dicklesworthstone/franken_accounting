@@ -57,12 +57,55 @@ pub struct BookSpec {
     pub opening_date: Option<DateDay>,
 }
 
-/// One declared legal entity (plan §4.1 `LegalEntity`; this slice carries
-/// its code and name, its functional unit being the book's base unit).
+/// One declared legal entity (plan §4.1 `LegalEntity`, §0.4 decision 1):
+/// carries its code, name, and functional currency (`functional_unit`),
+/// which is journaled at genesis and must equal `Book.base_unit`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LegalEntitySpec {
     pub code: String,
     pub name: String,
+    pub functional_unit: UnitId,
+}
+
+/// Enforce that a `LegalEntity`'s `functional_unit` is registered in `units`
+/// and equals the book's `base_unit` (plan §0.4 decision 1, §4.1).
+pub fn check_entity_functional_unit(
+    entity_code: &str,
+    functional_unit: UnitId,
+    base_unit: UnitId,
+    units: &UnitRegistry,
+) -> Result<(), Refusal> {
+    let Some(ent_unit) = units.get(functional_unit) else {
+        return Err(Refusal::new(
+            code::UNIT_UNREGISTERED,
+            exit::REFUSAL,
+            format!(
+                "legal entity `{entity_code}` names unregistered functional_unit {}",
+                functional_unit.0
+            ),
+            "plan §4.1, §4.4",
+            "use a unit registered in the book",
+        ));
+    };
+    if functional_unit != base_unit {
+        let base_code = units
+            .get(base_unit)
+            .map_or_else(|| base_unit.0.to_string(), |u| u.code.clone());
+        return Err(Refusal::new(
+            code::UNIT_POLICY,
+            exit::REFUSAL,
+            format!(
+                "legal entity `{entity_code}` has functional_unit `{}` which differs from the book's base_unit `{base_code}`; one functional currency per book (reporting currency exists only as Translation output in a consolidation book)",
+                ent_unit.code
+            ),
+            "plan §0.4 decision 1, §4.1 LegalEntity.functional_unit",
+            format!(
+                "create a separate book with `--base-unit {}` for legal entity `{entity_code}` and consolidate via Concordat, or set `{entity_code}`'s functional_unit to `{base_code}`",
+                ent_unit.code
+            ),
+        ));
+    }
+    Ok(())
 }
 
 const MAX_ENTITY_CODE_BYTES: usize = 32;
@@ -193,7 +236,7 @@ impl BookSpec {
         }
         if !self.entities.is_empty() || opening.is_some() {
             w.list(&self.entities, |w, e| {
-                w.str(&e.code).str(&e.name);
+                w.str(&e.code).str(&e.name).u32(e.functional_unit.0);
             });
         }
         if let Some(day) = opening {
@@ -202,9 +245,20 @@ impl BookSpec {
         w.finish().map_err(|e| KernelError::Model(e.into()))
     }
 
-    /// The structural law of a declaration (plan §4.1): entity codes are
-    /// non-empty, at most 32 bytes, unique; at most 256 entities; names at
-    /// most 256 bytes.
+    /// Enforce the one-functional-currency-per-book law (plan §0.4 decision 1,
+    /// §4.1 `LegalEntity.functional_unit`) with a typed [`Refusal`] (`FA-REF-003`,
+    /// exit 3 `refusal`) naming the fix.
+    pub fn validate_functional_units(&self, units: &UnitRegistry) -> Result<(), Refusal> {
+        for e in &self.entities {
+            check_entity_functional_unit(&e.code, e.functional_unit, self.base_unit, units)?;
+        }
+        Ok(())
+    }
+
+    /// The structural law of a declaration (plan §4.1, §0.4 decision 1): entity
+    /// codes are non-empty, at most 32 bytes, unique; at most 256 entities;
+    /// names at most 256 bytes; every entity's `functional_unit` equals
+    /// `self.base_unit`.
     pub fn validate(&self) -> Result<(), String> {
         if self.name.len() > MAX_BOOK_NAME_BYTES {
             return Err(format!(
@@ -242,6 +296,12 @@ impl BookSpec {
             }
             if !seen.insert(e.code.as_str()) {
                 return Err(format!("legal entity `{}` is declared twice", e.code));
+            }
+            if e.functional_unit != self.base_unit {
+                return Err(format!(
+                    "legal entity `{}` has functional_unit {} != book base_unit {}; one functional currency per book (plan §0.4 decision 1): create a separate book for `{}` and consolidate via Concordat",
+                    e.code, e.functional_unit.0, self.base_unit.0, e.code
+                ));
             }
         }
         if let Some(day) = self.opening_date {
@@ -350,6 +410,7 @@ impl BookSpec {
                             .str(MAX_ENTITY_CODE_BYTES, "book.entity.code")?
                             .to_string(),
                         name: r.str(MAX_BOOK_NAME_BYTES, "book.entity.name")?.to_string(),
+                        functional_unit: UnitId(r.u32("book.entity.functional_unit")?),
                     })
                 })?;
                 // An empty list is written only before an opening date.
@@ -555,6 +616,10 @@ pub async fn create_book<V: asupersync::fs::Vfs + Clone>(
             (property::BOOK_ID, book_id.clone()),
             (property::CODE, scalar_text("code", &e.code)?),
             (property::NAME, scalar_text("name", &e.name)?),
+            (
+                property::UNIT_ID,
+                CanonicalScalar::Int(i64::from(e.functional_unit.0)),
+            ),
         ];
         props.sort_by_key(|(k, _)| k.0);
         batch.create_vertex(evid, vec![label::LEGAL_ENTITY], props);
@@ -1272,10 +1337,12 @@ mod tests {
                 LegalEntitySpec {
                     code: "US".into(),
                     name: "US Co".into(),
+                    functional_unit: UnitId(3),
                 },
                 LegalEntitySpec {
                     code: "UK".into(),
                     name: "UK Ltd".into(),
+                    functional_unit: UnitId(3),
                 },
             ];
             let multi = BookSpec {
@@ -1304,6 +1371,24 @@ mod tests {
                 ..spec.clone()
             };
             assert!(twice.validate().unwrap_err().contains("twice"));
+            // Planted negative: a LegalEntity whose functional_unit differs from
+            // Book.base_unit is refused with the Concordat fix (plan §0.4 decision 1).
+            let units = UnitRegistry::with_defaults();
+            assert!(multi.validate_functional_units(&units).is_ok());
+            let mismatched = BookSpec {
+                entities: vec![LegalEntitySpec {
+                    code: "EU".into(),
+                    name: "EU Sub".into(),
+                    functional_unit: UnitId(1),
+                }],
+                ..spec.clone()
+            };
+            let err_msg = mismatched.validate().unwrap_err();
+            assert!(err_msg.contains("Concordat"), "{err_msg}");
+            let refusal = mismatched.validate_functional_units(&units).unwrap_err();
+            assert_eq!(refusal.code, code::UNIT_POLICY);
+            assert_eq!(refusal.exit, exit::REFUSAL);
+            assert!(refusal.fix.contains("Concordat"), "{}", refusal.fix);
             // A declared policy is one trailing byte; the bytes without it
             // are unchanged, and an unregistered tag is refused.
             let declared = BookSpec {
@@ -1362,6 +1447,7 @@ mod tests {
             entities: vec![LegalEntitySpec {
                 code: "US".into(),
                 name: "US Co".into(),
+                functional_unit: UnitId(1),
             }],
             ..live.clone()
         };

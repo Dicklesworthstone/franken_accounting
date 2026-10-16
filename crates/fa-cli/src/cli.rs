@@ -2883,6 +2883,14 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa book create --name \"My Co\" --opening-date YYYY-MM-DD",
         ));
     }
+    if args.flag("--entity").is_some()
+        && args.positional.get(1).map(String::as_str) != Some("create")
+    {
+        return Err(usage(
+            "--entity declares legal entities of a new book; it belongs to book create",
+            "fa book create --name \"My Co\" --entity HOLDCO",
+        ));
+    }
     match args.positional.get(1).map(String::as_str) {
         Some("create") => {
             if args.flag_all("--time-zone").len() > 1 {
@@ -2932,6 +2940,41 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "--base-unit USD|EUR|GBP|JPY|CHF|CAD|AUD|KWD",
                 )
             })?;
+            let mut entities = Vec::new();
+            for raw in args.flag_all("--entity") {
+                let parts: Vec<&str> = raw.splitn(3, ':').collect();
+                let (code, ent_name, functional_unit) = match parts.as_slice() {
+                    [code] => (*code, *code, base_unit),
+                    [code, second] => {
+                        if let Some(u) = units.lookup(second) {
+                            (*code, *code, u)
+                        } else {
+                            (*code, *second, base_unit)
+                        }
+                    }
+                    [code, ent_name, unit_code] => {
+                        let u = units.lookup(unit_code).ok_or_else(|| {
+                            usage(
+                                format!("unknown entity functional unit `{unit_code}`"),
+                                "--entity <code>[:<name>][:<functional_unit>]",
+                            )
+                        })?;
+                        (*code, *ent_name, u)
+                    }
+                    _ => unreachable!(),
+                };
+                if code.trim().is_empty() || ent_name.trim().is_empty() {
+                    return Err(usage(
+                        format!("invalid --entity `{raw}`: code and name must be non-empty"),
+                        "--entity <code>[:<name>][:<functional_unit>]",
+                    ));
+                }
+                entities.push(fa_journal::LegalEntitySpec {
+                    code: code.to_string(),
+                    name: ent_name.to_string(),
+                    functional_unit,
+                });
+            }
             let kind = args.flag("--calendar").unwrap_or("monthly");
             let adj: u8 = args
                 .flag("--adjustment-periods")
@@ -2955,9 +2998,11 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 base_unit,
                 calendar,
                 time_zone_policy,
-                entities: Vec::new(),
+                entities,
                 opening_date,
             };
+            spec.validate_functional_units(&units)
+                .map_err(Fail::Refusal)?;
             spec.validate()
                 .map_err(|m| usage(m, "fa book create --book <dir> --name \"My Co\""))?;
             let keys_file = keys_path(args, &dir, ctx.files.cwd.as_deref());
@@ -12892,7 +12937,9 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     [lbl, amt, inst] => (*lbl, *amt, Some(*inst)),
                     _ => {
                         return Err(usage(
-                            format!("--resource `{raw_r}` must be `<label>:<amount>[:<instrument>]`"),
+                            format!(
+                                "--resource `{raw_r}` must be `<label>:<amount>[:<instrument>]`"
+                            ),
                             "--resource cash:100.00\\ USD or --resource inventory:10.00\\ USD:INST-1",
                         ));
                     }
@@ -12920,10 +12967,7 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         rea.instruments
                             .values()
                             .find(|i| i.code == stripped)
-                            .map_or_else(
-                                || fa_model::instrument_vid(book_id, stripped),
-                                |i| i.vid,
-                            )
+                            .map_or_else(|| fa_model::instrument_vid(book_id, stripped), |i| i.vid)
                     }
                 });
                 resources.push(fa_model::EventResource {
@@ -12933,9 +12977,11 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 });
             }
             resources.sort_by(|a, b| {
-                a.label
-                    .cmp(&b.label)
-                    .then_with(|| a.instrument.map_or(0, |v| v.0).cmp(&b.instrument.map_or(0, |v| v.0)))
+                a.label.cmp(&b.label).then_with(|| {
+                    a.instrument
+                        .map_or(0, |v| v.0)
+                        .cmp(&b.instrument.map_or(0, |v| v.0))
+                })
             });
             let mut external_ids = Vec::new();
             for raw_ext in args.flag_all("--external-id") {
@@ -12981,13 +13027,8 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let event_digest = spec
                 .event_digest()
                 .map_err(|e| usage(format!("invalid event spec: {e}"), "fa event record --help"))?;
-            let recorded = book.record_event(
-                &spec,
-                who,
-                effective_date,
-                key_str.as_bytes(),
-                &capability,
-            )??;
+            let recorded =
+                book.record_event(&spec, who, effective_date, key_str.as_bytes(), &capability)??;
             ctx.out.at_book(&book)?;
             let vid_hex = format!("{:032x}", recorded.target_vid.0);
             let ctrl_hex = format!("{:032x}", recorded.control_entry.0);
