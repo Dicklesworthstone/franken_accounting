@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 ROUTES = {
+    "/api/compare": {"period", "before", "after"},
     "/api/ledger": {"account", "unit", "from", "to", "known_at"},
     "/api/aging": {"account", "as_of", "known_at", "buckets"},
 }
@@ -94,6 +95,9 @@ def scope(event: dict[str, Any], selection: dict[str, Any], error: type[Exceptio
 
 
 def dispatch(source: Any, path: str, params: dict[str, str], error: type[Exception]) -> dict[str, Any]:
+    if path == "/api/compare":
+        from compare import compare
+        return compare(source, params, error)
     selection = select(path, params, error)
     if source.mode == "demo":
         from demo_reports import report
