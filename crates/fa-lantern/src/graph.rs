@@ -13,11 +13,29 @@ use fa_model::{AccountType, EntryClass};
 use fa_money::{UnitId, UnitKind};
 use fgdb_types::VId;
 
-use crate::jet::finding;
 use crate::projection::{FlowLeg, scoped_flow_legs};
 use crate::{
     Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
 };
+
+/// Use the implementation's version, not the legacy JET constructor's v1.
+/// The run still independently checks code, registry and finding versions.
+fn finding(
+    identity: (&str, u16),
+    severity: Severity,
+    statistic: Statistic,
+    cites: Vec<Cite>,
+    narrative: String,
+) -> Finding {
+    Finding {
+        procedure: identity.0.to_string(),
+        version: identity.1,
+        severity,
+        statistic,
+        cites,
+        narrative,
+    }
+}
 
 fn days(params: &Params, name: &'static str) -> Result<i32, LanternError> {
     i32::try_from(params.get_u32(name)?).map_err(|_| LanternError::Overflow(name))
@@ -57,6 +75,7 @@ pub struct RoundTrips {
 
 impl RoundTrips {
     pub const ID: &'static str = "graph.round_trips";
+    pub const VERSION: u16 = 2;
 
     pub fn new() -> Result<Self, LanternError> {
         Ok(Self {
@@ -75,7 +94,7 @@ impl Procedure for RoundTrips {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        Self::VERSION
     }
     fn params(&self) -> &Params {
         &self.params
@@ -190,7 +209,7 @@ impl Procedure for RoundTrips {
                 };
                 let day_text = |d: Option<i64>| d.map_or("?".to_string(), |d| d.to_string());
                 out.push(finding(
-                    Self::ID,
+                    (Self::ID, Self::VERSION),
                     severity,
                     Statistic {
                         name: "round_trip_mantissa".into(),
@@ -287,7 +306,7 @@ fn multi_round_trips(
         }
         let gap = i64::from(last.effective_date.0) - i64::from(first.effective_date.0);
         out.push(finding(
-            RoundTrips::ID,
+            (RoundTrips::ID, RoundTrips::VERSION),
             if near_end { Severity::High } else { Severity::Medium },
             Statistic {
                 name: "round_trip_mantissa".into(),
@@ -316,6 +335,7 @@ pub struct Structuring {
 
 impl Structuring {
     pub const ID: &'static str = "graph.structuring";
+    pub const VERSION: u16 = 2;
 
     pub fn new() -> Result<Self, LanternError> {
         Ok(Self {
@@ -419,7 +439,7 @@ impl Rule {
         let mut cites = vec![Cite::Account(to), Cite::Account(from)];
         cites.extend(entries.into_iter().map(Cite::Entry));
         out.push(finding(
-            Structuring::ID,
+            (Structuring::ID, Structuring::VERSION),
             severity,
             Statistic { name: "chain_mantissa".into(), value: sum, scale, population },
             cites,
@@ -437,7 +457,7 @@ impl Procedure for Structuring {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        Self::VERSION
     }
     fn params(&self) -> &Params {
         &self.params
@@ -694,7 +714,7 @@ impl Procedure for CircularFlows {
                         let cgse = cgse_digest_hex(&dec_refs, nodes.len(), edge_pairs.len(), "scc_cycles");
                         cites.truncate(MAX_CITES);
                         out.push(finding(
-                            Self::ID,
+                            (Self::ID, self.version()),
                             Severity::High,
                             Statistic {
                                 name: "retained_flow_mantissa".into(),
@@ -849,7 +869,7 @@ impl Procedure for Layering {
                     let cgse = cgse_digest_hex(&dec_refs, dg.node_count(), dg.edge_count(), "layering_bfs");
                     cites.truncate(MAX_CITES);
                     out.push(finding(
-                        Self::ID,
+                        (Self::ID, self.version()),
                         Severity::High,
                         Statistic {
                             name: "layered_mantissa".into(),
@@ -980,7 +1000,7 @@ impl Procedure for Communities {
                     .map(Cite::Account)
                     .collect();
                 out.push(finding(
-                    Self::ID,
+                    (Self::ID, self.version()),
                     Severity::Medium,
                     Statistic {
                         name: "internal_share_bps".into(),
@@ -1106,7 +1126,7 @@ impl Procedure for RelatedPartyExposure {
                     cites.push(Cite::Principal(best.vid));
                 }
                 out.push(finding(
-                    Self::ID,
+                    (Self::ID, self.version()),
                     Severity::High,
                     Statistic {
                         name: "related_party_exposure_mantissa".into(),
@@ -1207,7 +1227,7 @@ impl Procedure for ShellSignature {
                         .map(Cite::Entry),
                 );
                 out.push(finding(
-                    Self::ID,
+                    (Self::ID, self.version()),
                     Severity::High,
                     Statistic {
                         name: "passthrough_bps".into(),
@@ -1299,7 +1319,7 @@ impl Procedure for Concentration {
                     "centrality",
                 );
                 out.push(finding(
-                    Self::ID,
+                    (Self::ID, self.version()),
                     Severity::Medium,
                     Statistic {
                         name: "flow_share_bps".into(),
@@ -1427,7 +1447,7 @@ impl Procedure for IdentityResolution {
                 .collect();
             let key_list: Vec<String> = keys.into_iter().collect();
             out.push(finding(
-                Self::ID,
+                (Self::ID, self.version()),
                 Severity::High,
                 Statistic::count("same_as_cluster_size", vids.len() as u64, population),
                 cites,

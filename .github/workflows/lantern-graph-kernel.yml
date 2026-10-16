@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths:
+      - 'crates/fa-lantern/src/graph.rs'
+      - 'crates/fa-lantern/src/trace.rs'
       - 'crates/fa-lantern/src/graph/cycles.rs'
       - 'crates/fa-lantern/src/projection/entity.rs'
       - 'crates/fa-lantern/src/catalog.rs'
@@ -30,6 +32,19 @@ jobs:
           git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
           git fetch --depth=1 origin "$GITHUB_SHA"
           git checkout --detach FETCH_HEAD
+      - name: Preserve the exact public source for failure reproduction
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only committed public files: no checkout credentials, build caches,
+          # environment, runner state or generated book/key files are archived.
+          git archive --format=tar.gz --output="$RUNNER_TEMP/lantern-source.tar.gz" HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lantern-source-${{ github.sha }}
+          path: ${{ runner.temp }}/lantern-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error
       - name: Test the production std-only cycle kernel and exhaustive oracle
         shell: bash
         run: |
@@ -75,8 +90,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Cargo's documented shallow-deps mode keeps exact locked revisions
-          # without fetching the foundations' complete repository histories.
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-lantern --lib --test network --test lantern --no-fail-fast --jobs 2
       - name: Test network tracing through the real CLI binary
         if: ${{ !cancelled() }}
