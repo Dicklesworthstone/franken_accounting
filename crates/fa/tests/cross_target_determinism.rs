@@ -553,6 +553,20 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
         "FX + valuation corpus digest drifted on {}",
         std::env::consts::ARCH
     );
+    // Every book pin at once: a deliberate format or registry change is then
+    // reviewed as one measured set, never discovered one assertion per run.
+    eprintln!(
+        "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
+        std::env::consts::ARCH,
+        hex32(&book_run_1.fold_digest),
+        hex32(&book_run_1.tb_bytes_digest),
+        hex32(&book_run_1.tb_cert_digest),
+        hex32(&book_run_1.bs_bytes_digest),
+        hex32(&book_run_1.bs_cert_digest),
+        hex32(&book_run_1.is_bytes_digest),
+        hex32(&book_run_1.is_cert_digest),
+        hex32(&book_run_1.bundle_digest),
+    );
     assert_eq!(
         hex32(&book_run_1.fold_digest),
         "3f81b9886e3ec2f029fccbc72c0c0b41d6da5c0782f7a274e036c1c63b4883c5",
