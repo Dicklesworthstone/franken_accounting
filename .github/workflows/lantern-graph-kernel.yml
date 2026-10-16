@@ -12,6 +12,13 @@ on:
       - 'crates/fa-lantern/src/catalog/**'
       - 'crates/fa-lantern/tests/network.rs'
       - 'crates/fa-cli/tests/network.rs'
+      - 'crates/fa/src/procedure_certificate.rs'
+      - 'crates/fa/src/procedure_certificate/**'
+      - 'crates/fa/src/lib.rs'
+      - 'crates/fa/src/report_artifact.rs'
+      - 'crates/fa-cli/src/notary.rs'
+      - 'crates/fa-cli/src/notary/**'
+      - 'crates/fa-cli/tests/procedure_replay.rs'
       - 'registries/procedures.toml'
       - '.github/workflows/lantern-graph-kernel.yml'
   workflow_dispatch:
@@ -36,8 +43,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Only committed public files: no checkout credentials, build caches,
-          # environment, runner state or generated book/key files are archived.
           git archive --format=tar.gz --output="$RUNNER_TEMP/lantern-source.tar.gz" HEAD
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -66,7 +71,6 @@ jobs:
           "$RUNNER_TEMP/lantern-network" --nocapture
   journal-integration:
     # Focused hosted feedback only; not the repository's RCH/full-workspace gate.
-    # New source supersedes only this feedback lane, never the official gates.
     concurrency:
       group: lantern-journal-feedback
       cancel-in-progress: true
@@ -97,3 +101,35 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test network --jobs 2
+  procedure-certificates:
+    # Separate feedback preserves journal/cycle results when this new family fails.
+    concurrency:
+      group: lantern-procedure-certificates
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Fetch the exact public commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Install the pinned compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2026-08-31 --profile minimal
+      - name: Test analytic source closure, replay, authority and tamper refusal
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib procedure_certificate --jobs 2 -- --nocapture
+      - name: Regress all existing report-artifact families
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib report_artifact --jobs 2
