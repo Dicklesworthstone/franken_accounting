@@ -114,7 +114,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test cli certified_ --jobs 2
-      - name: Check facade and CLI lints without weakening warnings
+      - name: Lint selected facade and CLI crates independently of dependency warnings
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Scoped feedback, not a substitute for the dependency-inclusive gate below.
+          cargo +nightly-2026-08-31 clippy --locked -Z bindeps -Z git=shallow-deps -p fa -p fa-cli --lib --jobs 2 -- --no-deps -D warnings
+      - name: Check facade and CLI lints including dependencies without weakening warnings
         if: ${{ !cancelled() }}
         shell: bash
         run: |
