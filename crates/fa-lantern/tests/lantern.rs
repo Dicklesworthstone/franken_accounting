@@ -3070,3 +3070,1025 @@ fn structuring_respects_currency_iso4217_across_multi_unit_transfers_and_agrees_
         vec![("4000".into(), "1000".into(), vec![3, 4, 5])]
     );
 }
+
+#[test]
+fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
+    use fa_lantern::digits::{FirstTwoDigits, SecondDigit};
+    use fa_lantern::jet::{
+        IntercompanyUnmatched, LargeRoundReversals, ManualVsRule, SuspenseAging, UnusualAccounts,
+        UnusualPreparers,
+    };
+    use fa_lantern::numbers::{RelativeSizeFactor, ThresholdSplitting};
+
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = Some(day(2026, 2, 28));
+    let jan = h.period_code(day(2026, 1, 15));
+    let feb = h.period_code(day(2026, 2, 10));
+    let usd = h.usd;
+
+    // Install a suspense account (9999) and an intercompany account (IC10) in snapshot.accounts
+    let susp_vid = account_vid(h.book.book_id, "9999");
+    snapshot.accounts.insert(
+        susp_vid,
+        fa_journal::rows::AccountRow {
+            vid: susp_vid,
+            code: "9999".into(),
+            name: "Unallocated Suspense Clearing".into(),
+            account_type: AccountType::ASSET,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            open_item: false,
+            limit: None,
+        },
+    );
+    let ic_vid = account_vid(h.book.book_id, "IC10");
+    snapshot.accounts.insert(
+        ic_vid,
+        fa_journal::rows::AccountRow {
+            vid: ic_vid,
+            code: "IC10".into(),
+            name: "Intercompany Due From Sub".into(),
+            account_type: AccountType::ASSET,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            open_item: false,
+            limit: None,
+        },
+    );
+
+    let rule_origin = Some(EntryOrigin::Rule {
+        rule_id: "rev.recognition".into(),
+        rule_version: 1,
+        rule_oid: Oid([5; 32]),
+        inputs_digest: Oid([6; 32]),
+    });
+
+    // 4 common entries on (6000, 1000) prepared by PREPARER with Rule origin
+    let mut entries = Vec::new();
+    let mut naive_rows = Vec::new();
+    for i in 0..4usize {
+        let m = match i {
+            0 => 1_200,
+            1 => 1_500,
+            2 => 1_800,
+            _ => 25_000, // 25_000 / 1_800 = 13.88x (>= 5.00x RSF!)
+        };
+        let d = day(2026, 1, 5 + i as u8);
+        entries.push(make_snapshot_entry(
+            &mut h,
+            VId(90_000 + i as u128),
+            CommitSeq(400 + i as u64),
+            d,
+            &jan,
+            EntryClass::ORIGINAL,
+            vec![
+                ("6000", Side::Debit, usd, m),
+                ("1000", Side::Credit, usd, m),
+            ],
+            Vec::new(),
+            None,
+            Some(d),
+            rule_origin.clone(),
+            Vec::new(),
+        ));
+        naive_rows.push(naive::Row {
+            index: i,
+            date: d,
+            document_date: Some(d),
+            period: jan.clone(),
+            period_start: None,
+            period_end: day(2026, 2, 1),
+            legs: vec![
+                naive::Leg {
+                    account: "6000".into(),
+                    debit: true,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: m,
+                },
+                naive::Leg {
+                    account: "1000".into(),
+                    debit: false,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: m,
+                },
+            ],
+            preparer: "P7".into(),
+            approvers: Vec::new(),
+            description_chars: Some(12),
+            external_ids: Vec::new(),
+            recorded_after_close: false,
+            reverses: None,
+            replaces: None,
+        });
+    }
+
+    // Entry 4: Rare account pair (7000, 2000), prepared by REVIEWER on 6000, Manual origin on rule-heavy 6000
+    let mut e_rare = make_snapshot_entry(
+        &mut h,
+        VId(90_004),
+        CommitSeq(404),
+        day(2026, 1, 12),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, usd, 1_100),
+            ("2000", Side::Credit, usd, 1_100),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 12)),
+        None, // Intent (manual) origin
+        Vec::new(),
+    );
+    e_rare.entry.proposal.principal_ref = REVIEWER;
+    entries.push(e_rare);
+    naive_rows.push(naive::Row {
+        index: 4,
+        date: day(2026, 1, 12),
+        document_date: Some(day(2026, 1, 12)),
+        period: jan.clone(),
+        period_start: None,
+        period_end: day(2026, 2, 1),
+        legs: vec![
+            naive::Leg {
+                account: "6000".into(),
+                debit: true,
+                unit: usd.0,
+                scale: 2,
+                mantissa: 1_100,
+            },
+            naive::Leg {
+                account: "2000".into(),
+                debit: false,
+                unit: usd.0,
+                scale: 2,
+                mantissa: 1_100,
+            },
+        ],
+        preparer: "P8".into(),
+        approvers: Vec::new(),
+        description_chars: Some(12),
+        external_ids: Vec::new(),
+        recorded_after_close: false,
+        reverses: None,
+        replaces: None,
+    });
+
+    // Entry 5 & 6: Round amount 500_000 ($5,000.00) on Jan 30 reversed on Feb 3 (`jet.large_round_reversals`)
+    let e_round = make_snapshot_entry(
+        &mut h,
+        VId(90_005),
+        CommitSeq(405),
+        day(2026, 1, 30),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1100", Side::Debit, usd, 500_000),
+            ("4000", Side::Credit, usd, 500_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 30)),
+        None,
+        Vec::new(),
+    );
+    let e_round_ref = fa_model::EntryRef {
+        vid: e_round.vid,
+        entry_digest: e_round.entry.entry_digest,
+    };
+    let e_round_rev = make_snapshot_entry(
+        &mut h,
+        VId(90_006),
+        CommitSeq(406),
+        day(2026, 2, 3),
+        &feb,
+        EntryClass::REVERSAL,
+        vec![
+            ("4000", Side::Debit, usd, 500_000),
+            ("1100", Side::Credit, usd, 500_000),
+        ],
+        vec![fa_model::Supersession {
+            target: e_round_ref,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }],
+        None,
+        Some(day(2026, 2, 3)),
+        None,
+        Vec::new(),
+    );
+    entries.push(e_round);
+    entries.push(e_round_rev);
+
+    // Entry 7: Stale suspense posting on 9999 dated Jan 10 (49 days old at Feb 28 > 7 days)
+    let mut e_susp = make_snapshot_entry(
+        &mut h,
+        VId(90_007),
+        CommitSeq(407),
+        day(2026, 1, 10),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 30_000),
+            ("4000", Side::Credit, usd, 30_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 10)),
+        None,
+        Vec::new(),
+    );
+    e_susp.entry.proposal.legs[0].account = susp_vid;
+    entries.push(e_susp);
+
+    // Entry 8: Unmatched intercompany posting on IC10
+    let mut e_ic = make_snapshot_entry(
+        &mut h,
+        VId(90_008),
+        CommitSeq(408),
+        day(2026, 1, 15),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 75_000),
+            ("4000", Side::Credit, usd, 75_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 15)),
+        None,
+        Vec::new(),
+    );
+    e_ic.entry.proposal.legs[0].account = ic_vid;
+    entries.push(e_ic);
+
+    // Entries 9 & 10: Threshold splitting — two $6,000.00 (600_000) postings on (7000, 1000) within 2 days
+    for (k, d) in [(9usize, day(2026, 2, 10)), (10, day(2026, 2, 11))] {
+        entries.push(make_snapshot_entry(
+            &mut h,
+            VId(90_000 + k as u128),
+            CommitSeq(400 + k as u64),
+            d,
+            &feb,
+            EntryClass::ORIGINAL,
+            vec![
+                ("7000", Side::Debit, usd, 600_000),
+                ("1000", Side::Credit, usd, 600_000),
+            ],
+            Vec::new(),
+            None,
+            Some(d),
+            None,
+            Vec::new(),
+        ));
+    }
+
+    snapshot.entries = entries;
+
+    // 1. jet.unusual_accounts & oracle
+    let ua = run_over(&snapshot, &h.book, &UnusualAccounts::new().unwrap()).unwrap();
+    assert!(!ua.findings.is_empty());
+    witness::determinism(&snapshot, &h.book, &UnusualAccounts::new().unwrap()).unwrap();
+    assert_eq!(naive::unusual_accounts(&naive_rows, 1, 5), vec![4]);
+
+    // 2. jet.unusual_preparers
+    let up = run_over(&snapshot, &h.book, &UnusualPreparers::new().unwrap()).unwrap();
+    assert!(
+        up.findings
+            .iter()
+            .any(|f| f.cites.contains(&Cite::Entry(VId(90_004))))
+    );
+    witness::determinism(&snapshot, &h.book, &UnusualPreparers::new().unwrap()).unwrap();
+
+    // 3. jet.manual_vs_rule
+    let mvr = run_over(&snapshot, &h.book, &ManualVsRule::new().unwrap()).unwrap();
+    assert!(
+        mvr.findings
+            .iter()
+            .any(|f| f.cites.contains(&Cite::Entry(VId(90_004))))
+    );
+    witness::determinism(&snapshot, &h.book, &ManualVsRule::new().unwrap()).unwrap();
+
+    // 4. jet.large_round_reversals
+    let lrr = run_over(&snapshot, &h.book, &LargeRoundReversals::new().unwrap()).unwrap();
+    assert_eq!(lrr.findings.len(), 1);
+    assert!(lrr.findings[0].cites.contains(&Cite::Entry(VId(90_005))));
+    assert!(lrr.findings[0].cites.contains(&Cite::Entry(VId(90_006))));
+    witness::determinism(&snapshot, &h.book, &LargeRoundReversals::new().unwrap()).unwrap();
+
+    // 5. jet.suspense_aging
+    let sa = run_over(&snapshot, &h.book, &SuspenseAging::new().unwrap()).unwrap();
+    assert_eq!(sa.findings.len(), 1);
+    assert!(sa.findings[0].cites.contains(&Cite::Account(susp_vid)));
+    witness::determinism(&snapshot, &h.book, &SuspenseAging::new().unwrap()).unwrap();
+
+    // 6. jet.intercompany_unmatched
+    let icu = run_over(&snapshot, &h.book, &IntercompanyUnmatched::new().unwrap()).unwrap();
+    assert_eq!(icu.findings.len(), 1);
+    assert!(icu.findings[0].cites.contains(&Cite::Entry(VId(90_008))));
+    witness::determinism(&snapshot, &h.book, &IntercompanyUnmatched::new().unwrap()).unwrap();
+
+    // 7. benford.second_digit & benford.first_two_digits & oracles
+    let sd = run_over(
+        &snapshot,
+        &h.book,
+        &SecondDigit::with(
+            Params::defaults(SecondDigit::ID)
+                .unwrap()
+                .set("min_population", 1)
+                .unwrap(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(sd.findings.len(), 1);
+    witness::determinism(&snapshot, &h.book, &SecondDigit::new().unwrap()).unwrap();
+    let naive_sd: u64 = naive::second_digit_counts_for(&naive_rows, Some(usd.0), true)
+        .iter()
+        .sum();
+    assert_eq!(naive_sd, 5);
+
+    let ftd = run_over(
+        &snapshot,
+        &h.book,
+        &FirstTwoDigits::with(
+            Params::defaults(FirstTwoDigits::ID)
+                .unwrap()
+                .set("min_population", 1)
+                .unwrap(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(ftd.findings.len(), 1);
+    witness::determinism(&snapshot, &h.book, &FirstTwoDigits::new().unwrap()).unwrap();
+    let naive_ftd: u64 = naive::first_two_digits_counts_for(&naive_rows, Some(usd.0), true)
+        .iter()
+        .sum();
+    assert_eq!(naive_ftd, 5);
+
+    // 8. numbers.relative_size_factor & oracle
+    let rsf = run_over(&snapshot, &h.book, &RelativeSizeFactor::new().unwrap()).unwrap();
+    assert!(!rsf.findings.is_empty());
+    witness::determinism(&snapshot, &h.book, &RelativeSizeFactor::new().unwrap()).unwrap();
+    let oracle_rsf = naive::relative_size_factor_by_account(&naive_rows, 3, 50_000);
+    assert_eq!(oracle_rsf.len(), 1);
+    assert_eq!(oracle_rsf[0].0, "6000");
+
+    // 9. numbers.threshold_splitting
+    let ts = run_over(&snapshot, &h.book, &ThresholdSplitting::new().unwrap()).unwrap();
+    assert_eq!(ts.findings.len(), 1);
+    assert!(ts.findings[0].cites.contains(&Cite::Entry(VId(90_009))));
+    assert!(ts.findings[0].cites.contains(&Cite::Entry(VId(90_010))));
+    witness::determinism(&snapshot, &h.book, &ThresholdSplitting::new().unwrap()).unwrap();
+}
+
+#[test]
+fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
+    use fa_lantern::graph::{
+        CircularFlows, Communities, Concentration, IdentityResolution, Layering,
+        RelatedPartyExposure, ShellSignature,
+    };
+
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = Some(day(2026, 1, 31));
+    let jan = h.period_code(day(2026, 1, 15));
+    let usd = h.usd;
+
+    // Populate REA parties and relationships for graph.related_party_exposure,
+    // graph.shell_signature, and graph.identity_resolution
+    let p_root = fa_model::party_vid(h.book.book_id, "HOLDCO");
+    let p_root_val = fa_model::party_value_vid(h.book.book_id, "HOLDCO");
+    let p_aff1 = fa_model::party_vid(h.book.book_id, "AFFIL-1");
+    let p_aff1_val = fa_model::party_value_vid(h.book.book_id, "AFFIL-1");
+    let p_aff2 = fa_model::party_vid(h.book.book_id, "AFFIL-2");
+    let p_aff2_val = fa_model::party_value_vid(h.book.book_id, "AFFIL-2");
+
+    snapshot.rea.parties.insert(
+        p_root,
+        fa_journal::rea::PartyRow {
+            vid: p_root,
+            dimension_value_vid: p_root_val,
+            code: "HOLDCO".into(),
+            kind: fa_model::PartyKind::RelatedParty,
+            name: Erasable::Present("Parent HoldCo".into()),
+            identifiers: Vec::new(),
+            external_ids: Vec::new(),
+            created_at: CommitSeq(1),
+        },
+    );
+    snapshot.rea.parties.insert(
+        p_aff1,
+        fa_journal::rea::PartyRow {
+            vid: p_aff1,
+            dimension_value_vid: p_aff1_val,
+            code: "AFFIL-1".into(),
+            kind: fa_model::PartyKind::Vendor,
+            name: Erasable::Present("Affiliate One LLC".into()),
+            identifiers: vec![(
+                "bank_account".into(),
+                Erasable::Present("IBAN-SHARED-777".into()),
+            )],
+            external_ids: Vec::new(),
+            created_at: CommitSeq(2),
+        },
+    );
+    snapshot.rea.parties.insert(
+        p_aff2,
+        fa_journal::rea::PartyRow {
+            vid: p_aff2,
+            dimension_value_vid: p_aff2_val,
+            code: "AFFIL-2".into(),
+            kind: fa_model::PartyKind::Vendor,
+            name: Erasable::Present("Affiliate Two LLC".into()),
+            identifiers: vec![(
+                "bank_account".into(),
+                Erasable::Present("IBAN-SHARED-777".into()),
+            )],
+            external_ids: Vec::new(),
+            created_at: CommitSeq(3),
+        },
+    );
+    snapshot
+        .rea
+        .relationships
+        .push(fa_journal::rea::RelationshipRow {
+            eid: fgdb_types::EId(1),
+            spec: fa_model::RelationshipSpec {
+                kind: fa_model::RelationshipKind::Controls,
+                from_vid: p_root,
+                to_vid: p_aff1,
+                valid_from: day(2026, 1, 1),
+                valid_to: None,
+                pct_bp: Some(fa_model::OwnershipPct::new(10_000).unwrap()),
+                basis: "voting_control".into(),
+            },
+            recorded_at: CommitSeq(4),
+            control_entry: VId(500),
+        });
+
+    // Build a 3-cycle (1000 -> 1010 -> 1020 -> 1000) and a 3-hop layering chain
+    // (4000 -> 1000 -> 1010 -> 6000), attaching p_aff1_val on the first entry
+    let mut e1 = make_snapshot_entry(
+        &mut h,
+        VId(91_001),
+        CommitSeq(501),
+        day(2026, 1, 5),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1010", Side::Debit, usd, 100_000),
+            ("1000", Side::Credit, usd, 100_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 5)),
+        None,
+        Vec::new(),
+    );
+    e1.entry.proposal.legs[0].dimensions.push(p_aff1_val);
+    let e2 = make_snapshot_entry(
+        &mut h,
+        VId(91_002),
+        CommitSeq(502),
+        day(2026, 1, 6),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1020", Side::Debit, usd, 95_000),
+            ("1010", Side::Credit, usd, 95_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 6)),
+        None,
+        Vec::new(),
+    );
+    let e3 = make_snapshot_entry(
+        &mut h,
+        VId(91_003),
+        CommitSeq(503),
+        day(2026, 1, 7),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 90_000),
+            ("1020", Side::Credit, usd, 90_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 7)),
+        None,
+        Vec::new(),
+    );
+    let e4 = make_snapshot_entry(
+        &mut h,
+        VId(91_004),
+        CommitSeq(504),
+        day(2026, 1, 8),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, usd, 85_000),
+            ("1020", Side::Credit, usd, 85_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 8)),
+        None,
+        Vec::new(),
+    );
+    snapshot.entries = vec![e1, e2, e3, e4];
+
+    // 1. graph.circular_flows
+    let cf = run_over(&snapshot, &h.book, &CircularFlows::new().unwrap()).unwrap();
+    assert!(!cf.findings.is_empty());
+    assert!(cf.findings[0].narrative.contains("cgse="));
+    witness::determinism(&snapshot, &h.book, &CircularFlows::new().unwrap()).unwrap();
+
+    // 2. graph.layering
+    let lay = run_over(&snapshot, &h.book, &Layering::new().unwrap()).unwrap();
+    assert!(!lay.findings.is_empty());
+    assert!(lay.findings[0].narrative.contains("cgse="));
+    witness::determinism(&snapshot, &h.book, &Layering::new().unwrap()).unwrap();
+
+    // 3. graph.communities
+    let comm = run_over(&snapshot, &h.book, &Communities::new().unwrap()).unwrap();
+    assert!(!comm.findings.is_empty());
+    assert!(comm.findings[0].narrative.contains("cgse="));
+    witness::determinism(&snapshot, &h.book, &Communities::new().unwrap()).unwrap();
+
+    // 4. graph.related_party_exposure
+    let rpe = run_over(&snapshot, &h.book, &RelatedPartyExposure::new().unwrap()).unwrap();
+    assert_eq!(rpe.findings.len(), 1);
+    assert!(rpe.findings[0].cites.contains(&Cite::Entry(VId(91_001))));
+    assert!(rpe.findings[0].narrative.contains("cgse="));
+    witness::determinism(&snapshot, &h.book, &RelatedPartyExposure::new().unwrap()).unwrap();
+
+    // 5. graph.shell_signature
+    let ss = run_over(&snapshot, &h.book, &ShellSignature::new().unwrap()).unwrap();
+    assert!(!ss.findings.is_empty());
+    assert!(ss.findings[0].narrative.contains("cgse="));
+    witness::determinism(&snapshot, &h.book, &ShellSignature::new().unwrap()).unwrap();
+
+    // 6. graph.concentration
+    let conc = run_over(&snapshot, &h.book, &Concentration::new().unwrap()).unwrap();
+    assert!(!conc.findings.is_empty());
+    assert!(conc.findings[0].narrative.contains("cgse="));
+    witness::determinism(&snapshot, &h.book, &Concentration::new().unwrap()).unwrap();
+
+    // 7. graph.identity_resolution
+    let ir = run_over(&snapshot, &h.book, &IdentityResolution::new().unwrap()).unwrap();
+    assert_eq!(ir.findings.len(), 1);
+    assert!(ir.findings[0].cites.contains(&Cite::Principal(p_aff1)));
+    assert!(ir.findings[0].cites.contains(&Cite::Principal(p_aff2)));
+    assert!(ir.findings[0].narrative.contains("cgse="));
+    witness::determinism(&snapshot, &h.book, &IdentityResolution::new().unwrap()).unwrap();
+}
+
+#[test]
+fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
+    use fa_journal::attestation::{
+        Attestation, AttestationClaim, CapabilityBinding, RegisterEqualsClaim, StoredAttestation,
+        Subject,
+    };
+    use fa_lantern::aging::InventoryAging;
+    use fa_lantern::cutoff::{
+        ConfirmCoverage, ExpenseCapitalization, PartyMasterChanges, PayrollGhost, ReconBookToBook,
+        ReconIntercompany, ReconLapping, ReversalPatterns, SubsequentEvents, UnrecordedLiabilities,
+    };
+
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = Some(day(2026, 4, 30));
+    let jan = h.period_code(day(2026, 1, 15));
+    let feb = h.period_code(day(2026, 2, 10));
+    let usd = h.usd;
+
+    // Add an intercompany account IC20 and an inventory account 1300
+    let ic_vid = account_vid(h.book.book_id, "IC20");
+    snapshot.accounts.insert(
+        ic_vid,
+        fa_journal::rows::AccountRow {
+            vid: ic_vid,
+            code: "IC20".into(),
+            name: "Intercompany Receivable".into(),
+            account_type: AccountType::ASSET,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            open_item: false,
+            limit: None,
+        },
+    );
+    let inv_vid = account_vid(h.book.book_id, "1300");
+    snapshot.accounts.insert(
+        inv_vid,
+        fa_journal::rows::AccountRow {
+            vid: inv_vid,
+            code: "1300".into(),
+            name: "Merchandise Inventory".into(),
+            account_type: AccountType::ASSET,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            open_item: false,
+            limit: None,
+        },
+    );
+    let capex_vid = account_vid(h.book.book_id, "1500");
+    snapshot.accounts.insert(
+        capex_vid,
+        fa_journal::rows::AccountRow {
+            vid: capex_vid,
+            code: "1500".into(),
+            name: "Network Property & CapEx".into(),
+            account_type: AccountType::ASSET,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            open_item: false,
+            limit: None,
+        },
+    );
+    let payroll_vid = account_vid(h.book.book_id, "6300");
+    snapshot.accounts.insert(
+        payroll_vid,
+        fa_journal::rows::AccountRow {
+            vid: payroll_vid,
+            code: "6300".into(),
+            name: "Wages & Salaries Expense".into(),
+            account_type: AccountType::EXPENSE,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            open_item: false,
+            limit: None,
+        },
+    );
+
+    // Parties for lapping & payroll & master changes
+    let pa = fa_model::party_vid(h.book.book_id, "CUST-A");
+    let pa_val = fa_model::party_value_vid(h.book.book_id, "CUST-A");
+    let pb = fa_model::party_vid(h.book.book_id, "CUST-B");
+    let pb_val = fa_model::party_value_vid(h.book.book_id, "CUST-B");
+    snapshot.rea.parties.insert(
+        pa,
+        fa_journal::rea::PartyRow {
+            vid: pa,
+            dimension_value_vid: pa_val,
+            code: "CUST-A".into(),
+            kind: fa_model::PartyKind::Customer,
+            name: Erasable::Present("Customer A".into()),
+            identifiers: vec![("bank".into(), Erasable::Present("SHARED-BANK-1".into()))],
+            external_ids: Vec::new(),
+            created_at: CommitSeq(1),
+        },
+    );
+    snapshot.rea.parties.insert(
+        pb,
+        fa_journal::rea::PartyRow {
+            vid: pb,
+            dimension_value_vid: pb_val,
+            code: "CUST-B".into(),
+            kind: fa_model::PartyKind::Customer,
+            name: Erasable::Present("Customer B".into()),
+            identifiers: vec![("bank".into(), Erasable::Present("SHARED-BANK-1".into()))],
+            external_ids: Vec::new(),
+            created_at: CommitSeq(2),
+        },
+    );
+
+    // Mark FY2026-P01 as soft-closed for subsequent events review
+    snapshot.transitions.insert(
+        jan.clone(),
+        vec![fa_lantern::Transition {
+            recorded_at: CommitSeq(590),
+            from: PeriodState::Open,
+            to: PeriodState::SoftClosed,
+        }],
+    );
+
+    // 1. Intercompany imbalance entry on IC20
+    let mut e_ic = make_snapshot_entry(
+        &mut h,
+        VId(92_001),
+        CommitSeq(601),
+        day(2026, 1, 10),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 40_000),
+            ("4000", Side::Credit, usd, 40_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 10)),
+        None,
+        Vec::new(),
+    );
+    e_ic.entry.proposal.legs[0].account = ic_vid;
+
+    // 2. Lapping triple on AR (1100):
+    //    - Jan 10: CUST-A debit 50_000
+    //    - Jan 12: CUST-B credit 50_000
+    //    - Jan 15: CUST-A credit 50_000
+    let mut e_lap1 = make_snapshot_entry(
+        &mut h,
+        VId(92_002),
+        CommitSeq(602),
+        day(2026, 1, 10),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1100", Side::Debit, usd, 50_000),
+            ("4000", Side::Credit, usd, 50_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 10)),
+        None,
+        Vec::new(),
+    );
+    e_lap1.entry.proposal.legs[0].dimensions.push(pa_val);
+    let mut e_lap2 = make_snapshot_entry(
+        &mut h,
+        VId(92_003),
+        CommitSeq(603),
+        day(2026, 1, 12),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 50_000),
+            ("1100", Side::Credit, usd, 50_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 12)),
+        None,
+        Vec::new(),
+    );
+    e_lap2.entry.proposal.legs[1].dimensions.push(pb_val);
+    let mut e_lap3 = make_snapshot_entry(
+        &mut h,
+        VId(92_004),
+        CommitSeq(604),
+        day(2026, 1, 15),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 50_000),
+            ("1100", Side::Credit, usd, 50_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 15)),
+        None,
+        Vec::new(),
+    );
+    e_lap3.entry.proposal.legs[1].dimensions.push(pa_val);
+
+    // 3. Unrecorded liability: effective Feb 10 (FY2026-P02), document_date Jan 25 (FY2026-P01), touches 6000 Expense
+    let e_unrec = make_snapshot_entry(
+        &mut h,
+        VId(92_005),
+        CommitSeq(605),
+        day(2026, 2, 10),
+        &feb,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, usd, 120_000),
+            ("2000", Side::Credit, usd, 120_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 25)),
+        None,
+        Vec::new(),
+    );
+
+    // 4. Subsequent event + cross-period reversal pattern: Adjusting/Reversal in Feb reversing Jan entry
+    let e_orig_ref = fa_model::EntryRef {
+        vid: e_lap1.vid,
+        entry_digest: e_lap1.entry.entry_digest,
+    };
+    let e_subseq = make_snapshot_entry(
+        &mut h,
+        VId(92_006),
+        CommitSeq(606),
+        day(2026, 2, 5),
+        &feb,
+        EntryClass::REVERSAL,
+        vec![
+            ("4000", Side::Debit, usd, 200_000),
+            ("1100", Side::Credit, usd, 200_000),
+        ],
+        vec![fa_model::Supersession {
+            target: e_orig_ref,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }],
+        None,
+        Some(day(2026, 2, 5)),
+        None,
+        Vec::new(),
+    );
+
+    // 5. Party master change control entry at CommitSeq(600) for CUST-A
+    let upd_bytes = fa_model::PartyIdentifierUpdate {
+        code: "CUST-A".into(),
+        identifiers: vec![("bank".into(), Erasable::Present("NEW-IBAN".into()))],
+    }
+    .encode()
+    .unwrap();
+    let mut e_ctrl = make_snapshot_entry(
+        &mut h,
+        VId(92_007),
+        CommitSeq(600),
+        day(2026, 1, 9),
+        "",
+        EntryClass::SCHEMA_CONTROL,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    e_ctrl.entry.proposal.control = Some(fa_model::ControlPayload::SchemaChange {
+        kind: fa_model::rea::SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS,
+        canonical_bytes: upd_bytes,
+    });
+
+    // 6. Payroll ghost entry (weekend payroll disbursement on Saturday Feb 14)
+    let mut e_pay = make_snapshot_entry(
+        &mut h,
+        VId(92_008),
+        CommitSeq(608),
+        day(2026, 2, 14),
+        &feb,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, usd, 350_000),
+            ("1000", Side::Credit, usd, 350_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 2, 14)),
+        None,
+        Vec::new(),
+    );
+    e_pay.entry.proposal.legs[0].account = payroll_vid;
+    e_pay.entry.proposal.legs[0].dimensions.push(pa_val);
+
+    // 7. Improper expense capitalization: Debit 1500 CapEx, Credit 6000 Expense
+    let mut e_capex = make_snapshot_entry(
+        &mut h,
+        VId(92_009),
+        CommitSeq(609),
+        day(2026, 1, 20),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 800_000),
+            ("6000", Side::Credit, usd, 800_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 20)),
+        None,
+        Vec::new(),
+    );
+    e_capex.entry.proposal.legs[0].account = capex_vid;
+
+    // 8. Stale inventory on 1300 dated Jan 2 (118 days without relief by Apr 30 > 90 days)
+    let mut e_inv = make_snapshot_entry(
+        &mut h,
+        VId(92_010),
+        CommitSeq(610),
+        day(2026, 1, 2),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 250_000),
+            ("2000", Side::Credit, usd, 250_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 2)),
+        None,
+        Vec::new(),
+    );
+    e_inv.entry.proposal.legs[0].account = inv_vid;
+
+    snapshot.entries = vec![
+        e_ic, e_lap1, e_lap2, e_lap3, e_unrec, e_subseq, e_ctrl, e_pay, e_capex, e_inv,
+    ];
+
+    // Add a RegisterEquals attestation on Cash (1000) in FY2026-P01 claiming 999_999 (diverging from fold)
+    let reg_claim = RegisterEqualsClaim {
+        account: h.account("1000"),
+        unit_id: usd.0,
+        period: jan.clone(),
+        entity: None,
+        mantissa: 999_999,
+        as_of_effective: day(2026, 1, 31),
+        evaluated_known_at: CommitSeq(700),
+        fold_digest: [0xAB; 32],
+    };
+    let cell = reg_claim.cell_digest();
+    snapshot.attestations.insert(
+        VId(95_001),
+        StoredAttestation {
+            attestation: Attestation {
+                book_id: h.book.book_id,
+                claim: AttestationClaim::RegisterEquals(reg_claim),
+                subject: Subject::Cell(cell),
+                principal: REVIEWER,
+                evidence_refs: Vec::new(),
+            },
+            signed_digest: [0xCD; 32],
+            binding: CapabilityBinding {
+                profile: fa_policy::Profile::Approver,
+                capability_commitment: [0xEF; 32],
+            },
+        },
+    );
+
+    // Run and verify all 10 reconciliation/completeness/audit + inventory aging procedures:
+    let r_ic = run_over(&snapshot, &h.book, &ReconIntercompany::new().unwrap()).unwrap();
+    assert_eq!(r_ic.findings.len(), 1);
+    assert_eq!(r_ic.findings[0].severity, Severity::Critical);
+    witness::determinism(&snapshot, &h.book, &ReconIntercompany::new().unwrap()).unwrap();
+
+    let r_lap = run_over(&snapshot, &h.book, &ReconLapping::new().unwrap()).unwrap();
+    assert_eq!(r_lap.findings.len(), 1);
+    witness::determinism(&snapshot, &h.book, &ReconLapping::new().unwrap()).unwrap();
+
+    let r_b2b = run_over(&snapshot, &h.book, &ReconBookToBook::new().unwrap()).unwrap();
+    assert_eq!(r_b2b.findings.len(), 1);
+    assert_eq!(r_b2b.findings[0].severity, Severity::Critical);
+    witness::determinism(&snapshot, &h.book, &ReconBookToBook::new().unwrap()).unwrap();
+
+    let r_ul = run_over(&snapshot, &h.book, &UnrecordedLiabilities::new().unwrap()).unwrap();
+    assert!(!r_ul.findings.is_empty());
+    assert!(
+        r_ul.findings
+            .iter()
+            .any(|f| f.cites.contains(&Cite::Entry(VId(92_005))))
+    );
+    witness::determinism(&snapshot, &h.book, &UnrecordedLiabilities::new().unwrap()).unwrap();
+
+    let r_sub = run_over(&snapshot, &h.book, &SubsequentEvents::new().unwrap()).unwrap();
+    assert!(!r_sub.findings.is_empty());
+    assert!(
+        r_sub
+            .findings
+            .iter()
+            .any(|f| f.cites.contains(&Cite::Entry(VId(92_006))))
+    );
+    witness::determinism(&snapshot, &h.book, &SubsequentEvents::new().unwrap()).unwrap();
+
+    let r_pmc = run_over(&snapshot, &h.book, &PartyMasterChanges::new().unwrap()).unwrap();
+    assert!(!r_pmc.findings.is_empty());
+    assert!(
+        r_pmc
+            .findings
+            .iter()
+            .any(|f| f.cites.contains(&Cite::Entry(VId(92_007))))
+    );
+    witness::determinism(&snapshot, &h.book, &PartyMasterChanges::new().unwrap()).unwrap();
+
+    let r_pg = run_over(&snapshot, &h.book, &PayrollGhost::new().unwrap()).unwrap();
+    assert!(!r_pg.findings.is_empty());
+    assert!(
+        r_pg.findings
+            .iter()
+            .any(|f| f.cites.contains(&Cite::Entry(VId(92_008))))
+    );
+    witness::determinism(&snapshot, &h.book, &PayrollGhost::new().unwrap()).unwrap();
+
+    let r_cap = run_over(&snapshot, &h.book, &ExpenseCapitalization::new().unwrap()).unwrap();
+    assert_eq!(r_cap.findings.len(), 1);
+    assert!(r_cap.findings[0].cites.contains(&Cite::Entry(VId(92_009))));
+    witness::determinism(&snapshot, &h.book, &ExpenseCapitalization::new().unwrap()).unwrap();
+
+    let r_inv = run_over(&snapshot, &h.book, &InventoryAging::new().unwrap()).unwrap();
+    assert_eq!(r_inv.findings.len(), 1);
+    assert!(r_inv.findings[0].cites.contains(&Cite::Account(inv_vid)));
+    witness::determinism(&snapshot, &h.book, &InventoryAging::new().unwrap()).unwrap();
+
+    let r_rev = run_over(&snapshot, &h.book, &ReversalPatterns::new().unwrap()).unwrap();
+    assert_eq!(r_rev.findings.len(), 1);
+    assert!(r_rev.findings[0].cites.contains(&Cite::Entry(VId(92_006))));
+    witness::determinism(&snapshot, &h.book, &ReversalPatterns::new().unwrap()).unwrap();
+
+    let r_cc = run_over(&snapshot, &h.book, &ConfirmCoverage::new().unwrap()).unwrap();
+    assert!(!r_cc.findings.is_empty());
+    witness::determinism(&snapshot, &h.book, &ConfirmCoverage::new().unwrap()).unwrap();
+}
+
