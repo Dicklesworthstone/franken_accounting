@@ -466,6 +466,7 @@ fn recorded_proposal_or_conflict<V: asupersync::fs::Vfs + Clone>(
         control_entry: row.vid,
         minted,
         blocked,
+        already_recorded: true,
     }))
 }
 
