@@ -87,24 +87,35 @@ fn state_digest(book: Id128, period: &str, payload: &[u8]) -> [u8; 32] {
     h.finalize().0
 }
 
+const STATE_VERSION: u16 = 2;
+
 fn empty(period: &str) -> Result<Fold, RegisterError> {
+    let pending_holds = BTreeMap::new();
     Ok(Fold {
         period: period.into(),
         cells: Vec::new(),
         pending: Vec::new(),
         watermark: None,
         entries: 0,
-        fold_digest: crate::digest_of(&[], &[], None)?,
+        fold_digest: crate::digest_of(period, &[], &[], None, [0u8; 32], &pending_holds)?,
+        posted_legs_digest: [0u8; 32],
+        pending_holds,
     })
 }
 
 fn encode(through: CommitSeq, fold: &Fold) -> Result<Vec<u8>, RegisterError> {
     let mut w = Writer::new();
-    w.fixed(b"FARS").u16(1).u64(through.0);
+    w.fixed(b"FARS").u16(STATE_VERSION).u64(through.0);
     w.opt(fold.watermark.as_ref(), |w, seq| {
         w.u64(seq.0);
     });
-    w.u64(fold.entries).fixed(&fold.fold_digest);
+    w.u64(fold.entries)
+        .fixed(&fold.fold_digest)
+        .fixed(&fold.posted_legs_digest);
+    let holds: Vec<_> = fold.pending_holds.iter().collect();
+    w.list(&holds, |w, ((seq, vid), digest)| {
+        w.u64(seq.0).u128(vid.0).fixed(digest);
+    });
     w.finish().map_err(RegisterError::Encoding)
 }
 
@@ -112,7 +123,7 @@ fn decode(payload: &[u8], period: &str) -> Result<(CommitSeq, Fold), RegisterErr
     let read = || -> Result<_, fa_model::DecodeError> {
         let mut r = Reader::new(payload);
         if r.fixed::<4>("register-state.magic")? != *b"FARS"
-            || r.u16("register-state.version")? != 1
+            || r.u16("register-state.version")? != STATE_VERSION
         {
             return Err(r.invalid("register-state.format"));
         }
@@ -122,10 +133,40 @@ fn decode(payload: &[u8], period: &str) -> Result<(CommitSeq, Fold), RegisterErr
         })?;
         let entries = r.u64("register-state.entries")?;
         let fold_digest = r.fixed::<32>("register-state.digest")?;
+        let posted_legs_digest = r.fixed::<32>("register-state.posted_legs_digest")?;
+        let holds = r.list(
+            "register-state.pending_holds",
+            fa_model::limits::MAX_LIST_LEN,
+            |r| {
+                let seq = CommitSeq(r.u64("register-state.hold_seq")?);
+                let vid = VId(r.u128("register-state.hold_vid")?);
+                let digest = r.fixed::<32>("register-state.hold_digest")?;
+                Ok(((seq, vid), digest))
+            },
+        )?;
         r.finish()?;
-        Ok((through, watermark, entries, fold_digest))
+        let mut pending_holds = BTreeMap::new();
+        for (key, digest) in holds {
+            if key.0 > through
+                || pending_holds
+                    .last_key_value()
+                    .is_some_and(|(prev, _)| *prev >= key)
+            {
+                return Err(r.invalid("register-state.pending_holds"));
+            }
+            pending_holds.insert(key, digest);
+        }
+        Ok((
+            through,
+            watermark,
+            entries,
+            fold_digest,
+            posted_legs_digest,
+            pending_holds,
+        ))
     };
-    let (through, watermark, entries, fold_digest) = read().map_err(|e| drift(e.to_string()))?;
+    let (through, watermark, entries, fold_digest, posted_legs_digest, pending_holds) =
+        read().map_err(|e| drift(e.to_string()))?;
     if watermark.is_some_and(|w| w > through) {
         return Err(drift("contribution watermark exceeds consumed frontier"));
     }
@@ -138,6 +179,8 @@ fn decode(payload: &[u8], period: &str) -> Result<(CommitSeq, Fold), RegisterErr
             watermark,
             entries,
             fold_digest,
+            posted_legs_digest,
+            pending_holds,
         },
     ))
 }
@@ -205,7 +248,14 @@ fn load<V: asupersync::fs::Vfs + Clone>(
     }
     fold.cells.sort_by(|a, b| a.key.cmp(&b.key));
     fold.pending.sort_by(|a, b| a.key.cmp(&b.key));
-    if crate::digest_of(&fold.cells, &fold.pending, fold.watermark)? != fold.fold_digest
+    if crate::digest_of(
+        period,
+        &fold.cells,
+        &fold.pending,
+        fold.watermark,
+        fold.posted_legs_digest,
+        &fold.pending_holds,
+    )? != fold.fold_digest
         || !crate::verify_projection(db, book, &fold)?.is_green()
     {
         return Err(drift(
@@ -281,6 +331,7 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
     let mut migration_runs = BTreeMap::new();
     for batch in db.delta_since(from)? {
         let seq = batch.commit_seq();
+        let mut batch_entries = Vec::new();
         for coordinate in batch.coordinate_entries() {
             for row in &coordinate.rows {
                 match row {
@@ -312,53 +363,7 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
                         entries_decoded = entries_decoded
                             .checked_add(1)
                             .ok_or(RegisterError::Overflow)?;
-                        if matches!(
-                            entry.proposal.control,
-                            Some(ControlPayload::MigrationControl {
-                                kind: fa_journal::migration::kind::FINALIZE,
-                                ..
-                            })
-                        ) {
-                            // Finalization activates chunks whose creation may
-                            // precede our cursor. Rebuild at this basis rather
-                            // than omit those newly visible old contributions.
-                            return prepare_rebuild(db, book, period);
-                        }
-                        if !fa_journal::migration::visible_at(
-                            db,
-                            &entry,
-                            basis,
-                            &mut migration_runs,
-                        )? {
-                            continue;
-                        }
-                        if entry.proposal.class == EntryClass::RESOLUTION {
-                            release(db, book, *vid, &entry, seq, &mut fold, &mut pending)?;
-                        }
-                        if entry.proposal.legs.is_empty()
-                            || crate::entry_period(book, &entry)? != period
-                        {
-                            continue;
-                        }
-                        fold.watermark = Some(fold.watermark.map_or(seq, |w| w.max(seq)));
-                        if entry.proposal.class == EntryClass::PENDING {
-                            match crate::add_entry(&mut pending, &entry, period) {
-                                Ok(()) => {}
-                                // Later resolutions in this same suffix may
-                                // release an otherwise overflowing hold. The
-                                // literal fold selects unresolved holds at
-                                // the target frontier before adding them. A
-                                // truly oversized final column still fails.
-                                Err(RegisterError::Overflow) => {
-                                    return prepare_rebuild(db, book, period);
-                                }
-                                Err(error) => return Err(error),
-                            }
-                        } else {
-                            fold.entries =
-                                fold.entries.checked_add(1).ok_or(RegisterError::Overflow)?;
-                            crate::add_entry(&mut cells, &entry, period)?;
-                        }
+                        batch_entries.push((*vid, entry));
                     }
                     DeltaRow::Property {
                         elem: ElementId::Vertex(vid),
@@ -376,10 +381,65 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
                 }
             }
         }
+        batch_entries.sort_by_key(|(vid, _)| vid.0);
+        for (vid, entry) in batch_entries {
+            if matches!(
+                entry.proposal.control,
+                Some(ControlPayload::MigrationControl {
+                    kind: fa_journal::migration::kind::FINALIZE,
+                    ..
+                })
+            ) {
+                // Finalization activates chunks whose creation may
+                // precede our cursor. Rebuild at this basis rather
+                // than omit those newly visible old contributions.
+                return prepare_rebuild(db, book, period);
+            }
+            if !fa_journal::migration::visible_at(db, &entry, basis, &mut migration_runs)? {
+                continue;
+            }
+            if entry.proposal.class == EntryClass::RESOLUTION {
+                release(db, book, vid, &entry, seq, &mut fold, &mut pending)?;
+            }
+            if entry.proposal.legs.is_empty() || crate::entry_period(book, &entry)? != period {
+                continue;
+            }
+            fold.watermark = Some(fold.watermark.map_or(seq, |w| w.max(seq)));
+            if entry.proposal.class == EntryClass::PENDING {
+                match crate::add_entry(&mut pending, &entry, period) {
+                    Ok(()) => {}
+                    // Later resolutions in this same suffix may
+                    // release an otherwise overflowing hold. The
+                    // literal fold selects unresolved holds at
+                    // the target frontier before adding them. A
+                    // truly oversized final column still fails.
+                    Err(RegisterError::Overflow) => {
+                        return prepare_rebuild(db, book, period);
+                    }
+                    Err(error) => return Err(error),
+                }
+                let hold_digest = crate::fold_entry_contributions([0u8; 32], seq, vid, &entry)?;
+                if fold.pending_holds.insert((seq, vid), hold_digest).is_some() {
+                    return Err(KernelError::Corrupt("duplicate pending hold identity".into()).into());
+                }
+            } else {
+                fold.entries = fold.entries.checked_add(1).ok_or(RegisterError::Overflow)?;
+                crate::add_entry(&mut cells, &entry, period)?;
+                fold.posted_legs_digest =
+                    crate::fold_entry_contributions(fold.posted_legs_digest, seq, vid, &entry)?;
+            }
+        }
     }
     fold.cells = cells.into_values().collect();
     fold.pending = pending.into_values().collect();
-    fold.fold_digest = crate::digest_of(&fold.cells, &fold.pending, fold.watermark)?;
+    fold.fold_digest = crate::digest_of(
+        period,
+        &fold.cells,
+        &fold.pending,
+        fold.watermark,
+        fold.posted_legs_digest,
+        &fold.pending_holds,
+    )?;
     // Repeated calls after our own maintenance write must not manufacture
     // an endless stream of empty maintenance commits.
     let wrote = expected_state.is_none() || entries_decoded != 0;
@@ -499,6 +559,11 @@ fn release<V: asupersync::fs::Vfs + Clone>(
         }
     }
     if !hold.proposal.legs.is_empty() {
+        let expected_hold_digest =
+            crate::fold_entry_contributions([0u8; 32], hold_seq, target.vid, &hold)?;
+        if fold.pending_holds.remove(&(hold_seq, target.vid)) != Some(expected_hold_digest) {
+            return Err(drift("released hold is missing from pending digest state"));
+        }
         fold.watermark = Some(fold.watermark.map_or(seq, |w| w.max(seq)));
     }
     Ok(())

@@ -149,6 +149,10 @@ pub struct Fold {
     /// Posting entries contributing to `cells` (excludes reservations/releases).
     pub entries: u64,
     pub fold_digest: [u8; 32],
+    /// Rolling BLAKE3 over posted leg contributions in `(commit_seq, entry_vid, ordinal)` order.
+    pub(crate) posted_legs_digest: [u8; 32],
+    /// Per-entry leg contribution digests of unresolved `Pending` holds, ordered by `(commit_seq, entry_vid)`.
+    pub(crate) pending_holds: BTreeMap<(CommitSeq, VId), [u8; 32]>,
 }
 
 /// `vid(Register) = H("fa:vid:register:v1" ‖ book ‖ account ‖ unit ‖ period)`.
@@ -167,14 +171,72 @@ pub fn register_vid(book: Id128, key: &CellKey) -> VId {
     VId(u128::from_le_bytes(lo))
 }
 
-fn digest_of(
+pub(crate) fn fold_leg_contribution(
+    prev: [u8; 32],
+    commit_seq: CommitSeq,
+    entry: VId,
+    ordinal: u16,
+    account: VId,
+    unit_id: u32,
+    side: Side,
+    mantissa: i128,
+) -> [u8; 32] {
+    let mut h = Hasher::new();
+    h.update(b"fa:register-leg-contribution:v1");
+    h.update(&prev);
+    h.update(&commit_seq.0.to_le_bytes());
+    h.update(&entry.0.to_le_bytes());
+    h.update(&ordinal.to_le_bytes());
+    h.update(&account.0.to_le_bytes());
+    h.update(&unit_id.to_le_bytes());
+    h.update(&[match side {
+        Side::Debit => 0,
+        Side::Credit => 1,
+    }]);
+    h.update(&mantissa.to_le_bytes());
+    h.finalize().0
+}
+
+pub(crate) fn fold_entry_contributions(
+    mut acc: [u8; 32],
+    commit_seq: CommitSeq,
+    entry_vid: VId,
+    entry: &Entry,
+) -> Result<[u8; 32], RegisterError> {
+    for (ordinal, leg) in entry.proposal.legs.iter().enumerate() {
+        let ordinal = u16::try_from(ordinal)
+            .map_err(|_| KernelError::Corrupt("leg ordinal exceeds u16".into()))?;
+        acc = fold_leg_contribution(
+            acc,
+            commit_seq,
+            entry_vid,
+            ordinal,
+            leg.account_ref,
+            leg.amount.unit.0,
+            leg.side,
+            leg.amount.mantissa,
+        );
+    }
+    Ok(acc)
+}
+
+pub(crate) fn digest_of(
+    period: &str,
     cells: &[Cell],
     pending: &[Cell],
     watermark: Option<CommitSeq>,
+    posted_legs_digest: [u8; 32],
+    pending_holds: &BTreeMap<(CommitSeq, VId), [u8; 32]>,
 ) -> Result<[u8; 32], RegisterError> {
     let mut w = Writer::new();
-    w.opt(watermark.as_ref(), |w, s| {
-        w.u64(s.0);
+    w.str(period)
+        .opt(watermark.as_ref(), |w, s| {
+            w.u64(s.0);
+        })
+        .fixed(&posted_legs_digest);
+    let holds: Vec<_> = pending_holds.iter().collect();
+    w.list(&holds, |w, ((seq, vid), digest)| {
+        w.u64(seq.0).u128(vid.0).fixed(digest);
     });
     for column in [cells, pending] {
         w.list(column, |w, c| {
@@ -260,6 +322,7 @@ pub fn entries_at<V: asupersync::fs::Vfs + Clone>(
         }
         entries.push((row.vid, entry, row.created_at));
     }
+    entries.sort_by_key(|(vid, _, created_at)| (*created_at, vid.0));
     Ok(entries)
 }
 
@@ -421,6 +484,8 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
     let mut pending = BTreeMap::new();
     let mut watermark: Option<CommitSeq> = None;
     let mut count = 0u64;
+    let mut posted_legs_digest = [0u8; 32];
+    let mut pending_holds = BTreeMap::new();
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
     let activated = migration_activations(&entries)?;
@@ -438,15 +503,26 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
                 watermark = Some(watermark.map_or(*release, |w| w.max(*release)));
             } else {
                 add_entry(&mut pending, &entry, period_code)?;
+                let hold_digest = fold_entry_contributions([0u8; 32], created_at, vid, &entry)?;
+                pending_holds.insert((created_at, vid), hold_digest);
             }
         } else {
             count = count.checked_add(1).ok_or(RegisterError::Overflow)?;
             add_entry(&mut cells, &entry, period_code)?;
+            posted_legs_digest =
+                fold_entry_contributions(posted_legs_digest, created_at, vid, &entry)?;
         }
     }
     let cells: Vec<Cell> = cells.into_values().collect();
     let pending: Vec<Cell> = pending.into_values().collect();
-    let fold_digest = digest_of(&cells, &pending, watermark)?;
+    let fold_digest = digest_of(
+        period_code,
+        &cells,
+        &pending,
+        watermark,
+        posted_legs_digest,
+        &pending_holds,
+    )?;
     Ok(Fold {
         period: period_code.to_string(),
         cells,
@@ -454,6 +530,8 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
         watermark,
         entries: count,
         fold_digest,
+        posted_legs_digest,
+        pending_holds,
     })
 }
 
@@ -1338,23 +1416,96 @@ mod tests {
         };
         let a = vec![Cell {
             key: key.clone(),
-            debits: 10,
-            credits: 10,
-            entry_count: 1,
+            debits: 150,
+            credits: 150,
+            entry_count: 2,
         }];
         let mut b = a.clone();
-        b[0].debits = 11;
+        b[0].debits = 151;
+        let holds = BTreeMap::new();
+        // History 1: 100 at seq 5, then 50 at seq 7.
+        let h1 = fold_leg_contribution(
+            fold_leg_contribution(
+                [0u8; 32],
+                CommitSeq(5),
+                VId(10),
+                0,
+                VId(1),
+                1,
+                Side::Debit,
+                100,
+            ),
+            CommitSeq(7),
+            VId(11),
+            0,
+            VId(1),
+            1,
+            Side::Debit,
+            50,
+        );
+        // History 2: 50 at seq 5, then 100 at seq 7 (equal cell sum = 150, same watermark = 7).
+        let h2 = fold_leg_contribution(
+            fold_leg_contribution(
+                [0u8; 32],
+                CommitSeq(5),
+                VId(10),
+                0,
+                VId(1),
+                1,
+                Side::Debit,
+                50,
+            ),
+            CommitSeq(7),
+            VId(11),
+            0,
+            VId(1),
+            1,
+            Side::Debit,
+            100,
+        );
+        // History 3: different ordinal order within an entry.
+        let h3 = fold_leg_contribution(
+            fold_leg_contribution(
+                [0u8; 32],
+                CommitSeq(5),
+                VId(10),
+                1,
+                VId(1),
+                1,
+                Side::Debit,
+                100,
+            ),
+            CommitSeq(7),
+            VId(11),
+            0,
+            VId(1),
+            1,
+            Side::Debit,
+            50,
+        );
+        assert_ne!(h1, h2);
+        assert_ne!(h1, h3);
         assert_eq!(
-            digest_of(&a, &[], Some(CommitSeq(5))).unwrap(),
-            digest_of(&a, &[], Some(CommitSeq(5))).unwrap()
+            digest_of("P", &a, &[], Some(CommitSeq(7)), h1, &holds).unwrap(),
+            digest_of("P", &a, &[], Some(CommitSeq(7)), h1, &holds).unwrap()
         );
         assert_ne!(
-            digest_of(&a, &[], Some(CommitSeq(5))).unwrap(),
-            digest_of(&b, &[], Some(CommitSeq(5))).unwrap()
+            digest_of("P", &a, &[], Some(CommitSeq(7)), h1, &holds).unwrap(),
+            digest_of("P", &a, &[], Some(CommitSeq(7)), h2, &holds).unwrap(),
+            "two histories with equal cell sums and identical watermark must have distinct fold digests"
         );
         assert_ne!(
-            digest_of(&a, &[], Some(CommitSeq(5))).unwrap(),
-            digest_of(&a, &[], Some(CommitSeq(6))).unwrap()
+            digest_of("P", &a, &[], Some(CommitSeq(7)), h1, &holds).unwrap(),
+            digest_of("P", &a, &[], Some(CommitSeq(7)), h3, &holds).unwrap(),
+            "leg ordinal within an entry is bound by fold_digest"
+        );
+        assert_ne!(
+            digest_of("P", &a, &[], Some(CommitSeq(7)), h1, &holds).unwrap(),
+            digest_of("P", &b, &[], Some(CommitSeq(7)), h1, &holds).unwrap()
+        );
+        assert_ne!(
+            digest_of("P", &a, &[], Some(CommitSeq(7)), h1, &holds).unwrap(),
+            digest_of("P", &a, &[], Some(CommitSeq(8)), h1, &holds).unwrap()
         );
         assert_ne!(
             register_vid(Id128([1; 16]), &key),
