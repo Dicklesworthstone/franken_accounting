@@ -246,17 +246,17 @@ impl Procedure for InventoryAging {
             if eff > as_of {
                 continue;
             }
-            for leg in &e.entry.proposal.legs {
+            for (ordinal, leg) in e.entry.proposal.legs.iter().enumerate() {
                 work.leg();
-                let Some(acct) = snapshot.accounts.get(&leg.account) else {
+                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
-                if !is_inventory_account(&acct.code, &acct.name, acct.account_type) {
+                if !is_inventory_account(&acct.code, &acct.name, AccountType(acct.account_type)) {
                     continue;
                 }
                 population += 1;
                 let pos = positions
-                    .entry((leg.account, leg.amount.unit.0))
+                    .entry((leg.account_ref, leg.amount.unit.0))
                     .or_default();
                 let mag = leg.amount.mantissa.unsigned_abs() as i128;
                 match leg.side {
@@ -270,7 +270,7 @@ impl Procedure for InventoryAging {
                             _ => eff,
                         });
                         if pos.debit_legs.len() < MAX_CITES - 1 {
-                            pos.debit_legs.push((e.vid, leg.ordinal));
+                            pos.debit_legs.push((e.vid, ordinal as u16));
                         }
                     }
                     Side::Credit => {
@@ -289,7 +289,7 @@ impl Procedure for InventoryAging {
 
         let mut out = Vec::new();
         for ((acct_vid, unit_id), mut pos) in positions {
-            work.comparison();
+            work.compare(1);
             if pos.net_debit <= 0 {
                 continue;
             }

@@ -132,7 +132,7 @@ impl Procedure for ReconIntercompany {
             work.entry();
             for leg in &e.entry.proposal.legs {
                 work.leg();
-                let Some(acct) = snapshot.accounts.get(&leg.account) else {
+                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
                 if !is_ic_account(&acct.code, &acct.name) {
@@ -150,14 +150,14 @@ impl Procedure for ReconIntercompany {
                     .0
                     .checked_add(signed)
                     .ok_or(LanternError::Overflow("intercompany balance sum"))?;
-                b.1.insert(leg.account);
+                b.1.insert(leg.account_ref);
                 b.2.insert(e.vid);
             }
         }
 
         let mut out = Vec::new();
         for ((period, unit_id), (net, accts, entries)) in buckets {
-            work.comparison();
+            work.compare(1);
             if net == 0 {
                 continue;
             }
@@ -201,10 +201,7 @@ pub struct ReconLapping {
 }
 procedure_boilerplate!(ReconLapping, "recon.lapping");
 
-fn is_ar_ap_account(code: &str, name: &str, open_item: bool) -> bool {
-    if open_item {
-        return true;
-    }
+fn is_ar_ap_account(code: &str, name: &str) -> bool {
     let cl = code.to_ascii_lowercase();
     let nl = name.to_ascii_lowercase();
     cl.starts_with("11")
@@ -265,22 +262,22 @@ impl Procedure for ReconLapping {
             let eff = e.entry.proposal.effective_date;
             for leg in &e.entry.proposal.legs {
                 work.leg();
-                let Some(acct) = snapshot.accounts.get(&leg.account) else {
+                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
-                if !is_ar_ap_account(&acct.code, &acct.name, acct.open_item) {
+                if !is_ar_ap_account(&acct.code, &acct.name) {
                     continue;
                 }
                 let party = leg
-                    .dimensions
+                    .dimension_set
                     .iter()
-                    .find_map(|d| pval_to_party.get(d).copied());
+                    .find_map(|(_, d)| pval_to_party.get(d).copied());
                 let Some(party) = party else {
                     continue;
                 };
                 population += 1;
                 streams
-                    .entry((leg.account, leg.amount.unit.0))
+                    .entry((leg.account_ref, leg.amount.unit.0))
                     .or_default()
                     .push(ControlMovement {
                         date: eff,
@@ -300,7 +297,7 @@ impl Procedure for ReconLapping {
             // 2) Party B (B != A) credit (cash receipt) at index j > i within window_days
             // 3) Party A credit (delayed settlement of A's invoice) at index k > j within window_days of j
             for i in 0..movs.len() {
-                work.comparison();
+                work.compare(1);
                 if movs[i].side != Side::Debit {
                     continue;
                 }
@@ -394,7 +391,7 @@ impl Procedure for ReconBookToBook {
 
         // 1. Check every stored RegisterEquals attestation against the posted journal fold
         for att in snapshot.attestations.values() {
-            work.comparison();
+            work.compare(1);
             let AttestationClaim::RegisterEquals(claim) = &att.attestation.claim else {
                 continue;
             };
@@ -411,11 +408,11 @@ impl Procedure for ReconBookToBook {
                     continue;
                 }
                 for leg in &e.entry.proposal.legs {
-                    if leg.account != claim.account || leg.amount.unit.0 != claim.unit_id {
+                    if leg.account_ref != claim.account || leg.amount.unit.0 != claim.unit_id {
                         continue;
                     }
                     if let Some(req_dvid) = entity_dvid
-                        && !leg.dimensions.contains(&req_dvid)
+                        && !leg.dimension_set.iter().any(|(_, d)| *d == req_dvid)
                     {
                         continue;
                     }
@@ -465,11 +462,11 @@ impl Procedure for ReconBookToBook {
 
         // 2. Check every Instrument vertex mirroring an account for unit consistency
         for inst in snapshot.rea.instruments.values() {
-            work.comparison();
+            work.compare(1);
             let mut mismatched_entries = Vec::new();
             for e in &live {
                 for leg in &e.entry.proposal.legs {
-                    if leg.account == inst.mirrors_account && leg.amount.unit != inst.unit {
+                    if leg.account_ref == inst.mirrors_account && leg.amount.unit != inst.unit {
                         mismatched_entries.push(e.vid);
                     }
                 }
@@ -565,16 +562,16 @@ impl Procedure for UnrecordedLiabilities {
             let mut max_expense_or_liab: Option<(u32, i128, VId)> = None;
             for leg in &e.entry.proposal.legs {
                 work.leg();
-                let Some(acct) = snapshot.accounts.get(&leg.account) else {
+                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
                 if matches!(
-                    acct.account_type,
+                    AccountType(acct.account_type),
                     AccountType::EXPENSE | AccountType::LIABILITY
                 ) {
                     let mag = leg.amount.mantissa.unsigned_abs() as i128;
                     if max_expense_or_liab.is_none_or(|(_, m, _)| mag > m) {
-                        max_expense_or_liab = Some((leg.amount.unit.0, mag, leg.account));
+                        max_expense_or_liab = Some((leg.amount.unit.0, mag, leg.account_ref));
                     }
                 }
             }
@@ -821,8 +818,11 @@ impl Procedure for PartyMasterChanges {
             for leg in &e.entry.proposal.legs {
                 work.leg();
                 for (ctrl_vid, ctrl_seq, code, pvid, pval_vid) in &updates {
-                    work.comparison();
-                    if (leg.dimensions.contains(pval_vid) || leg.dimensions.contains(pvid))
+                    work.compare(1);
+                    if leg
+                        .dimension_set
+                        .iter()
+                        .any(|(_, d)| d == pval_vid || d == pvid)
                         && e.recorded_at.0 >= *ctrl_seq
                         && e.recorded_at.0 - *ctrl_seq <= u64::from(window_commits)
                     {
@@ -938,7 +938,7 @@ impl Procedure for PayrollGhost {
             let mut party: Option<VId> = None;
             for leg in &e.entry.proposal.legs {
                 work.leg();
-                if let Some(acct) = snapshot.accounts.get(&leg.account)
+                if let Some(acct) = snapshot.accounts.get(&leg.account_ref)
                     && is_payroll_account(&acct.code, &acct.name)
                 {
                     is_payroll = true;
@@ -949,9 +949,9 @@ impl Procedure for PayrollGhost {
                 }
                 if party.is_none() {
                     party = leg
-                        .dimensions
+                        .dimension_set
                         .iter()
-                        .find_map(|d| pval_to_party.get(d).copied());
+                        .find_map(|(_, d)| pval_to_party.get(d).copied());
                 }
             }
             if !is_payroll {
@@ -995,7 +995,7 @@ impl Procedure for PayrollGhost {
         let mut out = Vec::new();
 
         for ((period, unit_id, mag), group) in &by_amount {
-            work.comparison();
+            work.compare(1);
             if group.len() >= 2 {
                 let mut cites: Vec<Cite> = group.iter().map(|pe| Cite::Entry(pe.vid)).collect();
                 for pe in group {
@@ -1027,7 +1027,7 @@ impl Procedure for PayrollGhost {
         }
 
         for pe in &payroll_entries {
-            work.comparison();
+            work.compare(1);
             let has_shared_id = pe.party.is_some_and(|p| shared_id_parties.contains(&p));
             if (has_shared_id || pe.weekend_or_self_approved) && flagged.insert(pe.vid) {
                 let mut cites = vec![Cite::Entry(pe.vid)];
@@ -1129,27 +1129,20 @@ impl Procedure for ExpenseCapitalization {
             let mut cost_credits: Vec<VId> = Vec::new();
             for leg in &e.entry.proposal.legs {
                 work.leg();
-                let Some(acct) = snapshot.accounts.get(&leg.account) else {
+                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
+                let atype = AccountType(acct.account_type);
                 match leg.side {
-                    Side::Debit
-                        if is_capex_asset(&acct.code, &acct.name, acct.account_type) =>
-                    {
+                    Side::Debit if is_capex_asset(&acct.code, &acct.name, atype) => {
                         capex_debits.push((
-                            leg.account,
+                            leg.account_ref,
                             leg.amount.unit.0,
                             leg.amount.mantissa.unsigned_abs() as i128,
                         ));
                     }
-                    Side::Credit
-                        if is_operating_cost_credit(
-                            &acct.code,
-                            &acct.name,
-                            acct.account_type,
-                        ) =>
-                    {
-                        cost_credits.push(leg.account);
+                    Side::Credit if is_operating_cost_credit(&acct.code, &acct.name, atype) => {
+                        cost_credits.push(leg.account_ref);
                     }
                     _ => {}
                 }
@@ -1234,7 +1227,7 @@ impl Procedure for ReversalPatterns {
                 continue;
             };
             let target_vid = s.target.vid;
-            work.comparison();
+            work.compare(1);
             let Some(orig) = by_vid.get(&target_vid).copied() else {
                 continue;
             };
@@ -1344,18 +1337,21 @@ impl Procedure for ConfirmCoverage {
                 if leg.side != Side::Debit {
                     continue;
                 }
-                let Some(acct) = snapshot.accounts.get(&leg.account) else {
+                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
-                if !is_confirmable_asset(&acct.code, &acct.name, acct.account_type) {
+                if !is_confirmable_asset(&acct.code, &acct.name, AccountType(acct.account_type)) {
                     continue;
                 }
                 population += 1;
                 let mag = leg.amount.mantissa.unsigned_abs() as i128;
-                let cell_attested =
-                    attested_cells.contains(&(leg.account, leg.amount.unit.0, e.period.clone()));
+                let cell_attested = attested_cells.contains(&(
+                    leg.account_ref,
+                    leg.amount.unit.0,
+                    e.period.clone(),
+                ));
                 let row = coverage
-                    .entry((leg.account, leg.amount.unit.0))
+                    .entry((leg.account_ref, leg.amount.unit.0))
                     .or_default();
                 row.0 = row
                     .0
@@ -1374,7 +1370,7 @@ impl Procedure for ConfirmCoverage {
 
         let mut out = Vec::new();
         for ((acct_vid, unit_id), (total, corroborated, mut uncorroborated)) in coverage {
-            work.comparison();
+            work.compare(1);
             if total <= 0 {
                 continue;
             }

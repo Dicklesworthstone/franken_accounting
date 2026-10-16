@@ -291,7 +291,7 @@ impl Procedure for ThresholdSplitting {
                 }
                 scale = unit.scale;
                 if let Some((_, v)) = leg
-                    .dimensions
+                    .dimension_set
                     .iter()
                     .find(|(d, _)| *d == fa_model::PARTY_DIMENSION)
                 {
