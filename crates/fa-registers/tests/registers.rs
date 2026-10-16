@@ -1789,7 +1789,7 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
             .expect("opened 2025-p12");
     }
 
-    // Install one leaf account per registered AccountType (1..=7) plus counter-accounts.
+    // Install one leaf account per registered AccountType (1..=8) plus counter-accounts.
     let type_accounts: &[(&str, &str, u8, u8)] = &[
         ("1010", "AssetSample", 1, 0),
         ("2010", "LiabilitySample", 2, 1),
@@ -1798,6 +1798,8 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
         ("5010", "ExpenseSample", 5, 0),
         ("8010", "MemoGuarantee", 6, 0),
         ("8020", "MemoCounter", 6, 1),
+        ("8510", "OffBalanceCommitment", 8, 0),
+        ("8520", "OffBalanceCounter", 8, 1),
         ("9010", "StatHeadcount", 7, 0),
         ("9020", "StatCounter", 7, 1),
     ];
@@ -1918,8 +1920,8 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
         (k_res, o_res)
     };
 
-    // Planted negatives: mixing a monetary leg with a Memo or Statistical leg in
-    // the same unit is refused FA-REF-001 by both kernel and oracle.
+    // Planted negatives: mixing a monetary leg with a Memo, OffBalance, or
+    // Statistical leg in the same unit is refused FA-REF-001 by both kernel and oracle.
     let head_before = h.db.frontier().unwrap();
     for (bad_key, bad_legs) in [
         (
@@ -1927,18 +1929,26 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
             &[("1010", Side::Debit, 500), ("8020", Side::Credit, 500)][..],
         ),
         (
+            b"mix-asset-offbal",
+            &[("1010", Side::Debit, 500), ("8520", Side::Credit, 500)][..],
+        ),
+        (
             b"mix-rev-stat",
             &[("9010", Side::Debit, 300), ("4010", Side::Credit, 300)][..],
         ),
+        (
+            b"mix-offbal-stat",
+            &[("8510", Side::Debit, 300), ("9020", Side::Credit, 300)][..],
+        ),
     ] {
         let (k_res, o_res) = post_dated(&mut h, &mut oracle, mar_2026, bad_key, bad_legs);
-        let err = k_res.expect_err("memo/statistical leg must not balance a monetary leg");
+        let err = k_res.expect_err("memo/off-balance/statistical leg must not cross-balance");
         assert_eq!((err.code, err.exit), ("FA-REF-001", exit::REFUSAL));
         assert_eq!(o_res, fa_reference::Verdict::Refused { code: "FA-REF-001" });
     }
     assert_eq!(h.db.frontier().unwrap(), head_before);
 
-    // Post FY2025 activity across all 7 account types (unclosed prior year).
+    // Post FY2025 activity across all 8 account types (unclosed prior year).
     for (key, legs) in [
         (
             b"fy25-stock" as &[u8],
@@ -1961,6 +1971,10 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
             &[("8010", Side::Debit, 700), ("8020", Side::Credit, 700)][..],
         ),
         (
+            b"fy25-offbal",
+            &[("8510", Side::Debit, 950), ("8520", Side::Credit, 950)][..],
+        ),
+        (
             b"fy25-stat",
             &[("9010", Side::Debit, 42), ("9020", Side::Credit, 42)][..],
         ),
@@ -1970,7 +1984,7 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
         assert!(matches!(o_res, fa_reference::Verdict::Posted { .. }));
     }
 
-    // Post FY2026 activity across all 7 account types.
+    // Post FY2026 activity across all 8 account types.
     for (key, legs) in [
         (
             b"fy26-stock" as &[u8],
@@ -1991,6 +2005,10 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
         (
             b"fy26-memo",
             &[("8010", Side::Debit, 150), ("8020", Side::Credit, 150)][..],
+        ),
+        (
+            b"fy26-offbal",
+            &[("8510", Side::Debit, 225), ("8520", Side::Credit, 225)][..],
         ),
         (
             b"fy26-stat",
@@ -2043,12 +2061,12 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
         .collect();
     assert_eq!(
         got_stock, want_stock,
-        "as-of TB rows match oracle ITD fold across all 7 account types"
+        "as-of TB rows match oracle ITD fold across all 8 account types"
     );
     assert_eq!(
         as_of_tb.unit_totals,
         oracle.trial_balance_totals(&oracle_stock),
-        "monetary unit_totals exclude Memo (6) and Statistical (7) rows"
+        "monetary unit_totals exclude Memo (6), Statistical (7), and OffBalance (8) rows"
     );
     assert_eq!(
         as_of_tb.pending_unit_totals.get(&usd.0).copied(),
@@ -2105,4 +2123,330 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
             act_row.credits,
         );
     }
+}
+
+#[test]
+fn memo_off_balance_and_single_sided_statistical_legs_obey_partition_and_footing_law() {
+    use fa_model::AccountType;
+    use fa_registers::verify_entities;
+
+    let mut h = harness();
+    let usd = h.book.units.lookup("USD").unwrap();
+    let each = h.book.units.lookup("EACH").unwrap();
+    let hour = h.book.units.lookup("HOUR").unwrap();
+    let mar_2026 = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let end_mar_2026 = DateDay::from_ymd(2026, 3, 31).unwrap();
+
+    let extra_accounts = [
+        AccountSpec {
+            code: "8100".into(),
+            name: "MemoAsset".into(),
+            account_type: AccountType::MEMO.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyUnit,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "8200".into(),
+            name: "MemoCounter".into(),
+            account_type: AccountType::MEMO.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyUnit,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "8510".into(),
+            name: "LeaseCommitment".into(),
+            account_type: AccountType::OFF_BALANCE.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyUnit,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "8520".into(),
+            name: "LeaseCommitmentCounter".into(),
+            account_type: AccountType::OFF_BALANCE.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyUnit,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "9100".into(),
+            name: "Headcount".into(),
+            account_type: AccountType::STATISTICAL.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(each),
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "9200".into(),
+            name: "BillableHours".into(),
+            account_type: AccountType::STATISTICAL.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(hour),
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "1990".into(),
+            name: "InventoryUnitsAsset".into(),
+            account_type: AccountType::ASSET.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyUnit,
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let desc = Erasable::seal(
+            &"memo-offbal-stat".to_string(),
+            None,
+            &book.seal_key,
+            [21; 32],
+            [22; 24],
+        );
+        h.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &extra_accounts,
+                    PRINCIPAL,
+                    mar_2026,
+                    b"install-memo-offbal-stat",
+                    desc,
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("installed");
+    }
+
+    let mut oracle = fa_reference::Oracle::new(h.book.calendar.clone());
+    oracle.create_periods(2026);
+    oracle
+        .transition(&h.march, PeriodTransition::Open)
+        .expect("oracle open 2026-p03");
+    for (code, tag, unit_opt) in [
+        ("1000", AccountType::ASSET.0, Some(usd.0)),
+        ("6000", AccountType::EXPENSE.0, Some(usd.0)),
+        ("8100", AccountType::MEMO.0, None),
+        ("8200", AccountType::MEMO.0, None),
+        ("8510", AccountType::OFF_BALANCE.0, None),
+        ("8520", AccountType::OFF_BALANCE.0, None),
+        ("9100", AccountType::STATISTICAL.0, Some(each.0)),
+        ("9200", AccountType::STATISTICAL.0, Some(hour.0)),
+        ("1990", AccountType::ASSET.0, None),
+    ] {
+        oracle.add_account(fa_reference::Account {
+            code: code.into(),
+            is_leaf: true,
+            unit: unit_opt,
+        });
+        oracle.set_account_type(code, tag);
+    }
+
+    let book_id = h.book.book_id;
+    let vid = move |code: &str| account_vid(book_id, code);
+    let post_both = |h: &mut Harness,
+                     oracle: &mut fa_reference::Oracle,
+                     key: &[u8],
+                     legs: &[(&str, Side, fa_money::UnitId, i128)]|
+     -> (Result<Posted, Refusal>, fa_reference::Verdict) {
+        let k_legs: Vec<LegPayload> = legs
+            .iter()
+            .map(|(c, side, u, m)| LegPayload::simple(*side, vid(c), Amount::new(*u, *m)))
+            .collect();
+        let mut proposal = h.proposal(k_legs, key, EntryClass::ORIGINAL);
+        proposal.effective_date = mar_2026;
+        let req = PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).expect("post"),
+        };
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let k_res = h
+            .runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .expect("kernel");
+        let o_legs: Vec<fa_reference::Leg> = legs
+            .iter()
+            .map(|(c, side, u, m)| fa_reference::Leg {
+                side: match side {
+                    Side::Debit => fa_reference::Side::Debit,
+                    Side::Credit => fa_reference::Side::Credit,
+                },
+                account: (*c).into(),
+                unit: u.0,
+                entity: None,
+                mantissa: *m,
+            })
+            .collect();
+        let o_intent = fa_reference::Intent {
+            class: "Original".into(),
+            date: mar_2026,
+            discriminator: None,
+            legs: o_legs,
+            ops: vec!["post".into()],
+            approvals: 0,
+            reverses: None,
+            supersession_reason: 0,
+            resolves: None,
+            settles: Vec::new(),
+            key: key.to_vec(),
+        };
+        let o_res = oracle.post(&o_intent);
+        (k_res, o_res)
+    };
+
+    // 1. Single-sided statistical postings in EACH or HOUR on Statistical accounts succeed;
+    //    single-sided postings in USD fail FA-REF-100; single-sided postings in EACH on
+    //    Asset, Memo, or OffBalance fail FA-REF-001.
+    for (bad_key, bad_legs, want_code, want_exit) in [
+        (
+            b"1leg-usd-stat" as &[u8],
+            &[("9100", Side::Debit, usd, 10)][..],
+            "FA-REF-100",
+            exit::USAGE,
+        ),
+        (
+            b"1leg-each-asset",
+            &[("1990", Side::Debit, each, 10)][..],
+            "FA-REF-001",
+            exit::REFUSAL,
+        ),
+        (
+            b"1leg-each-memo",
+            &[("8100", Side::Debit, each, 10)][..],
+            "FA-REF-001",
+            exit::REFUSAL,
+        ),
+        (
+            b"1leg-each-offbal",
+            &[("8510", Side::Debit, each, 10)][..],
+            "FA-REF-001",
+            exit::REFUSAL,
+        ),
+        (
+            b"2leg-each-asset-stat",
+            &[
+                ("1990", Side::Debit, each, 10),
+                ("9100", Side::Credit, each, 10),
+            ][..],
+            "FA-REF-001",
+            exit::REFUSAL,
+        ),
+    ] {
+        let (k_res, o_res) = post_both(&mut h, &mut oracle, bad_key, bad_legs);
+        let err = k_res.expect_err("expected refusal");
+        assert_eq!((err.code, err.exit), (want_code, want_exit), "{err}");
+        assert_eq!(
+            o_res,
+            fa_reference::Verdict::Refused { code: want_code },
+            "key {:?}",
+            std::str::from_utf8(bad_key)
+        );
+    }
+
+    // 2. Post valid single-sided statistical entries (headcount in EACH, hours in HOUR),
+    //    balanced OffBalance commitment in USD, and composite entry with monetary + OffBalance + Statistical.
+    for (ok_key, ok_legs) in [
+        (
+            b"stat-headcount-1leg" as &[u8],
+            &[("9100", Side::Debit, each, 42)][..],
+        ),
+        (
+            b"stat-hours-1leg",
+            &[("9200", Side::Debit, hour, 16_000)][..],
+        ),
+        (
+            b"offbal-commitment",
+            &[
+                ("8510", Side::Debit, usd, 250_000),
+                ("8520", Side::Credit, usd, 250_000),
+            ][..],
+        ),
+        (
+            b"composite-monetary-offbal-stat",
+            &[
+                ("6000", Side::Debit, usd, 100_000),
+                ("1000", Side::Credit, usd, 100_000),
+                ("8100", Side::Debit, usd, 50_000),
+                ("8520", Side::Credit, usd, 50_000),
+                ("9100", Side::Debit, each, 3),
+            ][..],
+        ),
+    ] {
+        let (k_res, o_res) = post_both(&mut h, &mut oracle, ok_key, ok_legs);
+        assert!(matches!(k_res, Ok(Posted::Committed { .. })), "{k_res:?}");
+        assert!(
+            matches!(o_res, fa_reference::Verdict::Posted { .. }),
+            "{o_res:?}"
+        );
+    }
+
+    let tb = balance_as_of(&h.db, &h.book, end_mar_2026, None).expect("balance_as_of");
+    assert!(
+        tb.is_balanced(),
+        "monetary trial balance must remain balanced"
+    );
+    assert_eq!(
+        tb.unit_totals.get(&usd.0).copied(),
+        Some((100_000, 100_000)),
+        "monetary unit_totals include only 1000/6000 (100_000) and exclude Memo/OffBalance (300_000)"
+    );
+    assert_eq!(
+        tb.unit_totals.get(&each.0),
+        None,
+        "statistical EACH rows do not enter monetary unit_totals"
+    );
+    let headcount_row = tb
+        .rows
+        .iter()
+        .find(|r| r.code == "9100")
+        .expect("9100 row present");
+    assert_eq!(
+        (headcount_row.debits, headcount_row.credits, headcount_row.unit_id),
+        (45, 0, each.0)
+    );
+    let hours_row = tb
+        .rows
+        .iter()
+        .find(|r| r.code == "9200")
+        .expect("9200 row present");
+    assert_eq!(
+        (hours_row.debits, hours_row.credits, hours_row.unit_id),
+        (16_000, 0, hour.0)
+    );
+    let offbal_row = tb
+        .rows
+        .iter()
+        .find(|r| r.code == "8510")
+        .expect("8510 row present");
+    assert_eq!(
+        (offbal_row.debits, offbal_row.credits, offbal_row.account_type),
+        (250_000, 0, AccountType::OFF_BALANCE)
+    );
+
+    let entity_v = verify_entities(&h.db, &h.book, &h.march, None).expect("verify_entities");
+    assert!(entity_v.is_green(), "findings: {:?}", entity_v.findings);
 }

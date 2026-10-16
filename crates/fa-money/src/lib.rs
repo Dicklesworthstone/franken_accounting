@@ -35,7 +35,7 @@ pub use allocation::largest_remainder;
 pub use amount::{Amount, AmountError, Side};
 pub use rate::{ArithmeticBudget, BudgetLimits, Rate, RateError};
 pub use rounding::RoundingLaw;
-pub use unit::{Unit, UnitError, UnitId, UnitKind, UnitRegistry};
+pub use unit::{BalancePolicy, Unit, UnitError, UnitId, UnitKind, UnitRegistry};
 pub use valuation::{Valuation, ValuationError, value_legs};
 
 #[cfg(test)]

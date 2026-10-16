@@ -9141,3 +9141,133 @@ fn verify_periods_exits_eight_on_planted_period_state_mirror_drift() -> std::io:
     );
     Ok(())
 }
+
+#[test]
+fn off_balance_commitment_and_statistical_headcount_cli_scenario() -> std::io::Result<()> {
+    let dir = tmp("off-balance-statistical-cli")?;
+    let book = dir.join("book");
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"4000","name":"Sales Revenue","type":"Revenue","unit":"USD"},
+            {"code":"8510","name":"LOC Commitment","type":"OffBalance","unit":"USD"},
+            {"code":"8520","name":"LOC Counter","type":"OffBalance","unit":"USD"},
+            {"code":"9100","name":"Engineering Headcount","type":"Statistical","unit":"EACH"}
+        ]}"#,
+    );
+    let (c, o, e) = fa(
+        Some(&book),
+        &["book", "create", "--name", "OffBalStat Co", "--json"],
+    );
+    assert_eq!(c, 0, "{o}\n{e}");
+    let (c, o, e) = fa(Some(&book), &["chart", "import", &chart, "--json"]);
+    assert_eq!(c, 0, "{o}\n{e}");
+    let (c, o, e) = fa(
+        Some(&book),
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    assert_eq!(c, 0, "{o}\n{e}");
+    let (c, o, e) = fa(Some(&book), &["period", "open", "FY2026-P03", "--json"]);
+    assert_eq!(c, 0, "{o}\n{e}");
+
+    let ev_oid = source_doc(&dir, &book);
+
+    // 1. Cross-class Asset + OffBalance fails with exit 3 (FA-REF-001)
+    let bad_cross = write(
+        &dir,
+        "bad_cross.json",
+        r#"{"idempotency_key":"bad-cross","effective_date":"2026-03-15","description":"cross","legs":[
+            {"side":"debit","account":"1000","amount":"500.00 USD"},
+            {"side":"credit","account":"8520","amount":"500.00 USD"}
+        ]}"#,
+    );
+    let (c, o, e) = fa(
+        Some(&book),
+        &["post", "--intent", &bad_cross, "--evidence", &ev_oid, "--json"],
+    );
+    assert_eq!(c, 3, "{o}\n{e}");
+    assert!(o.contains("FA-REF-001"), "{o}");
+
+    // 2. Post monetary revenue (1000.00 USD), OffBalance commitment (2500.00 USD),
+    //    and single-sided Statistical headcount (17 EACH)
+    let sale_intent = write(
+        &dir,
+        "sale.json",
+        r#"{"idempotency_key":"sale-1","effective_date":"2026-03-15","description":"sale","legs":[
+            {"side":"debit","account":"1000","amount":"1000.00 USD"},
+            {"side":"credit","account":"4000","amount":"1000.00 USD"}
+        ]}"#,
+    );
+    let offbal_intent = write(
+        &dir,
+        "offbal.json",
+        r#"{"idempotency_key":"loc-1","effective_date":"2026-03-15","description":"LOC commitment","legs":[
+            {"side":"debit","account":"8510","amount":"2500.00 USD"},
+            {"side":"credit","account":"8520","amount":"2500.00 USD"}
+        ]}"#,
+    );
+    let stat_intent = write(
+        &dir,
+        "stat.json",
+        r#"{"idempotency_key":"hc-1","effective_date":"2026-03-15","description":"headcount","legs":[
+            {"side":"debit","account":"9100","amount":"17 EACH"}
+        ]}"#,
+    );
+    for intent in [&sale_intent, &offbal_intent, &stat_intent] {
+        let (c, o, e) = fa(
+            Some(&book),
+            &["post", "--intent", intent, "--evidence", &ev_oid, "--json"],
+        );
+        assert_eq!(c, 0, "{o}\n{e}");
+    }
+
+    // 3. Trial balance shows all rows, but monetary footing (`totals`) includes only 1000.00 USD
+    let (c, tb_out, e) = fa(Some(&book), &["tb", "--period", "FY2026-P03", "--json"]);
+    assert_eq!(c, 0, "{tb_out}\n{e}");
+    let tb_doc = doc(&tb_out);
+    let tb_data = tb_doc.get("data").unwrap_or(&tb_doc);
+    assert_eq!(tb_data.get("balanced"), Some(&Json::Bool(true)));
+    let totals = arr(tb_data, "unit_totals");
+    assert_eq!(totals.len(), 1, "{tb_out}");
+    assert_eq!(text(&totals[0], "unit"), "USD");
+    assert_eq!(text(&totals[0], "debits"), "1000.00 USD");
+    assert_eq!(text(&totals[0], "credits"), "1000.00 USD");
+    let rows = arr(tb_data, "rows");
+    assert!(
+        rows.iter()
+            .any(|r| text(r, "code") == "8510" && text(r, "debits") == "2500.00 USD"),
+        "{tb_out}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| text(r, "code") == "9100" && text(r, "debits") == "17 EACH"),
+        "{tb_out}"
+    );
+
+    // 4. Financial statements exclude OffBalance and Statistical accounts from footing
+    let (c, bs_out, e) = fa(
+        Some(&book),
+        &["statement", "balance-sheet", "--for", "FY2026-P03", "--json"],
+    );
+    assert_eq!(c, 0, "{bs_out}\n{e}");
+    let bs_doc = doc(&bs_out);
+    let bs_data = bs_doc.get("data").unwrap_or(&bs_doc);
+    let bs_lines = arr(bs_data, "lines");
+    let usd_assets = bs_lines
+        .iter()
+        .find(|l| text(l, "code") == "assets" && text(l, "unit") == "USD")
+        .expect("usd assets line");
+    assert_eq!(
+        arr(usd_assets, "amounts"),
+        &[Json::Str("1000.00 USD".into())]
+    );
+    let usd_check = bs_lines
+        .iter()
+        .find(|l| text(l, "code") == "balance_check" && text(l, "unit") == "USD")
+        .expect("usd balance_check line");
+    assert_eq!(arr(usd_check, "amounts"), &[Json::Str("0.00 USD".into())]);
+    Ok(())
+}
+

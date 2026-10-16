@@ -6762,3 +6762,163 @@ fn instant_before_book_genesis_and_non_increasing_ticks_are_refused() {
     assert_eq!(resolved.lower_entry, second.entry_ref.vid);
 }
 
+#[test]
+fn memo_off_balance_and_statistical_legs_obey_fa_inv_01_memo() {
+    use fa_model::AccountType;
+    let mut h = harness();
+    let usd = h.book.units.lookup("USD").unwrap();
+    let each = h.book.units.lookup("EACH").unwrap();
+    let hour = h.book.units.lookup("HOUR").unwrap();
+
+    let extra_accounts = [
+        AccountSpec {
+            code: "8510".into(),
+            name: "OffBalanceCommitment".into(),
+            account_type: AccountType::OFF_BALANCE.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyUnit,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "8520".into(),
+            name: "OffBalanceCounter".into(),
+            account_type: AccountType::OFF_BALANCE.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyUnit,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "9100".into(),
+            name: "Headcount".into(),
+            account_type: AccountType::STATISTICAL.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(each),
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "9200".into(),
+            name: "BillableHours".into(),
+            account_type: AccountType::STATISTICAL.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(hour),
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "1990".into(),
+            name: "AssetEach".into(),
+            account_type: AccountType::ASSET.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyUnit,
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    {
+        let desc = h.statement("install-memo-offbal-stat", 91);
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &extra_accounts,
+                    PRINCIPAL,
+                    DateDay::from_ymd(2026, 3, 15).unwrap(),
+                    b"install-memo-offbal-stat",
+                    desc,
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("installed");
+    }
+
+    let vid = |h: &Harness, code: &str| account_vid(h.book.book_id, code);
+
+    // 1. Single-leg entry in USD on Statistical account is refused at structure (FA-REF-100).
+    let bad_usd = h.proposal(
+        vec![LegPayload::simple(
+            Side::Debit,
+            vid(&h, "9100"),
+            Amount::new(usd, 10),
+        )],
+        b"bad-usd-1leg",
+        EntryClass::ORIGINAL,
+    );
+    let r = h.post(h.request(bad_usd, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+
+    // 2. Single-leg entry in EACH on Asset or OffBalance is refused at Step 6 (FA-REF-001).
+    for (key, acct) in [
+        (&b"bad-each-asset"[..], "1990"),
+        (&b"bad-each-offbal"[..], "8510"),
+    ] {
+        let p = h.proposal(
+            vec![LegPayload::simple(
+                Side::Debit,
+                vid(&h, acct),
+                Amount::new(each, 10),
+            )],
+            key,
+            EntryClass::ORIGINAL,
+        );
+        let r = h.post(h.request(p, &["post"])).unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-001", exit::REFUSAL), "{r}");
+    }
+
+    // 3. Balanced OffBalance entry in USD posts cleanly; cross-class Asset + OffBalance fails FA-REF-001.
+    let cross = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, h.cash, Amount::new(usd, 5_000)),
+            LegPayload::simple(Side::Credit, vid(&h, "8520"), Amount::new(usd, 5_000)),
+        ],
+        b"bad-cross-asset-offbal",
+        EntryClass::ORIGINAL,
+    );
+    let r = h.post(h.request(cross, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-001", exit::REFUSAL), "{r}");
+
+    let offbal_ok = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, vid(&h, "8510"), Amount::new(usd, 50_000)),
+            LegPayload::simple(Side::Credit, vid(&h, "8520"), Amount::new(usd, 50_000)),
+        ],
+        b"ok-offbal-commitment",
+        EntryClass::ORIGINAL,
+    );
+    assert!(h.post(h.request(offbal_ok, &["post"])).is_ok());
+
+    // 4. Single-leg Statistical entry in EACH posts cleanly, and its 1-leg Reversal succeeds.
+    let stat_ok = h.proposal(
+        vec![LegPayload::simple(
+            Side::Debit,
+            vid(&h, "9100"),
+            Amount::new(each, 17),
+        )],
+        b"ok-stat-headcount",
+        EntryClass::ORIGINAL,
+    );
+    let posted_stat = h
+        .post(h.request(stat_ok, &["post"]))
+        .expect("single-sided statistical post");
+    let rev_stat = h.reversal_of_entry(posted_stat.entry_ref(), b"rev-stat-headcount");
+    assert_eq!(rev_stat.legs.len(), 1);
+    assert_eq!(rev_stat.legs[0].side, Side::Credit);
+    let reversed = h
+        .post(h.request(rev_stat, &["post"]))
+        .expect("single-sided statistical reversal");
+    assert!(matches!(reversed, Posted::Committed { .. }));
+}
+

@@ -14,11 +14,14 @@
 #    `debits == credits` (`FA-INV-01`) holds at every coordinate. Period activity
 #    (`period_activity`, `IncomeStatement` with `excluded_classes = ["Closing"]`)
 #    folds only the explicitly selected period(s).
-# 2. `memo` accounts (`Memo`, `Statistical`, `AccountType::is_memo()`) sit
-#    outside the monetary balance law (`FA-INV-01.memo`): they never balance
-#    monetary (`stock` or `flow`) legs at commit, appear in `TrialBalance.rows`
-#    at the selected coordinate, and are excluded from `TrialBalance.unit_totals`
-#    and `TrialBalance.pending_unit_totals` (monetary trial-balance footing).
+# 2. `memo` accounts (`Memo`, `Statistical`, `OffBalance`, `AccountType::is_memo()`)
+#    sit outside the monetary balance law (`FA-INV-01.memo`): `Memo` and
+#    `OffBalance` legs balance among themselves per unit and per `(unit, entity)`
+#    and never balance monetary (`stock` or `flow`) legs; `Statistical` accounts
+#    admit single-sided legs in single-sided units (`EACH`, `HOUR`) outside the
+#    balance law; all three appear in `TrialBalance.rows` at the selected
+#    coordinate and are excluded from `TrialBalance.unit_totals`,
+#    `TrialBalance.pending_unit_totals`, and financial statement footing.
 #
 # Consumer: fa-model AccountType constants (cross-checked), fa-journal post/chart,
 # fa-registers balance/TB folds, fa-reference oracle. Gate: unknown kind fails.
@@ -64,5 +67,11 @@ normal_balance = 0
 [[account_type]]
 tag = 7
 name = "Statistical"
+kind = "memo"
+normal_balance = 0
+
+[[account_type]]
+tag = 8
+name = "OffBalance"
 kind = "memo"
 normal_balance = 0

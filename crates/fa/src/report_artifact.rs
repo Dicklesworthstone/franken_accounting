@@ -115,20 +115,16 @@ impl ReportArtifact {
         if bytes.len() > MAX_REPORT_ARTIFACT_BYTES {
             return Err(invalid("report artifact exceeds the 64 MiB total limit"));
         }
+        if bytes.starts_with(b"fa:report-certificate:v") {
+            return Ok(Self {
+                inner: Artifact::Native(Box::new(ReportCertificate::decode(bytes)?)),
+            });
+        }
         let mut reader = Reader::new(bytes);
         let format = reader
             .bytes(64, "report artifact format")
             .map_err(|error| invalid(format!("malformed report artifact: {error}")))?;
-        let inner = if [
-            crate::certificate::CERTIFICATE_FORMAT,
-            crate::certificate::INSTANT_CERTIFICATE_FORMAT,
-            crate::certificate::REPORT_CERTIFICATE_FORMAT,
-            crate::certificate::STATEMENT_CERTIFICATE_FORMAT,
-        ]
-        .contains(&format)
-        {
-            Artifact::Native(Box::new(ReportCertificate::decode(bytes)?))
-        } else if format == crate::summary_certificate::CERTIFICATE_FORMAT {
+        let inner = if format == crate::summary_certificate::CERTIFICATE_FORMAT {
             Artifact::Summary(Box::new(SummaryCertificate::decode(bytes)?))
         } else if format == crate::AGING_CERTIFICATE_FORMAT {
             Artifact::Aging(Box::new(AgingCertificate::decode(bytes)?))
@@ -255,7 +251,9 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
     principal: VId,
     capability: &Capability,
 ) -> Outcome<()> {
-    if let Err(denial) = fa_policy::admit_read(capability, principal, book.context().book_id) {
+    if let Err(denial) = fa_policy::admit_read(capability, principal, book.context().book_id)
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+    {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
     }
     book.query(cx, |db, context| {

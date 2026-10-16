@@ -993,6 +993,7 @@ pub struct UnitRow {
     pub kind: String,
     pub iso4217: Option<u16>,
     pub rounding_default: u16,
+    pub balance_policy: String,
 }
 
 pub fn units_embedded() -> Result<Vec<UnitRow>, RegistryError> {
@@ -1035,6 +1036,23 @@ pub fn parse_units(text: &str) -> Result<Vec<UnitRow>, RegistryError> {
             "commodity" | "share" | "time" | "count" | "custom" => None,
             other => return Err(invalid(R, format!("unknown unit kind `{other}`"))),
         };
+        let default_balance_policy = match kind {
+            "currency" | "commodity" | "share" => "balanced",
+            "time" | "count" | "custom" => "single_sided",
+            _ => "balanced",
+        };
+        let balance_policy = match t.get("balance_policy") {
+            None => default_balance_policy.to_string(),
+            Some(v) => match v.as_str() {
+                Some("balanced" | "single_sided") => v.as_str().unwrap_or("balanced").to_string(),
+                _ => {
+                    return Err(invalid(
+                        R,
+                        format!("`{code}` has invalid balance_policy (expected `balanced` or `single_sided`)"),
+                    ));
+                }
+            },
+        };
         let rounding_default = u16::try_from(req_int(R, t, "rounding_default")?)
             .map_err(|_| invalid(R, "default rounding law out of range"))?;
         if !rounding_laws.iter().any(|law| law.id == rounding_default) {
@@ -1054,6 +1072,7 @@ pub fn parse_units(text: &str) -> Result<Vec<UnitRow>, RegistryError> {
             kind: kind.to_owned(),
             iso4217,
             rounding_default,
+            balance_policy,
         });
     }
     if rows.is_empty() {

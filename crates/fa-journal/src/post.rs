@@ -976,8 +976,29 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
 
     // 2. Balance law per unit (FA-INV-01). The suggested residual is text.
     //    Amounts are rendered at the unit's registered scale ("0.01 USD"), so
-    //    the fix names an amount the caller can post as written.
+    //    the fix names an amount the caller can post as written. Statistical
+    //    quantity units (`allows_single_sided`) on posting classes that admit
+    //    single-sided statistical legs are deferred to Step 6 once account
+    //    types are loaded.
+    let allows_single_sided_class = matches!(
+        proposal.class,
+        EntryClass::ORIGINAL
+            | EntryClass::ADJUSTING
+            | EntryClass::REVERSAL
+            | EntryClass::MIGRATION
+    );
+    let is_deferred_single_sided_unit = |unit: fa_money::UnitId| {
+        allows_single_sided_class
+            && book
+                .units
+                .get(unit)
+                .is_some_and(fa_money::Unit::allows_single_sided)
+    };
     for t in &proposal.unit_totals {
+        let unit = fa_money::UnitId(t.unit_id);
+        if is_deferred_single_sided_unit(unit) {
+            continue;
+        }
         if t.debits != t.credits {
             let (side, gap) = if t.debits > t.credits {
                 ("credit", t.debits.checked_sub(t.credits))
@@ -990,7 +1011,6 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                     t.unit_id
                 ))
             })?;
-            let unit = fa_money::UnitId(t.unit_id);
             let show = |m: i128| {
                 if book.units.get(unit).is_some() {
                     fa_money::Amount::new(unit, m).render(&book.units)
@@ -1018,8 +1038,20 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     // 2'. Per legal entity (FA-INV-01 `per-entity`): the same law per
     //     (unit, legal_entity); a cross-entity imbalance is never closed by
     //     an invented leg.
-    if let Some(r) = entity::per_entity_refusal(&proposal.legs, &leg_entities, &book.units)? {
-        return Ok(Err(r));
+    {
+        let mut immediate_legs = Vec::with_capacity(proposal.legs.len());
+        let mut immediate_entities = Vec::with_capacity(leg_entities.len());
+        for (leg, entity) in proposal.legs.iter().zip(leg_entities.iter().cloned()) {
+            if !is_deferred_single_sided_unit(leg.amount.unit) {
+                immediate_legs.push(leg.clone());
+                immediate_entities.push(entity);
+            }
+        }
+        if let Some(r) =
+            entity::per_entity_refusal(&immediate_legs, &immediate_entities, &book.units)?
+        {
+            return Ok(Err(r));
+        }
     }
 
     // 3. Resolve the effective date to exactly one period (plan §7.3).
@@ -1646,20 +1678,32 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     if accounts
         .iter()
         .any(|a| fa_model::AccountType(a.account_type).is_memo())
+        || proposal
+            .unit_totals
+            .iter()
+            .any(|t| is_deferred_single_sided_unit(fa_money::UnitId(t.unit_id)))
     {
         let mut monetary_legs = Vec::new();
         let mut monetary_entities = Vec::new();
         let mut memo_legs = Vec::new();
         let mut memo_entities = Vec::new();
+        let mut statistical_balanced_legs = Vec::new();
+        let mut statistical_balanced_entities = Vec::new();
         for ((leg, account), entity) in proposal
             .legs
             .iter()
             .zip(&accounts)
             .zip(leg_entities.iter().cloned())
         {
-            if fa_model::AccountType(account.account_type).is_memo() {
+            let kind = fa_model::AccountType(account.account_type);
+            if kind.is_balanced_memo() {
                 memo_legs.push(leg.clone());
                 memo_entities.push(entity);
+            } else if kind.is_statistical() {
+                if !is_deferred_single_sided_unit(leg.amount.unit) {
+                    statistical_balanced_legs.push(leg.clone());
+                    statistical_balanced_entities.push(entity);
+                }
             } else {
                 monetary_legs.push(leg.clone());
                 monetary_entities.push(entity);
@@ -1668,6 +1712,11 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         for (label_kind, subset_legs, subset_entities) in [
             ("monetary", &monetary_legs, &monetary_entities),
             ("memo", &memo_legs, &memo_entities),
+            (
+                "statistical",
+                &statistical_balanced_legs,
+                &statistical_balanced_entities,
+            ),
         ] {
             let mut by_unit: BTreeMap<fa_money::UnitId, (i128, i128)> = BTreeMap::new();
             for leg in subset_legs {
@@ -1697,11 +1746,11 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                     code::UNBALANCED,
                     exit::REFUSAL,
                     format!(
-                        "{label_kind} legs are unbalanced in {u}: debits {debits} != credits {credits} (memo and statistical accounts sit outside the monetary balance law and never balance monetary legs)"
+                        "{label_kind} legs are unbalanced in {u}: debits {debits} != credits {credits} (memo, off-balance, and statistical accounts sit outside the monetary balance law and never balance monetary legs)"
                     ),
-                    "FA-INV-01 (`memo`: memo and statistical accounts balance separately from monetary accounts; plan §4.2)",
+                    "FA-INV-01 (`memo`: memo/off-balance accounts balance within their partition; statistical accounts admit single-sided legs only in registered statistical quantity units; plan §4.2)",
                     format!(
-                        "balance {label_kind} debits and credits in {u} separately from memo/statistical legs; never balance a monetary leg against a Memo or Statistical account"
+                        "balance {label_kind} debits and credits in {u} within the {label_kind} partition; only Statistical accounts admit single-sided legs in statistical quantity units (EACH, HOUR)"
                     ),
                 )));
             }

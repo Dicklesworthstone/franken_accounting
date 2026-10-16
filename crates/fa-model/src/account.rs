@@ -13,6 +13,7 @@ impl AccountType {
     pub const EXPENSE: Self = Self(5);
     pub const MEMO: Self = Self(6);
     pub const STATISTICAL: Self = Self(7);
+    pub const OFF_BALANCE: Self = Self(8);
 
     /// `(tag, name, kind, normal_balance)` for every registered type.
     pub const ALL: &[(u8, &str, &str, u8)] = &[
@@ -23,6 +24,7 @@ impl AccountType {
         (5, "Expense", "flow", 0),
         (6, "Memo", "memo", 0),
         (7, "Statistical", "memo", 0),
+        (8, "OffBalance", "memo", 0),
     ];
 
     #[must_use]
@@ -54,12 +56,39 @@ impl AccountType {
             .any(|(t, _, k, _)| *t == self.0 && *k == "flow")
     }
 
-    /// Outside the balance law.
+    /// Monetary account (`Asset`, `Liability`, `Equity`, `Revenue`, `Expense`):
+    /// participates in the monetary trial-balance footing and financial
+    /// statements (plan §4.2, `FA-INV-01`).
+    #[must_use]
+    pub fn is_monetary(self) -> bool {
+        self.is_stock() || self.is_flow()
+    }
+
+    /// Outside the monetary trial-balance footing (`Memo`, `Statistical`,
+    /// `OffBalance`).
     #[must_use]
     pub fn is_memo(self) -> bool {
         Self::ALL
             .iter()
             .any(|(t, _, k, _)| *t == self.0 && *k == "memo")
+    }
+
+    /// Double-entry memo / off-balance-sheet account (`Memo`, `OffBalance`):
+    /// must balance debits and credits per unit and per entity within the memo
+    /// partition, and never against monetary or statistical accounts
+    /// (plan §4.2, `FA-INV-01.memo`).
+    #[must_use]
+    pub const fn is_balanced_memo(self) -> bool {
+        matches!(self.0, 6 | 8)
+    }
+
+    /// Statistical account (`Statistical`): admits single-sided postings in
+    /// registered statistical quantity units (`EACH`, `HOUR`, count/time units)
+    /// and never crosses into monetary or balanced-memo footing
+    /// (plan §4.2, `FA-INV-01.memo`).
+    #[must_use]
+    pub const fn is_statistical(self) -> bool {
+        self.0 == 7
     }
 
     /// 0 = debit-normal, 1 = credit-normal.
@@ -86,11 +115,16 @@ mod tests {
             assert_eq!(t.is_stock(), row.kind == "stock", "{}", row.name);
             assert_eq!(t.is_flow(), row.kind == "flow", "{}", row.name);
             assert_eq!(t.is_memo(), row.kind == "memo", "{}", row.name);
+            assert_eq!(t.is_monetary(), row.kind != "memo", "{}", row.name);
             assert_eq!(t.normal_balance(), Some(row.normal_balance));
         }
         assert!(
             AccountType::ASSET.is_stock()
                 && AccountType::EXPENSE.is_flow()
+                && AccountType::MEMO.is_balanced_memo()
+                && AccountType::OFF_BALANCE.is_balanced_memo()
+                && AccountType::STATISTICAL.is_statistical()
+                && !AccountType::STATISTICAL.is_balanced_memo()
                 && !AccountType(99).is_registered()
         );
     }

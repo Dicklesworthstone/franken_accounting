@@ -863,6 +863,8 @@ pub struct Oracle {
     /// Registered unit ids: units.toml, which genesis journals as the
     /// book's unit table (plan §4.4).
     units: BTreeSet<u32>,
+    /// Registered statistical quantity unit ids (`balance_policy = "single_sided"`).
+    single_sided_units: BTreeSet<u32>,
     /// The reversal sweep's position: (tick index, last target examined).
     schedule_cursor: Option<(usize, usize)>,
     /// Migration runs, by opening order (plan §8.6).
@@ -886,8 +888,9 @@ pub struct Oracle {
     /// path that may cite ScheduledAccrualReversal (fa-cvg).
     minting_scheduled: bool,
     /// Optional registered account type tag per account code (`registries/account_types.toml`,
-    /// `fa-a57x`): defaults to monetary (`1`) when unset; `6` (`Memo`) and `7` (`Statistical`)
-    /// sit outside the monetary balance law and trial-balance footing.
+    /// `fa-a57x`, `fa-xjlb`): defaults to monetary (`1`) when unset; `6` (`Memo`),
+    /// `7` (`Statistical`), and `8` (`OffBalance`) sit outside the monetary balance law
+    /// and trial-balance footing.
     account_types: BTreeMap<String, u8>,
 }
 
@@ -896,6 +899,13 @@ impl Oracle {
         let classes = EntryClasses::embedded().expect("entry_classes.toml");
         let matrix = Admissibility::embedded(&classes).expect("admissibility.toml");
         let sod = SodPolicy::embedded(&classes, &matrix).expect("sod_policy.toml");
+        let unit_rows = fa_registry::units_embedded().expect("units.toml");
+        let units = unit_rows.iter().map(|u| u.id).collect();
+        let single_sided_units = unit_rows
+            .into_iter()
+            .filter(|u| u.balance_policy == "single_sided")
+            .map(|u| u.id)
+            .collect();
         Self {
             calendar,
             accounts: BTreeMap::new(),
@@ -913,11 +923,8 @@ impl Oracle {
             tz_declared: false,
             schedules: BTreeMap::new(),
             entities: Vec::new(),
-            units: fa_registry::units_embedded()
-                .expect("units.toml")
-                .into_iter()
-                .map(|u| u.id)
-                .collect(),
+            units,
+            single_sided_units,
             schedule_cursor: None,
             runs: Vec::new(),
             run_keys: BTreeMap::new(),
@@ -933,15 +940,34 @@ impl Oracle {
         }
     }
 
-    /// Record the registered account type tag (`1..=7`) for `code` (`fa-a57x`).
+    /// Record the registered account type tag (`1..=8`) for `code` (`fa-a57x`, `fa-xjlb`).
     pub fn set_account_type(&mut self, code: &str, account_type: u8) {
         self.account_types.insert(code.to_string(), account_type);
     }
 
-    /// Whether `code` is a `Memo` (`6`) or `Statistical` (`7`) account (`fa-a57x`).
+    /// Whether `code` is a `Memo` (`6`), `Statistical` (`7`), or `OffBalance` (`8`)
+    /// account (`fa-a57x`, `fa-xjlb`).
     #[must_use]
     pub fn is_memo_account(&self, code: &str) -> bool {
-        matches!(self.account_types.get(code).copied(), Some(6 | 7))
+        matches!(self.account_types.get(code).copied(), Some(6..=8))
+    }
+
+    /// Whether `code` is a balanced memo account (`Memo` = `6`, `OffBalance` = `8`).
+    #[must_use]
+    pub fn is_balanced_memo_account(&self, code: &str) -> bool {
+        matches!(self.account_types.get(code).copied(), Some(6 | 8))
+    }
+
+    /// Whether `code` is a `Statistical` (`7`) account.
+    #[must_use]
+    pub fn is_statistical_account(&self, code: &str) -> bool {
+        matches!(self.account_types.get(code).copied(), Some(7))
+    }
+
+    /// Whether `unit` is a statistical quantity unit (`balance_policy = "single_sided"`).
+    #[must_use]
+    pub fn is_single_sided_unit(&self, unit: u32) -> bool {
+        self.single_sided_units.contains(&unit)
     }
 
     /// The book declares `time_zone_policy = Utc` at genesis (plan §7.7).
@@ -1647,8 +1673,15 @@ impl Oracle {
         let is_resolution = intent.class == "Resolution";
         let is_release =
             is_resolution && intent.resolves.as_ref().is_some_and(|r| r.posts.is_none());
+        let allows_single_sided_class = matches!(
+            intent.class.as_str(),
+            "Original" | "Adjusting" | "Reversal" | "Migration"
+        );
+        let single_sided_statistical = intent.legs.len() == 1
+            && allows_single_sided_class
+            && self.is_single_sided_unit(intent.legs[0].unit);
         let shape_ok = match (&intent.resolves, is_resolution) {
-            (None, false) => intent.legs.len() >= 2,
+            (None, false) => intent.legs.len() >= 2 || single_sided_statistical,
             (None, true) | (Some(_), false) => false,
             (Some(Resolve { posts: None, .. }), true) => intent.legs.is_empty(),
             (Some(Resolve { posts: Some(o), .. }), true) => {
@@ -1805,9 +1838,15 @@ impl Oracle {
             };
             schedule_period = Some(p);
         }
-        // 2. Balance per unit.
+        // 2. Balance per unit (deferring registered statistical quantity units
+        //    on single-sided-capable classes to Step 6).
+        let is_deferred_single_sided_unit =
+            |unit: u32| allows_single_sided_class && self.is_single_sided_unit(unit);
         let mut per_unit: BTreeMap<u32, (Int, Int)> = BTreeMap::new();
         for l in &intent.legs {
+            if is_deferred_single_sided_unit(l.unit) {
+                continue;
+            }
             let e = per_unit.entry(l.unit).or_insert((Int::zero(), Int::zero()));
             let m = Int::from_i128(l.mantissa);
             match l.side {
@@ -1823,6 +1862,9 @@ impl Oracle {
         // 2'. Balance per (unit, legal entity) (FA-INV-01 `per-entity`).
         let mut per_entity: BTreeMap<(u32, Option<String>), (Int, Int)> = BTreeMap::new();
         for l in &intent.legs {
+            if is_deferred_single_sided_unit(l.unit) {
+                continue;
+            }
             let e = per_entity
                 .entry((l.unit, self.entity_of(l)))
                 .or_insert((Int::zero(), Int::zero()));
@@ -2019,15 +2061,28 @@ impl Oracle {
                 };
             }
         }
-        if intent.legs.iter().any(|l| self.is_memo_account(&l.account)) {
-            for is_memo in [false, true] {
+        if intent
+            .legs
+            .iter()
+            .any(|l| self.is_memo_account(&l.account) || is_deferred_single_sided_unit(l.unit))
+        {
+            for partition in [0u8, 1, 2] {
                 let mut by_unit: BTreeMap<u32, (Int, Int)> = BTreeMap::new();
                 let mut by_entity: BTreeMap<(u32, Option<String>), (Int, Int)> = BTreeMap::new();
-                for l in intent
-                    .legs
-                    .iter()
-                    .filter(|l| self.is_memo_account(&l.account) == is_memo)
-                {
+                for l in &intent.legs {
+                    let leg_partition = if self.is_balanced_memo_account(&l.account) {
+                        1u8
+                    } else if self.is_statistical_account(&l.account) {
+                        if is_deferred_single_sided_unit(l.unit) {
+                            continue;
+                        }
+                        2u8
+                    } else {
+                        0u8
+                    };
+                    if leg_partition != partition {
+                        continue;
+                    }
                     let amt = Int::from_i128(l.mantissa);
                     let u_slot = by_unit
                         .entry(l.unit)

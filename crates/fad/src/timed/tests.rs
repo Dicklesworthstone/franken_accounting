@@ -433,11 +433,12 @@ fn missing_clock_and_human_system_substitution_are_refused() {
         let cx = PurposeContexts::narrow_runtime_root(&root);
         let mut work =
             TimedWork::bootstrap_for_book(&root, fixture.book.context().book_id, POLICY).unwrap();
-        assert_eq!(work.capability.books().unwrap().len(), 1);
-        assert!(!work.capability.admits_book(Id128([80; 16])));
-        assert!(!work.capability.holds(Op::Approve));
-        assert!(!work.capability.holds(Op::IssueCapability));
-        work.capability = Capability::embedded(VId(1), &["witness", "post"]).unwrap();
+        let cap = work.capability.as_ref().expect("bootstrap capability");
+        assert_eq!(cap.books().unwrap().len(), 1);
+        assert!(!cap.admits_book(Id128([80; 16])));
+        assert!(!cap.holds(Op::Approve));
+        assert!(!cap.holds(Op::IssueCapability));
+        work.capability = Some(Capability::embedded(VId(1), &["witness", "post"]).unwrap());
         work.run_observation(&root, &mut fixture.book, Ok(observation(&root, 100)))
             .await
             .unwrap();
@@ -611,7 +612,7 @@ fn register_maintenance_alone_never_bootstraps_timed_authority() {
         assert!(work.register_maintenance().is_some());
 
         let fields = status_fields(Some(&work));
-        let status = obj(fields);
+        let status = fa_cli::json::obj(fields);
         assert_eq!(status.get("timed_work_enabled"), Some(&Json::Bool(false)));
         assert_eq!(status.get("timed_authority"), Some(&Json::Null));
         assert_eq!(status.get("tick_ns"), Some(&Json::Null));

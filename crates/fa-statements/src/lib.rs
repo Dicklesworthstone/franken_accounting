@@ -655,6 +655,7 @@ mod tests {
                     5 => Some(oracle::AccountKind::Expense),
                     6 => Some(oracle::AccountKind::Memo),
                     7 => Some(oracle::AccountKind::Statistical),
+                    8 => Some(oracle::AccountKind::OffBalance),
                     _ => None,
                 }
                 .expect("registered test type"),
@@ -992,6 +993,33 @@ mod tests {
                 source.known_at = iteration;
                 assert_oracle(&definition, &source);
             }
+        }
+    }
+
+    #[test]
+    fn memo_off_balance_and_statistical_accounts_are_excluded_from_financial_statements() {
+        for name in ["balance-sheet", "income-statement"] {
+            let definition = StatementDefinition::embedded(name).unwrap();
+            let baseline = evaluate(&definition, &source(definition.kind())).unwrap();
+
+            let mut with_non_monetary = source(definition.kind());
+            with_non_monetary.accounts.extend([
+                account(60, "8100", 6), // Memo
+                account(70, "9100", 7), // Statistical (single-sided allowed)
+                account(80, "8510", 8), // OffBalance
+                account(81, "8520", 8), // OffBalance counter
+            ]);
+            with_non_monetary.columns[0].balances.extend([
+                balance(60, 1, 50_000, 50_000),
+                balance(70, 1, 42, 0),
+                balance(80, 1, 250_000, 0),
+                balance(81, 1, 0, 250_000),
+            ]);
+
+            let statement = evaluate(&definition, &with_non_monetary).unwrap();
+            assert_eq!(statement.lines, baseline.lines);
+            assert_eq!(statement.mappings, baseline.mappings);
+            assert_oracle(&definition, &with_non_monetary);
         }
     }
 }

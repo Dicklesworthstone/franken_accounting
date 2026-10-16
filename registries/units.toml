@@ -113,6 +113,7 @@ version = 0
 scale = 2
 kind = "time"
 rounding_default = 3
+balance_policy = "single_sided"
 
 [[unit]]
 id = 12
@@ -121,3 +122,4 @@ version = 0
 scale = 0
 kind = "count"
 rounding_default = 3
+balance_policy = "single_sided"

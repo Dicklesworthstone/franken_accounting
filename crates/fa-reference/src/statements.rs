@@ -25,6 +25,7 @@ pub enum AccountKind {
     Expense,
     Memo,
     Statistical,
+    OffBalance,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,7 +67,10 @@ pub enum Error {
 
 fn covered(kind: Kind, account: AccountKind) -> bool {
     match kind {
-        Kind::BalanceSheet => !matches!(account, AccountKind::Memo | AccountKind::Statistical),
+        Kind::BalanceSheet => !matches!(
+            account,
+            AccountKind::Memo | AccountKind::Statistical | AccountKind::OffBalance
+        ),
         Kind::IncomeStatement => matches!(account, AccountKind::Revenue | AccountKind::Expense),
     }
 }

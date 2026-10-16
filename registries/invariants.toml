@@ -252,11 +252,15 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-01"
 id = "memo"
-status = "dormant"
+status = "live"
 statement = "Memo and statistical units balance separately."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G2"
-activating = ["fa-s3c"]
+owner = "fa-xjlb"
+checkers = ["fa-registers::tests/registers.rs::memo_off_balance_and_single_sided_statistical_legs_obey_partition_and_footing_law", "fa-registers::tests/registers.rs::as_of_and_activity_semantics_across_all_account_types_and_memo_footing", "fa-statements::lib::tests::memo_off_balance_and_statistical_accounts_are_excluded_from_financial_statements", "fa-cli::tests/cli.rs::off_balance_commitment_and_statistical_headcount_cli_scenario"]
+negatives = ["fa-journal::tests/genesis.rs::memo_off_balance_and_statistical_legs_obey_fa_inv_01_memo"]
+depends = ["FA-INV-01.per-unit"]
 waiver = "forbidden"
 
 [[clause]]

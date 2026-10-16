@@ -11,6 +11,15 @@ use crate::rounding::RoundingLaw;
 pub struct UnitId(pub u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BalancePolicy {
+    /// Monetary, commodity, and share units must balance debits and credits.
+    Balanced,
+    /// Statistical quantities (`EACH`, `HOUR`, custom count/time units) admit
+    /// single-sided legs when posted to a `Statistical` account (plan §4.2).
+    SingleSided,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UnitKind {
     /// ISO 4217 currency with its numeric code.
     Currency {
@@ -21,6 +30,16 @@ pub enum UnitKind {
     Time,
     Count,
     Custom,
+}
+
+impl UnitKind {
+    #[must_use]
+    pub const fn balance_policy(self) -> BalancePolicy {
+        match self {
+            Self::Currency { .. } | Self::Commodity | Self::Share => BalancePolicy::Balanced,
+            Self::Time | Self::Count | Self::Custom => BalancePolicy::SingleSided,
+        }
+    }
 }
 
 /// One unit version. `code` is the human spelling (`USD`), `version` the
@@ -75,6 +94,18 @@ impl Unit {
             format!("{}@v{}", self.code, self.version)
         }
     }
+
+    /// Whether a `Statistical` account may post single-sided legs in this unit
+    /// (plan §4.2, `FA-INV-01.memo`).
+    #[must_use]
+    pub const fn balance_policy(&self) -> BalancePolicy {
+        self.kind.balance_policy()
+    }
+
+    #[must_use]
+    pub const fn allows_single_sided(&self) -> bool {
+        matches!(self.balance_policy(), BalancePolicy::SingleSided)
+    }
 }
 
 pub(crate) fn pow10(scale: u8) -> i128 {
@@ -120,6 +151,16 @@ impl UnitRegistry {
                 "custom" => UnitKind::Custom,
                 other => return Err(invalid(format!("unknown unit kind `{other}`"))),
             };
+            let expected_policy = match kind.balance_policy() {
+                BalancePolicy::Balanced => "balanced",
+                BalancePolicy::SingleSided => "single_sided",
+            };
+            if row.balance_policy != expected_policy {
+                return Err(invalid(format!(
+                    "`{}` declares balance_policy `{}`, expected `{expected_policy}`",
+                    row.code, row.balance_policy
+                )));
+            }
             let rounding_default = RoundingLaw::from_id(row.rounding_default)
                 .ok_or_else(|| invalid("default rounding law is not executable".into()))?;
             let id = registry

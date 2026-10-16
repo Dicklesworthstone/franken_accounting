@@ -27,7 +27,8 @@ pub mod portfolio;
 
 mod certificate;
 pub use certificate::{
-    AgingReconciliationCertificate, CertifiedAgingReconciliation, MAX_AGING_RECONCILIATION_BYTES,
+    AGING_RECONCILIATION_CERTIFICATE_FORMAT, AgingReconciliationCertificate,
+    CertifiedAgingReconciliation, MAX_AGING_RECONCILIATION_BYTES,
 };
 
 /// The account is an explicit posting-leaf selection, not an access scope.

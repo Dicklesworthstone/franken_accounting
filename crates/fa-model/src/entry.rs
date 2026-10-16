@@ -1439,7 +1439,21 @@ impl EntryPayload {
                     "a posting class carries no control payload",
                 ));
             }
-            if self.legs.len() < 2 {
+            let single_sided_statistical = self.legs.len() == 1
+                && matches!(
+                    self.class,
+                    EntryClass::ORIGINAL
+                        | EntryClass::ADJUSTING
+                        | EntryClass::REVERSAL
+                        | EntryClass::MIGRATION
+                )
+                && fa_money::UnitRegistry::with_defaults()
+                    .get(self.legs[0].amount.unit)
+                    .map_or(
+                        self.legs[0].amount.unit.0 >= 11,
+                        fa_money::Unit::allows_single_sided,
+                    );
+            if self.legs.len() < 2 && !single_sided_statistical {
                 return Err(invalid("legs", "a posting class has at least two legs"));
             }
             if self.legs.len() > MAX_LEGS_PER_ENTRY {

@@ -19,7 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_journal::KernelError;
 use fa_journal::entity::leg_entity;
 use fa_journal::genesis::{BookContext, BookSpec, read_book_spec};
-use fa_model::{Entry, EntryClass, LegPayload, Writer};
+use fa_journal::rows::AccountRow;
+use fa_model::{AccountType, Entry, EntryClass, LegPayload, Writer};
 use fa_money::{Amount, Side, UnitId};
 use fa_time::DateDay;
 use fgdb::Database;
@@ -350,7 +351,14 @@ pub fn verify_entities<V: asupersync::fs::Vfs + Clone>(
             continue;
         }
         entries_checked += 1;
-        let mut totals: BTreeMap<(u32, Option<String>), (i128, i128)> = BTreeMap::new();
+        let allows_single_sided_class = matches!(
+            entry.proposal.class,
+            EntryClass::ORIGINAL
+                | EntryClass::ADJUSTING
+                | EntryClass::REVERSAL
+                | EntryClass::MIGRATION
+        );
+        let mut totals: BTreeMap<(u8, u32, Option<String>), (i128, i128)> = BTreeMap::new();
         for leg in &entry.proposal.legs {
             if spec.entities.len() > 1 && leg_entity(&spec, leg).is_none() {
                 findings.push(format!(
@@ -358,8 +366,33 @@ pub fn verify_entities<V: asupersync::fs::Vfs + Clone>(
                     vid.0
                 ));
             }
+            let account_row = db
+                .vertex_at(leg.account_ref, by_entity.known_at)?
+                .ok_or_else(|| {
+                    KernelError::Corrupt(format!(
+                        "missing account {:?} at sequence {}",
+                        leg.account_ref, by_entity.known_at.0
+                    ))
+                })?;
+            let account = AccountRow::decode(&account_row)?;
+            let account_type = AccountType(account.account_type);
+            let partition = if account_type.is_balanced_memo() {
+                1u8
+            } else if account_type.is_statistical() {
+                if allows_single_sided_class
+                    && book
+                        .units
+                        .get(leg.amount.unit)
+                        .is_some_and(fa_money::Unit::allows_single_sided)
+                {
+                    continue;
+                }
+                2u8
+            } else {
+                0u8
+            };
             let slot = totals
-                .entry((leg.amount.unit.0, entity_of(&spec, leg)))
+                .entry((partition, leg.amount.unit.0, entity_of(&spec, leg)))
                 .or_insert((0, 0));
             let side = match leg.side {
                 Side::Debit => &mut slot.0,
@@ -369,7 +402,7 @@ pub fn verify_entities<V: asupersync::fs::Vfs + Clone>(
                 .checked_add(leg.amount.mantissa)
                 .ok_or(RegisterError::Overflow)?;
         }
-        for ((unit, entity), (d, c)) in totals {
+        for ((_, unit, entity), (d, c)) in totals {
             if d != c {
                 findings.push(format!(
                     "entry {:032x} is unbalanced for entity {:?} in unit {unit}",

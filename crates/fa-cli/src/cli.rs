@@ -2965,7 +2965,7 @@ fn parse_chart_specs_fail(
             .ok_or_else(|| {
                 usage(
                     format!("{what}: unknown type `{type_name}`"),
-                    "type: Asset|Liability|Equity|Revenue|Expense|Memo|Statistical",
+                    "type: Asset|Liability|Equity|Revenue|Expense|Memo|Statistical|OffBalance",
                 )
             })?;
         let normal_balance = AccountType(account_type).normal_balance().unwrap_or(0);
