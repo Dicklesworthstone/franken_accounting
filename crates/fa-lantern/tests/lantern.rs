@@ -3095,12 +3095,12 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
             vid: susp_vid,
             code: "9999".into(),
             name: "Unallocated Suspense Clearing".into(),
-            account_type: AccountType::ASSET,
+            account_type: AccountType::ASSET.0,
             normal_balance: 0,
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
-            open_item: false,
             limit: None,
+            created_at: CommitSeq(1),
         },
     );
     let ic_vid = account_vid(h.book.book_id, "IC10");
@@ -3110,12 +3110,12 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
             vid: ic_vid,
             code: "IC10".into(),
             name: "Intercompany Due From Sub".into(),
-            account_type: AccountType::ASSET,
+            account_type: AccountType::ASSET.0,
             normal_balance: 0,
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
-            open_item: false,
             limit: None,
+            created_at: CommitSeq(1),
         },
     );
 
@@ -3303,7 +3303,7 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
         None,
         Vec::new(),
     );
-    e_susp.entry.proposal.legs[0].account = susp_vid;
+    e_susp.entry.proposal.legs[0].account_ref = susp_vid;
     entries.push(e_susp);
 
     // Entry 8: Unmatched intercompany posting on IC10
@@ -3324,7 +3324,7 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
         None,
         Vec::new(),
     );
-    e_ic.entry.proposal.legs[0].account = ic_vid;
+    e_ic.entry.proposal.legs[0].account_ref = ic_vid;
     entries.push(e_ic);
 
     // Entries 9 & 10: Threshold splitting — two $6,000.00 (600_000) postings on (7000, 1000) within 2 days
@@ -3550,7 +3550,9 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
         None,
         Vec::new(),
     );
-    e1.entry.proposal.legs[0].dimensions.push(p_aff1_val);
+    e1.entry.proposal.legs[0]
+        .dimension_set
+        .push((fa_model::PARTY_DIMENSION, p_aff1_val));
     let e2 = make_snapshot_entry(
         &mut h,
         VId(91_002),
@@ -3677,12 +3679,12 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             vid: ic_vid,
             code: "IC20".into(),
             name: "Intercompany Receivable".into(),
-            account_type: AccountType::ASSET,
+            account_type: AccountType::ASSET.0,
             normal_balance: 0,
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
-            open_item: false,
             limit: None,
+            created_at: CommitSeq(1),
         },
     );
     let inv_vid = account_vid(h.book.book_id, "1300");
@@ -3692,12 +3694,12 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             vid: inv_vid,
             code: "1300".into(),
             name: "Merchandise Inventory".into(),
-            account_type: AccountType::ASSET,
+            account_type: AccountType::ASSET.0,
             normal_balance: 0,
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
-            open_item: false,
             limit: None,
+            created_at: CommitSeq(1),
         },
     );
     let capex_vid = account_vid(h.book.book_id, "1500");
@@ -3707,12 +3709,12 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             vid: capex_vid,
             code: "1500".into(),
             name: "Network Property & CapEx".into(),
-            account_type: AccountType::ASSET,
+            account_type: AccountType::ASSET.0,
             normal_balance: 0,
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
-            open_item: false,
             limit: None,
+            created_at: CommitSeq(1),
         },
     );
     let payroll_vid = account_vid(h.book.book_id, "6300");
@@ -3722,12 +3724,12 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             vid: payroll_vid,
             code: "6300".into(),
             name: "Wages & Salaries Expense".into(),
-            account_type: AccountType::EXPENSE,
+            account_type: AccountType::EXPENSE.0,
             normal_balance: 0,
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
-            open_item: false,
             limit: None,
+            created_at: CommitSeq(1),
         },
     );
 
@@ -3791,7 +3793,7 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         None,
         Vec::new(),
     );
-    e_ic.entry.proposal.legs[0].account = ic_vid;
+    e_ic.entry.proposal.legs[0].account_ref = ic_vid;
 
     // 2. Lapping triple on AR (1100):
     //    - Jan 10: CUST-A debit 50_000
@@ -3814,7 +3816,9 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         None,
         Vec::new(),
     );
-    e_lap1.entry.proposal.legs[0].dimensions.push(pa_val);
+    e_lap1.entry.proposal.legs[0]
+        .dimension_set
+        .push((fa_model::PARTY_DIMENSION, pa_val));
     let mut e_lap2 = make_snapshot_entry(
         &mut h,
         VId(92_003),
@@ -3832,7 +3836,9 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         None,
         Vec::new(),
     );
-    e_lap2.entry.proposal.legs[1].dimensions.push(pb_val);
+    e_lap2.entry.proposal.legs[1]
+        .dimension_set
+        .push((fa_model::PARTY_DIMENSION, pb_val));
     let mut e_lap3 = make_snapshot_entry(
         &mut h,
         VId(92_004),
@@ -3850,7 +3856,9 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         None,
         Vec::new(),
     );
-    e_lap3.entry.proposal.legs[1].dimensions.push(pa_val);
+    e_lap3.entry.proposal.legs[1]
+        .dimension_set
+        .push((fa_model::PARTY_DIMENSION, pa_val));
 
     // 3. Unrecorded liability: effective Feb 10 (FY2026-P02), document_date Jan 25 (FY2026-P01), touches 6000 Expense
     let e_unrec = make_snapshot_entry(
@@ -3942,8 +3950,10 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         None,
         Vec::new(),
     );
-    e_pay.entry.proposal.legs[0].account = payroll_vid;
-    e_pay.entry.proposal.legs[0].dimensions.push(pa_val);
+    e_pay.entry.proposal.legs[0].account_ref = payroll_vid;
+    e_pay.entry.proposal.legs[0]
+        .dimension_set
+        .push((fa_model::PARTY_DIMENSION, pa_val));
 
     // 7. Improper expense capitalization: Debit 1500 CapEx, Credit 6000 Expense
     let mut e_capex = make_snapshot_entry(
@@ -3963,7 +3973,7 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         None,
         Vec::new(),
     );
-    e_capex.entry.proposal.legs[0].account = capex_vid;
+    e_capex.entry.proposal.legs[0].account_ref = capex_vid;
 
     // 8. Stale inventory on 1300 dated Jan 2 (118 days without relief by Apr 30 > 90 days)
     let mut e_inv = make_snapshot_entry(
@@ -3983,7 +3993,7 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         None,
         Vec::new(),
     );
-    e_inv.entry.proposal.legs[0].account = inv_vid;
+    e_inv.entry.proposal.legs[0].account_ref = inv_vid;
 
     snapshot.entries = vec![
         e_ic, e_lap1, e_lap2, e_lap3, e_unrec, e_subseq, e_ctrl, e_pay, e_capex, e_inv,
