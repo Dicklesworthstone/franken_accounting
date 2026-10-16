@@ -916,7 +916,7 @@ impl Procedure for Communities {
     ) -> Result<Vec<Finding>, LanternError> {
         let min_size = self.params.get_u32("min_community_size")? as usize;
         let min_share_bps = i128::from(self.params.get_u32("min_internal_share_bps")?);
-        let flow = crate::projection::MoneyFlow::fold(snapshot, work)?;
+        let flow = crate::projection::money_flow(snapshot)?;
         if flow.edges.is_empty() {
             return Ok(Vec::new());
         }
@@ -1179,7 +1179,7 @@ impl Procedure for ShellSignature {
         let mut acct_entries: BTreeMap<VId, Vec<VId>> = BTreeMap::new();
         for e in &live {
             work.entry();
-            let doc_count = e.entry.proposal.supporting_documents.len();
+            let doc_count = e.entry.proposal.evidence.len();
             for leg in &e.entry.proposal.legs {
                 work.leg();
                 if !is_asset(snapshot, leg.account_ref) {
@@ -1272,7 +1272,7 @@ impl Procedure for Concentration {
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_share_bps = i128::from(self.params.get_u32("min_share_bps")?);
-        let flow = crate::projection::MoneyFlow::fold(snapshot, work)?;
+        let flow = crate::projection::money_flow(snapshot)?;
         if flow.edges.is_empty() {
             return Ok(Vec::new());
         }

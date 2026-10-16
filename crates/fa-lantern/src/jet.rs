@@ -668,7 +668,7 @@ impl Procedure for ManualVsRule {
         for e in &live {
             work.entry();
             let is_rule = matches!(e.entry.proposal.origin, EntryOrigin::Rule { .. });
-            let is_manual = matches!(e.entry.proposal.origin, EntryOrigin::Manual { .. });
+            let is_manual = matches!(e.entry.proposal.origin, EntryOrigin::Intent { .. });
             let mut accts: Vec<VId> = Vec::new();
             for leg in &e.entry.proposal.legs {
                 work.leg();

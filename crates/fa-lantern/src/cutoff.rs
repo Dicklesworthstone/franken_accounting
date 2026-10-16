@@ -6,10 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_journal::attestation::{AttestationClaim, review_vid};
 use fa_journal::genesis::BookContext;
 use fa_model::rea::SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS;
-use fa_model::{
-    AccountType, ControlPayload, EntryClass, Erasable, PartyIdentifierUpdate, party_value_vid,
-    party_vid,
-};
+use fa_model::{AccountType, ControlPayload, EntryClass, PartyIdentifierUpdate};
 use fa_money::Side;
 use fa_time::{DateDay, Weekday};
 use fgdb_types::VId;
@@ -702,7 +699,7 @@ impl Procedure for SubsequentEvents {
                 EntryClass::REVERSAL
                     | EntryClass::REPLACEMENT
                     | EntryClass::RESTATEMENT
-                    | EntryClass::PRIOR_PERIOD
+                    | EntryClass::PRIOR_PERIOD_ADJUSTMENT
                     | EntryClass::ADJUSTING
             );
 
@@ -776,7 +773,7 @@ impl Procedure for PartyMasterChanges {
     fn run(
         &self,
         snapshot: &Snapshot,
-        book: &BookContext,
+        _book: &BookContext,
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
         let window_commits = self.params.get_u32("window_commits")?;
@@ -798,9 +795,12 @@ impl Procedure for PartyMasterChanges {
             }) = &e.entry.proposal.control
                 && let Ok(upd) = PartyIdentifierUpdate::decode(canonical_bytes)
             {
-                let pvid = party_vid(book.book_id, &upd.code);
-                let pval_vid = party_value_vid(book.book_id, &upd.code);
-                updates.push((e.vid, e.recorded_at.0, upd.code, pvid, pval_vid));
+                let pvid = upd.party_vid;
+                let (pval_vid, code) = snapshot.rea.parties.get(&pvid).map_or_else(
+                    || (pvid, format!("{:032x}", pvid.0)),
+                    |p| (p.dimension_value_vid, p.code.clone()),
+                );
+                updates.push((e.vid, e.recorded_at.0, code, pvid, pval_vid));
             }
         }
         updates.sort_by_key(|(vid, seq, _, _, _)| (*seq, *vid));
@@ -894,7 +894,7 @@ impl Procedure for PayrollGhost {
             pval_to_party.insert(p.dimension_value_vid, p.vid);
             pval_to_party.insert(p.vid, p.vid);
             for (k, v) in &p.identifiers {
-                if let Erasable::Present(val) = v {
+                if let Ok(val) = v.open(&book.seal_key, 256) {
                     let norm = val.trim().to_ascii_uppercase();
                     if !norm.is_empty() {
                         id_to_parties
@@ -1329,7 +1329,7 @@ impl Procedure for ConfirmCoverage {
         for e in &live {
             work.entry();
             let entry_reviewed = e.entry.proposal.evidence.iter().any(|ev| {
-                let rvid = review_vid(book.book_id, &ev.document);
+                let rvid = review_vid(book.book_id, &ev.document_oid);
                 snapshot.attestations.contains_key(&rvid)
             });
             for leg in &e.entry.proposal.legs {
@@ -1389,7 +1389,7 @@ impl Procedure for ConfirmCoverage {
                     .accounts
                     .get(&acct_vid)
                     .map_or("?", |a| a.code.as_str());
-                let unconfirmed_bps = (10_000 - cov_bps) as u64;
+                let unconfirmed_bps = 10_000 - cov_bps;
                 let severity = if cov_bps * 2 < min_coverage_bps {
                     Severity::High
                 } else {
@@ -1398,7 +1398,12 @@ impl Procedure for ConfirmCoverage {
                 out.push(finding(
                     Self::ID,
                     severity,
-                    Statistic::bps("unconfirmed_share_bps", unconfirmed_bps, population),
+                    Statistic {
+                        name: "unconfirmed_share_bps".into(),
+                        value: unconfirmed_bps,
+                        scale: 0,
+                        population,
+                    },
                     cites,
                     format!(
                         "account {code} unit {unit_id} has {cov_bps} bps corroborated coverage ({corroborated}/{total}), below threshold {min_coverage_bps} bps"
