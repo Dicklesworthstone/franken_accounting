@@ -74,6 +74,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("chart", chart_cmd),
     ("period", period_cmd),
     ("approve", approve_cmd),
+    ("capability", capability_cmd),
     ("post", post_cmd),
     ("commit", commit_cmd),
     ("reverse", reverse_cmd),
@@ -631,13 +632,15 @@ impl Books<'_> {
                 )?)))
             }
             Self::LeasedOnOpen { lease, note, held } => {
-                let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
-                if !crate::lease::Lease::is_book_dir(&dir) {
-                    return Ok(BookRef::Owned(Box::new(Book::open_dir(
-                        &dir,
-                        keys,
-                        Entropy::production(),
-                    )?)));
+                if !note.starts_with("fa-mcp ") {
+                    let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
+                    if !crate::lease::Lease::is_book_dir(&dir) {
+                        return Ok(BookRef::Owned(Box::new(Book::open_dir(
+                            &dir,
+                            keys,
+                            Entropy::production(),
+                        )?)));
+                    }
                 }
                 if held.is_none() {
                     match crate::lease::Lease::acquire(&dir, lease, note) {
@@ -657,6 +660,7 @@ impl Books<'_> {
                         }
                     }
                 }
+                let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
                 Ok(BookRef::Owned(Box::new(Book::open_dir(
                     &dir,
                     keys,
@@ -1543,6 +1547,7 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         },
         ("migrate", Some("show")) => &[Op::Read],
         ("migrate", Some("open" | "stage" | "finalize" | "abandon")) => &[Op::Post, Op::Migrate],
+        ("capability", Some("revoke")) => &[Op::IssueCapability],
         _ => return None,
     };
     Some(ops)
@@ -2183,9 +2188,13 @@ fn help_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
-fn capabilities_cmd(ctx: &mut Ctx<'_>, _args: &Args) -> Result<(), Fail> {
+fn capabilities_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let reg = registry()?;
+    let bound_cap = ctx.capability(args, &[])?;
+    let commitment = bound_cap
+        .commitment()
+        .map_err(|e| Fail::Internal(format!("capability commitment: {e}")))?;
     let exits = fa_registry::ExitCodes::embedded().map_err(BookError::Registry)?;
     let codes: Vec<Json> = exits
         .rows
@@ -2235,7 +2244,10 @@ fn capabilities_cmd(ctx: &mut Ctx<'_>, _args: &Args) -> Result<(), Fail> {
         ("stdout", s("data")),
         ("stderr", s("diagnostics")),
         ("tui", Json::Bool(false)),
-        ("capability", capability_model(ctx.authority.as_ref())?),
+        (
+            "capability",
+            capability_model(ctx.authority.as_ref(), &commitment)?,
+        ),
         (
             "dangerous",
             Json::Arr(
@@ -2279,7 +2291,10 @@ fn capabilities_cmd(ctx: &mut Ctx<'_>, _args: &Args) -> Result<(), Fail> {
 /// The capability model this build enforces (plan §14.2, §14.4; fa-policy):
 /// the closed op vocabulary, the profiles and the ops each can never hold,
 /// the caveats' semantics, and the embedded posture's binding.
-fn capability_model(authority: Option<&LaunchAuthority>) -> Result<Json, Fail> {
+fn capability_model(
+    authority: Option<&LaunchAuthority>,
+    commitment: &[u8; 32],
+) -> Result<Json, Fail> {
     let steward = fa_journal::policy::steward().map_err(BookError::Kernel)?;
     let names = |ops: &[fa_policy::Op]| Json::Arr(ops.iter().map(|o| s(o.name())).collect());
     Ok(obj(vec![
@@ -2319,6 +2334,7 @@ fn capability_model(authority: Option<&LaunchAuthority>) -> Result<Json, Fail> {
         (
             "binding",
             obj(vec![
+                ("commitment", s(hex(commitment))),
                 (
                     "flags",
                     Json::Arr(if authority.is_some() {
@@ -3821,6 +3837,59 @@ fn emit_approved(out: &Out, book: &Book, approved: fa_journal::Approved) -> Resu
         ),
     );
     Ok(())
+}
+
+/// `fa capability revoke --commitment <64-hex>` (plan §14.2; bead fa-1d6):
+/// journal a `PolicyControl` entry revoking a capability by its commitment.
+/// Requires `issue_capability` (`--grant issue_capability` in embedded posture)
+/// and dangerous-operation confirmation (`--yes`).
+fn capability_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(1).map(String::as_str) {
+        Some("revoke") => {
+            let commitment_text = args.require("--commitment", "<64-hex>")?;
+            let revoked_commitment = parse_digest(commitment_text, "--commitment")?;
+            let capability = ctx.capability(args, &[])?;
+            let mut book = ctx.books.open(args)?;
+            let default_date = book
+                .spec()?
+                .opening_date
+                .or_else(|| book.periods().ok()?.first().map(|p| p.start))
+                .unwrap_or(DateDay(0));
+            let date = date_flag(args, default_date)?;
+            let key = args
+                .flag("--key")
+                .map(|k| k.as_bytes().to_vec())
+                .unwrap_or_else(|| revoked_commitment.to_vec());
+            let default_desc = format!("capability revoke {}", hex(&revoked_commitment));
+            let description = args.flag("--description").unwrap_or(&default_desc);
+            let revoked =
+                book.revoke_capability(capability, revoked_commitment, date, &key, description)??;
+            ctx.out.at_book(&book)?;
+            ctx.out.event(
+                "capability_revoked",
+                vec![
+                    (
+                        "control_entry",
+                        s(format!("{:032x}", revoked.control_entry.0)),
+                    ),
+                    ("recorded_at", Json::Int(i128::from(revoked.recorded_at.0))),
+                    ("already_recorded", Json::Bool(revoked.already_recorded)),
+                ],
+                &format!(
+                    "revoked capability {} at {} ({})",
+                    hex(&revoked_commitment),
+                    revoked.recorded_at.0,
+                    if revoked.already_recorded {
+                        "already recorded"
+                    } else {
+                        "recorded"
+                    }
+                ),
+            );
+            Ok(())
+        }
+        other => Err(unhandled("capability", other)),
+    }
 }
 
 /// A 64-hex digest from a flag.

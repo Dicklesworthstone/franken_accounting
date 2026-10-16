@@ -816,6 +816,23 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.approve(&purposes, capability, proposal_digest)))
     }
 
+    /// Revoke a capability by its commitment under `capability` (plan §14.2):
+    /// one `PolicyControl` entry carrying `ControlPayload::CapabilityEvent { Revoke }`.
+    /// The capability must hold `issue_capability`.
+    pub fn revoke_capability(
+        &mut self,
+        capability: fa_journal::Capability,
+        revoked_commitment: [u8; 32],
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        description: &str,
+    ) -> Outcome<fa_journal::Revoked> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.revoke_capability(
+            &purposes, capability, revoked_commitment, effective_date, idempotency_key, description,
+        )))
+    }
+
     /// Post one entry under the accounting laws (plan §5).
     pub fn post(&mut self, req: PostRequest) -> Outcome<Posted> {
         let purposes = self.purposes();

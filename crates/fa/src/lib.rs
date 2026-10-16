@@ -111,8 +111,9 @@ pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, P
 pub use fa_journal::{
     AllocationPosting, DocumentEvidenceSummary, EvidenceExplanation, InstantSelection,
     ManualAssertionSummary, PeriodBalance, PeriodCheck, PeriodTransitionRecord, PeriodVerification,
-    ReviewedSummary, Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode, RunState,
-    ScheduleVerification, SupplementSummary, TieOut, TieOutLine, TrialBalanceLine, UploadRequest,
+    ReviewedSummary, RevocationRequest, Revoked, Run, RunBody, RunChunk, RunControlRequest,
+    RunControlled, RunMode, RunState, ScheduleVerification, SupplementSummary, TieOut, TieOutLine,
+    TrialBalanceLine, UploadRequest,
 };
 pub use fa_money::allocation::{
     AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,

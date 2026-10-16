@@ -1970,12 +1970,25 @@ mod tests {
         for c in &mcp.clusters {
             assert!(mcp.tools_of(&c.name).count() <= 7, "{}", c.name);
         }
+        let is_excluded = |verb: &str, sub: Option<&str>| {
+            mcp.excluded
+                .iter()
+                .any(|e| e.verb == verb && e.subcommand.as_deref() == sub)
+        };
         for v in &reg.verbs {
             if v.subcommands.is_empty() {
-                assert!(mcp.tool_for(&v.name, None).is_some(), "{}", v.name);
+                assert!(
+                    mcp.tool_for(&v.name, None).is_some() || is_excluded(&v.name, None),
+                    "{}",
+                    v.name
+                );
             } else {
                 for s in &v.subcommands {
-                    assert!(mcp.tool_for(&v.name, Some(s)).is_some(), "{} {s}", v.name);
+                    assert!(
+                        mcp.tool_for(&v.name, Some(s)).is_some() || is_excluded(&v.name, Some(s)),
+                        "{} {s}",
+                        v.name
+                    );
                 }
             }
         }

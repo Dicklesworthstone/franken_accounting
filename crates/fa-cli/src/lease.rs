@@ -220,6 +220,9 @@ impl Lease {
                 ),
             });
         }
+        if let Some(holder) = Self::holder(dir, lease_file) {
+            return Err(LeaseError::Held { path, holder });
+        }
         if !Self::is_book_dir(dir) && !Self::is_empty_or_lease_only(dir, lease_file) {
             return Err(LeaseError::Io {
                 path,
@@ -338,10 +341,22 @@ impl Lease {
         if meta.is_symlink() || !meta.is_file() {
             return None;
         }
+        #[cfg(unix)]
+        if (meta.permissions().mode() & 0o7777) != 0o600 {
+            return None;
+        }
         let mut opts = OpenOptions::new();
         opts.read(true);
         apply_no_follow(&mut opts);
         let mut file = opts.open(&path).ok()?;
+        let mut preview = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(257)
+            .read_to_end(&mut preview)
+            .ok()?;
+        if !is_existing_lease_note(&preview) {
+            return None;
+        }
         match file.try_lock_shared() {
             Ok(()) => {
                 // Free: nobody holds it exclusively. Our shared lock ends here.

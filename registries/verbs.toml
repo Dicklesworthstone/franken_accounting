@@ -123,6 +123,18 @@ usage = ["approve --proposal <proposal_digest> [--as <principal>] [--grant <op>]
 example = "fa approve --proposal <proposal_digest> --as controller --book ./books/myco --json"
 
 [[verb]]
+name = "capability"
+summary = "Steward capability controls: journal an irreversible capability revocation by commitment (plan §14.2)."
+writes = true
+subcommands = ["revoke"]
+flags = ["--commitment", "--date", "--key", "--description", "--grant"]
+switches = []
+events = ["capability_revoked"]
+exits = [0, 2, 4, 5, 6, 7]
+usage = ["capability revoke --commitment <64-hex> [--date YYYY-MM-DD] [--key K] [--description <text>] --as <principal> [--grant issue_capability] --yes"]
+example = "fa capability revoke --commitment 0101010101010101010101010101010101010101010101010101010101010101 --as controller --grant issue_capability --yes --book ./books/myco --json"
+
+[[verb]]
 name = "post"
 summary = "Post one entry intent under the accounting laws (balance, period law, idempotency)."
 writes = true
@@ -440,11 +452,11 @@ name = "capabilities"
 summary = "What this build can do: verbs, aliases, exit codes, entry classes, robot mode."
 writes = false
 subcommands = []
-flags = []
+flags = ["--grant"]
 switches = []
 events = ["capabilities"]
-exits = [0, 5]
-usage = ["capabilities"]
+exits = [0, 2, 5]
+usage = ["capabilities [--as <principal>] [--grant <op>]..."]
 example = "fa capabilities --json"
 
 [[verb]]
@@ -579,6 +591,12 @@ verb = "registers"
 subcommand = "materialize"
 condition = "existing-cells"
 safe = "`fa verify registers --period <code> --json` checks the existing cells against the journal without rewriting them"
+
+[[dangerous]]
+verb = "capability"
+subcommand = "revoke"
+condition = "always"
+safe = "inspect the target capability's commitment first (`fa capabilities --json`); a revoked capability is never reinstated"
 
 # What an agent usually runs next after an event (plan Appendix D
 # `next_actions`): every listed event's lines carry these, in order. The
@@ -791,6 +809,12 @@ name = "approved"
 book = true
 doc = "An approval of a proposal digest was recorded (or already existed: then nothing was written and security_policy_epoch is null)."
 fields = ["approval_vid:hex", "approved_digest:hex", "security_policy_epoch:int?", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "capability_revoked"
+book = true
+doc = "A capability commitment was revoked by a journaled PolicyControl entry (or was already revoked: then nothing was written)."
+fields = ["control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
 name = "posted"
@@ -1271,7 +1295,7 @@ fields = ["name:string", "forbidden_ops:[string]"]
 [[shape]]
 name = "capability_binding"
 doc = "The actual execution binding: embedded-owner self-issues Human operations per command; MCP uses one trusted launch capability and exposes no per-call identity or authority flags. Neither posture authenticates the operator."
-fields = ["flags:[string]", "posture:string", "profile:string", "ceilings:[string]", "expires_at:seq?", "trust_boundary:text"]
+fields = ["commitment:hex", "flags:[string]", "posture:string", "profile:string", "ceilings:[string]", "expires_at:seq?", "trust_boundary:text"]
 
 [[shape]]
 name = "authority"
@@ -1692,7 +1716,12 @@ reason = "host-only: stops the daemon process that will host fa-mcp (plan §15.4
 [[mcp.excluded]]
 verb = "demo"
 subcommand = "init"
-reason = "host-only: writes a new demo book directory outside an existing book (plan §15.4 registered exclusion)"
+reason = "host-only: creates a new demo book directory and key files on the host filesystem (plan §15.4 registered exclusion)"
+
+[[mcp.excluded]]
+verb = "capability"
+subcommand = "revoke"
+reason = "host-only: revokes a capability commitment with --grant issue_capability and --yes, neither of which a bound MCP session can hold or supply (plan §14.2/§15.4 registered exclusion)"
 
 # ---- fa.orient --------------------------------------------------------------
 
@@ -2195,5 +2224,3 @@ positionals = ["id?"]
 required = []
 dont = ["Don't invent a procedure id or a parameter name: `action: \"list\"` returns every registered procedure with its pinned default and meaning.", "Don't treat a finding as a conclusion: it is a statistic with citations; every cited handle resolves and should be read before anything is asserted.", "Don't pass an instant to known_at: procedures run at HEAD or a recorded sequence."]
 mistakes = ["Passing a parameter in display units (10000.00) instead of the unit's mantissa (1000000 at scale 2); the listing's `meaning` says which.", "Running aging.* or trace.* without effective_through (they are historical folds and are refused naming it).", "Running trace.* without account and source (the commingled account and the deposit entry).", "Overriding a parameter with a float; parameters are integers in the registered unit."]
-
-

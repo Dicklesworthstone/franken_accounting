@@ -401,7 +401,7 @@ impl Denial {
                 _ => format!("use a capability whose `{caveat}` caveat names this target"),
             },
             Self::Revoked { .. } => {
-                "obtain a fresh capability from the book's steward; a revoked token is never reinstated".into()
+                "obtain a fresh capability from the book's steward (`fa capabilities --as <principal> --json` inspects the bound capability; embedded posture: --as <principal> --grant <op>); a revoked token is never reinstated".into()
             }
         }
     }

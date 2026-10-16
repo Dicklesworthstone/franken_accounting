@@ -4455,6 +4455,15 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let imp_vid = field(&imp_ev, "run_vid").unwrap_or_default().to_string();
     run2(&["document", "import", "receipt", &imp_vid]);
     run2(&["verify", "periods"]);
+    run2(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        "--grant",
+        "issue_capability",
+        "--yes",
+    ]);
     let demo_dir = dir.join("demo-ev");
     let demo_args = [
         "demo",
@@ -5338,6 +5347,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("reverse", None, "grant:post_closed"),
     ("resolve", None, "disposition:voids"),
     ("registers", Some("materialize"), "existing-cells"),
+    ("capability", Some("revoke"), "always"),
 ];
 
 /// Every operation the plan calls dangerous has a `[[dangerous]]` row
@@ -9532,6 +9542,214 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
         err_bad.contains("unknown output format `yaml`"),
         "{out_bad}\n{err_bad}"
     );
+
+    Ok(())
+}
+
+/// fa-1d6: `fa capabilities --as <principal> [--grant <op>]... --json` exposes
+/// `data.capability.binding.commitment` (64-hex); `fa capability revoke`
+/// requires `--yes` (FA-REF-007, exit 7) and `issue_capability` (FA-REF-011,
+/// exit 7); a confirmed revocation journals a `PolicyControl` entry and is
+/// idempotent on repeat; subsequent `post` and `period` transitions under the
+/// revoked capability refuse with `FA-REF-023` (exit 7) naming `fa capabilities`.
+#[test]
+fn capability_revocation_journals_policy_control_and_refuses_revoked_tokens_idempotently()
+-> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("capability-revoke")?;
+    let fa_b = |args: &[&str]| fa(Some(&book), args);
+
+    // 1. Discover capability commitments via `fa capabilities --json`.
+    let (code, caps_post_out, _) =
+        fa_b(&["capabilities", "--as", "clerk", "--grant", "post", "--json"]);
+    assert_eq!(code, 0, "{caps_post_out}");
+    let clerk_post_commitment = text(
+        &doc(&caps_post_out)
+            .get("capability")
+            .and_then(|c| c.get("binding"))
+            .cloned()
+            .unwrap_or(Json::Null),
+        "commitment",
+    )
+    .to_string();
+    assert_eq!(clerk_post_commitment.len(), 64, "{caps_post_out}");
+
+    let (code, caps_close_out, _) = fa_b(&[
+        "capabilities",
+        "--as",
+        "clerk",
+        "--grant",
+        "close",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{caps_close_out}");
+    let clerk_soft_close_commitment = text(
+        &doc(&caps_close_out)
+            .get("capability")
+            .and_then(|c| c.get("binding"))
+            .cloned()
+            .unwrap_or(Json::Null),
+        "commitment",
+    )
+    .to_string();
+    assert_eq!(clerk_soft_close_commitment.len(), 64, "{caps_close_out}");
+    assert_ne!(clerk_post_commitment, clerk_soft_close_commitment);
+
+    // 2. Unconfirmed `fa capability revoke` refuses FA-REF-007 (exit 7).
+    let (code, unconfirmed_out, _) = fa_b(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &clerk_post_commitment,
+        "--as",
+        "controller",
+        "--grant",
+        "issue_capability",
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{unconfirmed_out}");
+    assert_eq!(text(&doc(&unconfirmed_out), "refusal_id"), "FA-REF-007");
+    assert!(
+        text(&doc(&unconfirmed_out), "fix").contains("fa capabilities --json"),
+        "{unconfirmed_out}"
+    );
+
+    // Revoker without `issue_capability` refuses FA-REF-011 (exit 7).
+    let (code, no_grant_out, _) = fa_b(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &clerk_post_commitment,
+        "--as",
+        "controller",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{no_grant_out}");
+    assert_eq!(text(&doc(&no_grant_out), "refusal_id"), "FA-REF-011");
+
+    // 3. Confirmed `fa capability revoke` journals PolicyControl and is idempotent.
+    let (code, revoked_out, _) = fa_b(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &clerk_post_commitment,
+        "--as",
+        "controller",
+        "--grant",
+        "issue_capability",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{revoked_out}");
+    assert_eq!(field(&revoked_out, "event"), Some("capability_revoked"));
+    let first_data = doc(&revoked_out);
+    assert_eq!(
+        first_data.get("already_recorded"),
+        Some(&Json::Bool(false)),
+        "{revoked_out}"
+    );
+    let first_entry = text(&first_data, "control_entry").to_string();
+    let first_seq = int(&first_data, "recorded_at").unwrap();
+
+    let (code, repeat_out, _) = fa_b(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &clerk_post_commitment,
+        "--as",
+        "controller",
+        "--grant",
+        "issue_capability",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{repeat_out}");
+    let repeat_data = doc(&repeat_out);
+    assert_eq!(
+        repeat_data.get("already_recorded"),
+        Some(&Json::Bool(true)),
+        "{repeat_out}"
+    );
+    assert_eq!(text(&repeat_data, "control_entry"), first_entry);
+    assert_eq!(int(&repeat_data, "recorded_at"), Some(first_seq));
+
+    // Also revoke clerk's soft_close capability.
+    let (code, revoked_close_out, _) = fa_b(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &clerk_soft_close_commitment,
+        "--as",
+        "controller",
+        "--grant",
+        "issue_capability",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{revoked_close_out}");
+
+    // 4. Subsequent `post` and `period` transition under the revoked capabilities
+    // refuse with FA-REF-023 (exit 7) and name `fa capabilities` in `fix`.
+    let entry = write(
+        &dir,
+        "rent.json",
+        r#"{"effective_date":"2026-03-10","description":"March rent","idempotency_key":"rent-revoked","legs":[{"side":"debit","account":"6000","amount":"50.00 USD"},{"side":"credit","account":"1000","amount":"50.00 USD"}]}"#,
+    );
+    let (code, post_refused, _) = fa_b(&[
+        "post",
+        "--intent",
+        &entry,
+        "--evidence",
+        &ev,
+        "--as",
+        "clerk",
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{post_refused}");
+    let post_err = doc(&post_refused);
+    assert_eq!(
+        text(&post_err, "refusal_id"),
+        "FA-REF-023",
+        "{post_refused}"
+    );
+    assert!(
+        text(&post_err, "fix").contains("fa capabilities"),
+        "{post_refused}"
+    );
+
+    let (code, period_refused, _) = fa_b(&[
+        "period",
+        "soft-close",
+        "FY2026-P03",
+        "--as",
+        "clerk",
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{period_refused}");
+    let period_err = doc(&period_refused);
+    assert_eq!(
+        text(&period_err, "refusal_id"),
+        "FA-REF-023",
+        "{period_refused}"
+    );
+    assert!(
+        text(&period_err, "fix").contains("fa capabilities"),
+        "{period_refused}"
+    );
+
+    // Another principal's unrevoked capability still succeeds.
+    let (code, posted_out, _) = fa_b(&[
+        "post",
+        "--intent",
+        &entry,
+        "--evidence",
+        &ev,
+        "--as",
+        "senior-clerk",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{posted_out}");
+    assert_eq!(field(&posted_out, "event"), Some("posted"));
 
     Ok(())
 }

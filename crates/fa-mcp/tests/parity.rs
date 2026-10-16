@@ -70,11 +70,14 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             });
         }
     }
-    // Exclusions are the two plan §15.4 host-only families: `fad serve|status|stop`
-    // and `fa demo init` (which writes outside a book). Every exclusion names the reason.
+    // Exclusions are the plan §15.4 host-only families: `fad serve|status|stop`,
+    // `fa demo init` (which writes outside a book), and `fa capability revoke`
+    // (which requires `--grant issue_capability` and `--yes` on the host).
+    // Every exclusion names the reason.
     for e in &mcp.excluded {
         let is_allowed_host_only = e.verb == reg.daemon.binary
-            || (e.verb == "demo" && e.subcommand.as_deref() == Some("init"));
+            || (e.verb == "demo" && e.subcommand.as_deref() == Some("init"))
+            || (e.verb == "capability" && e.subcommand.as_deref() == Some("revoke"));
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"
@@ -251,6 +254,14 @@ fn tool_names_and_schemas_are_host_safe_and_registry_derived() {
 fn dangerous_tools_keep_annotations_and_safe_guidance_without_caller_confirmation() {
     let (mcp, reg) = embedded();
     for d in &reg.dangerous {
+        if mcp
+            .excluded
+            .iter()
+            .any(|e| e.verb == d.verb && e.subcommand == d.subcommand)
+        {
+            assert!(mcp.tool_for(&d.verb, d.subcommand.as_deref()).is_none());
+            continue;
+        }
         let tool = mcp
             .tool_for(&d.verb, d.subcommand.as_deref())
             .unwrap_or_else(|| panic!("no tool covers dangerous {} {:?}", d.verb, d.subcommand));

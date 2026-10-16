@@ -378,6 +378,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    pub async fn revoke_capability(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        revoked_commitment: [u8; 32],
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        description: &str,
+    ) -> Outcome<fa_journal::Revoked> {
+        let description = self.seal_text(cx, description)?;
+        Ok(fa_journal::revoke_capability(
+            &mut self.db,
+            cx,
+            &self.context,
+            fa_journal::RevocationRequest {
+                capability,
+                revoked: revoked_commitment,
+                effective_date,
+                idempotency_key: idempotency_key.to_vec(),
+                description,
+            },
+        )
+        .await?)
+    }
+
     pub async fn post(&mut self, cx: &PurposeContexts, req: PostRequest) -> Outcome<Posted> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         Ok(fa_journal::post(&mut self.db, cx, &self.context, req).await?)
