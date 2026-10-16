@@ -164,8 +164,11 @@ fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mime = args.flag("--mime").unwrap_or("application/octet-stream");
     let retrieved_by = ctx.principal(args);
     let authority = ctx.authority().cloned();
-    let bytes = ctx.files.read_bytes(path)?;
     let mut book = ctx.books.open(args)?;
+    if let Some(authority) = &authority {
+        book.preflight_intake(authority.capability(), fa::IntakeAction::Upload)??;
+    }
+    let bytes = crate::intake::read_document(&ctx.files, path)?;
     let added = if let Some(authority) = &authority {
         book.upload_document(
             authority.capability(),
@@ -1235,14 +1238,14 @@ fn import_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa import run --source Connector --file invoice.pdf --book <dir> --json",
                 ));
             }
+            crate::intake::validate_documents(&paths)?;
             let who = ctx.principal(args);
             let capability = ctx.capability(args, &["post"])?;
             let source = parse_intake_source(args.flag("--source"), who);
-            let mut raw_bytes = Vec::with_capacity(paths.len());
-            for path in paths {
-                raw_bytes.push(ctx.files.read_bytes(path)?);
-            }
+            fa_journal::custody::admit_source(&source)?;
             let mut book = ctx.books.open(args)?;
+            book.preflight_intake(&capability, fa::IntakeAction::ImportRun)??;
+            let raw_bytes = crate::intake::read_documents(&ctx.files, &paths)?;
             let book_id = book.context().book_id;
             let docs: Vec<Document> = raw_bytes
                 .into_iter()
