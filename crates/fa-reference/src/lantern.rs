@@ -1196,6 +1196,163 @@ pub fn naive_stringer_bound_mantissa(
     (num_i + den_i - 1) / den_i
 }
 
+/// Independent reference oracle for `jet.unusual_accounts` (`FA-EVID-L24`).
+#[must_use]
+pub fn unusual_accounts(rows: &[Row], max_pair_count: usize, min_population: usize) -> Vec<usize> {
+    let live = live_rows(rows);
+    if live.len() < min_population {
+        return Vec::new();
+    }
+    let mut pair_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for r in &live {
+        let debits: BTreeSet<String> = r
+            .legs
+            .iter()
+            .filter(|l| l.debit)
+            .map(|l| l.account.clone())
+            .collect();
+        let credits: BTreeSet<String> = r
+            .legs
+            .iter()
+            .filter(|l| !l.debit)
+            .map(|l| l.account.clone())
+            .collect();
+        let mut row_pairs = BTreeSet::new();
+        for d in &debits {
+            for c in &credits {
+                let p = if d <= c {
+                    (d.clone(), c.clone())
+                } else {
+                    (c.clone(), d.clone())
+                };
+                row_pairs.insert(p);
+            }
+        }
+        for p in row_pairs {
+            *pair_counts.entry(p).or_insert(0) += 1;
+        }
+    }
+    let mut out = Vec::new();
+    for r in &live {
+        let debits: BTreeSet<String> = r
+            .legs
+            .iter()
+            .filter(|l| l.debit)
+            .map(|l| l.account.clone())
+            .collect();
+        let credits: BTreeSet<String> = r
+            .legs
+            .iter()
+            .filter(|l| !l.debit)
+            .map(|l| l.account.clone())
+            .collect();
+        let mut min_c = usize::MAX;
+        for d in &debits {
+            for c in &credits {
+                let p = if d <= c {
+                    (d.clone(), c.clone())
+                } else {
+                    (c.clone(), d.clone())
+                };
+                if let Some(&cnt) = pair_counts.get(&p) {
+                    min_c = min_c.min(cnt);
+                }
+            }
+        }
+        if min_c <= max_pair_count {
+            out.push(r.index);
+        }
+    }
+    out
+}
+
+/// Independent reference oracle for `benford.second_digit` (`FA-EVID-L30`).
+#[must_use]
+pub fn second_digit_counts_for(rows: &[Row], unit: Option<u32>, debit: bool) -> [u64; 10] {
+    let mut counts = [0u64; 10];
+    for r in live_rows(rows) {
+        for l in &r.legs {
+            if l.debit != debit || unit.is_some_and(|u| l.unit != u) {
+                continue;
+            }
+            let min = 10i128.pow(l.scale) * 10;
+            if l.mantissa.abs() >= min {
+                let s = l.mantissa.abs().to_string();
+                let bytes = s.as_bytes();
+                if bytes.len() >= 2 {
+                    let d = (bytes[1] - b'0') as usize;
+                    counts[d] += 1;
+                }
+            }
+        }
+    }
+    counts
+}
+
+/// Independent reference oracle for `benford.first_two_digits` (`FA-EVID-L31`).
+#[must_use]
+pub fn first_two_digits_counts_for(rows: &[Row], unit: Option<u32>, debit: bool) -> [u64; 90] {
+    let mut counts = [0u64; 90];
+    for r in live_rows(rows) {
+        for l in &r.legs {
+            if l.debit != debit || unit.is_some_and(|u| l.unit != u) {
+                continue;
+            }
+            let min = 10i128.pow(l.scale) * 10;
+            if l.mantissa.abs() >= min {
+                let s = l.mantissa.abs().to_string();
+                let bytes = s.as_bytes();
+                if bytes.len() >= 2 {
+                    let d1 = (bytes[0] - b'0') as usize;
+                    let d2 = (bytes[1] - b'0') as usize;
+                    let two = d1 * 10 + d2;
+                    if (10..=99).contains(&two) {
+                        counts[two - 10] += 1;
+                    }
+                }
+            }
+        }
+    }
+    counts
+}
+
+/// Independent reference oracle for `numbers.relative_size_factor` (`FA-EVID-L32`)
+/// grouped by debit account and unit.
+#[must_use]
+pub fn relative_size_factor_by_account(
+    rows: &[Row],
+    min_subset_size: usize,
+    min_rsf_bps: i128,
+) -> Vec<(String, u32, i128)> {
+    let mut groups: BTreeMap<(String, u32), Vec<i128>> = BTreeMap::new();
+    for r in live_rows(rows) {
+        for l in &r.legs {
+            if l.debit && l.mantissa.abs() > 0 {
+                groups
+                    .entry((l.account.clone(), l.unit))
+                    .or_default()
+                    .push(l.mantissa.abs());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for ((acct, unit), mut vals) in groups {
+        if vals.len() < min_subset_size {
+            continue;
+        }
+        vals.sort_by(|a, b| b.cmp(a));
+        let largest = vals[0];
+        let second = vals[1];
+        if second > 0 {
+            let rsf_bps = (largest * 10_000) / second;
+            if rsf_bps >= min_rsf_bps {
+                out.push((acct, unit, rsf_bps));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

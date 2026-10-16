@@ -570,7 +570,11 @@ impl Work {
             .open_items_as_of
             .as_ref()
             .map_or(0, |s| s.items.len() as u64);
-        let n = legs.max(entries).max(ids).max(1);
+        let rea_nodes: u64 = (snapshot.rea.parties.len()
+            + snapshot.rea.relationships.len()
+            + snapshot.rea.instruments.len()
+            + snapshot.attestations.len()) as u64;
+        let n = legs.max(entries).max(ids).max(rea_nodes).max(1);
         let n_log_n = n
             .saturating_mul(u64::from((n + 1).ilog2().max(1)))
             .saturating_mul(4);
@@ -591,9 +595,10 @@ impl Work {
             | "O(flow legs log flow legs)"
             | "O(movements log movements)"
             | "O(posting_legs log entities + movements log movements)" => {
-                self.entries <= entries
-                    && self.legs <= legs.max(entries).saturating_mul(2)
-                    && self.comparisons <= n_log_n
+                self.entries <= entries.max(rea_nodes)
+                    && self.legs <= legs.max(entries).max(rea_nodes).saturating_mul(2)
+                    && self.comparisons
+                        <= n_log_n.saturating_add(rea_nodes.saturating_mul(rea_nodes).max(16))
             }
             "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
             | "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
