@@ -37,7 +37,10 @@ fn forward_args(parsed: &Args, book: &str) -> Vec<String> {
 fn wants_stdin(parsed: &Args) -> bool {
     parsed.positional.iter().any(|word| word == "-")
         || parsed.flags.iter().any(|(flag, values)| {
-            flag != "--book" && flag != "--via" && values.iter().any(|value| value == "-")
+            flag != "--book"
+                && flag != "--via"
+                && flag != "--format"
+                && values.iter().any(|value| value == "-")
         })
 }
 

@@ -357,16 +357,43 @@ fn stamp(said: &RefCell<Said>, book: &Book) -> Result<(), Fail> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutputFormat {
+    Human,
+    Json,
+    Toon,
+}
+
+impl OutputFormat {
+    pub(crate) const fn is_robot(self) -> bool {
+        matches!(self, Self::Json | Self::Toon)
+    }
+}
+
 pub(crate) struct Out {
+    /// True in robot mode (`--json`, `--format json`, or `--format toon`).
     json: bool,
+    format: OutputFormat,
     style: Style,
     sink: Sink,
     said: Rc<RefCell<Said>>,
 }
 
 impl Out {
+    #[cfg(test)]
     fn new(json: bool, capture: bool) -> Self {
-        Self::styled(json, capture, Style::PLAIN)
+        Self::new_format(
+            if json {
+                OutputFormat::Json
+            } else {
+                OutputFormat::Human
+            },
+            capture,
+        )
+    }
+
+    fn new_format(format: OutputFormat, capture: bool) -> Self {
+        Self::styled_format(format, capture, Style::PLAIN)
     }
 
     fn with_authority(self, authority: Option<&LaunchAuthority>) -> Self {
@@ -378,9 +405,10 @@ impl Out {
         self.said.borrow().authority.is_some()
     }
 
-    fn styled(json: bool, capture: bool, style: Style) -> Self {
+    fn styled_format(format: OutputFormat, capture: bool, style: Style) -> Self {
         Self {
-            json,
+            json: format.is_robot(),
+            format,
             style,
             sink: if capture {
                 Sink::Capture(RefCell::new(Captured::default()))
@@ -522,7 +550,10 @@ impl Out {
                         .unwrap_or_else(|| owner_envelope(said.owner_principal.as_deref())),
                 },
             );
-            self.line(line.render());
+            match self.format {
+                OutputFormat::Toon => self.line(line.render_toon()),
+                OutputFormat::Json | OutputFormat::Human => self.line(line.render()),
+            }
         } else if !human.is_empty() {
             self.line(human);
         }
@@ -870,6 +901,56 @@ pub fn run_with_authority(
     run_scoped(argv, books, files, Some(authority), None, capture)
 }
 
+fn output_format_from_raw_argv(argv: &[String]) -> OutputFormat {
+    let mut format = OutputFormat::Human;
+    let mut i = 0;
+    while i < argv.len() {
+        let arg = argv[i].as_str();
+        if arg == "--" {
+            break;
+        }
+        if arg == "--json" || arg == "--format=json" {
+            return OutputFormat::Json;
+        }
+        if arg == "--format=toon" {
+            format = OutputFormat::Toon;
+        } else if arg == "--format" {
+            match argv.get(i + 1).map(String::as_str) {
+                Some("json") => return OutputFormat::Json,
+                Some("toon") => format = OutputFormat::Toon,
+                _ => {}
+            }
+            i += 1;
+        }
+        i += 1;
+    }
+    format
+}
+
+fn resolve_output_format(args: &Args) -> Result<OutputFormat, Fail> {
+    let formats = args.flag_all("--format");
+    if formats.len() > 1 {
+        return Err(usage(
+            "--format may be supplied at most once",
+            "--format json|toon|text (or --json)",
+        ));
+    }
+    let json_switch = args.switch("--json");
+    match (json_switch, formats.first().copied()) {
+        (false, None) | (false, Some("text" | "human")) => Ok(OutputFormat::Human),
+        (true, None) | (false, Some("json")) | (true, Some("json")) => Ok(OutputFormat::Json),
+        (false, Some("toon")) => Ok(OutputFormat::Toon),
+        (true, Some("toon" | "text" | "human")) => Err(usage(
+            "--json and --format disagree",
+            "pass one of --json, --format json, --format toon, or --format text",
+        )),
+        (_, Some(other)) => Err(usage(
+            format!("unknown output format `{other}`"),
+            "--format json|toon|text (or --json)",
+        )),
+    }
+}
+
 fn run_scoped(
     argv: &[String],
     books: Books<'_>,
@@ -878,18 +959,21 @@ fn run_scoped(
     daemon_files: Option<DaemonFiles>,
     capture: bool,
 ) -> (u8, Captured) {
-    let json = argv.iter().any(|a| a == "--json");
+    let raw_format = output_format_from_raw_argv(argv);
     let reg = match registry() {
         Ok(r) => r,
         Err(fail) => {
-            return finish_into(Out::new(json, capture).with_authority(authority), Err(fail));
+            return finish_into(
+                Out::new_format(raw_format, capture).with_authority(authority),
+                Err(fail),
+            );
         }
     };
     let mut args = match args::parse(argv, &reg.value_flags(), &reg.switches()) {
         Ok(a) => a,
         Err(e) => {
             return finish_into(
-                Out::new(json, capture).with_authority(authority),
+                Out::new_format(raw_format, capture).with_authority(authority),
                 Err(Fail::Usage(e)),
             );
         }
@@ -917,15 +1001,23 @@ fn run_scoped(
                 .insert("--keys".into(), vec![keys.to_string_lossy().into_owned()]);
         }
     }
-    let json = args.switch("--json");
+    let format = match resolve_output_format(&args) {
+        Ok(f) => f,
+        Err(fail) => {
+            return finish_into(
+                Out::new_format(raw_format, capture).with_authority(authority),
+                Err(fail),
+            );
+        }
+    };
     let style = Style::resolve(
-        json,
+        format.is_robot(),
         args.switch("--no-color"),
         capture,
         std::io::stdout().is_terminal(),
         |name| std::env::var(name).ok(),
     );
-    let out = Out::styled(json, capture, style).with_authority(authority);
+    let out = Out::styled_format(format, capture, style).with_authority(authority);
     if authority.is_none() {
         out.said.borrow_mut().owner_principal =
             Some(args.flag("--as").unwrap_or("operator").to_string());
@@ -1023,9 +1115,9 @@ fn host_failure_with_authority(
     authority: &LaunchAuthority,
     capture: bool,
 ) -> (u8, Captured) {
-    let json = argv.iter().any(|a| a == "--json");
+    let format = output_format_from_raw_argv(argv);
     finish_into(
-        Out::new(json, capture).with_authority(Some(authority)),
+        Out::new_format(format, capture).with_authority(Some(authority)),
         Err(fail),
     )
 }
@@ -1061,8 +1153,8 @@ pub fn foundation_error(argv: &[String], message: String, capture: bool) -> (u8,
 }
 
 fn host_failure(argv: &[String], fail: Fail, capture: bool) -> (u8, Captured) {
-    let json = argv.iter().any(|a| a == "--json");
-    finish_into(Out::new(json, capture), Err(fail))
+    let format = output_format_from_raw_argv(argv);
+    finish_into(Out::new_format(format, capture), Err(fail))
 }
 
 fn registry() -> Result<&'static Registry, Fail> {
@@ -2392,7 +2484,7 @@ fn robot_schema(out: &Out, reg: &Registry, name: Option<&String>) -> Result<(), 
 
 const GUIDE: &str = "fa robot-docs guide\n\
 \n\
-1. Every command accepts --json. Parse stdout line by line; each line is one JSON object {v, event, book, coordinate, data, certificate, authority, warnings, next_actions}: `event` names the schema of `data`; `book` and `coordinate` say which book and (branch, known_at, effective) the line describes; `authority` declares the actual execution binding; `next_actions` are the commands usually run next (add the same --book in the owner's CLI).\n\
+1. Every command accepts --json (or --format json|toon|text). Parse --json stdout line by line; each line is one JSON object {v, event, book, coordinate, data, certificate, authority, warnings, next_actions}: `event` names the schema of `data`; `book` and `coordinate` say which book and (branch, known_at, effective) the line describes; `authority` declares the actual execution binding; `next_actions` are the commands usually run next (add the same --book in the owner's CLI). Prefer `--format toon` on tabular read verbs (`tb`, `open-items`, `gl`, `chart list`, `period list`, `explain balance`, `statement`) when feeding large register, open-item, or trial-balance tables into an agent context window: TOON v3.0 encodes uniform object arrays as compact `rows[N]{f1,f2,...}:` tables while keeping every amount an exact string with its unit.\n\
 2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability, an unconfirmed dangerous operation), 8 verification failure. 1 is never emitted.\n\
 3. Every non-zero exit is exactly one `error` line: data {class, exit, refusal_id, message, cite, fix, detail}. `refusal_id` (FA-REF-nnn) is the refusal catalog code when one applies. Do the `fix`; do not invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: its fix names the safe alternative; add --yes only when the operation is intended (`fa capabilities --json` lists them under `dangerous`).\n\
 4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\

@@ -9271,3 +9271,238 @@ fn off_balance_commitment_and_statistical_headcount_cli_scenario() -> std::io::R
     Ok(())
 }
 
+#[test]
+fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
+    let dir = tmp("toon-format-cli")?;
+    let book = dir.join("book");
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"4000","name":"Sales Revenue","type":"Revenue","unit":"USD"}
+        ]}"#,
+    );
+    let (c, o, e) = fa(
+        Some(&book),
+        &["book", "create", "--name", "Toon Co", "--json"],
+    );
+    assert_eq!(c, 0, "{o}\n{e}");
+    let (c, o, e) = fa(Some(&book), &["chart", "import", &chart, "--json"]);
+    assert_eq!(c, 0, "{o}\n{e}");
+    let (c, o, e) = fa(
+        Some(&book),
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    assert_eq!(c, 0, "{o}\n{e}");
+    let (c, o, e) = fa(Some(&book), &["period", "open", "FY2026-P03", "--json"]);
+    assert_eq!(c, 0, "{o}\n{e}");
+
+    let ev_oid = source_doc(&dir, &book);
+    let sale_intent = write(
+        &dir,
+        "sale.json",
+        r#"{"idempotency_key":"toon-sale-1","effective_date":"2026-03-10","description":"Consulting invoice & payment","legs":[
+            {"side":"debit","account":"1000","amount":"1500.00 USD"},
+            {"side":"credit","account":"4000","amount":"1500.00 USD"}
+        ]}"#,
+    );
+    let (c, out, err) = fa(
+        Some(&book),
+        &[
+            "post",
+            "--intent",
+            &sale_intent,
+            "--evidence",
+            &ev_oid,
+            "--format",
+            "toon",
+        ],
+    );
+    assert_eq!(c, 0, "{out}\n{err}");
+    assert!(out.contains("event: posted\n"), "{out}");
+    assert!(out.contains("v: 1\n"), "{out}");
+
+    // Read verbs under `--format toon`: tb, chart list, period list, open-items,
+    // explain balance, statement balance-sheet, robot-docs guide.
+    let commands: &[(&str, &[&str])] = &[
+        ("tb", &["tb", "--period", "FY2026-P03", "--format", "toon"]),
+        ("chart_list", &["chart", "list", "--format=toon"]),
+        ("period_list", &["period", "list", "--format", "toon"]),
+        (
+            "open_items",
+            &["open-items", "--account", "1000", "--format", "toon"],
+        ),
+        (
+            "explain_balance",
+            &[
+                "explain",
+                "balance",
+                "1000",
+                "--period",
+                "FY2026-P03",
+                "--format",
+                "toon",
+            ],
+        ),
+        (
+            "statement_bs",
+            &[
+                "statement",
+                "balance-sheet",
+                "--for",
+                "FY2026-P03",
+                "--format",
+                "toon",
+            ],
+        ),
+        (
+            "robot_docs_guide",
+            &["robot-docs", "guide", "--format", "toon"],
+        ),
+    ];
+
+    let tru_available = std::process::Command::new("tru")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+
+    for (label, args) in commands {
+        let (c_toon, out_toon, err_toon) = fa(Some(&book), args);
+        assert_eq!(c_toon, 0, "{label} toon failed: {out_toon}\n{err_toon}");
+        assert!(
+            out_toon.contains("v: 1\n"),
+            "{label} should contain v: 1 header: {out_toon}"
+        );
+        assert!(
+            out_toon.contains("\nevent: "),
+            "{label} should contain event field: {out_toon}"
+        );
+
+        // Equivalent `--json` invocation for comparison
+        let mut json_args: Vec<&str> = args
+            .iter()
+            .copied()
+            .filter(|a| *a != "--format" && *a != "toon" && *a != "--format=toon")
+            .collect();
+        json_args.push("--json");
+        let (c_json, out_json, err_json) = fa(Some(&book), &json_args);
+        assert_eq!(c_json, 0, "{label} json failed: {out_json}\n{err_json}");
+
+        // Verify that parsing the JSON output and calling render_toon() produces the exact CLI output
+        let parsed_json = json::parse(out_json.trim()).expect("parse --json envelope");
+        assert_eq!(
+            out_toon.trim_end_matches('\n'),
+            parsed_json.render_toon(),
+            "{label} CLI --format toon output must equal Json::render_toon() of --json"
+        );
+
+        // If `tru` reference decoder is installed in PATH, run differential round-trip check
+        if tru_available {
+            let mut child = std::process::Command::new("tru")
+                .arg("--decode")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            {
+                use std::io::Write;
+                let stdin = child.stdin.as_mut().expect("tru stdin");
+                stdin.write_all(out_toon.as_bytes())?;
+            }
+            let decoded = child.wait_with_output()?;
+            assert!(
+                decoded.status.success(),
+                "tru --decode failed on {label}: {}",
+                String::from_utf8_lossy(&decoded.stderr)
+            );
+            let decoded_str = String::from_utf8(decoded.stdout)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            let roundtripped = json::parse(decoded_str.trim()).expect("parse tru --decode output");
+            assert_eq!(
+                roundtripped, parsed_json,
+                "tru --decode round-trip mismatch on {label}"
+            );
+        }
+    }
+
+    if !tru_available {
+        eprintln!("NOTE: external `tru` binary not in PATH; differential decode check UNRUN (in-house TOON v3.0 golden spec fixtures verified in fa-verbs).");
+    }
+
+    // Verify tabular array formatting in `tb --format toon` and that numeric account codes remain quoted strings
+    let (_, tb_toon, _) = fa(
+        Some(&book),
+        &["tb", "--period", "FY2026-P03", "--format", "toon"],
+    );
+    assert!(
+        tb_toon.contains("rows[2]{code,credits,credits_pending,debits,debits_pending,name,net,type}:"),
+        "tb rows should use TOON tabular header: {tb_toon}"
+    );
+    assert!(
+        tb_toon.contains("\"1000\",0.00 USD,0.00 USD,1500.00 USD,0.00 USD,Cash,1500.00 USD,Asset"),
+        "account code '1000' must be quoted so it stays a string, while '1500.00 USD' is an unquoted string token: {tb_toon}"
+    );
+    assert!(
+        tb_toon.contains("\"4000\",1500.00 USD,0.00 USD,0.00 USD,0.00 USD,Sales Revenue,\"-1500.00 USD\",Revenue"),
+        "negative amount '-1500.00 USD' must be quoted in TOON v3.0: {tb_toon}"
+    );
+
+    // Verify `--format json` is an exact alias for `--json`
+    let (c_fmt_json, out_fmt_json, _) = fa(
+        Some(&book),
+        &["tb", "--period", "FY2026-P03", "--format", "json"],
+    );
+    let (c_flag_json, out_flag_json, _) = fa(
+        Some(&book),
+        &["tb", "--period", "FY2026-P03", "--json"],
+    );
+    assert_eq!(c_fmt_json, 0);
+    assert_eq!(c_flag_json, 0);
+    assert_eq!(out_fmt_json, out_flag_json);
+
+    // Verify `--format text` forces human table mode
+    let (c_text, out_text, _) = fa(
+        Some(&book),
+        &["tb", "--period", "FY2026-P03", "--format", "text"],
+    );
+    assert_eq!(c_text, 0);
+    assert!(
+        !out_text.starts_with('{') && !out_text.contains("\nv: 1\n"),
+        "text mode must emit human table: {out_text}"
+    );
+
+    // Verify error envelope under `--format toon` renders in TOON format
+    let (c_err_toon, out_err_toon, _) = fa(
+        Some(&book),
+        &["tb", "--period", "UNKNOWN", "--format", "toon"],
+    );
+    assert_eq!(c_err_toon, 2, "{out_err_toon}");
+    assert!(out_err_toon.contains("event: error\n"), "{out_err_toon}");
+    assert!(out_err_toon.contains("  exit: 2\n"), "{out_err_toon}");
+
+    // Verify conflicting `--json` and `--format toon` refuses with exit code 2
+    let (c_conflict, out_conflict, _) = fa(
+        Some(&book),
+        &["tb", "--period", "FY2026-P03", "--json", "--format", "toon"],
+    );
+    assert_eq!(c_conflict, 2, "{out_conflict}");
+    assert!(
+        out_conflict.contains("--json and --format disagree"),
+        "{out_conflict}"
+    );
+
+    // Verify unknown `--format yaml` refuses with exit code 2
+    let (c_bad, out_bad, err_bad) = fa(
+        Some(&book),
+        &["tb", "--period", "FY2026-P03", "--format", "yaml"],
+    );
+    assert_eq!(c_bad, 2, "{out_bad}\n{err_bad}");
+    assert!(
+        err_bad.contains("unknown output format `yaml`"),
+        "{out_bad}\n{err_bad}"
+    );
+
+    Ok(())
+}
+
