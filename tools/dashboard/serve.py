@@ -24,6 +24,7 @@ import webbrowser
 
 import reports
 import certificates
+import proof_lab
 
 ROOT = Path(__file__).resolve().parent
 MAX_OUTPUT = 16 * 1024 * 1024
@@ -44,6 +45,9 @@ STATIC = {
     "/proofs.html": ("proofs.html", "text/html; charset=utf-8"),
     "/proofs.mjs": ("proofs.mjs", "text/javascript; charset=utf-8"),
     "/proofs.css": ("proofs.css", "text/css; charset=utf-8"),
+    "/proof-lab.html": ("proof-lab.html", "text/html; charset=utf-8"),
+    "/proof-lab.mjs": ("proof-lab.mjs", "text/javascript; charset=utf-8"),
+    "/proof-lab.css": ("proof-lab.css", "text/css; charset=utf-8"),
 }
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; "
        "connect-src 'self'; img-src 'self' data:; font-src 'self'; "
@@ -370,7 +374,7 @@ class Handler(BaseHTTPRequestHandler):
             params = {key: val[0] for key, val in values.items()}
             allowed = {"/api/bootstrap": set(), "/api/overview": {"period", "known_at"},
                        "/api/account": {"account", "period", "known_at"}, "/api/entry": {"vid"},
-                       "/api/health": set(), "/api/projections": set(), **reports.ROUTES, **certificates.ROUTES}
+                       "/api/health": set(), "/api/projections": set(), **reports.ROUTES, **certificates.ROUTES, **proof_lab.ROUTES}
             if target.path not in allowed:
                 raise DashboardError("Not found.", 404)
             if set(params) - allowed[target.path]:
@@ -379,7 +383,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise DashboardError("Another native read is running. Try again after it completes.", 429)
             try:
                 source = self.server.source
-                if target.path in certificates.ROUTES:
+                if target.path in proof_lab.ROUTES:
+                    result = proof_lab.dispatch(source, target.path, params, DashboardError)
+                elif target.path in certificates.ROUTES:
                     result = certificates.dispatch(source, target.path, params, DashboardError)
                 elif target.path in reports.ROUTES:
                     result = reports.dispatch(source, target.path, params, DashboardError)

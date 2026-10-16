@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer"><title>FrankenAccounting · Proof lab</title>
+<link rel="icon" href="data:,"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/proofs.css"><link rel="stylesheet" href="/proof-lab.css">
+<script type="module" src="/proof-lab.mjs"></script></head>
+<body class="proof-page lab-page">
+<aside class="proof-rail">
+  <a class="proof-brand" href="/"><span class="proof-mark">f∴</span><span>franken<strong>ACCOUNTING</strong></span></a>
+  <a class="proof-back" href="/">← Ledger workbench</a>
+  <div class="proof-kicker">PORTABLE ACCOUNTING EVIDENCE</div>
+  <h1>Proof<br>lab.</h1>
+  <p>Inspect the checkpoint chain, select a recorded prefix, and export native proof bytes with the exact verification command beside them.</p>
+  <div class="proof-rail-note"><span class="status-dot"></span><span><strong>Read-only proof export</strong><small>No checkpoint creation. No journal write.</small></span></div>
+</aside>
+<main class="proof-main">
+  <header class="proof-topbar"><div><span class="eyebrow">TRANSPARENCY CHECKPOINTS & PORTABLE PROOFS</span><strong id="book-title">Local workspace</strong></div><div class="proof-top-actions"><a class="proof-link" href="/proofs.html">Certificate desk</a><span id="mode-chip" class="proof-chip">LOCAL</span><button id="theme" class="proof-icon" aria-label="Switch theme">◐</button></div></header>
+  <section id="demo-warning" class="proof-warning" hidden><strong>SYNTHETIC PREVIEW</strong><span>No native checkpoint or signature is being verified in demo mode.</span></section>
+  <section class="lab-hero"><div><span class="eyebrow">CHAIN FIRST · CLAIM SECOND</span><h2>Start from a recorded checkpoint.<br><em>Then ask for one exact proof.</em></h2><p>The chain tells you which prefix is anchored. The proof tells you one bounded claim about that prefix. Neither should be confused with a live balance table or a generic “trust score.”</p></div><button id="refresh-chain" class="lab-primary">Refresh checkpoint chain</button></section>
+  <div id="message" role="alert" hidden></div>
+  <section id="chain" class="proof-card"><div class="lab-loading">Reading the checkpoint chain…</div></section>
+  <section class="proof-card lab-builder">
+    <div class="lab-section-head"><div><span class="eyebrow">BUILD A PORTABLE CLAIM</span><h3>Export proof bytes</h3><p>Choose the proof kind and checkpoint. Inputs that do not apply to that kind disappear.</p></div><span class="proof-chip">NO BOOK WRITE</span></div>
+    <form id="proof-form" class="lab-form">
+      <label>Proof kind<select id="kind"><option value="signed-checkpoint">Signed checkpoint</option><option value="checkpoint">Raw checkpoint statement</option><option value="prefix">Prefix completeness</option><option value="inclusion">Entry inclusion</option><option value="balance">Account balance</option></select></label>
+      <label>Checkpoint<select id="state"><option value="latest">Latest recorded state</option></select></label>
+      <label id="entry-field" hidden>Entry handle<input id="entry" placeholder="32-hex entry vid or E:…"></label>
+      <label id="record-field" hidden class="lab-check"><input id="with-record" type="checkbox"> Include canonical entry record</label>
+      <label id="account-field" hidden>Account code<input id="account" placeholder="1000"></label>
+      <label id="unit-field" hidden>Native unit<input id="unit" placeholder="USD"></label>
+      <label id="date-field" hidden>Effective cutoff<input id="as-of" type="date"></label>
+      <button class="lab-primary">Export proof</button>
+    </form>
+  </section>
+  <section id="proof-result" hidden></section>
+  <footer class="proof-footer"><span>LOCAL OWNER WORKSPACE · PORTABLE BYTES ARE SENSITIVE</span><span>Use fa-verify outside this browser for independent verification</span></footer>
+</main>
+</body></html>
