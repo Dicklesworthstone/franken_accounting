@@ -1,0 +1,89 @@
+# TigerBeetle Semantic Conformance Corpus (`crates/fa-formats/corpora/tigerbeetle_semantics.toml`, plan §5.4 / §16.3, bead `fa-npi`).
+#
+# Replays two-phase transfer semantics (pending, post_pending, void_pending,
+# expire_pending, per-leg sub-vectors `debits_pending`, `debits_posted`,
+# `credits_pending`, `credits_posted`, and reserved availability limits) and
+# compares TigerBeetle's documented outcome and balance sub-vectors against
+# FrankenAccounting's two-phase reservation and escrow semantics.
+
+schema_version = 1
+
+[[scenario]]
+id = "tb_01_simple_post"
+description = "Immediate two-leg transfer increases debits_posted on debit account and credits_posted on credit account."
+divergence = "none"
+divergence_reason = "Exact agreement on immediate two-leg transfer."
+accounts = ["1000:USD:0", "2000:USD:0"]
+steps = ["post:T1:1000:2000:5000:day=10"]
+expected_outcomes = ["T1:committed"]
+expected_balances = ["1000:dp=0:dpost=5000:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=5000"]
+
+[[scenario]]
+id = "tb_02_pending_then_post_full"
+description = "Two-phase pending reservation followed by full capture moves amount from pending to posted sub-vectors."
+divergence = "none"
+divergence_reason = "Exact agreement on full two-phase capture."
+accounts = ["1000:USD:0", "2000:USD:0"]
+steps = ["pending:P1:1000:2000:8000:day=10:expiry=20", "capture:R1:P1:8000:day=12"]
+expected_outcomes = ["P1:committed", "R1:committed"]
+expected_balances = ["1000:dp=0:dpost=8000:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=8000"]
+
+[[scenario]]
+id = "tb_03_pending_then_post_partial"
+description = "Two-phase pending reservation followed by partial capture posts the captured amount and releases the remaining pending reservation."
+divergence = "none"
+divergence_reason = "Exact agreement on partial capture and remainder release."
+accounts = ["1000:USD:0", "2000:USD:0"]
+steps = ["pending:P1:1000:2000:10000:day=10:expiry=20", "capture:R1:P1:6500:day=12"]
+expected_outcomes = ["P1:committed", "R1:committed"]
+expected_balances = ["1000:dp=0:dpost=6500:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=6500"]
+
+[[scenario]]
+id = "tb_04_pending_then_void"
+description = "Two-phase pending reservation followed by explicit void releases pending sub-vectors with zero posted effect."
+divergence = "none"
+divergence_reason = "Exact agreement on explicit void of pending reservation."
+accounts = ["1000:USD:0", "2000:USD:0"]
+steps = ["pending:P1:1000:2000:4200:day=10:expiry=20", "void:V1:P1:day=15"]
+expected_outcomes = ["P1:committed", "V1:committed"]
+expected_balances = ["1000:dp=0:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=0"]
+
+[[scenario]]
+id = "tb_05_pending_then_expire"
+description = "Two-phase pending reservation expires at its expiry day, releasing pending sub-vectors."
+divergence = "documented_mechanism"
+divergence_reason = "Both release pending sub-vectors at expiry; FrankenAccounting journals an explicit ExpirySweep Resolution(Expires) control entry rather than mutating state by wall-clock timeout."
+accounts = ["1000:USD:0", "2000:USD:0"]
+steps = ["pending:P1:1000:2000:3000:day=10:expiry=20", "expire:X1:P1:day=20"]
+expected_outcomes = ["P1:committed", "X1:committed"]
+expected_balances = ["1000:dp=0:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=0"]
+
+[[scenario]]
+id = "tb_06_double_resolution_refused"
+description = "Attempting to capture or void an already-resolved pending reservation is refused (FA-REF-060 / TigerBeetle transfer_already_post_or_void)."
+divergence = "none"
+divergence_reason = "Exact agreement: a pending reservation has at most one resolution."
+accounts = ["1000:USD:0", "2000:USD:0"]
+steps = ["pending:P1:1000:2000:5000:day=10:expiry=20", "void:V1:P1:day=12", "capture:R2:P1:5000:day=13"]
+expected_outcomes = ["P1:committed", "V1:committed", "R2:refused_already_resolved"]
+expected_balances = ["1000:dp=0:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=0"]
+
+[[scenario]]
+id = "tb_07_reserved_availability_limit"
+description = "Pending debit reduces available credit capacity (`credits_posted - debits_posted - debits_pending`); a second transfer exceeding max_debit_net is refused."
+divergence = "none"
+divergence_reason = "Exact agreement on worst-case pending reservation against account limit (FA-INV-09)."
+accounts = ["1000:USD:10000", "2000:USD:0"]
+steps = ["pending:P1:1000:2000:7000:day=10:expiry=30", "post:T2:1000:2000:4000:day=11"]
+expected_outcomes = ["P1:committed", "T2:refused_exceeds_limit"]
+expected_balances = ["1000:dp=7000:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=7000:cpost=0"]
+
+[[scenario]]
+id = "tb_08_capture_exceeds_pending_refused"
+description = "Capturing more than the reserved pending amount is refused (FA-REF-060 / TigerBeetle exceeded_pending_transfer_amount)."
+divergence = "none"
+divergence_reason = "Exact agreement: capture amount cannot exceed reserved pending amount."
+accounts = ["1000:USD:0", "2000:USD:0"]
+steps = ["pending:P1:1000:2000:5000:day=10:expiry=30", "capture:R1:P1:5001:day=12"]
+expected_outcomes = ["P1:committed", "R1:refused_exceeds_pending"]
+expected_balances = ["1000:dp=5000:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=5000:cpost=0"]

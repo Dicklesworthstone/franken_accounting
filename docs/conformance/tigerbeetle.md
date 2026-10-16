@@ -1,0 +1,16 @@
+# TigerBeetle Two-Phase Semantic Conformance Matrix
+
+- **Oracle:** `tigerbeetle_corpus_v1`
+- **Proof Class:** `differential (semantic corpus)`
+- **No-Claim Boundary:** Proves semantic agreement on two-phase reservation, capture, void, expiry, and worst-case pending limit sub-vectors, not TigerBeetle transfer throughput.
+
+| Fixture | Expected | Observed | Divergence | Reason |
+|---|---|---|---|---|
+| `tb_01_simple_post` | `["T1:committed"]; ["1000:dp=0:dpost=5000:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=5000"]` | `["T1:committed"]; ["1000:dp=0:dpost=5000:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=5000"]` | `none` | Exact agreement on immediate two-leg transfer. |
+| `tb_02_pending_then_post_full` | `["P1:committed", "R1:committed"]; ["1000:dp=0:dpost=8000:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=8000"]` | `["P1:committed", "R1:committed"]; ["1000:dp=0:dpost=8000:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=8000"]` | `none` | Exact agreement on full two-phase capture. |
+| `tb_03_pending_then_post_partial` | `["P1:committed", "R1:committed"]; ["1000:dp=0:dpost=6500:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=6500"]` | `["P1:committed", "R1:committed"]; ["1000:dp=0:dpost=6500:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=6500"]` | `none` | Exact agreement on partial capture and remainder release. |
+| `tb_04_pending_then_void` | `["P1:committed", "V1:committed"]; ["1000:dp=0:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=0"]` | `["P1:committed", "V1:committed"]; ["1000:dp=0:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=0"]` | `none` | Exact agreement on explicit void of pending reservation. |
+| `tb_05_pending_then_expire` | `["P1:committed", "X1:committed"]; ["1000:dp=0:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=0"]` | `["P1:committed", "X1:committed"]; ["1000:dp=0:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=0"]` | `documented_mechanism` | Both release pending sub-vectors at expiry; FrankenAccounting journals an explicit ExpirySweep Resolution(Expires) control entry rather than mutating state by wall-clock timeout. |
+| `tb_06_double_resolution_refused` | `["P1:committed", "V1:committed", "R2:refused_already_resolved"]; ["1000:dp=0:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=0"]` | `["P1:committed", "V1:committed", "R2:refused_already_resolved"]; ["1000:dp=0:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=0"]` | `none` | Exact agreement: a pending reservation has at most one resolution. |
+| `tb_07_reserved_availability_limit` | `["P1:committed", "T2:refused_exceeds_limit"]; ["1000:dp=7000:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=7000:cpost=0"]` | `["P1:committed", "T2:refused_exceeds_limit"]; ["1000:dp=7000:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=7000:cpost=0"]` | `none` | Exact agreement on worst-case pending reservation against account limit (FA-INV-09). |
+| `tb_08_capture_exceeds_pending_refused` | `["P1:committed", "R1:refused_exceeds_pending"]; ["1000:dp=5000:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=5000:cpost=0"]` | `["P1:committed", "R1:refused_exceeds_pending"]; ["1000:dp=5000:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=5000:cpost=0"]` | `none` | Exact agreement: capture amount cannot exceed reserved pending amount. |

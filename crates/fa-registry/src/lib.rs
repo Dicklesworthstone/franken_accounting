@@ -28,8 +28,9 @@ pub mod topology;
 
 pub use admissibility_plan::{ALL_KINDS, DispositionFamily, PlanAdmissibility};
 pub use g0::{
-    ApplicationDifferenceKindRow, ConversionLawRow, ConversionLaws, FxLawRow, FxLaws, IfrsRuleRow,
-    IntradayOrderRow, LotLawRow, LotLaws, ReplenishmentModeRow, TracingLawRow, TracingLaws,
+    ApplicationDifferenceKindRow, ConversionLawRow, ConversionLaws, FormatRow, Formats, FxLawRow,
+    FxLaws, IfrsRuleRow, IntradayOrderRow, LotLawRow, LotLaws, ReplenishmentModeRow, TracingLawRow,
+    TracingLaws,
 };
 
 use core::fmt;

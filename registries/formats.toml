@@ -1,0 +1,165 @@
+# Interop & Conformance Formats Registry (`registries/formats.toml`, plan §9.5 / §16.3 / §18.1, bead `fa-npi`).
+#
+# Every external journal, audit data standard, regulatory filing, semantic
+# corpus, and bank statement format supported by `fa-formats` has a closed row
+# here. No float parsing is permitted in any format reader or writer; amounts
+# are exact fixed-scale `fa_money::Amount` integers at the unit's registered
+# scale.
+
+schema_version = 1
+
+[[format]]
+id = 1
+name = "beancount_v3"
+kind = "plain_text_journal"
+direction = "both"
+mime = "text/x-beancount"
+extension = "beancount"
+oracle_tool = "bean-check"
+round_trip_identity = false
+certified_coordinate = true
+plan_ref = "§16.3"
+summary = "Beancount v3 plain-text double-entry journal (open directives, dated transactions, multi-unit postings, balance assertions) used for external balance differential oracles."
+
+[[format]]
+id = 2
+name = "hledger_journal"
+kind = "plain_text_journal"
+direction = "both"
+mime = "text/x-hledger"
+extension = "hledger"
+oracle_tool = "hledger"
+round_trip_identity = false
+certified_coordinate = true
+plan_ref = "§16.3"
+summary = "hledger journal format with exact decimal postings and balance assertions (`= <amount> <unit>`) used for external balance differential oracles."
+
+[[format]]
+id = 3
+name = "ledger_cli_journal"
+kind = "plain_text_journal"
+direction = "export"
+mime = "text/x-ledger"
+extension = "ledger"
+oracle_tool = "ledger"
+round_trip_identity = false
+certified_coordinate = true
+plan_ref = "§16.3"
+summary = "Ledger-cli compatible journal export for external balance differential verification."
+
+[[format]]
+id = 4
+name = "tigerbeetle_corpus_v1"
+kind = "semantic_corpus"
+direction = "import"
+mime = "application/toml"
+extension = "toml"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = true
+plan_ref = "§16.3"
+summary = "TigerBeetle semantic scenario corpus (two-phase pending/post/void/expire transfers, per-leg sub-vectors, reserved availability limits, and documented N-leg divergences)."
+
+[[format]]
+id = 5
+name = "aicpa_ads_gl_v2"
+kind = "audit_data_standard"
+direction = "both"
+mime = "text/tab-separated-values"
+extension = "ads"
+oracle_tool = "none"
+round_trip_identity = true
+certified_coordinate = true
+plan_ref = "§8.6, §16.3"
+summary = "AICPA Audit Data Standards General Ledger package (Chart_of_Accounts, GL_Detail, Trial_Balance, plus coordinate certificate) with byte-identical export-import identity and FA-INV-04 refold proof."
+
+[[format]]
+id = 6
+name = "oecd_saft_v2"
+kind = "audit_data_standard"
+direction = "both"
+mime = "application/xml"
+extension = "xml"
+oracle_tool = "none"
+round_trip_identity = true
+certified_coordinate = true
+plan_ref = "§16.3"
+summary = "OECD SAF-T v2.0 XML audit file (Header, MasterFiles/GeneralLedgerAccounts, GeneralLedgerEntries) with byte-identical export-import identity and FA-INV-04 refold proof."
+
+[[format]]
+id = 7
+name = "xbrl_gl_instance_v1"
+kind = "regulatory_filing"
+direction = "export"
+mime = "application/xml"
+extension = "xbrl"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = true
+plan_ref = "§12.1, §16.3"
+summary = "XBRL instance and calculation-linkbase validation format for financial statements."
+
+[[format]]
+id = 8
+name = "csv_gl_v1"
+kind = "tabular_extract"
+direction = "both"
+mime = "text/csv"
+extension = "csv"
+oracle_tool = "none"
+round_trip_identity = true
+certified_coordinate = true
+plan_ref = "§8.6, §15.3"
+summary = "Canonical deterministic CSV General Ledger extract and import format with declared column map and coordinate certificate."
+
+[[format]]
+id = 9
+name = "ndjson_gl_stream_v1"
+kind = "tabular_extract"
+direction = "export"
+mime = "application/x-ndjson"
+extension = "ndjson"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = true
+plan_ref = "§15.9"
+summary = "Streaming NDJSON General Ledger detail extract (`fa gl detail --stream`) with header coordinate envelope, per-leg rows, and footer digest."
+
+[[format]]
+id = 10
+name = "iso20022_camt053"
+kind = "bank_statement"
+direction = "import"
+mime = "application/xml"
+extension = "xml"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§9.5"
+summary = "ISO 20022 camt.053 bank-to-customer statement XML parser into BankLine vertices with statement sequence and balance continuity checks."
+
+[[format]]
+id = 11
+name = "bai2_v2"
+kind = "bank_statement"
+direction = "import"
+mime = "text/x-bai2"
+extension = "bai2"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§9.5, §15.3"
+summary = "BAI2 cash-management bank statement parser (01/02/03/16/49/88/98/99 records) with control-total and opening/closing continuity validation."
+
+[[format]]
+id = 12
+name = "ofx_qbo_v2"
+kind = "bank_statement"
+direction = "import"
+mime = "application/x-ofx"
+extension = "qbo"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§9.5, §15.3"
+summary = "OFX / Intuit QBO v2 bank statement parser (`STMTTRN` records and `LEDGERBAL`) into deterministic BankLine extracts."

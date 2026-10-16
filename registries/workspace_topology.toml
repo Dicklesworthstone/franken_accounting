@@ -146,7 +146,8 @@ planned = false
 name = "fa-formats"
 layer = "interop"
 path = "crates/fa-formats"
-planned = true
+planned = false
+
 
 [[crate]]
 name = "fa-verbs"

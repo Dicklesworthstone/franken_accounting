@@ -2433,6 +2433,189 @@ impl FxLaws {
     }
 }
 
+// =============================================================================
+// 14. Interop & Conformance Formats (`registries/formats.toml`, bead `fa-npi`)
+// =============================================================================
+
+pub const FORMATS_TOML: &str = include_str!("../../../registries/formats.toml");
+
+const VALID_FORMAT_KINDS: &[&str] = &[
+    "plain_text_journal",
+    "semantic_corpus",
+    "audit_data_standard",
+    "regulatory_filing",
+    "tabular_extract",
+    "bank_statement",
+];
+
+const VALID_FORMAT_DIRECTIONS: &[&str] = &["import", "export", "both"];
+
+/// One format row from `registries/formats.toml`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormatRow {
+    pub id: u16,
+    pub name: String,
+    pub kind: String,
+    pub direction: String,
+    pub mime: String,
+    pub extension: String,
+    pub oracle_tool: String,
+    pub round_trip_identity: bool,
+    pub certified_coordinate: bool,
+    pub plan_ref: String,
+    pub summary: String,
+}
+
+/// The parsed `registries/formats.toml` registry (`fa-npi`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Formats {
+    pub schema_version: u32,
+    pub rows: Vec<FormatRow>,
+}
+
+impl Formats {
+    pub fn embedded() -> Result<Self, RegistryError> {
+        Self::parse(FORMATS_TOML)
+    }
+
+    pub fn parse(src: &str) -> Result<Self, RegistryError> {
+        const R: &str = "formats.toml";
+        let doc = load(R, src)?;
+        let schema_version = u32::try_from(req_int(R, &doc.root, "schema_version")?)
+            .map_err(|_| invalid(R, "schema_version out of u32 range"))?;
+        if schema_version != 1 {
+            return Err(invalid(
+                R,
+                format!("unsupported schema_version {schema_version}"),
+            ));
+        }
+
+        let mut seen_ids = BTreeSet::new();
+        let mut seen_names = BTreeSet::new();
+        let mut rows = Vec::new();
+        for sec in doc
+            .arrays
+            .get("format")
+            .ok_or_else(|| invalid(R, "missing [[format]]"))?
+        {
+            let id = u16::try_from(req_int(R, sec, "id")?)
+                .map_err(|_| invalid(R, "format id out of u16 range"))?;
+            let name = req_str(R, sec, "name")?.to_string();
+            let kind = req_str(R, sec, "kind")?.to_string();
+            let direction = req_str(R, sec, "direction")?.to_string();
+            let mime = req_str(R, sec, "mime")?.to_string();
+            let extension = req_str(R, sec, "extension")?.to_string();
+            let oracle_tool = req_str(R, sec, "oracle_tool")?.to_string();
+            let round_trip_identity = req_bool(R, sec, "round_trip_identity")?;
+            let certified_coordinate = req_bool(R, sec, "certified_coordinate")?;
+            let plan_ref = req_str(R, sec, "plan_ref")?.to_string();
+            let summary = req_str(R, sec, "summary")?.to_string();
+
+            if id == 0 || !seen_ids.insert(id) {
+                return Err(invalid(R, format!("duplicate or zero format id {id}")));
+            }
+            if name.trim().is_empty() || !seen_names.insert(name.clone()) {
+                return Err(invalid(
+                    R,
+                    format!("duplicate or empty format name {name:?}"),
+                ));
+            }
+            if !VALID_FORMAT_KINDS.contains(&kind.as_str()) {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "format {name:?} has unknown kind {kind:?} (expected one of {VALID_FORMAT_KINDS:?})"
+                    ),
+                ));
+            }
+            if !VALID_FORMAT_DIRECTIONS.contains(&direction.as_str()) {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "format {name:?} has unknown direction {direction:?} (expected one of {VALID_FORMAT_DIRECTIONS:?})"
+                    ),
+                ));
+            }
+            if round_trip_identity && direction != "both" {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "format {name:?} declares round_trip_identity = true but direction = {direction:?} (requires \"both\")"
+                    ),
+                ));
+            }
+            if kind == "audit_data_standard" && (!round_trip_identity || !certified_coordinate) {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "audit_data_standard format {name:?} must declare round_trip_identity = true and certified_coordinate = true"
+                    ),
+                ));
+            }
+            if mime.trim().is_empty()
+                || extension.trim().is_empty()
+                || oracle_tool.trim().is_empty()
+                || plan_ref.trim().is_empty()
+                || summary.trim().is_empty()
+            {
+                return Err(invalid(
+                    R,
+                    format!("format {name:?} has empty required string field"),
+                ));
+            }
+
+            rows.push(FormatRow {
+                id,
+                name,
+                kind,
+                direction,
+                mime,
+                extension,
+                oracle_tool,
+                round_trip_identity,
+                certified_coordinate,
+                plan_ref,
+                summary,
+            });
+        }
+
+        for required in [
+            "beancount_v3",
+            "hledger_journal",
+            "ledger_cli_journal",
+            "tigerbeetle_corpus_v1",
+            "aicpa_ads_gl_v2",
+            "oecd_saft_v2",
+            "xbrl_gl_instance_v1",
+            "csv_gl_v1",
+            "ndjson_gl_stream_v1",
+            "iso20022_camt053",
+            "bai2_v2",
+            "ofx_qbo_v2",
+        ] {
+            if !seen_names.contains(required) {
+                return Err(invalid(
+                    R,
+                    format!("missing required interop format {required:?}"),
+                ));
+            }
+        }
+
+        Ok(Self {
+            schema_version,
+            rows,
+        })
+    }
+
+    pub fn by_name(&self, name: &str) -> Option<&FormatRow> {
+        self.rows.iter().find(|r| r.name == name)
+    }
+
+    pub fn by_id(&self, id: u16) -> Option<&FormatRow> {
+        self.rows.iter().find(|r| r.id == id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2496,6 +2679,9 @@ mod tests {
         let fx_laws = FxLaws::embedded(&classes).expect("fx_laws.toml");
         assert_eq!(fx_laws.laws.len(), 4);
         assert_eq!(fx_laws.application_difference_kinds.len(), 5);
+
+        let formats = Formats::embedded().expect("formats.toml");
+        assert_eq!(formats.rows.len(), 12);
     }
 
     #[test]
@@ -2615,5 +2801,14 @@ mod tests {
         let err = FxLaws::parse(&bad_realized, &classes)
             .expect_err("RealizedFx without conversion account");
         assert!(err.to_string().contains("FA-INV-01.realized-fx"), "{err}");
+
+        // Planted negative 9 (fa-npi): audit_data_standard without round_trip_identity fails.
+        let bad_ads = FORMATS_TOML.replacen(
+            "name = \"aicpa_ads_gl_v2\"\nkind = \"audit_data_standard\"\ndirection = \"both\"\nmime = \"text/tab-separated-values\"\nextension = \"ads\"\noracle_tool = \"none\"\nround_trip_identity = true",
+            "name = \"aicpa_ads_gl_v2\"\nkind = \"audit_data_standard\"\ndirection = \"both\"\nmime = \"text/tab-separated-values\"\nextension = \"ads\"\noracle_tool = \"none\"\nround_trip_identity = false",
+            1,
+        );
+        let err = Formats::parse(&bad_ads).expect_err("ADS without round_trip_identity");
+        assert!(err.to_string().contains("round_trip_identity"), "{err}");
     }
 }

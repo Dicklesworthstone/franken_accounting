@@ -15,9 +15,9 @@ use fa_registry::document_stores::DocumentStores;
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::foundations::Ledger;
 use fa_registry::g0::{
-    CheckerIndex, ClaimsLintConfig, Constitution, ConversionLaws, EvidenceRegistry, FxLaws,
-    LotLaws, OperationCosts, PeriodStatesRegistry, ProofLanes, RelationshipBases, SloRegistry,
-    SupersessionKinds, TracingLaws,
+    CheckerIndex, ClaimsLintConfig, Constitution, ConversionLaws, EvidenceRegistry, Formats,
+    FxLaws, LotLaws, OperationCosts, PeriodStatesRegistry, ProofLanes, RelationshipBases,
+    SloRegistry, SupersessionKinds, TracingLaws,
 };
 use fa_registry::intake_sources::IntakeSources;
 use fa_registry::invariants::Invariants;
@@ -100,6 +100,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "evidence.toml",
     "evidence_policy.toml",
     "exit_codes.toml",
+    "formats.toml",
     "foundation_dependencies.toml",
     "fx_laws.toml",
     "intake_sources.toml",
@@ -675,6 +676,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let _tracing_laws =
         TracingLaws::parse(&read("tracing_laws.toml")?, &procedures).map_err(|e| e.to_string())?;
     let _fx_laws = FxLaws::parse(&read("fx_laws.toml")?, &classes).map_err(|e| e.to_string())?;
+    let _formats = Formats::parse(&read("formats.toml")?).map_err(|e| e.to_string())?;
     let claims_config =
         ClaimsLintConfig::parse(&read("claims_lint.toml")?).map_err(|e| e.to_string())?;
 
