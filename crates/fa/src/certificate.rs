@@ -1246,12 +1246,15 @@ fn statement_chart_additions<V: Vfs + Clone>(
         {
             continue;
         }
-        let Some(ControlPayload::SchemaChange {
-            kind: 1,
-            canonical_bytes,
-        }) = &entry.proposal.control
-        else {
-            return Ok(Err(invalid("chart install lacks its recorded chart body")));
+        let canonical_bytes = match &entry.proposal.control {
+            Some(ControlPayload::SchemaChange {
+                kind: 1,
+                canonical_bytes,
+            }) => canonical_bytes,
+            Some(ControlPayload::SchemaChange { kind: 2..=10, .. }) => continue,
+            _ => {
+                return Ok(Err(invalid("chart install lacks its recorded chart body")));
+            }
         };
         let declared =
             match statement_chart_accounts(canonical_bytes, book.book_id, leaf.envelope.commit_seq)

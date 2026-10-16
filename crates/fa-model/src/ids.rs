@@ -243,6 +243,31 @@ pub fn entity_value_vid(book: Id128, code: &str) -> VId {
     dimension_value_vid(book, LEGAL_ENTITY_DIMENSION_CODE, code)
 }
 
+/// The dimension id of a book's party dimension (plan §4.1 `Dimension` /
+/// `Party`, bead `fa-l2h`): non-balancing counterparty dimension (`label::PARTY` = 12).
+pub const PARTY_DIMENSION: u32 = 12;
+
+/// The code of a book's party dimension.
+pub const PARTY_DIMENSION_CODE: &str = "party";
+
+/// `vid(Party) = H("fa:vid:party:v1" ‖ book_id ‖ code)` (plan §4.5, §4.9).
+#[must_use]
+pub fn party_vid(book: Id128, code: &str) -> VId {
+    derive_vid(b"fa:vid:party:v1", &[&book.0, code.as_bytes()])
+}
+
+/// The `dimension_set` value of party `code` in `book`.
+#[must_use]
+pub fn party_value_vid(book: Id128, code: &str) -> VId {
+    dimension_value_vid(book, PARTY_DIMENSION_CODE, code)
+}
+
+/// `vid(Instrument) = H("fa:vid:instrument:v1" ‖ book_id ‖ code)` (plan §4.5, §4.9).
+#[must_use]
+pub fn instrument_vid(book: Id128, code: &str) -> VId {
+    derive_vid(b"fa:vid:instrument:v1", &[&book.0, code.as_bytes()])
+}
+
 /// `vid(Principal) = H("fa:vid:principal:v1" ‖ name)`: the identity a
 /// named operator or agent posts under until Steward issues principals.
 #[must_use]

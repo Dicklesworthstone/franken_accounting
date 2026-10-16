@@ -282,6 +282,14 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
                     promotion_date,
                 }
             }
+            Some(ControlPayload::SchemaChange {
+                kind,
+                canonical_bytes,
+            }) if fa_model::ReaControlOp::is_rea_schema_change_kind(*kind) => {
+                fa_model::ReaControlOp::decode(*kind, canonical_bytes)
+                    .map_err(|error| corrupt(format!("control {:032x}: {error}", row.vid.0)))?;
+                continue;
+            }
             _ => {
                 return Err(corrupt(
                     "unsupported schema change; its chart effect must be implemented before reporting",
@@ -772,7 +780,7 @@ pub struct AccountLifecycleRecorded {
     pub already_recorded: bool,
 }
 
-fn admit_schema_change<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn admit_schema_change<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     principal_ref: VId,
@@ -798,7 +806,7 @@ fn admit_schema_change<V: asupersync::fs::Vfs + Clone>(
     Ok(None)
 }
 
-fn schema_control_proposal(
+pub(crate) fn schema_control_proposal(
     book: &BookContext,
     kind: u16,
     canonical_bytes: Vec<u8>,

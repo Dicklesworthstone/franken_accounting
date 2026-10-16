@@ -36,6 +36,7 @@ pub mod plan;
 pub mod policy;
 pub mod post;
 pub mod projections;
+pub mod rea;
 pub mod redaction;
 pub mod refusal;
 pub mod rows;
@@ -103,6 +104,12 @@ pub use policy::{
 pub use post::{
     Capability, PostPreparation, PostRequest, Posted, PreparedPost, decide_admissibility_cell,
     explain_entry_lineage, post, post_replacement_pair, prepare_post, superseded_by,
+};
+pub use rea::{
+    DIMENSION_KIND_PARTY, ExternalIdRow, InstrumentRow, LegalEntityRow, PartyRow,
+    ReaControlRecorded, ReaSnapshot, RelatedPartyHit, RelationshipRow, bind_external_id,
+    create_instrument, create_legal_entity, create_party, read_rea_at, record_relationship,
+    relationship_edge_id, update_party_identifiers,
 };
 pub use redaction::{
     DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,

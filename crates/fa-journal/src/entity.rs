@@ -55,7 +55,7 @@ pub(crate) fn leg_entities(
         if leg
             .dimension_set
             .iter()
-            .any(|(d, _)| *d != LEGAL_ENTITY_DIMENSION)
+            .any(|(d, _)| *d != LEGAL_ENTITY_DIMENSION && *d != fa_model::PARTY_DIMENSION)
         {
             return Err(LegEntityError::OtherDimension);
         }

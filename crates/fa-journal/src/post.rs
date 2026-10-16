@@ -1719,6 +1719,28 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 ),
             )));
         }
+        for (dim_id, dim_val_vid) in &leg.dimension_set {
+            if *dim_id == fa_model::PARTY_DIMENSION {
+                let valid_party_dim = txn.vertex(db, *dim_val_vid)?.is_some_and(|drow| {
+                    drow.labels.contains(&label::DIMENSION_VALUE)
+                        && prop(&drow, property::DIMENSION_ID)
+                            == Some(&CanonicalScalar::Int(i64::from(fa_model::PARTY_DIMENSION)))
+                });
+                if !valid_party_dim {
+                    txn.abort();
+                    return Ok(Err(Refusal::new(
+                        code::STRUCTURE,
+                        exit::USAGE,
+                        format!(
+                            "leg {i} names party dimension value {:032x}, which does not exist in this book",
+                            dim_val_vid.0
+                        ),
+                        "plan §4.1, §4.5 (Party dimension values are bound to created Party vertices)",
+                        "create the Party first (`fa party create`) or use party_value_vid(book_id, party_code)",
+                    )));
+                }
+            }
+        }
         accounts.push(account);
     }
     if accounts
