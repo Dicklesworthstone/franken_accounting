@@ -37,8 +37,8 @@ use fa_lantern::digits::FirstDigit;
 use fa_lantern::graph::RoundTrips;
 use fa_lantern::jet::RoundAmounts;
 use fa_model::{
-    Disposition, EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid, Pending,
-    account_vid, domain_digest, principal_vid,
+    ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid,
+    Pending, account_vid, domain_digest, principal_vid,
 };
 use fa_money::{Amount, Side, UnitRegistry};
 use fa_registry::g0::{OperationCosts, SloRegistry};
@@ -756,7 +756,7 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                     .map_err(|e| BenchError::Execution(e.to_string()))?,
                 effective_period: None,
                 legs: Vec::new(),
-                control: None,
+                control: Some(ControlPayload::ReservationRelease),
                 unit_totals: Vec::new(),
                 base_totals: None,
                 idempotency_key: b"bench:witness:resolve".to_vec(),
