@@ -74,8 +74,8 @@ pub use limit::{
 };
 pub use migration::{
     PeriodBalance, Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode, RunState,
-    TieOut, TieOutLine, TrialBalanceLine, open_proposal, open_run, plan_run_transition, tie_out,
-    transition_run, visible_at,
+    TieOut, TieOutLine, TrialBalanceLine, open_proposal, open_run, plan_run_transition,
+    run_entries, tie_out, transition_run, visible_at,
 };
 pub use period::{
     PeriodCheck, PeriodTransitionRecord, PeriodVerification, PreparedTransition, TransitionPlan,

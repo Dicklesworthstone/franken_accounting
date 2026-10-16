@@ -2349,6 +2349,16 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     }
     let mut batches = vec![has_leg, in_period];
     batches.extend(leg_edges);
+    if let Some(run_vid) = migration_run {
+        let mut in_run = WriteBatch::new(relation::IN_MIGRATION_RUN);
+        in_run.add_edge(
+            edge_id(relation::IN_MIGRATION_RUN, evid, run_vid),
+            evid,
+            run_vid,
+            vec![],
+        );
+        batches.push(in_run);
+    }
     if let Some(target) = reversal_target {
         let mut supersedes = WriteBatch::new(relation::SUPERSEDES);
         supersedes.add_edge(

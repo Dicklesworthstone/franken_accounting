@@ -477,6 +477,58 @@ pub fn read_run<V: asupersync::fs::Vfs + Clone>(
     row.as_ref().map(run_from_row).transpose()
 }
 
+/// Every entry linked by edge into `run_vid` as of `at` (head when `None`),
+/// ascending by `(recorded_at, vid)` (`fa-yyl3`).
+///
+/// New books write [`relation::IN_MIGRATION_RUN`] (`Entry → MigrationRun`) so
+/// [`relation::CONTROLS`] stays reserved for `Subledger → Account` and
+/// entity/party control. To read older books without rewriting append-only
+/// history, this versioned reader also accepts legacy [`relation::CONTROLS`]
+/// edges whose target is a `MigrationRun` and whose source is an `Entry`
+/// carrying migration provenance or a `MigrationControl` payload for `run_vid`.
+pub fn run_entries<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    run_vid: VId,
+    at: Option<CommitSeq>,
+) -> Result<Vec<VId>, KernelError> {
+    let seq = match at {
+        Some(s) => s,
+        None => db.frontier()?,
+    };
+    let mut found: Vec<(CommitSeq, VId)> = Vec::new();
+    for edge in db.edges_at(seq)? {
+        let e = &edge.entry;
+        if e.dst != run_vid || !edge.props.is_empty() {
+            continue;
+        }
+        let valid_rel = (e.relation == relation::IN_MIGRATION_RUN
+            && e.eid == edge_id(relation::IN_MIGRATION_RUN, e.src, run_vid))
+            || (e.relation == relation::CONTROLS
+                && e.eid == edge_id(relation::CONTROLS, e.src, run_vid));
+        if !valid_rel {
+            continue;
+        }
+        let Some(row) = db.vertex_at(e.src, seq)? else {
+            continue;
+        };
+        if !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
+        let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry._fa_payload")?)?;
+        let belongs = matches!(
+            (&entry.proposal.origin, &entry.proposal.control),
+            (EntryOrigin::Migration { run_ref, .. }, _)
+                | (_, Some(ControlPayload::MigrationControl { run_ref, .. }))
+                if *run_ref == run_vid
+        );
+        if belongs && !found.iter().any(|(_, v)| *v == e.src) {
+            found.push((row.created_at, e.src));
+        }
+    }
+    found.sort_by_key(|(seq, vid)| (*seq, vid.0));
+    Ok(found.into_iter().map(|(_, vid)| vid).collect())
+}
+
 /// What [`visible_at`] needs of one run at one sequence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunVisibility {
@@ -1142,7 +1194,7 @@ pub struct RunControlled {
 }
 
 /// Open a run: one commit journaling the `Open` record, the run vertex with
-/// its immutable body and `state = Open`, the `CONTROLS` edge, and the
+/// its immutable body and `state = Open`, the `IN_MIGRATION_RUN` edge, and the
 /// record's citation of the trial balance document.
 pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
@@ -1240,16 +1292,16 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
         (property::STATE, RunState::Open.scalar()),
     ];
     props.sort_by_key(|(k, _)| k.0);
-    let mut controls = WriteBatch::new(relation::CONTROLS);
-    controls.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
-    controls.create_vertex(run_vid, vec![label::MIGRATION_RUN], props);
-    controls.add_edge(
-        edge_id(relation::CONTROLS, evid, run_vid),
+    let mut in_run = WriteBatch::new(relation::IN_MIGRATION_RUN);
+    in_run.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_run.create_vertex(run_vid, vec![label::MIGRATION_RUN], props);
+    in_run.add_edge(
+        edge_id(relation::IN_MIGRATION_RUN, evid, run_vid),
         evid,
         run_vid,
         vec![],
     );
-    let mut batches = vec![controls];
+    let mut batches = vec![in_run];
     let cited: Vec<VId> = documents.iter().map(|d| d.vid).collect();
     if let Some(edges) = evidenced_by(evid, &cited) {
         batches.push(edges);
@@ -1384,22 +1436,22 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         RunState::Abandoned
     };
     let entry = proposal.clone().seal(req.approvals.clone(), None)?;
-    let mut controls = WriteBatch::new(relation::CONTROLS);
-    controls.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
-    controls.compare_and_set_vertex_property(
+    let mut in_run = WriteBatch::new(relation::IN_MIGRATION_RUN);
+    in_run.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_run.compare_and_set_vertex_property(
         run_vid,
         property::STATE,
         Some(RunState::Open.scalar()),
         to.scalar(),
         WriteMismatchPolicy::AbortWrite,
     );
-    controls.add_edge(
-        edge_id(relation::CONTROLS, evid, run_vid),
+    in_run.add_edge(
+        edge_id(relation::IN_MIGRATION_RUN, evid, run_vid),
         evid,
         run_vid,
         vec![],
     );
-    txn.write(db, controls)?;
+    txn.write(db, in_run)?;
     if db.frontier()? != basis {
         return Err(KernelError::Corrupt(
             "the head moved under an exclusive handle between the run's fold and its commit".into(),

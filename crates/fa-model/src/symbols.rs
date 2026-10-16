@@ -175,6 +175,7 @@ symbols!(
         (REDACTS, "REDACTS", 33),
         (HOLDS, "HOLDS", 34),
         (CHECKPOINTS, "CHECKPOINTS", 35),
+        (IN_MIGRATION_RUN, "IN_MIGRATION_RUN", 36),
     ]
 );
 

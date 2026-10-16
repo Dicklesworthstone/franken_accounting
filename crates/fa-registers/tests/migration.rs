@@ -1284,7 +1284,7 @@ fn activation_is_all_or_nothing_across_crash_points() {
     let purposes = k.ctx();
     let txn_cx = purposes.txn();
     let mut doomed = k.db.begin(&txn_cx).expect("begin");
-    let mut write = WriteBatch::new(fa_model::symbols::relation::CONTROLS);
+    let mut write = WriteBatch::new(fa_model::symbols::relation::IN_MIGRATION_RUN);
     write.compare_and_set_vertex_property(
         run,
         fa_model::symbols::property::STATE,
@@ -3615,4 +3615,82 @@ fn migrated_legs_are_open_items_once_their_run_finalizes_and_their_chunk_counts(
             .expect("verify")
             .is_green()
     );
+}
+
+#[test]
+fn entry_to_migration_run_uses_in_migration_run_and_reads_legacy_controls() {
+    let (mut k, _) = setup();
+    let mut rng = Rng(0x00FA_7713);
+    let (spec, chunks) = plan_run(&mut rng, "in-migration-run-edge");
+    let opened = kernel_open(&mut k, &spec, "open-edge", &["post", "migrate"]).expect("opens");
+    let run = opened.run;
+    let mut expected_vids = vec![opened.control_entry];
+    for (i, legs) in chunks.iter().enumerate() {
+        let key = format!("edge-chunk-{i}");
+        let posted = post_chunk(&mut k, run, &key, legs.clone());
+        expected_vids.push(posted.entry_ref().vid);
+    }
+    let before_finalize = k.db.frontier().unwrap();
+    let fin_plan = kernel_plan(&k, run, kind::FINALIZE, "fin-edge").expect("ties out");
+    let finalized = kernel_transition(&mut k, fin_plan, true).expect("finalized");
+    expected_vids.push(finalized.control_entry);
+
+    let head = k.db.frontier().unwrap();
+    let incoming: Vec<_> =
+        k.db.edges_at(head)
+            .expect("edges_at")
+            .into_iter()
+            .filter(|e| e.entry.dst == run)
+            .collect();
+    assert!(
+        incoming
+            .iter()
+            .all(|e| e.entry.relation != fa_model::symbols::relation::CONTROLS),
+        "new books write zero CONTROLS edges into MigrationRun"
+    );
+    let in_run_edges: Vec<_> = incoming
+        .iter()
+        .filter(|e| e.entry.relation == fa_model::symbols::relation::IN_MIGRATION_RUN)
+        .collect();
+    assert_eq!(in_run_edges.len(), expected_vids.len());
+
+    let vids_now = fa_journal::run_entries(&k.db, run, None).expect("run_entries at head");
+    assert_eq!(vids_now, expected_vids);
+
+    let vids_before = fa_journal::run_entries(&k.db, run, Some(before_finalize))
+        .expect("run_entries before finalize");
+    assert_eq!(
+        vids_before,
+        expected_vids[..expected_vids.len() - 1],
+        "known-at filter excludes the later finalize control"
+    );
+
+    // Old-format fixture: replace IN_MIGRATION_RUN edges into `run` with legacy
+    // CONTROLS edges (simulating a book written before fa-yyl3) and verify the
+    // versioned readers still resolve every run entry, tie-out, and fold.
+    let mut retire = WriteBatch::new(fa_model::symbols::relation::IN_MIGRATION_RUN);
+    for edge in &in_run_edges {
+        retire.delete_edge(edge.entry.eid);
+    }
+    write_raw(&mut k, retire);
+    let mut legacy = WriteBatch::new(fa_model::symbols::relation::CONTROLS);
+    for &src in &expected_vids {
+        let eid = fa_journal::rows::edge_id(fa_model::symbols::relation::CONTROLS, src, run);
+        legacy.add_edge(eid, src, run, Vec::new());
+    }
+    write_raw(&mut k, legacy);
+
+    let legacy_vids =
+        fa_journal::run_entries(&k.db, run, None).expect("legacy CONTROLS run_entries");
+    assert_eq!(
+        legacy_vids, expected_vids,
+        "versioned reader accepts legacy CONTROLS edges on old-format books"
+    );
+    let run_record = read_run(&k.db, run, None)
+        .expect("read_run")
+        .expect("run exists");
+    assert_eq!(run_record.state, RunState::Finalized);
+    let tie = tie_out(&k.db, &k.book, &run_record, k.db.frontier().unwrap()).expect("tie_out");
+    assert!(tie.mismatches.is_empty());
+    assert_eq!(opening_net(&k, None), declared(&spec));
 }

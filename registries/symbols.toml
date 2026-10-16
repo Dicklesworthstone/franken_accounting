@@ -438,3 +438,10 @@ name = "HOLDS"
 [[relation]]
 id = 35
 name = "CHECKPOINTS"
+
+# fa-yyl3: an Entry (MigrationControl or Migration chunk) -> its MigrationRun.
+# Replaces the legacy CONTROLS edge on MigrationRun so CONTROLS is reserved for
+# Subledger -> Account and LegalEntity|Party -> LegalEntity|Party control.
+[[relation]]
+id = 36
+name = "IN_MIGRATION_RUN"
