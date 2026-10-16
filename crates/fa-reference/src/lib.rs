@@ -26,6 +26,7 @@ pub mod evidence;
 pub mod fx;
 pub mod lantern;
 pub mod lots;
+pub mod reconciliation;
 pub mod reports;
 pub mod sod;
 pub mod statements;

@@ -343,10 +343,15 @@ pub struct DecisionCard {
     pub reason: DecisionReason,
 }
 
-/// Error returned when a replayed decision card drifts from its recorded bytes.
+/// Error returned when a replayed decision card drifts from its recorded bytes
+/// or lacks its registered pinned fallback.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecisionReplayError {
     Encode(EncodeError),
+    FallbackMissingOrInvalid {
+        expected_action: &'static str,
+        actual_action: String,
+    },
     Drift {
         recorded_digest: [u8; 32],
         replayed_digest: [u8; 32],
@@ -357,6 +362,13 @@ impl fmt::Display for DecisionReplayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Encode(e) => write!(f, "decision card encoding error: {e}"),
+            Self::FallbackMissingOrInvalid {
+                expected_action,
+                actual_action,
+            } => write!(
+                f,
+                "decision card fallback invalid: expected pinned fallback {expected_action:?}, got {actual_action:?}"
+            ),
             Self::Drift {
                 recorded_digest,
                 replayed_digest,
@@ -379,6 +391,19 @@ impl From<EncodeError> for DecisionReplayError {
 }
 
 impl DecisionCard {
+    /// Validate that the card carries the registered pinned deterministic fallback
+    /// for its [`DecisionKind`] (refuses registration of a card whose fallback was removed or altered).
+    pub fn validate_fallback(&self) -> Result<(), DecisionReplayError> {
+        let row = DecisionPolicyRow::for_kind(self.decision_kind);
+        let expected = row.fallback_candidate();
+        if self.fallback != expected {
+            return Err(DecisionReplayError::FallbackMissingOrInvalid {
+                expected_action: row.pinned_fallback_action,
+                actual_action: self.fallback.action.clone(),
+            });
+        }
+        Ok(())
+    }
     /// Canonical binary encoding (`FADC` v1).
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
         let mut w = Writer::new();
@@ -444,6 +469,7 @@ impl DecisionCard {
         &self,
         enforced_policy_epoch: [u8; 32],
     ) -> Result<[u8; 32], DecisionReplayError> {
+        self.validate_fallback()?;
         let replayed = evaluate_decision(
             self.policy_epoch,
             enforced_policy_epoch,
@@ -740,6 +766,32 @@ pub fn decide_lantern_threshold(
         candidates,
         features,
         interval,
+    )
+}
+
+/// Consumer 3: Bank / subledger / three-way reconciliation match decision card
+/// (plan §15.9, §12.5; bead `fa-2ek`).
+///
+/// Emits a replayable [`DecisionCard`] for [`DecisionKind::BankMatchHeuristic`]
+/// over `subject_digest`, candidate entry ordinals (`parameter`), analytic and
+/// advisory features, and the expected-benefit interval.
+#[must_use]
+pub fn decide_bank_match(
+    policy_epoch: Option<[u8; 32]>,
+    enforced_policy_epoch: [u8; 32],
+    subject_digest: [u8; 32],
+    candidates: Vec<DecisionCandidate>,
+    features: Vec<DecisionFeature>,
+    expected_benefit_interval: BenefitInterval,
+) -> DecisionCard {
+    evaluate_decision(
+        policy_epoch,
+        enforced_policy_epoch,
+        DecisionKind::BankMatchHeuristic,
+        subject_digest.to_vec(),
+        candidates,
+        features,
+        expected_benefit_interval,
     )
 }
 

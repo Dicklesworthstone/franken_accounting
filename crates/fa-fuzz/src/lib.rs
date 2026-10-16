@@ -530,8 +530,9 @@ pub fn fuzz_chart_import_json(bytes: &[u8]) {
     }
 }
 
-/// Target 8 (`fa-qm4t`): Legacy GL export readers (QuickBooks IIF/CSV, Xero CSV,
-/// NetSuite CSV, Generic GL CSV) and `LegacyColumnMap` parser on arbitrary bytes.
+/// Target 8 (`fa-qm4t`, `fa-2ek`): Legacy GL export readers (QuickBooks IIF/CSV, Xero CSV,
+/// NetSuite CSV, Generic GL CSV), `LegacyColumnMap` parser, and bank statement parsers
+/// (ISO 20022 `camt.053`/`camt.052`, BAI2, OFX/QBO, CSV, SWIFT MT940) on arbitrary bytes.
 pub fn fuzz_legacy_gl_formats(bytes: &[u8]) {
     let text = String::from_utf8_lossy(bytes);
     let _ = fa_formats::legacy::LegacyColumnMap::parse_toml(&text);
@@ -543,6 +544,12 @@ pub fn fuzz_legacy_gl_formats(bytes: &[u8]) {
         let _ = fa_formats::legacy::parse_quickbooks_csv(&text, &units, &map, "USD");
         let _ = fa_formats::legacy::parse_xero_csv(&text, &units, &map, "USD");
         let _ = fa_formats::legacy::parse_netsuite_csv(&text, &units, &map, "USD");
+        let _ = fa_formats::bank::parse_camt053(&text, &units);
+        let _ = fa_formats::bank::parse_camt052(&text, &units);
+        let _ = fa_formats::bank::parse_bai2(&text, &units);
+        let _ = fa_formats::bank::parse_ofx_qbo(&text, &units);
+        let _ = fa_formats::bank::parse_bank_csv(&text, &units);
+        let _ = fa_formats::bank::parse_mt940(&text, &units);
     }
 }
 

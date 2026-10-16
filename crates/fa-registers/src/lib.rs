@@ -20,6 +20,7 @@ pub mod fx;
 pub mod lots;
 pub mod maintainer;
 pub mod open_items;
+pub mod reconciliation;
 pub mod replay;
 mod report;
 
@@ -66,6 +67,15 @@ pub use maintainer::{
 };
 pub use open_items::{
     Application, AppliedDrift, OpenItem, OpenItemVerification, open_items, verify_open_items,
+};
+pub use reconciliation::{
+    BANK_LINE_DOC_DOMAIN, BankStatementLine, BookCandidateEntry, MatcherConfig, PurchaseOrderLine,
+    RECON_FOLD_DOMAIN, RECON_MATCH_DOMAIN, ReceivingReportLine, ReconciliationError,
+    ReconciliationMatch, ReconciliationRegister, ResidualExplanation, ThreeWayMatchResult,
+    ThreeWayMatchVerdict, UnpostedResidualFinding, VendorInvoiceLine,
+    check_reconciled_through_lock, fold_reconciliation_register, match_bank_lines, match_three_way,
+    normalize_counterparty, normalize_reference, verify_match_preserves_committed_amounts,
+    verify_reconciliation_register,
 };
 
 pub const FOLD_DIGEST_DOMAIN: &[u8] = b"fa:register-fold:v2";
