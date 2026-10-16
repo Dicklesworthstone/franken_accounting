@@ -31,6 +31,7 @@ const LOT_LAWS_TOML: &str = include_str!("../../../registries/lot_laws.toml");
 const CONVERSION_LAWS_TOML: &str = include_str!("../../../registries/conversion_laws.toml");
 const SUPERSESSION_KINDS_TOML: &str = include_str!("../../../registries/supersession_kinds.toml");
 const TRACING_LAWS_TOML: &str = include_str!("../../../registries/tracing_laws.toml");
+const FX_LAWS_TOML: &str = include_str!("../../../registries/fx_laws.toml");
 
 fn req_bool(registry: &'static str, t: &Table, key: &str) -> Result<bool, RegistryError> {
     t.get(key)
@@ -2137,6 +2138,301 @@ impl TracingLaws {
     }
 }
 
+// ---------------------------------------------------------------------------
+// fx_laws.toml (plan §5.2, §5.7, §6.4; FA-INV-01, FA-INV-04; bead fa-s3c)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FxLawRow {
+    pub id: u16,
+    pub version: u16,
+    pub code: String,
+    pub name: String,
+    pub rate_purpose: String,
+    pub date_selector: String,
+    pub rounding_law: String,
+    pub residual_mode: String,
+    pub admitted_classes: Vec<String>,
+    pub status: String,
+    pub standard_ref: String,
+    pub meaning: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplicationDifferenceKindRow {
+    pub tag: u8,
+    pub name: String,
+    pub requires_conversion_account: bool,
+    pub status: String,
+    pub meaning: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FxLaws {
+    pub ad_hoc_rate_admission: String,
+    pub residual_bound_law: String,
+    pub realized_fx_mode: String,
+    pub laws: Vec<FxLawRow>,
+    pub application_difference_kinds: Vec<ApplicationDifferenceKindRow>,
+}
+
+impl FxLaws {
+    pub fn embedded(classes: &crate::EntryClasses) -> Result<Self, RegistryError> {
+        Self::parse(FX_LAWS_TOML, classes)
+    }
+
+    pub fn parse(text: &str, classes: &crate::EntryClasses) -> Result<Self, RegistryError> {
+        const R: &str = "fx_laws.toml";
+        let doc = load(R, text)?;
+        if req_int(R, &doc.root, "schema_version")? != 1 {
+            return Err(invalid(R, "schema_version must be 1"));
+        }
+        let ad_hoc_rate_admission = req_str(R, &doc.root, "ad_hoc_rate_admission")?.to_string();
+        if ad_hoc_rate_admission != "forbidden" {
+            return Err(invalid(
+                R,
+                format!("ad_hoc_rate_admission must be `forbidden`, got `{ad_hoc_rate_admission}`"),
+            ));
+        }
+        let residual_bound_law = req_str(R, &doc.root, "residual_bound_law")?.to_string();
+        if residual_bound_law != "strictly_less_than_one_base_minor_unit_times_foreign_leg_count" {
+            return Err(invalid(
+                R,
+                format!("invalid residual_bound_law `{residual_bound_law}`"),
+            ));
+        }
+        let realized_fx_mode = req_str(R, &doc.root, "realized_fx_mode")?.to_string();
+        if realized_fx_mode != "paired_conversion_account" {
+            return Err(invalid(
+                R,
+                format!(
+                    "realized_fx_mode must be `paired_conversion_account`, got `{realized_fx_mode}`"
+                ),
+            ));
+        }
+
+        let valid_rounding = [
+            "HalfEven",
+            "HalfUp",
+            "HalfDown",
+            "HalfAwayFromZero",
+            "Floor",
+            "Ceiling",
+            "Truncate",
+        ];
+
+        let mut laws = Vec::new();
+        let mut seen_ids = BTreeSet::new();
+        let mut seen_codes = BTreeSet::new();
+        let mut seen_names = BTreeSet::new();
+        for t in doc
+            .arrays
+            .get("law")
+            .ok_or_else(|| invalid(R, "missing [[law]]"))?
+        {
+            let id = u16::try_from(req_int(R, t, "id")?)
+                .map_err(|_| invalid(R, "law id out of u16 range"))?;
+            let version = u16::try_from(req_int(R, t, "version")?)
+                .map_err(|_| invalid(R, "law version out of u16 range"))?;
+            if id == 0 || version == 0 {
+                return Err(invalid(R, "law id and version must be positive"));
+            }
+            let code = req_str(R, t, "code")?.to_string();
+            let name = req_str(R, t, "name")?.to_string();
+            let rate_purpose = req_str(R, t, "rate_purpose")?.to_string();
+            let date_selector = req_str(R, t, "date_selector")?.to_string();
+            let rounding_law = req_str(R, t, "rounding_law")?.to_string();
+            let residual_mode = req_str(R, t, "residual_mode")?.to_string();
+            let admitted_classes = req_str_vec(R, t, "admitted_classes")?;
+            let status = req_str(R, t, "status")?.to_string();
+            let standard_ref = req_str(R, t, "standard_ref")?.to_string();
+            let meaning = req_str(R, t, "meaning")?.to_string();
+
+            if !seen_ids.insert(id) {
+                return Err(invalid(R, format!("duplicate law id `{id}`")));
+            }
+            if !seen_codes.insert(code.clone()) {
+                return Err(invalid(R, format!("duplicate law code `{code}`")));
+            }
+            if !seen_names.insert(name.clone()) {
+                return Err(invalid(R, format!("duplicate law name `{name}`")));
+            }
+            if !matches!(
+                rate_purpose.as_str(),
+                "SpotClose" | "PeriodClose" | "PeriodAverage" | "Settlement"
+            ) {
+                return Err(invalid(
+                    R,
+                    format!("law `{code}`: invalid rate_purpose `{rate_purpose}`"),
+                ));
+            }
+            if !matches!(
+                date_selector.as_str(),
+                "entry_effective_date" | "period_end_date" | "settlement_and_settled_item_dates"
+            ) {
+                return Err(invalid(
+                    R,
+                    format!("law `{code}`: invalid date_selector `{date_selector}`"),
+                ));
+            }
+            if !valid_rounding.contains(&rounding_law.as_str()) {
+                return Err(invalid(
+                    R,
+                    format!("law `{code}`: unknown rounding_law `{rounding_law}`"),
+                ));
+            }
+            if !matches!(residual_mode.as_str(), "designated_leg" | "none") {
+                return Err(invalid(
+                    R,
+                    format!("law `{code}`: invalid residual_mode `{residual_mode}`"),
+                ));
+            }
+            if name == "PeriodEndRevaluation" && residual_mode != "none" {
+                return Err(invalid(
+                    R,
+                    "PeriodEndRevaluation must have residual_mode = `none`",
+                ));
+            }
+            if admitted_classes.is_empty() {
+                return Err(invalid(
+                    R,
+                    format!("law `{code}` must declare non-empty admitted_classes"),
+                ));
+            }
+            for cls in &admitted_classes {
+                let Some(row) = classes.by_name(cls) else {
+                    return Err(invalid(
+                        R,
+                        format!("law `{code}`: unknown entry class `{cls}`"),
+                    ));
+                };
+                if row.kind != crate::ClassKind::Posting {
+                    return Err(invalid(
+                        R,
+                        format!("law `{code}`: control class `{cls}` cannot carry FX valuation"),
+                    ));
+                }
+            }
+            if !matches!(status.as_str(), "live" | "reserved") {
+                return Err(invalid(
+                    R,
+                    format!("law `{code}`: invalid status `{status}`"),
+                ));
+            }
+            if standard_ref.trim().is_empty() || meaning.trim().is_empty() {
+                return Err(invalid(
+                    R,
+                    format!("law `{code}` requires non-empty standard_ref and meaning"),
+                ));
+            }
+            laws.push(FxLawRow {
+                id,
+                version,
+                code,
+                name,
+                rate_purpose,
+                date_selector,
+                rounding_law,
+                residual_mode,
+                admitted_classes,
+                status,
+                standard_ref,
+                meaning,
+            });
+        }
+        if laws.len() != 4 {
+            return Err(invalid(
+                R,
+                format!("expected 4 [[law]] rows, found {}", laws.len()),
+            ));
+        }
+
+        let mut application_difference_kinds = Vec::new();
+        let mut seen_diff_tags = BTreeSet::new();
+        let mut seen_diff_names = BTreeSet::new();
+        for t in doc
+            .arrays
+            .get("application_difference_kind")
+            .ok_or_else(|| invalid(R, "missing [[application_difference_kind]]"))?
+        {
+            let tag = u8::try_from(req_int(R, t, "tag")?)
+                .map_err(|_| invalid(R, "application_difference_kind tag out of u8 range"))?;
+            let name = req_str(R, t, "name")?.to_string();
+            let requires_conversion_account = req_bool(R, t, "requires_conversion_account")?;
+            let status = req_str(R, t, "status")?.to_string();
+            let meaning = req_str(R, t, "meaning")?.to_string();
+            if !seen_diff_tags.insert(tag) {
+                return Err(invalid(
+                    R,
+                    format!("duplicate application_difference_kind tag `{tag}`"),
+                ));
+            }
+            if !seen_diff_names.insert(name.clone()) {
+                return Err(invalid(
+                    R,
+                    format!("duplicate application_difference_kind name `{name}`"),
+                ));
+            }
+            if name == "RealizedFx" && !requires_conversion_account {
+                return Err(invalid(
+                    R,
+                    "RealizedFx must declare requires_conversion_account = true (FA-INV-01.realized-fx)",
+                ));
+            }
+            if !matches!(status.as_str(), "live" | "reserved") {
+                return Err(invalid(
+                    R,
+                    format!("application_difference_kind `{name}`: invalid status `{status}`"),
+                ));
+            }
+            if meaning.trim().is_empty() {
+                return Err(invalid(
+                    R,
+                    format!("application_difference_kind `{name}` requires non-empty meaning"),
+                ));
+            }
+            application_difference_kinds.push(ApplicationDifferenceKindRow {
+                tag,
+                name,
+                requires_conversion_account,
+                status,
+                meaning,
+            });
+        }
+        if application_difference_kinds.len() != 5 {
+            return Err(invalid(
+                R,
+                format!(
+                    "expected 5 [[application_difference_kind]] rows, found {}",
+                    application_difference_kinds.len()
+                ),
+            ));
+        }
+
+        Ok(Self {
+            ad_hoc_rate_admission,
+            residual_bound_law,
+            realized_fx_mode,
+            laws,
+            application_difference_kinds,
+        })
+    }
+
+    pub fn by_id(&self, id: u16, version: u16) -> Option<&FxLawRow> {
+        self.laws
+            .iter()
+            .find(|r| r.id == id && r.version == version)
+    }
+
+    pub fn by_code(&self, code: &str) -> Option<&FxLawRow> {
+        self.laws.iter().find(|r| r.code == code)
+    }
+
+    pub fn by_name(&self, name: &str) -> Option<&FxLawRow> {
+        self.laws.iter().find(|r| r.name == name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2196,6 +2492,10 @@ mod tests {
         assert_eq!(tracing_laws.laws.len(), 5);
         assert_eq!(tracing_laws.intraday_orders.len(), 4);
         assert_eq!(tracing_laws.replenishment_modes.len(), 2);
+
+        let fx_laws = FxLaws::embedded(&classes).expect("fx_laws.toml");
+        assert_eq!(fx_laws.laws.len(), 4);
+        assert_eq!(fx_laws.application_difference_kinds.len(), 5);
     }
 
     #[test]
@@ -2297,5 +2597,23 @@ mod tests {
                 .contains("not registered in procedures.toml"),
             "{err}"
         );
+
+        // Planted negative 8 (fa-s3c): ad-hoc rate admission or RealizedFx without conversion account fails.
+        let bad_fx = FX_LAWS_TOML.replacen(
+            "ad_hoc_rate_admission = \"forbidden\"",
+            "ad_hoc_rate_admission = \"allowed\"",
+            1,
+        );
+        let err = FxLaws::parse(&bad_fx, &classes).expect_err("ad-hoc rate admission");
+        assert!(err.to_string().contains("forbidden"), "{err}");
+
+        let bad_realized = FX_LAWS_TOML.replacen(
+            "name = \"RealizedFx\"\nrequires_conversion_account = true",
+            "name = \"RealizedFx\"\nrequires_conversion_account = false",
+            1,
+        );
+        let err = FxLaws::parse(&bad_realized, &classes)
+            .expect_err("RealizedFx without conversion account");
+        assert!(err.to_string().contains("FA-INV-01.realized-fx"), "{err}");
     }
 }

@@ -275,6 +275,44 @@ fn unknown_period(book: &BookContext, period_code: &str) -> Refusal {
     )
 }
 
+fn existing_names_transition(
+    row: &fgdb::VertexRow,
+    book: &BookContext,
+    period_code: &str,
+    t: PeriodTransition,
+) -> Result<bool, KernelError> {
+    let stored = match crate::rows::prop(row, property::FA_PAYLOAD) {
+        Some(CanonicalScalar::Bytes(b)) => fa_model::Entry::decode(b.as_slice())?,
+        other => {
+            return Err(KernelError::Corrupt(format!(
+                "entry _fa_payload: {other:?}"
+            )));
+        }
+    };
+    if stored.proposal.class != EntryClass::PERIOD_CONTROL {
+        return Ok(false);
+    }
+    let Some(ControlPayload::PeriodTransition {
+        period_ref,
+        from: from_tag,
+        to: to_tag,
+        ..
+    }) = &stored.proposal.control
+    else {
+        return Ok(false);
+    };
+    if period_ref.calendar != book.calendar.id || period_ref.code != period_code {
+        return Ok(false);
+    }
+    let (Some(stored_from), Some(stored_to)) = (
+        PeriodState::from_tag(*from_tag),
+        PeriodState::from_tag(*to_tag),
+    ) else {
+        return Ok(false);
+    };
+    Ok(transition(stored_from, t) == Ok(stored_to))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
@@ -860,11 +898,52 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         &principal_ref.0.to_le_bytes(),
         idempotency_key,
     );
-    // An existing row at the transition's identity (plan §4.9, FA-INV-09,
-    // fa-l93 D13): the recorded outcome when the proposal is identical (or
-    // semantically equal under the book key), and an idempotency conflict
-    // otherwise — checked before reading the period's current state, which
-    // the original commit already moved.
+    let epoch = policy::epoch_witness(&txn, db)?;
+
+    let Some(row) = txn.vertex(db, pvid)? else {
+        txn.abort();
+        return Ok(Err(unknown_period(book, period_code)));
+    };
+    let from = state_from_scalar(crate::rows::prop(&row, property::STATE))
+        .ok_or_else(|| KernelError::Corrupt(format!("period `{period_code}` state mirror")))?;
+    let opening_date = crate::genesis::opening_date_in(&txn, db)?;
+    if let Some(r) = kind_refusal(&row, period_code, t, opening_date)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let Ok(to) = transition(from, t) else {
+        // When `t` is not admissible from the period's current state `from`,
+        // check whether `evid` already recorded this `(period_code, t)`
+        // transition (FA-INV-09, fa-l93 D13): if so, return the recorded
+        // outcome on an identical retry or an idempotency conflict when the
+        // retry changed date/reason/description; if `evid` is absent or
+        // recorded a different transition, the state-machine refusal stands.
+        if let Some(existing) = txn.vertex(db, evid)?
+            && existing_names_transition(&existing, book, period_code, t)?
+        {
+            let basis = txn.basis();
+            txn.abort();
+            return match recorded_or_conflict(
+                db,
+                book,
+                &existing,
+                period_code,
+                t,
+                principal_ref,
+                reason_code,
+                effective_date,
+                idempotency_key,
+                &description,
+            )? {
+                Ok(recorded) => Ok(Ok(PreparedTransition {
+                    state: PreparedTransitionState::AlreadyRecorded { basis, recorded },
+                })),
+                Err(r) => Ok(Err(r)),
+            };
+        }
+        txn.abort();
+        return Ok(Err(illegal_transition(period_code, from, t)));
+    };
     if let Some(existing) = txn.vertex(db, evid)? {
         let basis = txn.basis();
         txn.abort();
@@ -886,23 +965,6 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
             Err(r) => Ok(Err(r)),
         };
     }
-    let epoch = policy::epoch_witness(&txn, db)?;
-
-    let Some(row) = txn.vertex(db, pvid)? else {
-        txn.abort();
-        return Ok(Err(unknown_period(book, period_code)));
-    };
-    let from = state_from_scalar(crate::rows::prop(&row, property::STATE))
-        .ok_or_else(|| KernelError::Corrupt(format!("period `{period_code}` state mirror")))?;
-    let opening_date = crate::genesis::opening_date_in(&txn, db)?;
-    if let Some(r) = kind_refusal(&row, period_code, t, opening_date)? {
-        txn.abort();
-        return Ok(Err(r));
-    }
-    let Ok(to) = transition(from, t) else {
-        txn.abort();
-        return Ok(Err(illegal_transition(period_code, from, t)));
-    };
 
     let proposal = transition_proposal(
         book,

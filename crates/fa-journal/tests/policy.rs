@@ -2789,7 +2789,13 @@ fn identical_period_transition_and_period_create_retries_return_recorded_outcome
             &[],
         )
         .expect("identical SoftClose retry returns recorded Transitioned");
-    assert_eq!(retry_sc, first_sc);
+    assert_eq!(
+        retry_sc,
+        Transitioned {
+            already_recorded: true,
+            ..first_sc
+        }
+    );
     assert_eq!(h.db.frontier().unwrap(), head_after_sc);
 
     // 3. Reusing the same idempotency key for a different transition (Close instead
@@ -2854,6 +2860,12 @@ fn identical_period_transition_and_period_create_retries_return_recorded_outcome
             apr1,
         )
         .expect("identical Open retry returns recorded Transitioned");
-    assert_eq!(retry_open, first_open);
+    assert_eq!(
+        retry_open,
+        Transitioned {
+            already_recorded: true,
+            ..first_open
+        }
+    );
     assert_eq!(h.db.frontier().unwrap(), head_after_open);
 }

@@ -222,31 +222,43 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-01"
 id = "base"
-status = "dormant"
+status = "live"
 statement = "When base totals are present, base debits equal base credits under the named FX law, per legal entity in multi-entity books."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G2"
-activating = ["fa-s3c"]
+owner = "fa-s3c"
+checkers = ["fa-registers::tests/registers.rs::fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_functionally"]
+negatives = ["fa-registers::tests/registers.rs::fx_unbalanced_base_amounts_are_refused_without_mutating_book"]
+depends = ["FA-INV-01.per-unit"]
 waiver = "forbidden"
 
 [[clause]]
 invariant = "FA-INV-01"
 id = "base-residual"
-status = "dormant"
+status = "live"
 statement = "Each representable valuation adjustment is recorded and absorbed within its entity, within the law's exact bound."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G2"
-activating = ["fa-s3c"]
+owner = "fa-s3c"
+checkers = ["fa-registers::tests/registers.rs::fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_functionally"]
+negatives = ["fa-registers::tests/registers.rs::fx_wrong_or_excessive_base_residual_is_refused_without_mutating_book"]
+depends = ["FA-INV-01.base"]
 waiver = "forbidden"
 
 [[clause]]
 invariant = "FA-INV-01"
 id = "realized-fx"
-status = "dormant"
+status = "live"
 statement = "Realized FX uses the paired postings of plan §5.2."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G2"
-activating = ["fa-s3c"]
+owner = "fa-s3c"
+checkers = ["fa-registers::tests/registers.rs::fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_functionally"]
+negatives = ["fa-registers::tests/registers.rs::fx_unpaired_realized_fx_settlement_is_refused_without_mutating_book"]
+depends = ["FA-INV-01.base"]
 waiver = "forbidden"
 
 [[clause]]
@@ -438,11 +450,15 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-04"
 id = "functional-fold"
-status = "dormant"
+status = "live"
 statement = "Functional-value registers fold base amounts under a registered functional fold."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G2"
-activating = ["fa-s3c"]
+owner = "fa-s3c"
+checkers = ["fa-registers::tests/registers.rs::fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_functionally"]
+negatives = ["fa-registers::tests/registers.rs::fx_tampered_functional_fold_is_detected_by_verify_functional_fold"]
+depends = ["FA-INV-04.core", "FA-INV-01.base"]
 waiver = "forbidden"
 
 [[clause]]

@@ -16,6 +16,7 @@ pub mod assertion;
 pub mod availability;
 pub mod entity;
 pub mod explain;
+pub mod fx;
 pub mod lots;
 pub mod maintainer;
 pub mod open_items;
@@ -47,6 +48,10 @@ pub use entity::{
     check_register_equals, fold_period_by_entity, register_equals, verify_entities,
 };
 pub use explain::{BalanceExplanation, explain_balance};
+pub use fx::{
+    FUNCTIONAL_FOLD_DIGEST_DOMAIN, FunctionalCell, FunctionalCellKey, FunctionalFold,
+    fold_period_functional, verify_functional_fold,
+};
 pub use lots::{
     LotDisposalPlan, LotDisposalRequest, LotDisposalSlice, LotItem, LotReliefEdge, LotsReport,
     fold_lots_from_open_items, lots,

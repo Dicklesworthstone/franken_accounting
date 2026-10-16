@@ -23,6 +23,7 @@
 
 pub mod admissibility;
 pub mod evidence;
+pub mod fx;
 pub mod lantern;
 pub mod lots;
 pub mod reports;

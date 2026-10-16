@@ -10,9 +10,9 @@ use fa_journal::rows::edge_id;
 use fa_journal::*;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef,
-    Id128, LegPayload, Oid, Pending, SealKey, Supersession, SupersessionKind, SymbolTable,
-    account_vid, period_vid,
+    AccountType, ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, Erasable,
+    EvidenceRef, Id128, LegPayload, Oid, Pending, SealKey, Supersession, SupersessionKind,
+    SymbolTable, account_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_registers::{
@@ -2909,4 +2909,1065 @@ fn lots_fifo_lifo_wac_specific_id_reversal_and_reference_differential() {
     assert_eq!(after_rev.lots[1].open_quantity.mantissa, 100_000);
     assert_eq!(after_rev.lots[1].open_cost.mantissa, 120_000);
     assert!(!after_rev.lots[1].relieves[0].live);
+}
+
+#[test]
+fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_functionally() {
+    use fa_journal::{
+        FxLawId, FxRateDocument, FxRatePurpose, add_document, plan_realized_fx_settlement,
+        plan_revaluation, value_proposal,
+    };
+    use fa_money::RoundingLaw;
+    use fa_money_rate::*;
+    use fa_reference::fx::{
+        OracleFunctionalEntry, OracleFxLeg, OracleRateQuote, OracleRealizedLeg,
+        fold_functional_period, value_entity_legs, verify_realized_fx,
+    };
+    use fa_registers::{FunctionalCellKey, fold_period_functional, verify_functional_fold};
+
+    mod fa_money_rate {
+        pub use asupersync::Cx;
+        pub use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+    }
+
+    let mut h = harness();
+    let usd = h.book.units.lookup("USD").unwrap();
+    let eur = h.book.units.lookup("EUR").unwrap();
+    let mar_05 = DateDay::from_ymd(2026, 3, 5).unwrap();
+    let mar_10 = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let mar_25 = DateDay::from_ymd(2026, 3, 25).unwrap();
+    let mar_28 = DateDay::from_ymd(2026, 3, 28).unwrap();
+
+    let fx_accounts = vec![
+        AccountSpec {
+            code: "1210".into(),
+            name: "AccountsReceivableEur".into(),
+            account_type: AccountType::ASSET.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "4110".into(),
+            name: "RevenueEur".into(),
+            account_type: AccountType::REVENUE.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(eur),
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "2910".into(),
+            name: "FxConversionClearing".into(),
+            account_type: AccountType::LIABILITY.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "7110".into(),
+            name: "RealizedFxGainLoss".into(),
+            account_type: AccountType::REVENUE.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "7120".into(),
+            name: "UnrealizedFxGainLoss".into(),
+            account_type: AccountType::REVENUE.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let desc = Erasable::seal(
+            &"install-fx-chart".to_string(),
+            None,
+            &book.seal_key,
+            [61; 32],
+            [62; 24],
+        );
+        h.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &fx_accounts,
+                    PRINCIPAL,
+                    mar_05,
+                    b"install-fx-chart",
+                    desc,
+                )
+                .await
+            })
+            .unwrap()
+            .unwrap();
+    }
+
+    let ar_eur = account_vid(h.book.book_id, "1210");
+    let rev_eur = account_vid(h.book.book_id, "4110");
+    let fx_conv = account_vid(h.book.book_id, "2910");
+    let fx_realized = account_vid(h.book.book_id, "7110");
+    let fx_unrealized = account_vid(h.book.book_id, "7120");
+    let spec = fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap();
+
+    let stripped = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+
+    // 1. SpotClose with rounding residual (Dr 0.01 EUR, Dr 0.01 EUR / Cr 0.02 EUR at 1/2 USD/EUR under HalfUp).
+    let rate_half = FxRateDocument::new(
+        usd,
+        eur,
+        1,
+        2,
+        RoundingLaw::HalfUp,
+        mar_05,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::SpotClose,
+        "ECB",
+    )
+    .unwrap();
+    {
+        let doc = rate_half.document(h.book.book_id, PRINCIPAL, 3).unwrap();
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &doc).await })
+            .unwrap()
+            .unwrap();
+    }
+
+    let mut raw_res = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
+            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 2)),
+        ],
+        b"fx-spot-residual",
+        EntryClass::ORIGINAL,
+    );
+    raw_res.effective_date = mar_05;
+    let valued_res = value_proposal(
+        &mut budget,
+        raw_res,
+        &spec,
+        &h.book.units,
+        FxLawId::SpotClose,
+        std::slice::from_ref(&rate_half),
+    )
+    .unwrap();
+
+    // Cross-check against independent reference oracle (`fa_reference::fx::value_entity_legs`).
+    let mut oracle_rates = std::collections::BTreeMap::new();
+    oracle_rates.insert(
+        eur.0,
+        OracleRateQuote {
+            quote_unit: eur.0,
+            quote_scale: 2,
+            rate_num: 1,
+            rate_den: 2,
+            rounding_law: "HalfUp".into(),
+        },
+    );
+    let oracle_val = value_entity_legs(
+        &[
+            OracleFxLeg {
+                side: fa_reference::Side::Debit,
+                account: ar_eur.0,
+                unit: eur.0,
+                mantissa: 1,
+                entity: None,
+            },
+            OracleFxLeg {
+                side: fa_reference::Side::Debit,
+                account: ar_eur.0,
+                unit: eur.0,
+                mantissa: 1,
+                entity: None,
+            },
+            OracleFxLeg {
+                side: fa_reference::Side::Credit,
+                account: rev_eur.0,
+                unit: eur.0,
+                mantissa: 2,
+                entity: None,
+            },
+        ],
+        usd.0,
+        2,
+        &oracle_rates,
+    )
+    .unwrap();
+    let bt_res = valued_res.base_totals.as_ref().unwrap();
+    assert_eq!(bt_res.debits, oracle_val.base_debits);
+    assert_eq!(bt_res.credits, oracle_val.base_credits);
+    assert_eq!(
+        bt_res.residual.map(|r| (r.leg_ordinal, r.amount.mantissa)),
+        oracle_val.residual
+    );
+    assert_eq!(oracle_val.residual, Some((2, 1)));
+
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: valued_res.clone(),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        h.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap();
+    }
+
+    // 2. SpotClose invoice of 100.00 EUR at 1.10 USD/EUR (110.00 USD) on 2026-03-10.
+    let rate_spot = FxRateDocument::new(
+        usd,
+        eur,
+        110,
+        100,
+        RoundingLaw::HalfEven,
+        mar_10,
+        1_700_100_000_000_000_000,
+        FxRatePurpose::SpotClose,
+        "ECB",
+    )
+    .unwrap();
+    {
+        let doc = rate_spot.document(h.book.book_id, PRINCIPAL, 3).unwrap();
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &doc).await })
+            .unwrap()
+            .unwrap();
+    }
+    let mut raw_inv = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 10_000)),
+            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 10_000)),
+        ],
+        b"fx-spot-100-eur",
+        EntryClass::ORIGINAL,
+    );
+    raw_inv.effective_date = mar_10;
+    let valued_inv = value_proposal(
+        &mut budget,
+        raw_inv,
+        &spec,
+        &h.book.units,
+        FxLawId::SpotClose,
+        std::slice::from_ref(&rate_spot),
+    )
+    .unwrap();
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: valued_inv.clone(),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        h.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap();
+    }
+
+    // 3. PeriodEndRevaluation of the 100.00 EUR receivable at period-close rate 1.15 USD/EUR (+5.00 USD).
+    let rate_close = FxRateDocument::new(
+        usd,
+        eur,
+        115,
+        100,
+        RoundingLaw::HalfEven,
+        mar_25,
+        1_700_200_000_000_000_000,
+        FxRatePurpose::PeriodClose,
+        "ECB",
+    )
+    .unwrap();
+    {
+        let doc = rate_close.document(h.book.book_id, PRINCIPAL, 3).unwrap();
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &doc).await })
+            .unwrap()
+            .unwrap();
+    }
+    let mut reval_tpl = h.proposal(Vec::new(), b"fx-reval-mar25", EntryClass::REVALUATION);
+    reval_tpl.effective_date = mar_25;
+    reval_tpl.evidence.clear();
+    let reval_prop = plan_revaluation(
+        &mut budget,
+        reval_tpl,
+        ar_eur,
+        Side::Debit,
+        Amount::new(eur, 10_000),
+        Amount::new(usd, 11_000),
+        fx_unrealized,
+        &rate_close,
+        Vec::new(),
+        &h.book.units,
+    )
+    .unwrap();
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: reval_prop.clone(),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        h.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap();
+    }
+
+    // 4. Realized FX settlement of the 100.00 EUR receivable (now carried at 115.00 USD)
+    //    into USD cash at settlement rate 1.18 USD/EUR (118.00 USD; +3.00 USD realized gain).
+    let rate_settle = FxRateDocument::new(
+        usd,
+        eur,
+        118,
+        100,
+        RoundingLaw::HalfEven,
+        mar_28,
+        1_700_300_000_000_000_000,
+        FxRatePurpose::Settlement,
+        "ECB",
+    )
+    .unwrap();
+    {
+        let doc = rate_settle.document(h.book.book_id, PRINCIPAL, 3).unwrap();
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &doc).await })
+            .unwrap()
+            .unwrap();
+    }
+    let mut settle_tpl = h.proposal(Vec::new(), b"fx-settle-mar28", EntryClass::ORIGINAL);
+    settle_tpl.effective_date = mar_28;
+    let settle_prop = plan_realized_fx_settlement(
+        &mut budget,
+        settle_tpl,
+        ar_eur,
+        Side::Credit,
+        Amount::new(eur, 10_000),
+        Amount::new(usd, 11_500),
+        h.cash,
+        fx_conv,
+        fx_realized,
+        &rate_settle,
+        Vec::new(),
+        &h.book.units,
+    )
+    .unwrap();
+
+    // Verify realized FX entry against independent reference oracle (`FA-INV-01.realized-fx`).
+    let to_oracle_legs = |p: &EntryPayload| -> Vec<OracleRealizedLeg> {
+        p.legs
+            .iter()
+            .map(|l| OracleRealizedLeg {
+                side: match l.side {
+                    Side::Debit => fa_reference::Side::Debit,
+                    Side::Credit => fa_reference::Side::Credit,
+                },
+                account: l.account_ref.0,
+                unit: l.amount.unit.0,
+                mantissa: l.amount.mantissa,
+                base_unit: l.base_amount.unwrap().unit.0,
+                base_mantissa: l.base_amount.unwrap().mantissa,
+                entity: None,
+            })
+            .collect()
+    };
+    verify_realized_fx(
+        &to_oracle_legs(&settle_prop),
+        usd.0,
+        2,
+        eur.0,
+        2,
+        118,
+        100,
+        "HalfEven",
+    )
+    .expect("reference oracle verifies paired conversion realized FX entry");
+
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: settle_prop.clone(),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        h.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap();
+    }
+
+    // 5. Functional-value register fold (`FA-INV-04.functional-fold`) and reference differential.
+    let f_fold = fold_period_functional(&h.db, &h.book, &h.march, None).unwrap();
+    verify_functional_fold(&h.db, &h.book, &h.march, &f_fold).unwrap();
+    assert_eq!(
+        f_fold.total_debits().unwrap(),
+        f_fold.total_credits().unwrap()
+    );
+
+    // Paired conversion clearing account nets to 0 in functional currency!
+    let conv_cell = f_fold
+        .cell(&FunctionalCellKey {
+            account: fx_conv,
+            unit_id: usd.0,
+            period: h.march.clone(),
+            entity: None,
+        })
+        .unwrap();
+    assert_eq!(conv_cell.debits, 11_500);
+    assert_eq!(conv_cell.credits, 11_500);
+    assert_eq!(conv_cell.net(), Some(0));
+
+    let oracle_entries = vec![
+        OracleFunctionalEntry {
+            period: h.march.clone(),
+            is_pending: false,
+            is_resolved: false,
+            legs: to_oracle_legs(&valued_res),
+        },
+        OracleFunctionalEntry {
+            period: h.march.clone(),
+            is_pending: false,
+            is_resolved: false,
+            legs: to_oracle_legs(&valued_inv),
+        },
+        OracleFunctionalEntry {
+            period: h.march.clone(),
+            is_pending: false,
+            is_resolved: false,
+            legs: to_oracle_legs(&reval_prop),
+        },
+        OracleFunctionalEntry {
+            period: h.march.clone(),
+            is_pending: false,
+            is_resolved: false,
+            legs: to_oracle_legs(&settle_prop),
+        },
+    ];
+    let oracle_fold = fold_functional_period(&oracle_entries, usd.0, &h.march).unwrap();
+    assert_eq!(f_fold.cells.len(), oracle_fold.len());
+    for cell in &f_fold.cells {
+        let key = (
+            cell.key.account.0,
+            cell.key.unit_id,
+            cell.key.period.clone(),
+            cell.key.entity.clone(),
+        );
+        assert_eq!(
+            oracle_fold.get(&key).copied(),
+            Some((cell.debits, cell.credits, cell.entry_count))
+        );
+    }
+}
+
+#[test]
+fn fx_unbalanced_base_amounts_are_refused_without_mutating_book() {
+    use asupersync::Cx;
+    use fa_journal::{FxLawId, FxRateDocument, FxRatePurpose, add_document, exit, value_proposal};
+    use fa_money::RoundingLaw;
+    use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+
+    let mut h = harness();
+    let usd = h.book.units.lookup("USD").unwrap();
+    let eur = h.book.units.lookup("EUR").unwrap();
+    let mar_05 = DateDay::from_ymd(2026, 3, 5).unwrap();
+    let fx_accounts = vec![
+        AccountSpec {
+            code: "1210".into(),
+            name: "AccountsReceivableEur".into(),
+            account_type: AccountType::ASSET.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "4110".into(),
+            name: "RevenueEur".into(),
+            account_type: AccountType::REVENUE.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(eur),
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let desc = Erasable::seal(
+            &"install-fx-neg-base".to_string(),
+            None,
+            &book.seal_key,
+            [71; 32],
+            [72; 24],
+        );
+        h.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &fx_accounts,
+                    PRINCIPAL,
+                    mar_05,
+                    b"install-fx-neg-base",
+                    desc,
+                )
+                .await
+            })
+            .unwrap()
+            .unwrap();
+    }
+    let ar_eur = account_vid(h.book.book_id, "1210");
+    let rev_eur = account_vid(h.book.book_id, "4110");
+    let spec = fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap();
+    let stripped = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+
+    let rate_half = FxRateDocument::new(
+        usd,
+        eur,
+        1,
+        2,
+        RoundingLaw::HalfUp,
+        mar_05,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::SpotClose,
+        "ECB",
+    )
+    .unwrap();
+    {
+        let doc = rate_half.document(h.book.book_id, PRINCIPAL, 3).unwrap();
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &doc).await })
+            .unwrap()
+            .unwrap();
+    }
+
+    let mut raw_res = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
+            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 2)),
+        ],
+        b"fx-neg-base",
+        EntryClass::ORIGINAL,
+    );
+    raw_res.effective_date = mar_05;
+    let mut unbalanced_base = value_proposal(
+        &mut budget,
+        raw_res,
+        &spec,
+        &h.book.units,
+        FxLawId::SpotClose,
+        std::slice::from_ref(&rate_half),
+    )
+    .unwrap();
+
+    let before = h.db.frontier().unwrap();
+    unbalanced_base.legs[2].base_amount = Some(Amount::new(usd, 1));
+    unbalanced_base.base_totals.as_mut().unwrap().credits = 1;
+    unbalanced_base.base_totals.as_mut().unwrap().residual = None;
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: unbalanced_base,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        let err = h
+            .runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((err.code, err.exit), ("FA-REF-001", exit::REFUSAL));
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn fx_wrong_or_excessive_base_residual_is_refused_without_mutating_book() {
+    use asupersync::Cx;
+    use fa_journal::{FxLawId, FxRateDocument, FxRatePurpose, add_document, exit, value_proposal};
+    use fa_model::Residual;
+    use fa_money::RoundingLaw;
+    use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+
+    let mut h = harness();
+    let usd = h.book.units.lookup("USD").unwrap();
+    let eur = h.book.units.lookup("EUR").unwrap();
+    let mar_05 = DateDay::from_ymd(2026, 3, 5).unwrap();
+    let fx_accounts = vec![
+        AccountSpec {
+            code: "1210".into(),
+            name: "AccountsReceivableEur".into(),
+            account_type: AccountType::ASSET.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "4110".into(),
+            name: "RevenueEur".into(),
+            account_type: AccountType::REVENUE.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(eur),
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let desc = Erasable::seal(
+            &"install-fx-neg-res".to_string(),
+            None,
+            &book.seal_key,
+            [73; 32],
+            [74; 24],
+        );
+        h.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &fx_accounts,
+                    PRINCIPAL,
+                    mar_05,
+                    b"install-fx-neg-res",
+                    desc,
+                )
+                .await
+            })
+            .unwrap()
+            .unwrap();
+    }
+    let ar_eur = account_vid(h.book.book_id, "1210");
+    let rev_eur = account_vid(h.book.book_id, "4110");
+    let spec = fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap();
+    let stripped = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+
+    let rate_half = FxRateDocument::new(
+        usd,
+        eur,
+        1,
+        2,
+        RoundingLaw::HalfUp,
+        mar_05,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::SpotClose,
+        "ECB",
+    )
+    .unwrap();
+    {
+        let doc = rate_half.document(h.book.book_id, PRINCIPAL, 3).unwrap();
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &doc).await })
+            .unwrap()
+            .unwrap();
+    }
+
+    let mut raw_res = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
+            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 2)),
+        ],
+        b"fx-neg-res",
+        EntryClass::ORIGINAL,
+    );
+    raw_res.effective_date = mar_05;
+    let mut wrong_residual = value_proposal(
+        &mut budget,
+        raw_res,
+        &spec,
+        &h.book.units,
+        FxLawId::SpotClose,
+        std::slice::from_ref(&rate_half),
+    )
+    .unwrap();
+
+    let before = h.db.frontier().unwrap();
+    wrong_residual.base_totals.as_mut().unwrap().residual = Some(Residual {
+        leg_ordinal: 0,
+        amount: Amount::new(usd, 5),
+    });
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: wrong_residual,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        let err = h
+            .runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((err.code, err.exit), ("FA-REF-001", exit::REFUSAL));
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn fx_unpaired_realized_fx_settlement_is_refused_without_mutating_book() {
+    use asupersync::Cx;
+    use fa_journal::{
+        FxRateDocument, FxRatePurpose, add_document, exit, plan_realized_fx_settlement,
+    };
+    use fa_money::RoundingLaw;
+    use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+    use fa_reference::fx::{OracleRealizedLeg, verify_realized_fx};
+
+    let mut h = harness();
+    let usd = h.book.units.lookup("USD").unwrap();
+    let eur = h.book.units.lookup("EUR").unwrap();
+    let mar_05 = DateDay::from_ymd(2026, 3, 5).unwrap();
+    let fx_accounts = vec![
+        AccountSpec {
+            code: "1210".into(),
+            name: "AccountsReceivableEur".into(),
+            account_type: AccountType::ASSET.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "2910".into(),
+            name: "FxConversionClearing".into(),
+            account_type: AccountType::LIABILITY.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "7110".into(),
+            name: "RealizedFxGainLoss".into(),
+            account_type: AccountType::REVENUE.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let desc = Erasable::seal(
+            &"install-fx-neg-settle".to_string(),
+            None,
+            &book.seal_key,
+            [75; 32],
+            [76; 24],
+        );
+        h.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &fx_accounts,
+                    PRINCIPAL,
+                    mar_05,
+                    b"install-fx-neg-settle",
+                    desc,
+                )
+                .await
+            })
+            .unwrap()
+            .unwrap();
+    }
+    let ar_eur = account_vid(h.book.book_id, "1210");
+    let fx_conv = account_vid(h.book.book_id, "2910");
+    let fx_realized = account_vid(h.book.book_id, "7110");
+    let stripped = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+
+    let rate_settle = FxRateDocument::new(
+        usd,
+        eur,
+        118,
+        100,
+        RoundingLaw::HalfEven,
+        mar_05,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::Settlement,
+        "ECB",
+    )
+    .unwrap();
+    {
+        let doc = rate_settle.document(h.book.book_id, PRINCIPAL, 3).unwrap();
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &doc).await })
+            .unwrap()
+            .unwrap();
+    }
+
+    let before = h.db.frontier().unwrap();
+    let mut settle_tpl = h.proposal(Vec::new(), b"fx-neg-settle", EntryClass::ORIGINAL);
+    settle_tpl.effective_date = mar_05;
+    let mut unpaired_settle = plan_realized_fx_settlement(
+        &mut budget,
+        settle_tpl,
+        ar_eur,
+        Side::Credit,
+        Amount::new(eur, 10_000),
+        Amount::new(usd, 11_000),
+        h.cash,
+        fx_conv,
+        fx_realized,
+        &rate_settle,
+        Vec::new(),
+        &h.book.units,
+    )
+    .unwrap();
+    unpaired_settle.legs[1].account_ref = ar_eur;
+    assert!(
+        verify_realized_fx(
+            &unpaired_settle
+                .legs
+                .iter()
+                .map(|l| OracleRealizedLeg {
+                    side: match l.side {
+                        Side::Debit => fa_reference::Side::Debit,
+                        Side::Credit => fa_reference::Side::Credit,
+                    },
+                    account: l.account_ref.0,
+                    unit: l.amount.unit.0,
+                    mantissa: l.amount.mantissa,
+                    base_unit: l.base_amount.unwrap().unit.0,
+                    base_mantissa: l.base_amount.unwrap().mantissa,
+                    entity: None,
+                })
+                .collect::<Vec<_>>(),
+            usd.0,
+            2,
+            eur.0,
+            2,
+            118,
+            100,
+            "HalfEven",
+        )
+        .is_err()
+    );
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: unpaired_settle,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        let err = h
+            .runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((err.code, err.exit), ("FA-REF-001", exit::REFUSAL));
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn fx_tampered_functional_fold_is_detected_by_verify_functional_fold() {
+    use asupersync::Cx;
+    use fa_journal::{FxLawId, FxRateDocument, FxRatePurpose, add_document, value_proposal};
+    use fa_money::RoundingLaw;
+    use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+    use fa_registers::{fold_period_functional, verify_functional_fold};
+
+    let mut h = harness();
+    let usd = h.book.units.lookup("USD").unwrap();
+    let eur = h.book.units.lookup("EUR").unwrap();
+    let mar_05 = DateDay::from_ymd(2026, 3, 5).unwrap();
+    let fx_accounts = vec![
+        AccountSpec {
+            code: "1210".into(),
+            name: "AccountsReceivableEur".into(),
+            account_type: AccountType::ASSET.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "4110".into(),
+            name: "RevenueEur".into(),
+            account_type: AccountType::REVENUE.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(eur),
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let desc = Erasable::seal(
+            &"install-fx-neg-fold".to_string(),
+            None,
+            &book.seal_key,
+            [77; 32],
+            [78; 24],
+        );
+        h.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &fx_accounts,
+                    PRINCIPAL,
+                    mar_05,
+                    b"install-fx-neg-fold",
+                    desc,
+                )
+                .await
+            })
+            .unwrap()
+            .unwrap();
+    }
+    let ar_eur = account_vid(h.book.book_id, "1210");
+    let rev_eur = account_vid(h.book.book_id, "4110");
+    let spec = fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap();
+    let stripped = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+
+    let rate_half = FxRateDocument::new(
+        usd,
+        eur,
+        1,
+        2,
+        RoundingLaw::HalfUp,
+        mar_05,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::SpotClose,
+        "ECB",
+    )
+    .unwrap();
+    {
+        let doc = rate_half.document(h.book.book_id, PRINCIPAL, 3).unwrap();
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &doc).await })
+            .unwrap()
+            .unwrap();
+    }
+
+    let mut raw_res = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
+            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 2)),
+        ],
+        b"fx-neg-fold",
+        EntryClass::ORIGINAL,
+    );
+    raw_res.effective_date = mar_05;
+    let valid_res = value_proposal(
+        &mut budget,
+        raw_res,
+        &spec,
+        &h.book.units,
+        FxLawId::SpotClose,
+        std::slice::from_ref(&rate_half),
+    )
+    .unwrap();
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: valid_res,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        h.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap();
+    }
+    let mut f_fold = fold_period_functional(&h.db, &h.book, &h.march, None).unwrap();
+    f_fold.cells[0].debits += 1;
+    assert!(verify_functional_fold(&h.db, &h.book, &h.march, &f_fold).is_err());
 }

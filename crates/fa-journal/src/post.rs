@@ -595,7 +595,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
 
 /// The classes this kernel slice posts (step 1b); every other registered
 /// class is refused as not implemented, and no refusal suggests one.
-const POSTED_CLASSES: [EntryClass; 7] = [
+const POSTED_CLASSES: [EntryClass; 8] = [
     EntryClass::ORIGINAL,
     EntryClass::ADJUSTING,
     EntryClass::REVERSAL,
@@ -603,6 +603,7 @@ const POSTED_CLASSES: [EntryClass; 7] = [
     EntryClass::RESOLUTION,
     EntryClass::MIGRATION,
     EntryClass::ALLOCATION,
+    EntryClass::REVALUATION,
 ];
 
 /// Run the production posting pipeline through staging, retaining its
@@ -846,17 +847,6 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             "release the hold now with Resolution(Voids), or let the expiry sweep expire it once a tick reaches its deadline",
         )));
     }
-    // 1d. FX valuations this slice does not enforce are refused, never
-    //     admitted unchecked. The aggregate is itself a claim about a law
-    //     and its rate documents, even when no leg carries a base amount.
-    if proposal.base_totals.is_some() {
-        return Ok(Err(not_implemented("base_totals")));
-    }
-    for leg in &proposal.legs {
-        if leg.base_amount.is_some() {
-            return Ok(Err(not_implemented("leg.base_amount")));
-        }
-    }
     // 1d'. Legal entities (plan §4.1, §5.2): a leg names its entity in its
     //      dimension_set; the book's declaration (its immutable genesis spec)
     //      decides — undeclared is refused, and in a multi-entity book every
@@ -866,9 +856,31 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     let leg_entities = match entity::leg_entities(&spec, &proposal.legs) {
         Ok(e) => e,
         Err(entity::LegEntityError::OtherDimension) => {
+            if proposal.base_totals.is_some() {
+                return Ok(Err(not_implemented("base_totals")));
+            }
+            if proposal.legs.iter().any(|l| l.base_amount.is_some()) {
+                return Ok(Err(not_implemented("leg.base_amount")));
+            }
             return Ok(Err(not_implemented("leg.dimension_set")));
         }
-        Err(entity::LegEntityError::Refused(r)) => return Ok(Err(r)),
+        Err(entity::LegEntityError::Refused(r)) => {
+            if proposal.base_totals.is_some() {
+                return Ok(Err(not_implemented("base_totals")));
+            }
+            if proposal.legs.iter().any(|l| l.base_amount.is_some()) {
+                return Ok(Err(not_implemented("leg.base_amount")));
+            }
+            return Ok(Err(r));
+        }
+    };
+    // 1d. FX valuations (plan §5.2, §6.4; fa-s3c): unregistered FX laws or
+    //     unvalued claims are refused as not implemented; registered FX laws
+    //     are checked structurally and per-entity here and recomputed against
+    //     witnessed Rate documents inside the posting transaction.
+    let fx_claim = match crate::fx::admit_structure(proposal, &spec, &leg_entities, &book.units) {
+        Ok(claim) => claim,
+        Err(refusal) => return Ok(Err(refusal)),
     };
     // 1e. Application structure (plan §5.7), decided from the payload alone:
     //     only a posting entry applies (a Reversal's undo is derived; a hold
@@ -1473,6 +1485,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 let posted = |class: &str| {
                     class != "Migration"
                         && class != "Allocation"
+                        && class != "Revaluation"
                         && POSTED_CLASSES.iter().any(|c| c.name() == Some(class))
                 };
                 let postings: Vec<String> = matrix
@@ -1599,6 +1612,14 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     // Zero shares omit journal legs, not account legality or dependencies.
     if let Some(basis) = &allocation
         && let Err(refusal) = crate::allocation::witness_targets(&txn, db, book, basis)?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+
+    if let Some(claim) = &fx_claim
+        && let Err(refusal) =
+            crate::fx::verify_in_txn(&txn, db, &spec, &book.units, &leg_entities, proposal, claim)?
     {
         txn.abort();
         return Ok(Err(refusal));
