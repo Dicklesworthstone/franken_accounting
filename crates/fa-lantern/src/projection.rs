@@ -2,17 +2,17 @@
 //! the graphs the procedures walk — money flow between accounts, preparers
 //! and approvers against accounts, documents against entries. Each carries a
 //! digest, is rebuildable from the journal, and is never more authoritative
-//! than it (FA-INV-04). Flow weights are exact: a credit leg's magnitude is
-//! allocated across the entry's debit accounts in proportion to their
-//! magnitudes under the registered largest-remainder law (plan §6.3), so
-//! every edge is an integer in the leg's unit and an entry's edges conserve
-//! its credit total.
+//! than it (FA-INV-04). Flow weights are exact: credit legs are allocated in
+//! canonical account/magnitude order under the registered largest-remainder
+//! law (plan §6.3), using the debit legs' remaining capacities as weights.
+//! Both the credit and debit margins reconcile, including rounding ties.
+
+mod transport;
 
 use std::collections::BTreeMap;
 
 use fa_model::{EntryClass, Writer};
-use fa_money::allocation::largest_remainder;
-use fa_money::{Amount, Side};
+use fa_money::Side;
 use fa_time::DateDay;
 use fgdb_crypto::Hasher;
 use fgdb_types::{CommitSeq, VId};
@@ -38,7 +38,7 @@ pub struct FlowEdge {
     pub unit_id: u32,
     pub period: String,
     pub mantissa: i128,
-    /// Credit-leg × debit-leg contributions folded into this edge.
+    /// Positive credit-leg × debit-leg contributions folded into this edge.
     pub contributions: u64,
 }
 
@@ -65,56 +65,46 @@ pub struct FlowLeg {
     pub from: VId,
     pub to: VId,
     pub unit_id: u32,
-    /// Exact and non-negative, in the unit's mantissa scale.
+    /// Exact and positive, in the unit's mantissa scale.
     pub mantissa: i128,
 }
 
 /// One entry's legs of one unit: `(credits as (account, amount), debits as
-/// (account, magnitude))`.
-type UnitLegs = (Vec<(VId, Amount)>, Vec<(VId, u128)>);
+/// (account, amount))`.
+type UnitLegs = (Vec<(VId, i128)>, Vec<(VId, i128)>);
 
 /// Every live posting entry's credit→debit allocations under the registered
-/// largest-remainder law, ascending by `(entry, unit, from, to)`.
+/// largest-remainder law, ascending by `(entry, unit, from, to, mantissa)`.
+/// Allocation is capacity-conserving: each debit receives exactly its posted
+/// amount, not merely an independently rounded share of every credit. Empty
+/// or unbalanced sides with nonzero value are corruption, never an empty graph.
 pub fn flow_legs(snapshot: &Snapshot) -> Result<Vec<FlowLeg>, LanternError> {
     let mut legs = Vec::new();
     for e in snapshot.live_postings()? {
         let mut by_unit: BTreeMap<u32, UnitLegs> = BTreeMap::new();
         for leg in &e.entry.proposal.legs {
             let slot = by_unit.entry(leg.amount.unit.0).or_default();
+            let value = (leg.account_ref, leg.amount.mantissa);
             match leg.side {
-                Side::Credit => slot.0.push((leg.account_ref, leg.amount)),
-                Side::Debit => slot
-                    .1
-                    .push((leg.account_ref, leg.amount.mantissa.unsigned_abs())),
+                Side::Credit => slot.0.push(value),
+                Side::Debit => slot.1.push(value),
             }
         }
         for (unit_id, (credits, debits)) in by_unit {
-            if credits.is_empty() || debits.is_empty() || debits.iter().all(|(_, w)| *w == 0) {
-                continue;
-            }
-            let weights: Vec<u128> = debits.iter().map(|(_, w)| *w).collect();
-            for (from, amount) in credits {
-                let magnitude = Amount::new(
-                    amount.unit,
-                    amount
-                        .mantissa
-                        .checked_abs()
-                        .ok_or(LanternError::Overflow("flow magnitude"))?,
-                );
-                let shares = largest_remainder(magnitude, &weights)?;
-                for ((to, _), share) in debits.iter().zip(shares) {
-                    legs.push(FlowLeg {
-                        entry: e.vid,
-                        recorded: e.recorded_at,
-                        class: e.entry.proposal.class,
-                        effective_date: e.entry.proposal.effective_date,
-                        period: e.period.clone(),
-                        from,
-                        to: *to,
-                        unit_id,
-                        mantissa: share.mantissa,
-                    });
-                }
+            for (from, to, mantissa) in
+                transport::allocate(fa_money::UnitId(unit_id), credits, debits)?
+            {
+                legs.push(FlowLeg {
+                    entry: e.vid,
+                    recorded: e.recorded_at,
+                    class: e.entry.proposal.class,
+                    effective_date: e.entry.proposal.effective_date,
+                    period: e.period.clone(),
+                    from,
+                    to,
+                    unit_id,
+                    mantissa,
+                });
             }
         }
     }
@@ -163,7 +153,9 @@ pub fn money_flow(snapshot: &Snapshot) -> Result<MoneyFlow, LanternError> {
             .i128(e.mantissa)
             .u64(e.contributions);
     });
-    let digest = digest("money-flow", w.finish()?);
+    // Do not label the corrected two-margin allocation with the historical
+    // independent-credit projection's digest domain.
+    let digest = digest("money-flow:capacity-v2", w.finish()?);
     Ok(MoneyFlow {
         edges,
         entries,
