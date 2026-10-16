@@ -117,10 +117,7 @@ pub(crate) fn scoped_entity(
         .map_err(|_| LanternError::Overflow("missing money-flow legal entity"))
 }
 
-fn partition(
-    legs: &[LegPayload],
-    scope: &entity::Scope,
-) -> Result<Partitions, LanternError> {
+fn partition(legs: &[LegPayload], scope: &entity::Scope) -> Result<Partitions, LanternError> {
     let mut partitions: Partitions = BTreeMap::new();
     for leg in legs {
         let entity = scoped_entity(scope, leg)?;
@@ -168,7 +165,14 @@ pub fn scoped_flow_legs(snapshot: &Snapshot) -> Result<Vec<ScopedFlowLeg>, Lante
     }
     legs.sort_by_key(|scoped| {
         let leg = &scoped.leg;
-        (leg.entry, leg.unit_id, leg.from, leg.to, leg.mantissa, scoped.legal_entity)
+        (
+            leg.entry,
+            leg.unit_id,
+            leg.from,
+            leg.to,
+            leg.mantissa,
+            scoped.legal_entity,
+        )
     });
     Ok(legs)
 }
@@ -178,7 +182,10 @@ pub fn scoped_flow_legs(snapshot: &Snapshot) -> Result<Vec<ScopedFlowLeg>, Lante
 /// within its own legal entity. Use `scoped_flow_legs` for path analysis;
 /// this compatibility view intentionally aggregates away the entity label.
 pub fn flow_legs(snapshot: &Snapshot) -> Result<Vec<FlowLeg>, LanternError> {
-    Ok(scoped_flow_legs(snapshot)?.into_iter().map(|scoped| scoped.leg).collect())
+    Ok(scoped_flow_legs(snapshot)?
+        .into_iter()
+        .map(|scoped| scoped.leg)
+        .collect())
 }
 
 /// The money-flow projection of every live posting entry in the snapshot: the
@@ -387,7 +394,8 @@ mod scope_tests {
     fn leg(side: Side, account: u128, entity: Option<u128>, unit: u32) -> LegPayload {
         let mut leg = LegPayload::simple(side, VId(account), Amount::new(UnitId(unit), 1));
         if let Some(entity) = entity {
-            leg.dimension_set.push((LEGAL_ENTITY_DIMENSION, VId(entity)));
+            leg.dimension_set
+                .push((LEGAL_ENTITY_DIMENSION, VId(entity)));
         }
         leg
     }
@@ -395,30 +403,44 @@ mod scope_tests {
     #[test]
     fn allocations_cannot_invent_transfers_between_entities_or_units() {
         let legs = [
-            leg(Side::Credit, 10, Some(1), 0), leg(Side::Debit, 20, Some(1), 0),
-            leg(Side::Credit, 30, Some(2), 0), leg(Side::Debit, 40, Some(2), 0),
-            leg(Side::Credit, 50, Some(1), 1), leg(Side::Debit, 60, Some(1), 1),
+            leg(Side::Credit, 10, Some(1), 0),
+            leg(Side::Debit, 20, Some(1), 0),
+            leg(Side::Credit, 30, Some(2), 0),
+            leg(Side::Debit, 40, Some(2), 0),
+            leg(Side::Credit, 50, Some(1), 1),
+            leg(Side::Debit, 60, Some(1), 1),
         ];
         let mut edges = Vec::new();
-        for ((unit, entity), (credits, debits)) in partition(&legs, &entity_scope(&legs).unwrap()).unwrap() {
+        for ((unit, entity), (credits, debits)) in
+            partition(&legs, &entity_scope(&legs).unwrap()).unwrap()
+        {
             for (from, to, value) in transport::allocate(UnitId(unit), credits, debits).unwrap() {
                 edges.push((entity, unit, from, to, value));
             }
         }
-        assert_eq!(edges, vec![
-            (Some(VId(1)), 0, VId(10), VId(20), 1),
-            (Some(VId(2)), 0, VId(30), VId(40), 1),
-            (Some(VId(1)), 1, VId(50), VId(60), 1),
-        ]);
+        assert_eq!(
+            edges,
+            vec![
+                (Some(VId(1)), 0, VId(10), VId(20), 1),
+                (Some(VId(2)), 0, VId(30), VId(40), 1),
+                (Some(VId(1)), 1, VId(50), VId(60), 1),
+            ]
+        );
     }
 
     #[test]
     fn a_single_implicit_entity_matches_its_explicit_dimension() {
-        let legs = [leg(Side::Credit, 10, None, 0), leg(Side::Debit, 20, Some(1), 0)];
+        let legs = [
+            leg(Side::Credit, 10, None, 0),
+            leg(Side::Debit, 20, Some(1), 0),
+        ];
         let parts = partition(&legs, &entity_scope(&legs).unwrap()).unwrap();
         assert_eq!(parts.len(), 1);
         let (credits, debits) = parts[&(0, Some(VId(1)))].clone();
-        assert_eq!(transport::allocate(UnitId(0), credits, debits).unwrap(), vec![(VId(10), VId(20), 1)]);
+        assert_eq!(
+            transport::allocate(UnitId(0), credits, debits).unwrap(),
+            vec![(VId(10), VId(20), 1)]
+        );
         let mut multiple = entity_scope(&legs).unwrap();
         multiple.observe(Some(2));
         assert!(partition(&legs, &multiple).is_err());
@@ -426,12 +448,19 @@ mod scope_tests {
 
     #[test]
     fn globally_balanced_but_entity_unbalanced_input_is_refused() {
-        let legs = [leg(Side::Credit, 10, Some(1), 0), leg(Side::Debit, 20, Some(2), 0)];
-        for ((unit, _), (credits, debits)) in partition(&legs, &entity_scope(&legs).unwrap()).unwrap() {
+        let legs = [
+            leg(Side::Credit, 10, Some(1), 0),
+            leg(Side::Debit, 20, Some(2), 0),
+        ];
+        for ((unit, _), (credits, debits)) in
+            partition(&legs, &entity_scope(&legs).unwrap()).unwrap()
+        {
             assert!(transport::allocate(UnitId(unit), credits, debits).is_err());
         }
         let mut duplicate = leg(Side::Debit, 10, Some(1), 0);
-        duplicate.dimension_set.push((LEGAL_ENTITY_DIMENSION, VId(2)));
+        duplicate
+            .dimension_set
+            .push((LEGAL_ENTITY_DIMENSION, VId(2)));
         assert!(named_entity(&duplicate).is_err());
     }
 }

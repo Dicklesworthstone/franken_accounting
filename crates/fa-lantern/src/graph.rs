@@ -42,7 +42,10 @@ fn days_to_period_end(snapshot: &Snapshot, leg: &FlowLeg) -> Option<i64> {
 }
 
 fn entity_text(entity: Option<VId>) -> String {
-    entity.map_or_else(|| "implicit book entity".into(), |v| format!("entity {:032x}", v.0))
+    entity.map_or_else(
+        || "implicit book entity".into(),
+        |v| format!("entity {:032x}", v.0),
+    )
 }
 
 /// `graph.round_trips`: same-amount asset-account round trips. Two-hop mode
@@ -122,7 +125,11 @@ impl Procedure for RoundTrips {
                 continue;
             }
             candidates += 1;
-            let pair = if l.from <= l.to { (l.from, l.to) } else { (l.to, l.from) };
+            let pair = if l.from <= l.to {
+                (l.from, l.to)
+            } else {
+                (l.to, l.from)
+            };
             by_bucket
                 .entry((scoped.legal_entity, pair.0, pair.1, l.unit_id, l.mantissa))
                 .or_default()
@@ -137,7 +144,9 @@ impl Procedure for RoundTrips {
             let mut used = vec![false; bucket.len()];
             let mut cursor = [0usize; 2];
             for i in 0..bucket.len() {
-                if used[i] { continue; }
+                if used[i] {
+                    continue;
+                }
                 let o = bucket[i];
                 let opp = 1 - dir(o);
                 cursor[opp] = cursor[opp].max(i + 1);
@@ -154,19 +163,31 @@ impl Procedure for RoundTrips {
                     work.compare(1);
                     r_idx += 1;
                 }
-                let Some(&r) = bucket.get(r_idx) else { continue; };
+                let Some(&r) = bucket.get(r_idx) else {
+                    continue;
+                };
                 work.compare(1);
                 let gap = i64::from(r.effective_date.0) - i64::from(o.effective_date.0);
-                if !(0..=i64::from(window_days)).contains(&gap) { continue; }
+                if !(0..=i64::from(window_days)).contains(&gap) {
+                    continue;
+                }
                 used[i] = true;
                 used[r_idx] = true;
-                if r_idx == cursor[opp] { cursor[opp] += 1; }
+                if r_idx == cursor[opp] {
+                    cursor[opp] += 1;
+                }
                 let (a, b) = (o.from, o.to);
                 let out_days = days_to_period_end(snapshot, o);
                 let back_days = days_to_period_end(snapshot, r);
-                let near_end = [out_days, back_days].iter().flatten()
+                let near_end = [out_days, back_days]
+                    .iter()
+                    .flatten()
                     .any(|d| (0..=i64::from(period_end_days)).contains(d));
-                let severity = if near_end { Severity::High } else { Severity::Medium };
+                let severity = if near_end {
+                    Severity::High
+                } else {
+                    Severity::Medium
+                };
                 let day_text = |d: Option<i64>| d.map_or("?".to_string(), |d| d.to_string());
                 out.push(finding(
                     Self::ID,
@@ -205,9 +226,13 @@ fn multi_round_trips(
     for flow in &scoped {
         work.leg();
         let leg = &flow.leg;
-        if leg.class == EntryClass::REVERSAL || leg.from == leg.to
-            || !is_asset(snapshot, leg.from) || !is_asset(snapshot, leg.to)
-        { continue; }
+        if leg.class == EntryClass::REVERSAL
+            || leg.from == leg.to
+            || !is_asset(snapshot, leg.from)
+            || !is_asset(snapshot, leg.to)
+        {
+            continue;
+        }
         sources.push(flow);
         edges.push(cycles::Edge {
             day: leg.effective_date.0,
@@ -240,12 +265,21 @@ fn multi_round_trips(
     work.compare(found.steps);
     let mut out = Vec::new();
     for path in found.paths {
-        let first_index = path.first().ok_or(LanternError::Overflow("empty circular-flow path"))?;
-        let last_index = path.last().ok_or(LanternError::Overflow("empty circular-flow path"))?;
+        let first_index = path
+            .first()
+            .ok_or(LanternError::Overflow("empty circular-flow path"))?;
+        let last_index = path
+            .last()
+            .ok_or(LanternError::Overflow("empty circular-flow path"))?;
         let first = &sources[*first_index].leg;
         let last = &sources[*last_index].leg;
-        let near_end = [days_to_period_end(snapshot, first), days_to_period_end(snapshot, last)]
-            .iter().flatten().any(|d| (0..=i64::from(period_end_days)).contains(d));
+        let near_end = [
+            days_to_period_end(snapshot, first),
+            days_to_period_end(snapshot, last),
+        ]
+        .iter()
+        .flatten()
+        .any(|d| (0..=i64::from(period_end_days)).contains(d));
         let mut cites = Vec::with_capacity(path.len() * 2);
         for index in &path {
             cites.push(Cite::Entry(sources[*index].leg.entry));
@@ -284,11 +318,15 @@ impl Structuring {
     pub const ID: &'static str = "graph.structuring";
 
     pub fn new() -> Result<Self, LanternError> {
-        Ok(Self { params: Params::defaults(Self::ID)? })
+        Ok(Self {
+            params: Params::defaults(Self::ID)?,
+        })
     }
 
     #[must_use]
-    pub fn with(params: Params) -> Self { Self { params } }
+    pub fn with(params: Params) -> Self {
+        Self { params }
+    }
 }
 
 struct Rule {
@@ -319,19 +357,23 @@ impl Rule {
         };
         if rule.currency == 0 || rule.currency > 999 {
             return Err(LanternError::Parameter {
-                procedure: Structuring::ID.into(), name: "currency_iso4217".into(),
+                procedure: Structuring::ID.into(),
+                name: "currency_iso4217".into(),
                 message: "an ISO 4217 numeric currency code (1..=999)".into(),
             });
         }
         if rule.threshold <= 0 || rule.floor < 0 || rule.floor >= rule.threshold {
             return Err(LanternError::Parameter {
-                procedure: Structuring::ID.into(), name: "floor".into(),
+                procedure: Structuring::ID.into(),
+                name: "floor".into(),
                 message: "0 <= floor < threshold is required".into(),
             });
         }
         if rule.min_count == 0 {
             return Err(LanternError::Parameter {
-                procedure: Structuring::ID.into(), name: "min_count".into(), message: "at least 1".into(),
+                procedure: Structuring::ID.into(),
+                name: "min_count".into(),
+                message: "at least 1".into(),
             });
         }
         Ok(rule)
@@ -346,19 +388,34 @@ impl Rule {
         scale: u8,
     ) -> Result<(), LanternError> {
         let (entity, from, to, unit_id) = key;
-        let (Some(first), Some(last)) = (chain.first(), chain.last()) else { return Ok(()); };
-        if chain.len() < self.min_count { return Ok(()); }
-        let sum = chain.iter().try_fold(0i128, |acc, l| acc.checked_add(l.mantissa))
+        let (Some(first), Some(last)) = (chain.first(), chain.last()) else {
+            return Ok(());
+        };
+        if chain.len() < self.min_count {
+            return Ok(());
+        }
+        let sum = chain
+            .iter()
+            .try_fold(0i128, |acc, l| acc.checked_add(l.mantissa))
             .ok_or(LanternError::Overflow("structuring chain"))?;
-        if sum < self.threshold { return Ok(()); }
+        if sum < self.threshold {
+            return Ok(());
+        }
         let span = i64::from(last.effective_date.0) - i64::from(first.effective_date.0);
         let mut seen = std::collections::BTreeSet::new();
-        let mut entries: Vec<VId> = chain.iter().map(|l| l.entry)
-            .filter(|entry| seen.insert(*entry)).collect();
+        let mut entries: Vec<VId> = chain
+            .iter()
+            .map(|l| l.entry)
+            .filter(|entry| seen.insert(*entry))
+            .collect();
         entries.truncate(MAX_CITES - 2);
         let severity = if sum >= self.threshold.saturating_mul(2)
             || chain.len() >= self.min_count.saturating_mul(2)
-        { Severity::High } else { Severity::Medium };
+        {
+            Severity::High
+        } else {
+            Severity::Medium
+        };
         let mut cites = vec![Cite::Account(to), Cite::Account(from)];
         cites.extend(entries.into_iter().map(Cite::Entry));
         out.push(finding(
@@ -376,9 +433,15 @@ impl Rule {
 }
 
 impl Procedure for Structuring {
-    fn id(&self) -> &'static str { Self::ID }
-    fn version(&self) -> u16 { 2 }
-    fn params(&self) -> &Params { &self.params }
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        2
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
     fn run(
         &self,
         snapshot: &Snapshot,
@@ -396,11 +459,19 @@ impl Procedure for Structuring {
                 book.units.get(UnitId(l.unit_id)).map(|u| u.kind),
                 Some(UnitKind::Currency { iso4217 }) if iso4217 == rule.currency
             );
-            if !in_currency || l.class == EntryClass::REVERSAL || l.from == l.to
-                || l.mantissa < rule.floor || l.mantissa >= rule.threshold
-            { continue; }
+            if !in_currency
+                || l.class == EntryClass::REVERSAL
+                || l.from == l.to
+                || l.mantissa < rule.floor
+                || l.mantissa >= rule.threshold
+            {
+                continue;
+            }
             candidates += 1;
-            groups.entry((scoped.legal_entity, l.from, l.to, l.unit_id)).or_default().push(l);
+            groups
+                .entry((scoped.legal_entity, l.from, l.to, l.unit_id))
+                .or_default()
+                .push(l);
         }
         let mut out = Vec::new();
         for (key, mut group) in groups {
@@ -410,7 +481,8 @@ impl Procedure for Structuring {
             let mut chain: Vec<&FlowLeg> = Vec::new();
             for l in group {
                 if let Some(last) = chain.last()
-                    && i64::from(l.effective_date.0) - i64::from(last.effective_date.0) > i64::from(rule.window_days)
+                    && i64::from(l.effective_date.0) - i64::from(last.effective_date.0)
+                        > i64::from(rule.window_days)
                 {
                     rule.report(&mut out, &chain, key, candidates, scale)?;
                     chain.clear();

@@ -45,7 +45,11 @@ pub(crate) enum AmbiguousSource {
 }
 
 impl Source {
-    pub(crate) fn observe(&mut self, unit: u32, entity: Option<u128>) -> Result<(), AmbiguousSource> {
+    pub(crate) fn observe(
+        &mut self,
+        unit: u32,
+        entity: Option<u128>,
+    ) -> Result<(), AmbiguousSource> {
         match self.selected {
             None => self.selected = Some((unit, entity)),
             Some((previous, _)) if previous != unit => return Err(AmbiguousSource::Unit),
@@ -93,11 +97,19 @@ mod tests {
 
     #[test]
     fn scope_resolution_is_permutation_invariant() {
-        for values in [vec![], vec![None, Some(0), Some(0)], vec![Some(u128::MAX), Some(0), None]] {
+        for values in [
+            vec![],
+            vec![None, Some(0), Some(0)],
+            vec![Some(u128::MAX), Some(0), None],
+        ] {
             let mut forward = Scope::default();
             let mut backward = Scope::default();
-            for value in &values { forward.observe(*value); }
-            for value in values.iter().rev() { backward.observe(*value); }
+            for value in &values {
+                forward.observe(*value);
+            }
+            for value in values.iter().rev() {
+                backward.observe(*value);
+            }
             for value in [None, Some(0), Some(u128::MAX)] {
                 assert_eq!(forward.resolve(value), backward.resolve(value));
             }
@@ -128,5 +140,4 @@ mod tests {
         assert_eq!(source.observe(8, Some(1)), Err(AmbiguousSource::Unit));
         assert_eq!(source.selected(), Some((7, Some(1))));
     }
-
 }

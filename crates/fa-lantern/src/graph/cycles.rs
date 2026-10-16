@@ -136,7 +136,10 @@ pub(crate) fn find(
     for index in &order {
         let edge = edges[*index];
         if edge.from != edge.to {
-            adjacent.entry(edge.key(edge.from)).or_default().push(*index);
+            adjacent
+                .entry(edge.key(edge.from))
+                .or_default()
+                .push(*index);
         }
     }
     let mut used = vec![false; edges.len()];
@@ -190,23 +193,36 @@ mod tests {
     }
 
     fn identities(edges: &[Edge], paths: &[Vec<usize>]) -> Vec<Vec<Edge>> {
-        paths.iter().map(|path| path.iter().map(|i| edges[*i]).collect()).collect()
+        paths
+            .iter()
+            .map(|path| path.iter().map(|i| edges[*i]).collect())
+            .collect()
     }
 
     #[test]
     fn three_and_four_account_cycles_are_detected_not_rotated_or_reused() {
         let edges = [
-            edge(1, 10, 20, 1), edge(2, 20, 30, 2), edge(3, 30, 10, 3),
-            edge(4, 10, 40, 4), edge(5, 40, 50, 5), edge(6, 50, 60, 6),
+            edge(1, 10, 20, 1),
+            edge(2, 20, 30, 2),
+            edge(3, 30, 10, 3),
+            edge(4, 10, 40, 4),
+            edge(5, 40, 50, 5),
+            edge(6, 50, 60, 6),
             edge(7, 60, 10, 7),
         ];
         assert!(find(&edges, 2, 10, 1000).unwrap().paths.is_empty());
-        assert_eq!(find(&edges, 3, 10, 1000).unwrap().paths, vec![vec![0, 1, 2]]);
+        assert_eq!(
+            find(&edges, 3, 10, 1000).unwrap().paths,
+            vec![vec![0, 1, 2]]
+        );
         let result = find(&edges, 4, 10, 1000).unwrap();
         assert_eq!(result.paths, vec![vec![0, 1, 2], vec![3, 4, 5, 6]]);
         let mut reversed = edges;
         reversed.reverse();
-        assert_eq!(identities(&edges, &result.paths), identities(&reversed, &find(&reversed, 4, 10, 1000).unwrap().paths));
+        assert_eq!(
+            identities(&edges, &result.paths),
+            identities(&reversed, &find(&reversed, 4, 10, 1000).unwrap().paths)
+        );
     }
 
     #[test]
@@ -221,7 +237,10 @@ mod tests {
                 3 => bad[1].entity = Some(2),
                 _ => bad[1].entry = bad[0].entry,
             }
-            assert!(find(&bad, 8, 10, 1000).unwrap().paths.is_empty(), "case {change}");
+            assert!(
+                find(&bad, 8, 10, 1000).unwrap().paths.is_empty(),
+                "case {change}"
+            );
         }
         assert!(find(&good, 3, 1, 1000).unwrap().paths.is_empty());
         assert_eq!(find(&good, 3, 2, 1000).unwrap().paths.len(), 1);
@@ -229,16 +248,25 @@ mod tests {
 
     #[test]
     fn same_day_uses_recorded_sequence_before_hashed_identity() {
-        let mut edges = [edge(300, 10, 20, 1), edge(200, 20, 30, 1), edge(100, 30, 10, 1)];
-        for (i, edge) in edges.iter_mut().enumerate() { edge.recorded = i as u64; }
+        let mut edges = [
+            edge(300, 10, 20, 1),
+            edge(200, 20, 30, 1),
+            edge(100, 30, 10, 1),
+        ];
+        for (i, edge) in edges.iter_mut().enumerate() {
+            edge.recorded = i as u64;
+        }
         assert_eq!(find(&edges, 3, 0, 1000).unwrap().paths, vec![vec![0, 1, 2]]);
     }
 
     #[test]
     fn repeated_intermediate_accounts_are_not_simple_cycles() {
         let edges = [
-            edge(1, 10, 20, 1), edge(2, 20, 30, 2), edge(3, 30, 20, 3),
-            edge(4, 20, 40, 4), edge(5, 40, 10, 5),
+            edge(1, 10, 20, 1),
+            edge(2, 20, 30, 2),
+            edge(3, 30, 20, 3),
+            edge(4, 20, 40, 4),
+            edge(5, 40, 10, 5),
         ];
         let paths = find(&edges, 8, 10, 1000).unwrap().paths;
         // The root's first continuation is a dead end for a simple cycle;
@@ -278,27 +306,45 @@ mod tests {
         let mut possible = Vec::new();
         for mask in 0..1usize << sorted.len() {
             let path: Vec<usize> = (0..sorted.len()).filter(|i| mask & (1 << i) != 0).collect();
-            if path.len() < 2 || path.len() > hops { continue; }
+            if path.len() < 2 || path.len() > hops {
+                continue;
+            }
             let first = sorted[path[0]];
             let last = sorted[*path.last().unwrap()];
-            if first.from != last.to || i64::from(last.day) - i64::from(first.day) > i64::from(window) { continue; }
+            if first.from != last.to
+                || i64::from(last.day) - i64::from(first.day) > i64::from(window)
+            {
+                continue;
+            }
             let entries: BTreeSet<u128> = path.iter().map(|i| sorted[*i].entry).collect();
             let nodes: BTreeSet<u128> = path.iter().map(|i| sorted[*i].from).collect();
-            if entries.len() != path.len() || nodes.len() != path.len() { continue; }
+            if entries.len() != path.len() || nodes.len() != path.len() {
+                continue;
+            }
             if path.iter().any(|i| {
                 let e = sorted[*i];
-                e.from == e.to || e.unit != first.unit || e.amount != first.amount || e.entity != first.entity
-            }) { continue; }
+                e.from == e.to
+                    || e.unit != first.unit
+                    || e.amount != first.amount
+                    || e.entity != first.entity
+            }) {
+                continue;
+            }
             if !path.windows(2).all(|pair| {
-                sorted[pair[0]].to == sorted[pair[1]].from && sorted[pair[0]].time() < sorted[pair[1]].time()
-            }) { continue; }
+                sorted[pair[0]].to == sorted[pair[1]].from
+                    && sorted[pair[0]].time() < sorted[pair[1]].time()
+            }) {
+                continue;
+            }
             possible.push(path);
         }
         possible.sort();
         let mut used = BTreeSet::new();
         let mut result = Vec::new();
         for path in possible {
-            if path.iter().any(|i| used.contains(i)) { continue; }
+            if path.iter().any(|i| used.contains(i)) {
+                continue;
+            }
             used.extend(path.iter().copied());
             result.push(path.into_iter().map(|i| sorted[i]).collect());
         }
@@ -312,7 +358,12 @@ mod tests {
             let mut edges = vec![edge(1, 0, 1, 0), edge(2, 1, 2, 1), edge(3, 2, 0, 2)];
             for i in 3..10 {
                 seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let mut e = edge((i + 1) as u128, u128::from(seed % 4), u128::from((seed >> 8) % 4), i);
+                let mut e = edge(
+                    (i + 1) as u128,
+                    u128::from(seed % 4),
+                    u128::from((seed >> 8) % 4),
+                    i,
+                );
                 e.amount = 100 + i128::from((seed >> 16) % 2);
                 e.unit = 1 + ((seed >> 24) % 2) as u32;
                 e.entity = Some(1 + u128::from((seed >> 32) % 2));
@@ -321,10 +372,18 @@ mod tests {
             for hops in 2..=5 {
                 let expected = oracle(&edges, hops, 6);
                 let result = find(&edges, hops, 6, 100_000).unwrap();
-                assert_eq!(identities(&edges, &result.paths), expected, "case={case} hops={hops}");
+                assert_eq!(
+                    identities(&edges, &result.paths),
+                    expected,
+                    "case={case} hops={hops}"
+                );
                 edges.reverse();
                 let result = find(&edges, hops, 6, 100_000).unwrap();
-                assert_eq!(identities(&edges, &result.paths), expected, "permuted case={case} hops={hops}");
+                assert_eq!(
+                    identities(&edges, &result.paths),
+                    expected,
+                    "permuted case={case} hops={hops}"
+                );
             }
         }
     }
