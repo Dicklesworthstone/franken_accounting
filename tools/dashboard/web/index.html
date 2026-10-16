@@ -5,45 +5,46 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <meta name="referrer" content="no-referrer">
-  <title>FrankenAccounting · Local workspace</title>
+  <title>FrankenAccounting — The ledger workbench</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/styles.css">
-  <link rel="stylesheet" href="/reports.css">
-  <script type="module" src="/app.js"></script>
+  <link rel="stylesheet" href="/workbench.css">
+  <script type="module" src="/workbench.mjs"></script>
 </head>
 <body>
-<a class="skip" href="#main">Skip to workspace</a>
-<aside class="sidebar" aria-label="Workspace navigation">
-  <a class="brand" href="#overview" aria-label="FrankenAccounting overview"><span class="brand-mark">f<span>∴</span></span><span>franken<span class="brand-sub">ACCOUNTING</span></span></a>
-  <div class="workspace-label">YOUR WORKSPACE</div>
-  <div class="book-card"><span class="book-avatar">B</span><div><strong id="book-title">Local book</strong><span id="book-subtitle">Connecting securely…</span></div><span class="book-chevron">⌄</span></div>
-  <div class="nav-label">EXPLORE</div>
-  <nav>
-    <button class="nav-item active" data-view="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg>Overview</button>
-    <button class="nav-item" data-view="accounts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 9h16M10 9v11"/></svg>Accounts<span class="nav-count" id="account-count">—</span></button>
-    <button class="nav-item" data-view="periods"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v16H4zM8 2v6M16 2v6M4 11h16"/></svg>Fiscal periods</button>
-    <button class="nav-item" data-view="evidence"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="3"/><circle cx="18" cy="5" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8 11 7-5M8 13l7 5"/></svg>Evidence explorer</button>
-    <button class="nav-item" data-view="health"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 8 3v6c0 5-8 11-8 11S4 16 4 11V5zM8 11l3 3 5-6"/></svg>Integrity checks</button>
-    <a class="nav-item" href="/reports.html#ledger"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16"/></svg>General ledger</a>
-    <a class="nav-item" href="/reports.html#aging"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg>Open-item aging</a>
+<a href="#main" class="skip-link">Skip to ledger workspace</a>
+<aside class="rail" aria-label="Workspace navigation">
+  <a class="brand" href="#overview"><svg viewBox="0 0 40 40" aria-hidden="true"><rect x="1" y="1" width="38" height="38" rx="12"/><path d="M13 29V15c0-5 4-7 10-6M9 19h18M21 26h8"/><circle cx="29" cy="12" r="2"/></svg><span>franken<span>ACCOUNTING</span></span></a>
+  <div class="book-switch"><div class="book-initial">N</div><div><strong id="book-title">Local workspace</strong><small id="book-subtitle">Connecting to your book</small></div><span class="book-more" aria-hidden="true">⌄</span></div>
+  <button id="command-button" class="rail-search"><span id="search-icon"></span>Find anything<kbd>⌘ K</kbd></button>
+  <div class="nav-section-label">YOUR LEDGER</div>
+  <nav id="navigation">
+    <a href="#overview" data-view="overview" aria-current="page"><span data-icon="overview"></span>Overview</a>
+    <a href="/reports.html#ledger" data-view="ledger"><span data-icon="ledger"></span>General ledger</a>
+    <a href="/reports.html#aging" data-view="aging"><span data-icon="aging"></span>Open-item aging</a>
+    <div class="nav-section-label">LOOK DEEPER</div>
+    <a href="#compare" data-view="compare"><span data-icon="time"></span>Time lens<span class="nav-tag">A ↔ B</span></a>
+    <a href="#graph" data-view="graph"><span data-icon="graph"></span>Evidence graph</a>
+    <a href="#periods" data-view="periods"><span data-icon="calendar"></span>Fiscal periods</a>
+    <a href="#health" data-view="health"><span data-icon="shield"></span>Integrity</a>
   </nav>
-  <div class="sidebar-note"><span class="mini-spark">✳</span><strong>Every number has a trail.</strong><p>Open an account to follow its entries, then explore the evidence behind them.</p><button class="text-button" id="tour-button">Explore an account <span>↗</span></button></div>
-  <div class="sidebar-bottom"><span class="local-dot"></span><div><strong>Stays on your machine</strong><span>No cloud. No telemetry.</span></div><span class="lock-icon">⌑</span></div>
+  <div class="rail-spacer"></div>
+  <div class="rail-insight"><span class="rail-eyebrow">A DIFFERENT KIND OF LEDGER</span><strong>Not just the number.<br>The whole story.</strong><p>Travel through recorded history.<br>Follow every connection.</p><button id="rail-explore">Explore the time lens <span aria-hidden="true">↗</span></button></div>
+  <button class="local-status" id="session-button"><span class="status-dot"></span><span><strong>Local. Private. Yours.</strong><small>Read-only owner workspace</small></span><span data-icon="lock"></span></button>
 </aside>
 <div class="workspace">
-  <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong id="view-name">Overview</strong></div><div class="top-actions"><button class="search-trigger" id="search-button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><span>Search workspace</span><kbd>⌘ K</kbd></button><button class="icon-button" id="theme-button" aria-label="Switch to dark theme" title="Switch theme">◐</button><span class="avatar" title="Local owner session">LO</span></div></header>
+  <header class="topbar"><div class="breadcrumbs"><span class="crumb-icon" data-icon="book"></span><span>Workspace</span><span class="slash">/</span><strong id="crumb-view">Overview</strong></div><div class="top-actions"><button id="mobile-command-button" class="icon-button mobile-command" aria-label="Search workspace"><span data-icon="search"></span></button><span class="branch-chip"><span data-icon="branch"></span>trunk</span><button id="theme-button" class="icon-button" aria-label="Switch color theme"></button><button id="help-button" class="icon-button" aria-label="About this workspace"><span data-icon="help"></span></button><button id="profile-button" class="profile-button" aria-label="Local session details">LO</button></div></header>
   <main id="main" tabindex="-1">
-    <div id="demo-banner" class="demo-banner" hidden><strong>DEMO WORKSPACE</strong><span>Synthetic sample data. No real book is connected and no native checks have run.</span></div>
-    <section class="page-heading"><div><div class="eyebrow" id="eyebrow">A CLEARER VIEW OF YOUR LEDGER</div><h1 id="page-title">Your books, in focus.</h1><p id="page-subtitle">Exact balances. Connected evidence. One local workspace.</p></div><div class="heading-actions"><span class="pill neutral">◉ &nbsp;Read-only</span><button class="button" id="refresh-button">↻ <span>Refresh to latest</span></button></div></section>
-    <section class="context-bar" aria-label="Report selection"><div class="context-controls"><label>Fiscal period<select id="period-select" aria-label="Fiscal period"><option>Loading…</option></select></label><span class="control-divider"></span><label>Native unit<select id="unit-select" aria-label="Native unit"><option>—</option></select></label><span class="control-divider"></span><label>As known at<input id="known-at" value="HEAD" inputmode="numeric" aria-label="As known at commit sequence" title="HEAD or an exact commit sequence. Press Enter to apply." spellcheck="false"></label><button class="small-button" id="apply-snapshot">Apply</button></div><div class="snapshot"><span class="local-dot"></span><span id="snapshot-label">Waiting for native data</span></div></section>
-    <div id="notice" role="alert" hidden></div>
-    <div id="content" aria-live="polite"><div class="loading-card"><span class="spinner"></span><h2>Opening your local workspace</h2><p>Reading the book through the native accounting API.</p></div></div>
-    <footer class="page-footer"><span>FRANKENACCOUNTING <span class="footer-separator">/</span> LOCAL WORKSPACE</span><span id="scope-footer">Presentation only · no posting endpoints · no implied certification</span></footer>
+    <div id="demo-banner" class="demo-banner" hidden><span class="demo-tag">SAMPLE BOOK</span><span>Synthetic preview · no real book connected · no native checks performed</span><span aria-hidden="true">✳</span></div>
+    <section class="page-heading"><div><p class="eyebrow" id="page-eyebrow">THE LEDGER WORKBENCH</p><h1 id="page-title">See the bigger picture.</h1><p class="page-subtitle" id="page-subtitle">Your balances, their history, and the evidence that connects them.</p></div><div class="page-actions"><button id="scope-button" class="button"><span data-icon="scope"></span>View scope</button><button id="refresh-button" class="button primary"><span data-icon="refresh"></span>Refresh to latest</button></div></section>
+    <form id="scope-form" class="scope-bar" aria-label="Report selection"><div id="scope-fields" class="scope-fields"></div><button id="apply-button" class="button scope-apply" type="submit">Apply selection <span aria-hidden="true">↗</span></button></form>
+    <div class="context-line"><div id="snapshot-status"><span class="status-dot"></span>Waiting for a native snapshot</div><span id="scope-kind">Exact native units · no currency conversion</span></div>
+    <div id="content"><div class="skeleton-grid" aria-hidden="true"><div></div><div></div><div></div><div></div></div><div class="loading-panel"><span class="spinner"></span><h2>Opening your ledger workspace</h2><p>Reading through the existing native accounting API.</p></div></div>
+    <footer class="workspace-footer"><span>FRANKENACCOUNTING <span class="footer-dot">·</span> BUILT AROUND THE EVIDENCE</span><span>Native reads. Exact amounts. No posting endpoints.</span></footer>
   </main>
 </div>
-<dialog id="drawer" class="drawer" aria-labelledby="drawer-title"><div class="drawer-top"><span class="eyebrow">FOLLOW THE EVIDENCE</span><button class="icon-button" id="close-drawer" aria-label="Close detail panel">×</button></div><div id="drawer-content"></div></dialog>
-<dialog id="palette" class="palette" aria-labelledby="palette-title"><div class="palette-heading"><strong id="palette-title">Jump to anything</strong><button class="icon-button" id="close-palette" aria-label="Close search">×</button></div><input id="palette-input" type="search" placeholder="Search accounts or views…" aria-label="Search accounts or views" autocomplete="off"><div id="palette-results"></div><div class="palette-footer">↑ ↓ to navigate <span>Enter to open · Esc to close</span></div></dialog>
-<div id="toast" role="status" hidden></div>
-<noscript><div class="noscript">This local visualization requires JavaScript. The native CLI remains available without it.</div></noscript>
+<dialog id="inspector" class="inspector" aria-labelledby="inspector-title"><div class="inspector-header"><div><p class="eyebrow">THE DETAILS BEHIND THE NUMBER</p><h2 id="inspector-title">Inspect</h2></div><button id="inspector-close" class="icon-button" aria-label="Close inspector">×</button></div><div id="inspector-content"></div></dialog>
+<dialog id="command-dialog" class="command-dialog" aria-labelledby="command-title"><div class="command-head"><span data-icon="search"></span><h2 id="command-title" class="sr-only">Find a view, account, or entry</h2><input id="command-input" role="combobox" aria-label="Find a view, account, or entry" aria-expanded="true" aria-controls="command-results" aria-autocomplete="list" placeholder="Find an account, view, or entry handle…" autocomplete="off"><button id="command-close" class="key-button" aria-label="Close command menu">Esc</button></div><div id="command-results" role="listbox" aria-label="Search results"></div><div class="command-footer"><span>↑ ↓ Navigate &nbsp; ↵ Open</span><span>One workspace. Every connection.</span></div></dialog>
+<div id="announcer" class="sr-only" role="status" aria-live="polite"></div><div id="toast" role="status" hidden></div>
+<noscript><div class="no-script">JavaScript is required for the workbench. The native CLI remains available.</div></noscript>
 </body>
 </html>
