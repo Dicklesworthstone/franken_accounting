@@ -179,7 +179,7 @@ status = "dormant"
 statement = "Every leg posts to a Leaf account whose effectivity interval covers the entry's effective date."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-bvx"]
+activating = ["fa-up7"]
 waiver = "forbidden"
 
 [[clause]]
@@ -216,7 +216,7 @@ status = "dormant"
 statement = "Required dimensions are present on every leg."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-bvx"]
+activating = ["fa-ficc"]
 waiver = "forbidden"
 
 [[clause]]
@@ -370,11 +370,15 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-03"
 id = "witness-race"
-status = "dormant"
+status = "live"
 statement = "A transition and a post cannot both commit against a stale period state: the conflict oracle over post-vs-close interleavings in both orders under DPOR."
 evidence_class = "bounded_model"
+checker_strength = "model"
 first_gate = "G2"
-activating = ["fa-0fl"]
+owner = "fa-zy1"
+checkers = ["fa-conformance::tests/substrate.rs::post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period"]
+negatives = ["fa-conformance::tests/substrate.rs::a_witnessed_row_changed_after_staging_loses_first_committer_wins_at_commit"]
+depends = ["FA-INV-03.core"]
 waiver = "forbidden"
 
 [[clause]]
@@ -589,11 +593,15 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-07"
 id = "book-scoped"
-status = "dormant"
+status = "live"
 statement = "Book-scoped controls follow the known-at control-history and class-applicability rules without a posting date."
 evidence_class = "invariant"
+checker_strength = "negative_fixture"
 first_gate = "G2"
-activating = ["fa-xwv"]
+owner = "fa-xwv"
+checkers = ["fa-journal::tests/policy.rs::policy_activation_is_a_dual_controlled_journaled_control_that_moves_the_epoch"]
+negatives = ["fa-journal::tests/policy.rs::only_the_enforced_policy_activates_and_only_from_its_date_onward"]
+depends = ["FA-INV-07.core"]
 waiver = "forbidden"
 
 [[clause]]
@@ -835,7 +843,7 @@ status = "dormant"
 statement = "Every external-profile read is logged."
 evidence_class = "invariant"
 first_gate = "G3"
-activating = ["fa-t6m"]
+activating = ["fa-7dw"]
 waiver = "forbidden"
 
 [[clause]]
@@ -878,7 +886,7 @@ status = "dormant"
 statement = "At every committed coordinate the fold of a subledger's detail legs equals its control account's register."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-06a"]
+activating = ["fa-03s"]
 waiver = "forbidden"
 
 [[clause]]
@@ -888,7 +896,7 @@ status = "dormant"
 statement = "External summary feeds name the detail batch digest they summarize and are refused if the detail does not fold to the summary."
 evidence_class = "invariant"
 first_gate = "G3"
-activating = ["fa-06a"]
+activating = ["fa-03s"]
 waiver = "forbidden"
 
 [[clause]]
@@ -1004,7 +1012,7 @@ status = "dormant"
 statement = "Signed, witnessed transparency checkpoints detect rollback."
 evidence_class = "invariant"
 first_gate = "G3"
-activating = ["fa-l3c"]
+activating = ["fa-qtfd"]
 waiver = "forbidden"
 
 [[clause]]
@@ -1111,10 +1119,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-16"
 id = "recovery-rebuild"
-status = "dormant"
+status = "live"
 statement = "Projections are rebuilt from payloads on recovery."
 evidence_class = "invariant"
+checker_strength = "negative_fixture"
 first_gate = "G2"
-activating = ["fa-vn4"]
+owner = "fa-zy1"
+checkers = ["fa-conformance::tests/substrate.rs::delta_cursor_retired_refuses_unloaded_or_retired_prefixes_and_triggers_register_rebuild"]
+negatives = ["fa-registers::tests/registers.rs::missing_register_membership_is_detected_and_repaired"]
+depends = ["FA-INV-16.core"]
 waiver = "forbidden"
 
