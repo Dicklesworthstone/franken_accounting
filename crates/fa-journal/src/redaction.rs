@@ -402,6 +402,14 @@ where
     ) {
         return Ok(Err(refusal(&d)));
     }
+    if let Some(contract) = capability.redaction() {
+        return Ok(Err(refusal(&fa_policy::Denial::OutOfScope {
+            caveat: "redaction",
+            value: format!(
+                "deriving a redacted view from unredacted bytes (the token is confined to contract {contract}'s views)"
+            ),
+        })));
+    }
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
         return Ok(Err(refusal(&d)));
     }
@@ -538,13 +546,14 @@ fn recorded(
 /// capability is its holder's, holds `read`, admits this book, carries no
 /// scope caveat (plan §14.2: which documents a scoped reader may see is
 /// whole-entry visibility, not yet enforced, so it is refused), is current
-/// and is not revoked. One that also holds `privileged` reads the verified
-/// bytes. For
-/// any other, the document's kind (public metadata, one point read of its
-/// mirror) selects the governing contract: none, and the verified bytes are
-/// read, because nothing in them is privileged; one, and only the view
-/// vertex is read — FA-REF-142 when no view has been derived, FA-REF-143
-/// when the stored view does not rebuild the document's commitment.
+/// and is not revoked. One that also holds `privileged` and is not confined
+/// by a `redaction = <contract>` caveat for the governing contract reads the
+/// verified bytes (fa-kuu). For any other, the document's kind (public
+/// metadata, one point read of its mirror) selects the governing contract:
+/// none, and the verified bytes are read, because nothing in them is
+/// privileged; one, and only the view vertex is read — FA-REF-142 when no
+/// view has been derived, FA-REF-143 when the stored view does not rebuild
+/// the document's commitment.
 pub async fn read_document_for<V, B>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -599,7 +608,7 @@ where
         Ok(None) => Err(unknown_document(&oid)),
         Err(r) => Err(r),
     };
-    if capability.holds(Op::Privileged) {
+    if capability.holds(Op::Privileged) && capability.redaction().is_none() {
         return Ok(full(
             crate::evidence::fetch_document_with(db, ctx, store, &oid, before_fetch).await?,
         ));
@@ -627,6 +636,12 @@ where
         return Ok(Err(unknown_document(&oid)));
     };
     let Some(contract) = contracts()?.for_kind(kind) else {
+        txn.abort();
+        return Ok(full(
+            crate::evidence::fetch_document_with(db, ctx, store, &oid, before_fetch).await?,
+        ));
+    };
+    if capability.reveals_contract(contract.id) {
         txn.abort();
         return Ok(full(
             crate::evidence::fetch_document_with(db, ctx, store, &oid, before_fetch).await?,
@@ -828,6 +843,107 @@ mod tests {
         assert_eq!(
             view.disclosed().collect::<Vec<_>>(),
             vec![(C, &statement.bytes[CHUNK_BYTES..])]
+        );
+        assert_eq!(f.db.frontier().unwrap(), head);
+    }
+
+    #[test]
+    fn a_redaction_caveat_is_conjunctive_with_privileged_and_decided_before_payload_inspection() {
+        let mut f = ReadFixture::new();
+        let unredacted_priv = Capability::embedded(VId(7), &["read", "privileged"])
+            .unwrap()
+            .for_books(&[f.book.book_id])
+            .unwrap();
+        let caveated_priv = unredacted_priv.clone().with_redaction(1).unwrap();
+
+        let invoice = Document { kind: 1, ..doc(19) };
+        let statement = doc(CHUNK_BYTES + 19);
+        f.add(&invoice);
+        f.add(&statement);
+
+        // Ungoverned documents are read in full by both capabilities.
+        assert_eq!(
+            f.read(&unredacted_priv, invoice.oid()).unwrap(),
+            DocumentRead::Full(invoice.clone())
+        );
+        assert_eq!(
+            f.read(&caveated_priv, invoice.oid()).unwrap(),
+            DocumentRead::Full(invoice)
+        );
+
+        // Before the view is derived, the un-caveated privileged capability reads
+        // the full BankStatement, while the redaction-caveated privileged capability
+        // is refused REDACTED_VIEW_ABSENT and cannot derive the view itself.
+        assert_eq!(
+            f.read(&unredacted_priv, statement.oid()).unwrap(),
+            DocumentRead::Full(statement.clone())
+        );
+        assert_eq!(
+            f.read(&caveated_priv, statement.oid()).unwrap_err().code,
+            code::REDACTED_VIEW_ABSENT
+        );
+        let head_before = f.db.frontier().unwrap();
+        let derive_refusal = f
+            .runtime
+            .block_on(derive_redacted_view(
+                &mut f.db,
+                &f.contexts,
+                &f.book,
+                &caveated_priv,
+                &f.store,
+                statement.oid(),
+            ))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(derive_refusal.code, "FA-REF-011");
+        assert!(
+            derive_refusal
+                .message
+                .starts_with("the capability's `redaction` caveat"),
+            "{}",
+            derive_refusal.message
+        );
+        assert_eq!(f.db.frontier().unwrap(), head_before);
+
+        // Derive the view with un-caveated privileged authority.
+        f.runtime
+            .block_on(derive_redacted_view(
+                &mut f.db,
+                &f.contexts,
+                &f.book,
+                &unredacted_priv,
+                &f.store,
+                statement.oid(),
+            ))
+            .unwrap()
+            .unwrap();
+
+        // Poison the BankStatement's raw payload bytes: the redaction-caveated
+        // privileged capability never touches the raw payload and reads only the
+        // verified RedactedView, whereas the un-caveated privileged capability
+        // inspects the raw payload and observes DOCUMENT_DRIFT.
+        let mut poison = WriteBatch::new(relation::CUSTODY_OF);
+        poison.set_vertex_property(
+            document_vid(&statement.oid()),
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("_fa_payload", vec![0xff]).unwrap()),
+        );
+        f.runtime
+            .block_on(f.db.write(&f.contexts.commit(), poison))
+            .unwrap();
+        let head = f.db.frontier().unwrap();
+
+        let view = match f.read(&caveated_priv, statement.oid()).unwrap() {
+            DocumentRead::Redacted(view) => Some(view),
+            DocumentRead::Full(_) => None,
+        }
+        .expect("a redaction-caveated privileged capability must receive only the RedactedView");
+        assert_eq!(view.verify(), Ok(()));
+        assert_eq!(view.contract, 1);
+        assert_eq!(view.doc_commit, statement.doc_commit());
+        assert_eq!(
+            f.read(&unredacted_priv, statement.oid()).unwrap_err().code,
+            code::DOCUMENT_DRIFT
         );
         assert_eq!(f.db.frontier().unwrap(), head);
     }

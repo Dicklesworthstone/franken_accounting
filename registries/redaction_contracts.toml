@@ -12,8 +12,9 @@
 # of §9.6's contract-on-a-class. Per-matter and per-production contracts
 # (§13.2) become journaled payloads of the same row shape, and a view names
 # its contract by id either way. The `redaction = <contract>` capability
-# caveat is bead fa-kuu (Capability v2 tag 2); until it lands the revealing
-# op is the only gate (ruling 3251), decided before any read.
+# caveat (Capability v2 tag 2, fa-kuu) is conjunctive with `privileged`: a
+# capability carrying it sees documents governed by that contract only through
+# the contract's RedactedView, decided before any read of the document's bytes.
 #
 # Consumer: fa-registry `redaction_contracts` (parser), fa-journal
 # `redaction` (derivation and reads).

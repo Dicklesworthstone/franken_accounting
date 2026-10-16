@@ -25,9 +25,11 @@
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 use fa_model::{DecodeError, EncodeError, Id128, Reader, Writer, domain_digest};
 use fa_money::UnitId;
+use fa_registry::redaction_contracts::RedactionContracts;
 use fa_time::DateDay;
 use fgdb_types::{CommitSeq, VId};
 
@@ -42,9 +44,10 @@ pub const CAPABILITY_DOMAIN: &[u8] = b"fa:capability:v1";
 const CAPABILITY_VERSION: u16 = 1;
 const CAPABILITY_VERSION_CAVEATS: u16 = 2;
 /// Caveat tags. A decoder refuses a tag it does not know: a restriction it
-/// cannot read is one it cannot enforce, so the token fails closed. Tag 2
-/// is `redaction` (fa-kuu), reserved and unknown to this build.
+/// cannot read is one it cannot enforce, so the token fails closed.
 pub const CAVEAT_BOOKS: u8 = 1;
+/// `redaction = <contract>`: `u16` registered contract id (fa-kuu).
+pub const CAVEAT_REDACTION: u8 = 2;
 /// `accounts ⊆ subtree(code)`: `list(str code, ascending)`.
 pub const CAVEAT_ACCOUNTS: u8 = 3;
 /// `periods ⊆ {…}`: `list(str period code, ascending)`.
@@ -167,6 +170,11 @@ pub enum CapabilityError {
     TooManyCeilings,
     /// A books caveat names no book, or more than [`MAX_BOOKS`].
     BadBooks,
+    /// A redaction caveat names an unregistered contract id, or would move a
+    /// redaction-confined token to a second contract.
+    BadRedaction {
+        contract: u16,
+    },
     /// An accounts caveat names no root, more than [`MAX_ACCOUNT_ROOTS`],
     /// or a code outside 1..=[`MAX_ACCOUNT_CODE_BYTES`] bytes.
     BadAccounts,
@@ -206,6 +214,10 @@ impl fmt::Display for CapabilityError {
             ),
             Self::TooManyCeilings => write!(f, "more than {MAX_CEILINGS} ceilings"),
             Self::BadBooks => write!(f, "a books caveat names 1..={MAX_BOOKS} books"),
+            Self::BadRedaction { contract } => write!(
+                f,
+                "a redaction caveat names one registered redaction contract (`redaction_contracts.toml`); contract {contract} is unregistered or conflicts with a held contract"
+            ),
             Self::BadAccounts => write!(
                 f,
                 "an accounts caveat names 1..={MAX_ACCOUNT_ROOTS} subtree roots of 1..={MAX_ACCOUNT_CODE_BYTES} bytes, and narrowing keeps at least one held root"
@@ -230,6 +242,13 @@ impl fmt::Display for CapabilityError {
 
 impl core::error::Error for CapabilityError {}
 
+fn redaction_contracts() -> &'static RedactionContracts {
+    static CONTRACTS: OnceLock<RedactionContracts> = OnceLock::new();
+    CONTRACTS.get_or_init(|| {
+        RedactionContracts::embedded().expect("embedded redaction_contracts.toml must be valid")
+    })
+}
+
 /// A capability: conjunctive caveats held by one principal (plan §14.2).
 /// Fields are private so the profile law holds for every value that exists.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,6 +265,11 @@ pub struct Capability {
     /// `books ⊆ {…}` (plan §14.2): `None` is no caveat (every book); a
     /// set admits only the books it names.
     books: Option<BTreeSet<Id128>>,
+    /// `redaction = <contract>` (plan §9.6, §14.2, fa-kuu): confines the
+    /// capability to the named registered contract's redacted views for the
+    /// documents that contract governs, even if the capability also holds
+    /// `privileged`.
+    redaction: Option<u16>,
     /// `accounts ⊆ subtree(code)`: the roots by account code, resolved per
     /// book by the kernel (the root and its `CHILD_OF` descendants).
     accounts: Option<BTreeSet<String>>,
@@ -280,6 +304,7 @@ impl Capability {
             expires_at: None,
             issuer,
             books: None,
+            redaction: None,
             accounts: None,
             periods: None,
             effective_through: None,
@@ -356,6 +381,38 @@ impl Capability {
     #[must_use]
     pub fn admits_book(&self, book: Id128) -> bool {
         self.books.as_ref().is_none_or(|b| b.contains(&book))
+    }
+
+    /// Confine the capability to the redacted views of registered `contract`
+    /// (`redaction_contracts.toml`) for the documents that contract governs,
+    /// conjunctive with `privileged` (plan §9.6, §14.2, fa-kuu). Repeating the
+    /// same contract is a no-op; naming an unregistered contract or another
+    /// contract is refused.
+    pub fn with_redaction(mut self, contract: u16) -> Result<Self, CapabilityError> {
+        if redaction_contracts().get(contract).is_none() {
+            return Err(CapabilityError::BadRedaction { contract });
+        }
+        match self.redaction {
+            Some(held) if held != contract => Err(CapabilityError::BadRedaction { contract }),
+            _ => {
+                self.redaction = Some(contract);
+                Ok(self)
+            }
+        }
+    }
+
+    /// The `redaction = <contract>` caveat, when the capability carries one.
+    #[must_use]
+    pub fn redaction(&self) -> Option<u16> {
+        self.redaction
+    }
+
+    /// Whether the capability reveals the privileged bytes of a document
+    /// governed by `contract`: it holds `privileged` and is not confined to
+    /// `contract`'s redacted views by a `redaction` caveat.
+    #[must_use]
+    pub fn reveals_contract(&self, contract: u16) -> bool {
+        self.holds(Op::Privileged) && self.redaction != Some(contract)
     }
 
     /// Confine the capability to the subtrees rooted at `codes`. A second
@@ -490,9 +547,10 @@ impl Capability {
     /// ‖ list(u32 unit ‖ i128 max, ascending by unit) ‖ opt(u64 expires_at)
     /// ‖ u128 issuer`, then, in v2 only, `‖ list(u8 tag ‖ bytes payload)`,
     /// non-empty and strictly ascending by tag. Payloads: `books` (1)
-    /// `list(id128 book, ascending)`; `accounts` (3) and `periods` (4)
-    /// `list(str code, ascending)`; `effective` (5) `i32 day`; `known_at`
-    /// (6) `u64 seq`; `branch` (7) `id128 branch`.
+    /// `list(id128 book, ascending)`; `redaction` (2) `u16 contract`;
+    /// `accounts` (3) and `periods` (4) `list(str code, ascending)`;
+    /// `effective` (5) `i32 day`; `known_at` (6) `u64 seq`; `branch` (7)
+    /// `id128 branch`.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, CapabilityError> {
         let ops: Vec<u8> = self.ops.iter().map(|op| op.tag()).collect();
         let ceilings: Vec<(UnitId, i128)> = self.ceilings.iter().map(|(u, m)| (*u, *m)).collect();
@@ -535,6 +593,14 @@ impl Capability {
             });
             out.push((
                 CAVEAT_BOOKS,
+                payload.finish().map_err(CapabilityError::Encode)?,
+            ));
+        }
+        if let Some(contract) = self.redaction {
+            let mut payload = Writer::with_capacity(2);
+            payload.u16(contract);
+            out.push((
+                CAVEAT_REDACTION,
                 payload.finish().map_err(CapabilityError::Encode)?,
             ));
         }
@@ -628,6 +694,7 @@ impl Capability {
             .u128("capability.issuer")
             .map_err(CapabilityError::Decode)?);
         let mut books = None;
+        let mut redaction = None;
         let mut accounts = None;
         let mut periods = None;
         let mut effective_through = None;
@@ -652,6 +719,14 @@ impl Capability {
             for (tag, payload) in &caveats {
                 match *tag {
                     CAVEAT_BOOKS => books = Some(decode_books(payload)?),
+                    CAVEAT_REDACTION => {
+                        let mut p = Reader::new(payload);
+                        let id = p
+                            .u16("capability.redaction")
+                            .map_err(CapabilityError::Decode)?;
+                        p.finish().map_err(CapabilityError::Decode)?;
+                        redaction = Some(id);
+                    }
                     CAVEAT_ACCOUNTS => {
                         accounts = Some(decode_codes(
                             payload,
@@ -706,6 +781,9 @@ impl Capability {
         cap.expires_at = expires_at;
         if let Some(books) = books {
             cap = cap.for_books(&books)?;
+        }
+        if let Some(contract) = redaction {
+            cap = cap.with_redaction(contract)?;
         }
         if let Some(codes) = accounts {
             let codes: Vec<&str> = codes.iter().map(String::as_str).collect();
@@ -921,9 +999,7 @@ mod tests {
         assert_eq!(scoped.canonical_bytes().unwrap(), v2);
         assert_eq!(Capability::decode(&v2).unwrap(), scoped);
         assert!(!scoped.admits_book(Id128([7; 16])));
-        // Two caveats: books, then tag 2 (`redaction`, fa-txf), which this
-        // build does not know yet. The token fails closed rather than
-        // decoding as less restricted than it was issued.
+        // Two caveats: books (tag 1), then redaction = 1 (tag 2, fa-kuu).
         let v2_two = hex(concat!(
             "0200",                             // version 2
             "01000000000000000000000000000000", // holder VId(1)
@@ -938,12 +1014,37 @@ mod tests {
             "14000000",                         //   20 payload bytes:
             "01000000",                         //     one book,
             "02020202020202020202020202020202", //     Id128([2; 16])
-            "02",                               //   tag 2
+            "02",                               //   tag 2, redaction
+            "02000000",                         //   2 payload bytes:
+            "0100",                             //     contract 1
+        ));
+        let redacted = scoped.clone().with_redaction(1).unwrap();
+        assert_eq!(redacted.canonical_bytes().unwrap(), v2_two);
+        assert_eq!(Capability::decode(&v2_two).unwrap(), redacted);
+        assert_eq!(redacted.redaction(), Some(1));
+        assert!(!redacted.is_scoped());
+        // An unknown caveat tag (tag 8) fails closed rather than decoding as
+        // less restricted than it was issued.
+        let v2_unknown = hex(concat!(
+            "0200",                             // version 2
+            "01000000000000000000000000000000", // holder VId(1)
+            "00",                               // profile Human
+            "01000000",                         // one op:
+            "06",                               //   close
+            "00000000",                         // no ceilings
+            "00",                               // no expiry
+            "01000000000000000000000000000000", // issuer VId(1)
+            "02000000",                         // two caveats:
+            "01",                               //   tag 1, books
+            "14000000",                         //   20 payload bytes:
+            "01000000",                         //     one book,
+            "02020202020202020202020202020202", //     Id128([2; 16])
+            "08",                               //   tag 8 (unknown)
             "00000000",                         //   empty payload
         ));
         assert_eq!(
-            Capability::decode(&v2_two),
-            Err(CapabilityError::UnknownCaveat { tag: 2 })
+            Capability::decode(&v2_unknown),
+            Err(CapabilityError::UnknownCaveat { tag: 8 })
         );
         // Tags are strictly ascending, and a v2 names at least one caveat.
         let mut swapped = v2.clone();
@@ -951,7 +1052,8 @@ mod tests {
         swapped.extend_from_slice(&hex(concat!(
             "02000000",
             "02",
-            "00000000",
+            "02000000",
+            "0100",
             "01",
             "14000000",
             "01000000",
@@ -968,6 +1070,57 @@ mod tests {
             Capability::decode(&bare),
             Err(CapabilityError::Decode(_))
         ));
+    }
+
+    #[test]
+    fn redaction_caveat_validates_registered_contract_and_cannot_be_dropped_or_moved() {
+        let priv_cap = Capability::embedded(VId(1), &["read", "privileged"]).unwrap();
+        assert_eq!(priv_cap.redaction(), None);
+        assert!(priv_cap.reveals_contract(1));
+
+        // Adding contract 1 confines the capability even when it holds `privileged`.
+        let caveated = priv_cap.clone().with_redaction(1).unwrap();
+        assert_eq!(caveated.redaction(), Some(1));
+        assert!(!caveated.reveals_contract(1));
+        assert!(caveated.reveals_contract(2));
+        assert_ne!(
+            caveated.commitment().unwrap(),
+            priv_cap.commitment().unwrap()
+        );
+
+        // Repeating the same contract is a no-op.
+        assert_eq!(caveated.clone().with_redaction(1).unwrap(), caveated);
+
+        // Unregistered contract ids (0, 99) are refused at construction and decode.
+        for bad in [0u16, 99u16] {
+            assert_eq!(
+                priv_cap.clone().with_redaction(bad),
+                Err(CapabilityError::BadRedaction { contract: bad })
+            );
+            let mut raw = priv_cap.canonical_bytes().unwrap();
+            raw[..2].copy_from_slice(&2u16.to_le_bytes());
+            raw.extend_from_slice(&1u32.to_le_bytes()); // one caveat
+            raw.push(CAVEAT_REDACTION);
+            raw.extend_from_slice(&2u32.to_le_bytes()); // 2-byte payload
+            raw.extend_from_slice(&bad.to_le_bytes());
+            assert_eq!(
+                Capability::decode(&raw),
+                Err(CapabilityError::BadRedaction { contract: bad })
+            );
+        }
+        // Empty or trailing payload for tag 2 does not decode.
+        for bad_payload in [&[][..], &[1, 0, 0][..]] {
+            let mut raw = priv_cap.canonical_bytes().unwrap();
+            raw[..2].copy_from_slice(&2u16.to_le_bytes());
+            raw.extend_from_slice(&1u32.to_le_bytes());
+            raw.push(CAVEAT_REDACTION);
+            raw.extend_from_slice(&u32::try_from(bad_payload.len()).unwrap().to_le_bytes());
+            raw.extend_from_slice(bad_payload);
+            assert!(matches!(
+                Capability::decode(&raw),
+                Err(CapabilityError::Decode(_))
+            ));
+        }
     }
 
     #[test]
