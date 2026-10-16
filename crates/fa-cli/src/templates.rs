@@ -39,11 +39,12 @@ pub(crate) fn find(name: &str) -> Option<&'static Template> {
 }
 
 /// The import key `fa chart import` journals for chart text `text`: the
-/// same for a template and for the same bytes in a file.
+/// same for a template and for the same bytes in a file (128-bit prefix,
+/// 38 ASCII bytes, within the 64-byte idempotency-key ceiling).
 pub(crate) fn chart_key(text: &str) -> String {
     format!(
         "chart:{}",
-        crate::cli::hex(&fa_model::domain_digest(b"fa:chart:v1", &[text.as_bytes()])[..8])
+        crate::cli::hex(&fa_model::domain_digest(b"fa:chart:v1", &[text.as_bytes()])[..16])
     )
 }
 
@@ -79,6 +80,26 @@ pub(crate) fn listing(template: &Template) -> Result<Listing, String> {
         .get("accounts")
         .and_then(Json::as_arr)
         .ok_or_else(|| format!("{}: `accounts` must be an array", template.name))?;
+    for account in accounts {
+        let code = account
+            .get("code")
+            .and_then(Json::as_str)
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| format!("{}: every account must have a non-empty `code`", template.name))?;
+        let kind = account
+            .get("type")
+            .and_then(Json::as_str)
+            .ok_or_else(|| format!("{}: account `{code}` is missing `type`", template.name))?;
+        if !fa_model::AccountType::ALL
+            .iter()
+            .any(|(_, n, ..)| n.eq_ignore_ascii_case(kind))
+        {
+            return Err(format!(
+                "{}: account `{code}` has unknown type `{kind}`",
+                template.name
+            ));
+        }
+    }
     let leaves = accounts
         .iter()
         .filter(|a| a.get("leaf").and_then(Json::as_bool).unwrap_or(true))

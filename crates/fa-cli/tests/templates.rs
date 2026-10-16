@@ -231,6 +231,17 @@ fn a_template_imports_once_and_a_chart_must_be_a_forest_of_unique_codes() {
     assert_eq!((code, id.as_str()), (2, "FA-REF-100"), "{message}");
     assert!(message.contains("already exists"), "{message}");
 
+    // Importing a modified version of an already-installed template (different
+    // content digest, overlapping account codes) is refused with FA-REF-100.
+    let v2_conflict = write(
+        &dir,
+        "us-gaap-smb-v2.json",
+        r#"{"template":"us-gaap-smb","version":2,"accounts":[{"code":"1200","name":"Accounts Receivable v2","type":"Asset","unit":"base"}]}"#,
+    );
+    let (code, id, message) = refused(&book, &["chart", "import", &v2_conflict, "--json"]);
+    assert_eq!((code, id.as_str()), (2, "FA-REF-100"), "{message}");
+    assert!(message.contains("already exists"), "{message}");
+
     // A file and a template, or an unknown template, are usage errors.
     let chart = write(
         &dir,
@@ -256,9 +267,17 @@ fn a_template_imports_once_and_a_chart_must_be_a_forest_of_unique_codes() {
     assert_eq!(code, 2, "{message}");
     assert!(message.contains("unknown chart template"), "{message}");
 
-    // The kernel refuses a duplicate code and a parent cycle before writing.
+    // The kernel refuses an untyped leaf, a duplicate code, and a parent cycle before writing.
     let fresh = dir.join("fresh");
     ok(&fresh, &["book", "create", "--name", "Fresh Co", "--json"]);
+    let untyped = write(
+        &dir,
+        "untyped.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","unit":"base"}]}"#,
+    );
+    let (code, _, message) = refused(&fresh, &["chart", "import", &untyped, "--json"]);
+    assert_eq!(code, 2, "{message}");
+    assert!(message.contains("type"), "{message}");
     let duplicate = write(
         &dir,
         "duplicate.json",
