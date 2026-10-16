@@ -243,3 +243,48 @@ fn public_native_fields_cannot_bypass_validation_via_typed_conversion() {
     native.digest[0] ^= 1;
     assert!(ReportArtifact::try_from(&native).is_err());
 }
+
+#[test]
+fn aging_reconciliation_requires_independent_scope_and_replays_both_sources() {
+    let mut h = Harness::new(84);
+    let at = h.head();
+    let request = crate::AgingReconciliationRequest {
+        account: h.id("1000"),
+        effective_through: day(20),
+        known_at: Some(at),
+        buckets: AgingBuckets::new(vec![30, 60, 90]).unwrap(),
+    };
+    let certified = h.book.certify_effective_date_aging_reconciliation(
+        &h.cx(), PRINCIPAL, &cap(&["read", "produce"]), &request,
+    ).unwrap().unwrap();
+    assert_eq!(h.head(), at, "certification publishes nothing");
+    let artifact = ReportArtifact::try_from(&certified.certificate).unwrap();
+    assert_eq!(artifact.family(), ReportArtifactFamily::AgingReconciliation);
+    let bytes = artifact.canonical_bytes().unwrap();
+    assert!(h.book.replay_report_artifact(
+        &h.cx(), PRINCIPAL, &cap(&["read"]), &bytes, Some(artifact.digest()),
+    ).unwrap().is_err(), "recipient scope is mandatory for reconciliation");
+    h.post(b"later reconciliation history", 7);
+    let head = h.head();
+    let replayed = h.book.replay_report_artifact_for(
+        &h.cx(), PRINCIPAL, &cap(&["read"]), &bytes, Some(artifact.digest()),
+        ReportArtifactExpectation::AgingReconciliation(&request),
+    ).unwrap().unwrap();
+    assert_eq!(replayed.family, ReportArtifactFamily::AgingReconciliation);
+    assert_eq!(replayed.known_at, at);
+    assert_eq!(replayed.output, artifact.output());
+    assert_eq!(h.head(), head, "replay publishes nothing");
+
+    let mut changed = request.clone();
+    changed.known_at = None;
+    assert!(h.book.replay_report_artifact_for(
+        &h.cx(), PRINCIPAL, &cap(&["read"]), &bytes, None,
+        ReportArtifactExpectation::AgingReconciliation(&changed),
+    ).unwrap().is_err());
+    changed = request.clone();
+    changed.account = h.id("3000");
+    assert!(h.book.replay_report_artifact_for(
+        &h.cx(), PRINCIPAL, &cap(&["read"]), &bytes, None,
+        ReportArtifactExpectation::AgingReconciliation(&changed),
+    ).unwrap().is_err());
+}

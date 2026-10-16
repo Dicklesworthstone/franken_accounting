@@ -17,7 +17,8 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    AgingCertificate, AsyncBook, BookError, CashFlowCertificate, CashFlowDefinition,
+    AgingCertificate, AgingReconciliationCertificate, AgingReconciliationRequest, AsyncBook,
+    BookError, CashFlowCertificate, CashFlowDefinition,
     IndirectCashFlowCertificate, IndirectCashFlowRequest, Outcome, ReportCertificate,
     RollForwardCertificate, RollForwardRequest, SummaryCertificate,
 };
@@ -34,6 +35,7 @@ pub enum ReportArtifactFamily {
     RollForward,
     CashFlow,
     IndirectCashFlow,
+    AgingReconciliation,
 }
 
 impl ReportArtifactFamily {
@@ -46,6 +48,7 @@ impl ReportArtifactFamily {
             Self::RollForward => "roll-forward",
             Self::CashFlow => "cash-flow",
             Self::IndirectCashFlow => "indirect-cash-flow",
+            Self::AgingReconciliation => "aging-reconciliation",
         }
     }
 }
@@ -63,6 +66,7 @@ pub enum ReportArtifactExpectation<'a> {
         definition: &'a CashFlowDefinition,
     },
     IndirectCashFlow(&'a IndirectCashFlowRequest),
+    AgingReconciliation(&'a AgingReconciliationRequest),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +77,7 @@ enum Artifact {
     RollForward(Box<RollForwardCertificate>),
     CashFlow(Box<CashFlowCertificate>),
     IndirectCashFlow(Box<IndirectCashFlowCertificate>),
+    AgingReconciliation(Box<AgingReconciliationCertificate>),
 }
 
 /// An intact canonical artifact, NOT a successful replay. Private variants keep
@@ -133,6 +138,8 @@ impl ReportArtifact {
             Artifact::CashFlow(Box::new(CashFlowCertificate::decode(bytes)?))
         } else if format == crate::INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT {
             Artifact::IndirectCashFlow(Box::new(IndirectCashFlowCertificate::decode(bytes)?))
+        } else if format == crate::aging::AGING_RECONCILIATION_CERTIFICATE_FORMAT {
+            Artifact::AgingReconciliation(Box::new(AgingReconciliationCertificate::decode(bytes)?))
         } else {
             return Err(invalid("unsupported report artifact family or version"));
         };
@@ -148,6 +155,7 @@ impl ReportArtifact {
             Artifact::RollForward(_) => ReportArtifactFamily::RollForward,
             Artifact::CashFlow(_) => ReportArtifactFamily::CashFlow,
             Artifact::IndirectCashFlow(_) => ReportArtifactFamily::IndirectCashFlow,
+            Artifact::AgingReconciliation(_) => ReportArtifactFamily::AgingReconciliation,
         }
     }
 
@@ -164,6 +172,7 @@ impl ReportArtifact {
             Artifact::IndirectCashFlow(c) => {
                 c.source_certificate().source_certificate().source_certificate()
             }
+            Artifact::AgingReconciliation(c) => c.aging_source().source(),
         }
     }
 
@@ -186,6 +195,7 @@ impl ReportArtifact {
             Artifact::RollForward(c) => c.digest(),
             Artifact::CashFlow(c) => c.digest(),
             Artifact::IndirectCashFlow(c) => c.digest(),
+            Artifact::AgingReconciliation(c) => c.digest(),
         }
     }
 
@@ -199,6 +209,7 @@ impl ReportArtifact {
             Artifact::RollForward(c) => c.output(),
             Artifact::CashFlow(c) => c.output(),
             Artifact::IndirectCashFlow(c) => c.output(),
+            Artifact::AgingReconciliation(c) => c.output(),
         }
     }
 
@@ -210,6 +221,7 @@ impl ReportArtifact {
             Artifact::RollForward(c) => c.canonical_bytes(),
             Artifact::CashFlow(c) => c.canonical_bytes(),
             Artifact::IndirectCashFlow(c) => c.canonical_bytes(),
+            Artifact::AgingReconciliation(c) => c.canonical_bytes(),
         }
     }
 }
@@ -234,6 +246,7 @@ from_certificate!(
     RollForwardCertificate,
     CashFlowCertificate,
     IndirectCashFlowCertificate,
+    AgingReconciliationCertificate,
 );
 
 fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
@@ -333,6 +346,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 ReportArtifactExpectation::IndirectCashFlow(request),
             ) => self
                 .replay_indirect_cash_flow(cx, principal, capability, c, request)?
+                .map(|_| ()),
+            (
+                Artifact::AgingReconciliation(c),
+                ReportArtifactExpectation::AgingReconciliation(request),
+            ) => self
+                .replay_effective_date_aging_reconciliation(
+                    cx, principal, capability, c, request,
+                )?
                 .map(|_| ()),
             _ => return Ok(Err(invalid(
                 "report artifact requires matching independently supplied replay expectations",
