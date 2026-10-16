@@ -556,7 +556,7 @@ evidence = "FA-EVID-L21"
 tie_break = "entry_vid"
 complexity = "O(input_legs log input_legs + max_steps log max_transfers + max_fragments * max_hops)"
 calibration = "planted"
-summary = "Follow a source deposit through a time-expanded network of commingled asset accounts under the Lowest Intermediate Balance Rule (Restatement (Third) of Restitution §59): clean money is presumed dissipated before tainted money, maximizing tainted flow retained in asset accounts subject to intermediate balance limits, with canonical holding-first tie-breaking."
+summary = "Follow a source deposit through a time-expanded network of commingled asset accounts under the Lowest Intermediate Balance Rule (Restatement (Third) of Restitution §59): clean money is presumed dissipated before tainted money, so only the part of a withdrawal exceeding the clean balance carries source value, and a later clean deposit does not replenish dissipated source value unless replenishment is OnEvidence. Final positions partition the source into held, spent, and overdraft-repaid amounts with no duplicated path totals. Every work or path bound refuses the entire run on exhaustion and never returns partial findings."
 
 [[input]]
 procedure = "trace.network_libr"
@@ -586,13 +586,13 @@ meaning = "0 Never (Restatement §59(2)(c) default); 1 OnEvidence (inflows shari
 procedure = "trace.network_libr"
 name = "max_input_legs"
 default = 100000
-meaning = "Maximum legs admitted from the snapshot, before projection (1..1000000)."
+meaning = "Maximum legs admitted from the snapshot, before projection (1..1000000); does not bound the separately executed snapshot read."
 
 [[parameter]]
 procedure = "trace.network_libr"
 name = "max_transfers"
 default = 25000
-meaning = "Maximum nonzero net-account transfer cells (1..250000)."
+meaning = "Maximum nonzero net-account transfer cells (1..250000); allocation work is also bounded before emitting cells."
 
 [[parameter]]
 procedure = "trace.network_libr"
@@ -604,13 +604,13 @@ meaning = "Maximum cumulative flow fragments created across the time-expanded ne
 procedure = "trace.network_libr"
 name = "max_hops"
 default = 16
-meaning = "Maximum path length including the source deposit (1..64)."
+meaning = "Maximum path length including the source deposit (1..64). Exceeding it refuses, rather than stopping and pretending the money remains there."
 
 [[parameter]]
 procedure = "trace.network_libr"
 name = "max_steps"
 default = 5000000
-meaning = "Projection and tracing work budget (1..100000000); exhaustion refuses with no partial output."
+meaning = "Projection and tracing work budget (1..100000000), including allocation, lot visitation and path copies; exhaustion refuses with no partial output."
 
 [[procedure]]
 id = "trace.network_pro_rata"
@@ -620,7 +620,7 @@ evidence = "FA-EVID-L22"
 tie_break = "entry_vid"
 complexity = "O(input_legs log input_legs + max_steps log max_transfers + max_fragments * max_hops)"
 calibration = "planted"
-summary = "Follow a source deposit through a network of commingled asset accounts under Pro-Rata sharing (Cunningham v. Brown): every withdrawal and branch carries exact rational proportions (fsym-rational) of each path in the pool, rounded once at the output under LargestRemainder so final positions sum to the source exactly without intermediate rounding drift."
+summary = "Follow a source deposit through a network of commingled asset accounts under Pro-Rata sharing (Cunningham v. Brown): every withdrawal and branch carries exact rational proportions (fsym-rational) of each path in the pool, rounded once at the output under LargestRemainder so final positions sum to the source exactly without intermediate rounding drift. Final positions partition the source into held, spent, and overdraft-repaid amounts with no duplicated path totals. Every work or path bound refuses the entire run on exhaustion and never returns partial findings."
 
 [[input]]
 procedure = "trace.network_pro_rata"
@@ -644,13 +644,13 @@ meaning = "How same-day movements are sequenced: 0 StatementOrdinal (recorded or
 procedure = "trace.network_pro_rata"
 name = "max_input_legs"
 default = 100000
-meaning = "Maximum legs admitted from the snapshot, before projection (1..1000000)."
+meaning = "Maximum legs admitted from the snapshot, before projection (1..1000000); does not bound the separately executed snapshot read."
 
 [[parameter]]
 procedure = "trace.network_pro_rata"
 name = "max_transfers"
 default = 25000
-meaning = "Maximum nonzero net-account transfer cells (1..250000)."
+meaning = "Maximum nonzero net-account transfer cells (1..250000); allocation work is also bounded before emitting cells."
 
 [[parameter]]
 procedure = "trace.network_pro_rata"
@@ -662,13 +662,13 @@ meaning = "Maximum cumulative rational path fragments created (1..100000)."
 procedure = "trace.network_pro_rata"
 name = "max_hops"
 default = 16
-meaning = "Maximum path length including the source deposit (1..64)."
+meaning = "Maximum path length including the source deposit (1..64). Exceeding it refuses, rather than stopping and pretending the money remains there."
 
 [[parameter]]
 procedure = "trace.network_pro_rata"
 name = "max_steps"
 default = 5000000
-meaning = "Projection and tracing work budget (1..100000000); exhaustion refuses with no partial output."
+meaning = "Projection and tracing work budget (1..100000000), including allocation, lot visitation and path copies; exhaustion refuses with no partial output."
 
 [[procedure]]
 id = "trace.restitution_order"
