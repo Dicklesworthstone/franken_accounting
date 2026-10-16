@@ -1385,6 +1385,43 @@ mod tests {
     use super::*;
     use fa_time::{DateDay, PeriodDef, PeriodKind};
 
+    #[test]
+    fn cell_net_is_exact_at_the_i128_boundaries_and_none_on_overflow() {
+        let cell = |debits, credits| Cell {
+            key: CellKey {
+                account: VId(1),
+                unit_id: 1,
+                period: "P".into(),
+            },
+            debits,
+            credits,
+            entry_count: 0,
+        };
+        for (debits, credits, expected) in [
+            (0, 0, 0),
+            (i128::MAX, 0, i128::MAX),
+            (0, i128::MAX, -i128::MAX),
+            (i128::MAX, i128::MAX, 0),
+            (i128::MAX, i128::MAX - 1, 1),
+            (i128::MAX - 1, i128::MAX, -1),
+            (i128::MIN, 0, i128::MIN),
+            (-1, i128::MAX, i128::MIN),
+        ] {
+            let value = cell(debits, credits);
+            let original = value.clone();
+            assert_eq!(value.net(), Some(expected));
+            assert_eq!(value, original);
+        }
+        // These malformed public cells cannot come from a valid fold.
+        // Their subtraction must still fail consistently in every profile.
+        for (debits, credits) in [(i128::MAX, -1), (i128::MIN, 1), (0, i128::MIN)] {
+            let value = cell(debits, credits);
+            let original = value.clone();
+            assert_eq!(value.net(), None);
+            assert_eq!(value, original);
+        }
+    }
+
     fn period(code: &str, fy: i32, start: i32, end: i32) -> PeriodDef {
         PeriodDef {
             code: code.into(),
