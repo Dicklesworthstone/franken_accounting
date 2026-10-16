@@ -31,6 +31,7 @@ members = [
     "crates/fa-verify",
     "crates/fa-conformance",
     "crates/fa-fuzz",
+    "crates/fa-gen",
     "crates/fa-notary",
     "crates/fa-policy",
     "crates/fa-intents",

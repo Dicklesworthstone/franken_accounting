@@ -886,6 +886,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-gen"
+version = "0.0.1"
+dependencies = [
+ "asupersync",
+ "fa",
+ "fa-journal",
+ "fa-lantern",
+ "fa-model",
+ "fa-money",
+ "fa-registry",
+ "fa-time",
+ "fgdb",
+ "fgdb-crypto",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fa-intents"
 version = "0.0.1"
 dependencies = [
@@ -918,6 +935,7 @@ name = "fa-lantern"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa-gen",
  "fa-journal",
  "fa-model",
  "fa-money",

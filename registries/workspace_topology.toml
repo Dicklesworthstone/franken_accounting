@@ -208,7 +208,7 @@ planned = true
 name = "fa-gen"
 layer = "verification"
 path = "crates/fa-gen"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-bench"

@@ -25,4 +25,5 @@ fgdb-delta-types = { workspace = true }
 fgdb-crypto = { workspace = true }
 
 [dev-dependencies]
+fa-gen = { path = "../fa-gen", version = "=0.0.1" }
 fa-reference = { path = "../fa-reference", version = "=0.0.1" }
