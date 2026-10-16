@@ -6,6 +6,7 @@ on:
     paths:
       - 'crates/fa-lantern/src/graph/cycles.rs'
       - 'crates/fa-lantern/src/projection/entity.rs'
+      - 'crates/fa-lantern/src/catalog/network/engine.rs'
       - '.github/workflows/lantern-graph-kernel.yml'
   workflow_dispatch:
 
@@ -38,3 +39,9 @@ jobs:
           set -euo pipefail
           rustup run stable rustc --edition=2024 --test crates/fa-lantern/src/projection/entity.rs -o "$RUNNER_TEMP/lantern-entities"
           "$RUNNER_TEMP/lantern-entities" --nocapture
+      - name: Test source-conserving network attribution and token oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup run stable rustc --edition=2024 --test crates/fa-lantern/src/catalog/network/engine.rs -o "$RUNNER_TEMP/lantern-network"
+          "$RUNNER_TEMP/lantern-network" --nocapture
