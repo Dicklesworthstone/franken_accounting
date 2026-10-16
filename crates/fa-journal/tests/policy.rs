@@ -2750,3 +2750,110 @@ fn ambiguous_dates_are_out_of_scope_until_the_period_mirror_exists() {
     h.post_ok(h.voids(plain_hold, b"void", dec15), december);
     h.post_ok(h.voids(p12_hold, b"void", dec15), controller());
 }
+
+#[test]
+fn identical_period_transition_and_period_create_retries_return_recorded_outcomes_and_changed_retry_conflicts()
+ {
+    let mut h = harness();
+    let closer = human(PREPARER, &["close"]);
+
+    // 1. Retrying create_periods for an already-created fiscal year is idempotent.
+    let head_before_create = h.db.frontier().unwrap();
+    let ctx = h.ctx();
+    let (seq_create, periods_again) = h
+        .runtime
+        .block_on(async { create_periods(&mut h.db, &ctx, &h.book, 2026).await })
+        .expect("idempotent create_periods");
+    assert_eq!(h.db.frontier().unwrap(), head_before_create);
+    assert!(!periods_again.is_empty());
+    assert!(seq_create <= head_before_create);
+
+    // 2. SoftClose March, then retry with the same key and fresh salt on description:
+    //    returns the recorded Transitioned without advancing the frontier.
+    let first_sc = h
+        .transition_with(
+            PeriodTransition::SoftClose,
+            b"sc-march-idempotent",
+            &closer,
+            &[],
+        )
+        .expect("first SoftClose");
+    let head_after_sc = h.db.frontier().unwrap();
+    assert_eq!(first_sc.from, PeriodState::Open);
+    assert_eq!(first_sc.to, PeriodState::SoftClosed);
+    let retry_sc = h
+        .transition_with(
+            PeriodTransition::SoftClose,
+            b"sc-march-idempotent",
+            &closer,
+            &[],
+        )
+        .expect("identical SoftClose retry returns recorded Transitioned");
+    assert_eq!(retry_sc, first_sc);
+    assert_eq!(h.db.frontier().unwrap(), head_after_sc);
+
+    // 3. Reusing the same idempotency key for a different transition (Close instead
+    //    of SoftClose) or different date is refused with FA-REF-032 (IDEMPOTENCY_CONFLICT).
+    let conflict_transition = h
+        .transition_with(
+            PeriodTransition::Close,
+            b"sc-march-idempotent",
+            &closer,
+            &[],
+        )
+        .expect_err("reusing key for Close must conflict");
+    assert_eq!(
+        (conflict_transition.code, conflict_transition.exit),
+        (
+            fa_journal::refusal::code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT
+        ),
+        "{conflict_transition}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), head_after_sc);
+
+    let march = h.march.clone();
+    let conflict_date = h
+        .transition_dated(
+            PeriodTransition::SoftClose,
+            b"sc-march-idempotent",
+            &closer,
+            &march,
+            DateDay::from_ymd(2026, 3, 2).unwrap(),
+        )
+        .expect_err("reusing key with different date must conflict");
+    assert_eq!(
+        (conflict_date.code, conflict_date.exit),
+        (
+            fa_journal::refusal::code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT
+        ),
+        "{conflict_date}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), head_after_sc);
+
+    // 4. Open April and retry Open with the same key: returns the recorded outcome.
+    let apr1 = DateDay::from_ymd(2026, 4, 1).unwrap();
+    let apr = h.period_of(apr1);
+    let first_open = h
+        .transition_dated(
+            PeriodTransition::Open,
+            b"open-apr-idempotent",
+            &closer,
+            &apr,
+            apr1,
+        )
+        .expect("first Open");
+    let head_after_open = h.db.frontier().unwrap();
+    let retry_open = h
+        .transition_dated(
+            PeriodTransition::Open,
+            b"open-apr-idempotent",
+            &closer,
+            &apr,
+            apr1,
+        )
+        .expect("identical Open retry returns recorded Transitioned");
+    assert_eq!(retry_open, first_open);
+    assert_eq!(h.db.frontier().unwrap(), head_after_open);
+}

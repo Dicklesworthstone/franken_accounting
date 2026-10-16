@@ -771,6 +771,47 @@ pub async fn create_periods<V: asupersync::fs::Vfs + Clone>(
         p.kind = kind;
         states.push(state);
     }
+    let accounts = list_accounts(db)?;
+    if let Some(first) = periods.first()
+        && let Some(first_row) = db.vertex(period_vid(&book.calendar.id, &first.code))?
+    {
+        let recorded_at = first_row.created_at;
+        let mut all_match = true;
+        for p in &periods {
+            let pvid = period_vid(&book.calendar.id, &p.code);
+            let Some(row) = db.vertex(pvid)? else {
+                all_match = false;
+                break;
+            };
+            if !row.labels.contains(&label::PERIOD) {
+                all_match = false;
+                break;
+            }
+            let decoded = crate::rows::PeriodRow::decode(&row)?;
+            if decoded.fiscal_year != p.fiscal_year
+                || decoded.ordinal != p.ordinal
+                || decoded.kind != p.kind
+                || decoded.start != p.start
+                || decoded.end != p.end
+            {
+                all_match = false;
+                break;
+            }
+            for account in &accounts {
+                if account.limit.is_some_and(|l| l.scope == LimitScope::Period)
+                    && db
+                        .vertex(period_cell_vid(account.vid, &p.code))?
+                        .is_none_or(|r| !r.labels.contains(&label::LIMIT_CELL))
+                {
+                    all_match = false;
+                    break;
+                }
+            }
+        }
+        if all_match {
+            return Ok((recorded_at, periods));
+        }
+    }
     let bvid = book_root();
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     for (p, state) in periods.iter().zip(&states) {
@@ -816,7 +857,7 @@ pub async fn create_periods<V: asupersync::fs::Vfs + Clone>(
     }
     // A budget-capped (period-scoped) account owns one limit cell per period,
     // born with the period (plan §5.5), so an absent cell stays corruption.
-    for account in list_accounts(db)? {
+    for account in accounts {
         if account.limit.is_some_and(|l| l.scope == LimitScope::Period) {
             for p in &periods {
                 batch.create_vertex(

@@ -568,9 +568,8 @@ impl Mints {
 /// The availability law on the reversal's posted legs, composed with the
 /// moves already staged in `mints` (one generation per entry per cell).
 /// `Ok(Some(why))` blocks the mint and leaves `mints` unchanged.
-fn judge_limits<V: asupersync::fs::Vfs + Clone>(
-    txn: &WriteTxn,
-    db: &Database<V>,
+fn judge_limits(
+    mut read_vertex: impl FnMut(VId) -> Result<Option<fgdb::VertexRow>, KernelError>,
     book: &BookContext,
     mints: &mut Mints,
     legs: &[LegPayload],
@@ -581,7 +580,7 @@ fn judge_limits<V: asupersync::fs::Vfs + Clone>(
         let account = match mints.accounts.entry(leg.account_ref) {
             MapEntry::Occupied(o) => o.into_mut(),
             MapEntry::Vacant(v) => {
-                let row = txn.vertex(db, leg.account_ref)?.ok_or_else(|| {
+                let row = read_vertex(leg.account_ref)?.ok_or_else(|| {
                     KernelError::Corrupt("a scheduled target's account is missing".into())
                 })?;
                 v.insert(AccountRow::decode(&row)?)
@@ -613,8 +612,7 @@ fn judge_limits<V: asupersync::fs::Vfs + Clone>(
         let (before, current) = match mints.cells.get(&cvid) {
             Some(run) => (run.before, run.after),
             None => {
-                let row = txn
-                    .vertex(db, cvid)?
+                let row = read_vertex(cvid)?
                     .filter(|r| r.labels.contains(&label::LIMIT_CELL))
                     .ok_or_else(|| {
                         KernelError::Corrupt(format!(
@@ -724,7 +722,13 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let legs = swapped(&target.proposal.legs);
-    if let Some(why) = judge_limits(txn, db, book, mints, &legs, &schedule.period)? {
+    if let Some(why) = judge_limits(
+        |vid| Ok(txn.vertex(db, vid)?),
+        book,
+        mints,
+        &legs,
+        &schedule.period,
+    )? {
         mints.blocked.push((schedule.target, why));
         return Ok(Ok(()));
     }
@@ -891,6 +895,114 @@ pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
         }
     }
     Ok(Ok(mints))
+}
+
+/// Reconstruct the `(minted, blocked)` lists of a previously committed `Open`
+/// transition at `recorded_at` for idempotent retry (`fa-l93` D13).
+#[allow(clippy::type_complexity)]
+pub(crate) fn recorded_open_mints<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    transition_ref: VId,
+    recorded_at: CommitSeq,
+) -> Result<(Vec<(EntryRef, EntryRef)>, Vec<(EntryRef, String)>), KernelError> {
+    let before = CommitSeq(recorded_at.0.saturating_sub(1));
+    let mut mints = Mints::new();
+    let Some(policy) = book_policy(db)? else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let Some(root) = crate::sweep::root_row(db, Some(before))? else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let Some(tick) = Tick::from_scalar(crate::rows::prop(&root, property::LATEST_TICK))? else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let tick_row = db
+        .vertex_at(tick.entry, before)?
+        .ok_or_else(|| KernelError::Corrupt("the latest tick's entry is missing".into()))?;
+    if !tick_corroborated(&tick_row)? {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let today = policy.civil_date(tick.observed_utc_ns);
+    let mut due: Vec<Schedule> = Vec::new();
+    for row in db.vertices()? {
+        if row.created_at > before || !row.labels.contains(&label::REVERSAL_SCHEDULE) {
+            continue;
+        }
+        let s = decode_schedule(&row)?;
+        if s.period == period
+            && s.reverse_on <= today
+            && db.vertex_at(reversal_vid(s.target.vid), before)?.is_none()
+        {
+            due.push(s);
+        }
+    }
+    if due.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    due.sort_by_key(|s| (s.recorded_at, s.vid));
+    due.truncate(MAX_BATCH_ENTRIES);
+    for s in &due {
+        let target_row = db
+            .vertex_at(s.target.vid, before)?
+            .ok_or_else(|| KernelError::Corrupt("a scheduled target is missing".into()))?;
+        let target = decode_entry(&target_row)?;
+        let legs = swapped(&target.proposal.legs);
+        let rvid = reversal_vid(s.target.vid);
+        if let Some(rev_row) = db.vertex_at(rvid, recorded_at)? {
+            let rev_entry = decode_entry(&rev_row)?;
+            if rev_row.created_at == recorded_at
+                && matches!(
+                    rev_entry.proposal.origin,
+                    EntryOrigin::Schedule {
+                        trigger: ScheduleTrigger::OpenPeriod {
+                            transition_ref: tref
+                        },
+                        ..
+                    } if tref == transition_ref
+                )
+            {
+                let _ = judge_limits(
+                    |vid| Ok(db.vertex_at(vid, before)?),
+                    book,
+                    &mut mints,
+                    &legs,
+                    &s.period,
+                )?;
+                mints.minted.push((s.target, rev_entry.entry_ref(rvid)));
+                continue;
+            }
+        }
+        let mut applied_blocked = false;
+        for i in 0..target.proposal.legs.len() {
+            let ordinal =
+                u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
+            let leg = db
+                .vertex_at(leg_vid(s.target.vid, ordinal), before)?
+                .ok_or_else(|| {
+                    KernelError::Corrupt("a scheduled target's leg is missing".into())
+                })?;
+            if applied_witness(&leg)? != 0 {
+                mints.blocked.push((s.target, LIVE_APPLICATIONS_ROW.into()));
+                applied_blocked = true;
+                break;
+            }
+        }
+        if applied_blocked {
+            continue;
+        }
+        if let Some(why) = judge_limits(
+            |vid| Ok(db.vertex_at(vid, before)?),
+            book,
+            &mut mints,
+            &legs,
+            &s.period,
+        )? {
+            mints.blocked.push((s.target, why));
+        }
+    }
+    Ok((mints.minted, mints.blocked))
 }
 
 /// One committed scheduled-reversal sweep batch.

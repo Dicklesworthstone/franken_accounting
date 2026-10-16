@@ -94,7 +94,7 @@ impl Tick {
         scalar_bytes("latest_tick", b)
     }
 
-    fn from_scalar(s: Option<&CanonicalScalar>) -> Result<Option<Self>, KernelError> {
+    pub(crate) fn from_scalar(s: Option<&CanonicalScalar>) -> Result<Option<Self>, KernelError> {
         match s {
             None => Ok(None),
             Some(CanonicalScalar::Bytes(b)) => {

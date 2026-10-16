@@ -51,32 +51,58 @@ pub struct Transitioned {
     pub blocked: Vec<(EntryRef, String)>,
 }
 
+#[derive(Debug)]
+struct StagedTransition {
+    txn: WriteTxn,
+    book: BookContext,
+    capability: Capability,
+    period: String,
+    transition: PeriodTransition,
+    from: PeriodState,
+    to: PeriodState,
+    control_entry: VId,
+    proposal: EntryPayload,
+    proposal_digest: [u8; 32],
+    minted: Vec<(EntryRef, EntryRef)>,
+    blocked: Vec<(EntryRef, String)>,
+}
+
+/// An authorized period transition staged against its original witnesses.
+/// Its capability and effects cannot be replaced after preparation. Dropping
+/// it abandons the staged write and releases the substrate's read pin.
+#[derive(Debug)]
+enum PreparedTransitionState {
+    Staged(Box<StagedTransition>),
+    AlreadyRecorded {
+        basis: CommitSeq,
+        recorded: Transitioned,
+    },
+}
+
 /// An authorized period transition staged against its original witnesses.
 /// Its capability and effects cannot be replaced after preparation. Dropping
 /// it abandons the staged write and releases the substrate's read pin.
 #[derive(Debug)]
 #[must_use]
 pub struct PreparedTransition {
-    txn: WriteTxn,
-    capability: Capability,
-    period: String,
-    from: PeriodState,
-    to: PeriodState,
-    control_entry: VId,
-    minted: Vec<(EntryRef, EntryRef)>,
-    blocked: Vec<(EntryRef, String)>,
+    state: PreparedTransitionState,
 }
 
 impl PreparedTransition {
     /// The committed prefix from which the transition's witnesses were read.
     #[must_use]
     pub fn basis(&self) -> CommitSeq {
-        self.txn.basis()
+        match &self.state {
+            PreparedTransitionState::Staged(staged) => staged.txn.basis(),
+            PreparedTransitionState::AlreadyRecorded { basis, .. } => *basis,
+        }
     }
 
     /// Release the prepared transaction without publishing any effects.
     pub fn abort(self) {
-        self.txn.abort();
+        if let PreparedTransitionState::Staged(staged) = self.state {
+            staged.txn.abort();
+        }
     }
 
     /// Commit with the original witnesses and a fresh check of the same
@@ -89,16 +115,25 @@ impl PreparedTransition {
     ) -> Outcome<Transitioned> {
         let commit = ctx.commit();
         commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
-        let Self {
+        let StagedTransition {
             mut txn,
+            book,
             capability,
             period,
+            transition,
             from,
             to,
             control_entry,
+            proposal,
+            proposal_digest,
             minted,
             blocked,
-        } = self;
+        } = match self.state {
+            PreparedTransitionState::AlreadyRecorded { recorded, .. } => {
+                return Ok(Ok(recorded));
+            }
+            PreparedTransitionState::Staged(staged) => *staged,
+        };
         if let Err(d) = fa_policy::current(&capability, db.frontier()?) {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
@@ -133,7 +168,20 @@ impl PreparedTransition {
             }
             Err(WriteTxnError::Write(
                 fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-            )) => Ok(Err(reused_key())),
+            )) => match db.vertex(control_entry)? {
+                Some(row) => recorded_proposal_or_conflict(
+                    db,
+                    &book,
+                    &row,
+                    &period,
+                    transition,
+                    &proposal,
+                    &proposal_digest,
+                ),
+                None => Err(KernelError::Corrupt(
+                    "identity spent but no live row".into(),
+                )),
+            },
             Err(e) => Err(e.into()),
         }
     }
@@ -223,14 +271,198 @@ fn unknown_period(book: &BookContext, period_code: &str) -> Refusal {
     )
 }
 
-fn reused_key() -> Refusal {
-    Refusal::new(
-        code::STRUCTURE,
-        exit::USAGE,
-        "a control entry with this idempotency key already exists",
-        "plan §4.9",
-        "use a fresh idempotency key",
-    )
+#[allow(clippy::too_many_arguments)]
+fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    row: &fgdb::VertexRow,
+    period_code: &str,
+    t: PeriodTransition,
+    principal_ref: VId,
+    reason_code: u16,
+    effective_date: DateDay,
+    idempotency_key: &[u8],
+    description: &Erasable<String>,
+) -> Outcome<Transitioned> {
+    let stored = match crate::rows::prop(row, property::FA_PAYLOAD) {
+        Some(CanonicalScalar::Bytes(b)) => fa_model::Entry::decode(b.as_slice())?,
+        other => {
+            return Err(KernelError::Corrupt(format!(
+                "entry _fa_payload: {other:?}"
+            )));
+        }
+    };
+    let conflict = || {
+        Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "idempotency key reused with different content; the recorded entry is {:032x}",
+                row.vid.0
+            ),
+            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
+            "resubmit the identical transition to get the recorded outcome, or use a new idempotency key",
+        )
+    };
+    if stored.proposal.class != EntryClass::PERIOD_CONTROL {
+        return Ok(Err(conflict()));
+    }
+    let Some(ControlPayload::PeriodTransition {
+        period_ref,
+        from: from_tag,
+        to: to_tag,
+        ..
+    }) = &stored.proposal.control
+    else {
+        return Ok(Err(conflict()));
+    };
+    if period_ref.calendar != book.calendar.id || period_ref.code != period_code {
+        return Ok(Err(conflict()));
+    }
+    let Some(stored_from) = PeriodState::from_tag(*from_tag) else {
+        return Err(KernelError::Corrupt(format!(
+            "transition {:032x} carries invalid from state tag {from_tag}",
+            row.vid.0
+        )));
+    };
+    let Some(stored_to) = PeriodState::from_tag(*to_tag) else {
+        return Err(KernelError::Corrupt(format!(
+            "transition {:032x} carries invalid to state tag {to_tag}",
+            row.vid.0
+        )));
+    };
+    if transition(stored_from, t) != Ok(stored_to) {
+        return Ok(Err(conflict()));
+    }
+    let candidate = transition_proposal(
+        book,
+        period_code,
+        stored_from,
+        stored_to,
+        principal_ref,
+        reason_code,
+        effective_date,
+        idempotency_key,
+        description.clone(),
+    );
+    let candidate_digest = candidate.proposal_digest()?;
+    recorded_proposal_or_conflict(db, book, row, period_code, t, &candidate, &candidate_digest)
+}
+
+fn recorded_proposal_or_conflict<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    row: &fgdb::VertexRow,
+    period_code: &str,
+    t: PeriodTransition,
+    proposal: &EntryPayload,
+    proposal_digest: &[u8; 32],
+) -> Outcome<Transitioned> {
+    let stored = match crate::rows::prop(row, property::FA_PAYLOAD) {
+        Some(CanonicalScalar::Bytes(b)) => fa_model::Entry::decode(b.as_slice())?,
+        other => {
+            return Err(KernelError::Corrupt(format!(
+                "entry _fa_payload: {other:?}"
+            )));
+        }
+    };
+    let conflict = || {
+        Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "idempotency key reused with different content; the recorded entry is {:032x}",
+                row.vid.0
+            ),
+            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
+            "resubmit the identical transition to get the recorded outcome, or use a new idempotency key",
+        )
+    };
+    if stored.proposal.class != EntryClass::PERIOD_CONTROL {
+        return Ok(Err(conflict()));
+    }
+    let Some(ControlPayload::PeriodTransition {
+        period_ref,
+        from: from_tag,
+        to: to_tag,
+        ..
+    }) = &stored.proposal.control
+    else {
+        return Ok(Err(conflict()));
+    };
+    if period_ref.calendar != book.calendar.id || period_ref.code != period_code {
+        return Ok(Err(conflict()));
+    }
+    let Some(stored_from) = PeriodState::from_tag(*from_tag) else {
+        return Err(KernelError::Corrupt(format!(
+            "transition {:032x} carries invalid from state tag {from_tag}",
+            row.vid.0
+        )));
+    };
+    let Some(stored_to) = PeriodState::from_tag(*to_tag) else {
+        return Err(KernelError::Corrupt(format!(
+            "transition {:032x} carries invalid to state tag {to_tag}",
+            row.vid.0
+        )));
+    };
+    if transition(stored_from, t) != Ok(stored_to) {
+        return Ok(Err(conflict()));
+    }
+    let same = if &stored.proposal_digest == proposal_digest {
+        true
+    } else {
+        match (
+            stored.proposal.semantic_digest(&book.seal_key),
+            proposal.semantic_digest(&book.seal_key),
+        ) {
+            (Ok(a), Ok(b)) => a == b,
+            (Err(fa_model::EntryError::Sealed(_)), _)
+            | (_, Err(fa_model::EntryError::Sealed(_))) => {
+                return Ok(Err(Refusal::new(
+                    code::EQUIVALENCE_UNVERIFIABLE,
+                    exit::CONFLICT,
+                    format!(
+                        "a transition with this identity exists ({:032x}) but a sealed field cannot be opened, so equivalence cannot be verified",
+                        row.vid.0
+                    ),
+                    "plan §8.5 (no plaintext equivalence over destroyed secrets)",
+                    "resubmit the exact prepared bytes to get the recorded outcome, or use a new idempotency key",
+                )));
+            }
+            (Err(e), _) | (_, Err(e)) => return Err(e.into()),
+        }
+    };
+    if !same {
+        return Ok(Err(conflict()));
+    }
+    let pvid = period_vid(&book.calendar.id, period_code);
+    if let Some(period_row) = db.vertex(pvid)? {
+        let current = state_from_scalar(crate::rows::prop(&period_row, property::STATE))
+            .ok_or_else(|| KernelError::Corrupt(format!("period `{period_code}` state mirror")))?;
+        if current != stored_to {
+            return Ok(Err(Refusal::new(
+                code::STRUCTURE,
+                exit::USAGE,
+                "a control entry with this idempotency key already exists",
+                "plan §4.9",
+                "use a fresh idempotency key",
+            )));
+        }
+    }
+    let (minted, blocked) = if t == PeriodTransition::Open {
+        crate::schedule::recorded_open_mints(db, book, period_code, row.vid, row.created_at)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    Ok(Ok(Transitioned {
+        period: period_code.to_string(),
+        from: stored_from,
+        to: stored_to,
+        recorded_at: row.created_at,
+        control_entry: row.vid,
+        minted,
+        blocked,
+    }))
 }
 
 /// The refusal for a transition of a period whose born kind has a registered
@@ -552,6 +784,37 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    let evid = entry_vid(
+        book.book_id,
+        &principal_ref.0.to_le_bytes(),
+        idempotency_key,
+    );
+    // An existing row at the transition's identity (plan §4.9, FA-INV-09,
+    // fa-l93 D13): the recorded outcome when the proposal is identical (or
+    // semantically equal under the book key), and an idempotency conflict
+    // otherwise — checked before reading the period's current state, which
+    // the original commit already moved.
+    if let Some(existing) = txn.vertex(db, evid)? {
+        let basis = txn.basis();
+        txn.abort();
+        return match recorded_or_conflict(
+            db,
+            book,
+            &existing,
+            period_code,
+            t,
+            principal_ref,
+            reason_code,
+            effective_date,
+            idempotency_key,
+            &description,
+        )? {
+            Ok(recorded) => Ok(Ok(PreparedTransition {
+                state: PreparedTransitionState::AlreadyRecorded { basis, recorded },
+            })),
+            Err(r) => Ok(Err(r)),
+        };
+    }
     let epoch = policy::epoch_witness(&txn, db)?;
 
     let Some(row) = txn.vertex(db, pvid)? else {
@@ -581,6 +844,7 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         idempotency_key,
         description,
     );
+    let proposal_digest = proposal.proposal_digest()?;
     // Segregation of duties for this transition from this state (plan §14.3):
     // every cited approval is a witnessed Approval of exactly this proposal
     // under the current epoch, judged by the registered rule.
@@ -594,7 +858,7 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         db,
         book,
         approvals,
-        &proposal.proposal_digest()?,
+        &proposal_digest,
         epoch,
         &key,
         0,
@@ -603,19 +867,7 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    let entry = proposal.seal(approvals.to_vec(), None)?;
-    let evid = entry_vid(
-        book.book_id,
-        &principal_ref.0.to_le_bytes(),
-        idempotency_key,
-    );
-    // The control entry's identity derives from the key, so an existing one
-    // is a reused key: refused here, before staging (the substrate would
-    // reject the batch as AlreadyLive), and the absent read is a witness.
-    if txn.vertex(db, evid)?.is_some() {
-        txn.abort();
-        return Ok(Err(reused_key()));
-    }
+    let entry = proposal.clone().seal(approvals.to_vec(), None)?;
 
     let mut batch = WriteBatch::new(relation::IN_PERIOD);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
@@ -653,14 +905,20 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
     batches.insert(0, batch);
     txn.write_ordered(db, batches)?;
     Ok(Ok(PreparedTransition {
-        txn,
-        capability: capability.clone(),
-        period: period_code.to_string(),
-        from,
-        to,
-        control_entry: evid,
-        minted,
-        blocked,
+        state: PreparedTransitionState::Staged(Box::new(StagedTransition {
+            txn,
+            book: book.clone(),
+            capability: capability.clone(),
+            period: period_code.to_string(),
+            transition: t,
+            from,
+            to,
+            control_entry: evid,
+            proposal,
+            proposal_digest,
+            minted,
+            blocked,
+        })),
     }))
 }
 
