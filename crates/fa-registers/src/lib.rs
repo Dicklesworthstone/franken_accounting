@@ -1066,7 +1066,8 @@ impl TrialBalance {
         w.finish()
     }
 
-    /// FA-INV-01 at the register level: every unit's debits equal its credits.
+    /// FA-INV-01 at the register level: every monetary unit's debits equal its
+    /// credits (`Memo` and `Statistical` accounts sit outside monetary footing).
     #[must_use]
     pub fn is_balanced(&self) -> bool {
         self.unit_totals
@@ -1076,7 +1077,11 @@ impl TrialBalance {
     }
 }
 
-/// Balances from inception through the latest selected period's inclusive end.
+/// Balances from inception through the latest selected period's inclusive end
+/// (`fa-a57x`: stock and flow accounts fold inception-to-date so unclosed
+/// prior-year nominal balances preserve `debits == credits` until `YearEndClose`
+/// moves them to equity; `Memo` and `Statistical` accounts appear in `rows` and
+/// are excluded from monetary `unit_totals` / `pending_unit_totals`).
 /// Period activity is available explicitly through [`period_activity`].
 pub fn trial_balance<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
@@ -1106,9 +1111,12 @@ pub fn trial_balance_at<V: asupersync::fs::Vfs + Clone>(
     report_at(db, book, selected, seq, through, &[])
 }
 
-/// A stock position on a civil day, independent of when postings were recorded.
-/// Includes adjustment/closing periods and every account type. Stock versus
-/// flow is a report-line choice; it is not inferred from an account's type.
+/// A stock position on a civil day, independent of when postings were recorded
+/// (`fa-a57x`, plan §7.5, §12.1). Includes adjustment/closing periods and every
+/// account type (`stock`, `flow`, `memo`) folded inception-to-date (`EFFECTIVE <= day`);
+/// `Memo` and `Statistical` accounts (`AccountType::is_memo()`) are excluded from
+/// monetary `unit_totals` and `pending_unit_totals`. Stock versus flow is a
+/// report/statement selector choice, not an implicit branch on an account's type.
 pub fn balance_as_of<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1266,16 +1274,18 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
         })?;
         let a = AccountRow::decode(&row)?;
         let (code, name, account_type) = (a.code, a.name, AccountType(a.account_type));
-        let t = unit_totals.entry(unit_id).or_insert((0, 0));
-        t.0 = t.0.checked_add(debits).ok_or(RegisterError::Overflow)?;
-        t.1 = t.1.checked_add(credits).ok_or(RegisterError::Overflow)?;
-        let p = pending_unit_totals.entry(unit_id).or_insert((0, 0));
-        p.0 =
-            p.0.checked_add(debits_pending)
-                .ok_or(RegisterError::Overflow)?;
-        p.1 =
-            p.1.checked_add(credits_pending)
-                .ok_or(RegisterError::Overflow)?;
+        if !account_type.is_memo() {
+            let t = unit_totals.entry(unit_id).or_insert((0, 0));
+            t.0 = t.0.checked_add(debits).ok_or(RegisterError::Overflow)?;
+            t.1 = t.1.checked_add(credits).ok_or(RegisterError::Overflow)?;
+            let p = pending_unit_totals.entry(unit_id).or_insert((0, 0));
+            p.0 =
+                p.0.checked_add(debits_pending)
+                    .ok_or(RegisterError::Overflow)?;
+            p.1 =
+                p.1.checked_add(credits_pending)
+                    .ok_or(RegisterError::Overflow)?;
+        }
         rows.push(TbRow {
             account,
             code,

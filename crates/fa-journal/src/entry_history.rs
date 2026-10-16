@@ -165,7 +165,9 @@ fn verify<V: Vfs + Clone>(
             "journal Entry {:032x} was created at {} but is absent at {}; retirement cannot remove an Entry from verification",
             vid.0, created_at.0, known_at.0,
         )))?;
-        if row.labels.as_slice() != [label::ENTRY] || row.retired_at.is_some() {
+        if row.labels.as_slice() != [label::ENTRY]
+            || row.retired_at.is_some_and(|retired| retired <= known_at)
+        {
             return Err(corrupt(format!(
                 "journal Entry {:032x} was relabeled or retired",
                 vid.0

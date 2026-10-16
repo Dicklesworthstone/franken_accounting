@@ -885,6 +885,10 @@ pub struct Oracle {
     /// True only while the model mints its own scheduled reversal: the one
     /// path that may cite ScheduledAccrualReversal (fa-cvg).
     minting_scheduled: bool,
+    /// Optional registered account type tag per account code (`registries/account_types.toml`,
+    /// `fa-a57x`): defaults to monetary (`1`) when unset; `6` (`Memo`) and `7` (`Statistical`)
+    /// sit outside the monetary balance law and trial-balance footing.
+    account_types: BTreeMap<String, u8>,
 }
 
 impl Oracle {
@@ -925,7 +929,19 @@ impl Oracle {
             revoked: BTreeSet::new(),
             epoch: 0,
             minting_scheduled: false,
+            account_types: BTreeMap::new(),
         }
+    }
+
+    /// Record the registered account type tag (`1..=7`) for `code` (`fa-a57x`).
+    pub fn set_account_type(&mut self, code: &str, account_type: u8) {
+        self.account_types.insert(code.to_string(), account_type);
+    }
+
+    /// Whether `code` is a `Memo` (`6`) or `Statistical` (`7`) account (`fa-a57x`).
+    #[must_use]
+    pub fn is_memo_account(&self, code: &str) -> bool {
+        matches!(self.account_types.get(code).copied(), Some(6 | 7))
     }
 
     /// The book declares `time_zone_policy = Utc` at genesis (plan §7.7).
@@ -2003,6 +2019,41 @@ impl Oracle {
                 };
             }
         }
+        if intent.legs.iter().any(|l| self.is_memo_account(&l.account)) {
+            for is_memo in [false, true] {
+                let mut by_unit: BTreeMap<u32, (Int, Int)> = BTreeMap::new();
+                let mut by_entity: BTreeMap<(u32, Option<String>), (Int, Int)> = BTreeMap::new();
+                for l in intent
+                    .legs
+                    .iter()
+                    .filter(|l| self.is_memo_account(&l.account) == is_memo)
+                {
+                    let amt = Int::from_i128(l.mantissa);
+                    let u_slot = by_unit
+                        .entry(l.unit)
+                        .or_insert_with(|| (Int::zero(), Int::zero()));
+                    let e_slot = by_entity
+                        .entry((l.unit, self.entity_of(l)))
+                        .or_insert_with(|| (Int::zero(), Int::zero()));
+                    match l.side {
+                        Side::Debit => {
+                            u_slot.0 = u_slot.0.add(&amt);
+                            e_slot.0 = e_slot.0.add(&amt);
+                        }
+                        Side::Credit => {
+                            u_slot.1 = u_slot.1.add(&amt);
+                            e_slot.1 = e_slot.1.add(&amt);
+                        }
+                    }
+                }
+                if by_unit.values().any(|(d, c)| d != c) || by_entity.values().any(|(d, c)| d != c)
+                {
+                    return Verdict::Refused {
+                        code: code::UNBALANCED,
+                    };
+                }
+            }
+        }
         // 6'. A staged chunk never moves a limit (not modelled until the
         //     migration availability slice).
         if run.is_some()
@@ -2814,6 +2865,26 @@ impl Oracle {
                 periods.contains(&entry.period.as_str()) && self.visible(entry, known)
             }),
         )
+    }
+
+    /// Monetary trial-balance footing over a fold's `cells` (`fa-a57x`):
+    /// sums `(debits, credits)` per unit across monetary (`stock` and `flow`)
+    /// accounts, excluding `Memo` (`6`) and `Statistical` (`7`) accounts.
+    #[must_use]
+    pub fn trial_balance_totals(
+        &self,
+        cells: &BTreeMap<(String, u32), Cell>,
+    ) -> BTreeMap<u32, (i128, i128)> {
+        let mut totals: BTreeMap<u32, (i128, i128)> = BTreeMap::new();
+        for ((code, unit), cell) in cells {
+            if self.is_memo_account(code) {
+                continue;
+            }
+            let slot = totals.entry(*unit).or_insert((0, 0));
+            slot.0 += cell.debits.to_i128().expect("fits i128");
+            slot.1 += cell.credits.to_i128().expect("fits i128");
+        }
+        totals
     }
 
     /// The model's head coordinate.

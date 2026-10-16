@@ -420,7 +420,9 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
                 }
                 let hold_digest = crate::fold_entry_contributions([0u8; 32], seq, vid, &entry)?;
                 if fold.pending_holds.insert((seq, vid), hold_digest).is_some() {
-                    return Err(KernelError::Corrupt("duplicate pending hold identity".into()).into());
+                    return Err(
+                        KernelError::Corrupt("duplicate pending hold identity".into()).into(),
+                    );
                 }
             } else {
                 fold.entries = fold.entries.checked_add(1).ok_or(RegisterError::Overflow)?;

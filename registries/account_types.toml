@@ -1,12 +1,27 @@
-# account_types.toml — the account types and the stock/flow rule (plan §4.3,
-# §7.5, fa-xwv). `stock` accounts carry their balance forward across fiscal
-# years (balance sheet); `flow` accounts accumulate within a fiscal year and
-# close to equity (income statement); `memo` accounts sit outside the balance
-# law. A balance "as of" a date folds inception-to-date for stock and
-# year-to-date for flow — the rule fa-registers branches on.
+# account_types.toml — the account types and the stock/flow/memo law (plan §4.2,
+# §4.3, §7.4, §7.5, §12.1; fa-xwv, fa-a57x, fa-4o0, fa-xjlb).
 #
-# Consumer: fa-model AccountType constants (cross-checked), fa-registers
-# balance/TB folds, fa-journal chart install. Gate: unknown kind fails.
+# Recorded decision (fa-a57x):
+# 1. Stock vs flow is a property of the report/statement selector (`Stock` vs
+#    `Activity`), never an implicit per-account-type branch inside `--as-of`
+#    (plan §7.5). As-of / stock selectors (`balance_as_of`, `trial_balance_at`,
+#    `BalanceSheet`) fold inception-to-date (`EFFECTIVE <= day`) across all
+#    monetary (`stock` and `flow`) and `memo` account types, including `Closing`
+#    entries. Once a prior fiscal year is closed by `YearEndClose` (fa-4o0,
+#    `FA-INV-03.nominal-zero`), prior-year `flow` accounts net to zero in equity,
+#    so their ITD fold in the current fiscal year equals current fiscal-YTD
+#    while any unclosed prior-year nominal balance stays visible so monetary
+#    `debits == credits` (`FA-INV-01`) holds at every coordinate. Period activity
+#    (`period_activity`, `IncomeStatement` with `excluded_classes = ["Closing"]`)
+#    folds only the explicitly selected period(s).
+# 2. `memo` accounts (`Memo`, `Statistical`, `AccountType::is_memo()`) sit
+#    outside the monetary balance law (`FA-INV-01.memo`): they never balance
+#    monetary (`stock` or `flow`) legs at commit, appear in `TrialBalance.rows`
+#    at the selected coordinate, and are excluded from `TrialBalance.unit_totals`
+#    and `TrialBalance.pending_unit_totals` (monetary trial-balance footing).
+#
+# Consumer: fa-model AccountType constants (cross-checked), fa-journal post/chart,
+# fa-registers balance/TB folds, fa-reference oracle. Gate: unknown kind fails.
 
 schema_version = 1
 

@@ -1643,6 +1643,75 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         }
         accounts.push(account);
     }
+    if accounts
+        .iter()
+        .any(|a| fa_model::AccountType(a.account_type).is_memo())
+    {
+        let mut monetary_legs = Vec::new();
+        let mut monetary_entities = Vec::new();
+        let mut memo_legs = Vec::new();
+        let mut memo_entities = Vec::new();
+        for ((leg, account), entity) in proposal
+            .legs
+            .iter()
+            .zip(&accounts)
+            .zip(leg_entities.iter().cloned())
+        {
+            if fa_model::AccountType(account.account_type).is_memo() {
+                memo_legs.push(leg.clone());
+                memo_entities.push(entity);
+            } else {
+                monetary_legs.push(leg.clone());
+                monetary_entities.push(entity);
+            }
+        }
+        for (label_kind, subset_legs, subset_entities) in [
+            ("monetary", &monetary_legs, &monetary_entities),
+            ("memo", &memo_legs, &memo_entities),
+        ] {
+            let mut by_unit: BTreeMap<fa_money::UnitId, (i128, i128)> = BTreeMap::new();
+            for leg in subset_legs {
+                let slot = by_unit.entry(leg.amount.unit).or_insert((0, 0));
+                match leg.side {
+                    fa_money::Side::Debit => {
+                        slot.0 = slot
+                            .0
+                            .checked_add(leg.amount.mantissa)
+                            .ok_or_else(|| KernelError::Corrupt("leg sum overflow".into()))?;
+                    }
+                    fa_money::Side::Credit => {
+                        slot.1 = slot
+                            .1
+                            .checked_add(leg.amount.mantissa)
+                            .ok_or_else(|| KernelError::Corrupt("leg sum overflow".into()))?;
+                    }
+                }
+            }
+            if let Some((&unit, &(debits, credits))) = by_unit.iter().find(|(_, (d, c))| d != c) {
+                txn.abort();
+                let u = book
+                    .units
+                    .get(unit)
+                    .map_or_else(|| format!("unit {}", unit.0), |u| u.code.clone());
+                return Ok(Err(Refusal::new(
+                    code::UNBALANCED,
+                    exit::REFUSAL,
+                    format!(
+                        "{label_kind} legs are unbalanced in {u}: debits {debits} != credits {credits} (memo and statistical accounts sit outside the monetary balance law and never balance monetary legs)"
+                    ),
+                    "FA-INV-01 (`memo`: memo and statistical accounts balance separately from monetary accounts; plan §4.2)",
+                    format!(
+                        "balance {label_kind} debits and credits in {u} separately from memo/statistical legs; never balance a monetary leg against a Memo or Statistical account"
+                    ),
+                )));
+            }
+            if let Some(r) = entity::per_entity_refusal(subset_legs, subset_entities, &book.units)?
+            {
+                txn.abort();
+                return Ok(Err(r));
+            }
+        }
+    }
     if migration_run.is_some() && accounts.iter().any(|a| a.limit.is_some()) {
         txn.abort();
         return Ok(Err(not_implemented("Migration into a limited account")));

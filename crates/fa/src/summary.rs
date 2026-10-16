@@ -327,10 +327,14 @@ fn aggregate(
                 row.code
             )));
         }
-        add(all_sums.entry(row.unit_id).or_insert([0; 4]), row)?;
+        if !row.account_type.is_memo() {
+            add(all_sums.entry(row.unit_id).or_insert([0; 4]), row)?;
+        }
         if let Some(index) = owners.get(&row.account) {
             add(group_sums[*index].entry(row.unit_id).or_insert([0; 4]), row)?;
-            add(selected_sums.entry(row.unit_id).or_insert([0; 4]), row)?;
+            if !row.account_type.is_memo() {
+                add(selected_sums.entry(row.unit_id).or_insert([0; 4]), row)?;
+            }
         }
     }
     let (posted, pending) = totals(&all_sums);

@@ -1680,7 +1680,10 @@ fn equal_sum_histories_with_different_leg_orders_have_distinct_fold_digests() {
     assert_eq!(adv_a.fold, fold_a);
     assert_eq!(adv_b.fold, fold_b);
     assert_eq!(fold_a.cells, fold_b.cells, "both books sum to 150");
-    assert_eq!(fold_a.watermark, fold_b.watermark, "same commit sequence watermark");
+    assert_eq!(
+        fold_a.watermark, fold_b.watermark,
+        "same commit sequence watermark"
+    );
     assert_eq!(fold_a.entries, fold_b.entries);
     assert_ne!(
         fold_a.fold_digest, fold_b.fold_digest,
@@ -1726,3 +1729,380 @@ fn equal_sum_histories_with_different_leg_orders_have_distinct_fold_digests() {
     );
 }
 
+#[test]
+fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
+    use std::collections::BTreeMap;
+
+    let mut h = harness();
+    let usd = h.usd;
+    let dec_2025 = DateDay::from_ymd(2025, 12, 15).unwrap();
+    let mar_2026 = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let end_mar_2026 = DateDay::from_ymd(2026, 3, 31).unwrap();
+
+    // Create FY2025 periods and open FY2025-P12.
+    let (_, fy2025) = {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { create_periods(db, &ctx, book, 2025).await })
+            .expect("fy2025 created")
+    };
+    let p12_2025 = fy2025
+        .iter()
+        .find(|p| p.contains(dec_2025) && p.kind == PeriodKind::Normal)
+        .unwrap()
+        .code
+        .clone();
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let desc = Erasable::seal(
+            &"open-p12".to_string(),
+            None,
+            &book.seal_key,
+            [11; 32],
+            [12; 24],
+        );
+        let cap = Capability::embedded(PRINCIPAL, &["close"]).expect("close");
+        let p12 = p12_2025.as_str();
+        h.runtime
+            .block_on(async move {
+                transition_period(
+                    db,
+                    &ctx,
+                    book,
+                    p12,
+                    PeriodTransition::Open,
+                    PRINCIPAL,
+                    1,
+                    dec_2025,
+                    b"open-2025-p12",
+                    desc,
+                    &cap,
+                    &[],
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("opened 2025-p12");
+    }
+
+    // Install one leaf account per registered AccountType (1..=7) plus counter-accounts.
+    let type_accounts: &[(&str, &str, u8, u8)] = &[
+        ("1010", "AssetSample", 1, 0),
+        ("2010", "LiabilitySample", 2, 1),
+        ("3010", "EquitySample", 3, 1),
+        ("4010", "RevenueSample", 4, 1),
+        ("5010", "ExpenseSample", 5, 0),
+        ("8010", "MemoGuarantee", 6, 0),
+        ("8020", "MemoCounter", 6, 1),
+        ("9010", "StatHeadcount", 7, 0),
+        ("9020", "StatCounter", 7, 1),
+    ];
+    let specs: Vec<AccountSpec> = type_accounts
+        .iter()
+        .map(|(code, name, tag, nb)| AccountSpec {
+            code: (*code).into(),
+            name: (*name).into(),
+            account_type: *tag,
+            normal_balance: *nb,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: None,
+            limit: None,
+        })
+        .collect();
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let desc = Erasable::seal(
+            &"all-types".to_string(),
+            None,
+            &book.seal_key,
+            [13; 32],
+            [14; 24],
+        );
+        h.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &specs,
+                    PRINCIPAL,
+                    dec_2025,
+                    b"install-all-types",
+                    desc,
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("installed");
+    }
+
+    let mut oracle = fa_reference::Oracle::new(h.book.calendar.clone());
+    oracle.create_periods(2025);
+    oracle.create_periods(2026);
+    oracle
+        .transition(&p12_2025, PeriodTransition::Open)
+        .expect("oracle open 2025-p12");
+    oracle
+        .transition(&h.march, PeriodTransition::Open)
+        .expect("oracle open 2026-p03");
+    for (code, _, tag, _) in type_accounts {
+        oracle.add_account(fa_reference::Account {
+            code: (*code).into(),
+            is_leaf: true,
+            unit: Some(usd.0),
+        });
+        oracle.set_account_type(code, *tag);
+    }
+
+    let book_id = h.book.book_id;
+    let vid = move |code: &str| account_vid(book_id, code);
+    let post_dated = |h: &mut Harness,
+                      oracle: &mut fa_reference::Oracle,
+                      date: DateDay,
+                      key: &[u8],
+                      legs: &[(&str, Side, i128)]|
+     -> (Result<Posted, Refusal>, fa_reference::Verdict) {
+        let k_legs: Vec<LegPayload> = legs
+            .iter()
+            .map(|(c, side, m)| LegPayload::simple(*side, vid(c), Amount::new(usd, *m)))
+            .collect();
+        let mut proposal = h.proposal(k_legs, key, EntryClass::ORIGINAL);
+        proposal.effective_date = date;
+        let req = PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).expect("post"),
+        };
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let k_res = h
+            .runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .expect("kernel");
+        let o_legs: Vec<fa_reference::Leg> = legs
+            .iter()
+            .map(|(c, side, m)| fa_reference::Leg {
+                side: match side {
+                    Side::Debit => fa_reference::Side::Debit,
+                    Side::Credit => fa_reference::Side::Credit,
+                },
+                account: (*c).into(),
+                unit: usd.0,
+                entity: None,
+                mantissa: *m,
+            })
+            .collect();
+        let o_intent = fa_reference::Intent {
+            class: "Original".into(),
+            date,
+            discriminator: None,
+            legs: o_legs,
+            ops: vec!["post".into()],
+            approvals: 0,
+            reverses: None,
+            supersession_reason: 0,
+            resolves: None,
+            settles: Vec::new(),
+            key: key.to_vec(),
+        };
+        let o_res = oracle.post(&o_intent);
+        (k_res, o_res)
+    };
+
+    // Planted negatives: mixing a monetary leg with a Memo or Statistical leg in
+    // the same unit is refused FA-REF-001 by both kernel and oracle.
+    let head_before = h.db.frontier().unwrap();
+    for (bad_key, bad_legs) in [
+        (
+            b"mix-asset-memo" as &[u8],
+            &[("1010", Side::Debit, 500), ("8020", Side::Credit, 500)][..],
+        ),
+        (
+            b"mix-rev-stat",
+            &[("9010", Side::Debit, 300), ("4010", Side::Credit, 300)][..],
+        ),
+    ] {
+        let (k_res, o_res) = post_dated(&mut h, &mut oracle, mar_2026, bad_key, bad_legs);
+        let err = k_res.expect_err("memo/statistical leg must not balance a monetary leg");
+        assert_eq!((err.code, err.exit), ("FA-REF-001", exit::REFUSAL));
+        assert_eq!(o_res, fa_reference::Verdict::Refused { code: "FA-REF-001" });
+    }
+    assert_eq!(h.db.frontier().unwrap(), head_before);
+
+    // Post FY2025 activity across all 7 account types (unclosed prior year).
+    for (key, legs) in [
+        (
+            b"fy25-stock" as &[u8],
+            &[
+                ("1010", Side::Debit, 1_000),
+                ("2010", Side::Credit, 400),
+                ("3010", Side::Credit, 600),
+            ][..],
+        ),
+        (
+            b"fy25-flow",
+            &[
+                ("1010", Side::Debit, 200),
+                ("5010", Side::Debit, 300),
+                ("4010", Side::Credit, 500),
+            ][..],
+        ),
+        (
+            b"fy25-memo",
+            &[("8010", Side::Debit, 700), ("8020", Side::Credit, 700)][..],
+        ),
+        (
+            b"fy25-stat",
+            &[("9010", Side::Debit, 42), ("9020", Side::Credit, 42)][..],
+        ),
+    ] {
+        let (k_res, o_res) = post_dated(&mut h, &mut oracle, dec_2025, key, legs);
+        assert!(matches!(k_res, Ok(Posted::Committed { .. })));
+        assert!(matches!(o_res, fa_reference::Verdict::Posted { .. }));
+    }
+
+    // Post FY2026 activity across all 7 account types.
+    for (key, legs) in [
+        (
+            b"fy26-stock" as &[u8],
+            &[
+                ("1010", Side::Debit, 250),
+                ("2010", Side::Credit, 100),
+                ("3010", Side::Credit, 150),
+            ][..],
+        ),
+        (
+            b"fy26-flow",
+            &[
+                ("1010", Side::Debit, 120),
+                ("5010", Side::Debit, 80),
+                ("4010", Side::Credit, 200),
+            ][..],
+        ),
+        (
+            b"fy26-memo",
+            &[("8010", Side::Debit, 150), ("8020", Side::Credit, 150)][..],
+        ),
+        (
+            b"fy26-stat",
+            &[("9010", Side::Debit, 8), ("9020", Side::Credit, 8)][..],
+        ),
+    ] {
+        let (k_res, o_res) = post_dated(&mut h, &mut oracle, mar_2026, key, legs);
+        assert!(matches!(k_res, Ok(Posted::Committed { .. })));
+        assert!(matches!(o_res, fa_reference::Verdict::Posted { .. }));
+    }
+
+    // Also place one pending hold on monetary accounts and one on memo accounts in FY2026.
+    h.hold(
+        vec![
+            LegPayload::simple(Side::Debit, vid("5010"), Amount::new(usd, 55)),
+            LegPayload::simple(Side::Credit, vid("1010"), Amount::new(usd, 55)),
+        ],
+        b"hold-monetary",
+    );
+    h.hold(
+        vec![
+            LegPayload::simple(Side::Debit, vid("8010"), Amount::new(usd, 99)),
+            LegPayload::simple(Side::Credit, vid("8020"), Amount::new(usd, 99)),
+        ],
+        b"hold-memo",
+    );
+
+    let as_of_tb = balance_as_of(&h.db, &h.book, end_mar_2026, None).expect("balance_as_of");
+    let periods_tb =
+        trial_balance_at(&h.db, &h.book, &[h.march.clone()], None).expect("trial_balance_at");
+    assert_eq!(as_of_tb.rows, periods_tb.rows);
+    assert_eq!(as_of_tb.unit_totals, periods_tb.unit_totals);
+    assert_eq!(as_of_tb.pending_unit_totals, periods_tb.pending_unit_totals);
+    assert!(as_of_tb.is_balanced());
+
+    let oracle_stock = oracle.stock_known(end_mar_2026, oracle.known());
+    let got_stock: BTreeMap<(String, u32), (i128, i128)> = as_of_tb
+        .rows
+        .iter()
+        .map(|r| ((r.code.clone(), r.unit_id), (r.debits, r.credits)))
+        .collect();
+    let want_stock: BTreeMap<(String, u32), (i128, i128)> = oracle_stock
+        .iter()
+        .map(|(k, c)| {
+            (
+                k.clone(),
+                (c.debits.to_i128().unwrap(), c.credits.to_i128().unwrap()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got_stock, want_stock,
+        "as-of TB rows match oracle ITD fold across all 7 account types"
+    );
+    assert_eq!(
+        as_of_tb.unit_totals,
+        oracle.trial_balance_totals(&oracle_stock),
+        "monetary unit_totals exclude Memo (6) and Statistical (7) rows"
+    );
+    assert_eq!(
+        as_of_tb.pending_unit_totals.get(&usd.0).copied(),
+        Some((55, 55)),
+        "pending_unit_totals include monetary holds (55) and exclude memo holds (99)"
+    );
+
+    let act_tb =
+        period_activity(&h.db, &h.book, &[h.march.clone()], None).expect("period_activity");
+    let oracle_act = oracle.activity_known(&[h.march.as_str()], oracle.known());
+    let got_act: BTreeMap<(String, u32), (i128, i128)> = act_tb
+        .rows
+        .iter()
+        .map(|r| ((r.code.clone(), r.unit_id), (r.debits, r.credits)))
+        .collect();
+    let want_act: BTreeMap<(String, u32), (i128, i128)> = oracle_act
+        .iter()
+        .map(|(k, c)| {
+            (
+                k.clone(),
+                (c.debits.to_i128().unwrap(), c.credits.to_i128().unwrap()),
+            )
+        })
+        .collect();
+    assert_eq!(got_act, want_act);
+    assert_eq!(act_tb.unit_totals, oracle.trial_balance_totals(&oracle_act));
+
+    for (code, _, tag, _) in type_accounts {
+        let stock_row = as_of_tb
+            .rows
+            .iter()
+            .find(|r| r.code == *code)
+            .expect("present in as_of_tb");
+        let act_row = act_tb
+            .rows
+            .iter()
+            .find(|r| r.code == *code)
+            .expect("present in act_tb");
+        assert_eq!(stock_row.account_type.0, *tag);
+        assert!(
+            stock_row.debits > act_row.debits || stock_row.credits > act_row.credits,
+            "as-of folds inception-to-date (FY2025 + FY2026) for account {code} (type {tag})"
+        );
+        eprintln!(
+            "fa-a57x account_type={}({}) is_memo={} selector=as-of:{} result=({},{}) selector=activity:{} result=({},{})",
+            stock_row.account_type.name().unwrap_or("?"),
+            tag,
+            stock_row.account_type.is_memo(),
+            end_mar_2026,
+            stock_row.debits,
+            stock_row.credits,
+            h.march,
+            act_row.debits,
+            act_row.credits,
+        );
+    }
+}
