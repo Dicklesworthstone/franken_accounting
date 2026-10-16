@@ -9,24 +9,35 @@ fn stream(moves: &[(bool, i128)], source_at: usize) -> Stream {
     Stream {
         unit: UnitId(0),
         entity: None,
-        moves: moves.iter().enumerate().map(|(i, (inflow, magnitude))| Movement {
-            entry: VId(i as u128 + 1),
-            date: DateDay(i as i32),
-            recorded: i as u64,
-            inflow: *inflow,
-            magnitude: *magnitude,
-        }).collect(),
+        moves: moves
+            .iter()
+            .enumerate()
+            .map(|(i, (inflow, magnitude))| Movement {
+                entry: VId(i as u128 + 1),
+                date: DateDay(i as i32),
+                recorded: i as u64,
+                inflow: *inflow,
+                magnitude: *magnitude,
+                replenishes: false,
+            })
+            .collect(),
         source_at,
     }
 }
 
 #[test]
 fn repeated_clean_turnover_does_not_overflow_an_unused_law_pool() {
-    let stream = stream(&[
-        (true, 1), (false, 1),
-        (true, i128::MAX), (false, i128::MAX),
-        (true, i128::MAX), (false, i128::MAX),
-    ], 0);
+    let stream = stream(
+        &[
+            (true, 1),
+            (false, 1),
+            (true, i128::MAX),
+            (false, i128::MAX),
+            (true, i128::MAX),
+            (false, i128::MAX),
+        ],
+        0,
+    );
     for law in LAWS {
         let traced = run_law(law, &stream, &mut Work::default()).unwrap();
         assert_eq!(traced.traced, 0, "{law:?}");
@@ -39,11 +50,15 @@ fn repeated_clean_turnover_does_not_overflow_an_unused_law_pool() {
 
 #[test]
 fn the_minimum_signed_opening_balance_can_be_repaid_without_negation() {
-    let stream = stream(&[
-        (false, i128::MAX), (false, 1), // opening = i128::MIN
-        (true, 1),                    // claimant repays one unit of debt
-        (true, i128::MAX),            // the remainder is repaid, nothing held
-    ], 2);
+    let stream = stream(
+        &[
+            (false, i128::MAX),
+            (false, 1),        // opening = i128::MIN
+            (true, 1),         // claimant repays one unit of debt
+            (true, i128::MAX), // the remainder is repaid, nothing held
+        ],
+        2,
+    );
     for law in LAWS {
         let traced = run_law(law, &stream, &mut Work::default()).unwrap();
         assert_eq!(traced.traced, 0, "{law:?}");
@@ -54,9 +69,7 @@ fn the_minimum_signed_opening_balance_can_be_repaid_without_negation() {
 
 #[test]
 fn overdrafts_after_the_deposit_do_not_replenish_tainted_money() {
-    let stream = stream(&[
-        (true, 10), (false, 15), (true, 8), (false, 1),
-    ], 0);
+    let stream = stream(&[(true, 10), (false, 15), (true, 8), (false, 1)], 0);
     for law in LAWS {
         let traced = run_law(law, &stream, &mut Work::default()).unwrap();
         assert_eq!(traced.traced, 0, "{law:?}");
@@ -66,15 +79,36 @@ fn overdrafts_after_the_deposit_do_not_replenish_tainted_money() {
 
 #[test]
 fn named_laws_keep_their_distinct_consumption_orders() {
-    let stream = stream(&[
-        (true, 3), (true, 10), (false, 5), (true, 4), (false, 6),
-    ], 1);
+    let stream = stream(
+        &[(true, 3), (true, 10), (false, 5), (true, 4), (false, 6)],
+        1,
+    );
     // Hamilton ties stay on the tainted pool, as in the registered law.
-    for (law, expected) in [(Law::Libr, 6), (Law::Fifo, 2), (Law::Lifo, 3), (Law::ProRata, 3)] {
+    for (law, expected) in [
+        (Law::Libr, 6),
+        (Law::Fifo, 2),
+        (Law::Lifo, 3),
+        (Law::ProRata, 3),
+    ] {
         let traced = run_law(law, &stream, &mut Work::default()).unwrap();
         assert_eq!(traced.traced, expected, "{law:?}");
         assert_eq!(traced.lowest.0, 6, "{law:?}");
     }
+}
+
+#[test]
+fn on_evidence_replenishment_restores_libr_up_to_initial_deposit_cap() {
+    let mut s = stream(&[(true, 100), (false, 60), (true, 50), (true, 40)], 0);
+    s.moves[2].replenishes = true;
+    s.moves[3].replenishes = true;
+    // Never (default): stays at lowest intermediate balance 40.
+    let never = run_law_with_replenishment(Law::Libr, &s, false, &mut Work::default()).unwrap();
+    assert_eq!(never.traced, 40);
+    assert!(never.replenishers.is_empty());
+    // OnEvidence: move[2] (+50) restores 40 -> 90; move[3] (+40) restores only 10 (capped at 100).
+    let on_ev = run_law_with_replenishment(Law::Libr, &s, true, &mut Work::default()).unwrap();
+    assert_eq!(on_ev.traced, 100);
+    assert_eq!(on_ev.replenishers, BTreeSet::from([VId(3), VId(4)]));
 }
 
 #[test]

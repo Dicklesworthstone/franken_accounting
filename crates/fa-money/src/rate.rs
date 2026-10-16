@@ -156,6 +156,10 @@ impl Rate {
         )
     }
 
+    pub fn zero(budget: &mut ArithmeticBudget<'_, impl Sized>) -> Result<Self, RateError> {
+        Self::new(budget, 0, 1)
+    }
+
     pub fn one(budget: &mut ArithmeticBudget<'_, impl Sized>) -> Result<Self, RateError> {
         Self::new(budget, 1, 1)
     }
@@ -234,6 +238,131 @@ impl Rate {
 
     pub fn is_zero(&self) -> bool {
         self.numerator().is_zero()
+    }
+
+    /// Add two exact non-negative rationals and reduce to lowest terms.
+    pub fn checked_add(
+        &self,
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+        other: &Self,
+    ) -> Result<Self, RateError> {
+        let lhs = metered_multiply(self.numerator(), other.denominator(), budget)?;
+        let rhs = metered_multiply(other.numerator(), self.denominator(), budget)?;
+        let num = metered_add(&lhs, &rhs, budget)?;
+        let den = metered_multiply(self.denominator(), other.denominator(), budget)?;
+        Self::from_integers(budget, &num, &den)
+    }
+
+    /// Subtract `other` from `self` as a non-negative rational, refusing if `self < other`.
+    pub fn checked_sub(
+        &self,
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+        other: &Self,
+    ) -> Result<Self, RateError> {
+        let lhs = metered_multiply(self.numerator(), other.denominator(), budget)?;
+        let rhs = metered_multiply(other.numerator(), self.denominator(), budget)?;
+        if fsym_bigint::metered_cmp(&lhs, &rhs, budget)?.is_lt() {
+            return Err(RateError::Overflow);
+        }
+        let num = fsym_bigint::metered_subtract(&lhs, &rhs, budget)?;
+        let den = metered_multiply(self.denominator(), other.denominator(), budget)?;
+        Self::from_integers(budget, &num, &den)
+    }
+
+    /// Exact metered comparison of two non-negative rationals.
+    pub fn metered_cmp(
+        &self,
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+        other: &Self,
+    ) -> Result<core::cmp::Ordering, RateError> {
+        let lhs = metered_multiply(self.numerator(), other.denominator(), budget)?;
+        let rhs = metered_multiply(other.numerator(), self.denominator(), budget)?;
+        Ok(fsym_bigint::metered_cmp(&lhs, &rhs, budget)?)
+    }
+
+    /// Decompose `self = q + frac` into `q = floor(self)` as `u128` and `frac` in `[0, 1)`.
+    pub fn floor_and_frac(
+        &self,
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+    ) -> Result<(u128, Self), RateError> {
+        let (q_big, r_big) =
+            fsym_bigint::metered_div_rem(self.numerator(), self.denominator(), budget)?
+                .ok_or(RateError::ZeroDenominator)?;
+        if q_big.bits() > 128 {
+            return Err(RateError::Overflow);
+        }
+        budget.reserve(16, 1)?;
+        let bytes = q_big.to_bytes_le();
+        let mut mag = [0u8; 16];
+        mag[..bytes.len()].copy_from_slice(&bytes);
+        let q = u128::from_le_bytes(mag);
+        let frac = Self::from_integers(budget, &r_big, self.denominator())?;
+        Ok((q, frac))
+    }
+
+    /// Round a slice of exact non-negative rational shares whose exact sum is
+    /// the non-negative integer `total` into integer `i128` shares under
+    /// Hamilton's `LargestRemainder` law (floor each share, then distribute
+    /// the integer residual `total - sum(floor)` to the largest fractional
+    /// remainders, breaking ties by lowest index). Refuses if the exact sum
+    /// of `shares` does not equal `total`.
+    pub fn round_largest_remainder(
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+        total: i128,
+        shares: &[Self],
+    ) -> Result<Vec<i128>, RateError> {
+        if total < 0 {
+            return Err(RateError::Overflow);
+        }
+        let total_u = u128::try_from(total).map_err(|_| RateError::Overflow)?;
+        let mut sum_exact = Self::zero(budget)?;
+        let mut floors: Vec<u128> = Vec::with_capacity(shares.len());
+        let mut fracs: Vec<(Self, usize)> = Vec::with_capacity(shares.len());
+        let mut floor_sum: u128 = 0;
+        for (idx, share) in shares.iter().enumerate() {
+            sum_exact = sum_exact.checked_add(budget, share)?;
+            let (q, frac) = share.floor_and_frac(budget)?;
+            floor_sum = floor_sum.checked_add(q).ok_or(RateError::Overflow)?;
+            floors.push(q);
+            fracs.push((frac, idx));
+        }
+        let expected = Self::new(budget, total_u, 1)?;
+        if sum_exact != expected {
+            return Err(RateError::Malformed(
+                "exact rational shares do not sum to declared integer total".into(),
+            ));
+        }
+        let mut residual = total_u.checked_sub(floor_sum).ok_or(RateError::Overflow)?;
+        for i in 1..fracs.len() {
+            let mut j = i;
+            while j > 0 {
+                let cmp_frac = fracs[j].0.metered_cmp(budget, &fracs[j - 1].0)?;
+                let before = cmp_frac.is_gt() || (cmp_frac.is_eq() && fracs[j].1 < fracs[j - 1].1);
+                if before {
+                    fracs.swap(j - 1, j);
+                    j -= 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        for (frac, idx) in fracs {
+            if residual == 0 {
+                break;
+            }
+            if frac.is_zero() {
+                break;
+            }
+            floors[idx] = floors[idx].checked_add(1).ok_or(RateError::Overflow)?;
+            residual -= 1;
+        }
+        if residual != 0 {
+            return Err(RateError::Overflow);
+        }
+        floors
+            .into_iter()
+            .map(|v| i128::try_from(v).map_err(|_| RateError::Overflow))
+            .collect()
     }
 
     /// Compose exact rates, cancelling cross factors before multiplication.

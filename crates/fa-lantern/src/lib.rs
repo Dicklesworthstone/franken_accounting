@@ -587,10 +587,18 @@ impl Work {
             "O(legs log legs)"
             | "O(ids log ids)"
             | "O(flow legs log flow legs)"
-            | "O(movements log movements)" => {
+            | "O(movements log movements)"
+            | "O(posting_legs log entities + movements log movements)" => {
                 self.entries <= entries
                     && self.legs <= legs.max(entries).saturating_mul(2)
                     && self.comparisons <= n_log_n
+            }
+            "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
+            | "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
+            | "O(input_legs log input_legs + max_steps log max_transfers + max_fragments * max_hops)" => {
+                self.entries <= entries.saturating_mul(2)
+                    && self.legs <= legs.max(entries).saturating_mul(4)
+                    && self.comparisons <= n_log_n.saturating_add(n.saturating_mul(300))
             }
             _ => false,
         }

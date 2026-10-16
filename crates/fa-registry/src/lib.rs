@@ -27,7 +27,10 @@ pub mod toml;
 pub mod topology;
 
 pub use admissibility_plan::{ALL_KINDS, DispositionFamily, PlanAdmissibility};
-pub use g0::{ConversionLawRow, ConversionLaws, IfrsRuleRow, LotLawRow, LotLaws};
+pub use g0::{
+    ConversionLawRow, ConversionLaws, IfrsRuleRow, IntradayOrderRow, LotLawRow, LotLaws,
+    ReplenishmentModeRow, TracingLawRow, TracingLaws,
+};
 
 use core::fmt;
 use std::collections::BTreeMap;

@@ -3,7 +3,7 @@
 //! differential test builds from the same intents it posts to the kernel.
 //! Deliberately simple, single pass where possible, own arithmetic.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_time::{DateDay, Weekday};
 
@@ -701,6 +701,353 @@ pub fn trace(
     )
 }
 
+fn gcd_i128(mut a: i128, mut b: i128) -> i128 {
+    a = a.abs();
+    b = b.abs();
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a.max(1)
+}
+
+fn rat_add(a: (i128, i128), b: (i128, i128)) -> (i128, i128) {
+    if a.0 == 0 {
+        return b;
+    }
+    if b.0 == 0 {
+        return a;
+    }
+    let g = gcd_i128(a.1, b.1);
+    let den = (a.1 / g) * b.1;
+    let num = a.0 * (b.1 / g) + b.0 * (a.1 / g);
+    if num == 0 {
+        return (0, 1);
+    }
+    let g2 = gcd_i128(num, den);
+    (num / g2, den / g2)
+}
+
+fn rat_mul(a: (i128, i128), b: (i128, i128)) -> (i128, i128) {
+    if a.0 == 0 || b.0 == 0 {
+        return (0, 1);
+    }
+    let g1 = gcd_i128(a.0, b.1);
+    let g2 = gcd_i128(b.0, a.1);
+    let num = (a.0 / g1) * (b.0 / g2);
+    let den = (a.1 / g2) * (b.1 / g1);
+    let g3 = gcd_i128(num, den);
+    (num / g3, den / g3)
+}
+
+/// Independent multi-hop network LIBR oracle via layered `s-t` cut enumeration
+/// over the time-expanded asset-account graph (`max_flow == min_cut`).
+///
+/// Requires `assets.len() <= 10` so that the exact subset cut enumeration
+/// across `2^|assets|` account subsets per time step runs in bounded time.
+pub fn network_libr_min_cut(
+    rows: &[Row],
+    assets: &[&str],
+    source_account: &str,
+    source: usize,
+    claim: DateDay,
+) -> i128 {
+    assert!(
+        assets.len() <= 10,
+        "network_libr_min_cut subset oracle expects at most 10 asset accounts"
+    );
+    let asset_idx = |name: &str| -> Option<usize> { assets.iter().position(|a| *a == name) };
+    let src_acct = asset_idx(source_account).expect("source_account must be in assets");
+
+    let mut moves: Vec<(i32, usize, String, String, i128)> = Vec::new();
+    for r in live_rows_through(rows, Some(claim)) {
+        if let Some((from, to, _unit, m)) = transfer(r)
+            && from != to
+            && m > 0
+        {
+            moves.push((r.date.0, r.index, from.to_string(), to.to_string(), m));
+        }
+    }
+    moves.sort_by_key(|m| (m.0, m.1));
+    let at = moves
+        .iter()
+        .position(|m| m.1 == source && m.3 == source_account)
+        .expect("source row deposits into source_account");
+
+    let k = assets.len();
+    let mut bal = vec![0i128; k];
+    for m in &moves[..at] {
+        if let Some(fi) = asset_idx(&m.2) {
+            bal[fi] -= m.4;
+        }
+        if let Some(ti) = asset_idx(&m.3) {
+            bal[ti] += m.4;
+        }
+    }
+    let deposit = moves[at].4;
+    let init_od = (-bal[src_acct]).max(0);
+    let traceable = (deposit - init_od).max(0);
+    bal[src_acct] += deposit;
+    if traceable == 0 {
+        return 0;
+    }
+
+    let n_subsets = 1usize << k;
+    let mut dp = vec![i128::MAX / 4; n_subsets];
+    for (mask, slot) in dp.iter_mut().enumerate() {
+        // If `src_acct` is not in the S-side mask at step 0, the source edge is cut.
+        *slot = if (mask & (1 << src_acct)) == 0 {
+            traceable
+        } else {
+            0
+        };
+    }
+
+    for m in &moves[at + 1..] {
+        let from_i = asset_idx(&m.2);
+        let to_i = asset_idx(&m.3);
+        let amount = m.4;
+        let drawn = from_i.map_or(0, |fi| amount.min(bal[fi].max(0)));
+        let surv = to_i.map_or(0, |ti| {
+            let od = (-bal[ti]).max(0);
+            (amount - od).max(0)
+        });
+        let xfer_cap = if from_i.is_some() && to_i.is_some() {
+            drawn.min(surv).min(traceable)
+        } else {
+            0
+        };
+
+        let mut surv_caps = vec![0i128; k];
+        for a in 0..k {
+            let avail = bal[a].max(0);
+            let rem = if Some(a) == from_i {
+                (avail - drawn).max(0)
+            } else {
+                avail
+            };
+            surv_caps[a] = rem.min(traceable);
+        }
+
+        let mut next_dp = vec![i128::MAX / 4; n_subsets];
+        for (mask_u, &base_cost) in dp.iter().enumerate() {
+            for (mask_v, next_slot) in next_dp.iter_mut().enumerate() {
+                let mut step_cut = 0i128;
+                for (a, &sc) in surv_caps.iter().enumerate() {
+                    if (mask_u & (1 << a)) != 0 && (mask_v & (1 << a)) == 0 {
+                        step_cut = (step_cut + sc).min(traceable);
+                    }
+                }
+                if xfer_cap > 0
+                    && let (Some(fi), Some(ti)) = (from_i, to_i)
+                    && (mask_u & (1 << fi)) != 0
+                    && (mask_v & (1 << ti)) == 0
+                {
+                    step_cut = (step_cut + xfer_cap).min(traceable);
+                }
+                let candidate = (base_cost + step_cut).min(traceable);
+                if candidate < *next_slot {
+                    *next_slot = candidate;
+                }
+            }
+        }
+        dp = next_dp;
+
+        if let Some(fi) = from_i {
+            bal[fi] -= amount;
+        }
+        if let Some(ti) = to_i {
+            bal[ti] += amount;
+        }
+    }
+
+    let mut best = traceable;
+    for (mask, &cost) in dp.iter().enumerate() {
+        let mut sink_cut = 0i128;
+        for (a, &b) in bal.iter().enumerate() {
+            if (mask & (1 << a)) != 0 {
+                sink_cut = (sink_cut + b.max(0)).min(traceable);
+            }
+        }
+        best = best.min(cost + sink_cut);
+    }
+    best
+}
+
+/// Independent multi-hop network Pro-Rata oracle using exact reduced rational
+/// `(num, den)` propagation rounded once at the output via largest-remainder.
+/// Returns `BTreeMap<account, held_mantissa>`.
+pub fn network_pro_rata_held(
+    rows: &[Row],
+    assets: &[&str],
+    source_account: &str,
+    source: usize,
+    claim: DateDay,
+) -> BTreeMap<String, i128> {
+    let is_asset = |name: &str| assets.contains(&name);
+    let mut moves: Vec<(i32, usize, String, String, i128)> = Vec::new();
+    for r in live_rows_through(rows, Some(claim)) {
+        if let Some((from, to, _unit, m)) = transfer(r)
+            && from != to
+            && m > 0
+        {
+            moves.push((r.date.0, r.index, from.to_string(), to.to_string(), m));
+        }
+    }
+    moves.sort_by_key(|m| (m.0, m.1));
+    let at = moves
+        .iter()
+        .position(|m| m.1 == source && m.3 == source_account)
+        .expect("source row deposits into source_account");
+
+    let mut bal: BTreeMap<String, i128> = BTreeMap::new();
+    for m in &moves[..at] {
+        if is_asset(&m.2) {
+            *bal.entry(m.2.clone()).or_default() -= m.4;
+        }
+        if is_asset(&m.3) {
+            *bal.entry(m.3.clone()).or_default() += m.4;
+        }
+    }
+
+    type Path = Vec<(usize, String, String)>;
+    let mut lots: BTreeMap<String, Vec<(Path, (i128, i128))>> = BTreeMap::new();
+    // Disposition tag: 0 = Held, 1 = Spent, 2 = RepaidOverdraft (matching Disposition order).
+    let mut terminal: BTreeMap<(String, u8, Path), (i128, i128)> = BTreeMap::new();
+
+    let src_move = &moves[at];
+    let deposit = src_move.4;
+    let init_od = (-bal.get(source_account).copied().unwrap_or(0)).max(0);
+    let repaid = deposit.min(init_od);
+    let traceable = deposit - repaid;
+    *bal.entry(source_account.to_string()).or_default() += deposit;
+    let init_path: Path = vec![(src_move.1, src_move.2.clone(), src_move.3.clone())];
+    if repaid > 0 {
+        terminal.insert(
+            (source_account.to_string(), 2, init_path.clone()),
+            (repaid, 1),
+        );
+    }
+    if traceable > 0 {
+        lots.entry(source_account.to_string())
+            .or_default()
+            .push((init_path, (traceable, 1)));
+    }
+
+    for m in &moves[at + 1..] {
+        let (_, entry, from, to, amount) = m;
+        let mut moved: Vec<(Path, (i128, i128))> = Vec::new();
+        if is_asset(from) {
+            let b_before = bal.get(from).copied().unwrap_or(0);
+            let avail = b_before.max(0);
+            let drawn = (*amount).min(avail);
+            *bal.entry(from.clone()).or_default() -= *amount;
+            if drawn > 0
+                && avail > 0
+                && let Some(prev_lots) = lots.remove(from)
+            {
+                let mut kept_lots = Vec::new();
+                for (path, r) in prev_lots {
+                    let out = rat_mul(r, (drawn, avail));
+                    let kept = rat_mul(r, (avail - drawn, avail));
+                    if kept.0 > 0 {
+                        kept_lots.push((path.clone(), kept));
+                    }
+                    if out.0 > 0 {
+                        let mut ext = path;
+                        ext.push((*entry, from.clone(), to.clone()));
+                        if is_asset(to) {
+                            moved.push((ext, out));
+                        } else {
+                            let e = terminal.entry((to.clone(), 1, ext)).or_insert((0, 1));
+                            *e = rat_add(*e, out);
+                        }
+                    }
+                }
+                if !kept_lots.is_empty() {
+                    lots.insert(from.clone(), kept_lots);
+                }
+            }
+        }
+        if is_asset(to) {
+            let b_before = bal.get(to).copied().unwrap_or(0);
+            let od = (-b_before).max(0);
+            let repaid_to = (*amount).min(od);
+            let surv_to = *amount - repaid_to;
+            *bal.entry(to.clone()).or_default() += *amount;
+            for (path, r) in moved {
+                if repaid_to == 0 {
+                    let list = lots.entry(to.clone()).or_default();
+                    if let Some(ex) = list.iter_mut().find(|(p, _)| *p == path) {
+                        ex.1 = rat_add(ex.1, r);
+                    } else {
+                        list.push((path, r));
+                    }
+                } else if surv_to == 0 {
+                    let e = terminal.entry((to.clone(), 2, path)).or_insert((0, 1));
+                    *e = rat_add(*e, r);
+                } else {
+                    let rep_r = rat_mul(r, (repaid_to, *amount));
+                    let surv_r = rat_mul(r, (surv_to, *amount));
+                    if rep_r.0 > 0 {
+                        let e = terminal
+                            .entry((to.clone(), 2, path.clone()))
+                            .or_insert((0, 1));
+                        *e = rat_add(*e, rep_r);
+                    }
+                    if surv_r.0 > 0 {
+                        let list = lots.entry(to.clone()).or_default();
+                        if let Some(ex) = list.iter_mut().find(|(p, _)| *p == path) {
+                            ex.1 = rat_add(ex.1, surv_r);
+                        } else {
+                            list.push((path, surv_r));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (acct, acct_lots) in lots {
+        for (path, r) in acct_lots {
+            if r.0 > 0 {
+                let e = terminal.entry((acct.clone(), 0, path)).or_insert((0, 1));
+                *e = rat_add(*e, r);
+            }
+        }
+    }
+
+    let entries: Vec<((String, u8, Path), (i128, i128))> = terminal.into_iter().collect();
+    let mut floors: Vec<i128> = Vec::with_capacity(entries.len());
+    let mut rems: Vec<(usize, i128, i128)> = Vec::with_capacity(entries.len());
+    let mut floor_sum = 0i128;
+    for (idx, (_, (num, den))) in entries.iter().enumerate() {
+        let q = num / den;
+        let rem = num % den;
+        floors.push(q);
+        floor_sum += q;
+        rems.push((idx, rem, *den));
+    }
+    let deficit = (deposit - floor_sum).max(0) as usize;
+    rems.sort_by(|a, b| {
+        let lhs = a.1 * b.2;
+        let rhs = b.1 * a.2;
+        rhs.cmp(&lhs).then_with(|| a.0.cmp(&b.0))
+    });
+    for &(idx, _, _) in rems.iter().take(deficit) {
+        floors[idx] += 1;
+    }
+
+    let mut held_by_acct: BTreeMap<String, i128> = BTreeMap::new();
+    for (((acct, disp, _), _), val) in entries.into_iter().zip(floors) {
+        if disp == 0 && val > 0 {
+            *held_by_acct.entry(acct).or_default() += val;
+        }
+    }
+    held_by_acct
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,5 +1137,28 @@ mod tests {
             structuring_for_unit(&s_rows, Some(392), 1_000_000, 800_000, 7, 3),
             vec![("4000".into(), "1000".into(), vec![3, 4, 5])]
         );
+    }
+
+    #[test]
+    fn network_libr_and_pro_rata_oracles_handle_commingled_multi_hop_transfers() {
+        let rows = vec![
+            row(0, 1, "1000", "3000", 840, 10_000), // clean in 1000
+            row(1, 2, "1000", "4000", 840, 10_000), // tainted source in 1000 (pool = 20_000)
+            row(2, 3, "1010", "1000", 840, 10_000), // transfer 10_000 from 1000 -> 1010
+            row(3, 4, "6000", "1000", 840, 5_000),  // spend 5_000 from 1000
+        ];
+        let claim = DateDay::from_ymd(2026, 1, 31).unwrap();
+        let assets = ["1000", "1010"];
+        // Under LIBR, 5_000 remains in 1000 and up to 10_000 could have moved to 1010,
+        // so total held is capped at traceable = 10_000 (5_000 in 1000 + 5_000 in 1010).
+        assert_eq!(
+            network_libr_min_cut(&rows, &assets, "1000", 1, claim),
+            10_000
+        );
+        // Under Pro-Rata, 50% of 1000's 10_000 transfer to 1010 is tainted (5_000 in 1010),
+        // and of the remaining 5_000 in 1000 after 5_000 is spent, 50% is tainted (2_500 in 1000).
+        let pr = network_pro_rata_held(&rows, &assets, "1000", 1, claim);
+        assert_eq!(pr.get("1000").copied().unwrap_or(0), 2_500);
+        assert_eq!(pr.get("1010").copied().unwrap_or(0), 5_000);
     }
 }

@@ -115,16 +115,31 @@ struct Movement {
     recorded: u64,
     inflow: bool,
     magnitude: i128,
+    replenishes: bool,
 }
 
 impl Movement {
+    #[cfg(test)]
     fn from_net(entry: VId, date: DateDay, recorded: u64, net: i128) -> Result<Self, LanternError> {
+        Self::from_net_with_replenish(entry, date, recorded, net, false)
+    }
+
+    fn from_net_with_replenish(
+        entry: VId,
+        date: DateDay,
+        recorded: u64,
+        net: i128,
+        replenishes: bool,
+    ) -> Result<Self, LanternError> {
         Ok(Self {
             entry,
             date,
             recorded,
             inflow: net > 0,
-            magnitude: net.checked_abs().ok_or(LanternError::Overflow("trace movement magnitude"))?,
+            magnitude: net
+                .checked_abs()
+                .ok_or(LanternError::Overflow("trace movement magnitude"))?,
+            replenishes,
         })
     }
 }
@@ -172,7 +187,11 @@ impl Trace {
         // Select BOTH the source's unit and legal entity. A shared chart
         // account is not authority to spend another entity's clean balance.
         let mut source_scope = entity::Source::default();
+        let mut source_docs = BTreeSet::new();
         for e in live.iter().filter(|e| e.vid == self.source) {
+            for ev in &e.entry.proposal.evidence {
+                source_docs.insert(ev.document_oid);
+            }
             for leg in &e.entry.proposal.legs {
                 if leg.account_ref == self.account && leg.side == inflow_side {
                     source_scope
@@ -193,11 +212,24 @@ impl Trace {
         let unit = UnitId(unit);
         let entity = entity.map(VId);
         // Net only this account, unit AND entity, retaining recorded order.
-        let mut per_entry: BTreeMap<VId, (DateDay, u64, i128)> = BTreeMap::new();
+        let mut per_entry: BTreeMap<VId, (DateDay, u64, i128, bool)> = BTreeMap::new();
         for e in live {
             work.entry();
+            let replenishes = e.vid != self.source
+                && ((!source_docs.is_empty()
+                    && e.entry
+                        .proposal
+                        .evidence
+                        .iter()
+                        .any(|ev| source_docs.contains(&ev.document_oid)))
+                    || e.entry
+                        .proposal
+                        .supersession
+                        .iter()
+                        .any(|s| s.target.vid == self.source));
             for leg in &e.entry.proposal.legs {
-                if leg.account_ref != self.account || leg.amount.unit != unit
+                if leg.account_ref != self.account
+                    || leg.amount.unit != unit
                     || scoped_entity(&scope, leg)? != entity
                 {
                     continue;
@@ -218,6 +250,7 @@ impl Trace {
                     e.entry.proposal.effective_date,
                     e.recorded_at.0,
                     0,
+                    replenishes,
                 ));
                 slot.2 = slot
                     .2
@@ -227,8 +260,10 @@ impl Trace {
         }
         let mut moves: Vec<Movement> = per_entry
             .into_iter()
-            .filter(|(_, (_, _, net))| *net != 0)
-            .map(|(entry, (date, recorded, net))| Movement::from_net(entry, date, recorded, net))
+            .filter(|(_, (_, _, net, _))| *net != 0)
+            .map(|(entry, (date, recorded, net, replenishes))| {
+                Movement::from_net_with_replenish(entry, date, recorded, net, replenishes)
+            })
             .collect::<Result<_, LanternError>>()?;
         let rank = |m: &Movement| match intraday {
             WITHDRAWALS_FIRST => u8::from(m.inflow),
@@ -272,6 +307,8 @@ struct Traced {
     lowest: (i128, Option<VId>),
     /// Outflow entries that carried tainted value, with the amount carried.
     carriers: BTreeMap<VId, i128>,
+    /// Inflow entries that replenished tainted value under `OnEvidence`.
+    replenishers: BTreeSet<VId>,
 }
 
 fn add(a: i128, b: i128, what: &'static str) -> Result<i128, LanternError> {
@@ -282,7 +319,17 @@ fn sub(a: i128, b: i128, what: &'static str) -> Result<i128, LanternError> {
     a.checked_sub(b).ok_or(LanternError::Overflow(what))
 }
 
+#[cfg(test)]
 fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, LanternError> {
+    run_law_with_replenishment(law, stream, false, work)
+}
+
+fn run_law_with_replenishment(
+    law: Law,
+    stream: &Stream,
+    replenish_on_evidence: bool,
+    work: &mut Work,
+) -> Result<Traced, LanternError> {
     // The opening balance before the deposit is clean money.
     let mut opening = 0i128;
     for m in &stream.moves[..stream.source_at] {
@@ -297,6 +344,7 @@ fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, Lantern
     let mut balance = add(opening, deposit, "balance")?;
     let mut lowest = (balance, None);
     let mut carriers: BTreeMap<VId, i128> = BTreeMap::new();
+    let mut replenishers: BTreeSet<VId> = BTreeSet::new();
     // An account owes before it holds: only the increase in max(balance, 0)
     // becomes held money. Keep overdrafts in the signed balance, not a
     // second magnitude accumulator: negating i128::MIN would falsely refuse
@@ -317,7 +365,11 @@ fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, Lantern
         }
     }
     let mut tainted = traceable;
-    let mut clean = if law == Law::ProRata { opening.max(0) } else { 0 };
+    let mut clean = if law == Law::ProRata {
+        opening.max(0)
+    } else {
+        0
+    };
     for m in &stream.moves[stream.source_at + 1..] {
         work.leg();
         if m.inflow {
@@ -328,7 +380,17 @@ fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, Lantern
                 match law {
                     Law::Fifo | Law::Lifo => layers.push_back((false, held)),
                     Law::ProRata => clean = add(clean, held, "clean pool")?,
-                    Law::Libr => {}
+                    Law::Libr => {
+                        if replenish_on_evidence && m.replenishes && tainted < traceable {
+                            let deficit = sub(traceable, tainted, "replenish cap")?;
+                            let avail = sub(balance.max(0), tainted, "replenish avail")?.max(0);
+                            let restored = held.min(deficit).min(avail);
+                            if restored > 0 {
+                                tainted = add(tainted, restored, "replenished taint")?;
+                                replenishers.insert(m.entry);
+                            }
+                        }
+                    }
                 }
             }
             continue;
@@ -339,7 +401,6 @@ fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, Lantern
         }
         match law {
             Law::Libr => {
-                // No replenishment: a later deposit never restores the share.
                 tainted = tainted.min(balance.max(0));
             }
             Law::Fifo | Law::Lifo => {
@@ -401,33 +462,26 @@ fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, Lantern
         traced,
         lowest,
         carriers,
+        replenishers,
     })
 }
 
-impl Procedure for Trace {
-    fn id(&self) -> &'static str {
-        self.law.id()
-    }
-    fn version(&self) -> u16 {
-        2
-    }
-    fn params(&self) -> &Params {
-        &self.params
-    }
-    fn inputs(&self) -> Vec<(String, String)> {
-        vec![
-            ("account".into(), hex(self.account)),
-            ("source".into(), hex(self.source)),
-        ]
-    }
-    fn run(
+impl Trace {
+    pub(crate) fn run_as(
         &self,
+        procedure_id: &str,
+        version: u16,
         snapshot: &Snapshot,
         book: &BookContext,
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
+        let refuse = |name: &str, message: &str| LanternError::Parameter {
+            procedure: procedure_id.into(),
+            name: name.into(),
+            message: message.into(),
+        };
         let Some(claim) = snapshot.coordinate.effective_through else {
-            return Err(self.refuse(
+            return Err(refuse(
                 "effective_through",
                 "tracing runs up to a declared effective date (the coordinate's effective_through)",
             ));
@@ -436,29 +490,40 @@ impl Procedure for Trace {
         match intraday {
             STATEMENT_ORDINAL | WITHDRAWALS_FIRST | DEPOSITS_FIRST => {}
             VALUE_DATE => {
-                return Err(self.refuse(
+                return Err(refuse(
                     "intraday_order",
                     "ValueDate ordering needs retained value dates; a later slice",
                 ));
             }
             _ => {
-                return Err(self.refuse(
+                return Err(refuse(
                     "intraday_order",
                     "0 StatementOrdinal, 2 WithdrawalsFirst or 3 DepositsFirst",
                 ));
             }
         }
-        if self.law == Law::Libr && self.params.get("replenishment")? != 0 {
-            return Err(self.refuse(
-                "replenishment",
-                "only 0 (Never) is registered; OnEvidence replenishment is a later slice",
-            ));
-        }
-        let stream = self.stream(snapshot, claim, intraday, work)?;
-        let t = run_law(self.law, &stream, work)?;
+        let replenish_on_evidence = if self.law == Law::Libr {
+            match self.params.get("replenishment")? {
+                0 => false,
+                1 => true,
+                _ => {
+                    return Err(refuse("replenishment", "0 Never or 1 OnEvidence"));
+                }
+            }
+        } else {
+            false
+        };
+        let stream = self
+            .stream(snapshot, claim, intraday, work)
+            .map_err(|err| match err {
+                LanternError::Parameter { name, message, .. } => refuse(&name, &message),
+                other => other,
+            })?;
+        let t = run_law_with_replenishment(self.law, &stream, replenish_on_evidence, work)?;
         let movements = stream.moves.len() as u64;
         let mut cites = vec![Cite::Account(self.account), Cite::Entry(self.source)];
         let mut cited: BTreeSet<VId> = t.carriers.keys().copied().collect();
+        cited.extend(t.replenishers.iter().copied());
         if let Some(at) = t.lowest.1 {
             cited.insert(at);
         }
@@ -475,9 +540,12 @@ impl Procedure for Trace {
             .try_fold(0i128, |acc, v| acc.checked_add(*v))
             .ok_or(LanternError::Overflow("carried"))?;
         let source_date = stream.moves[stream.source_at].date;
-        let entity_text = stream.entity.map_or_else(|| "implicit book entity".into(), |entity| format!("entity {}", hex(entity)));
-        Ok(vec![finding(
-            self.law.id(),
+        let entity_text = stream.entity.map_or_else(
+            || "implicit book entity".into(),
+            |entity| format!("entity {}", hex(entity)),
+        );
+        let mut f = finding(
+            procedure_id,
             Severity::Info,
             Statistic {
                 name: "traced_mantissa".into(),
@@ -502,6 +570,34 @@ impl Procedure for Trace {
                 carried,
                 t.traced
             ),
-        )])
+        );
+        f.version = version;
+        Ok(vec![f])
+    }
+}
+
+impl Procedure for Trace {
+    fn id(&self) -> &'static str {
+        self.law.id()
+    }
+    fn version(&self) -> u16 {
+        2
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn inputs(&self) -> Vec<(String, String)> {
+        vec![
+            ("account".into(), hex(self.account)),
+            ("source".into(), hex(self.source)),
+        ]
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        self.run_as(self.id(), self.version(), snapshot, book, work)
     }
 }

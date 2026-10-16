@@ -17,7 +17,7 @@ use fa_registry::foundations::Ledger;
 use fa_registry::g0::{
     CheckerIndex, ClaimsLintConfig, Constitution, ConversionLaws, EvidenceRegistry, LotLaws,
     OperationCosts, PeriodStatesRegistry, ProofLanes, RelationshipBases, SloRegistry,
-    SupersessionKinds,
+    SupersessionKinds, TracingLaws,
 };
 use fa_registry::intake_sources::IntakeSources;
 use fa_registry::invariants::Invariants;
@@ -121,6 +121,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "supersession_kinds.toml",
     "symbols.toml",
     "threat_model.toml",
+    "tracing_laws.toml",
     "units.toml",
     "verbs.toml",
     "workspace_topology.toml",
@@ -669,6 +670,9 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         ConversionLaws::parse(&read("conversion_laws.toml")?).map_err(|e| e.to_string())?;
     let _supersession_kinds = SupersessionKinds::parse(&read("supersession_kinds.toml")?, &classes)
         .map_err(|e| e.to_string())?;
+    let procedures = Procedures::from_text(&read("procedures.toml")?).map_err(|e| e.to_string())?;
+    let _tracing_laws =
+        TracingLaws::parse(&read("tracing_laws.toml")?, &procedures).map_err(|e| e.to_string())?;
     let claims_config =
         ClaimsLintConfig::parse(&read("claims_lint.toml")?).map_err(|e| e.to_string())?;
 

@@ -1,0 +1,108 @@
+# =============================================================================
+# registries/tracing_laws.toml — Constructive-Trust Tracing Laws (plan §11.5, bead fa-j5ng)
+# =============================================================================
+#
+# Every single-account and multi-account tracing procedure is backed by a
+# registered legal tracing law, intraday ordering mode, replenishment rule,
+# and exact rounding law. Two experts running a registered law over the same
+# coordinate and parameters obtain the same schedule byte-for-byte.
+#
+# Consumer: fa-registry (TracingLaws), fa-lantern (trace & network catalog),
+# fa-reference (lantern brute-force and naive tracing oracles).
+
+schema_version = 1
+
+[[law]]
+id = 1
+code = "libr"
+procedure_single = "trace.libr"
+procedure_network = "trace.network_libr"
+name = "Lowest Intermediate Balance Rule (LIBR)"
+citation = "Restatement (Third) of Restitution and Unjust Enrichment §59; In re Hallett's Estate, 13 Ch. D. 696 (1880)"
+presumption = "clean_dissipated_first"
+supports_replenishment = true
+rounding_law = "LargestRemainder"
+
+[[law]]
+id = 2
+code = "fifo"
+procedure_single = "trace.fifo"
+procedure_network = "trace.network_fifo"
+name = "First-In, First-Out (Clayton's Rule)"
+citation = "Devaynes v. Noble (Clayton's Case), 35 Eng. Rep. 781 (1816)"
+presumption = "oldest_drawn_first"
+supports_replenishment = false
+rounding_law = "LargestRemainder"
+
+[[law]]
+id = 3
+code = "lifo"
+procedure_single = "trace.lifo"
+procedure_network = "trace.network_lifo"
+name = "Last-In, First-Out (LIFO)"
+citation = "Restatement (Third) of Restitution and Unjust Enrichment §59 cmt. d"
+presumption = "newest_drawn_first"
+supports_replenishment = false
+rounding_law = "LargestRemainder"
+
+[[law]]
+id = 4
+code = "pro_rata"
+procedure_single = "trace.pro_rata"
+procedure_network = "trace.network_pro_rata"
+name = "Pro-Rata Sharing (Cunningham v. Brown)"
+citation = "Cunningham v. Brown, 265 U.S. 1 (1924); Restatement (Third) of Restitution §59(2)(b)"
+presumption = "proportional_co_mingled_pool"
+supports_replenishment = false
+rounding_law = "LargestRemainder"
+
+[[law]]
+id = 5
+code = "restitution_order"
+procedure_single = "trace.restitution_order"
+procedure_network = "trace.restitution_order"
+name = "Court-Ordered Restitution Schedule"
+citation = "Restatement (Third) of Restitution and Unjust Enrichment §59(1)"
+presumption = "parameterized_by_order"
+supports_replenishment = true
+rounding_law = "LargestRemainder"
+
+# ---- Intraday ordering modes (plan §11.5) -----------------------------------
+
+[[intraday_order]]
+tag = 0
+name = "StatementOrdinal"
+status = "live"
+meaning = "Same-day movements follow recorded commit sequence, then deterministic entry VId."
+
+[[intraday_order]]
+tag = 1
+name = "ValueDate"
+status = "reserved"
+meaning = "Same-day movements follow bank/instrument value date; refused until value-date lines are supplied."
+
+[[intraday_order]]
+tag = 2
+name = "WithdrawalsFirst"
+status = "live"
+meaning = "Same-day outflows precede inflows on the same effective date."
+
+[[intraday_order]]
+tag = 3
+name = "DepositsFirst"
+status = "live"
+meaning = "Same-day inflows precede outflows on the same effective date."
+
+# ---- Replenishment modes (Restatement (Third) of Restitution §59(2)(c)) -----
+
+[[replenishment_mode]]
+tag = 0
+name = "Never"
+status = "live"
+meaning = "Subsequent inflows never restore a depleted tainted balance (Restatement §59(2)(c) default)."
+
+[[replenishment_mode]]
+tag = 1
+name = "OnEvidence"
+status = "live"
+meaning = "Subsequent inflows that share a cited evidence document or supersession link with the source deposit replenish the depleted tainted share up to the original traceable deposit."

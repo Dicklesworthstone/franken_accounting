@@ -30,6 +30,7 @@ const SLO_TOML: &str = include_str!("../../../registries/slo.toml");
 const LOT_LAWS_TOML: &str = include_str!("../../../registries/lot_laws.toml");
 const CONVERSION_LAWS_TOML: &str = include_str!("../../../registries/conversion_laws.toml");
 const SUPERSESSION_KINDS_TOML: &str = include_str!("../../../registries/supersession_kinds.toml");
+const TRACING_LAWS_TOML: &str = include_str!("../../../registries/tracing_laws.toml");
 
 fn req_bool(registry: &'static str, t: &Table, key: &str) -> Result<bool, RegistryError> {
     t.get(key)
@@ -1854,6 +1855,288 @@ impl SupersessionKinds {
     }
 }
 
+// ---------------------------------------------------------------------------
+// tracing_laws.toml (plan §11.5, bead fa-j5ng)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TracingLawRow {
+    pub id: u8,
+    pub code: String,
+    pub procedure_single: String,
+    pub procedure_network: String,
+    pub name: String,
+    pub citation: String,
+    pub presumption: String,
+    pub supports_replenishment: bool,
+    pub rounding_law: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntradayOrderRow {
+    pub tag: u8,
+    pub name: String,
+    pub status: String,
+    pub meaning: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplenishmentModeRow {
+    pub tag: u8,
+    pub name: String,
+    pub status: String,
+    pub meaning: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TracingLaws {
+    pub laws: Vec<TracingLawRow>,
+    pub intraday_orders: Vec<IntradayOrderRow>,
+    pub replenishment_modes: Vec<ReplenishmentModeRow>,
+}
+
+const EXPECTED_TRACING_LAWS: &[(u8, &str, &str, &str)] = &[
+    (1, "libr", "trace.libr", "trace.network_libr"),
+    (2, "fifo", "trace.fifo", "trace.network_fifo"),
+    (3, "lifo", "trace.lifo", "trace.network_lifo"),
+    (4, "pro_rata", "trace.pro_rata", "trace.network_pro_rata"),
+    (
+        5,
+        "restitution_order",
+        "trace.restitution_order",
+        "trace.restitution_order",
+    ),
+];
+
+impl TracingLaws {
+    pub fn embedded(procedures: &crate::procedures::Procedures) -> Result<Self, RegistryError> {
+        Self::parse(TRACING_LAWS_TOML, procedures)
+    }
+
+    pub fn parse(
+        text: &str,
+        procedures: &crate::procedures::Procedures,
+    ) -> Result<Self, RegistryError> {
+        const R: &str = "tracing_laws.toml";
+        let doc = load(R, text)?;
+        if req_int(R, &doc.root, "schema_version")? != 1 {
+            return Err(invalid(R, "schema_version must be 1"));
+        }
+
+        let mut laws = Vec::new();
+        let mut seen_ids = BTreeSet::new();
+        let mut seen_codes = BTreeSet::new();
+        for t in doc
+            .arrays
+            .get("law")
+            .ok_or_else(|| invalid(R, "missing [[law]]"))?
+        {
+            let id = u8::try_from(req_int(R, t, "id")?)
+                .map_err(|_| invalid(R, "law id out of u8 range"))?;
+            let code = req_str(R, t, "code")?.to_string();
+            let procedure_single = req_str(R, t, "procedure_single")?.to_string();
+            let procedure_network = req_str(R, t, "procedure_network")?.to_string();
+            let name = req_str(R, t, "name")?.to_string();
+            let citation = req_str(R, t, "citation")?.to_string();
+            let presumption = req_str(R, t, "presumption")?.to_string();
+            let supports_replenishment = req_bool(R, t, "supports_replenishment")?;
+            let rounding_law = req_str(R, t, "rounding_law")?.to_string();
+
+            if !seen_ids.insert(id) {
+                return Err(invalid(R, format!("duplicate tracing law id `{id}`")));
+            }
+            if !seen_codes.insert(code.clone()) {
+                return Err(invalid(R, format!("duplicate tracing law code `{code}`")));
+            }
+            if procedures.get(&procedure_single).is_none() {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "`{code}`: procedure_single `{procedure_single}` is not registered in procedures.toml"
+                    ),
+                ));
+            }
+            if procedures.get(&procedure_network).is_none() {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "`{code}`: procedure_network `{procedure_network}` is not registered in procedures.toml"
+                    ),
+                ));
+            }
+            if !matches!(
+                presumption.as_str(),
+                "clean_dissipated_first"
+                    | "oldest_drawn_first"
+                    | "newest_drawn_first"
+                    | "proportional_co_mingled_pool"
+                    | "parameterized_by_order"
+            ) {
+                return Err(invalid(
+                    R,
+                    format!("`{code}`: unknown presumption `{presumption}`"),
+                ));
+            }
+            if rounding_law != "LargestRemainder" {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "`{code}`: rounding_law must be `LargestRemainder` (got `{rounding_law}`)"
+                    ),
+                ));
+            }
+            if name.trim().is_empty() || citation.trim().is_empty() {
+                return Err(invalid(
+                    R,
+                    format!("`{code}` requires non-empty `name` and `citation`"),
+                ));
+            }
+            laws.push(TracingLawRow {
+                id,
+                code,
+                procedure_single,
+                procedure_network,
+                name,
+                citation,
+                presumption,
+                supports_replenishment,
+                rounding_law,
+            });
+        }
+
+        if laws.len() != EXPECTED_TRACING_LAWS.len() {
+            return Err(invalid(
+                R,
+                format!(
+                    "expected {} [[law]] rows, found {}",
+                    EXPECTED_TRACING_LAWS.len(),
+                    laws.len()
+                ),
+            ));
+        }
+        for (exp_id, exp_code, exp_single, exp_net) in EXPECTED_TRACING_LAWS {
+            let Some(row) = laws.iter().find(|r| r.id == *exp_id) else {
+                return Err(invalid(
+                    R,
+                    format!("missing tracing law id {exp_id} (`{exp_code}`)"),
+                ));
+            };
+            if row.code != *exp_code
+                || row.procedure_single != *exp_single
+                || row.procedure_network != *exp_net
+            {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "tracing law id {exp_id} must map `{exp_code}` -> ({exp_single}, {exp_net})"
+                    ),
+                ));
+            }
+        }
+
+        let mut intraday_orders = Vec::new();
+        let mut seen_order_tags = BTreeSet::new();
+        for t in doc
+            .arrays
+            .get("intraday_order")
+            .ok_or_else(|| invalid(R, "missing [[intraday_order]]"))?
+        {
+            let tag = u8::try_from(req_int(R, t, "tag")?)
+                .map_err(|_| invalid(R, "intraday_order tag out of u8 range"))?;
+            let name = req_str(R, t, "name")?.to_string();
+            let status = req_str(R, t, "status")?.to_string();
+            let meaning = req_str(R, t, "meaning")?.to_string();
+            if !seen_order_tags.insert(tag) {
+                return Err(invalid(R, format!("duplicate intraday_order tag `{tag}`")));
+            }
+            if !matches!(status.as_str(), "live" | "reserved") {
+                return Err(invalid(
+                    R,
+                    format!("intraday_order `{name}`: invalid status `{status}`"),
+                ));
+            }
+            if name.trim().is_empty() || meaning.trim().is_empty() {
+                return Err(invalid(
+                    R,
+                    format!("intraday_order tag {tag} requires non-empty name and meaning"),
+                ));
+            }
+            intraday_orders.push(IntradayOrderRow {
+                tag,
+                name,
+                status,
+                meaning,
+            });
+        }
+        if intraday_orders.len() != 4 {
+            return Err(invalid(
+                R,
+                format!(
+                    "expected 4 [[intraday_order]] rows, found {}",
+                    intraday_orders.len()
+                ),
+            ));
+        }
+
+        let mut replenishment_modes = Vec::new();
+        let mut seen_rep_tags = BTreeSet::new();
+        for t in doc
+            .arrays
+            .get("replenishment_mode")
+            .ok_or_else(|| invalid(R, "missing [[replenishment_mode]]"))?
+        {
+            let tag = u8::try_from(req_int(R, t, "tag")?)
+                .map_err(|_| invalid(R, "replenishment_mode tag out of u8 range"))?;
+            let name = req_str(R, t, "name")?.to_string();
+            let status = req_str(R, t, "status")?.to_string();
+            let meaning = req_str(R, t, "meaning")?.to_string();
+            if !seen_rep_tags.insert(tag) {
+                return Err(invalid(
+                    R,
+                    format!("duplicate replenishment_mode tag `{tag}`"),
+                ));
+            }
+            if !matches!(status.as_str(), "live" | "reserved") {
+                return Err(invalid(
+                    R,
+                    format!("replenishment_mode `{name}`: invalid status `{status}`"),
+                ));
+            }
+            if name.trim().is_empty() || meaning.trim().is_empty() {
+                return Err(invalid(
+                    R,
+                    format!("replenishment_mode tag {tag} requires non-empty name and meaning"),
+                ));
+            }
+            replenishment_modes.push(ReplenishmentModeRow {
+                tag,
+                name,
+                status,
+                meaning,
+            });
+        }
+        if replenishment_modes.len() != 2 {
+            return Err(invalid(
+                R,
+                format!(
+                    "expected 2 [[replenishment_mode]] rows, found {}",
+                    replenishment_modes.len()
+                ),
+            ));
+        }
+
+        Ok(Self {
+            laws,
+            intraday_orders,
+            replenishment_modes,
+        })
+    }
+
+    pub fn by_code(&self, code: &str) -> Option<&TracingLawRow> {
+        self.laws.iter().find(|r| r.code == code)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1907,6 +2190,12 @@ mod tests {
         let sup_kinds = SupersessionKinds::embedded(&classes).expect("supersession_kinds.toml");
         assert_eq!(sup_kinds.kinds.len(), 6);
         assert_eq!(sup_kinds.target_classes.len(), classes.rows.len());
+
+        let procedures = crate::procedures::Procedures::embedded().expect("procedures.toml");
+        let tracing_laws = TracingLaws::embedded(&procedures).expect("tracing_laws.toml");
+        assert_eq!(tracing_laws.laws.len(), 5);
+        assert_eq!(tracing_laws.intraday_orders.len(), 4);
+        assert_eq!(tracing_laws.replenishment_modes.len(), 2);
     }
 
     #[test]
@@ -1991,6 +2280,21 @@ mod tests {
         let err = SupersessionKinds::parse(&bad_paired, &classes).expect_err("unpaired Replaces");
         assert!(
             err.to_string().contains("FA-INV-08.replacement-paired"),
+            "{err}"
+        );
+
+        // Planted negative 7 (fa-j5ng): unregistered procedure foreign key in tracing_laws.toml fails.
+        let procedures = crate::procedures::Procedures::embedded().expect("procedures.toml");
+        let bad_trace_proc = TRACING_LAWS_TOML.replacen(
+            "procedure_network = \"trace.network_libr\"",
+            "procedure_network = \"trace.no_such_proc\"",
+            1,
+        );
+        let err = TracingLaws::parse(&bad_trace_proc, &procedures)
+            .expect_err("unregistered procedure_network");
+        assert!(
+            err.to_string()
+                .contains("not registered in procedures.toml"),
             "{err}"
         );
     }

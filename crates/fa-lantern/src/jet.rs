@@ -26,7 +26,7 @@ pub(crate) fn finding(
 ) -> Finding {
     Finding {
         procedure: procedure.to_string(),
-        version: 1,
+        version: crate::bind(procedure).map_or(1, |row| row.version),
         severity,
         statistic,
         cites,
