@@ -168,6 +168,7 @@ fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let Some(authority) = &authority {
         book.preflight_intake(authority.capability(), fa::IntakeAction::Upload)??;
     }
+    crate::intake_provenance::check_mime(&policy, mime)?;
     let bytes = crate::intake::read_document(&ctx.files, path)?;
     let added = if let Some(authority) = &authority {
         book.upload_document(
@@ -1210,11 +1211,13 @@ fn import_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let names: Vec<&str> = policy.kinds.iter().map(|k| k.name.as_str()).collect();
                 named("document kind", kind_name, &names)
             })?;
-            let grade_name = args.flag("--grade").unwrap_or("AgentUpload");
-            let grade = policy.grade_by_name(grade_name).ok_or_else(|| {
-                let names: Vec<&str> = policy.grades.iter().map(|g| g.name.as_str()).collect();
-                named("provenance grade", grade_name, &names)
-            })?;
+            let explicit_grade = match args.flag("--grade") {
+                Some(grade_name) => Some(policy.grade_by_name(grade_name).ok_or_else(|| {
+                    let names: Vec<&str> = policy.grades.iter().map(|g| g.name.as_str()).collect();
+                    named("provenance grade", grade_name, &names)
+                })?),
+                None => None,
+            };
             let mime = args.flag("--mime").unwrap_or("application/octet-stream");
             let date_str = args
                 .flag("--date")
@@ -1241,10 +1244,30 @@ fn import_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             crate::intake::validate_documents(&paths)?;
             let who = ctx.principal(args);
             let capability = ctx.capability(args, &["post"])?;
-            let source = parse_intake_source(args.flag("--source"), who);
+            let (source, grade) = if ctx.authority().is_some() {
+                crate::intake_provenance::session_import(
+                    &policy,
+                    &capability,
+                    args.flag("--source"),
+                    explicit_grade.map(|grade| grade.tag),
+                )?
+            } else {
+                // The labelled embedded-owner route retains its conservative
+                // default and registered source assertions. Bound sessions do
+                // not acquire that posture from command-line metadata.
+                let grade = match explicit_grade {
+                    Some(grade) => grade,
+                    None => policy.grade_by_name("AgentUpload").ok_or_else(|| {
+                        Fail::Internal("missing AgentUpload grade".into())
+                    })?,
+                };
+                (parse_intake_source(args.flag("--source"), who), grade.tag)
+            };
             fa_journal::custody::admit_source(&source)?;
             let mut book = ctx.books.open(args)?;
             book.preflight_intake(&capability, fa::IntakeAction::ImportRun)??;
+            crate::intake_provenance::check_mime(&policy, mime)?;
+            crate::intake_provenance::check_import_header(args.flag("--key"), description)?;
             let raw_bytes = crate::intake::read_documents(&ctx.files, &paths)?;
             let book_id = book.context().book_id;
             let docs: Vec<Document> = raw_bytes
@@ -1253,7 +1276,7 @@ fn import_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     book_id,
                     kind: kind.tag,
                     mime: mime.to_string(),
-                    grade: grade.tag,
+                    grade,
                     retrieved_by: who,
                     bytes,
                 })

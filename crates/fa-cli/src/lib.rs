@@ -21,6 +21,7 @@ pub mod client;
 mod document;
 pub mod entry;
 mod intake;
+mod intake_provenance;
 pub mod json;
 pub mod lease;
 pub(crate) mod notary;
