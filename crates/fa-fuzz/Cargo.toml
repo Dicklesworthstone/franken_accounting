@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 fa = { path = "../fa" }
 fa-cli = { path = "../fa-cli" }
+fa-formats = { path = "../fa-formats" }
 fa-intents = { path = "../fa-intents" }
 fa-journal = { path = "../fa-journal" }
 fa-model = { path = "../fa-model" }

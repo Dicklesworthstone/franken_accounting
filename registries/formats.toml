@@ -163,3 +163,56 @@ round_trip_identity = false
 certified_coordinate = false
 plan_ref = "§9.5, §15.3"
 summary = "OFX / Intuit QBO v2 bank statement parser (`STMTTRN` records and `LEDGERBAL`) into deterministic BankLine extracts."
+
+[[format]]
+id = 13
+name = "quickbooks_iif_v1"
+kind = "legacy_gl_export"
+direction = "import"
+mime = "text/x-iif"
+extension = "iif"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§8.6"
+summary = "QuickBooks Desktop IIF (`!TRNS`/`!SPL`/`!ENDTRNS`) legacy general ledger export reader feeding MigrationRun chunks with migrated_from provenance and opening-balance attestation."
+
+[[format]]
+id = 14
+name = "quickbooks_csv_v1"
+kind = "legacy_gl_export"
+direction = "import"
+mime = "text/csv"
+extension = "csv"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§8.6"
+summary = "QuickBooks Online/Desktop Journal Report CSV legacy export reader feeding MigrationRun chunks with migrated_from provenance and opening-balance attestation."
+
+[[format]]
+id = 15
+name = "xero_csv_v1"
+kind = "legacy_gl_export"
+direction = "import"
+mime = "text/csv"
+extension = "csv"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§8.6"
+summary = "Xero Journal / Account Transactions CSV legacy export reader feeding MigrationRun chunks with migrated_from provenance and opening-balance attestation."
+
+[[format]]
+id = 16
+name = "netsuite_csv_v1"
+kind = "legacy_gl_export"
+direction = "import"
+mime = "text/csv"
+extension = "csv"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§8.6"
+summary = "NetSuite General Ledger Detail CSV legacy export reader feeding MigrationRun chunks with migrated_from provenance and opening-balance attestation."
+

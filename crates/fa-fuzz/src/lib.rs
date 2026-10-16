@@ -92,6 +92,11 @@ pub const LIVE_TARGETS: &[FuzzTarget] = &[
         description: "Closed-universe JSON parser and chart spec importer without panic",
         run: fuzz_chart_import_json,
     },
+    FuzzTarget {
+        name: "legacy_gl_formats",
+        description: "Legacy GL export readers (QuickBooks IIF/CSV, Xero CSV, NetSuite CSV, Generic GL CSV) and column-map parser without panic",
+        run: fuzz_legacy_gl_formats,
+    },
 ];
 
 /// Dormant fuzz targets registered per `fa-tre` with their activating beads.
@@ -525,6 +530,22 @@ pub fn fuzz_chart_import_json(bytes: &[u8]) {
     }
 }
 
+/// Target 8 (`fa-qm4t`): Legacy GL export readers (QuickBooks IIF/CSV, Xero CSV,
+/// NetSuite CSV, Generic GL CSV) and `LegacyColumnMap` parser on arbitrary bytes.
+pub fn fuzz_legacy_gl_formats(bytes: &[u8]) {
+    let text = String::from_utf8_lossy(bytes);
+    let _ = fa_formats::legacy::LegacyColumnMap::parse_toml(&text);
+    if let Ok(units) = fa_formats::UnitCatalog::embedded() {
+        let mut map = fa_formats::legacy::AccountMap::new(["1000", "2000", "3000", "4000", "5000"]);
+        map.insert("Checking", "1000");
+        map.insert("Opening Equity", "3000");
+        let _ = fa_formats::legacy::parse_quickbooks_iif(&text, &units, &map, "USD");
+        let _ = fa_formats::legacy::parse_quickbooks_csv(&text, &units, &map, "USD");
+        let _ = fa_formats::legacy::parse_xero_csv(&text, &units, &map, "USD");
+        let _ = fa_formats::legacy::parse_netsuite_csv(&text, &units, &map, "USD");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Golden seed synthesis + checked-in corpus loader
 // ---------------------------------------------------------------------------
@@ -917,6 +938,16 @@ pub fn seeds_for_target(target_name: &str) -> Vec<Vec<u8>> {
         "chart_import_json" => {
             seeds.push(
                 br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"base"}]}"#
+                    .to_vec(),
+            );
+        }
+        "legacy_gl_formats" => {
+            seeds.push(
+                b"!TRNS\tTRNSID\tTRNSTYPE\tDATE\tACCNT\tAMOUNT\tMEMO\n!SPL\tSPLID\tTRNSTYPE\tDATE\tACCNT\tAMOUNT\tMEMO\n!ENDTRNS\nTRNS\t1\tGENERAL JOURNAL\t2025-12-15\tChecking\t100.00\tSeed\nSPL\t2\tGENERAL JOURNAL\t2025-12-15\tOpening Equity\t-100.00\tSeed\nENDTRNS\n"
+                    .to_vec(),
+            );
+            seeds.push(
+                b"Transaction ID,Date,Account,Debit,Credit,Currency,Memo/Description\n1,2025-12-15,1000,100.00,,USD,Seed\n1,2025-12-15,3000,,100.00,USD,Seed\n"
                     .to_vec(),
             );
         }

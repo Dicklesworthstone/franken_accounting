@@ -18,6 +18,7 @@ pub mod bank;
 pub mod beancount;
 pub mod conformance;
 pub mod csv_gl;
+pub mod legacy;
 pub mod saft;
 pub mod tigerbeetle;
 pub mod xbrl;
@@ -53,6 +54,12 @@ pub enum FormatError {
     UnknownAccount {
         format: &'static str,
         account_code: String,
+    },
+    /// Legacy account identifier has no mapping to a FrankenAccounting leaf account (§8.6).
+    UnmappedAccount {
+        format: &'static str,
+        legacy_account: String,
+        fix_hint: String,
     },
     /// Entry violates per-unit double-entry balance (`FA-INV-01`).
     UnbalancedEntry {
@@ -128,6 +135,16 @@ impl fmt::Display for FormatError {
                 account_code,
             } => {
                 write!(f, "{format}: unknown account code {account_code:?}")
+            }
+            Self::UnmappedAccount {
+                format,
+                legacy_account,
+                fix_hint,
+            } => {
+                write!(
+                    f,
+                    "{format}: unmapped legacy account {legacy_account:?}; fix: {fix_hint}"
+                )
             }
             Self::UnbalancedEntry {
                 format,

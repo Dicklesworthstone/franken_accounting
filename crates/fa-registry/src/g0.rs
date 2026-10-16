@@ -2446,6 +2446,7 @@ const VALID_FORMAT_KINDS: &[&str] = &[
     "regulatory_filing",
     "tabular_extract",
     "bank_statement",
+    "legacy_gl_export",
 ];
 
 const VALID_FORMAT_DIRECTIONS: &[&str] = &["import", "export", "both"];
@@ -2592,6 +2593,10 @@ impl Formats {
             "iso20022_camt053",
             "bai2_v2",
             "ofx_qbo_v2",
+            "quickbooks_iif_v1",
+            "quickbooks_csv_v1",
+            "xero_csv_v1",
+            "netsuite_csv_v1",
         ] {
             if !seen_names.contains(required) {
                 return Err(invalid(
@@ -2681,7 +2686,7 @@ mod tests {
         assert_eq!(fx_laws.application_difference_kinds.len(), 5);
 
         let formats = Formats::embedded().expect("formats.toml");
-        assert_eq!(formats.rows.len(), 12);
+        assert_eq!(formats.rows.len(), 16);
     }
 
     #[test]
