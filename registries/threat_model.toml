@@ -83,7 +83,7 @@ mitigation_clauses = ["FA-INV-02.payload-immutable", "FA-INV-14.consistency", "F
 mitigation_refusals = ["FA-REF-121", "FA-REF-127"]
 status = "live"
 residual_risk = "An insider who controls both the book directory and the local signing key before any checkpoint is externally witnessed can rewrite an unwitnessed tail; external witness co-signing is tracked by FA-THR-05 / fa-l3c."
-test_refs = ["fa-model::lib::entry::tests::tampered_bytes_are_refused", "fa-notary::tests/notary.rs::recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it", "fa-cli::tests/notary.rs::a_checkpointed_entry_rewritten_or_retired_in_place_fails_verification"]
+test_refs = ["fa-model::lib::entry::tests::tampered_bytes_are_refused", "fa-notary::tests/notary.rs::recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it", "fa-cli::tests/notary.rs::a_checkpointed_entry_rewritten_or_retired_in_place_fails_verification", "fa-cli::tests/tamper.rs::tamper_evidence_red_team_matrix"]
 
 [[threat]]
 id = "FA-THR-02"
@@ -136,7 +136,7 @@ mitigation_refusals = ["FA-REF-094", "FA-REF-124"]
 status = "dormant"
 activating_beads = ["fa-l3c"]
 residual_risk = "Consistency proofs between two states in hand are live (FA-INV-14.consistency), but external witness co-signing and rollback detection against an external witness log (FA-INV-14.witnessed) are dormant until fa-l3c witness co-signing lands."
-test_refs = ["fa-notary::tests/notary.rs::a_later_state_extends_the_earlier_and_consistency_verifies", "fa-notary::tests/notary.rs::checkpoint_refuses_a_predecessor_with_a_falsely_advanced_sequence"]
+test_refs = ["fa-notary::tests/notary.rs::a_later_state_extends_the_earlier_and_consistency_verifies", "fa-notary::tests/notary.rs::checkpoint_refuses_a_predecessor_with_a_falsely_advanced_sequence", "fa-cli::tests/tamper.rs::tamper_evidence_red_team_matrix"]
 
 [[threat]]
 id = "FA-THR-06"
