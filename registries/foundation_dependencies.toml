@@ -46,6 +46,7 @@ upstream = "live"
 fa_status = "live"
 consumed_apis = ["WriteBatch", "WriteTxn", "execute_certified", "replay", "delta_since", "ensure_delta_window", "open_memory"]
 unconsumed_apis = ["Database::query", "read_session", "subscribe_native", "bulk_load"]
+conformance_tests = ["a_live_identity_is_refused_already_live_by_autocommit_and_while_staging", "a_transaction_behind_the_frontier_is_refused_snapshot_advanced_at_staging", "refresh_snapshot_refuses_first_committer_wins_iff_a_witnessed_row_changed", "a_witnessed_row_changed_after_staging_loses_first_committer_wins_at_commit", "delta_since_returns_every_committed_batch_in_commit_order", "open_memory_and_directory_books_produce_identical_commits_and_certified_reads", "write_ordered_publishes_all_or_none_across_every_crash_point"]
 
 [[capability]]
 row = "R-ST"
@@ -56,6 +57,7 @@ switch_over = "retention policy per book"
 foundation = "frankengraphdb"
 upstream = "live"
 fa_status = "live"
+conformance_tests = ["a_certified_read_replays_byte_identically_after_later_commits"]
 
 [[capability]]
 row = "R-SSI"
@@ -67,6 +69,7 @@ foundation = "frankengraphdb"
 upstream = "planned"
 fa_status = "interim"
 tracking = "fa-0fl"
+conformance_tests = ["refresh_snapshot_refuses_first_committer_wins_iff_a_witnessed_row_changed", "a_witnessed_row_changed_after_staging_loses_first_committer_wins_at_commit", "post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period", "concurrent_receipts_settling_one_open_item_conflict_in_both_commit_orders"]
 
 [[capability]]
 row = "R-CAT"
@@ -88,6 +91,7 @@ foundation = "frankengraphdb"
 upstream = "planned"
 fa_status = "interim"
 tracking = "fa-xwv"
+conformance_tests = ["post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period"]
 
 [[capability]]
 row = "R-ESC"
@@ -99,6 +103,7 @@ foundation = "frankengraphdb"
 upstream = "planned"
 fa_status = "interim"
 tracking = "fa-s30"
+conformance_tests = ["concurrent_posts_on_a_limited_account_conflict_through_the_limit_cell_cas_in_both_orders"]
 
 [[capability]]
 row = "R-REG"
@@ -110,6 +115,7 @@ foundation = "frankengraphdb"
 upstream = "planned"
 fa_status = "interim"
 tracking = "fa-vn4"
+conformance_tests = ["delta_since_returns_every_committed_batch_in_commit_order", "delta_cursor_retired_refuses_unloaded_or_retired_prefixes_and_triggers_register_rebuild"]
 
 [[capability]]
 row = "R-SUB"
@@ -133,6 +139,7 @@ foundation = "frankengraphdb"
 upstream = "partial"
 fa_status = "interim"
 tracking = "fa-s7x"
+conformance_tests = ["open_memory_and_directory_books_produce_identical_commits_and_certified_reads"]
 
 [[capability]]
 row = "R-IDX"
@@ -177,6 +184,7 @@ foundation = "frankengraphdb"
 upstream = "live"
 fa_status = "live"
 tracking = "fa-9ae"
+conformance_tests = ["a_certified_read_replays_byte_identically_after_later_commits"]
 
 [[capability]]
 row = "R-POST-PLAN"
@@ -276,6 +284,7 @@ foundation = "frankengraphdb"
 upstream = "live"
 fa_status = "live"
 tracking = "fa-0fl"
+conformance_tests = ["write_ordered_publishes_all_or_none_across_every_crash_point"]
 
 [[capability]]
 row = "R-HLC"

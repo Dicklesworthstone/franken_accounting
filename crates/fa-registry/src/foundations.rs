@@ -54,6 +54,7 @@ pub struct Capability {
     pub tracking: Option<String>,
     pub consumed_apis: Vec<String>,
     pub unconsumed_apis: Vec<String>,
+    pub conformance_tests: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,6 +134,7 @@ impl Ledger {
             };
             let consumed_apis = str_list(&row, t, "consumed_apis")?;
             let unconsumed_apis = str_list(&row, t, "unconsumed_apis")?;
+            let conformance_tests = str_list(&row, t, "conformance_tests")?;
             for api in &consumed_apis {
                 if unconsumed_apis.contains(api) {
                     return Err(bad(format!(
@@ -155,6 +157,7 @@ impl Ledger {
                 row,
                 consumed_apis,
                 unconsumed_apis,
+                conformance_tests,
             };
             if matches!(c.upstream, Upstream::Planned | Upstream::Absent)
                 && c.fa_status != FaStatus::Interim
@@ -186,9 +189,13 @@ impl Ledger {
                     )));
                 }
             }
-            if c.row == "R-API" && (c.consumed_apis.is_empty() || c.unconsumed_apis.is_empty()) {
+            if c.row == "R-API"
+                && (c.consumed_apis.is_empty()
+                    || c.unconsumed_apis.is_empty()
+                    || c.conformance_tests.is_empty())
+            {
                 return Err(bad(
-                    "R-API must declare both `consumed_apis` and `unconsumed_apis`",
+                    "R-API must declare `consumed_apis`, `unconsumed_apis`, and `conformance_tests`",
                 ));
             }
             if !rows.insert(c.row.clone()) {
@@ -268,6 +275,58 @@ pub fn check_api_consumption(ledger: &Ledger, workspace_root: &Path) -> Result<(
                     cap.row
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Verify that every test listed in `conformance_tests` exists in
+/// `crates/fa-conformance/tests/substrate.rs`, and every `#[test]` in that file
+/// is referenced by at least one capability row (`fa-zy1`).
+pub fn check_conformance_tests(
+    ledger: &Ledger,
+    workspace_root: &Path,
+) -> Result<(), RegistryError> {
+    let suite_path = workspace_root.join("crates/fa-conformance/tests/substrate.rs");
+    let Ok(content) = std::fs::read_to_string(&suite_path) else {
+        return Err(bad(format!("cannot read {}", suite_path.display())));
+    };
+    let mut defined_tests = BTreeSet::new();
+    let mut after_test_attr = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "#[test]" {
+            after_test_attr = true;
+            continue;
+        }
+        if after_test_attr && let Some(rest) = trimmed.strip_prefix("fn ") {
+            if let Some(name) = rest.split('(').next() {
+                defined_tests.insert(name.trim().to_string());
+            }
+            after_test_attr = false;
+        } else if !trimmed.starts_with("#[") && !trimmed.starts_with("//") && !trimmed.is_empty() {
+            after_test_attr = false;
+        }
+    }
+
+    let mut referenced_tests = BTreeSet::new();
+    for cap in &ledger.capabilities {
+        for test_name in &cap.conformance_tests {
+            if !defined_tests.contains(test_name.as_str()) {
+                return Err(bad(format!(
+                    "{}: claims conformance_test `{test_name}`, which does not exist in crates/fa-conformance/tests/substrate.rs",
+                    cap.row
+                )));
+            }
+            referenced_tests.insert(test_name.clone());
+        }
+    }
+
+    for defined in &defined_tests {
+        if !referenced_tests.contains(defined.as_str()) {
+            return Err(bad(format!(
+                "conformance test `{defined}` in crates/fa-conformance/tests/substrate.rs is not referenced by any capability row in foundation_dependencies.toml"
+            )));
         }
     }
     Ok(())
@@ -409,6 +468,24 @@ mod tests {
             .expect("workspace root");
         check_api_consumption(&ledger, root)
             .expect("all consumed/unconsumed API claims match crates/");
+        check_conformance_tests(&ledger, root)
+            .expect("all conformance_tests match crates/fa-conformance/tests/substrate.rs");
+
+        // Planted negative 0: claiming a nonexistent conformance test must fail.
+        let mut fake_conf = ledger.clone();
+        fake_conf
+            .capabilities
+            .iter_mut()
+            .find(|c| c.row == "R-API")
+            .unwrap()
+            .conformance_tests
+            .push("nonexistent_conformance_test".to_string());
+        let err0 = check_conformance_tests(&fake_conf, root)
+            .expect_err("claiming nonexistent conformance test must fail");
+        assert!(
+            err0.to_string().contains("nonexistent_conformance_test"),
+            "{err0}"
+        );
 
         // Planted negative 1: claiming `bulk_load` is consumed when no crate calls it must fail.
         let mut fake_consumed = ledger.clone();

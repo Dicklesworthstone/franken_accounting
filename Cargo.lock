@@ -841,6 +841,12 @@ name = "fa-conformance"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa-journal",
+ "fa-model",
+ "fa-money",
+ "fa-policy",
+ "fa-registers",
+ "fa-time",
  "fgdb",
  "fgdb-delta-types",
  "fgdb-gql",

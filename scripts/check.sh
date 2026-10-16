@@ -12,15 +12,16 @@
 # not installed) is `UNRUN` + `FAIL`, never a silent green. The contract is
 # scripts/lib/gate_verdict.sh, adopted verbatim from FrankenGraphDB.
 #
-# COVERED STEPS (22 total in full mode):
+# COVERED STEPS (23 total in full mode):
 #   fmt, check, clippy (-D warnings), test + test-inventory-witness (fa-czx),
-#   deny, ubs, shellcheck, registries-embedded, registry-check (tools/registry-check:
-#   schema validation, claims lint, foundation API consumption, negative-checker
-#   disjointness, fa-szi / fa-r3d), scoreboards (xtask scoreboard: vision + gate
-#   scoreboards, fa-e9z / fa-7s6d), file-coverage (every tracked file claimed by a
-#   gate or exempted with a reason, fa-szi), readme-agents-sync (fa-4v5),
-#   beads-cycles (br dep cycles), forbidden-deps, resolved-foundation-graph (fa-c23),
-#   reference-boundary, and tree-integrity.
+#   conformance-mutation (fa-zy1), deny, ubs, shellcheck, registries-embedded,
+#   registry-check (tools/registry-check: schema validation, claims lint,
+#   foundation API consumption, negative-checker disjointness, fa-szi / fa-r3d),
+#   scoreboards (xtask scoreboard: vision + gate scoreboards, fa-e9z / fa-7s6d),
+#   file-coverage (every tracked file claimed by a gate or exempted with a
+#   reason, fa-szi), readme-agents-sync (fa-4v5), beads-cycles (br dep cycles),
+#   forbidden-deps, resolved-foundation-graph (fa-c23), reference-boundary, and
+#   tree-integrity.
 #   Verb parity (verbs.toml vs CLI vs MCP) runs under `test` via
 #   crates/fa-mcp/tests/parity.rs and crates/fa-mcp/tests/deny_rows.rs (fa-xex).
 #   Exact-tree proof manifests and merge-train scripts are tracked in fa-u7u.
@@ -206,6 +207,10 @@ if [ "$QUICK" -eq 0 ]; then
   # replays every checked-in seed and synthesized golden vector with
   # deterministic PRNG mutations across all 7 live decoder/parser targets.
   cargo_build "fuzz-smoke" run -p fa-fuzz --bin fa-fuzz-smoke
+  # Substrate conformance mutation gate (plan §16.3, bead fa-zy1):
+  # inverts each #[test] in crates/fa-conformance/tests/substrate.rs via
+  # FA_CONFORMANCE_INVERT and proves that exactly that test fails.
+  run_gate "conformance-mutation" "$ROOT/scripts/conformance_mutation.sh"
   if cargo deny --version >/dev/null 2>&1; then
     run_step "deny" cargo deny check
   else

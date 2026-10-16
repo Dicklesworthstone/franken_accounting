@@ -12,7 +12,15 @@ workspace = true
 
 [dev-dependencies]
 asupersync = { workspace = true }
+fa-journal = { path = "../fa-journal" }
+fa-model = { path = "../fa-model" }
+fa-money = { path = "../fa-money" }
+fa-policy = { path = "../fa-policy" }
+fa-registers = { path = "../fa-registers" }
+fa-time = { path = "../fa-time" }
 fgdb = { workspace = true }
 fgdb-delta-types = { workspace = true }
 fgdb-gql = { workspace = true }
 fgdb-types = { workspace = true }
+
+

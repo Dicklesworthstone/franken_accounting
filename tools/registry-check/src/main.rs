@@ -628,6 +628,8 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     if root.join("crates").is_dir() {
         fa_registry::foundations::check_api_consumption(&foundations, root)
             .map_err(|e| e.to_string())?;
+        fa_registry::foundations::check_conformance_tests(&foundations, root)
+            .map_err(|e| e.to_string())?;
     }
     let invariants = Invariants::parse(&read("invariants.toml")?).map_err(|e| e.to_string())?;
     let _topology =
