@@ -1024,8 +1024,12 @@ fn projections_conserve_credits_under_the_allocation_law() {
     ];
     h.post(&a);
     // 0.50 from Cash and 0.50 from Payables to Rent 0.33, Utilities 0.33,
-    // Receivables 0.34: each credit allocates 16.5/16.5/17 cents, and the
-    // largest-remainder law hands the residual cent to the lowest index.
+    // Receivables 0.34. Since b6293c20 each credit is allocated by the
+    // largest-remainder law against the *remaining* debit capacity, so both
+    // margins conserve: every debit receives exactly its amount. (The old
+    // independent per-credit split sent 17 + 17 cents into the 33-cent Rent
+    // leg.) Which tie gets the odd cent follows account identity, so the
+    // assertions below pin the margins and the one-cent bound, not the tie.
     let mut b = Spec::simple(day(2026, 1, 13), "6000", "1000", 100);
     b.legs = vec![
         ("6000", Side::Debit, 33),
@@ -1045,12 +1049,47 @@ fn projections_conserve_credits_under_the_allocation_law() {
             .find(|e| e.from == h.account(from) && e.to == h.account(to))
             .map(|e| (e.mantissa, e.contributions, e.period.clone()))
     };
-    assert_eq!(edge("1000", "6000"), Some((3000 + 17, 2, jan.clone())));
-    assert_eq!(edge("1000", "7000"), Some((7000 + 16, 2, jan.clone())));
-    assert_eq!(edge("1000", "1200"), Some((17, 1, jan.clone())));
-    assert_eq!(edge("2000", "6000"), Some((17, 1, jan.clone())));
-    assert_eq!(edge("2000", "7000"), Some((16, 1, jan.clone())));
-    assert_eq!(edge("2000", "1200"), Some((17, 1, jan)));
+    // Entry a's exact shares, plus entry b's share within one cent of the
+    // proportional 16.5/16.5/17 (largest remainder), on every pair.
+    for (from, to, base, contributions) in [
+        ("1000", "6000", 3000, 2),
+        ("1000", "7000", 7000, 2),
+        ("1000", "1200", 0, 1),
+        ("2000", "6000", 0, 1),
+        ("2000", "7000", 0, 1),
+        ("2000", "1200", 0, 1),
+    ] {
+        let (mantissa, count, period) = edge(from, to).expect("an edge for every pair");
+        assert!(
+            (base + 16..=base + 17).contains(&mantissa),
+            "{from}->{to}: {mantissa}"
+        );
+        assert_eq!(
+            (count, period.as_str()),
+            (contributions, jan.as_str()),
+            "{from}->{to}"
+        );
+    }
+    // Both margins conserve exactly: what each account credited, and what
+    // each account was debited.
+    let margin = |account: &str, outgoing: bool| -> i128 {
+        flow.edges
+            .iter()
+            .filter(|e| {
+                if outgoing {
+                    e.from == h.account(account)
+                } else {
+                    e.to == h.account(account)
+                }
+            })
+            .map(|e| e.mantissa)
+            .sum()
+    };
+    assert_eq!(margin("1000", true), 10_000 + 50, "cash credited");
+    assert_eq!(margin("2000", true), 50, "payables credited");
+    assert_eq!(margin("6000", false), 3000 + 33, "rent debited");
+    assert_eq!(margin("7000", false), 7000 + 33, "utilities debited");
+    assert_eq!(margin("1200", false), 34, "receivables debited");
     let total: i128 = flow.edges.iter().map(|e| e.mantissa).sum();
     assert_eq!(
         total,

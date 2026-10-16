@@ -1,7 +1,6 @@
 //! End-to-end statement regressions through the public facade and its real
 //! memory and directory books. Every monetary input is admitted by the posting kernel.
 
-use std::io::Write;
 use std::path::Path;
 
 use fa::{
@@ -473,7 +472,7 @@ fn retained_comparatives_replay_after_later_and_backdated_postings() {
 }
 
 #[test]
-fn large_retained_certificate_survives_reopen_and_never_repairs_missing_or_changed_bytes() {
+fn large_retained_certificate_survives_reopen_as_native_fragments_without_a_blob() {
     let seed = 0x96;
     let suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -483,8 +482,8 @@ fn large_retained_certificate_survives_reopen_and_never_repairs_missing_or_chang
         "fa-certificate-storage-{}-{suffix}",
         std::process::id()
     ));
-    // Keep the book and every damaged version for failure diagnosis. The
-    // unique directory is created exclusively; no pre-existing data is reused.
+    // Keep the book for failure diagnosis. The unique directory is created
+    // exclusively; no pre-existing data is reused.
     std::fs::create_dir(&directory).unwrap();
     let mut fixture = Fixture::at(seed, Some(&directory));
     let usd = fixture.usd;
@@ -516,8 +515,10 @@ fn large_retained_certificate_survives_reopen_and_never_repairs_missing_or_chang
         .retain_certificate(&certificate)
         .unwrap()
         .unwrap();
-    // Locate the actual persisted bytes independently of the producer's
-    // descriptor and locator helpers. The evidence document is inline.
+    // c9b1c775 (fa-9ae, report_certificate_storage.toml): above one native
+    // row, retention publishes a manifest plus ordered native fragments in ONE
+    // transaction and never writes the legacy `fa:certificate-external:v1`
+    // blob. Check the bytes on disk independently of the producer's helpers.
     let mut matching = Vec::new();
     for shard in std::fs::read_dir(directory.join("blobs")).unwrap() {
         let shard = shard.unwrap();
@@ -530,8 +531,10 @@ fn large_retained_certificate_survives_reopen_and_never_repairs_missing_or_chang
             }
         }
     }
-    assert_eq!(matching.len(), 1, "one persisted canonical certificate");
-    let blob = matching.pop().unwrap();
+    assert!(
+        matching.is_empty(),
+        "new retention writes native fragments, never a blob sidecar: {matching:?}"
+    );
     drop(fixture);
     let mut book = Book::open_dir(
         &directory,
@@ -546,69 +549,19 @@ fn large_retained_certificate_survives_reopen_and_never_repairs_missing_or_chang
     assert_eq!(loaded.canonical_bytes().unwrap(), canonical);
     assert_eq!(replay(&book, &loaded), certified.statement);
     assert_eq!(book.retain_certificate(&loaded).unwrap().unwrap(), retained);
-    assert_eq!(book.head().unwrap(), head);
-
-    let backup = directory.join("certificate-pristine-backup");
-    std::fs::rename(&blob, &backup).unwrap();
-    for refusal in [
-        book.read_certificate(&retained.digest)
-            .unwrap()
-            .unwrap_err(),
-        book.retain_certificate(&certificate).unwrap().unwrap_err(),
-    ] {
-        assert_eq!(refusal.code, fa_journal::refusal::code::BLOB_MISSING);
-        assert_eq!(refusal.exit, fa_journal::refusal::exit::FOUNDATION);
-    }
-    assert_eq!(book.head().unwrap(), head);
-    assert!(
-        !blob.exists(),
-        "a retry must not silently recreate missing bytes"
+    assert_eq!(
+        book.retain_certificate(&certificate).unwrap().unwrap(),
+        retained
     );
-    assert_eq!(std::fs::read(&backup).unwrap(), canonical);
-    std::fs::rename(&backup, &blob).unwrap();
-
-    let mut changed_digest = canonical.clone();
-    *changed_digest.last_mut().unwrap() ^= 1;
-    let mut overlong = canonical.clone();
-    overlong.push(0);
-    let truncated = canonical[..canonical.len() - 1].to_vec();
-    for (name, damaged) in [
-        ("changed-digest", changed_digest),
-        ("overlong", overlong),
-        ("truncated", truncated),
-    ] {
-        std::fs::rename(&blob, &backup).unwrap();
-        let mut file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&blob)
-            .unwrap();
-        file.write_all(&damaged).unwrap();
-        file.sync_all().unwrap();
-        drop(file);
-        for refusal in [
-            book.read_certificate(&retained.digest)
-                .unwrap()
-                .unwrap_err(),
-            book.retain_certificate(&certificate).unwrap().unwrap_err(),
-        ] {
-            assert_eq!(refusal.code, fa::certificate::code::CERTIFICATE_INVALID);
-            assert_eq!(refusal.exit, fa_journal::refusal::exit::VERIFICATION);
-        }
-        assert_eq!(book.head().unwrap(), head);
-        assert_eq!(std::fs::read(&blob).unwrap(), damaged, "no silent repair");
-        assert_eq!(std::fs::read(&backup).unwrap(), canonical);
-        std::fs::rename(&blob, directory.join(format!("certificate-{name}"))).unwrap();
-        std::fs::rename(&backup, &blob).unwrap();
-        let restored = book.read_certificate(&retained.digest).unwrap().unwrap();
-        assert_eq!(restored.canonical_bytes().unwrap(), canonical);
-        assert_eq!(replay(&book, &restored), certified.statement);
-        assert_eq!(
-            book.retain_certificate(&restored).unwrap().unwrap(),
-            retained
-        );
-        assert_eq!(book.head().unwrap(), head);
-    }
+    assert_eq!(
+        book.head().unwrap(),
+        head,
+        "an exact retry publishes nothing"
+    );
+    // Missing, rewritten, restored and late fragments (and the no-repair rule
+    // for each) are exercised against real native rows in
+    // crates/fa/src/certificate_store/tests.rs; the legacy external-blob read
+    // path keeps its missing/changed-bytes coverage there too.
 }
 
 #[test]

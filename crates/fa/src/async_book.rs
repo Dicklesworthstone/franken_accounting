@@ -87,7 +87,7 @@ fn sweep_request(
 /// Each operation preserves the caller's cancellation and budget.
 pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     pub(crate) db: Database<V>,
-    blobs: fa_journal::BlobStore<B>,
+    pub(crate) blobs: fa_journal::BlobStore<B>,
     context: BookContext,
     entropy: Entropy,
     /// Signs this book's transparency checkpoints (derived from its keys).
