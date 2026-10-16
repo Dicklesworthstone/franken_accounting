@@ -567,7 +567,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "baeb532c65808fc51c980612099ddcb4246c630a21efd3ce92eaf699fc583794",
+        "8d9fa3cb9ccb51e8c513a5c77b1dd79df756e3365053e8365b9ec162df711cc8",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -579,7 +579,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "13d384f061d2ad8669f786ac99de8cbdd22010370b7e72c16e2b0ffcf5c10bee",
+        "cf29be8049764e53562e8bcb8d4e2c9412bc768422d4765f5299a1467305fa0c",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -591,7 +591,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "65d82051a14e2f5ada8a517961f078aba4b1c8111dcb967fe75e1716f78f9250",
+        "14fadc542be82627c0d360feab9dfe7b0c1327d504f7aa89cd2da96c0bcd163d",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );

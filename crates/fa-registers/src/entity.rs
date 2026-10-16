@@ -122,30 +122,25 @@ fn add_entry(
 
 fn fold_entity_leg_contribution(
     prev: [u8; 32],
-    commit_seq: CommitSeq,
-    entry: VId,
-    ordinal: u16,
-    account: VId,
-    unit_id: u32,
+    (commit_seq, entry, ordinal): (CommitSeq, VId, u16),
+    leg: &LegPayload,
     entity: Option<&String>,
-    side: Side,
-    mantissa: i128,
 ) -> Result<[u8; 32], RegisterError> {
     let mut w = Writer::new();
     w.fixed(&prev)
         .u64(commit_seq.0)
         .u128(entry.0)
         .u16(ordinal)
-        .u128(account.0)
-        .u32(unit_id)
+        .u128(leg.account_ref.0)
+        .u32(leg.amount.unit.0)
         .opt(entity, |w, e| {
             w.str(e);
         })
-        .u8(match side {
+        .u8(match leg.side {
             Side::Debit => 0,
             Side::Credit => 1,
         })
-        .i128(mantissa);
+        .i128(leg.amount.mantissa);
     let mut h = Hasher::new();
     h.update(b"fa:register-entity-leg-contribution:v1");
     h.update(&w.finish().map_err(RegisterError::Encoding)?);
@@ -165,14 +160,9 @@ fn fold_entity_entry_contributions(
         let entity = entity_of(spec, leg);
         acc = fold_entity_leg_contribution(
             acc,
-            commit_seq,
-            entry_vid,
-            ordinal,
-            leg.account_ref,
-            leg.amount.unit.0,
+            (commit_seq, entry_vid, ordinal),
+            leg,
             entity.as_ref(),
-            leg.side,
-            leg.amount.mantissa,
         )?;
     }
     Ok(acc)
