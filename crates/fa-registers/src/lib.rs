@@ -229,11 +229,11 @@ pub(crate) fn digest_of(
     pending_holds: &BTreeMap<(CommitSeq, VId), [u8; 32]>,
 ) -> Result<[u8; 32], RegisterError> {
     let mut w = Writer::new();
-    w.str(period)
-        .opt(watermark.as_ref(), |w, s| {
-            w.u64(s.0);
-        })
-        .fixed(&posted_legs_digest);
+    w.str(period);
+    w.opt(watermark.as_ref(), |w, s| {
+        w.u64(s.0);
+    });
+    w.fixed(&posted_legs_digest);
     let holds: Vec<_> = pending_holds.iter().collect();
     w.list(&holds, |w, ((seq, vid), digest)| {
         w.u64(seq.0).u128(vid.0).fixed(*digest);

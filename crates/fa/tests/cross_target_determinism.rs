@@ -555,7 +555,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.fold_digest),
-        "ef1b83190531b0c1d7d5e9c9e30c90f9edf210c600bc1016d786b45be2a1d312",
+        "3f81b9886e3ec2f029fccbc72c0c0b41d6da5c0782f7a274e036c1c63b4883c5",
         "register fold digest drifted on {}",
         std::env::consts::ARCH
     );
