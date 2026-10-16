@@ -9,6 +9,7 @@
 
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
+use fa_money::{Side, UnitKind};
 
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{Finding, LanternError, Params, Procedure, Severity, Snapshot, Statistic, Work};
@@ -113,8 +114,33 @@ impl Procedure for FirstDigit {
         let close = i128::from(self.params.get_u32("mad_close")?) * 1_000_000;
         let acceptable = i128::from(self.params.get_u32("mad_acceptable")?) * 1_000_000;
         let marginal = i128::from(self.params.get_u32("mad_marginal")?) * 1_000_000;
+        let currency = u16::try_from(self.params.get_u32("currency_iso4217")?).map_err(|_| {
+            LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "currency_iso4217".into(),
+                message: "must be an ISO 4217 numeric code in 1..=999".into(),
+            }
+        })?;
+        if !(1..=999).contains(&currency) {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "currency_iso4217".into(),
+                message: "must be an ISO 4217 numeric code in 1..=999".into(),
+            });
+        }
+        let target_side = match self.params.get("side")? {
+            0 => Side::Debit,
+            1 => Side::Credit,
+            _ => {
+                return Err(LanternError::Parameter {
+                    procedure: Self::ID.into(),
+                    name: "side".into(),
+                    message: "must be 0 (debit) or 1 (credit)".into(),
+                });
+            }
+        };
         let mut counts = [0u64; 9];
-        for e in snapshot.entries.iter().filter(|e| e.posts()) {
+        for e in snapshot.live_postings()? {
             work.entry();
             for leg in &e.entry.proposal.legs {
                 work.leg();
@@ -123,6 +149,11 @@ impl Procedure for FirstDigit {
                         KernelError::Corrupt("a leg names an unregistered unit".into()).into(),
                     );
                 };
+                if leg.side != target_side
+                    || !matches!(unit.kind, UnitKind::Currency { iso4217 } if iso4217 == currency)
+                {
+                    continue;
+                }
                 let magnitude = leg.amount.mantissa.unsigned_abs();
                 if magnitude < unit.one().unsigned_abs() {
                     continue;

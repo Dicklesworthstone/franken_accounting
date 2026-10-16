@@ -82,8 +82,10 @@ impl Procedure for RoundTrips {
         let window_days = days(&self.params, "window_days")?;
         let period_end_days = days(&self.params, "period_end_days")?;
         let legs = flow_legs(snapshot)?;
-        // Candidate legs between two distinct asset accounts, by (from, to, unit).
-        let mut by_pair: BTreeMap<(VId, VId, u32), Vec<&FlowLeg>> = BTreeMap::new();
+        // Candidate legs between two distinct asset accounts, grouped by
+        // unordered account pair, unit, and exact mantissa so only equal-amount
+        // opposite-direction legs ever meet.
+        let mut by_bucket: BTreeMap<(VId, VId, u32, i128), Vec<&FlowLeg>> = BTreeMap::new();
         let mut candidates = 0u64;
         for l in &legs {
             work.leg();
@@ -96,69 +98,97 @@ impl Procedure for RoundTrips {
                 continue;
             }
             candidates += 1;
-            by_pair
-                .entry((l.from, l.to, l.unit_id))
+            let pair = if l.from <= l.to {
+                (l.from, l.to)
+            } else {
+                (l.to, l.from)
+            };
+            by_bucket
+                .entry((pair.0, pair.1, l.unit_id, l.mantissa))
                 .or_default()
                 .push(l);
         }
         let mut out = Vec::new();
-        for ((a, b, unit_id), outbound) in &by_pair {
-            let Some(returns) = by_pair.get(&(*b, *a, *unit_id)) else {
-                continue;
-            };
-            for o in outbound {
-                for r in returns {
-                    work.compare(1);
-                    let gap = r.effective_date.0 - o.effective_date.0;
-                    // When the dates tie both orderings qualify; report the
-                    // one whose outbound entry was recorded first.
-                    if o.entry == r.entry
-                        || o.mantissa != r.mantissa
-                        || !(0..=window_days).contains(&gap)
-                        || (gap == 0 && (r.recorded, r.entry) < (o.recorded, o.entry))
-                    {
-                        continue;
-                    }
-                    let out_days = days_to_period_end(snapshot, o);
-                    let back_days = days_to_period_end(snapshot, r);
-                    let near_end = [out_days, back_days]
-                        .iter()
-                        .flatten()
-                        .any(|d| (0..=period_end_days).contains(d));
-                    let severity = if near_end {
-                        Severity::High
-                    } else {
-                        Severity::Medium
-                    };
-                    let day_text = |d: Option<i32>| d.map_or("?".to_string(), |d| d.to_string());
-                    out.push(finding(
-                        Self::ID,
-                        severity,
-                        Statistic {
-                            name: "round_trip_mantissa".into(),
-                            value: o.mantissa,
-                            scale: crate::unit_scale(book, *unit_id)?,
-                            population: candidates,
-                        },
-                        vec![
-                            Cite::Entry(o.entry),
-                            Cite::Entry(r.entry),
-                            Cite::Account(*a),
-                            Cite::Account(*b),
-                        ],
-                        format!(
-                            "unit {unit_id}: {} (mantissa) out and back in {gap} day(s); outbound {} and return {} day(s) before their period ends{}",
-                            o.mantissa,
-                            day_text(out_days),
-                            day_text(back_days),
-                            if near_end {
-                                "; within the period-end window"
-                            } else {
-                                ""
-                            }
-                        ),
-                    ));
+        for ((p0, p1, unit_id, _), mut bucket) in by_bucket {
+            let n = bucket.len() as u64;
+            work.compare(n.saturating_mul(n.max(1).ilog2().into()));
+            bucket.sort_by_key(|l| (l.effective_date, l.recorded, l.entry, l.from, l.to));
+            let dir = |l: &FlowLeg| usize::from(l.from != p0 || l.to != p1);
+            let mut used = vec![false; bucket.len()];
+            let mut cursor = [0usize; 2];
+            for i in 0..bucket.len() {
+                if used[i] {
+                    continue;
                 }
+                let o = bucket[i];
+                let opp = 1 - dir(o);
+                cursor[opp] = cursor[opp].max(i + 1);
+                while cursor[opp] < bucket.len()
+                    && (used[cursor[opp]] || dir(bucket[cursor[opp]]) != opp)
+                {
+                    work.compare(1);
+                    cursor[opp] += 1;
+                }
+                let mut r_idx = cursor[opp];
+                while r_idx < bucket.len()
+                    && (used[r_idx] || dir(bucket[r_idx]) != opp || bucket[r_idx].entry == o.entry)
+                {
+                    work.compare(1);
+                    r_idx += 1;
+                }
+                let Some(&r) = bucket.get(r_idx) else {
+                    continue;
+                };
+                work.compare(1);
+                let gap = r.effective_date.0 - o.effective_date.0;
+                if !(0..=window_days).contains(&gap) {
+                    continue;
+                }
+                used[i] = true;
+                used[r_idx] = true;
+                if r_idx == cursor[opp] {
+                    cursor[opp] += 1;
+                }
+                let (a, b) = (o.from, o.to);
+                let out_days = days_to_period_end(snapshot, o);
+                let back_days = days_to_period_end(snapshot, r);
+                let near_end = [out_days, back_days]
+                    .iter()
+                    .flatten()
+                    .any(|d| (0..=period_end_days).contains(d));
+                let severity = if near_end {
+                    Severity::High
+                } else {
+                    Severity::Medium
+                };
+                let day_text = |d: Option<i32>| d.map_or("?".to_string(), |d| d.to_string());
+                out.push(finding(
+                    Self::ID,
+                    severity,
+                    Statistic {
+                        name: "round_trip_mantissa".into(),
+                        value: o.mantissa,
+                        scale: crate::unit_scale(book, unit_id)?,
+                        population: candidates,
+                    },
+                    vec![
+                        Cite::Entry(o.entry),
+                        Cite::Entry(r.entry),
+                        Cite::Account(a),
+                        Cite::Account(b),
+                    ],
+                    format!(
+                        "unit {unit_id}: {} (mantissa) out and back in {gap} day(s); outbound {} and return {} day(s) before their period ends{}",
+                        o.mantissa,
+                        day_text(out_days),
+                        day_text(back_days),
+                        if near_end {
+                            "; within the period-end window"
+                        } else {
+                            ""
+                        }
+                    ),
+                ));
             }
         }
         Ok(out)

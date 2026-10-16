@@ -216,6 +216,19 @@ impl Snapshot {
         book: &BookContext,
         date: fa_time::DateDay,
     ) -> Result<String, LanternError> {
+        self.document_period_code_of(book, date, None)
+    }
+
+    /// Resolve a document date to its period code, honoring the entry's
+    /// explicit period discriminator (`hint`) when the document date lies
+    /// inside that special period (e.g. an adjustment period sharing the
+    /// year-end civil date with the final normal period).
+    pub fn document_period_code_of(
+        &self,
+        book: &BookContext,
+        date: fa_time::DateDay,
+        hint: Option<&str>,
+    ) -> Result<String, LanternError> {
         let fy = book
             .calendar
             .fiscal_year_of(date)
@@ -224,9 +237,107 @@ impl Snapshot {
             .calendar
             .periods_for_year(fy)
             .map_err(KernelError::from)?;
+        if let Some(code) = hint
+            && let Ok(p) = fa_time::resolve_period(&periods, date, Some(code))
+        {
+            return Ok(p.code.clone());
+        }
         fa_time::resolve_period(&periods, date, None)
             .map(|p| p.code.clone())
             .map_err(|e| KernelError::Corrupt(format!("period of date: {e:?}")).into())
+    }
+
+    /// Live posting entries under the §8.2 supersession netting laws,
+    /// optionally bounded by an effective-date cutoff (`through`).
+    ///
+    /// A `Reversal` entry (`SupersessionKind::Reverses`) negates its target;
+    /// a chain of reversals of reversals alternates liveness by parity
+    /// (`fa_registers::open_items::is_live`). A live `Replacement` entry
+    /// (`SupersessionKind::Replaces`) supersedes its target. Neither a
+    /// `Reversal` entry nor a superseded target survives into the net
+    /// posting stream.
+    pub fn live_postings_through(
+        &self,
+        through: Option<DateDay>,
+    ) -> Result<Vec<&SnapshotEntry>, LanternError> {
+        let in_window = |e: &&SnapshotEntry| {
+            e.posts() && through.is_none_or(|d| e.entry.proposal.effective_date <= d)
+        };
+        let mut reversed_by: BTreeMap<VId, VId> = BTreeMap::new();
+        for e in self.entries.iter().filter(in_window) {
+            if e.entry.proposal.class != EntryClass::REVERSAL {
+                continue;
+            }
+            for s in &e.entry.proposal.supersession {
+                if s.kind == fa_model::SupersessionKind::Reverses
+                    && reversed_by.insert(s.target.vid, e.vid).is_some()
+                {
+                    return Err(KernelError::Corrupt("an entry is reversed twice".into()).into());
+                }
+            }
+        }
+        let mut unreversed = std::collections::BTreeSet::new();
+        for e in self.entries.iter().filter(in_window) {
+            if fa_registers::open_items::is_live(e.vid, &reversed_by)? {
+                unreversed.insert(e.vid);
+            }
+        }
+        let mut replaced = std::collections::BTreeSet::new();
+        for e in self.entries.iter().filter(in_window) {
+            if !unreversed.contains(&e.vid) {
+                continue;
+            }
+            for s in &e.entry.proposal.supersession {
+                if s.kind == fa_model::SupersessionKind::Replaces {
+                    replaced.insert(s.target.vid);
+                }
+            }
+        }
+        Ok(self
+            .entries
+            .iter()
+            .filter(in_window)
+            .filter(|e| {
+                e.entry.proposal.class != EntryClass::REVERSAL
+                    && unreversed.contains(&e.vid)
+                    && !replaced.contains(&e.vid)
+            })
+            .collect())
+    }
+
+    /// Live posting entries across the snapshot (`live_postings_through(None)`).
+    pub fn live_postings(&self) -> Result<Vec<&SnapshotEntry>, LanternError> {
+        self.live_postings_through(None)
+    }
+
+    /// Whether `a` and `b` are connected by a directed supersession chain in
+    /// either direction.
+    #[must_use]
+    pub fn shares_supersession_lineage(&self, a: VId, b: VId) -> bool {
+        if a == b {
+            return true;
+        }
+        let by_vid: BTreeMap<VId, &SnapshotEntry> =
+            self.entries.iter().map(|e| (e.vid, e)).collect();
+        let reaches = |start: VId, goal: VId| -> bool {
+            let mut stack = vec![start];
+            let mut seen = std::collections::BTreeSet::new();
+            while let Some(cur) = stack.pop() {
+                if cur == goal {
+                    return true;
+                }
+                if !seen.insert(cur) {
+                    continue;
+                }
+                if let Some(e) = by_vid.get(&cur) {
+                    for s in &e.entry.proposal.supersession {
+                        stack.push(s.target.vid);
+                    }
+                }
+            }
+            false
+        };
+        reaches(a, b) || reaches(b, a)
     }
 
     /// The same snapshot with its entry order reversed: the determinism

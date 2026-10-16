@@ -73,11 +73,11 @@ pub struct FlowLeg {
 /// (account, magnitude))`.
 type UnitLegs = (Vec<(VId, Amount)>, Vec<(VId, u128)>);
 
-/// Every posting entry's credit→debit allocations under the registered
+/// Every live posting entry's credit→debit allocations under the registered
 /// largest-remainder law, ascending by `(entry, unit, from, to)`.
 pub fn flow_legs(snapshot: &Snapshot) -> Result<Vec<FlowLeg>, LanternError> {
     let mut legs = Vec::new();
-    for e in snapshot.entries.iter().filter(|e| e.posts()) {
+    for e in snapshot.live_postings()? {
         let mut by_unit: BTreeMap<u32, UnitLegs> = BTreeMap::new();
         for leg in &e.entry.proposal.legs {
             let slot = by_unit.entry(leg.amount.unit.0).or_default();
@@ -125,10 +125,10 @@ pub fn flow_legs(snapshot: &Snapshot) -> Result<Vec<FlowLeg>, LanternError> {
     Ok(legs)
 }
 
-/// The money-flow projection of every posting entry in the snapshot: the
+/// The money-flow projection of every live posting entry in the snapshot: the
 /// flow legs folded per `(from, to, unit, period)`.
 pub fn money_flow(snapshot: &Snapshot) -> Result<MoneyFlow, LanternError> {
-    let entries = snapshot.entries.iter().filter(|e| e.posts()).count() as u64;
+    let entries = snapshot.live_postings()?.len() as u64;
     let mut edges: BTreeMap<(u128, u128, u32, String), (i128, u64)> = BTreeMap::new();
     for l in flow_legs(snapshot)? {
         let slot = edges
@@ -203,7 +203,7 @@ pub struct Preparers {
 pub fn preparers(snapshot: &Snapshot) -> Result<Preparers, LanternError> {
     let mut rows: BTreeMap<(u128, u128, u32), (i128, i128, u64)> = BTreeMap::new();
     let mut approvals: BTreeMap<(u128, u128), u64> = BTreeMap::new();
-    for e in snapshot.entries.iter().filter(|e| e.posts()) {
+    for e in snapshot.live_postings()? {
         let preparer = e.entry.proposal.principal_ref;
         let mut touched = std::collections::BTreeSet::new();
         for leg in &e.entry.proposal.legs {
@@ -289,7 +289,7 @@ pub struct Documents {
 pub fn documents(snapshot: &Snapshot) -> Result<Documents, LanternError> {
     let mut rows: BTreeMap<([u8; 32], u8), u64> = BTreeMap::new();
     let mut entries_without_evidence = 0u64;
-    for e in snapshot.entries.iter().filter(|e| e.posts()) {
+    for e in snapshot.live_postings()? {
         if e.entry.proposal.evidence.is_empty() {
             entries_without_evidence += 1;
         }

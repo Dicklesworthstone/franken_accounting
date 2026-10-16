@@ -84,7 +84,7 @@ evidence = "FA-EVID-L05"
 tie_break = "entry_vid"
 complexity = "O(entries + approvals)"
 calibration = "planted"
-summary = "Entries one of whose recorded approvals was made by the preparing principal. For a class sod_policy.toml covers a hit proves a capability misconfiguration; for an uncovered class it is a control finding."
+summary = "Entries one of whose recorded approvals was made by the preparing principal, or migrated entries whose legacy source_approved_by matches source_entered_by. For a class sod_policy.toml covers a native hit proves a capability misconfiguration; for imported history or an uncovered class it is a control finding."
 
 [[procedure]]
 id = "jet.thin_descriptions"
@@ -112,7 +112,7 @@ evidence = "FA-EVID-L07"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Groups of two or more entries with the same leg multiset (account, side, unit, magnitude) and the same effective date."
+summary = "Groups of two or more live entries with the same leg multiset (account, side, unit, magnitude) and the same effective date, supersession pairs excluded."
 
 [[procedure]]
 id = "duplicates.same_same_different"
@@ -122,7 +122,7 @@ evidence = "FA-EVID-L08"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Pairs of entries with the same leg multiset on different effective dates at most window_days apart."
+summary = "Pairs of live entries with the same leg multiset on different effective dates at most window_days apart, supersession pairs excluded."
 
 [[parameter]]
 procedure = "duplicates.same_same_different"
@@ -148,13 +148,13 @@ evidence = "FA-EVID-L10"
 tie_break = "none"
 complexity = "O(legs)"
 calibration = "planted"
-summary = "First-digit distribution of posted leg magnitudes of at least one whole unit against Benford's law: the mean absolute deviation (Nigrini's conformity ranges) and the chi-square statistic in fixed point, with the population stated. Assumes naturally occurring, multi-magnitude, non-assigned numbers."
+summary = "First-digit distribution of live posted leg magnitudes on one side (debit by default) in one registered currency unit (USD by default) of at least one whole unit against Benford's law: the mean absolute deviation (Nigrini's conformity ranges) and the chi-square statistic in fixed point, with the population stated. Excludes reversals, superseded entries, the opposite side, other currencies and non-currency quantity units."
 
 [[parameter]]
 procedure = "benford.first_digit"
 name = "min_population"
 default = 500
-meaning = "Below this many legs no conformity score is claimed; the finding reports the population only."
+meaning = "Below this many eligible legs no conformity score is claimed; the finding reports the population only."
 
 [[parameter]]
 procedure = "benford.first_digit"
@@ -174,6 +174,18 @@ name = "mad_marginal"
 default = 15
 meaning = "Nigrini first-digit MAD upper bound for marginal conformity, in thousandths (0.015); above it is nonconformity."
 
+[[parameter]]
+procedure = "benford.first_digit"
+name = "currency_iso4217"
+default = 840
+meaning = "The ISO 4217 numeric code of the one currency whose legs are examined (840 = USD); other currencies and non-currency quantity units are excluded so distributions of different units are never pooled."
+
+[[parameter]]
+procedure = "benford.first_digit"
+name = "side"
+default = 0
+meaning = "Which side of each live posting entry is sampled so a balanced two-leg entry is counted once, never twice: 0 = debit legs, 1 = credit legs."
+
 # ---- Cutoff and aging (plan §11.7) -----------------------------------------
 
 [[procedure]]
@@ -184,7 +196,7 @@ evidence = "FA-EVID-L11"
 tie_break = "entry_vid"
 complexity = "O(entries)"
 calibration = "planted"
-summary = "Entries whose document date resolves to a different period than their effective date: candidates for the cutoff assertion."
+summary = "Entries whose document date resolves to a different period than their effective date (honoring the entry's period discriminator when the document date lies inside that special period): candidates for the cutoff assertion."
 
 [[procedure]]
 id = "aging.open_items"
@@ -226,9 +238,9 @@ version = 1
 claim = "statistical"
 evidence = "FA-EVID-L13"
 tie_break = "entry_vid"
-complexity = "O(flow legs × returns per account pair)"
+complexity = "O(flow legs log flow legs)"
 calibration = "planted"
-summary = "Value that leaves one asset account for another and returns in the same exact amount within window_days (the kiting motif): over the entry-level money flow between asset accounts, reversals excluded; a trip whose outbound or return falls within period_end_days of its period's end scores High, otherwise Medium."
+summary = "Value that leaves one asset account for another and returns in the same exact amount within window_days (the kiting motif): one-to-one earliest chronological matching over the live entry-level money flow between asset accounts, reversals and superseded entries excluded; a trip whose outbound or return falls within period_end_days of its period's end scores High, otherwise Medium."
 
 [[parameter]]
 procedure = "graph.round_trips"

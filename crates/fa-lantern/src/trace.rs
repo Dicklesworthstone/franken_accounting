@@ -131,6 +131,7 @@ impl Trace {
         snapshot: &Snapshot,
         claim: DateDay,
         intraday: i128,
+        work: &mut Work,
     ) -> Result<Stream, LanternError> {
         let account = snapshot
             .accounts
@@ -141,8 +142,6 @@ impl Trace {
         } else {
             Side::Credit
         };
-        // The deposit's unit comes from the source entry's inflow leg(s).
-        let mut unit: Option<UnitId> = None;
         for e in snapshot.entries.iter().filter(|e| e.vid == self.source) {
             if e.entry.proposal.effective_date > claim {
                 return Err(self.refuse(
@@ -150,6 +149,11 @@ impl Trace {
                     "the source deposit is effective after the coordinate's effective date",
                 ));
             }
+        }
+        let live = snapshot.live_postings_through(Some(claim))?;
+        // The deposit's unit comes from the live source entry's inflow leg(s).
+        let mut unit: Option<UnitId> = None;
+        for e in live.iter().filter(|e| e.vid == self.source) {
             for leg in &e.entry.proposal.legs {
                 if leg.account_ref == self.account && leg.side == inflow_side {
                     match unit {
@@ -168,15 +172,13 @@ impl Trace {
         let Some(unit) = unit else {
             return Err(self.refuse(
                 "source",
-                "the source entry has no inflow leg on the account (an entry of the book that deposits into it is required)",
+                "the source entry has no live inflow leg on the account (an unreversed entry of the book that deposits into it is required)",
             ));
         };
-        // Net each entry's legs on the account, per side, in that unit.
-        let mut per_entry: BTreeMap<(VId, bool), (DateDay, u64, i128)> = BTreeMap::new();
-        for e in snapshot.entries.iter().filter(|e| e.posts()) {
-            if e.entry.proposal.effective_date > claim {
-                continue;
-            }
+        // Net each live entry's legs on the account in that unit.
+        let mut per_entry: BTreeMap<VId, (DateDay, u64, i128)> = BTreeMap::new();
+        for e in live {
+            work.entry();
             for leg in &e.entry.proposal.legs {
                 if leg.account_ref != self.account || leg.amount.unit != unit {
                     continue;
@@ -186,24 +188,33 @@ impl Trace {
                     .mantissa
                     .checked_abs()
                     .ok_or(LanternError::Overflow("trace magnitude"))?;
-                let slot = per_entry
-                    .entry((e.vid, leg.side == inflow_side))
-                    .or_insert((e.entry.proposal.effective_date, e.recorded_at.0, 0));
+                let signed = if leg.side == inflow_side {
+                    magnitude
+                } else {
+                    magnitude
+                        .checked_neg()
+                        .ok_or(LanternError::Overflow("trace magnitude"))?
+                };
+                let slot = per_entry.entry(e.vid).or_insert((
+                    e.entry.proposal.effective_date,
+                    e.recorded_at.0,
+                    0,
+                ));
                 slot.2 = slot
                     .2
-                    .checked_add(magnitude)
+                    .checked_add(signed)
                     .ok_or(LanternError::Overflow("trace movement"))?;
             }
         }
         let mut moves: Vec<Movement> = per_entry
             .into_iter()
-            .filter(|(_, (_, _, m))| *m != 0)
-            .map(|((entry, inflow), (date, recorded, magnitude))| Movement {
+            .filter(|(_, (_, _, net))| *net != 0)
+            .map(|(entry, (date, recorded, net))| Movement {
                 entry,
                 date,
                 recorded,
-                inflow,
-                magnitude,
+                inflow: net > 0,
+                magnitude: net.abs(),
             })
             .collect();
         let rank = |m: &Movement| match intraday {
@@ -213,6 +224,8 @@ impl Trace {
         };
         // Same-day movements follow the statement (recorded) order; the
         // entry identity only breaks ties inside one commit, deterministically.
+        let move_count = moves.len() as u64;
+        work.compare(move_count.saturating_mul(move_count.max(1).ilog2().into()));
         moves.sort_by(|a, b| {
             (a.date, rank(a), a.recorded, a.entry, a.inflow).cmp(&(
                 b.date,
@@ -426,7 +439,7 @@ impl Procedure for Trace {
                 "only 0 (Never) is registered; OnEvidence replenishment is a later slice",
             ));
         }
-        let stream = self.stream(snapshot, claim, intraday)?;
+        let stream = self.stream(snapshot, claim, intraday, work)?;
         let t = run_law(self.law, &stream, work)?;
         let movements = stream.moves.len() as u64;
         let mut cites = vec![Cite::Account(self.account), Cite::Entry(self.source)];

@@ -65,13 +65,18 @@ impl Procedure for SameSameSame {
     ) -> Result<Vec<Finding>, LanternError> {
         let mut groups: BTreeMap<(Signature, i32), Vec<VId>> = BTreeMap::new();
         let mut population = 0u64;
-        for e in snapshot.entries.iter().filter(|e| e.posts()) {
+        for e in snapshot.live_postings()? {
             work.entry();
             population += 1;
-            groups
+            let list = groups
                 .entry((signature(e, work), e.entry.proposal.effective_date.0))
-                .or_default()
-                .push(e.vid);
+                .or_default();
+            if list
+                .iter()
+                .all(|&other| !snapshot.shares_supersession_lineage(other, e.vid))
+            {
+                list.push(e.vid);
+            }
         }
         work.compare(population.saturating_mul(population.max(1).ilog2().into()));
         Ok(groups
@@ -131,7 +136,7 @@ impl Procedure for SameSameDifferent {
         // `(effective day, recorded sequence, entry)` per signature.
         let mut groups: BTreeMap<Signature, Vec<(i32, u64, VId)>> = BTreeMap::new();
         let mut population = 0u64;
-        for e in snapshot.entries.iter().filter(|e| e.posts()) {
+        for e in snapshot.live_postings()? {
             work.entry();
             population += 1;
             groups.entry(signature(e, work)).or_default().push((
@@ -152,8 +157,15 @@ impl Procedure for SameSameDifferent {
                     work.compare(1);
                     next += 1;
                 }
-                let Some(&(day, _, later)) = list.get(next) else {
-                    break;
+                let mut cand = next;
+                while cand < list.len()
+                    && snapshot.shares_supersession_lineage(list[i].2, list[cand].2)
+                {
+                    work.compare(1);
+                    cand += 1;
+                }
+                let Some(&(day, _, later)) = list.get(cand) else {
+                    continue;
                 };
                 work.compare(1);
                 let apart = day - list[i].0;

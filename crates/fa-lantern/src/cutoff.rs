@@ -31,13 +31,21 @@ impl Procedure for PeriodBoundary {
     ) -> Result<Vec<Finding>, LanternError> {
         let mut population = 0u64;
         let mut hits = Vec::new();
-        for e in snapshot.entries.iter().filter(|e| e.posts()) {
+        for e in snapshot.live_postings()? {
             work.entry();
             let Some(document_date) = e.entry.proposal.document_date else {
                 continue;
             };
             population += 1;
-            let document_period = snapshot.period_code_of(book, document_date)?;
+            let document_period = snapshot.document_period_code_of(
+                book,
+                document_date,
+                e.entry
+                    .proposal
+                    .effective_period
+                    .as_ref()
+                    .map(|p| p.code.as_str()),
+            )?;
             if document_period != e.period {
                 let days = (document_date.0 - e.entry.proposal.effective_date.0).unsigned_abs();
                 hits.push((e.vid, e.period.clone(), document_period, days));

@@ -33,7 +33,7 @@ use fa_lantern::{
 };
 use fa_model::{
     ApprovalRef, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, ExternalId, Id128,
-    LegPayload, Oid, SealKey, SymbolTable, account_vid,
+    LegPayload, Oid, SealKey, SupersessionKind, SymbolTable, account_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_reference::lantern as naive;
@@ -713,7 +713,7 @@ fn procedures_find_the_planted_anomalies_and_cite_only_resolving_handles() {
 #[test]
 fn benford_claims_nothing_below_the_minimum_population_and_scores_above_it() {
     let (h, c) = posted_corpus();
-    let legs = 2 * c.specs.len() as u64;
+    let legs = c.specs.len() as u64;
     let r = h.run(&FirstDigit::new().unwrap());
     assert_eq!(r.findings.len(), 1);
     assert_eq!(r.findings[0].severity, Severity::Info);
@@ -738,7 +738,7 @@ fn benford_claims_nothing_below_the_minimum_population_and_scores_above_it() {
     assert!(f.narrative.contains("chi-square"));
     // The same counts through the naive oracle give the same MAD.
     let rows = naive_rows(&h, &c);
-    let counts = naive::first_digit_counts(&rows);
+    let counts = naive::first_digit_counts_for(&rows, h.usd.0, true);
     assert_eq!(counts.iter().sum::<u64>(), legs);
     assert_eq!(f.statistic.value, naive::benford_mad_1e9(&counts));
     assert_eq!(
@@ -912,25 +912,17 @@ fn rankings_are_deterministic_and_an_order_dependent_ranking_fails_the_witness()
         assert!(w.deterministic(), "{w:?}");
         // A fresh read of the same coordinate reproduces the digest.
         let again = run(&h.db, &h.book, None, Some(day(2026, 4, 30)), p.as_ref()).unwrap();
+        println!("{}", again.log_line());
         assert_eq!(again.findings_digest, w.digest);
-        // Work stays inside the registered bounds.
-        let n = snapshot.entries.len() as u64;
+        // Work stays inside the registered complexity bound.
+        let row = fa_lantern::bind(p.id()).expect("registered row");
         assert!(
-            again.work.entries <= n,
-            "{}: {:?}",
+            again
+                .work
+                .within_registered_bound(&row.complexity, &snapshot),
+            "{} ({}) exceeded bound: {:?}",
             again.procedure,
-            again.work
-        );
-        assert!(
-            again.work.legs <= 4 * n,
-            "{}: {:?}",
-            again.procedure,
-            again.work
-        );
-        assert!(
-            again.work.comparisons <= n * n,
-            "{}: {:?}",
-            again.procedure,
+            row.complexity,
             again.work
         );
     }
@@ -1110,6 +1102,7 @@ fn naive_rows(h: &Harness, c: &Corpus) -> Vec<naive::Row> {
             date: s.date,
             document_date: s.document_date,
             period: h.period_code(s.date),
+            period_start: None,
             period_end: h.period_end(s.date),
             legs: s
                 .legs
@@ -1135,6 +1128,8 @@ fn naive_rows(h: &Harness, c: &Corpus) -> Vec<naive::Row> {
                 .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
                 .collect(),
             recorded_after_close: s.soft_closed,
+            reverses: None,
+            replaces: None,
         })
         .collect()
 }
@@ -1459,6 +1454,7 @@ fn tracing_follows_recorded_same_day_order_and_repays_an_overdraft_first() {
                 date: spec.date,
                 document_date: None,
                 period: h.period_code(spec.date),
+                period_start: None,
                 period_end: h.period_end(spec.date),
                 legs: spec
                     .legs
@@ -1476,6 +1472,8 @@ fn tracing_follows_recorded_same_day_order_and_repays_an_overdraft_first() {
                 description_chars: Some(0),
                 external_ids: Vec::new(),
                 recorded_after_close: false,
+                reverses: None,
+                replaces: None,
             })
             .collect()
     };
@@ -1605,4 +1603,800 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
         ),
         Err(LanternError::Unregistered { .. })
     ));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_snapshot_entry(
+    h: &mut Harness,
+    vid: VId,
+    recorded_at: CommitSeq,
+    date: DateDay,
+    period: &str,
+    class: EntryClass,
+    legs: Vec<(&str, Side, UnitId, i128)>,
+    supersession: Vec<fa_model::Supersession>,
+    effective_period: Option<fa_model::PeriodRef>,
+    document_date: Option<DateDay>,
+    origin: Option<EntryOrigin>,
+    approvals: Vec<(VId, VId)>,
+) -> fa_lantern::snapshot::SnapshotEntry {
+    let mut proposal = h.proposal(&Spec::simple(date, "6000", "1000", 100));
+    proposal.class = class;
+    proposal.document_date = document_date;
+    proposal.effective_period = effective_period;
+    proposal.legs = legs
+        .into_iter()
+        .map(|(code, side, unit, mantissa)| {
+            LegPayload::simple(side, h.account(code), Amount::new(unit, mantissa))
+        })
+        .collect();
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    proposal.supersession = supersession;
+    if let Some(origin) = origin {
+        proposal.origin = origin;
+    }
+    let entry = proposal.seal(Vec::new(), None).expect("seal entry");
+    fa_lantern::snapshot::SnapshotEntry {
+        vid,
+        entry,
+        recorded_at,
+        period: period.to_string(),
+        approvals,
+    }
+}
+
+/// fa-vil6 items 1 & 3: supersession netting in tracing, projections, and
+/// duplicate detection.
+///
+/// 1. Tainted deposit 500.00 on day 1, erroneous clean deposit 1,000.00 on
+///    day 2, and its Reversal on day 3 (which reverses day 2's entry via
+///    `SupersessionKind::Reverses` rather than acting as an independent third-
+///    party withdrawal): all four tracing laws keep the full 500.00 tainted
+///    balance (not 0), and projections (`money_flow`, `preparers`, `documents`)
+///    exclude the reversed pair.
+/// 2. An entry corrected via Reversal + Replacement (`SupersessionKind::Replaces`)
+///    keeping the same legs is NOT flagged by `SameSameSame` or
+///    `SameSameDifferent`, while two independent entries with the same legs ARE
+///    flagged.
+#[test]
+fn supersession_netting_and_correction_lineage_exclusion() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = Some(day(2026, 1, 31));
+    let jan = h.period_code(day(2026, 1, 15));
+    let usd = h.usd;
+    let trust = h.account("1020");
+
+    // E1: Tainted deposit 500.00 into Trust (1020) on Jan 2.
+    let e1 = make_snapshot_entry(
+        &mut h,
+        VId(101),
+        CommitSeq(10),
+        day(2026, 1, 2),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1020", Side::Debit, usd, 50_000),
+            ("4000", Side::Credit, usd, 50_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    // E2: Erroneous clean deposit 1,000.00 into Trust (1020) on Jan 5.
+    let e2 = make_snapshot_entry(
+        &mut h,
+        VId(102),
+        CommitSeq(11),
+        day(2026, 1, 5),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1020", Side::Debit, usd, 100_000),
+            ("4000", Side::Credit, usd, 100_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let e2_ref = fa_model::EntryRef {
+        vid: e2.vid,
+        entry_digest: e2.entry.entry_digest,
+    };
+    // E3: Reversal of E2 on Jan 6 (credits 1020 for 1,000.00). Without
+    // supersession netting, FIFO/LIBR would treat E3 as a 1,000.00 withdrawal
+    // that drains E1's 500.00 first!
+    let e3 = make_snapshot_entry(
+        &mut h,
+        VId(103),
+        CommitSeq(12),
+        day(2026, 1, 6),
+        &jan,
+        EntryClass::REVERSAL,
+        vec![
+            ("4000", Side::Debit, usd, 100_000),
+            ("1020", Side::Credit, usd, 100_000),
+        ],
+        vec![fa_model::Supersession {
+            target: e2_ref,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }],
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    // E4: Replacement of E2 on Jan 6 with the same legs on Cash (1000) instead
+    // of Trust, plus E5 which replaces E4 on the same legs to test duplicate
+    // correction-lineage exclusion.
+    let e4 = make_snapshot_entry(
+        &mut h,
+        VId(104),
+        CommitSeq(13),
+        day(2026, 1, 10),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, usd, 25_000),
+            ("1000", Side::Credit, usd, 25_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let e4_ref = fa_model::EntryRef {
+        vid: e4.vid,
+        entry_digest: e4.entry.entry_digest,
+    };
+    let e5 = make_snapshot_entry(
+        &mut h,
+        VId(105),
+        CommitSeq(14),
+        day(2026, 1, 10),
+        &jan,
+        EntryClass::REPLACEMENT,
+        vec![
+            ("6000", Side::Debit, usd, 25_000),
+            ("1000", Side::Credit, usd, 25_000),
+        ],
+        vec![fa_model::Supersession {
+            target: e4_ref,
+            kind: SupersessionKind::Replaces,
+            reason_code: 1,
+        }],
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    snapshot.entries = vec![e1, e2, e3, e4, e5];
+
+    let rows = vec![
+        naive::Row {
+            index: 0,
+            date: day(2026, 1, 2),
+            document_date: None,
+            period: jan.clone(),
+            period_start: None,
+            period_end: day(2026, 2, 1),
+            legs: vec![
+                naive::Leg {
+                    account: "1020".into(),
+                    debit: true,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: 50_000,
+                },
+                naive::Leg {
+                    account: "4000".into(),
+                    debit: false,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: 50_000,
+                },
+            ],
+            preparer: "P7".into(),
+            approvers: Vec::new(),
+            description_chars: Some(10),
+            external_ids: Vec::new(),
+            recorded_after_close: false,
+            reverses: None,
+            replaces: None,
+        },
+        naive::Row {
+            index: 1,
+            date: day(2026, 1, 5),
+            document_date: None,
+            period: jan.clone(),
+            period_start: None,
+            period_end: day(2026, 2, 1),
+            legs: vec![
+                naive::Leg {
+                    account: "1020".into(),
+                    debit: true,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: 100_000,
+                },
+                naive::Leg {
+                    account: "4000".into(),
+                    debit: false,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: 100_000,
+                },
+            ],
+            preparer: "P7".into(),
+            approvers: Vec::new(),
+            description_chars: Some(10),
+            external_ids: Vec::new(),
+            recorded_after_close: false,
+            reverses: None,
+            replaces: None,
+        },
+        naive::Row {
+            index: 2,
+            date: day(2026, 1, 6),
+            document_date: None,
+            period: jan.clone(),
+            period_start: None,
+            period_end: day(2026, 2, 1),
+            legs: vec![
+                naive::Leg {
+                    account: "4000".into(),
+                    debit: true,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: 100_000,
+                },
+                naive::Leg {
+                    account: "1020".into(),
+                    debit: false,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: 100_000,
+                },
+            ],
+            preparer: "P7".into(),
+            approvers: Vec::new(),
+            description_chars: Some(10),
+            external_ids: Vec::new(),
+            recorded_after_close: false,
+            reverses: Some(1),
+            replaces: None,
+        },
+        naive::Row {
+            index: 3,
+            date: day(2026, 1, 10),
+            document_date: None,
+            period: jan.clone(),
+            period_start: None,
+            period_end: day(2026, 2, 1),
+            legs: vec![
+                naive::Leg {
+                    account: "6000".into(),
+                    debit: true,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: 25_000,
+                },
+                naive::Leg {
+                    account: "1000".into(),
+                    debit: false,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: 25_000,
+                },
+            ],
+            preparer: "P7".into(),
+            approvers: Vec::new(),
+            description_chars: Some(10),
+            external_ids: Vec::new(),
+            recorded_after_close: false,
+            reverses: None,
+            replaces: None,
+        },
+        naive::Row {
+            index: 4,
+            date: day(2026, 1, 10),
+            document_date: None,
+            period: jan,
+            period_start: None,
+            period_end: day(2026, 2, 1),
+            legs: vec![
+                naive::Leg {
+                    account: "6000".into(),
+                    debit: true,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: 25_000,
+                },
+                naive::Leg {
+                    account: "1000".into(),
+                    debit: false,
+                    unit: usd.0,
+                    scale: 2,
+                    mantissa: 25_000,
+                },
+            ],
+            preparer: "P7".into(),
+            approvers: Vec::new(),
+            description_chars: Some(10),
+            external_ids: Vec::new(),
+            recorded_after_close: false,
+            reverses: None,
+            replaces: Some(3),
+        },
+    ];
+
+    for (law, naive_law) in [
+        (Law::Libr, naive::TraceLaw::Libr),
+        (Law::Fifo, naive::TraceLaw::Fifo),
+        (Law::Lifo, naive::TraceLaw::Lifo),
+        (Law::ProRata, naive::TraceLaw::ProRata),
+    ] {
+        let r = run_over(
+            &snapshot,
+            &h.book,
+            &Trace::new(law, trust, VId(101)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(r.findings[0].statistic.value, 50_000, "{}", law.name());
+        let (naive_val, _) = naive::trace(&rows, "1020", 0, day(2026, 1, 31), naive_law);
+        assert_eq!(r.findings[0].statistic.value, naive_val);
+    }
+
+    // Projections fold only live postings (E1 and E5; E2+E3 reversed, E4 replaced).
+    let flow = money_flow(&snapshot).unwrap();
+    assert_eq!(flow.entries, 2);
+    let total: i128 = flow.edges.iter().map(|e| e.mantissa).sum();
+    assert_eq!(total, 50_000 + 25_000);
+
+    // Duplicates: E4 and E5 share supersession lineage (E5 replaces E4), so
+    // neither SameSameSame nor SameSameDifferent flags them.
+    let sss = run_over(&snapshot, &h.book, &SameSameSame::new().unwrap()).unwrap();
+    assert!(sss.findings.is_empty());
+    assert!(naive::same_same_same(&rows).is_empty());
+    let ssd = run_over(&snapshot, &h.book, &SameSameDifferent::new().unwrap()).unwrap();
+    assert!(ssd.findings.is_empty());
+    assert!(naive::same_same_different(&rows, 30).is_empty());
+}
+
+/// fa-vil6 item 2: Benford's first-digit test samples one side (Debit default)
+/// of one currency (USD = 840 default) so a two-leg double-entry posting is
+/// counted once, never twice, and foreign currencies / share quantities are not
+/// pooled into the USD population.
+#[test]
+fn benford_samples_one_side_and_one_currency_without_double_counting() {
+    let mut h = harness();
+    let jpy = h.book.units.lookup("JPY").unwrap();
+    let shares = h.book.units.lookup("SHARE").unwrap();
+
+    let mut snapshot = h.snapshot();
+    let jan = h.period_code(day(2026, 1, 15));
+    let usd = h.usd;
+
+    // 1 USD entry (2 legs: 1 debit, 1 credit), 1 JPY entry (2 legs), 1 SHARE entry (2 legs).
+    let e_usd = make_snapshot_entry(
+        &mut h,
+        VId(201),
+        CommitSeq(20),
+        day(2026, 1, 10),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, usd, 12_345),
+            ("1000", Side::Credit, usd, 12_345),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let e_jpy = make_snapshot_entry(
+        &mut h,
+        VId(202),
+        CommitSeq(21),
+        day(2026, 1, 11),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, jpy, 900_000),
+            ("1000", Side::Credit, jpy, 900_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let e_shares = make_snapshot_entry(
+        &mut h,
+        VId(203),
+        CommitSeq(22),
+        day(2026, 1, 12),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, shares, 500),
+            ("1000", Side::Credit, shares, 500),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    snapshot.entries = vec![e_usd, e_jpy, e_shares];
+
+    // Default (USD = 840, side = 0 Debit): population is 1 (not 2, not 6).
+    let r_usd = run_over(
+        &snapshot,
+        &h.book,
+        &FirstDigit::with(
+            Params::defaults(FirstDigit::ID)
+                .unwrap()
+                .set("min_population", 1)
+                .unwrap(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(r_usd.findings[0].statistic.population, 1);
+
+    // JPY = 392, side = 1 Credit: population is 1 (the JPY credit leg).
+    let r_jpy = run_over(
+        &snapshot,
+        &h.book,
+        &FirstDigit::with(
+            Params::defaults(FirstDigit::ID)
+                .unwrap()
+                .set("min_population", 1)
+                .unwrap()
+                .set("currency_iso4217", 392)
+                .unwrap()
+                .set("side", 1)
+                .unwrap(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(r_jpy.findings[0].statistic.population, 1);
+}
+
+/// fa-vil6 item 4: cutoff.period_boundary honors `effective_period` when a
+/// document is dated on the civil date shared by a normal year-end period and
+/// an adjustment period (`FY2026-A1`).
+#[test]
+fn cutoff_honors_effective_period_discriminator_in_adjustment_periods() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    // Ensure FY2026-A1 is in the snapshot's period map (created by create_periods(2026)).
+    assert!(snapshot.periods.contains_key("FY2026-A1"));
+    let usd = h.usd;
+    let adj_ref = fa_model::PeriodRef {
+        calendar: "cal".into(),
+        code: "FY2026-A1".into(),
+    };
+
+    // Entry 1: Adjusting entry in FY2026-A1 dated 2026-12-31 with document_date
+    // 2026-12-31 -> same period (`FY2026-A1`), NOT a cutoff mismatch!
+    let e_same = make_snapshot_entry(
+        &mut h,
+        VId(301),
+        CommitSeq(30),
+        day(2026, 12, 31),
+        "FY2026-A1",
+        EntryClass::ADJUSTING,
+        vec![
+            ("6000", Side::Debit, usd, 10_000),
+            ("2000", Side::Credit, usd, 10_000),
+        ],
+        Vec::new(),
+        Some(adj_ref.clone()),
+        Some(day(2026, 12, 31)),
+        None,
+        Vec::new(),
+    );
+    // Entry 2: Adjusting entry in FY2026-A1 dated 2026-12-31 with document_date
+    // 2026-11-28 (`FY2026-P11`) -> cross-period cutoff finding!
+    let e_cross = make_snapshot_entry(
+        &mut h,
+        VId(302),
+        CommitSeq(31),
+        day(2026, 12, 31),
+        "FY2026-A1",
+        EntryClass::ADJUSTING,
+        vec![
+            ("6000", Side::Debit, usd, 20_000),
+            ("2000", Side::Credit, usd, 20_000),
+        ],
+        Vec::new(),
+        Some(adj_ref),
+        Some(day(2026, 11, 28)),
+        None,
+        Vec::new(),
+    );
+    snapshot.entries = vec![e_same, e_cross];
+
+    let r = run_over(&snapshot, &h.book, &PeriodBoundary::new().unwrap()).unwrap();
+    assert_eq!(r.findings.len(), 1);
+    assert_eq!(r.findings[0].cites[0], Cite::Entry(VId(302)));
+}
+
+/// fa-vil6 item 5: graph.round_trips matches each outbound transfer and each
+/// return transfer at most once (earliest unmatched return in the window), and
+/// runs in O(L log L).
+#[test]
+fn round_trips_matches_one_to_one_without_reusing_endpoints() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    let jan = h.period_code(day(2026, 1, 15));
+    let usd = h.usd;
+
+    // 1 outbound transfer (1000 -> 1010 on Jan 10) followed by 2 returns
+    // (1010 -> 1000 on Jan 11 and Jan 12) in the same amount.
+    let e_out = make_snapshot_entry(
+        &mut h,
+        VId(401),
+        CommitSeq(40),
+        day(2026, 1, 10),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1010", Side::Debit, usd, 50_000),
+            ("1000", Side::Credit, usd, 50_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let e_ret1 = make_snapshot_entry(
+        &mut h,
+        VId(402),
+        CommitSeq(41),
+        day(2026, 1, 11),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 50_000),
+            ("1010", Side::Credit, usd, 50_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let e_ret2 = make_snapshot_entry(
+        &mut h,
+        VId(403),
+        CommitSeq(42),
+        day(2026, 1, 12),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 50_000),
+            ("1010", Side::Credit, usd, 50_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    snapshot.entries = vec![e_out, e_ret1, e_ret2];
+
+    let r = run_over(&snapshot, &h.book, &RoundTrips::new().unwrap()).unwrap();
+    assert_eq!(
+        r.findings.len(),
+        1,
+        "one outbound transfer can be returned at most once"
+    );
+    assert_eq!(r.findings[0].cites[0], Cite::Entry(VId(401)));
+    assert_eq!(r.findings[0].cites[1], Cite::Entry(VId(402)));
+}
+
+/// fa-vil6 item 6: jet.self_approved positively detects both a snapshot entry
+/// carrying a self-approval vertex and a migrated entry (`EntryOrigin::Migration`)
+/// whose `source_entered_by` and `source_approved_by` match.
+#[test]
+fn self_approved_detects_migrated_and_snapshot_self_approvals() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    let jan = h.period_code(day(2026, 1, 15));
+    let usd = h.usd;
+
+    let alice_entered = h.seal("alice@legacy.example");
+    let alice_approved = h.seal("alice@legacy.example");
+    let bob_approved = h.seal("bob@legacy.example");
+    let mig1_id = h.seal("MIG-1");
+    let mig2_id = h.seal("MIG-2");
+
+    // 1. Migrated entry where alice both entered and approved in the source system.
+    let e_mig_self = make_snapshot_entry(
+        &mut h,
+        VId(501),
+        CommitSeq(50),
+        day(2026, 1, 10),
+        &jan,
+        EntryClass::MIGRATION,
+        vec![
+            ("6000", Side::Debit, usd, 10_000),
+            ("1000", Side::Credit, usd, 10_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        Some(EntryOrigin::Migration {
+            run_ref: VId(900),
+            source_system: "legacy_erp".into(),
+            source_id: mig1_id,
+            source_recorded_at_ns: None,
+            source_entered_by: Some(alice_entered.clone()),
+            source_approved_by: Some(alice_approved),
+            batch_oid: Oid([9; 32]),
+        }),
+        Vec::new(),
+    );
+    // 2. Migrated entry where alice entered and bob approved (control: clean).
+    let e_mig_clean = make_snapshot_entry(
+        &mut h,
+        VId(502),
+        CommitSeq(51),
+        day(2026, 1, 11),
+        &jan,
+        EntryClass::MIGRATION,
+        vec![
+            ("6000", Side::Debit, usd, 10_000),
+            ("1000", Side::Credit, usd, 10_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        Some(EntryOrigin::Migration {
+            run_ref: VId(900),
+            source_system: "legacy_erp".into(),
+            source_id: mig2_id,
+            source_recorded_at_ns: None,
+            source_entered_by: Some(alice_entered),
+            source_approved_by: Some(bob_approved),
+            batch_oid: Oid([9; 32]),
+        }),
+        Vec::new(),
+    );
+    // 3. Snapshot entry whose approval list names its own preparer (PREPARER).
+    let e_snap_self = make_snapshot_entry(
+        &mut h,
+        VId(503),
+        CommitSeq(52),
+        day(2026, 1, 12),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, usd, 10_000),
+            ("1000", Side::Credit, usd, 10_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        vec![(VId(901), PREPARER)],
+    );
+    snapshot.entries = vec![e_mig_self, e_mig_clean, e_snap_self];
+
+    let r = run_over(&snapshot, &h.book, &SelfApproved::new().unwrap()).unwrap();
+    let cited: Vec<VId> = r
+        .findings
+        .iter()
+        .map(|f| match &f.cites[0] {
+            Cite::Entry(v) => *v,
+            other => panic!("expected entry cite, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(cited, vec![VId(501), VId(503)]);
+}
+
+/// fa-vil6 item 7: complexity witness across 10^2, 10^3, and 10^4 entry corpora
+/// verifies that every procedure's work counters obey its registered asymptotic
+/// complexity in `registries/procedures.toml`.
+#[test]
+fn complexity_witness_holds_across_100_1000_and_10000_entries() {
+    let mut h = harness();
+    let base = h.snapshot();
+    let jan = h.period_code(day(2026, 1, 15));
+    let usd = h.usd;
+    let desc = h.seal("synthetic scale entry");
+    let legs = vec![
+        LegPayload::simple(Side::Debit, h.account("1010"), Amount::new(usd, 12_345)),
+        LegPayload::simple(Side::Credit, h.account("1000"), Amount::new(usd, 12_345)),
+    ];
+    let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+    let template_proposal = EntryPayload {
+        schema_minor: 0,
+        book_id: h.book.book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::ORIGINAL,
+        effective_date: day(2026, 1, 15),
+        document_date: Some(day(2026, 1, 15)),
+        description: desc,
+        effective_period: None,
+        unit_totals: totals,
+        legs,
+        control: None,
+        base_totals: None,
+        idempotency_key: vec![1, 2, 3, 4],
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([1; 32]),
+            intent_kind: 1,
+        },
+        principal_ref: PREPARER,
+        session_ref: None,
+        evidence: h.evidence.clone(),
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    };
+    let template_entry = template_proposal.seal(Vec::new(), None).unwrap();
+
+    for scale in [100usize, 1_000, 10_000] {
+        let mut snapshot = base.clone();
+        snapshot.entries = (0..scale)
+            .map(|i| {
+                let mut entry = template_entry.clone();
+                // Vary amounts and dates so buckets are realistic while keeping
+                // construction fast across 10,000 entries.
+                let amount = 10_000 + (i as i128 % 97) * 100;
+                entry.proposal.effective_date = day(2026, 1, 1 + (i % 28) as u8);
+                entry.proposal.legs[0].amount = Amount::new(usd, amount);
+                entry.proposal.legs[1].amount = Amount::new(usd, amount);
+                fa_lantern::snapshot::SnapshotEntry {
+                    vid: VId(10_000 + i as u128),
+                    entry,
+                    recorded_at: CommitSeq(100 + i as u64),
+                    period: jan.clone(),
+                    approvals: Vec::new(),
+                }
+            })
+            .collect();
+
+        let procedures: Vec<Box<dyn Procedure>> = vec![
+            Box::new(RoundAmounts::new().unwrap()),
+            Box::new(PeriodEndTiming::new().unwrap()),
+            Box::new(PostClosing::new().unwrap()),
+            Box::new(Weekend::new().unwrap()),
+            Box::new(SelfApproved::new().unwrap()),
+            Box::new(ThinDescriptions::new().unwrap()),
+            Box::new(SameSameSame::new().unwrap()),
+            Box::new(SameSameDifferent::new().unwrap()),
+            Box::new(SequenceGaps::new().unwrap()),
+            Box::new(FirstDigit::new().unwrap()),
+            Box::new(PeriodBoundary::new().unwrap()),
+            Box::new(RoundTrips::new().unwrap()),
+            Box::new(Structuring::new().unwrap()),
+            Box::new(Trace::new(Law::Libr, h.account("1010"), VId(10_000)).unwrap()),
+        ];
+
+        for p in &procedures {
+            let run = run_over(&snapshot, &h.book, p.as_ref()).unwrap();
+            let row = fa_lantern::bind(p.id()).unwrap();
+            assert!(
+                run.work.within_registered_bound(&row.complexity, &snapshot),
+                "scale={scale} procedure={} complexity='{}' work={:?}",
+                run.procedure,
+                row.complexity,
+                run.work
+            );
+        }
+    }
 }

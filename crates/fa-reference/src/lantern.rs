@@ -3,7 +3,7 @@
 //! differential test builds from the same intents it posts to the kernel.
 //! Deliberately simple, single pass where possible, own arithmetic.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_time::{DateDay, Weekday};
 
@@ -24,6 +24,9 @@ pub struct Row {
     pub date: DateDay,
     pub document_date: Option<DateDay>,
     pub period: String,
+    /// Optional inclusive start of the entry's resolved period (used when an
+    /// entry names a special/adjustment period discriminator).
+    pub period_start: Option<DateDay>,
     /// The period's exclusive end (fa-time `PeriodDef::end`); its last day
     /// is one before.
     pub period_end: DateDay,
@@ -36,12 +39,58 @@ pub struct Row {
     /// Whether the entry was recorded after its period's first close-side
     /// transition.
     pub recorded_after_close: bool,
+    /// Target row index when this row is a `Reversal` (`SupersessionKind::Reverses`).
+    pub reverses: Option<usize>,
+    /// Target row index when this row is a `Replacement` (`SupersessionKind::Replaces`).
+    pub replaces: Option<usize>,
+}
+
+fn live_rows_through(rows: &[Row], through: Option<DateDay>) -> Vec<&Row> {
+    let window: Vec<&Row> = rows
+        .iter()
+        .filter(|r| through.is_none_or(|d| r.date <= d))
+        .collect();
+    fn unreversed(idx: usize, window: &[&Row]) -> bool {
+        match window.iter().find(|r| r.reverses == Some(idx)) {
+            None => true,
+            Some(rev) => !unreversed(rev.index, window),
+        }
+    }
+    window
+        .iter()
+        .copied()
+        .filter(|r| {
+            r.reverses.is_none()
+                && unreversed(r.index, &window)
+                && !window.iter().any(|other| {
+                    other.replaces == Some(r.index) && unreversed(other.index, &window)
+                })
+        })
+        .collect()
+}
+
+fn live_rows(rows: &[Row]) -> Vec<&Row> {
+    live_rows_through(rows, None)
+}
+
+fn linked_supersession(rows: &[Row], a: usize, b: usize) -> bool {
+    fn reaches(rows: &[Row], cur: usize, goal: usize) -> bool {
+        if cur == goal {
+            return true;
+        }
+        let Some(r) = rows.iter().find(|r| r.index == cur) else {
+            return false;
+        };
+        r.reverses.is_some_and(|t| reaches(rows, t, goal))
+            || r.replaces.is_some_and(|t| reaches(rows, t, goal))
+    }
+    reaches(rows, a, b) || reaches(rows, b, a)
 }
 
 /// `(row index, round legs)` for rows with at least one round leg.
 pub fn round_amounts(rows: &[Row], round_power: u32) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
-    for r in rows {
+    for r in live_rows(rows) {
         let mut round = 0;
         for l in &r.legs {
             let base = 10i128.pow(l.scale + round_power);
@@ -57,7 +106,8 @@ pub fn round_amounts(rows: &[Row], round_power: u32) -> Vec<(usize, usize)> {
 }
 
 pub fn period_end_timing(rows: &[Row], window: i32) -> Vec<usize> {
-    rows.iter()
+    live_rows(rows)
+        .into_iter()
         .filter(|r| {
             let d = r.period_end.0 - 1 - r.date.0;
             d >= 0 && d < window
@@ -67,14 +117,16 @@ pub fn period_end_timing(rows: &[Row], window: i32) -> Vec<usize> {
 }
 
 pub fn post_closing(rows: &[Row]) -> Vec<usize> {
-    rows.iter()
+    live_rows(rows)
+        .into_iter()
         .filter(|r| r.recorded_after_close)
         .map(|r| r.index)
         .collect()
 }
 
 pub fn weekend(rows: &[Row]) -> Vec<usize> {
-    rows.iter()
+    live_rows(rows)
+        .into_iter()
         .filter(|r| {
             matches!(
                 r.document_date.unwrap_or(r.date).weekday(),
@@ -86,14 +138,16 @@ pub fn weekend(rows: &[Row]) -> Vec<usize> {
 }
 
 pub fn self_approved(rows: &[Row]) -> Vec<usize> {
-    rows.iter()
+    live_rows(rows)
+        .into_iter()
         .filter(|r| r.approvers.contains(&r.preparer))
         .map(|r| r.index)
         .collect()
 }
 
 pub fn thin_descriptions(rows: &[Row], min_chars: usize) -> Vec<usize> {
-    rows.iter()
+    live_rows(rows)
+        .into_iter()
         .filter(|r| r.description_chars.is_some_and(|c| c < min_chars))
         .map(|r| r.index)
         .collect()
@@ -112,15 +166,18 @@ fn leg_key(r: &Row) -> LegKey {
     s
 }
 
-/// Groups (ascending row indexes) of two or more rows with the same legs and
-/// date.
+/// Groups (ascending row indexes) of two or more live rows with the same legs
+/// and date, excluding supersession pairs.
 pub fn same_same_same(rows: &[Row]) -> Vec<Vec<usize>> {
     let mut groups: BTreeMap<(LegKey, i32), Vec<usize>> = BTreeMap::new();
-    for r in rows {
-        groups
-            .entry((leg_key(r), r.date.0))
-            .or_default()
-            .push(r.index);
+    for r in live_rows(rows) {
+        let list = groups.entry((leg_key(r), r.date.0)).or_default();
+        if list
+            .iter()
+            .all(|&other| !linked_supersession(rows, other, r.index))
+        {
+            list.push(r.index);
+        }
     }
     let mut out: Vec<Vec<usize>> = groups
         .into_values()
@@ -134,16 +191,22 @@ pub fn same_same_same(rows: &[Row]) -> Vec<Vec<usize>> {
     out
 }
 
-/// Pairs `(i, j)` with `i < j`: for each row `a`, the rows with the same legs
-/// on later dates are found by brute force; the earliest such date, if it is
-/// at most `window` days after `a`'s, contributes its lowest-index row `b`
-/// (the first recorded) as `a`'s pair.
+/// Pairs `(i, j)` with `i < j`: for each live row `a`, the live rows with the
+/// same legs on later dates (excluding supersession pairs) are found by brute
+/// force; the earliest such date, if it is at most `window` days after `a`'s,
+/// contributes its lowest-index row `b` (the first recorded) as `a`'s pair.
 pub fn same_same_different(rows: &[Row], window: i32) -> Vec<(usize, usize)> {
+    let live = live_rows(rows);
     let mut out = Vec::new();
-    for a in rows {
-        let later: Vec<&Row> = rows
+    for a in &live {
+        let later: Vec<&Row> = live
             .iter()
-            .filter(|b| leg_key(b) == leg_key(a) && b.date.0 > a.date.0)
+            .copied()
+            .filter(|b| {
+                leg_key(b) == leg_key(a)
+                    && b.date.0 > a.date.0
+                    && !linked_supersession(rows, a.index, b.index)
+            })
             .collect();
         let Some(next_day) = later.iter().map(|b| b.date.0).min() else {
             continue;
@@ -166,7 +229,7 @@ pub fn same_same_different(rows: &[Row], window: i32) -> Vec<(usize, usize)> {
 /// `(system, missing numbers)` per gap, in `(system, prefix, number)` order.
 pub fn sequence_gaps(rows: &[Row]) -> Vec<(String, u64)> {
     let mut sequences: BTreeMap<(String, String), Vec<u64>> = BTreeMap::new();
-    for r in rows {
+    for r in live_rows(rows) {
         for (system, id) in &r.external_ids {
             let digits: String = id
                 .chars()
@@ -199,17 +262,29 @@ pub fn sequence_gaps(rows: &[Row]) -> Vec<(String, u64)> {
 }
 
 pub fn cutoff(rows: &[Row], period_of: &dyn Fn(DateDay) -> String) -> Vec<usize> {
-    rows.iter()
-        .filter(|r| r.document_date.is_some_and(|d| period_of(d) != r.period))
+    live_rows(rows)
+        .into_iter()
+        .filter(|r| {
+            r.document_date.is_some_and(|d| {
+                let in_own_period = r
+                    .period_start
+                    .is_some_and(|start| d >= start && d < r.period_end);
+                !in_own_period && period_of(d) != r.period
+            })
+        })
         .map(|r| r.index)
         .collect()
 }
 
-/// First-digit counts of leg magnitudes of at least one whole unit.
-pub fn first_digit_counts(rows: &[Row]) -> [u64; 9] {
+/// First-digit counts of live leg magnitudes on `debit` side in `unit` of at
+/// least one whole unit.
+pub fn first_digit_counts_for(rows: &[Row], unit: u32, debit: bool) -> [u64; 9] {
     let mut counts = [0u64; 9];
-    for r in rows {
+    for r in live_rows(rows) {
         for l in &r.legs {
+            if l.debit != debit || l.unit != unit {
+                continue;
+            }
             let mut m = l.mantissa.unsigned_abs();
             if m < 10u128.pow(l.scale) {
                 continue;
@@ -221,6 +296,18 @@ pub fn first_digit_counts(rows: &[Row]) -> [u64; 9] {
         }
     }
     counts
+}
+
+/// First-digit counts of debit-side leg magnitudes in the primary unit of at
+/// least one whole unit.
+pub fn first_digit_counts(rows: &[Row]) -> [u64; 9] {
+    let unit = rows
+        .iter()
+        .flat_map(|r| r.legs.iter())
+        .map(|l| l.unit)
+        .next()
+        .unwrap_or(0);
+    first_digit_counts_for(rows, unit, true)
 }
 
 /// Nigrini's MAD at nine decimal places, with the expected proportions
@@ -260,36 +347,47 @@ fn transfer(r: &Row) -> Option<(&str, &str, u32, i128)> {
     }
 }
 
-/// Pairs `(i, j)` of two-leg rows where value leaves asset `A` for asset `B`
-/// in row `i` and the same magnitude returns from `B` to `A` in row `j`,
-/// 0..=window days later (`i` before `j` when the dates tie).
+/// One-to-one chronological pairs `(i, j)` of live two-leg rows where value
+/// leaves asset `A` for asset `B` in row `i` and the same magnitude returns
+/// from `B` to `A` in the earliest unmatched row `j`, 0..=window days later
+/// (`i` before `j` when the dates tie).
 pub fn round_trips(
     rows: &[Row],
     window: i32,
     is_asset: &dyn Fn(&str) -> bool,
 ) -> Vec<(usize, usize)> {
+    let mut ordered = live_rows(rows);
+    ordered.sort_by_key(|r| (r.date.0, r.index));
+    let mut matched: BTreeSet<usize> = BTreeSet::new();
     let mut out = Vec::new();
-    for a in rows {
-        for b in rows {
-            let (Some((from_a, to_a, unit_a, m_a)), Some((from_b, to_b, unit_b, m_b))) =
-                (transfer(a), transfer(b))
-            else {
+    for (pos, a) in ordered.iter().enumerate() {
+        if matched.contains(&a.index) {
+            continue;
+        }
+        let Some((from_a, to_a, unit_a, m_a)) = transfer(a) else {
+            continue;
+        };
+        if from_a == to_a || m_a == 0 || !is_asset(from_a) || !is_asset(to_a) {
+            continue;
+        }
+        for b in &ordered[pos + 1..] {
+            if matched.contains(&b.index) || a.index == b.index {
+                continue;
+            }
+            let Some((from_b, to_b, unit_b, m_b)) = transfer(b) else {
                 continue;
             };
             let gap = b.date.0 - a.date.0;
-            if a.index != b.index
-                && from_a == to_b
+            if from_a == to_b
                 && to_a == from_b
-                && from_a != to_a
                 && unit_a == unit_b
                 && m_a == m_b
-                && m_a != 0
                 && (0..=window).contains(&gap)
-                && (gap != 0 || a.index < b.index)
-                && is_asset(from_a)
-                && is_asset(to_a)
             {
+                matched.insert(a.index);
+                matched.insert(b.index);
                 out.push((a.index, b.index));
+                break;
             }
         }
     }
@@ -301,7 +399,7 @@ pub fn round_trips(
 /// `(date, row index, magnitude)` keyed by `(from, to, unit)`.
 type TransferGroups = BTreeMap<(String, String, u32), Vec<(i32, usize, i128)>>;
 
-/// `(from account, to account, row indexes)` of every chain of two-leg
+/// `(from account, to account, row indexes)` of every chain of live two-leg
 /// transfers between one pair of accounts in one unit whose magnitudes lie in
 /// `floor..threshold`, with consecutive dates at most `window` days apart,
 /// at least `min_count` long and summing to at least `threshold`.
@@ -313,7 +411,7 @@ pub fn structuring(
     min_count: usize,
 ) -> Vec<(String, String, Vec<usize>)> {
     let mut groups: TransferGroups = BTreeMap::new();
-    for r in rows {
+    for r in live_rows(rows) {
         if let Some((from, to, unit, m)) = transfer(r)
             && m >= floor
             && m < threshold
@@ -364,7 +462,7 @@ pub enum TraceLaw {
 /// The traceable share of row `source`'s deposit into `account` at `claim`
 /// under `law`, and the rows whose withdrawals carried tainted value (for
 /// LIBR, the row at which the lowest balance was reached). Movements are
-/// each row's debits minus credits on the account, in date then row
+/// each live row's debits minus credits on the account, in date then row
 /// (recorded) order; money before the deposit is clean; an overdraft is
 /// repaid by the next money in, so a deposit into an overdrawn account is
 /// traceable only above the overdraft, and a withdrawal beyond the money
@@ -378,10 +476,7 @@ pub fn trace(
     law: TraceLaw,
 ) -> (i128, Vec<usize>) {
     let mut moves: Vec<(i32, usize, i128)> = Vec::new();
-    for r in rows {
-        if r.date.0 > claim.0 {
-            continue;
-        }
+    for r in live_rows_through(rows, Some(claim)) {
         let net: i128 = r
             .legs
             .iter()

@@ -496,6 +496,60 @@ impl Work {
     pub fn compare(&mut self, n: u64) {
         self.comparisons = self.comparisons.saturating_add(n);
     }
+
+    /// Whether the recorded operation counts satisfy the procedure's
+    /// registered complexity class from `registries/procedures.toml` over
+    /// `snapshot` (never a quadratic `n²` fallback).
+    #[must_use]
+    pub fn within_registered_bound(&self, complexity: &str, snapshot: &Snapshot) -> bool {
+        let entries = snapshot.entries.len() as u64;
+        let legs: u64 = snapshot
+            .entries
+            .iter()
+            .map(|e| e.entry.proposal.legs.len() as u64)
+            .sum();
+        let ids: u64 = snapshot
+            .entries
+            .iter()
+            .map(|e| e.entry.proposal.external_ids.len() as u64)
+            .sum();
+        let transitions: u64 = snapshot.transitions.values().map(|v| v.len() as u64).sum();
+        let approvals: u64 = snapshot
+            .entries
+            .iter()
+            .map(|e| e.approvals.len() as u64 + 1)
+            .sum();
+        let open_items: u64 = snapshot
+            .open_items_as_of
+            .as_ref()
+            .map_or(0, |s| s.items.len() as u64);
+        let n = legs.max(entries).max(ids).max(1);
+        let n_log_n = n
+            .saturating_mul(u64::from((n + 1).ilog2().max(1)))
+            .saturating_mul(4);
+        match complexity {
+            "O(entries)" => self.entries <= entries && self.legs == 0 && self.comparisons == 0,
+            "O(legs)" => self.entries <= entries && self.legs <= legs && self.comparisons == 0,
+            "O(entries + transitions)" => {
+                self.entries <= entries && self.legs == 0 && self.comparisons <= transitions
+            }
+            "O(entries + approvals)" => {
+                self.entries <= entries && self.legs == 0 && self.comparisons <= approvals
+            }
+            "O(open items)" => {
+                self.entries == 0 && self.legs <= open_items && self.comparisons == 0
+            }
+            "O(legs log legs)"
+            | "O(ids log ids)"
+            | "O(flow legs log flow legs)"
+            | "O(movements log movements)" => {
+                self.entries <= entries
+                    && self.legs <= legs.max(entries).saturating_mul(2)
+                    && self.comparisons <= n_log_n
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A registered procedure (plan §11.1).
@@ -542,6 +596,25 @@ pub struct ProcedureRun {
     pub findings_digest: [u8; 32],
     pub decision_card: fa_policy::DecisionCard,
     pub decision_card_digest: [u8; 32],
+}
+
+impl ProcedureRun {
+    /// Structured summary line logging population size, parameters digest,
+    /// and findings count for audit and test transcripts.
+    #[must_use]
+    pub fn log_line(&self) -> String {
+        let mut hex = String::with_capacity(64);
+        for b in &self.parameters_digest {
+            use core::fmt::Write as _;
+            let _ = write!(&mut hex, "{b:02x}");
+        }
+        format!(
+            "lantern_run procedure={} population={} parameters_digest={hex} findings={}",
+            self.procedure,
+            self.population,
+            self.findings.len()
+        )
+    }
 }
 
 /// The registry row of `id`, or `Unregistered`.

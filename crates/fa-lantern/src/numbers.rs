@@ -56,7 +56,7 @@ impl Procedure for SequenceGaps {
     ) -> Result<Vec<Finding>, LanternError> {
         let mut sequences: BTreeMap<(String, String), Vec<(u64, VId)>> = BTreeMap::new();
         let mut population = 0u64;
-        for e in snapshot.entries.iter().filter(|e| e.posts()) {
+        for e in snapshot.live_postings()? {
             work.entry();
             for ext in &e.entry.proposal.external_ids {
                 let Ok(id) = ext.id.open(&book.seal_key, MAX_EXTERNAL_ID_BYTES) else {

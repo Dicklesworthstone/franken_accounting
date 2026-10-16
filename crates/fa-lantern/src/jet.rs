@@ -4,9 +4,12 @@
 //! (and the legs or approval that made it a hit) and reports the population
 //! it was drawn from.
 
+use std::collections::BTreeMap;
+
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
-use fa_model::limits::MAX_DESCRIPTION_BYTES;
+use fa_model::EntryOrigin;
+use fa_model::limits::{MAX_DESCRIPTION_BYTES, MAX_EXTERNAL_ID_BYTES};
 use fa_time::{PeriodState, Weekday};
 use fgdb_types::VId;
 
@@ -93,7 +96,7 @@ impl Procedure for RoundAmounts {
             .ok_or(LanternError::Overflow("round factor"))?;
         let mut population = 0u64;
         let mut hits = Vec::new();
-        for e in snapshot.entries.iter().filter(|e| e.posts()) {
+        for e in snapshot.live_postings()? {
             work.entry();
             let mut round = Vec::new();
             for (i, leg) in e.entry.proposal.legs.iter().enumerate() {
@@ -172,7 +175,7 @@ impl Procedure for PeriodEndTiming {
             .map_err(|_| LanternError::Overflow("window_days"))?;
         let mut population = 0u64;
         let mut hits = Vec::new();
-        for e in snapshot.entries.iter().filter(|e| e.posts()) {
+        for e in snapshot.live_postings()? {
             work.entry();
             let Some(period) = snapshot.period_of(e) else {
                 continue;
@@ -225,22 +228,25 @@ impl Procedure for PostClosing {
         _book: &BookContext,
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
-        let mut population = 0u64;
-        let mut hits = Vec::new();
-        for e in snapshot.entries.iter().filter(|e| e.posts()) {
-            work.entry();
-            population += 1;
-            let Some(transitions) = snapshot.transitions.get(&e.period) else {
-                continue;
-            };
-            let closed_at = transitions.iter().find(|t| {
-                matches!(
+        let mut first_close = BTreeMap::new();
+        for (period, transitions) in &snapshot.transitions {
+            for t in transitions {
+                work.compare(1);
+                if matches!(
                     t.to,
                     PeriodState::SoftClosed | PeriodState::Closed | PeriodState::Locked
-                )
-            });
-            work.compare(transitions.len() as u64);
-            if let Some(t) = closed_at
+                ) {
+                    first_close.insert(period.as_str(), *t);
+                    break;
+                }
+            }
+        }
+        let mut population = 0u64;
+        let mut hits = Vec::new();
+        for e in snapshot.live_postings()? {
+            work.entry();
+            population += 1;
+            if let Some(t) = first_close.get(e.period.as_str())
                 && e.recorded_at > t.recorded_at
             {
                 hits.push((
@@ -294,7 +300,7 @@ impl Procedure for Weekend {
     ) -> Result<Vec<Finding>, LanternError> {
         let mut population = 0u64;
         let mut hits = Vec::new();
-        for e in snapshot.entries.iter().filter(|e| e.posts()) {
+        for e in snapshot.live_postings()? {
             work.entry();
             population += 1;
             let date = e
@@ -323,7 +329,8 @@ impl Procedure for Weekend {
 }
 
 /// `jet.self_approved`: entries one of whose recorded approvals was made by
-/// the preparing principal.
+/// the preparing principal, or migrated entries whose legacy
+/// `source_approved_by` matches `source_entered_by`.
 pub struct SelfApproved {
     params: Params,
 }
@@ -342,42 +349,59 @@ impl Procedure for SelfApproved {
     fn run(
         &self,
         snapshot: &Snapshot,
-        _book: &BookContext,
+        book: &BookContext,
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut population = 0u64;
-        let mut hits: Vec<(VId, Vec<VId>, usize)> = Vec::new();
-        for e in snapshot
-            .entries
-            .iter()
-            .filter(|e| !e.entry.approvals.is_empty())
-        {
+        let mut hits: Vec<(VId, Vec<VId>, usize, usize)> = Vec::new();
+        for e in snapshot.live_postings()? {
+            let legacy_pair = match &e.entry.proposal.origin {
+                EntryOrigin::Migration {
+                    source_entered_by: Some(entered),
+                    source_approved_by: Some(approved),
+                    ..
+                } => entered
+                    .open(&book.seal_key, MAX_EXTERNAL_ID_BYTES)
+                    .ok()
+                    .zip(approved.open(&book.seal_key, MAX_EXTERNAL_ID_BYTES).ok())
+                    .filter(|(ent, app)| !ent.trim().is_empty() && !app.trim().is_empty()),
+                _ => None,
+            };
+            if e.approvals.is_empty() && legacy_pair.is_none() {
+                continue;
+            }
             work.entry();
             population += 1;
-            work.compare(e.approvals.len() as u64);
+            work.compare(e.approvals.len() as u64 + u64::from(legacy_pair.is_some()));
             let own: Vec<VId> = e
                 .approvals
                 .iter()
                 .filter(|(_, approver)| *approver == e.entry.proposal.principal_ref)
                 .map(|(vid, _)| *vid)
                 .collect();
-            if !own.is_empty() {
-                hits.push((e.vid, own, e.approvals.len()));
+            let legacy_self = usize::from(
+                legacy_pair
+                    .as_ref()
+                    .is_some_and(|(ent, app)| ent.trim() == app.trim()),
+            );
+            let total_own = own.len() + legacy_self;
+            if total_own > 0 {
+                let total = e.approvals.len() + usize::from(legacy_pair.is_some());
+                hits.push((e.vid, own, total_own, total));
             }
         }
         Ok(hits
             .into_iter()
-            .map(|(vid, own, total)| {
+            .map(|(vid, own, total_own, total)| {
                 let mut cites = vec![Cite::Entry(vid)];
                 cites.extend(own.iter().map(|a| Cite::Approval(*a)));
                 finding(
                     Self::ID,
                     Severity::High,
-                    Statistic::count("own_approvals", own.len() as u64, population),
+                    Statistic::count("own_approvals", total_own as u64, population),
                     cites,
                     format!(
-                        "{} of {total} recorded approval(s) were made by the preparing principal",
-                        own.len()
+                        "{total_own} of {total} recorded approval(s) were made by the preparing principal"
                     ),
                 )
             })
@@ -412,7 +436,7 @@ impl Procedure for ThinDescriptions {
         let mut population = 0u64;
         let mut hits = Vec::new();
         let mut unreadable: Vec<VId> = Vec::new();
-        for e in snapshot.entries.iter().filter(|e| e.posts()) {
+        for e in snapshot.live_postings()? {
             work.entry();
             let Ok(text) = e
                 .entry
