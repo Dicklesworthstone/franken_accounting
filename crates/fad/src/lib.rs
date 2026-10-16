@@ -35,7 +35,7 @@ use asupersync::cx::{ChildRegion, ChildRegionError, ChildRegionSpec};
 use asupersync::io::{AsyncRead, AsyncWrite, ReadBuf};
 use asupersync::types::Time;
 use fa::book::Book;
-use fa_cli::cli::{self, Books, Files, Stdin};
+use fa_cli::cli::{self, Stdin};
 use fa_cli::json::{Json, obj, s};
 use fa_cli::verbs::Daemon;
 use fa_cli::wire::{
@@ -215,7 +215,7 @@ pub fn stop_refusal(argv: &[String], dir: &Path) -> Response {
     }
 }
 
-/// Structured refusal when a socket peer's kernel UID does not match the daemon's UID (fa-een).
+/// Structured refusal when a socket peer's kernel UID does not match the daemon's UID (fa-een, fa-udti).
 #[must_use]
 pub fn peer_uid_refusal(request: &Request, peer_uid: u32, daemon_uid: u32, dir: &Path) -> Response {
     let refusal = fa_journal::Refusal::new(
@@ -239,6 +239,32 @@ pub fn peer_uid_refusal(request: &Request, peer_uid: u32, daemon_uid: u32, dir: 
     let (exit, out) = cli::refuse(&argv, refusal, true);
     Response {
         op: request.op,
+        exit,
+        stdout: out.stdout,
+        stderr: out.stderr,
+    }
+}
+
+/// Pre-parse structured refusal when an accepted socket peer's kernel UID does
+/// not match the daemon's UID (`fa-udti`). Emitted before reading or parsing
+/// any request frame bytes from the foreign peer.
+#[must_use]
+pub fn peer_uid_refusal_unparsed(peer_uid: u32, daemon_uid: u32, dir: &Path) -> Response {
+    let refusal = fa_journal::Refusal::new(
+        fa_journal::refusal::code::CAPABILITY,
+        fa_journal::refusal::exit::SAFETY,
+        format!(
+            "fad refused connection for {} from peer uid {peer_uid} (daemon runs as uid {daemon_uid})",
+            dir.display()
+        ),
+        "plan §14.1, §15.3 (daemon socket peer credential check; fa-udti)",
+        format!(
+            "connect as uid {daemon_uid} (foreign-uid socket peers are refused before frame parsing; fa-udti)",
+        ),
+    );
+    let (exit, out) = cli::refuse(&["--json".to_string()], refusal, true);
+    Response {
+        op: Op::Run,
         exit,
         stdout: out.stdout,
         stderr: out.stderr,
@@ -559,6 +585,9 @@ pub struct Server<'a> {
     pub book: &'a mut Book,
     pub dir: PathBuf,
     pub socket: PathBuf,
+    /// Optional launch-time host file containment root (`--files-root <dir>`; `fa-udti`).
+    /// When `None`, socket requests may not read or write any host filesystem paths.
+    pub files_root: Option<PathBuf>,
     pub requests: u64,
     /// Present only after the local launcher explicitly authorizes a
     /// book-key System bootstrap. Wire requests never construct this.
@@ -617,15 +646,15 @@ impl Server<'_> {
         let json = request.argv.iter().any(|a| a == "--json");
         match request.op {
             Op::Run => {
-                let files = Files {
-                    cwd: request.cwd.map(PathBuf::from),
-                    stdin: request.stdin.map_or(Stdin::Missing, Stdin::Forwarded),
-                };
-                let books = Books::Held {
-                    book: &mut *self.book,
-                    dir: self.dir.clone(),
-                };
-                let (exit, out) = cli::run(&request.argv, books, files, true);
+                let (exit, out) = cli::run_for_daemon(
+                    &request.argv,
+                    &mut *self.book,
+                    self.dir.clone(),
+                    self.files_root.clone(),
+                    request.cwd.map(PathBuf::from),
+                    request.stdin.map_or(Stdin::Missing, Stdin::Forwarded),
+                    true,
+                );
                 (
                     Response {
                         op: Op::Run,
@@ -1203,7 +1232,7 @@ async fn serve_with<L: Listener, H: Service>(
                 let phase = Phase::new_reading(cx, limits.idle).map_err(|e| {
                     std::io::Error::other(format!("{}", WaitError::Clock(e).frame()))
                 })?;
-                connections.push(ConnSlot {
+                let mut slot = ConnSlot {
                     id: next_conn_id,
                     region,
                     stream,
@@ -1211,7 +1240,26 @@ async fn serve_with<L: Listener, H: Service>(
                     started_ns,
                     requests: 0,
                     phase,
-                });
+                };
+                if let (Some(peer), Some(daemon_uid)) = (peer, service.daemon_uid())
+                    && peer.uid != daemon_uid
+                {
+                    let response = peer_uid_refusal_unparsed(peer.uid, daemon_uid, dir);
+                    let reply = response.to_json(limits.protocol).render();
+                    let after = AfterWrite::Close(Ended::UnauthorizedPeer {
+                        peer_uid: peer.uid,
+                        daemon_uid,
+                    });
+                    if let Err(ended) =
+                        slot.queue_write(reply.as_bytes(), limits.max_frame_bytes, after)
+                    {
+                        finish_connection(cx, slot, ended, service).await;
+                    } else {
+                        connections.push(slot);
+                    }
+                } else {
+                    connections.push(slot);
+                }
             }
             Ready::Conn(idx, step) => {
                 rr_cursor = idx.wrapping_add(1);

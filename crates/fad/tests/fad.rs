@@ -168,9 +168,21 @@ fn start(book: &Path) -> Daemon {
     start_with_timed_work(book, false)
 }
 
+fn start_without_files_root(book: &Path) -> Daemon {
+    start_daemon(book, false, None)
+}
+
 fn start_with_timed_work(book: &Path, bootstrap: bool) -> Daemon {
+    let files_root = book.parent().expect("book parent dir");
+    start_daemon(book, bootstrap, Some(files_root))
+}
+
+fn start_daemon(book: &Path, bootstrap: bool, files_root: Option<&Path>) -> Daemon {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fad"));
     command.args(["serve", "--book", &book.display().to_string(), "--json"]);
+    if let Some(root) = files_root {
+        command.args(["--files-root", &root.display().to_string()]);
+    }
     if bootstrap {
         command.arg("--bootstrap-system");
     }
@@ -907,4 +919,213 @@ fn concurrent_slow_client_does_not_starve_other_clients_and_unauthorized_stop_is
     assert_eq!(field(&stopped, "event"), Some("fad_stopped"), "{stopped}");
     let (exit, rest) = daemon.finish();
     assert_eq!(exit, 0, "{rest}");
+}
+
+#[test]
+fn fad_confinement_refuses_host_file_paths_without_files_root_and_rejects_escapes_symlinks_and_foreign_cwd()
+ {
+    let dir = tmp("confinement");
+    let (book, _oid) = book(&dir);
+    let b = book.display().to_string();
+    let reg = registry().expect("verbs.toml");
+
+    let outside_dir = tmp("confinement-outside");
+    let secret = write(&outside_dir, "secret.txt", "TOP SECRET HOST FILE");
+    let escape_out = outside_dir.join("escaped.out");
+
+    // 1. Without `--files-root`, `fad serve` refuses host file reads and writes over the socket
+    //    with a fix hint naming `-` (stdin) and `--files-root` (`fa-udti`).
+    let inside_doc = write(&dir, "inside.txt", "INSIDE DOC");
+    let daemon_no_root = start_without_files_root(&book);
+    let (code, err_out, _) = fa(&[
+        "document",
+        "add",
+        &inside_doc,
+        "--kind",
+        "Invoice",
+        "--via",
+        "fad",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{err_out}");
+    assert!(
+        err_out.contains("--files-root"),
+        "must name --files-root when omitted: {err_out}"
+    );
+    assert!(
+        err_out.contains("stdin with -"),
+        "must name stdin (-): {err_out}"
+    );
+
+    // Non-file commands (and stdin `-`) still succeed without `--files-root`.
+    let (code, tb_out, _) = fa(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--via",
+        "fad",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{tb_out}");
+
+    let (code, stopped, _) = fad(&["stop", "--book", &b, "--json"]);
+    assert_eq!(code, 0, "{stopped}");
+    let (exit, _) = daemon_no_root.finish();
+    assert_eq!(exit, 0);
+
+    // 2. With `--files-root <dir>`, reading `/etc/passwd` (or `secret`), writing `../escape`,
+    //    reading/writing through a symlink pointing outside `--files-root`, or sending a
+    //    hostile `request.cwd` (`Some("/etc")`) are all refused before touching the target.
+    let symlink_in = dir.join("symlink_to_secret.txt");
+    std::os::unix::fs::symlink(&secret, &symlink_in).expect("create input symlink");
+    let symlink_out_dir = dir.join("symlink_out_dir");
+    std::os::unix::fs::symlink(&outside_dir, &symlink_out_dir).expect("create output dir symlink");
+
+    let daemon = start(&book);
+    let head_before = ok(&["book", "info", "--via", "fad", "--book", &b, "--json"]);
+
+    // Attempt to read `/etc/passwd` and `secret` outside `--files-root`.
+    for outside_target in ["/etc/passwd", secret.as_str()] {
+        let (code, out, _) = fa(&[
+            "document",
+            "add",
+            outside_target,
+            "--kind",
+            "Invoice",
+            "--via",
+            "fad",
+            "--book",
+            &b,
+            "--json",
+        ]);
+        assert_eq!(code, 2, "must refuse {outside_target}: {out}");
+        assert!(out.contains("--files-root"), "{out}");
+    }
+
+    // Attempt to write `--certificate-out ../escaped.cert`.
+    let (code, out, _) = fa(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        "../escaped.cert",
+        "--via",
+        "fad",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 2, "must refuse ../ traversal: {out}");
+    assert!(out.contains(".."), "{out}");
+    assert!(!dir.join("../escaped.cert").exists());
+
+    // Attempt to read through a symlink inside `--files-root` pointing outside.
+    let (code, out, _) = fa(&[
+        "document",
+        "add",
+        &symlink_in.display().to_string(),
+        "--kind",
+        "Invoice",
+        "--via",
+        "fad",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 2, "must refuse symlink input: {out}");
+    assert!(out.contains("symlink"), "{out}");
+
+    // Attempt to write through a symlinked directory inside `--files-root` pointing outside.
+    let symlink_escape_file = symlink_out_dir.join("pwned.cert");
+    let (code, out, _) = fa(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        &symlink_escape_file.display().to_string(),
+        "--via",
+        "fad",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 2, "must refuse symlink dir output: {out}");
+    assert!(out.contains("symlink"), "{out}");
+    assert!(!escape_out.exists() && !outside_dir.join("pwned.cert").exists());
+
+    // Attempt to pass a hostile `request.cwd` (`Some("/etc")` or `Some(outside_dir)`) over the socket
+    // with a relative filename (`secret.txt`).
+    use std::io::Write;
+    let sock_path = book.join(&reg.daemon.socket);
+    let mut raw_client =
+        std::os::unix::net::UnixStream::connect(&sock_path).expect("connect raw socket");
+    let hostile_req = fa_cli::wire::Request {
+        op: fa_cli::wire::Op::Run,
+        argv: vec![
+            "document".into(),
+            "add".into(),
+            "secret.txt".into(),
+            "--kind".into(),
+            "Invoice".into(),
+            format!("--book={b}"),
+            "--json".into(),
+        ],
+        cwd: Some(outside_dir.display().to_string()),
+        stdin: None,
+    };
+    let wire_bytes = fa_cli::wire::encode(
+        hostile_req.to_json(reg.daemon.protocol).render().as_bytes(),
+        reg.daemon.max_frame_bytes,
+    )
+    .expect("encode hostile request");
+    raw_client
+        .write_all(&wire_bytes)
+        .expect("write hostile request");
+    raw_client.flush().expect("flush hostile request");
+    let mut prefix = [0u8; 4];
+    raw_client
+        .read_exact(&mut prefix)
+        .expect("read reply prefix");
+    let len = u32::from_be_bytes(prefix) as usize;
+    let mut payload = vec![0u8; len];
+    raw_client
+        .read_exact(&mut payload)
+        .expect("read reply payload");
+    let reply_json = fa_cli::json::parse(&String::from_utf8_lossy(&payload)).expect("parse reply");
+    let reply = fa_cli::wire::Response::from_json(&reply_json, reg.daemon.protocol).unwrap();
+    assert_eq!(
+        reply.exit, 2,
+        "hostile request.cwd must be refused: {}",
+        reply.stdout
+    );
+    assert!(reply.stdout.contains("--files-root"), "{}", reply.stdout);
+    drop(raw_client);
+
+    // Book frontier is unchanged after all refused escape attempts.
+    let head_after = ok(&["book", "info", "--via", "fad", "--book", &b, "--json"]);
+    assert_eq!(head_before, head_after, "book state must remain unchanged");
+
+    // Valid file inside `--files-root` succeeds.
+    let valid_added = ok(&[
+        "document",
+        "add",
+        &inside_doc,
+        "--kind",
+        "Invoice",
+        "--via",
+        "fad",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(field(&valid_added, "event"), Some("document"));
+
+    let (code, stopped, _) = fad(&["stop", "--book", &b, "--json"]);
+    assert_eq!(code, 0, "{stopped}");
+    let (exit, _) = daemon.finish();
+    assert_eq!(exit, 0);
 }

@@ -666,6 +666,18 @@ impl BookSource<'_> {
     /// resolves them, without opening anything.
     pub(crate) fn locate(&self, args: &Args) -> Result<(PathBuf, PathBuf), Fail> {
         let dir = book_dir(args, self.cwd.as_deref())?;
+        if let Books::Held { dir: held, .. } = &self.books {
+            if !same_dir(&dir, held) {
+                return Err(usage(
+                    format!("this fad serves {}, not {}", held.display(), dir.display()),
+                    format!(
+                        "--book {} (or run the command directly against its own book)",
+                        held.display()
+                    ),
+                ));
+            }
+            return Ok((held.clone(), held.join("book.keys")));
+        }
         let keys = keys_path(args, &dir, self.cwd.as_deref());
         Ok((dir, keys))
     }
@@ -763,12 +775,19 @@ impl Files {
     }
 }
 
+#[derive(Clone, Debug)]
+struct DaemonFiles {
+    book_dir: PathBuf,
+    files_root: Option<PathBuf>,
+}
+
 /// Everything a command runs against.
 pub(crate) struct Ctx<'a> {
     pub(crate) out: Out,
     pub(crate) books: BookSource<'a>,
     pub(crate) files: Files,
     authority: Option<LaunchAuthority>,
+    daemon_files: Option<DaemonFiles>,
 }
 
 impl Ctx<'_> {
@@ -803,7 +822,39 @@ impl Ctx<'_> {
 /// frame instead of writing it to stdio. Returns the exit code and, when
 /// captured, the output.
 pub fn run(argv: &[String], books: Books<'_>, files: Files, capture: bool) -> (u8, Captured) {
-    run_scoped(argv, books, files, None, capture)
+    run_scoped(argv, books, files, None, None, capture)
+}
+
+/// Run one `fa` command line on a `fad` daemon holding `book` at `dir` (`fa-udti`).
+///
+/// The client's `client_cwd` is never used to resolve host file reads or writes
+/// on the daemon; host file paths require an explicit `--files-root` (`files_root`)
+/// and are confined to it.
+pub fn run_for_daemon(
+    argv: &[String],
+    book: &mut Book,
+    dir: PathBuf,
+    files_root: Option<PathBuf>,
+    client_cwd: Option<PathBuf>,
+    stdin: Stdin,
+    capture: bool,
+) -> (u8, Captured) {
+    let daemon_files = DaemonFiles {
+        book_dir: dir.clone(),
+        files_root: files_root.clone(),
+    };
+    let files = Files {
+        cwd: client_cwd,
+        stdin,
+    };
+    run_scoped(
+        argv,
+        Books::Held { book, dir },
+        files,
+        None,
+        Some(daemon_files),
+        capture,
+    )
 }
 
 /// Run under the immutable authority supplied by the host. Hosts opening
@@ -816,7 +867,7 @@ pub fn run_with_authority(
     authority: &LaunchAuthority,
     capture: bool,
 ) -> (u8, Captured) {
-    run_scoped(argv, books, files, Some(authority), capture)
+    run_scoped(argv, books, files, Some(authority), None, capture)
 }
 
 fn run_scoped(
@@ -824,6 +875,7 @@ fn run_scoped(
     books: Books<'_>,
     mut files: Files,
     authority: Option<&LaunchAuthority>,
+    daemon_files: Option<DaemonFiles>,
     capture: bool,
 ) -> (u8, Captured) {
     let json = argv.iter().any(|a| a == "--json");
@@ -883,6 +935,28 @@ fn run_scoped(
         said: Rc::clone(&out.said),
         cwd: files.cwd.clone(),
     };
+    if let Some(daemon) = &daemon_files {
+        // The daemon never trusts a client working directory outside --files-root;
+        // relative paths resolve only under --files-root (or a validated subdirectory
+        // within it) (fa-udti).
+        files.cwd = match (&daemon.files_root, &files.cwd) {
+            (Some(root), Some(client_cwd)) => client_cwd
+                .to_str()
+                .and_then(|raw| {
+                    crate::authority::resolve_in_daemon_files_root(
+                        root,
+                        &daemon.book_dir,
+                        raw,
+                        false,
+                    )
+                    .ok()
+                })
+                .filter(|path| path.is_dir())
+                .or_else(|| Some(root.clone())),
+            (Some(root), None) => Some(root.clone()),
+            (None, _) => None,
+        };
+    }
     if let Some(root) = authority.and_then(LaunchAuthority::files) {
         files.cwd = Some(root.to_path_buf());
     }
@@ -891,6 +965,7 @@ fn run_scoped(
         books,
         files,
         authority: authority.cloned(),
+        daemon_files,
     };
     let result = dispatch(&mut ctx, reg, &args);
     finish_into(ctx.out, result)
@@ -1212,6 +1287,7 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
     gate_from_argv(out, reg, verb, args, ctx.authority.as_ref())?;
     admit_bound_command(ctx, verb, args)?;
     admit_bound_files(ctx, verb, args)?;
+    admit_daemon_files(ctx, verb, args)?;
     let handler = HANDLERS
         .iter()
         .find(|(name, _)| *name == verb.name)
@@ -1447,7 +1523,13 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
                 )
             })
     };
-    for flag in ["--plan-out", "--certificate-out", "--out", "--review-out"] {
+    for flag in [
+        "--plan-out",
+        "--certificate-out",
+        "--out",
+        "--review-out",
+        "--receipt-out",
+    ] {
         if let Some(value) = args.flag(flag) {
             check_path(
                 flag,
@@ -1515,6 +1597,139 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
                 input,
                 false,
                 "forward the complete input on stdin with -; report replay also accepts a retained C:<oid>. MCP uses inline chart, text, or certificate properties (fa-yha)",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Commands routed through `fad` may only read or write host files inside the
+/// daemon's configured `--files-root <dir>` containment directory (excluding
+/// the book directory itself), or use forwarded stdin (`-`) / inline bytes (`fa-udti`).
+fn admit_daemon_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail> {
+    let Some(daemon_files) = &ctx.daemon_files else {
+        return Ok(());
+    };
+    if args.flag("--keys").is_some() {
+        return Err(usage(
+            "--keys is set when fad starts; a command routed through fad cannot replace the daemon's key material",
+            "restart fad with --keys <file>, or run with --via direct",
+        ));
+    }
+    let check_path = |argument: &str, value: &str, allow_missing_leaf: bool, fix: &str| {
+        let Some(root) = &daemon_files.files_root else {
+            return Err(usage(
+                format!(
+                    "{argument} cannot name a host filesystem path (`{value}`) when fad serves without --files-root"
+                ),
+                format!(
+                    "{fix}; or start the daemon with `fad serve --book <dir> --files-root <dir>` (fa-udti)"
+                ),
+            ));
+        };
+        let path_obj = Path::new(value);
+        let has_parent_dir = path_obj
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir));
+        let candidate = if path_obj.is_relative() && !has_parent_dir {
+            ctx.files.cwd.as_ref().map_or_else(
+                || value.to_string(),
+                |base| base.join(path_obj).to_string_lossy().into_owned(),
+            )
+        } else {
+            value.to_string()
+        };
+        crate::authority::resolve_in_daemon_files_root(
+            root,
+            &daemon_files.book_dir,
+            &candidate,
+            allow_missing_leaf,
+        )
+        .map(|_| ())
+        .map_err(|reason| {
+            usage(
+                format!("{argument} path `{value}` is outside the daemon --files-root: {reason}"),
+                "paths over fad must stay within the daemon --files-root without `..`, symlinks, or book-directory access (fa-udti)",
+            )
+        })
+    };
+    for flag in [
+        "--plan-out",
+        "--certificate-out",
+        "--out",
+        "--review-out",
+        "--receipt-out",
+    ] {
+        if let Some(value) = args.flag(flag)
+            && !value.is_empty()
+            && value != "-"
+        {
+            check_path(
+                flag,
+                value,
+                true,
+                "omit the output path to receive inline bytes on stdout, or run with --via direct",
+            )?;
+        }
+    }
+    for flag in ["--intent", "--plan", "--policy", "--file"] {
+        for value in args.flag_all(flag) {
+            if value != "-" {
+                check_path(
+                    flag,
+                    value,
+                    false,
+                    "forward the complete content on stdin with -",
+                )?;
+            }
+        }
+    }
+    for value in args.flag_all("--review") {
+        let is_hex = !value.is_empty()
+            && value.len() % 2 == 0
+            && value.bytes().all(|b| b.is_ascii_hexdigit());
+        if value != "-" && !is_hex {
+            check_path(
+                "--review",
+                value,
+                false,
+                "pass the review event's complete bytes hex string in --review, or forward it on stdin with -",
+            )?;
+        }
+    }
+    let sub = args.positional.get(1).map(String::as_str);
+    if verb.name == "document"
+        && sub == Some("import")
+        && args.positional.get(2).map(String::as_str) == Some("run")
+    {
+        for p in args.positional.iter().skip(3) {
+            if p != "-" {
+                check_path(
+                    "file",
+                    p,
+                    false,
+                    "forward the complete input on stdin with -",
+                )?;
+            }
+        }
+    }
+    let input = match (verb.name.as_str(), sub) {
+        ("chart", Some("import")) | ("document", Some("add")) => args.positional.get(2),
+        ("replay", _) => args.positional.get(1),
+        ("certificate", Some("status")) => args.positional.get(2),
+        _ => None,
+    };
+    if let Some(input) = input {
+        let digits = input.strip_prefix("C:").unwrap_or(input);
+        let retained = matches!(verb.name.as_str(), "replay" | "certificate")
+            && digits.len() == 64
+            && digits.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if input != "-" && !retained {
+            check_path(
+                "file",
+                input,
+                false,
+                "forward the complete input on stdin with -; report replay also accepts a retained C:<oid>",
             )?;
         }
     }

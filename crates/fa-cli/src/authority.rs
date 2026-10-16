@@ -313,6 +313,165 @@ fn launch_path(path: PathBuf, field: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Validate and canonicalize a daemon or launch `--files-root` / `--files`
+/// containment directory (`fa-udti`, `fa-yha`). The path must exist, must not
+/// be a symlink, and must be a directory.
+pub fn validate_files_root(path: PathBuf) -> Result<PathBuf, String> {
+    launch_files_root(path)
+}
+
+/// Resolve a caller-supplied path against the daemon's `--files-root` (`root`),
+/// rejecting `..` traversal, symlinks, paths inside `book_dir`, and absolute
+/// paths outside `root` (`fa-udti`).
+pub fn resolve_in_daemon_files_root(
+    root: &Path,
+    book_dir: &Path,
+    raw: &str,
+    allow_missing_leaf: bool,
+) -> Result<PathBuf, String> {
+    if raw.is_empty() || raw == "-" || raw.starts_with('-') {
+        return Err(format!(
+            "path `{raw}` must name a file inside --files-root `{}`",
+            root.display()
+        ));
+    }
+    let candidate = Path::new(raw);
+    for component in candidate.components() {
+        if matches!(component, Component::ParentDir) {
+            return Err(format!(
+                "parent traversal `..` in `{raw}` is forbidden under --files-root `{}`",
+                root.display()
+            ));
+        }
+    }
+    let rel = if candidate.is_relative() {
+        candidate
+    } else if let Ok(stripped) = candidate.strip_prefix(root) {
+        stripped
+    } else {
+        return Err(format!(
+            "absolute path `{raw}` is outside --files-root `{}`",
+            root.display()
+        ));
+    };
+    let mut normal_segments = Vec::new();
+    for component in rel.components() {
+        match component {
+            Component::Normal(seg) => {
+                if seg.is_empty() {
+                    return Err(format!("invalid empty path segment in `{raw}`"));
+                }
+                normal_segments.push(seg);
+            }
+            Component::ParentDir => {
+                return Err(format!(
+                    "parent traversal `..` in `{raw}` is forbidden under --files-root `{}`",
+                    root.display()
+                ));
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "absolute path `{raw}` is outside --files-root `{}`",
+                    root.display()
+                ));
+            }
+            Component::CurDir => {}
+        }
+    }
+    if normal_segments.is_empty() {
+        return Err(format!(
+            "`{raw}` does not name a file inside --files-root `{}`",
+            root.display()
+        ));
+    }
+    let canon_book = std::fs::canonicalize(book_dir).unwrap_or_else(|_| book_dir.to_path_buf());
+    let mut cur = root.to_path_buf();
+    let total = normal_segments.len();
+    for (idx, seg) in normal_segments.into_iter().enumerate() {
+        let is_last = idx + 1 == total;
+        cur.push(seg);
+        if cur == canon_book
+            || cur.starts_with(&canon_book)
+            || cur == book_dir
+            || cur.starts_with(book_dir)
+        {
+            return Err(format!(
+                "path `{raw}` resolves inside book directory `{}` and cannot be accessed as a host file",
+                book_dir.display()
+            ));
+        }
+        match std::fs::symlink_metadata(&cur) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() {
+                    return Err(format!(
+                        "symlink component in `{raw}` is forbidden under --files-root `{}`",
+                        root.display()
+                    ));
+                }
+                if !is_last && !meta.is_dir() {
+                    return Err(format!(
+                        "intermediate component in `{raw}` is not a directory under --files-root `{}`",
+                        root.display()
+                    ));
+                }
+                if is_last && meta.is_dir() {
+                    return Err(format!(
+                        "`{raw}` names a directory, not a file, under --files-root `{}`",
+                        root.display()
+                    ));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if is_last && allow_missing_leaf {
+                    break;
+                }
+                return Err(format!(
+                    "`{raw}` does not exist under --files-root `{}`: {e}",
+                    root.display()
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "cannot inspect `{raw}` under --files-root `{}`: {e}",
+                    root.display()
+                ));
+            }
+        }
+    }
+    let resolved = if allow_missing_leaf && !cur.exists() {
+        let parent = cur
+            .parent()
+            .ok_or_else(|| format!("`{raw}` has no parent under --files-root"))?;
+        let canon_parent = std::fs::canonicalize(parent)
+            .map_err(|e| format!("cannot canonicalize parent of `{raw}`: {e}"))?;
+        if !canon_parent.starts_with(root)
+            || canon_parent == canon_book
+            || canon_parent.starts_with(&canon_book)
+        {
+            return Err(format!("`{raw}` escapes --files-root `{}`", root.display()));
+        }
+        canon_parent.join(
+            cur.file_name()
+                .ok_or_else(|| format!("`{raw}` has no file name"))?,
+        )
+    } else {
+        let canon =
+            std::fs::canonicalize(&cur).map_err(|e| format!("cannot canonicalize `{raw}`: {e}"))?;
+        if !canon.starts_with(root)
+            || canon == root
+            || canon == canon_book
+            || canon.starts_with(&canon_book)
+        {
+            return Err(format!("`{raw}` escapes --files-root `{}`", root.display()));
+        }
+        canon
+    };
+    if resolved.to_str().is_none() {
+        return Err(format!("`{raw}` is not valid UTF-8 under --files-root"));
+    }
+    Ok(resolved)
+}
+
 fn launch_files_root(path: PathBuf) -> Result<PathBuf, String> {
     let path = launch_path(path, "files")?;
     let meta = std::fs::symlink_metadata(&path)

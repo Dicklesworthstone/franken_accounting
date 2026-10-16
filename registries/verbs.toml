@@ -65,10 +65,10 @@ tick_ns = 1000000000
 sweep_batch = 64
 clock_drift_ns = 250000000
 verbs = ["serve", "status", "stop"]
-flags = ["--book", "--keys", "--register-period"]
+flags = ["--book", "--keys", "--files-root", "--register-period"]
 switches = ["--json", "--help", "--bootstrap-system"]
 events = ["fad_request", "fad_response", "fad_serving", "fad_status", "fad_stopped"]
-usage = ["fad serve --book <dir> [--keys <file>] [--bootstrap-system] [--register-period <code> ...] [--json]   (holds the writer lease and serves until `fad stop`)", "--bootstrap-system opts the local book-key holder into daemon TimeEvidence and one bounded expiry batch plus one reversal batch per cycle. This is trusted local bootstrap authority, not journaled capability issuance. First/restart and uncorroborated clock observations never sweep. Batch sizes bound effects; candidate discovery still scans the book.", "--register-period requires --bootstrap-system and selects 1..=64 distinct exact period codes at local launch. Maintenance attempts one period per cycle in round-robin order through the native maintainer. It does not silently repair drift, change report semantics or certify a checkpoint. Unknown periods remain visible as per-period errors.", "fad status --book <dir> [--json]", "fad stop --book <dir> [--json]"]
+usage = ["fad serve --book <dir> [--keys <file>] [--files-root <dir>] [--bootstrap-system] [--register-period <code> ...] [--json]   (holds the writer lease and serves until `fad stop`)", "--files-root <dir> confines host file-reading and file-writing requests served over the daemon socket to an existing non-symlink directory; without it, file-reading and file-writing requests over fad are refused.", "--bootstrap-system opts the local book-key holder into daemon TimeEvidence and one bounded expiry batch plus one reversal batch per cycle. This is trusted local bootstrap authority, not journaled capability issuance. First/restart and uncorroborated clock observations never sweep. Batch sizes bound effects; candidate discovery still scans the book.", "--register-period requires --bootstrap-system and selects 1..=64 distinct exact period codes at local launch. Maintenance attempts one period per cycle in round-robin order through the native maintainer. It does not silently repair drift, change report semantics or certify a checkpoint. Unknown periods remain visible as per-period errors.", "fad status --book <dir> [--json]", "fad stop --book <dir> [--json]"]
 
 # ---------------------------------------------------------------------------
 # Verbs

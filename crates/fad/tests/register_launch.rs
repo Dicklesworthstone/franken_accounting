@@ -74,5 +74,36 @@ fn registered_help_explains_explicit_period_selection() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("--register-period"));
     assert!(text.contains("--bootstrap-system"));
+    assert!(text.contains("--files-root"));
     assert!(text.contains("one period"));
+}
+
+#[test]
+fn files_root_is_serve_only_and_rejects_missing_or_book_overlapping_dirs_before_book_open() {
+    let book = "/this-book-must-not-be-opened/files-root-launch";
+    for args in [
+        vec!["status", "--files-root", "/tmp", "--book", book, "--json"],
+        vec!["stop", "--files-root", "/tmp", "--book", book, "--json"],
+        vec![
+            "serve",
+            "--files-root",
+            "/tmp",
+            "--files-root",
+            "/tmp",
+            "--book",
+            book,
+            "--json",
+        ],
+        vec![
+            "serve",
+            "--files-root",
+            "/nonexistent-files-root-dir-fa-udti",
+            "--book",
+            book,
+            "--json",
+        ],
+    ] {
+        let result = run(&args);
+        assert_eq!(result.status.code(), Some(2), "{args:?}");
+    }
 }

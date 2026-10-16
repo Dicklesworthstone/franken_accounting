@@ -95,6 +95,24 @@ fn run(argv: &[String]) -> u8 {
         )
         .0;
     }
+    if parsed.flag("--files-root").is_some() && verb != Some("serve") {
+        return cli::usage_error(
+            argv,
+            "--files-root is a local daemon launch containment choice for serve",
+            "fad serve --book <dir> --files-root <dir>",
+            false,
+        )
+        .0;
+    }
+    if parsed.flag_all("--files-root").len() > 1 {
+        return cli::usage_error(
+            argv,
+            "--files-root may be supplied at most once",
+            "fad serve --book <dir> --files-root <dir>",
+            false,
+        )
+        .0;
+    }
     let register_periods: Vec<String> = parsed
         .flag_all("--register-period")
         .into_iter()
@@ -143,6 +161,36 @@ fn run(argv: &[String]) -> u8 {
 
 fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
     let json = parsed.switch("--json");
+    let files_root = match parsed.flag("--files-root") {
+        Some(raw) => match fa_cli::authority::validate_files_root(PathBuf::from(raw)) {
+            Ok(root) => {
+                let canon_book = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+                if root.starts_with(&canon_book) {
+                    return cli::usage_error(
+                        argv,
+                        format!(
+                            "invalid --files-root: --files-root `{}` may not be the book directory or inside it",
+                            root.display()
+                        ),
+                        "supply an existing non-symlink directory distinct from --book",
+                        false,
+                    )
+                    .0;
+                }
+                Some(root)
+            }
+            Err(reason) => {
+                return cli::usage_error(
+                    argv,
+                    format!("invalid --files-root: {reason}"),
+                    "supply an existing non-symlink directory distinct from --book",
+                    false,
+                )
+                .0;
+            }
+        },
+        None => None,
+    };
     let socket = dir.join(&d.socket);
     let keys_file = parsed
         .flag("--keys")
@@ -286,6 +334,7 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             book: &mut book,
             dir: dir.to_path_buf(),
             socket: socket.clone(),
+            files_root,
             requests: 0,
             timed,
             daemon_uid: Some(daemon_uid),

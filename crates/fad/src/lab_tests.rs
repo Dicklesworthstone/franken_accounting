@@ -365,13 +365,14 @@ fn slow_client_sending_a_frame_every_29s_does_not_starve_other_clients_and_unaut
                 "Client B must complete within its 5 s deadline, not wait 29 s for Client A (elapsed={b_elapsed} ns)"
             );
 
-            // At t = 2 s, a foreign-UID peer (uid 2000 != 1000) attempts to stop the daemon.
+            // At t = 2 s, a foreign-UID peer (uid 2000 != 1000) connects and sends unparseable
+            // bytes; it must be refused with FA-REF-011 before any frame reading or parsing (fa-udti).
             sleep_ns(&cx, SEC).await;
             let (server_foreign, mut client_foreign) =
                 VirtualTcpStream::pair(addr(9000), addr(FOREIGN_UID as u16));
             listener_for_client.inject_connection(server_foreign, addr(FOREIGN_UID as u16));
             client_foreign
-                .write_all(&frame(&request(Op::Stop, 99)))
+                .write_all(b"\x00\x00\x00\x07NOTJSON")
                 .await
                 .unwrap();
             let reply_foreign = read_frame(&cx, &mut client_foreign, MAX)
