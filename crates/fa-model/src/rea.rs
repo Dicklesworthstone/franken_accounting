@@ -6,15 +6,19 @@
 //! valid-time `[valid_from, valid_to)` `OWNS`, `CONTROLS`, and `RELATED_TO` edges under
 //! `registries/relationship_bases.toml`.
 
-use fa_money::{ArithmeticBudget, Rate, RateError, UnitId};
+use fa_money::{Amount, ArithmeticBudget, Rate, RateError, UnitId};
 use fa_time::DateDay;
 use fgdb_delta_types::RelationId;
 use fgdb_types::VId;
 
-use crate::canon::{DecodeError, EncodeError, Reader, Writer};
-use crate::entry::ExternalId;
+use crate::canon::{DecodeError, EncodeError, Reader, Writer, strictly_ascending};
+use crate::entry::{EvidenceRef, ExternalId};
 use crate::erasable::Erasable;
-use crate::limits::{MAX_EXTERNAL_ID_BYTES, MAX_EXTERNAL_IDS, MAX_SYSTEM_BYTES};
+use crate::ids::{Oid, domain_digest};
+use crate::limits::{
+    MAX_DESCRIPTION_BYTES, MAX_EVIDENCE_PER_ENTRY, MAX_EXTERNAL_ID_BYTES, MAX_EXTERNAL_IDS,
+    MAX_SYSTEM_BYTES,
+};
 use crate::symbols::relation;
 
 pub const SCHEMA_CHANGE_CREATE_PARTY: u16 = 5;
@@ -23,6 +27,9 @@ pub const SCHEMA_CHANGE_CREATE_LEGAL_ENTITY: u16 = 7;
 pub const SCHEMA_CHANGE_BIND_EXTERNAL_ID: u16 = 8;
 pub const SCHEMA_CHANGE_RECORD_RELATIONSHIP: u16 = 9;
 pub const SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS: u16 = 10;
+pub const SCHEMA_CHANGE_RECORD_EVENT: u16 = 11;
+
+pub const EVENT_DIGEST_DOMAIN: &[u8] = b"fa:event:v1";
 
 pub const MAX_REA_CODE_BYTES: usize = 64;
 pub const MAX_REA_NAME_BYTES: usize = 256;
@@ -31,6 +38,9 @@ pub const MAX_PARTY_IDENTIFIERS: usize = 32;
 pub const MAX_IDENTIFIER_KEY_BYTES: usize = 64;
 pub const MAX_IDENTIFIER_VAL_BYTES: usize = 256;
 pub const MAX_RELATIONSHIP_BASIS_BYTES: usize = 64;
+pub const MAX_EVENT_PARTICIPANTS: usize = 32;
+pub const MAX_EVENT_RESOURCES: usize = 32;
+pub const MAX_EVENT_RESOURCE_LABEL_BYTES: usize = 64;
 
 /// Role/kind of a `Party` vertex (plan §4.1 `Party`, §4.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -680,7 +690,208 @@ impl PartyIdentifierUpdate {
     }
 }
 
-/// Decoded REA schema-change control operation (`kind = 5..=10`).
+/// Kind of an REA economic `Event` vertex (plan §4.1 `Event`, §4.5, bead `fa-f3bo`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum EventKind {
+    Sale = 1,
+    Purchase = 2,
+    Receipt = 3,
+    Payment = 4,
+    Shipment = 5,
+    Return = 6,
+    Accrual = 7,
+    Depreciation = 8,
+}
+
+impl EventKind {
+    pub const ALL: &[Self] = &[
+        Self::Sale,
+        Self::Purchase,
+        Self::Receipt,
+        Self::Payment,
+        Self::Shipment,
+        Self::Return,
+        Self::Accrual,
+        Self::Depreciation,
+    ];
+
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        self as u8
+    }
+
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        Some(match tag {
+            1 => Self::Sale,
+            2 => Self::Purchase,
+            3 => Self::Receipt,
+            4 => Self::Payment,
+            5 => Self::Shipment,
+            6 => Self::Return,
+            7 => Self::Accrual,
+            8 => Self::Depreciation,
+            _ => return None,
+        })
+    }
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Sale => "sale",
+            Self::Purchase => "purchase",
+            Self::Receipt => "receipt",
+            Self::Payment => "payment",
+            Self::Shipment => "shipment",
+            Self::Return => "return",
+            Self::Accrual => "accrual",
+            Self::Depreciation => "depreciation",
+        }
+    }
+
+    #[must_use]
+    pub fn from_name(s: &str) -> Option<Self> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "sale" => Self::Sale,
+            "purchase" => Self::Purchase,
+            "receipt" => Self::Receipt,
+            "payment" => Self::Payment,
+            "shipment" => Self::Shipment,
+            "return" => Self::Return,
+            "accrual" => Self::Accrual,
+            "depreciation" => Self::Depreciation,
+            _ => return None,
+        })
+    }
+}
+
+/// Resource flow line on an REA `Event` (`label`, positive `amount`, optional `instrument` `VId`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventResource {
+    pub label: String,
+    pub amount: Amount,
+    pub instrument: Option<VId>,
+}
+
+/// Canonical specification for `RecordEvent` (`SchemaChange` `kind = 11`, plan §4.1 `Event`, §4.5, bead `fa-f3bo`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventSpec {
+    pub code: String,
+    pub kind: EventKind,
+    pub occurred_on: DateDay,
+    pub description: Erasable<String>,
+    /// Sorted strictly ascending by `VId`.
+    pub participants: Vec<VId>,
+    pub resources: Vec<EventResource>,
+    /// Sorted strictly ascending by `(document_oid, doc_commit, role)`. Must be non-empty.
+    pub evidence: Vec<EvidenceRef>,
+    /// Sorted strictly ascending by `(system, id.field_digest)`.
+    pub external_ids: Vec<ExternalId>,
+}
+
+impl EventSpec {
+    pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut w = Writer::new();
+        w.str(&self.code)
+            .u8(self.kind.tag())
+            .i32(self.occurred_on.0);
+        self.description.encode(&mut w);
+        w.list(&self.participants, |w, v| {
+            w.u128(v.0);
+        })
+        .list(&self.resources, |w, r| {
+            w.str(&r.label)
+                .u32(r.amount.unit.0)
+                .i128(r.amount.mantissa)
+                .opt(r.instrument.as_ref(), |w, inst| {
+                    w.u128(inst.0);
+                });
+        })
+        .list(&self.evidence, |w, e| {
+            w.fixed(&e.document_oid.0).fixed(&e.doc_commit).u8(e.role);
+        });
+        encode_external_ids(&mut w, &self.external_ids);
+        w.finish()
+    }
+
+    /// `BLAKE3("fa:event:v1" ‖ len(canonical(spec)) ‖ canonical(spec))`.
+    pub fn event_digest(&self) -> Result<[u8; 32], EncodeError> {
+        let bytes = self.encode()?;
+        Ok(domain_digest(EVENT_DIGEST_DOMAIN, &[&bytes]))
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut r = Reader::new(bytes);
+        let code = r.str(MAX_REA_CODE_BYTES, "event.code")?.to_string();
+        if code.is_empty() {
+            return Err(r.invalid("event.code"));
+        }
+        let kind_tag = r.u8("event.kind")?;
+        let kind = EventKind::from_tag(kind_tag).ok_or_else(|| r.bad_tag("event.kind", kind_tag))?;
+        let occurred_on = DateDay(r.i32("event.occurred_on")?);
+        let description = Erasable::decode(&mut r, MAX_DESCRIPTION_BYTES)?;
+        let participants = r.list(MAX_EVENT_PARTICIPANTS, "event.participants", |r| {
+            Ok(VId(r.u128("event.participant")?))
+        })?;
+        if !strictly_ascending(&participants, |v| *v) {
+            return Err(r.unsorted("event.participants"));
+        }
+        let resources = r.list(MAX_EVENT_RESOURCES, "event.resources", |r| {
+            let label = r
+                .str(MAX_EVENT_RESOURCE_LABEL_BYTES, "event.resource.label")?
+                .to_string();
+            if label.is_empty() {
+                return Err(r.invalid("event.resource.label"));
+            }
+            let unit = UnitId(r.u32("event.resource.unit")?);
+            let mantissa = r.i128("event.resource.mantissa")?;
+            if mantissa <= 0 {
+                return Err(r.invalid("event.resource.mantissa"));
+            }
+            let instrument = r.opt("event.resource.instrument", |r| {
+                Ok(VId(r.u128("event.resource.instrument")?))
+            })?;
+            Ok(EventResource {
+                label,
+                amount: Amount { unit, mantissa },
+                instrument,
+            })
+        })?;
+        let evidence = r.list(MAX_EVIDENCE_PER_ENTRY, "event.evidence", |r| {
+            Ok(EvidenceRef {
+                document_oid: Oid(r.fixed("event.evidence.document_oid")?),
+                doc_commit: r.fixed("event.evidence.doc_commit")?,
+                role: r.u8("event.evidence.role")?,
+            })
+        })?;
+        if evidence.is_empty() {
+            return Err(r.invalid("event.evidence"));
+        }
+        if !strictly_ascending(&evidence, |e| *e) {
+            return Err(r.unsorted("event.evidence"));
+        }
+        let external_ids = decode_external_ids(&mut r)?;
+        for ext in &external_ids {
+            if ext.system.is_empty() {
+                return Err(r.invalid("external_id.system"));
+            }
+        }
+        r.finish()?;
+        Ok(Self {
+            code,
+            kind,
+            occurred_on,
+            description,
+            participants,
+            resources,
+            evidence,
+            external_ids,
+        })
+    }
+}
+
+/// Decoded REA schema-change control operation (`kind = 5..=11`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReaControlOp {
     CreateParty(PartySpec),
@@ -689,12 +900,13 @@ pub enum ReaControlOp {
     BindExternalId(ExternalIdBinding),
     RecordRelationship(RelationshipSpec),
     UpdatePartyIdentifiers(PartyIdentifierUpdate),
+    RecordEvent(EventSpec),
 }
 
 impl ReaControlOp {
     #[must_use]
     pub const fn is_rea_schema_change_kind(kind: u16) -> bool {
-        matches!(kind, 5..=10)
+        matches!(kind, 5..=11)
     }
 
     pub fn decode(kind: u16, bytes: &[u8]) -> Result<Self, DecodeError> {
@@ -715,6 +927,7 @@ impl ReaControlOp {
             SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS => {
                 PartyIdentifierUpdate::decode(bytes).map(Self::UpdatePartyIdentifiers)
             }
+            SCHEMA_CHANGE_RECORD_EVENT => EventSpec::decode(bytes).map(Self::RecordEvent),
             _ => {
                 let r = Reader::new(bytes);
                 Err(r.invalid("rea.schema_change_kind"))
@@ -748,7 +961,7 @@ mod tests {
             identifiers: vec![("iban".to_string(), iban)],
             external_ids: vec![ExternalId {
                 system: "netsuite".to_string(),
-                id: ext_val,
+                id: ext_val.clone(),
             }],
         };
         let encoded = party.encode().unwrap();
@@ -769,5 +982,40 @@ mod tests {
         assert_eq!(RelationshipSpec::decode(&rel_bytes).unwrap(), rel);
         assert!(rel.is_active_on(DateDay::from_ymd(2026, 3, 15).unwrap()));
         assert!(!rel.is_active_on(DateDay::from_ymd(2026, 7, 1).unwrap()));
+
+        let desc = Erasable::seal(
+            &"SaaS annual subscription invoice".to_string(),
+            None,
+            &key,
+            [7u8; 32],
+            [8u8; 24],
+        );
+        let ev = EventSpec {
+            code: "EVT-SALE-001".to_string(),
+            kind: EventKind::Sale,
+            occurred_on: DateDay::from_ymd(2026, 3, 20).unwrap(),
+            description: desc,
+            participants: vec![VId(10), VId(20)],
+            resources: vec![EventResource {
+                label: "subscription_fee".to_string(),
+                amount: Amount::new(UnitId(1), 120_000_00),
+                instrument: Some(VId(30)),
+            }],
+            evidence: vec![EvidenceRef {
+                document_oid: Oid([11u8; 32]),
+                doc_commit: [12u8; 32],
+                role: 1,
+            }],
+            external_ids: vec![ExternalId {
+                system: "stripe".to_string(),
+                id: ext_val,
+            }],
+        };
+        let ev_bytes = ev.encode().unwrap();
+        assert_eq!(EventSpec::decode(&ev_bytes).unwrap(), ev);
+        assert_eq!(
+            ReaControlOp::decode(SCHEMA_CHANGE_RECORD_EVENT, &ev_bytes).unwrap(),
+            ReaControlOp::RecordEvent(ev)
+        );
     }
 }

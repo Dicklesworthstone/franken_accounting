@@ -139,11 +139,11 @@ name = "post"
 summary = "Post one entry intent under the accounting laws (balance, period law, idempotency)."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on"]
+flags = ["--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target."]
+usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--event <code|vid>] [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target."]
 example = "fa post --intent entry.json --book ./books/myco --json"
 
 [[verb]]
@@ -229,6 +229,18 @@ events = ["document", "document_read", "redacted_view_derived", "document_disclo
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> --subject <vid|oid>... [--effective YYYY-MM-DD] [--description <text>] [--key K]", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]..."]
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
+
+[[verb]]
+name = "event"
+summary = "Record an REA economic event vertex (plan §4.1, §9.1; Appendix A Event) with participant parties, economic resources, and evidence documents, or inspect recorded events."
+writes = true
+subcommands = ["record", "show", "list"]
+flags = ["--code", "--kind", "--occurred-on", "--description", "--participant", "--resource", "--evidence", "--external-id", "--effective", "--key", "--as-known-at", "--grant"]
+switches = []
+events = ["event_recorded", "event_shown", "events_listed"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["event record --code <CODE> --kind sale|purchase|receipt|payment|shipment|return|accrual|depreciation --occurred-on YYYY-MM-DD --evidence <oid>[:<role>]... [--participant <code|vid>]... [--resource <label>:<amount>[:<instrument>]]... [--external-id <system>:<id>]... [--description <text>] [--effective YYYY-MM-DD] [--key K]", "event show <code|vid> [--as-known-at HEAD|<seq>]", "event list [--as-known-at HEAD|<seq>]", "Every recorded Event requires at least one non-empty evidence citation; entries posted with `fa post --event <code|vid>` link to the Event via DERIVED_FROM and inherit its evidence closure when the entry supplies none."]
+example = "fa event record --code EV-1001 --kind sale --occurred-on 2026-03-15 --evidence 0101010101010101010101010101010101010101010101010101010101010101 --book ./books/myco --json"
 
 [[verb]]
 name = "migrate"
@@ -1045,8 +1057,8 @@ fields = ["account:string", "account_vid:hex", "name:string", "type:string", "pe
 [[event]]
 name = "entry_explained"
 book = true
-doc = "An explained committed entry (`fa explain entry <vid>`): its payload, posting period, resolved legs with account codes and names, supersession lineage (both what it supersedes and any later entries that supersede it), cited evidence, and approval count."
-fields = ["vid:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "effective_date:date", "period:string?", "recorded_at:seq", "principal:hex", "description:untrusted_text?", "approvals:int", "resolves:hex?", "disposition:string?", "legs:[explained_entry_leg]", "supersedes:[lineage]", "superseded_by:[lineage]", "evidence:[evidence_head]"]
+doc = "An explained committed entry (`fa explain entry <vid>`): its payload, posting period, resolved legs with account codes and names, supersession lineage (both what it supersedes and any later entries that supersede it), cited evidence, cited REA event (`DERIVED_FROM`), and approval count."
+fields = ["vid:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "effective_date:date", "period:string?", "recorded_at:seq", "principal:hex", "description:untrusted_text?", "approvals:int", "resolves:hex?", "disposition:string?", "legs:[explained_entry_leg]", "supersedes:[lineage]", "superseded_by:[lineage]", "evidence:[evidence_head]", "event:event_summary?"]
 
 [[event]]
 name = "evidence_explained"
@@ -1186,9 +1198,47 @@ book = true
 doc = "A canonical settlement review artifact (`fa:settlement-review:v1` or `fa:settlement-group-review:v1`, plan §5.7) binding the open-item snapshot (`known_at`), exact invoice applications (`applications`), resulting entry legs (`legs`), `review_digest`, and sealed `proposal_digest`."
 fields = ["kind:string", "known_at:seq", "review_digest:hex", "proposal_digest:hex", "applications:[settlement_application]", "legs:[plan_leg]", "bytes:hex", "file:string?"]
 
+[[event]]
+name = "event_recorded"
+book = true
+doc = "A journaled REA `Event` vertex (`fa event record`, plan §4.1/§9.1) linking participant parties, economic resources, and evidence documents."
+fields = ["event_vid:hex", "code:string", "kind:string", "occurred_on:date", "event_digest:hex", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "event_shown"
+book = true
+doc = "One recorded REA `Event` vertex (`fa event show <code|vid>`), with its participants, resources, evidence citations, and external IDs."
+fields = ["event:event_detail"]
+
+[[event]]
+name = "events_listed"
+book = true
+doc = "All recorded REA `Event` vertices at `known_at` (`fa event list`)."
+fields = ["known_at:seq", "count:int", "events:[event_summary]"]
+
 # ---------------------------------------------------------------------------
 # Shapes: the objects events nest.
 # ---------------------------------------------------------------------------
+
+[[shape]]
+name = "event_summary"
+doc = "Summary of a recorded REA `Event` vertex."
+fields = ["vid:hex", "code:string", "kind:string", "occurred_on:date", "event_digest:hex", "recorded_at:seq"]
+
+[[shape]]
+name = "event_detail"
+doc = "Complete record of an REA `Event` vertex."
+fields = ["vid:hex", "code:string", "kind:string", "occurred_on:date", "description:string", "participants:[hex]", "resources:[event_resource]", "evidence:[evidence_head]", "external_ids:[external_id]", "event_digest:hex", "recorded_at:seq"]
+
+[[shape]]
+name = "event_resource"
+doc = "One economic resource delta on an REA `Event`."
+fields = ["label:string", "instrument:hex?", "quantity:amount"]
+
+[[shape]]
+name = "external_id"
+doc = "An external system identifier pair `(system, id)`."
+fields = ["system:string", "id:string"]
 
 [[shape]]
 name = "settlement_application"
@@ -1713,7 +1763,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed"]
 
@@ -1969,7 +2019,7 @@ name = "post"
 verb = "post"
 subcommands = []
 positionals = []
-flags = ["--intent", "--evidence", "--balancing", "--timeout-ns", "--reverse-on"]
+flags = ["--intent", "--evidence", "--event", "--balancing", "--timeout-ns", "--reverse-on"]
 stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
@@ -2264,6 +2314,19 @@ stdin_via = "--plan"
 required = []
 dont = ["Don't release a legal hold you placed yourself: HoldControl(Release) requires an independent Human approval (`fa_time_approve`).", "Don't record a Reviewed attestation from an Agent profile: promoting an AgentUpload document requires a human reviewer with approve authority.", "Don't pass host filesystem paths in plan_file, plan_out or out: MCP returns disclosure proofs and release plans inline."]
 mistakes = ["Attempting to erase a document under an active legal hold (FA-REF-117, exit 7) or without an eligible erasure class (FA-REF-088, exit 3).", "Recording a ManualAssertion without a registered manual_assertion reason code and explicit statement.", "Passing a document's doc_commit where the 64-hex document oid is required."]
+
+[[mcp.tool]]
+cluster = "fa.evidence"
+name = "event"
+verb = "event"
+subcommands = ["record", "show", "list"]
+selector = "action"
+positionals = ["target?"]
+flags = ["--code", "--kind", "--occurred-on", "--description", "--participant", "--resource", "--evidence", "--external-id", "--effective", "--key", "--as-known-at"]
+switches = []
+required = []
+dont = ["Don't record an REA event without evidence: every Event requires at least one held document citation (`FA-REF-030`).", "Don't cite an AgentUpload document on an Event before a human Reviewer has attested `Reviewed` (`FA-REF-032`)."]
+mistakes = ["Passing an unregistered event kind: use `sale`, `purchase`, `receipt`, `payment`, `shipment`, `return`, `accrual`, or `depreciation`.", "Citing an Event in `fa_post_post` that has not been recorded yet (`FA-REF-030`)."]
 
 [[mcp.tool]]
 cluster = "fa.forensics"

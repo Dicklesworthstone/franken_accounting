@@ -268,6 +268,12 @@ pub fn instrument_vid(book: Id128, code: &str) -> VId {
     derive_vid(b"fa:vid:instrument:v1", &[&book.0, code.as_bytes()])
 }
 
+/// `vid(Event) = H("fa:vid:event:v1" ‖ book_id ‖ code)` (plan §4.1 `Event`, §4.5, §4.9, bead `fa-f3bo`).
+#[must_use]
+pub fn event_vid(book: Id128, code: &str) -> VId {
+    derive_vid(b"fa:vid:event:v1", &[&book.0, code.as_bytes()])
+}
+
 /// `vid(Principal) = H("fa:vid:principal:v1" ‖ name)`: the identity a
 /// named operator or agent posts under until Steward issues principals.
 #[must_use]

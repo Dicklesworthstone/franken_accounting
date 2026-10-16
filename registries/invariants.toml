@@ -49,6 +49,7 @@ proof = ["FA-INV-04.outsider-recomputation", "FA-INV-14.inclusion", "FA-INV-14.s
 bundle = ["FA-INV-14.scope-index-complete", "FA-INV-14.public-commitment"]
 replay = ["FA-INV-11.core"]
 certificate = ["FA-INV-11.core"]
+event = ["FA-INV-05.event-closure", "FA-INV-09.core"]
 
 [[invariant]]
 id = "FA-INV-01"
@@ -550,6 +551,31 @@ first_gate = "G2"
 owner = "fa-cw1"
 checkers = ["fa-registers::tests/differential.rs::public_post_provenance_and_envelope_claims_match_the_independent_oracle", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep"]
 negatives = ["fa-journal::tests/genesis.rs::unchecked_base_totals_are_refused_before_publication", "fa-journal::tests/genesis.rs::unverified_plan_and_origin_claims_are_refused_without_consuming_identity"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-05"
+id = "event-closure"
+status = "live"
+statement = "Every journaled REA Event carries a non-empty evidence closure (`EVIDENCED_BY`) and domain-separated `fa:event:v1` digest; every entry citing an Event witnesses the Event vertex inside the posting transaction, verifies its digest and evidence closure, and links to it via `DERIVED_FROM`, refusing missing or un-evidenced events with FA-REF-030."
+evidence_class = "invariant"
+checker_strength = "differential"
+first_gate = "G2"
+owner = "fa-f3bo"
+checkers = ["fa-journal::tests/rea.rs::rea_event_recording_and_post_derived_from_linkage_match_oracle"]
+negatives = ["fa-journal::tests/rea.rs::rea_event_missing_or_unevidenced_event_citation_is_refused"]
+depends = ["FA-INV-05.evidence-minimum"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-05"
+id = "rule-reproduction"
+status = "dormant"
+statement = "A rule-derived entry (`EntryOrigin::Rule`) binds `rule_version_oid`, `event_ref`, and `inputs_digest`, and re-running the pure `RuleVersion` over the recorded `Event` and inputs reproduces the entry's legs bit-for-bit."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-c34"]
+depends = ["FA-INV-05.event-closure"]
 waiver = "forbidden"
 
 [[clause]]

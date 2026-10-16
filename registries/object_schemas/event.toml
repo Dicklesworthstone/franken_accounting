@@ -1,0 +1,73 @@
+# =============================================================================
+# registries/object_schemas/event.toml — Canonical REA Economic Event Schema
+# (plan §4.1 `Event`, §4.5, FA-INV-05, bead `fa-f3bo`)
+# =============================================================================
+
+schema_version = 1
+name = "Event"
+owner = "fa-model::rea::EventSpec"
+major = 1
+minor = 0
+digest_domain = "fa:event:v1"
+vid_domain = "fa:vid:event:v1"
+schema_change_kind = 11
+entry_extension_tag = 6
+externally_verifiable = true
+
+fields = [
+    "code:string",
+    "kind:u8",
+    "occurred_on:i32",
+    "description:erasable<string>",
+    "participants:list<u128>",
+    "resources:list<event_resource>",
+    "evidence:list<evidence_ref>",
+    "external_ids:list<external_id>",
+]
+
+resource_fields = [
+    "label:string",
+    "unit_id:u32",
+    "mantissa:i128",
+    "instrument:option<u128>",
+]
+
+[[event_kind]]
+id = 1
+name = "sale"
+description = "Customer sale or revenue recognition event."
+
+[[event_kind]]
+id = 2
+name = "purchase"
+description = "Vendor purchase or procurement event."
+
+[[event_kind]]
+id = 3
+name = "receipt"
+description = "Cash, asset, or inventory receipt event."
+
+[[event_kind]]
+id = 4
+name = "payment"
+description = "Cash or settlement disbursement event."
+
+[[event_kind]]
+id = 5
+name = "shipment"
+description = "Outbound fulfillment or delivery event."
+
+[[event_kind]]
+id = 6
+name = "return"
+description = "Customer or vendor return event."
+
+[[event_kind]]
+id = 7
+name = "accrual"
+description = "Periodic accrual or obligation recognition event."
+
+[[event_kind]]
+id = 8
+name = "depreciation"
+description = "Fixed-asset depreciation or amortization event."

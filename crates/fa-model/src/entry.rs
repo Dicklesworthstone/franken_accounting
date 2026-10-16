@@ -71,6 +71,10 @@ pub const DATE_BASIS_EXTENSION: u16 = 3;
 /// scope's digest. On a Place: `0u8 ‖ list(u128 subject)`, strictly
 /// ascending. On a Release: `1u8 ‖ u128 hold`, the Place it releases.
 pub const LEGAL_HOLD_SCOPE_EXTENSION: u16 = 4;
+/// Extension tag 6, `fa:event-ref:v1` (plan §4.1 `Event`, §4.5, FA-INV-05,
+/// bead `fa-f3bo`): binds an `EntryProposal` to a committed REA `Event`
+/// vertex — `event_vid: u128 LE ‖ event_digest: [u8; 32]` (48 bytes).
+pub const EVENT_REF_EXTENSION: u16 = 6;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -79,6 +83,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     AUTO_REVERSE_EXTENSION,
     DATE_BASIS_EXTENSION,
     LEGAL_HOLD_SCOPE_EXTENSION,
+    EVENT_REF_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1515,6 +1520,31 @@ impl EntryPayload {
                 "an unregistered extension tag at this schema minor",
             ));
         }
+        if self
+            .extensions
+            .iter()
+            .any(|(t, b)| *t == EVENT_REF_EXTENSION && b.len() != 48)
+        {
+            return Err(invalid(
+                "extensions.event_ref",
+                "fa:event-ref:v1 requires 48 bytes (event_vid u128 LE || event_digest [u8; 32])",
+            ));
+        }
+        if let (Some((_, bytes)), EntryOrigin::Rule { event_ref, .. }) = (
+            self.extensions
+                .iter()
+                .find(|(t, _)| *t == EVENT_REF_EXTENSION),
+            &self.origin,
+        ) {
+            let mut vid_bytes = [0u8; 16];
+            vid_bytes.copy_from_slice(&bytes[..16]);
+            if VId(u128::from_le_bytes(vid_bytes)) != *event_ref {
+                return Err(invalid(
+                    "extensions.event_ref",
+                    "must match EntryOrigin::Rule event_ref when both are present",
+                ));
+            }
+        }
         for leg in &self.legs {
             leg.validate()?;
         }
@@ -1892,6 +1922,45 @@ impl EntryPayload {
             proposal_digest,
             entry_digest,
         })
+    }
+
+    /// Attach or replace the REA `Event` citation (`EVENT_REF_EXTENSION = 6`:
+    /// `event_vid: u128 LE ‖ event_digest: [u8; 32]`, 48 bytes).
+    pub fn with_event_ref(&mut self, event_vid: VId, event_digest: [u8; 32]) {
+        self.schema_minor = self.schema_minor.max(EXTENSIONS_MINOR);
+        let mut bytes = Vec::with_capacity(48);
+        bytes.extend_from_slice(&event_vid.0.to_le_bytes());
+        bytes.extend_from_slice(&event_digest);
+        match self
+            .extensions
+            .binary_search_by_key(&EVENT_REF_EXTENSION, |(t, _)| *t)
+        {
+            Ok(i) => self.extensions[i].1 = bytes,
+            Err(i) => self.extensions.insert(i, (EVENT_REF_EXTENSION, bytes)),
+        }
+    }
+
+    /// Return the REA `Event` cited by this proposal, if any:
+    /// - `(event_vid, Some(event_digest))` when `EVENT_REF_EXTENSION` (tag 6) is present;
+    /// - `(event_ref, None)` when `origin` is `EntryOrigin::Rule { event_ref, .. }` and tag 6 is absent.
+    #[must_use]
+    pub fn cited_event(&self) -> Option<(VId, Option<[u8; 32]>)> {
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(t, _)| *t == EVENT_REF_EXTENSION)
+            && bytes.len() == 48
+        {
+            let mut vid_bytes = [0u8; 16];
+            vid_bytes.copy_from_slice(&bytes[..16]);
+            let mut digest = [0u8; 32];
+            digest.copy_from_slice(&bytes[16..48]);
+            return Some((VId(u128::from_le_bytes(vid_bytes)), Some(digest)));
+        }
+        if let EntryOrigin::Rule { event_ref, .. } = &self.origin {
+            return Some((*event_ref, None));
+        }
+        None
     }
 }
 
