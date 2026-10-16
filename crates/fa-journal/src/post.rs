@@ -1592,6 +1592,66 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
 
+    // 5a. Economic event citation (plan §4.1 Event, §4.5, FA-INV-05, bead fa-f3bo):
+    //     when the proposal cites an Event vertex (via EVENT_REF_EXTENSION tag 6 or
+    //     EntryOrigin::Rule { event_ref, .. }), witness that the Event vertex exists,
+    //     carries non-empty evidence, and matches the cited event_digest.
+    let cited_event = proposal.cited_event();
+    if let Some((ev_vid, maybe_digest)) = cited_event {
+        let Some(ev_row) = txn.vertex(db, ev_vid)? else {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::EVIDENCE_MINIMUM,
+                exit::REFUSAL,
+                format!(
+                    "entry cites event {:032x} which does not exist in this book",
+                    ev_vid.0
+                ),
+                "plan §4.1 Event, §4.5, FA-INV-05 (`event-closure`: every cited Event must exist as a committed Event vertex with non-empty evidence)",
+                "record the economic event first with `fa event record` and cite its vid or code",
+            )));
+        };
+        if !ev_row.labels.contains(&label::EVENT) {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::EVIDENCE_MINIMUM,
+                exit::REFUSAL,
+                format!("vertex {:032x} cited as an event is not an Event", ev_vid.0),
+                "plan §4.1 Event, §4.5, FA-INV-05 (`event-closure`)",
+                "cite an existing Event vertex (`fa event list --json`)",
+            )));
+        }
+        let ev_payload = bytes(&ev_row, property::FA_PAYLOAD, "event._fa_payload")?;
+        let ev_spec = fa_model::EventSpec::decode(&ev_payload)
+            .map_err(|e| KernelError::Corrupt(format!("event._fa_payload: {e}")))?;
+        if ev_spec.evidence.is_empty() {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::EVIDENCE_MINIMUM,
+                exit::REFUSAL,
+                format!("cited event `{}` carries no evidence", ev_spec.code),
+                "FA-INV-05 (`event-closure`: every cited Event vertex cites non-empty evidence)",
+                "record a valid Event with at least one evidence document citation",
+            )));
+        }
+        if let Some(expected_digest) = maybe_digest {
+            let stored_digest = bytes(&ev_row, property::FA_DIGEST, "event._fa_digest")?;
+            if stored_digest.as_slice() != expected_digest.as_slice() {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::STRUCTURE,
+                    exit::USAGE,
+                    format!(
+                        "entry cites event `{}` ({:032x}) with mismatched event_digest",
+                        ev_spec.code, ev_vid.0
+                    ),
+                    "plan §4.1 Event, §4.9 (event citation binds the committed event_digest)",
+                    "re-read the Event (`fa event show`) and cite its committed event_digest",
+                )));
+            }
+        }
+    }
+
     // 5b. Evidence minimum (plan §9.2, FA-INV-05 `evidence-minimum`): every
     //     citation names a document this book holds under its exact
     //     commitment, read as a witness of this transaction, as is the
@@ -2617,6 +2677,16 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         }
         batches.push(settles);
         batches.push(unsettles);
+    }
+    if let Some((ev_vid, _)) = cited_event {
+        let mut derived_from = WriteBatch::new(relation::DERIVED_FROM);
+        derived_from.add_edge(
+            edge_id(relation::DERIVED_FROM, evid, ev_vid),
+            evid,
+            ev_vid,
+            vec![],
+        );
+        batches.push(derived_from);
     }
     batches.extend(evidence_edges(evid, &evidence));
     batches.retain(|b| !b.is_empty());

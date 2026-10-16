@@ -8,24 +8,27 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use fa_model::limits::MAX_EXTERNAL_ID_BYTES;
+use fa_model::limits::{MAX_EVIDENCE_PER_ENTRY, MAX_EXTERNAL_ID_BYTES};
 use fa_model::rea::{
+    MAX_EVENT_PARTICIPANTS, MAX_EVENT_RESOURCE_LABEL_BYTES, MAX_EVENT_RESOURCES,
     MAX_IDENTIFIER_KEY_BYTES, MAX_JURISDICTION_BYTES, MAX_PARTY_IDENTIFIERS, MAX_REA_CODE_BYTES,
     MAX_REA_NAME_BYTES, SCHEMA_CHANGE_BIND_EXTERNAL_ID, SCHEMA_CHANGE_CREATE_INSTRUMENT,
-    SCHEMA_CHANGE_CREATE_LEGAL_ENTITY, SCHEMA_CHANGE_CREATE_PARTY,
+    SCHEMA_CHANGE_CREATE_LEGAL_ENTITY, SCHEMA_CHANGE_CREATE_PARTY, SCHEMA_CHANGE_RECORD_EVENT,
     SCHEMA_CHANGE_RECORD_RELATIONSHIP, SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS,
 };
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable,
-    ExternalId, ExternalIdBinding, Id128, InstrumentKind, InstrumentSpec, LEGAL_ENTITY_DIMENSION,
-    LEGAL_ENTITY_DIMENSION_CODE, LegalEntityFullSpec, OwnershipPct, PARTY_DIMENSION,
-    PARTY_DIMENSION_CODE, PartyIdentifierUpdate, PartyKind, PartySpec, ReaControlOp,
-    RelationshipKind, RelationshipSpec, dimension_vid, entity_value_vid, entry_mirrors, entry_vid,
-    external_id_vid, instrument_vid, legal_entity_vid, party_value_vid, party_vid,
+    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, EventKind,
+    EventResource, EventSpec, ExternalId, ExternalIdBinding, Id128, InstrumentKind, InstrumentSpec,
+    LEGAL_ENTITY_DIMENSION, LEGAL_ENTITY_DIMENSION_CODE, LegalEntityFullSpec, OwnershipPct,
+    PARTY_DIMENSION, PARTY_DIMENSION_CODE, PartyIdentifierUpdate, PartyKind, PartySpec,
+    ReaControlOp, RelationshipKind, RelationshipSpec, dimension_vid, entity_value_vid,
+    entry_mirrors, entry_vid, event_vid, external_id_vid, instrument_vid, legal_entity_vid,
+    party_value_vid, party_vid,
 };
 use fa_money::UnitId;
 use fa_policy::Capability;
+use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::g0::RelationshipBases;
 use fa_time::DateDay;
 use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxnError};
@@ -43,7 +46,7 @@ use crate::rows::{AccountRow, book_root, bytes, edge_id, prop, scalar_bytes, sca
 /// `Dimension.kind` of the party dimension (plan §4.1 `Dimension` row: counterparty).
 pub const DIMENSION_KIND_PARTY: i64 = 2;
 
-/// Recorded outcome of a journaled REA schema-control operation (`kind = 5..=10`).
+/// Recorded outcome of a journaled REA schema-control operation (`kind = 5..=11`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReaControlRecorded {
     pub recorded_at: CommitSeq,
@@ -114,6 +117,16 @@ pub struct RelationshipRow {
     pub control_entry: VId,
 }
 
+/// An economic `Event` vertex reconstructed from the journaled REA control stream (plan §4.1 `Event`, §4.5, bead `fa-f3bo`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventRow {
+    pub vid: VId,
+    pub spec: EventSpec,
+    pub event_digest: [u8; 32],
+    pub created_at: CommitSeq,
+    pub control_entry: VId,
+}
+
 /// One party/entity reached by [`ReaSnapshot::related_as_of`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelatedPartyHit {
@@ -134,10 +147,11 @@ pub struct ReaSnapshot {
     pub legal_entities: BTreeMap<VId, LegalEntityRow>,
     pub external_ids: BTreeMap<VId, ExternalIdRow>,
     pub relationships: Vec<RelationshipRow>,
+    pub events: BTreeMap<VId, EventRow>,
 }
 
 impl ReaSnapshot {
-    /// Code of a `Party` or `LegalEntity` vertex in this snapshot, if present.
+    /// Code of a `Party`, `LegalEntity`, `Instrument`, or `Event` vertex in this snapshot, if present.
     #[must_use]
     pub fn endpoint_code(&self, vid: VId) -> Option<&str> {
         if let Some(p) = self.parties.get(&vid) {
@@ -148,6 +162,9 @@ impl ReaSnapshot {
         }
         if let Some(inst) = self.instruments.get(&vid) {
             return Some(&inst.code);
+        }
+        if let Some(ev) = self.events.get(&vid) {
+            return Some(&ev.spec.code);
         }
         None
     }
@@ -1309,6 +1326,7 @@ pub async fn bind_external_id<V: asupersync::fs::Vfs + Clone>(
         row.labels.contains(&label::PARTY)
             || row.labels.contains(&label::INSTRUMENT)
             || row.labels.contains(&label::LEGAL_ENTITY)
+            || row.labels.contains(&label::EVENT)
     });
     if !target_ok {
         txn.abort();
@@ -1316,11 +1334,11 @@ pub async fn bind_external_id<V: asupersync::fs::Vfs + Clone>(
             code::STRUCTURE,
             exit::USAGE,
             format!(
-                "bind_external_id target {:032x} is not an existing Party, Instrument, or LegalEntity in this book",
+                "bind_external_id target {:032x} is not an existing Party, Instrument, LegalEntity, or Event in this book",
                 binding.target_vid.0
             ),
             "plan §4.5, §4.9",
-            "create the target Party, Instrument, or LegalEntity before binding an ExternalId to it",
+            "create the target Party, Instrument, LegalEntity, or Event before binding an ExternalId to it",
         )));
     }
     if let Some(refusal) = check_external_id_conflicts(&txn, db, &resolved_ext)? {
@@ -1693,9 +1711,425 @@ pub async fn update_party_identifiers<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+fn admit_event_record<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    principal_ref: VId,
+    capability: &Capability,
+) -> Result<Option<Refusal>, KernelError> {
+    let post_ok = fa_policy::admit_within(
+        capability,
+        &fa_policy::Intent {
+            principal: principal_ref,
+            trunk: true,
+            op: fa_policy::Op::Post,
+            book: book.book_id,
+            legs: &[],
+        },
+        &fa_policy::Reach::whole_book(true),
+        None,
+    );
+    if let Err(post_denial) = post_ok {
+        let schema_ok = fa_policy::admit_within(
+            capability,
+            &fa_policy::Intent {
+                principal: principal_ref,
+                trunk: true,
+                op: fa_policy::Op::SchemaChange,
+                book: book.book_id,
+                legs: &[],
+            },
+            &fa_policy::Reach::whole_book(true),
+            None,
+        );
+        if schema_ok.is_err() {
+            return Ok(Some(crate::policy::refusal(&post_denial)));
+        }
+    }
+    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
+        return Ok(Some(crate::policy::refusal(&d)));
+    }
+    Ok(None)
+}
+
+/// Journal and materialize an REA economic `Event` vertex (`SchemaChange` `kind = 11`,
+/// plan §4.1 `Event`, §4.5, FA-INV-05, bead `fa-f3bo`), witness its cited `evidence`
+/// documents, `participants`, and `resources`, and stage `EVIDENCED_BY` edges and any
+/// declared `ExternalId` vertices.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_event<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    spec: &EventSpec,
+    principal_ref: VId,
+    effective_date: DateDay,
+    idempotency_key: &[u8],
+    description: Erasable<String>,
+    capability: &Capability,
+) -> Outcome<ReaControlRecorded> {
+    if let Some(refusal) = admit_event_record(db, book, principal_ref, capability)? {
+        return Ok(Err(refusal));
+    }
+    if spec.code.is_empty() || spec.code.len() > MAX_REA_CODE_BYTES {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!(
+                "event code `{}` must be 1..={MAX_REA_CODE_BYTES} bytes",
+                spec.code
+            ),
+            "Appendix A Event.code",
+            "provide a non-empty event code of at most 64 bytes",
+        )));
+    }
+    if spec.participants.len() > MAX_EVENT_PARTICIPANTS {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!(
+                "event `{}` has {} participants (max {MAX_EVENT_PARTICIPANTS})",
+                spec.code,
+                spec.participants.len()
+            ),
+            "Appendix A Event.participants",
+            "reduce the number of event participants",
+        )));
+    }
+    for pair in spec.participants.windows(2) {
+        if pair[0] >= pair[1] {
+            return Ok(Err(Refusal::new(
+                code::STRUCTURE,
+                exit::USAGE,
+                format!(
+                    "event `{}` participants must be distinct and strictly ascending by VId",
+                    spec.code
+                ),
+                "Appendix A Event.participants",
+                "sort and deduplicate event participants by VId",
+            )));
+        }
+    }
+    if spec.resources.len() > MAX_EVENT_RESOURCES {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!(
+                "event `{}` has {} resources (max {MAX_EVENT_RESOURCES})",
+                spec.code,
+                spec.resources.len()
+            ),
+            "Appendix A Event.resources",
+            "reduce the number of event resources",
+        )));
+    }
+    for (idx, res) in spec.resources.iter().enumerate() {
+        if res.label.is_empty() || res.label.len() > MAX_EVENT_RESOURCE_LABEL_BYTES {
+            return Ok(Err(Refusal::new(
+                code::STRUCTURE,
+                exit::USAGE,
+                format!(
+                    "event `{}` resource[{idx}] label `{}` must be 1..={MAX_EVENT_RESOURCE_LABEL_BYTES} bytes",
+                    spec.code, res.label
+                ),
+                "Appendix A Event.resources",
+                "provide a non-empty resource label of at most 64 bytes",
+            )));
+        }
+        if book.units.get(res.amount.unit).is_none() {
+            return Ok(Err(Refusal::new(
+                code::UNIT_UNREGISTERED,
+                exit::REFUSAL,
+                format!(
+                    "event `{}` resource[{idx}] (`{}`) names unregistered unit id {}",
+                    spec.code, res.label, res.amount.unit.0
+                ),
+                "plan §4.1 Event, §4.4",
+                "use a unit registered in the book",
+            )));
+        }
+        if res.amount.mantissa <= 0 {
+            return Ok(Err(Refusal::new(
+                code::STRUCTURE,
+                exit::USAGE,
+                format!(
+                    "event `{}` resource[{idx}] (`{}`) amount must be strictly positive (got {})",
+                    spec.code, res.label, res.amount.mantissa
+                ),
+                "Appendix A Event.resources",
+                "provide a positive resource amount",
+            )));
+        }
+    }
+    if spec.evidence.is_empty() {
+        return Ok(Err(Refusal::new(
+            code::EVIDENCE_MINIMUM,
+            exit::REFUSAL,
+            format!(
+                "event `{}` cites no evidence documents; every Event requires at least 1 evidence document",
+                spec.code
+            ),
+            "plan §4.1 Event, §4.5, FA-INV-05 (every Event vertex cites non-empty evidence)",
+            "record the source document with `fa document add <file> --kind <Kind> --json` and cite it on the event",
+        )));
+    }
+    if spec.evidence.len() > MAX_EVIDENCE_PER_ENTRY {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!(
+                "event `{}` cites {} evidence items (max {MAX_EVIDENCE_PER_ENTRY})",
+                spec.code,
+                spec.evidence.len()
+            ),
+            "Appendix A Event.evidence",
+            "reduce the number of evidence citations",
+        )));
+    }
+    for pair in spec.evidence.windows(2) {
+        if pair[0] >= pair[1] {
+            return Ok(Err(Refusal::new(
+                code::STRUCTURE,
+                exit::USAGE,
+                format!(
+                    "event `{}` evidence citations must be strictly ascending by (document_oid, doc_commit, role)",
+                    spec.code
+                ),
+                "Appendix A Event.evidence",
+                "sort and deduplicate evidence citations",
+            )));
+        }
+    }
+    let resolved_ext = match open_external_ids(book, &spec.external_ids)? {
+        Ok(v) => v,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+
+    let canonical_bytes = spec.encode().map_err(fa_model::EntryError::from)?;
+    let event_digest = spec.event_digest().map_err(fa_model::EntryError::from)?;
+    let mut proposal = schema_control_proposal(
+        book,
+        SCHEMA_CHANGE_RECORD_EVENT,
+        canonical_bytes.clone(),
+        principal_ref,
+        effective_date,
+        idempotency_key,
+        description,
+    );
+    proposal.evidence.clone_from(&spec.evidence);
+    let proposal_digest = proposal.proposal_digest()?;
+    let entry: Entry = proposal.clone().seal(Vec::new(), None)?;
+    let evid = entry_vid(
+        book.book_id,
+        &principal_ref.0.to_le_bytes(),
+        idempotency_key,
+    );
+    let ev_vid = event_vid(book.book_id, &spec.code);
+
+    let evidence_policy =
+        EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = crate::policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Some(row) = txn.vertex(db, evid)? {
+        txn.abort();
+        return check_rea_idempotency(book, &row, ev_vid, &proposal, &proposal_digest);
+    }
+    if txn.vertex(db, ev_vid)?.is_some() {
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!("event `{}` already exists in this book", spec.code),
+            "plan §4.1 Event, §4.9 (Event codes are unique derived identities)",
+            "use a distinct event code or cite the existing Event vertex",
+        )));
+    }
+    for participant in &spec.participants {
+        let ok = txn.vertex(db, *participant)?.is_some_and(|row| {
+            row.labels.contains(&label::PARTY)
+                || row.labels.contains(&label::INSTRUMENT)
+                || row.labels.contains(&label::LEGAL_ENTITY)
+        });
+        if !ok {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::STRUCTURE,
+                exit::USAGE,
+                format!(
+                    "event `{}` participant {:032x} is not an existing Party, Instrument, or LegalEntity in this book",
+                    spec.code, participant.0
+                ),
+                "plan §4.1 Event, §4.5",
+                "create all participant Party/Instrument/LegalEntity vertices before recording the event",
+            )));
+        }
+    }
+    for (idx, res) in spec.resources.iter().enumerate() {
+        if let Some(inst) = res.instrument {
+            let ok = txn
+                .vertex(db, inst)?
+                .is_some_and(|row| row.labels.contains(&label::INSTRUMENT));
+            if !ok {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::STRUCTURE,
+                    exit::USAGE,
+                    format!(
+                        "event `{}` resource[{idx}] (`{}`) instrument {:032x} is not an existing Instrument in this book",
+                        spec.code, res.label, inst.0
+                    ),
+                    "plan §4.1 Event, §4.5",
+                    "create the Instrument first (`fa instrument create`) before citing it on an event resource",
+                )));
+            }
+        }
+    }
+    let cited_docs =
+        match crate::evidence::resolve_documents(&txn, db, &evidence_policy, &spec.evidence)? {
+            Ok(docs) => docs,
+            Err(r) => {
+                txn.abort();
+                return Ok(Err(r));
+            }
+        };
+    for c in &cited_docs {
+        let is_self_sourced = evidence_policy
+            .grade_by_tag(c.grade)
+            .is_some_and(|g| g.self_sourced);
+        if is_self_sourced {
+            let review = match crate::attestation::witness_review(&txn, db, book.book_id, &c.oid)? {
+                Ok(r) => r,
+                Err(r) => {
+                    txn.abort();
+                    return Ok(Err(r));
+                }
+            };
+            match review {
+                Some(r) if r.reviewer == c.uploader => {
+                    txn.abort();
+                    return Ok(Err(crate::attestation::self_review_refusal(
+                        &c.oid, r.reviewer,
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    txn.abort();
+                    return Ok(Err(Refusal::new(
+                        code::SELF_SOURCED,
+                        exit::REFUSAL,
+                        format!(
+                            "event `{}` cites self-sourced document {:064x} which has not been reviewed by a distinct principal",
+                            spec.code,
+                            u128::from_be_bytes(c.oid.0[..16].try_into().unwrap_or([0; 16]))
+                        ),
+                        "plan §9.3 (self-sourced evidence counts only once an approver other than the uploader records a Reviewed attestation)",
+                        "record a Reviewed attestation over the document from a distinct principal with `approve`, or cite a HumanUpload document",
+                    )));
+                }
+            }
+        }
+    }
+    if let Some(refusal) = check_external_id_conflicts(&txn, db, &resolved_ext)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+
+    let root = book_root();
+    let book_id_scalar = scalar_bytes("book_id", book.book_id.0.to_vec())?;
+    let mut in_book = WriteBatch::new(relation::IN_BOOK);
+    in_book.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+
+    let mut ev_props = vec![
+        (
+            property::FA_PAYLOAD,
+            scalar_bytes("event._fa_payload", canonical_bytes)?,
+        ),
+        (
+            property::FA_DIGEST,
+            scalar_bytes("event._fa_digest", event_digest.to_vec())?,
+        ),
+        (property::BOOK_ID, book_id_scalar),
+        (property::CODE, scalar_text("code", &spec.code)?),
+        (
+            property::FA_EFFECTIVE_DAY,
+            CanonicalScalar::Int(i64::from(spec.occurred_on.0)),
+        ),
+    ];
+    ev_props.sort_by_key(|(k, _)| k.0);
+    in_book.create_vertex(ev_vid, vec![label::EVENT], ev_props);
+    in_book.add_edge(
+        edge_id(relation::IN_BOOK, ev_vid, root),
+        ev_vid,
+        root,
+        vec![],
+    );
+    stage_external_id_vertices(book, ev_vid, &resolved_ext, &mut in_book)?;
+
+    let mut doc_vids: Vec<VId> = cited_docs.iter().map(|c| c.vid).collect();
+    doc_vids.sort_unstable();
+    doc_vids.dedup();
+    let mut evidenced = WriteBatch::new(relation::EVIDENCED_BY);
+    for dvid in &doc_vids {
+        evidenced.add_edge(
+            edge_id(relation::EVIDENCED_BY, ev_vid, *dvid),
+            ev_vid,
+            *dvid,
+            vec![],
+        );
+        evidenced.add_edge(
+            edge_id(relation::EVIDENCED_BY, evid, *dvid),
+            evid,
+            *dvid,
+            vec![],
+        );
+    }
+
+    let mut batches = vec![in_book];
+    if !evidenced.is_empty() {
+        batches.push(evidenced);
+    }
+    if let Err(e) = txn.write_ordered(db, batches) {
+        txn.abort();
+        return Err(e.into());
+    }
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(ReaControlRecorded {
+            recorded_at: seq,
+            control_entry: evid,
+            target_vid: ev_vid,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(Refusal::new(
+                code::CONFLICT,
+                exit::CONFLICT,
+                format!("a concurrent commit invalidated record_event's witness: {detail}"),
+                "FG-LAW-FCW-01 (first committer wins)",
+                "retry record_event against the new frontier",
+            )))
+        }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => Ok(Err(Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            "concurrent record_event collided on a derived Event or ExternalId vertex",
+            "plan §4.9 (derived identity uniqueness; FA-INV-09)",
+            "inspect existing events and external_ids before retrying",
+        ))),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Rebuild the journaled REA graph snapshot at `known_at` from genesis +
-/// `SchemaChange` controls (`kind = 5..=10`), and verify stored `Party`,
-/// `Instrument`, `LegalEntity`, `ExternalId`, and `CONTROLS` edges against it.
+/// `SchemaChange` controls (`kind = 5..=11`), and verify stored `Party`,
+/// `Instrument`, `LegalEntity`, `ExternalId`, `Event`, and `CONTROLS` edges against it.
 pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1774,6 +2208,7 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
     let mut instruments: BTreeMap<VId, InstrumentRow> = BTreeMap::new();
     let mut external_ids: BTreeMap<VId, ExternalIdRow> = BTreeMap::new();
     let mut relationships: Vec<RelationshipRow> = Vec::new();
+    let mut events: BTreeMap<VId, EventRow> = BTreeMap::new();
 
     let register_ext = |target_vid: VId,
                         target_code: &str,
@@ -1892,6 +2327,7 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
                             .map(|le| le.code.clone())
                     })
                     .or_else(|| instruments.get(&binding.target_vid).map(|i| i.code.clone()))
+                    .or_else(|| events.get(&binding.target_vid).map(|ev| ev.spec.code.clone()))
                     .ok_or_else(|| {
                         corrupt(format!(
                             "BindExternalId references absent target {:032x}",
@@ -1911,6 +2347,8 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
                     le.external_ids.push(binding.external_id);
                 } else if let Some(inst) = instruments.get_mut(&binding.target_vid) {
                     inst.external_ids.push(binding.external_id);
+                } else if let Some(ev) = events.get_mut(&binding.target_vid) {
+                    ev.spec.external_ids.push(binding.external_id);
                 }
             }
             ReaControlOp::RecordRelationship(spec) => {
@@ -1937,10 +2375,34 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
                 })?;
                 party.identifiers = update.identifiers;
             }
+            ReaControlOp::RecordEvent(spec) => {
+                let vid = event_vid(book.book_id, &spec.code);
+                let event_digest = spec
+                    .event_digest()
+                    .map_err(|e| corrupt(format!("event `{}` digest: {e}", spec.code)))?;
+                for ext in &spec.external_ids {
+                    register_ext(vid, &spec.code, ext, created_at, &mut external_ids)?;
+                }
+                if events
+                    .insert(
+                        vid,
+                        EventRow {
+                            vid,
+                            spec,
+                            event_digest,
+                            created_at,
+                            control_entry: control_vid,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(corrupt(format!("duplicate Event {:032x}", vid.0)));
+                }
+            }
         }
     }
 
-    // Verify stored PARTY, INSTRUMENT, EXTERNAL_ID vertices and CONTROLS edge discipline.
+    // Verify stored PARTY, INSTRUMENT, EXTERNAL_ID, EVENT vertices and CONTROLS edge discipline.
     for row in &rows {
         if row.labels.contains(&label::PARTY) && !parties.contains_key(&row.vid) {
             return Err(corrupt(format!(
@@ -1958,6 +2420,32 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
             return Err(corrupt(format!(
                 "ExternalId vertex {:032x} has no journaled declaration",
                 row.vid.0
+            )));
+        }
+        if row.labels.contains(&label::EVENT) {
+            let Some(expected) = events.get(&row.vid) else {
+                return Err(corrupt(format!(
+                    "Event vertex {:032x} has no journaled RecordEvent declaration",
+                    row.vid.0
+                )));
+            };
+            let stored_digest = bytes(row, property::FA_DIGEST, "event._fa_digest")?;
+            if stored_digest.as_slice() != expected.event_digest.as_slice() {
+                return Err(corrupt(format!(
+                    "Event vertex {:032x} _fa_digest does not match journaled RecordEvent",
+                    row.vid.0
+                )));
+            }
+        }
+    }
+    for (ev_vid, ev_row) in &events {
+        if !vertices_by_vid
+            .get(ev_vid)
+            .is_some_and(|r| r.labels.contains(&label::EVENT))
+        {
+            return Err(corrupt(format!(
+                "journaled Event `{}` ({:032x}) is missing its Event vertex",
+                ev_row.spec.code, ev_vid.0
             )));
         }
     }
@@ -1989,5 +2477,6 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
         legal_entities,
         external_ids,
         relationships,
+        events,
     })
 }

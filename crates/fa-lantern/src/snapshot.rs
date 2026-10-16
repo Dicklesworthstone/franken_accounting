@@ -197,6 +197,7 @@ impl Snapshot {
                     legal_entities: BTreeMap::new(),
                     external_ids: BTreeMap::new(),
                     relationships: Vec::new(),
+                    events: BTreeMap::new(),
                 }
             }
             Err(e) => return Err(e.into()),

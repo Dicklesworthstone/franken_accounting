@@ -899,3 +899,363 @@ fn rea_planted_negatives_agent_trunk_pct_bounds_and_nonexistent_party() {
         Err((missing_err.code, missing_err.exit))
     );
 }
+
+#[test]
+fn rea_event_recording_and_post_derived_from_linkage_match_oracle() {
+    let (rt, mut db, ctx, book, usd) = setup_book();
+    let controller = principal_vid("controller");
+    let cap = Capability::embedded(controller, &["post", "schema_change", "close"]).expect("cap");
+    let d_jan1 = DateDay::from_ymd(2026, 1, 1).unwrap();
+    let d_jan14 = DateDay::from_ymd(2026, 1, 14).unwrap();
+
+    let vendor_rec = rt
+        .block_on(create_party(
+            &mut db,
+            &ctx,
+            &book,
+            &PartySpec {
+                code: "VEND-ACME".into(),
+                kind: PartyKind::Vendor,
+                name: seal_str("Acme Supplies LLC", &book.seal_key, 60),
+                identifiers: Vec::new(),
+                external_ids: Vec::new(),
+            },
+            controller,
+            d_jan1,
+            b"ev-party-acme",
+            seal_str("create vendor", &book.seal_key, 61),
+            &cap,
+        ))
+        .unwrap()
+        .unwrap();
+
+    let cash_vid = account_vid(book.book_id, "1010");
+    let ap_vid = account_vid(book.book_id, "2010");
+    let inst_rec = rt
+        .block_on(create_instrument(
+            &mut db,
+            &ctx,
+            &book,
+            &InstrumentSpec {
+                code: "CHK-JPM-01".into(),
+                name: "JPM Operating Checking".into(),
+                kind: InstrumentKind::BankAccount,
+                unit: usd,
+                held_at_party: vendor_rec.target_vid,
+                mirrors_account: cash_vid,
+                external_ids: Vec::new(),
+            },
+            controller,
+            d_jan1,
+            b"ev-inst-chk",
+            seal_str("create instrument", &book.seal_key, 62),
+            &cap,
+        ))
+        .unwrap()
+        .unwrap();
+
+    let doc = fa_journal::Document {
+        book_id: book.book_id,
+        kind: 1,
+        mime: "application/pdf".into(),
+        grade: 3,
+        retrieved_by: controller,
+        bytes: b"event-invoice-bytes-1001".to_vec(),
+    };
+    rt.block_on(fa_journal::add_document(&mut db, &ctx, &book, &doc))
+        .unwrap()
+        .unwrap();
+    let doc_oid = doc.oid();
+
+    let ev_spec = fa_model::EventSpec {
+        code: "EV-1001".into(),
+        kind: fa_model::EventKind::Purchase,
+        occurred_on: d_jan14,
+        description: seal_str("Purchase of supplies from Acme", &book.seal_key, 63),
+        participants: vec![vendor_rec.target_vid],
+        resources: vec![fa_model::EventResource {
+            label: "cash_outflow".into(),
+            amount: Amount::new(usd, 15_000),
+            instrument: Some(inst_rec.target_vid),
+        }],
+        evidence: vec![doc.evidence_ref(1)],
+        external_ids: vec![ExternalId {
+            system: "stripe".into(),
+            id: seal_str("ch_1001", &book.seal_key, 64),
+        }],
+    };
+    let ev_digest = ev_spec.event_digest().unwrap();
+    let ev_rec = rt
+        .block_on(fa_journal::record_event(
+            &mut db,
+            &ctx,
+            &book,
+            &ev_spec,
+            controller,
+            d_jan14,
+            b"event:EV-1001",
+            seal_str("record EV-1001", &book.seal_key, 65),
+            &cap,
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(!ev_rec.already_recorded);
+    assert_eq!(ev_rec.target_vid, fa_model::event_vid(book.book_id, "EV-1001"));
+
+    // Idempotent retry returns already_recorded = true.
+    let ev_retry = rt
+        .block_on(fa_journal::record_event(
+            &mut db,
+            &ctx,
+            &book,
+            &ev_spec,
+            controller,
+            d_jan14,
+            b"event:EV-1001",
+            seal_str("record EV-1001", &book.seal_key, 65),
+            &cap,
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(ev_retry.already_recorded);
+    assert_eq!(ev_retry.recorded_at, ev_rec.recorded_at);
+
+    // Cross-check with reference oracle validate_event.
+    let parties_set = [vendor_rec.target_vid.0].into_iter().collect();
+    let inst_set = [inst_rec.target_vid.0].into_iter().collect();
+    let docs_set = [doc_oid].into_iter().collect();
+    let ext_map = BTreeMap::new();
+    assert_eq!(
+        fa_reference::rea::validate_event(
+            &fa_reference::rea::RefEvent {
+                vid: ev_rec.target_vid.0,
+                code: "EV-1001".into(),
+                kind: "purchase".into(),
+                occurred_on: d_jan14,
+                participants: vec![vendor_rec.target_vid.0],
+                resources: vec![fa_reference::rea::RefEventResource {
+                    label: "cash_outflow".into(),
+                    instrument_vid: Some(inst_rec.target_vid.0),
+                    unit: usd,
+                    mantissa: 15_000,
+                }],
+                evidence_oids: vec![doc_oid],
+                external_ids: vec![("stripe".into(), "ch_1001".into())],
+                event_digest: ev_digest,
+            },
+            &parties_set,
+            &inst_set,
+            &docs_set,
+            &ext_map,
+            false,
+        ),
+        Ok(())
+    );
+
+    // Post an entry citing EV-1001 and verify DERIVED_FROM edge and read_rea_at reconstruction.
+    let holdco_val = entity_value_vid(book.book_id, "HOLDCO");
+    let mut leg_dr = LegPayload::simple(Side::Debit, ap_vid, Amount::new(usd, 15_000));
+    leg_dr.dimension_set = vec![(LEGAL_ENTITY_DIMENSION, holdco_val)];
+    let mut leg_cr = LegPayload::simple(Side::Credit, cash_vid, Amount::new(usd, 15_000));
+    leg_cr.dimension_set = vec![(LEGAL_ENTITY_DIMENSION, holdco_val)];
+    let legs = vec![leg_dr, leg_cr];
+    let unit_totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+    let mut proposal = EntryPayload {
+        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        book_id: book.book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::ORIGINAL,
+        effective_date: d_jan14,
+        document_date: None,
+        description: seal_str("Entry from EV-1001", &book.seal_key, 66),
+        effective_period: None,
+        legs,
+        control: None,
+        unit_totals,
+        base_totals: None,
+        idempotency_key: b"post-from-ev-1001".to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([2; 32]),
+            intent_kind: 1,
+        },
+        principal_ref: controller,
+        session_ref: None,
+        evidence: vec![doc.evidence_ref(1)],
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        tags: Vec::new(),
+        extensions: Vec::new(),
+    };
+    proposal.with_event_ref(ev_rec.target_vid, ev_digest);
+
+    let posted = rt
+        .block_on(post(
+            &mut db,
+            &ctx,
+            &book,
+            PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                capability: cap.clone(),
+                plan_certificate: None,
+            },
+        ))
+        .unwrap()
+        .unwrap();
+    let entry_vid = match posted {
+        fa_journal::Posted::Committed { entry_ref, .. } => entry_ref.vid,
+        other => panic!("expected Committed, got {other:?}"),
+    };
+
+    assert!(
+        db.edge(fa_journal::rows::edge_id(
+            relation::DERIVED_FROM,
+            entry_vid,
+            ev_rec.target_vid,
+        ))
+        .unwrap()
+        .is_some(),
+        "DERIVED_FROM edge from entry to event must exist"
+    );
+
+    let head = db.frontier().unwrap();
+    let rea_snap = read_rea_at(&db, &book, head).unwrap();
+    let ev_row = rea_snap.events.get(&ev_rec.target_vid).expect("event in rea_snap");
+    assert_eq!(ev_row.spec.code, "EV-1001");
+    assert_eq!(ev_row.event_digest, ev_digest);
+}
+
+#[test]
+fn rea_event_missing_or_unevidenced_event_citation_is_refused() {
+    let (rt, mut db, ctx, book, usd) = setup_book();
+    let controller = principal_vid("controller");
+    let cap = Capability::embedded(controller, &["post", "schema_change", "close"]).expect("cap");
+    let d_jan14 = DateDay::from_ymd(2026, 1, 14).unwrap();
+
+    // 1. Recording an Event with empty evidence is refused with FA-REF-030 (exit 3).
+    let no_ev_spec = fa_model::EventSpec {
+        code: "EV-NO-DOC".into(),
+        kind: fa_model::EventKind::Sale,
+        occurred_on: d_jan14,
+        description: seal_str("no evidence event", &book.seal_key, 70),
+        participants: Vec::new(),
+        resources: Vec::new(),
+        evidence: Vec::new(),
+        external_ids: Vec::new(),
+    };
+    let no_ev_err = rt
+        .block_on(fa_journal::record_event(
+            &mut db,
+            &ctx,
+            &book,
+            &no_ev_spec,
+            controller,
+            d_jan14,
+            b"ev-no-doc",
+            seal_str("record ev-no-doc", &book.seal_key, 71),
+            &cap,
+        ))
+        .unwrap()
+        .expect_err("Event without evidence must be refused");
+    assert_eq!(no_ev_err.code, "FA-REF-030");
+    assert_eq!(no_ev_err.exit, fa_journal::exit::REFUSAL);
+    assert_eq!(
+        fa_reference::rea::validate_event(
+            &fa_reference::rea::RefEvent {
+                vid: 1,
+                code: "EV-NO-DOC".into(),
+                kind: "sale".into(),
+                occurred_on: d_jan14,
+                participants: Vec::new(),
+                resources: Vec::new(),
+                evidence_oids: Vec::new(),
+                external_ids: Vec::new(),
+                event_digest: [0; 32],
+            },
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+            false,
+        ),
+        Err((no_ev_err.code, no_ev_err.exit))
+    );
+
+    // 2. Posting an entry citing a nonexistent Event is refused with FA-REF-030 (exit 3).
+    let doc = fa_journal::Document {
+        book_id: book.book_id,
+        kind: 1,
+        mime: "application/pdf".into(),
+        grade: 3,
+        retrieved_by: controller,
+        bytes: b"valid-doc-for-post".to_vec(),
+    };
+    rt.block_on(fa_journal::add_document(&mut db, &ctx, &book, &doc))
+        .unwrap()
+        .unwrap();
+    let cash_vid = account_vid(book.book_id, "1010");
+    let ap_vid = account_vid(book.book_id, "2010");
+    let holdco_val = entity_value_vid(book.book_id, "HOLDCO");
+    let mut leg_dr = LegPayload::simple(Side::Debit, ap_vid, Amount::new(usd, 5_000));
+    leg_dr.dimension_set = vec![(LEGAL_ENTITY_DIMENSION, holdco_val)];
+    let mut leg_cr = LegPayload::simple(Side::Credit, cash_vid, Amount::new(usd, 5_000));
+    leg_cr.dimension_set = vec![(LEGAL_ENTITY_DIMENSION, holdco_val)];
+    let legs = vec![leg_dr, leg_cr];
+    let unit_totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+    let missing_ev_vid = fa_model::event_vid(book.book_id, "EV-DOES-NOT-EXIST");
+    let mut bad_post = EntryPayload {
+        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        book_id: book.book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::ORIGINAL,
+        effective_date: d_jan14,
+        document_date: None,
+        description: seal_str("Citing nonexistent event", &book.seal_key, 72),
+        effective_period: None,
+        legs,
+        control: None,
+        unit_totals,
+        base_totals: None,
+        idempotency_key: b"post-missing-ev".to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([3; 32]),
+            intent_kind: 1,
+        },
+        principal_ref: controller,
+        session_ref: None,
+        evidence: vec![doc.evidence_ref(1)],
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        tags: Vec::new(),
+        extensions: Vec::new(),
+    };
+    bad_post.with_event_ref(missing_ev_vid, [0u8; 32]);
+
+    let post_err = rt
+        .block_on(post(
+            &mut db,
+            &ctx,
+            &book,
+            PostRequest {
+                proposal: bad_post,
+                approvals: Vec::new(),
+                capability: cap,
+                plan_certificate: None,
+            },
+        ))
+        .unwrap()
+        .expect_err("posting with nonexistent event citation must be refused");
+    assert_eq!(post_err.code, "FA-REF-030");
+    assert_eq!(post_err.exit, fa_journal::exit::REFUSAL);
+    assert_eq!(
+        fa_reference::rea::validate_event_citation(
+            missing_ev_vid.0,
+            [0u8; 32],
+            &Default::default(),
+            &Default::default(),
+        ),
+        Err((post_err.code, post_err.exit))
+    );
+}
