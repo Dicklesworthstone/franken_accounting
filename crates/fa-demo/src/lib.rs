@@ -233,8 +233,14 @@ fn chart_key(template_text: &str) -> Vec<u8> {
 
 fn derive_seeds(scenario: Scenario, seed: u64) -> (u64, u64, Id128) {
     let seed_le = seed.to_le_bytes();
-    let d_keys = domain_digest(b"fa:demo:keys:v1", &[scenario.as_str().as_bytes(), &seed_le]);
-    let d_book = domain_digest(b"fa:demo:book:v1", &[scenario.as_str().as_bytes(), &seed_le]);
+    let d_keys = domain_digest(
+        b"fa:demo:keys:v1",
+        &[scenario.as_str().as_bytes(), &seed_le],
+    );
+    let d_book = domain_digest(
+        b"fa:demo:book:v1",
+        &[scenario.as_str().as_bytes(), &seed_le],
+    );
     let d_id = domain_digest(b"fa:demo:id:v1", &[scenario.as_str().as_bytes(), &seed_le]);
     let mut k_bytes = [0u8; 8];
     k_bytes.copy_from_slice(&d_keys[..8]);
@@ -278,11 +284,32 @@ pub fn us_gaap_smb_accounts(base_unit: UnitId) -> Vec<AccountSpec> {
     use AccountType as T;
     vec![
         spec_row("1", "Assets", T::ASSET, false, any, None),
-        spec_row("1000", "Cash and cash equivalents", T::ASSET, false, any, Some("1")),
-        spec_row("1010", "Operating checking", T::ASSET, true, base, Some("1000")),
+        spec_row(
+            "1000",
+            "Cash and cash equivalents",
+            T::ASSET,
+            false,
+            any,
+            Some("1"),
+        ),
+        spec_row(
+            "1010",
+            "Operating checking",
+            T::ASSET,
+            true,
+            base,
+            Some("1000"),
+        ),
         spec_row("1020", "Savings", T::ASSET, true, base, Some("1000")),
         spec_row("1030", "Petty cash", T::ASSET, true, base, Some("1000")),
-        spec_row("1200", "Accounts receivable", T::ASSET, true, base, Some("1")),
+        spec_row(
+            "1200",
+            "Accounts receivable",
+            T::ASSET,
+            true,
+            base,
+            Some("1"),
+        ),
         spec_row(
             "1250",
             "Allowance for credit losses (contra-asset)",
@@ -293,9 +320,23 @@ pub fn us_gaap_smb_accounts(base_unit: UnitId) -> Vec<AccountSpec> {
         ),
         spec_row("1300", "Inventory", T::ASSET, true, base, Some("1")),
         spec_row("1400", "Prepaid expenses", T::ASSET, true, base, Some("1")),
-        spec_row("1500", "Property and equipment", T::ASSET, false, any, Some("1")),
+        spec_row(
+            "1500",
+            "Property and equipment",
+            T::ASSET,
+            false,
+            any,
+            Some("1"),
+        ),
         spec_row("1510", "Equipment", T::ASSET, true, base, Some("1500")),
-        spec_row("1520", "Furniture and fixtures", T::ASSET, true, base, Some("1500")),
+        spec_row(
+            "1520",
+            "Furniture and fixtures",
+            T::ASSET,
+            true,
+            base,
+            Some("1500"),
+        ),
         spec_row("1530", "Vehicles", T::ASSET, true, base, Some("1500")),
         spec_row(
             "1590",
@@ -307,13 +348,62 @@ pub fn us_gaap_smb_accounts(base_unit: UnitId) -> Vec<AccountSpec> {
         ),
         spec_row("1900", "Other assets", T::ASSET, true, base, Some("1")),
         spec_row("2", "Liabilities", T::LIABILITY, false, any, None),
-        spec_row("2000", "Accounts payable", T::LIABILITY, true, base, Some("2")),
-        spec_row("2100", "Credit cards payable", T::LIABILITY, true, base, Some("2")),
-        spec_row("2200", "Accrued liabilities", T::LIABILITY, true, base, Some("2")),
-        spec_row("2300", "Sales tax payable", T::LIABILITY, true, base, Some("2")),
-        spec_row("2400", "Payroll liabilities", T::LIABILITY, true, base, Some("2")),
-        spec_row("2500", "Deferred revenue", T::LIABILITY, true, base, Some("2")),
-        spec_row("2600", "Income taxes payable", T::LIABILITY, true, base, Some("2")),
+        spec_row(
+            "2000",
+            "Accounts payable",
+            T::LIABILITY,
+            true,
+            base,
+            Some("2"),
+        ),
+        spec_row(
+            "2100",
+            "Credit cards payable",
+            T::LIABILITY,
+            true,
+            base,
+            Some("2"),
+        ),
+        spec_row(
+            "2200",
+            "Accrued liabilities",
+            T::LIABILITY,
+            true,
+            base,
+            Some("2"),
+        ),
+        spec_row(
+            "2300",
+            "Sales tax payable",
+            T::LIABILITY,
+            true,
+            base,
+            Some("2"),
+        ),
+        spec_row(
+            "2400",
+            "Payroll liabilities",
+            T::LIABILITY,
+            true,
+            base,
+            Some("2"),
+        ),
+        spec_row(
+            "2500",
+            "Deferred revenue",
+            T::LIABILITY,
+            true,
+            base,
+            Some("2"),
+        ),
+        spec_row(
+            "2600",
+            "Income taxes payable",
+            T::LIABILITY,
+            true,
+            base,
+            Some("2"),
+        ),
         spec_row("2700", "Notes payable", T::LIABILITY, true, base, Some("2")),
         spec_row("3", "Equity", T::EQUITY, false, any, None),
         spec_row(
@@ -324,9 +414,30 @@ pub fn us_gaap_smb_accounts(base_unit: UnitId) -> Vec<AccountSpec> {
             base,
             Some("3"),
         ),
-        spec_row("3100", "Additional paid-in capital", T::EQUITY, true, base, Some("3")),
-        spec_row("3200", "Retained earnings", T::EQUITY, true, base, Some("3")),
-        spec_row("3300", "Owner's draws or dividends", T::EQUITY, true, base, Some("3")),
+        spec_row(
+            "3100",
+            "Additional paid-in capital",
+            T::EQUITY,
+            true,
+            base,
+            Some("3"),
+        ),
+        spec_row(
+            "3200",
+            "Retained earnings",
+            T::EQUITY,
+            true,
+            base,
+            Some("3"),
+        ),
+        spec_row(
+            "3300",
+            "Owner's draws or dividends",
+            T::EQUITY,
+            true,
+            base,
+            Some("3"),
+        ),
         spec_row("4", "Revenue", T::REVENUE, false, any, None),
         spec_row("4000", "Sales revenue", T::REVENUE, true, base, Some("4")),
         spec_row("4100", "Service revenue", T::REVENUE, true, base, Some("4")),
@@ -340,23 +451,93 @@ pub fn us_gaap_smb_accounts(base_unit: UnitId) -> Vec<AccountSpec> {
         ),
         spec_row("4900", "Other income", T::REVENUE, true, base, Some("4")),
         spec_row("5", "Cost of goods sold", T::EXPENSE, false, any, None),
-        spec_row("5000", "Cost of goods sold", T::EXPENSE, true, base, Some("5")),
-        spec_row("5100", "Freight and delivery in", T::EXPENSE, true, base, Some("5")),
+        spec_row(
+            "5000",
+            "Cost of goods sold",
+            T::EXPENSE,
+            true,
+            base,
+            Some("5"),
+        ),
+        spec_row(
+            "5100",
+            "Freight and delivery in",
+            T::EXPENSE,
+            true,
+            base,
+            Some("5"),
+        ),
         spec_row("6", "Operating expenses", T::EXPENSE, false, any, None),
         spec_row("6000", "Rent", T::EXPENSE, true, base, Some("6")),
-        spec_row("6100", "Salaries and wages", T::EXPENSE, true, base, Some("6")),
+        spec_row(
+            "6100",
+            "Salaries and wages",
+            T::EXPENSE,
+            true,
+            base,
+            Some("6"),
+        ),
         spec_row("6150", "Payroll taxes", T::EXPENSE, true, base, Some("6")),
         spec_row("6200", "Utilities", T::EXPENSE, true, base, Some("6")),
         spec_row("6300", "Insurance", T::EXPENSE, true, base, Some("6")),
         spec_row("6400", "Office supplies", T::EXPENSE, true, base, Some("6")),
-        spec_row("6500", "Professional fees", T::EXPENSE, true, base, Some("6")),
-        spec_row("6600", "Advertising and marketing", T::EXPENSE, true, base, Some("6")),
-        spec_row("6700", "Depreciation expense", T::EXPENSE, true, base, Some("6")),
-        spec_row("6800", "Bank and merchant fees", T::EXPENSE, true, base, Some("6")),
-        spec_row("6900", "Travel and meals", T::EXPENSE, true, base, Some("6")),
+        spec_row(
+            "6500",
+            "Professional fees",
+            T::EXPENSE,
+            true,
+            base,
+            Some("6"),
+        ),
+        spec_row(
+            "6600",
+            "Advertising and marketing",
+            T::EXPENSE,
+            true,
+            base,
+            Some("6"),
+        ),
+        spec_row(
+            "6700",
+            "Depreciation expense",
+            T::EXPENSE,
+            true,
+            base,
+            Some("6"),
+        ),
+        spec_row(
+            "6800",
+            "Bank and merchant fees",
+            T::EXPENSE,
+            true,
+            base,
+            Some("6"),
+        ),
+        spec_row(
+            "6900",
+            "Travel and meals",
+            T::EXPENSE,
+            true,
+            base,
+            Some("6"),
+        ),
         spec_row("7", "Other expenses", T::EXPENSE, false, any, None),
-        spec_row("7000", "Interest expense", T::EXPENSE, true, base, Some("7")),
-        spec_row("7100", "Income tax expense", T::EXPENSE, true, base, Some("7")),
+        spec_row(
+            "7000",
+            "Interest expense",
+            T::EXPENSE,
+            true,
+            base,
+            Some("7"),
+        ),
+        spec_row(
+            "7100",
+            "Income tax expense",
+            T::EXPENSE,
+            true,
+            base,
+            Some("7"),
+        ),
     ]
 }
 
@@ -408,7 +589,14 @@ pub fn us_bank_call_report_accounts(base_unit: UnitId) -> Vec<AccountSpec> {
             base,
             Some("1"),
         ),
-        spec_row("1310", "Federal funds sold (RC 3.a)", T::ASSET, true, base, Some("1")),
+        spec_row(
+            "1310",
+            "Federal funds sold (RC 3.a)",
+            T::ASSET,
+            true,
+            base,
+            Some("1"),
+        ),
         spec_row(
             "1320",
             "Securities purchased under agreements to resell (RC 3.b)",
@@ -441,7 +629,14 @@ pub fn us_bank_call_report_accounts(base_unit: UnitId) -> Vec<AccountSpec> {
             base,
             Some("1"),
         ),
-        spec_row("1500", "Trading assets (RC 5)", T::ASSET, true, base, Some("1")),
+        spec_row(
+            "1500",
+            "Trading assets (RC 5)",
+            T::ASSET,
+            true,
+            base,
+            Some("1"),
+        ),
         spec_row(
             "1600",
             "Premises and fixed assets (RC 6)",
@@ -474,9 +669,30 @@ pub fn us_bank_call_report_accounts(base_unit: UnitId) -> Vec<AccountSpec> {
             base,
             Some("1"),
         ),
-        spec_row("1900", "Intangible assets (RC 10)", T::ASSET, true, base, Some("1")),
-        spec_row("1950", "Other assets (RC 11)", T::ASSET, true, base, Some("1")),
-        spec_row("2", "Liabilities (Schedule RC)", T::LIABILITY, false, any, None),
+        spec_row(
+            "1900",
+            "Intangible assets (RC 10)",
+            T::ASSET,
+            true,
+            base,
+            Some("1"),
+        ),
+        spec_row(
+            "1950",
+            "Other assets (RC 11)",
+            T::ASSET,
+            true,
+            base,
+            Some("1"),
+        ),
+        spec_row(
+            "2",
+            "Liabilities (Schedule RC)",
+            T::LIABILITY,
+            false,
+            any,
+            None,
+        ),
         spec_row(
             "2110",
             "Deposits in domestic offices: noninterest-bearing (RC 13.a.1)",
@@ -541,7 +757,14 @@ pub fn us_bank_call_report_accounts(base_unit: UnitId) -> Vec<AccountSpec> {
             base,
             Some("2"),
         ),
-        spec_row("3", "Equity capital (Schedule RC)", T::EQUITY, false, any, None),
+        spec_row(
+            "3",
+            "Equity capital (Schedule RC)",
+            T::EQUITY,
+            false,
+            any,
+            None,
+        ),
         spec_row(
             "3100",
             "Perpetual preferred stock and related surplus (RC 23)",
@@ -550,7 +773,14 @@ pub fn us_bank_call_report_accounts(base_unit: UnitId) -> Vec<AccountSpec> {
             base,
             Some("3"),
         ),
-        spec_row("3200", "Common stock (RC 24)", T::EQUITY, true, base, Some("3")),
+        spec_row(
+            "3200",
+            "Common stock (RC 24)",
+            T::EQUITY,
+            true,
+            base,
+            Some("3"),
+        ),
         spec_row("3300", "Surplus (RC 25)", T::EQUITY, true, base, Some("3")),
         spec_row(
             "3400",
@@ -880,7 +1110,8 @@ fn two_principal_approvals(
         .map_err(|e| fa_journal::KernelError::Model(e.into()))?;
     let mut out = Vec::with_capacity(2);
     for p in [approver_1, approver_2] {
-        let cap = Capability::embedded(p, &["approve"]).map_err(|e| BookError::KeyFile(e.to_string()))?;
+        let cap =
+            Capability::embedded(p, &["approve"]).map_err(|e| BookError::KeyFile(e.to_string()))?;
         let approved: Approved = book.approve(cap, digest)??;
         out.push(approved.approval());
     }
@@ -904,8 +1135,7 @@ pub fn init_dir(
     let usd = units
         .lookup("USD")
         .ok_or_else(|| BookError::KeyFile("USD unit missing from registry".into()))?;
-    let calendar =
-        FiscalCalendar::monthly("US-FY", 1, 1).map_err(fa_journal::KernelError::from)?;
+    let calendar = FiscalCalendar::monthly("US-FY", 1, 1).map_err(fa_journal::KernelError::from)?;
     let opening_date =
         DateDay::from_ymd(2026, 1, 1).map_err(|e| BookError::KeyFile(format!("{e:?}")))?;
 
@@ -946,8 +1176,8 @@ pub fn init_dir(
 
     // 2. Create FY2026 periods, lock `FY2026-OPEN` for Migration, and open `FY2026-P01`..`FY2026-P12`.
     let (_, period_defs) = book.create_periods(2026)?;
-    let close_cap =
-        Capability::embedded(controller, &["close"]).map_err(|e| BookError::KeyFile(e.to_string()))?;
+    let close_cap = Capability::embedded(controller, &["close"])
+        .map_err(|e| BookError::KeyFile(e.to_string()))?;
     for (idx, transition) in [
         PeriodTransition::Open,
         PeriodTransition::SoftClose,
@@ -1057,8 +1287,8 @@ pub fn init_dir(
         ),
     )?;
     doc_count += 1;
-    let review_cap =
-        Capability::embedded(controller, &["approve"]).map_err(|e| BookError::KeyFile(e.to_string()))?;
+    let review_cap = Capability::embedded(controller, &["approve"])
+        .map_err(|e| BookError::KeyFile(e.to_string()))?;
     book.record_review(&review_cap, &vendor_doc.oid(), vec![sales_doc.oid()])??;
 
     let workpaper_doc = add_doc(
@@ -1487,8 +1717,8 @@ pub fn init_dir(
         format!("demo:p02:lock:s{seed}").as_bytes(),
     )??;
     let lock_digest = book.plan_digest(&lock_plan)?;
-    let auditor_approve_cap =
-        Capability::embedded(auditor, &["approve"]).map_err(|e| BookError::KeyFile(e.to_string()))?;
+    let auditor_approve_cap = Capability::embedded(auditor, &["approve"])
+        .map_err(|e| BookError::KeyFile(e.to_string()))?;
     let lock_approval: Approved = book.approve(auditor_approve_cap, lock_digest)??;
     let p02_lk = book.transition_planned(
         &lock_plan,
@@ -1500,8 +1730,14 @@ pub fn init_dir(
         id: "PERIOD-LOCKED-P02".into(),
         kind: "PeriodLifecycle".into(),
         period: "FY2026-P02".into(),
-        entry_vids: vec![p02_sc.control_entry, p02_cl.control_entry, p02_lk.control_entry],
-        summary: "FY2026-P02 transitioned Open -> SoftClosed -> Closed -> Locked (approved by auditor)".into(),
+        entry_vids: vec![
+            p02_sc.control_entry,
+            p02_cl.control_entry,
+            p02_lk.control_entry,
+        ],
+        summary:
+            "FY2026-P02 transitioned Open -> SoftClosed -> Closed -> Locked (approved by auditor)"
+                .into(),
     });
 
     // 6. FY2026-P03: Two-phase Pending hold and Resolution(Posts), plus auto-reversing Adjusting accrual.
@@ -1577,7 +1813,9 @@ pub fn init_dir(
         kind: "TwoPhaseHoldResolution".into(),
         period: "FY2026-P03".into(),
         entry_vids: vec![hold_ref.vid, resolve_ref.vid],
-        summary: "Pending reservation of 850.00 USD resolved at 720.00 USD posted (130.00 USD released)".into(),
+        summary:
+            "Pending reservation of 850.00 USD resolved at 720.00 USD posted (130.00 USD released)"
+                .into(),
     });
 
     // Auto-reversing Adjusting accrual on 2026-03-31 scheduled to reverse on 2026-04-01.
@@ -1662,13 +1900,9 @@ pub fn init_dir(
             entry_count += 1;
 
             let mut dup_vids = Vec::with_capacity(3);
-            for (idx, (day, suffix)) in [
-                (pay_day_1, "a"),
-                (pay_day_1, "b"),
-                (pay_day_2, "c"),
-            ]
-            .into_iter()
-            .enumerate()
+            for (idx, (day, suffix)) in [(pay_day_1, "a"), (pay_day_1, "b"), (pay_day_2, "c")]
+                .into_iter()
+                .enumerate()
             {
                 let p = build_proposal(
                     &book,
@@ -1676,7 +1910,10 @@ pub fn init_dir(
                     day,
                     Some(day),
                     &format!("demo:retail:dup-pay-{suffix}:s{seed}"),
-                    &format!("Disbursement to VEND-APEX for BILL-APEX-884 (run #{})", idx + 1),
+                    &format!(
+                        "Disbursement to VEND-APEX for BILL-APEX-884 (run #{})",
+                        idx + 1
+                    ),
                     operator,
                     vec![
                         LegPayload::simple(
@@ -1730,7 +1967,10 @@ pub fn init_dir(
                     day,
                     Some(day),
                     &format!("demo:bank:kite-{step}:s{seed}"),
-                    &format!("Interbank float transfer leg {} ({from_acct} -> {to_acct})", step + 1),
+                    &format!(
+                        "Interbank float transfer leg {} ({from_acct} -> {to_acct})",
+                        step + 1
+                    ),
                     operator,
                     vec![
                         LegPayload::simple(
@@ -1880,7 +2120,10 @@ pub fn init_dir(
                     day,
                     Some(day),
                     &format!("demo:shell:leg-{step}:s{seed}"),
-                    &format!("Related-party conduit transfer leg {} ({from_acct} -> {to_acct})", step + 1),
+                    &format!(
+                        "Related-party conduit transfer leg {} ({from_acct} -> {to_acct})",
+                        step + 1
+                    ),
                     operator,
                     vec![
                         LegPayload::simple(
@@ -1997,8 +2240,7 @@ pub fn init_dir(
             let d1 = DateDay::from_ymd(2026, 3, 27).unwrap();
             let d2 = DateDay::from_ymd(2026, 3, 28).unwrap();
             let mut ghost_vids = Vec::with_capacity(3);
-            for (idx, (day, suffix)) in [(d1, "a"), (d1, "b"), (d2, "c")].into_iter().enumerate()
-            {
+            for (idx, (day, suffix)) in [(d1, "a"), (d1, "b"), (d2, "c")].into_iter().enumerate() {
                 let p = build_proposal(
                     &book,
                     EntryClass::ORIGINAL,
@@ -2043,8 +2285,8 @@ pub fn init_dir(
     for period_code in ["FY2026-OPEN", "FY2026-P01", "FY2026-P02", "FY2026-P03"] {
         book.advance_registers(period_code)?;
     }
-    let witness_cap =
-        Capability::embedded(auditor, &["witness"]).map_err(|e| BookError::KeyFile(e.to_string()))?;
+    let witness_cap = Capability::embedded(auditor, &["witness"])
+        .map_err(|e| BookError::KeyFile(e.to_string()))?;
     let checkpointed = book.checkpoint(auditor, &witness_cap)??;
     let head_seq = book.head()?;
 
@@ -2143,7 +2385,10 @@ pub fn render_readme(info: &DemoInitialized) -> String {
     out.push_str(&format!("- **Scenario:** `{}`\n", info.scenario.as_str()));
     out.push_str(&format!("- **Seed:** `{}`\n", info.seed));
     out.push_str(&format!("- **Base Unit:** `{}`\n", info.base_unit));
-    out.push_str(&format!("- **Calendar:** `{}` (`{}` periods)\n", info.calendar, info.periods));
+    out.push_str(&format!(
+        "- **Calendar:** `{}` (`{}` periods)\n",
+        info.calendar, info.periods
+    ));
     out.push_str(&format!(
         "- **Chart Template:** `{}` (`{}` accounts)\n",
         info.chart_template, info.accounts
@@ -2165,7 +2410,10 @@ pub fn render_readme(info: &DemoInitialized) -> String {
         "- **Journal Accumulator Root (`journal_digest`):** `{}`\n",
         hex(&info.journal_digest)
     ));
-    out.push_str(&format!("- **Recorded Head (`CommitSeq`):** `{}`\n\n", info.head_seq.0));
+    out.push_str(&format!(
+        "- **Recorded Head (`CommitSeq`):** `{}`\n\n",
+        info.head_seq.0
+    ));
 
     out.push_str("## Period Lifecycle States\n\n");
     out.push_str("| Period | State | Notes |\n");
@@ -2174,7 +2422,9 @@ pub fn render_readme(info: &DemoInitialized) -> String {
     out.push_str("| `FY2026-P01` | `Closed` | January activity posted, registers advanced, transitioned `Open -> SoftClosed -> Closed` |\n");
     out.push_str("| `FY2026-P02` | `Locked` | February activity posted, partial AR settlement, transitioned `Open -> SoftClosed -> Closed -> Locked` |\n");
     out.push_str("| `FY2026-P03` | `Open` | March operational activity, two-phase hold/resolution, auto-reversing accrual, planted forensic facts |\n");
-    out.push_str("| `FY2026-P04`..`FY2026-P12` | `Open` | Open for interactive experimentation |\n\n");
+    out.push_str(
+        "| `FY2026-P04`..`FY2026-P12` | `Open` | Open for interactive experimentation |\n\n",
+    );
 
     out.push_str("## Planted Facts\n\n");
     out.push_str("| Fact ID | Kind | Period | Entry VIds | Summary |\n");
@@ -2209,8 +2459,12 @@ pub fn render_readme(info: &DemoInitialized) -> String {
     out.push_str("fa verify periods --book . --json\n\n");
     out.push_str("# Run Lantern audit/forensic procedures over FY2026-P03\n");
     out.push_str("fa procedure list --json\n");
-    out.push_str("fa procedure run duplicates.same_same_same --period FY2026-P03 --book . --json\n");
-    out.push_str("fa procedure run duplicates.same_same_different --period FY2026-P03 --book . --json\n");
+    out.push_str(
+        "fa procedure run duplicates.same_same_same --period FY2026-P03 --book . --json\n",
+    );
+    out.push_str(
+        "fa procedure run duplicates.same_same_different --period FY2026-P03 --book . --json\n",
+    );
     out.push_str("```\n");
     out
 }

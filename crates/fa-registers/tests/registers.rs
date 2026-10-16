@@ -2435,7 +2435,11 @@ fn memo_off_balance_and_single_sided_statistical_legs_obey_partition_and_footing
         .find(|r| r.code == "9100")
         .expect("9100 row present");
     assert_eq!(
-        (headcount_row.debits, headcount_row.credits, headcount_row.unit_id),
+        (
+            headcount_row.debits,
+            headcount_row.credits,
+            headcount_row.unit_id
+        ),
         (45, 0, each.0)
     );
     let hours_row = tb
@@ -2453,7 +2457,11 @@ fn memo_off_balance_and_single_sided_statistical_legs_obey_partition_and_footing
         .find(|r| r.code == "8510")
         .expect("8510 row present");
     assert_eq!(
-        (offbal_row.debits, offbal_row.credits, offbal_row.account_type),
+        (
+            offbal_row.debits,
+            offbal_row.credits,
+            offbal_row.account_type
+        ),
         (250_000, 0, AccountType::OFF_BALANCE)
     );
 

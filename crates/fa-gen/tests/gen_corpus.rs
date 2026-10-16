@@ -49,9 +49,13 @@ struct PostedScenario {
 
 impl PostedScenario {
     fn run_procedure(&self, p: &dyn Procedure) -> ProcedureRun {
-        let mut snapshot =
-            Snapshot::read(&self.db, &self.book, None, Some(self.corpus.snapshot_cutoff))
-                .expect("snapshot");
+        let mut snapshot = Snapshot::read(
+            &self.db,
+            &self.book,
+            None,
+            Some(self.corpus.snapshot_cutoff),
+        )
+        .expect("snapshot");
         // For planted entries representing legacy self-approval (`self_approve = true`),
         // attach legacy migration self-approval provenance on the snapshot entry (native
         // self-approval is proactively refused by FA-INV-06 / FA-REF-008 at commit).
@@ -73,13 +77,8 @@ impl PostedScenario {
                         [78; 32],
                         [78; 24],
                     );
-                    let mig_id = Erasable::seal(
-                        &ge.key,
-                        None,
-                        &self.book.seal_key,
-                        [79; 32],
-                        [79; 24],
-                    );
+                    let mig_id =
+                        Erasable::seal(&ge.key, None, &self.book.seal_key, [79; 32], [79; 24]);
                     se.entry.proposal.origin = EntryOrigin::Migration {
                         run_ref: VId(900),
                         source_system: "legacy_erp".into(),
@@ -263,8 +262,7 @@ fn post_corpus(corpus: GeneratedCorpus) -> PostedScenario {
         let mut external_ids = Vec::new();
         for (sys, id) in &entry.external_ids {
             salt = salt.wrapping_add(1);
-            let sealed_id =
-                Erasable::seal(id, None, &book.seal_key, [salt; 32], [salt; 24]);
+            let sealed_id = Erasable::seal(id, None, &book.seal_key, [salt; 32], [salt; 24]);
             external_ids.push(ExternalId {
                 system: sys.clone(),
                 id: sealed_id,

@@ -115,9 +115,7 @@ impl DeterministicRng {
             // $8,000.00 structuring floor (800_000 cents) so clean baseline flows
             // never accidentally form a sub-threshold structuring chain.
             if cents >= 750_000 {
-                cents = i128::from(leading_digit) * 10_000
-                    + i128::from(self.below(9_900))
-                    + 13;
+                cents = i128::from(leading_digit) * 10_000 + i128::from(self.below(9_900)) + 13;
             }
             if cents % 100_000 != 0 && used.insert(cents) {
                 return cents;
@@ -652,7 +650,9 @@ impl GeneratedCorpus {
                 "No fraud or control anomalies are planted in this clean baseline book.\n",
             );
         } else {
-            out.push_str("| Fact ID | Kind | Target Procedures | Entry Keys | Accounts | Rationale |\n");
+            out.push_str(
+                "| Fact ID | Kind | Target Procedures | Entry Keys | Accounts | Rationale |\n",
+            );
             out.push_str("|---|---|---|---|---|---|\n");
             for f in &self.labels {
                 out.push_str(&format!(
@@ -744,18 +744,53 @@ pub fn standard_chart() -> Vec<GenAccount> {
         GenAccount::new("2000", "Accounts Payable", AccountType::LIABILITY, 1),
         GenAccount::new("2100", "Accrued Line Costs", AccountType::LIABILITY, 1),
         GenAccount::new("2200", "Accrued Wages Payable", AccountType::LIABILITY, 1),
-        GenAccount::new("2400", "Investor Capital Cohort A", AccountType::LIABILITY, 1),
-        GenAccount::new("2410", "Investor Capital Cohort B", AccountType::LIABILITY, 1),
+        GenAccount::new(
+            "2400",
+            "Investor Capital Cohort A",
+            AccountType::LIABILITY,
+            1,
+        ),
+        GenAccount::new(
+            "2410",
+            "Investor Capital Cohort B",
+            AccountType::LIABILITY,
+            1,
+        ),
         GenAccount::new("3000", "Contributed Capital", AccountType::EQUITY, 1),
-        GenAccount::new("4000", "Merchandise & Service Revenue", AccountType::REVENUE, 1),
-        GenAccount::new("4100", "Advisory & Management Revenue", AccountType::REVENUE, 1),
+        GenAccount::new(
+            "4000",
+            "Merchandise & Service Revenue",
+            AccountType::REVENUE,
+            1,
+        ),
+        GenAccount::new(
+            "4100",
+            "Advisory & Management Revenue",
+            AccountType::REVENUE,
+            1,
+        ),
         GenAccount::new("5000", "Cost of Goods Sold", AccountType::EXPENSE, 0),
         GenAccount::new("6000", "Store Rent Expense", AccountType::EXPENSE, 0),
         GenAccount::new("6100", "Network Line Cost Expense", AccountType::EXPENSE, 0),
-        GenAccount::new("6200", "Consulting & Advisory Expense", AccountType::EXPENSE, 0),
+        GenAccount::new(
+            "6200",
+            "Consulting & Advisory Expense",
+            AccountType::EXPENSE,
+            0,
+        ),
         GenAccount::new("6300", "Wages & Salaries Expense", AccountType::EXPENSE, 0),
-        GenAccount::new("6500", "Investor Redemption Distributions", AccountType::EXPENSE, 0),
-        GenAccount::new("7000", "Utilities & Operations Expense", AccountType::EXPENSE, 0),
+        GenAccount::new(
+            "6500",
+            "Investor Redemption Distributions",
+            AccountType::EXPENSE,
+            0,
+        ),
+        GenAccount::new(
+            "7000",
+            "Utilities & Operations Expense",
+            AccountType::EXPENSE,
+            0,
+        ),
     ]
 }
 
@@ -969,8 +1004,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
             let prev_inv_idx = entries
                 .iter()
                 .rposition(|e| {
-                    e.key != cutoff_key
-                        && e.external_ids.iter().any(|(s, _)| s == "ar_invoice")
+                    e.key != cutoff_key && e.external_ids.iter().any(|(s, _)| s == "ar_invoice")
                 })
                 .expect("prior invoice entry exists");
             labels.push(PlantedFact {
@@ -1032,7 +1066,9 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 entry_keys: vec![post_close_key],
                 account_codes: vec!["1200".into(), "4000".into()],
                 party_codes: vec!["CUST-STUFF-01".into()],
-                rationale: "Top-side $50,000.00 revenue entry recorded into FY2026-P01 after SoftClose.".into(),
+                rationale:
+                    "Top-side $50,000.00 revenue entry recorded into FY2026-P01 after SoftClose."
+                        .into(),
             });
         }
         ScenarioKind::KitingBank => {
@@ -1266,7 +1302,9 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 entry_keys: vec![rt_out_key, rt_back_key],
                 account_codes: vec!["1000".into(), "1020".into()],
                 party_codes: vec!["INV-COHORT-A".into()],
-                rationale: "Commingled trust-to-operating cash round-trip of $15,432.10 within 1 day.".into(),
+                rationale:
+                    "Commingled trust-to-operating cash round-trip of $15,432.10 within 1 day."
+                        .into(),
             });
         }
         ScenarioKind::ShellNetwork => {
@@ -1304,10 +1342,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                     effective_date: day(2026, 2, d),
                     document_date: Some(day(2026, 2, d)),
                     description: format!("Intermediary clearing funding tranche #{}", i + 1),
-                    legs: vec![
-                        GenLeg::debit("1030", cents),
-                        GenLeg::credit("1000", cents),
-                    ],
+                    legs: vec![GenLeg::debit("1030", cents), GenLeg::credit("1000", cents)],
                     external_ids: Vec::new(),
                     party_code: Some("SHELL-01".into()),
                     self_approve: false,
@@ -1392,7 +1427,9 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 entry_keys: vec![dup1_key.clone(), dup2_key.clone()],
                 account_codes: vec!["1000".into(), "6200".into()],
                 party_codes: vec!["SHELL-02".into()],
-                rationale: "Two identical $6,421.15 consulting disbursements to SHELL-02 on 2026-03-16.".into(),
+                rationale:
+                    "Two identical $6,421.15 consulting disbursements to SHELL-02 on 2026-03-16."
+                        .into(),
             });
             labels.push(PlantedFact {
                 fact_id: "SN-FACT-03".into(),
@@ -1402,7 +1439,8 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 entry_keys: vec![dup1_key, dup2_key, dup3_key],
                 account_codes: vec!["1000".into(), "6200".into()],
                 party_codes: vec!["SHELL-02".into()],
-                rationale: "Repeat $6,421.15 consulting disbursement 4 days later on 2026-03-20.".into(),
+                rationale: "Repeat $6,421.15 consulting disbursement 4 days later on 2026-03-20."
+                    .into(),
             });
         }
         ScenarioKind::WorldComCapitalization => {
@@ -1432,7 +1470,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 class: EntryClass::ORIGINAL,
                 effective_date: day(2026, 1, 31), // Saturday + last day of Jan!
                 document_date: Some(day(2026, 2, 4)), // Cutoff straddle!
-                description: "cap".into(), // 3 chars < 4 -> thin_descriptions!
+                description: "cap".into(),        // 3 chars < 4 -> thin_descriptions!
                 legs: vec![
                     GenLeg::debit("1500", 8_000_000),
                     GenLeg::credit("6100", 8_000_000),
@@ -1488,7 +1526,9 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 entry_keys: vec![wk_cap_key],
                 account_codes: vec!["1500".into(), "2100".into()],
                 party_codes: vec!["CARRIER-01".into()],
-                rationale: "Sunday $40,000.00 capitalization of accrued line costs into network CapEx.".into(),
+                rationale:
+                    "Sunday $40,000.00 capitalization of accrued line costs into network CapEx."
+                        .into(),
             });
         }
         ScenarioKind::GhostPayroll => {
@@ -1577,7 +1617,8 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 entry_keys: vec![pay1_key.clone(), pay2_key.clone()],
                 account_codes: vec!["1050".into(), "6300".into()],
                 party_codes: vec!["EMP-01".into(), "EMP-GHOST-01".into()],
-                rationale: "Skipped payroll advice number PAY-2002 between PAY-2001 and PAY-2003.".into(),
+                rationale: "Skipped payroll advice number PAY-2002 between PAY-2001 and PAY-2003."
+                    .into(),
             });
             labels.push(PlantedFact {
                 fact_id: "GP-FACT-03".into(),
@@ -1587,7 +1628,8 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 entry_keys: vec![pay1_key, pay2_key, pay3_key.clone()],
                 account_codes: vec!["1050".into(), "6300".into()],
                 party_codes: vec!["EMP-GHOST-01".into()],
-                rationale: "Repeat $3,845.12 payroll disbursement 2 days later on 2026-02-15.".into(),
+                rationale: "Repeat $3,845.12 payroll disbursement 2 days later on 2026-02-15."
+                    .into(),
             });
             labels.push(PlantedFact {
                 fact_id: "GP-FACT-04".into(),
@@ -1662,7 +1704,10 @@ mod tests {
             for label in &a.labels {
                 assert_eq!(label.entry_indices.len(), label.entry_keys.len());
                 for (&idx, key) in label.entry_indices.iter().zip(label.entry_keys.iter()) {
-                    assert!(idx < a.entries.len(), "{scenario}: index {idx} out of bounds");
+                    assert!(
+                        idx < a.entries.len(),
+                        "{scenario}: index {idx} out of bounds"
+                    );
                     assert_eq!(&a.entries[idx].key, key);
                 }
             }

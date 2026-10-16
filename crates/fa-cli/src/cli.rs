@@ -2982,13 +2982,12 @@ fn demo_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let dir = book_dir(args, ctx.files.cwd.as_deref())?;
             let keys_file = keys_path(args, &dir, ctx.files.cwd.as_deref());
             ctx.books.prepare_create(&dir)?;
-            let initialized = fa_demo::init_dir(&dir, &keys_file, scenario, seed).map_err(
-                |e| match e {
+            let initialized =
+                fa_demo::init_dir(&dir, &keys_file, scenario, seed).map_err(|e| match e {
                     fa_demo::DemoError::Book(b) => Fail::Book(b),
                     fa_demo::DemoError::Refusal(r) => Fail::Refusal(r),
                     fa_demo::DemoError::Verification(m) => Fail::Internal(m),
-                },
-            )?;
+                })?;
             let book = ctx.books.open(args)?;
             out.at_book(&book)?;
             let planted_facts: Vec<Json> = initialized

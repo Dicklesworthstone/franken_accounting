@@ -14,10 +14,8 @@ fn temp_dir(tag: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "fa-demo-test-{}-{tag}-{n}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("fa-demo-test-{}-{tag}-{n}", std::process::id()));
         if std::fs::create_dir(&dir).is_ok() {
             return dir;
         }

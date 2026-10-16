@@ -6921,4 +6921,3 @@ fn memo_off_balance_and_statistical_legs_obey_fa_inv_01_memo() {
         .expect("single-sided statistical reversal");
     assert!(matches!(reversed, Posted::Committed { .. }));
 }
-

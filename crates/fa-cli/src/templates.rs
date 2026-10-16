@@ -85,7 +85,12 @@ pub(crate) fn listing(template: &Template) -> Result<Listing, String> {
             .get("code")
             .and_then(Json::as_str)
             .filter(|c| !c.is_empty())
-            .ok_or_else(|| format!("{}: every account must have a non-empty `code`", template.name))?;
+            .ok_or_else(|| {
+                format!(
+                    "{}: every account must have a non-empty `code`",
+                    template.name
+                )
+            })?;
         let kind = account
             .get("type")
             .and_then(Json::as_str)
