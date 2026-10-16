@@ -4,13 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'crates/fa-lantern/src/graph.rs'
-      - 'crates/fa-lantern/src/trace.rs'
-      - 'crates/fa-lantern/src/graph/cycles.rs'
-      - 'crates/fa-lantern/src/projection/entity.rs'
-      - 'crates/fa-lantern/src/catalog.rs'
-      - 'crates/fa-lantern/src/catalog/**'
-      - 'crates/fa-lantern/tests/network.rs'
+      - 'crates/fa-lantern/**'
       - 'crates/fa-cli/tests/network.rs'
       - 'crates/fa/src/procedure_certificate.rs'
       - 'crates/fa/src/procedure_certificate/**'
@@ -26,83 +20,14 @@ on:
 permissions:
   contents: read
 
+# A single worker keeps one exact checkout and dependency build for all feedback.
+# Supersedes only this workflow's earlier feedback lanes, not official RCH gates.
+concurrency:
+  group: lantern-journal-feedback
+  cancel-in-progress: true
+
 jobs:
-  exact-temporal-cycles:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Fetch the exact public commit
-        shell: bash
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "$GITHUB_SHA"
-          git checkout --detach FETCH_HEAD
-      - name: Preserve the exact public source for failure reproduction
-        shell: bash
-        run: |
-          set -euo pipefail
-          git archive --format=tar.gz --output="$RUNNER_TEMP/lantern-source.tar.gz" HEAD
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: lantern-source-${{ github.sha }}
-          path: ${{ runner.temp }}/lantern-source.tar.gz
-          retention-days: 1
-          if-no-files-found: error
-      - name: Test the production std-only cycle kernel and exhaustive oracle
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup run stable rustc --version
-          rustup run stable rustc --edition=2024 --test crates/fa-lantern/src/graph/cycles.rs -o "$RUNNER_TEMP/lantern-cycles"
-          "$RUNNER_TEMP/lantern-cycles" --nocapture
-      - name: Test shared legal-entity scope normalization
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup run stable rustc --edition=2024 --test crates/fa-lantern/src/projection/entity.rs -o "$RUNNER_TEMP/lantern-entities"
-          "$RUNNER_TEMP/lantern-entities" --nocapture
-      - name: Test source-conserving network attribution and independent oracles
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup run stable rustc --edition=2024 --test crates/fa-lantern/src/catalog/network/engine.rs -o "$RUNNER_TEMP/lantern-network"
-          "$RUNNER_TEMP/lantern-network" --nocapture
-  journal-integration:
-    # Focused hosted feedback only; not the repository's RCH/full-workspace gate.
-    concurrency:
-      group: lantern-journal-feedback
-      cancel-in-progress: true
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Fetch the exact public commit
-        shell: bash
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "$GITHUB_SHA"
-          git checkout --detach FETCH_HEAD
-      - name: Install the pinned compiler
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install nightly-2026-08-31 --profile minimal
-      - name: Test Lantern with real journal entries and the existing corpus
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-lantern --lib --test network --test lantern --no-fail-fast --jobs 2
-      - name: Test network tracing through the real CLI binary
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test network --jobs 2
-  procedure-certificates:
-    # Separate feedback preserves journal/cycle results when this new family fails.
+  exact-source-and-journal:
     concurrency:
       group: lantern-procedure-certificates
       cancel-in-progress: true
@@ -117,12 +42,48 @@ jobs:
           git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
           git fetch --depth=1 origin "$GITHUB_SHA"
           git checkout --detach FETCH_HEAD
-      - name: Install the pinned compiler
+          git archive --format=tar.gz --output="$RUNNER_TEMP/lantern-source.tar.gz" HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lantern-source-${{ github.sha }}
+          path: ${{ runner.temp }}/lantern-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+      - name: Install the pinned compiler and formatter
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install nightly-2026-08-31 --profile minimal
-      - name: Test analytic source closure, replay, authority and tamper refusal
+          rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt --component clippy
+      - name: Prepare an isolated formatting proposal without changing tested source
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/format-proposal"
+          files=(crates/fa/src/procedure_certificate.rs crates/fa/src/procedure_certificate/tests.rs crates/fa/src/report_artifact.rs crates/fa-cli/src/notary.rs crates/fa-cli/src/notary/procedure.rs crates/fa-cli/tests/procedure_replay.rs crates/fa-cli/tests/network.rs)
+          for file in "${files[@]}"; do
+            mkdir -p "$target/$(dirname "$file")"
+            cp "$file" "$target/$file"
+            rustup run nightly-2026-08-31 rustfmt --edition 2024 --config skip_children=true "$target/$file"
+          done
+          tar -czf "$RUNNER_TEMP/lantern-formatted.tar.gz" -C "$target" .
+          git diff --exit-code
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lantern-format-proposal-${{ github.sha }}
+          path: ${{ runner.temp }}/lantern-formatted.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+      - name: Test the independent cycle and entity production modules
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup run nightly-2026-08-31 rustc --edition=2024 --test crates/fa-lantern/src/graph/cycles.rs -o "$RUNNER_TEMP/lantern-cycles"
+          "$RUNNER_TEMP/lantern-cycles" --nocapture
+          rustup run nightly-2026-08-31 rustc --edition=2024 --test crates/fa-lantern/src/projection/entity.rs -o "$RUNNER_TEMP/lantern-entities"
+          "$RUNNER_TEMP/lantern-entities" --nocapture
+      - name: Test native analytic certificates and malicious artifact refusal
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -euo pipefail
@@ -133,3 +94,29 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib report_artifact --jobs 2
+      - name: Test network engine, real journal and complete Lantern corpus
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The network engine now depends on exact arithmetic/runtime crates.
+          # Its same unit/oracle tests run here, not with a standalone rustc.
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-lantern --lib --test network --test lantern --no-fail-fast --jobs 2
+      - name: Test persisted analytic replay and ordinary tracing through the CLI
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test procedure_replay --test network --no-fail-fast --jobs 2
+      - name: Regress existing native certificate replay through the CLI
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test cli certified_ --jobs 2
+      - name: Check facade and CLI lints without weakening warnings
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 clippy --locked -Z bindeps -Z git=shallow-deps -p fa -p fa-cli --lib --jobs 2 -- -D warnings

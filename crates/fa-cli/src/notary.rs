@@ -4,6 +4,8 @@
 //! Report certificates bind native historical reads and exact folds. Neither
 //! surface issues a signed TransparencyCheckpoint or an outsider evidence bundle.
 
+mod procedure;
+
 use std::io::Read;
 
 use crate::json::{Json, obj, s};
@@ -52,16 +54,16 @@ fn certificate_digest(text: &str) -> Result<Option<[u8; 32]>, Fail> {
     Ok(Some(digest))
 }
 
-/// Resolve a retained digest, canonical binary file, or inline hex input.
+/// Resolve a retained digest, or a file/stdin containing canonical binary or hex.
 /// A bare 64-hex argument is a digest; prefix a filename with ./ if it has
 /// that shape. Bound file/stdin reads before allocating for them.
-fn read_report_certificate(
+fn read_certificate_bytes(
     book: &Book,
     files: &Files,
     path: &str,
-) -> Result<ReportCertificate, Fail> {
+) -> Result<Vec<u8>, Fail> {
     if let Some(digest) = certificate_digest(path)? {
-        return Ok(book.read_certificate(&digest)??);
+        return book.read_certificate(&digest)??.canonical_bytes().map_err(|e| certificate_invalid(e.to_string()));
     }
     let limit = MAX_CERTIFICATE_BYTES * 2 + 2; // hex plus a final CRLF
     let read = |reader: &mut dyn Read| -> Result<Vec<u8>, Fail> {
@@ -99,7 +101,7 @@ fn read_report_certificate(
         let mut file = std::fs::File::open(files.resolve(path)).map_err(|e| {
             usage(
                 format!("{path}: {e}"),
-                "pass the certificate file saved by fa tb --certificate-out",
+                "pass the certificate file saved by fa tb --certificate-out or the procedure certificate API",
             )
         })?;
         read(&mut file)?
@@ -109,14 +111,17 @@ fn read_report_certificate(
             "report certificate input exceeds its bounded wire size",
         ));
     }
-    if bytes.starts_with(b"fa:report-certificate:") {
-        return ReportCertificate::decode(&bytes).map_err(Into::into);
+    let procedure_format = fa::procedure_certificate::PROCEDURE_CERTIFICATE_FORMAT;
+    let is_procedure = bytes.get(..4).is_some_and(|length| length == (procedure_format.len() as u32).to_le_bytes())
+        && bytes.get(4..4 + procedure_format.len()).is_some_and(|format| format == procedure_format);
+    if bytes.starts_with(b"fa:report-certificate:") || is_procedure {
+        return Ok(bytes);
     }
     let text = std::str::from_utf8(&bytes).ok().map(str::trim);
     if let Some(text) = text
         && let Some(digest) = certificate_digest(text)?
     {
-        return Ok(book.read_certificate(&digest)??);
+        return book.read_certificate(&digest)??.canonical_bytes().map_err(|e| certificate_invalid(e.to_string()));
     }
     let Some(text) = text.filter(|text| {
         !text.is_empty() && text.len() % 2 == 0 && text.bytes().all(|b| b.is_ascii_hexdigit())
@@ -142,7 +147,11 @@ fn read_report_certificate(
                 .map_err(|_| certificate_invalid("invalid certificate hex"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    ReportCertificate::decode(&decoded).map_err(Into::into)
+    Ok(decoded)
+}
+
+fn read_report_certificate(book: &Book, files: &Files, path: &str) -> Result<ReportCertificate, Fail> {
+    ReportCertificate::decode(&read_certificate_bytes(book, files, path)?).map_err(Into::into)
 }
 
 /// Save an optional external copy, then retain the immutable certificate in
@@ -240,8 +249,25 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa replay <C:oid|oid|certificate-file|-> --book <dir> --json",
         ));
     }
+    let principal = ctx.principal(args);
+    let capability = ctx.capability(args, &["read"])?;
     let book = ctx.books.open(args)?;
-    let certificate = read_report_certificate(&book, &ctx.files, &args.positional[1])?;
+    // A saved capability commitment grants no current authority. Admission
+    // precedes decoding or fetching a retained artifact, including malformed input.
+    fa_policy::admit_read(&capability, principal, book.context().book_id)
+        .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    book.read_scope(principal, &capability)??;
+    let bytes = read_certificate_bytes(&book, &ctx.files, &args.positional[1])?;
+    if !bytes.starts_with(b"fa:report-certificate:") {
+        let certificate = fa::procedure_certificate::ProcedureCertificate::decode(&bytes)?;
+        // Unified artifact replay verifies the native report and Approval
+        // closures and byte-identical analytic output before anything is emitted.
+        book.replay_report_artifact(principal, &capability, &bytes, Some(certificate.digest()))??;
+        procedure::render(&ctx.out, certificate.report(), &hex(certificate.digest()));
+        return Ok(());
+    }
+    let certificate = ReportCertificate::decode(&bytes)?;
     let report = book.replay_report(&certificate)??;
     ctx.out.time_selection(certificate.time_selection.as_ref());
     let digest = hex(&certificate.digest);

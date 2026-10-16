@@ -88,7 +88,7 @@ fn network_laws_are_discoverable_and_trace_real_postings_with_ordered_path_citat
         }
         let repeat = ok(&book, &args);
         assert_eq!(text(report, "findings_digest"), text(data(&repeat[0]), "findings_digest"));
-        let mut historical = args.to_vec(); historical.extend(["--as-known-at", &prefix]);
+        let mut historical = args.to_vec(); historical.extend(["--known-at", &prefix]);
         let old = ok(&book, &historical);
         let old_findings = array(data(&old[0]), "findings");
         assert_eq!(old_findings.len(), 1);
