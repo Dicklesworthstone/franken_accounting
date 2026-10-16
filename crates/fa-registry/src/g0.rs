@@ -1250,7 +1250,10 @@ impl SloRegistry {
         if rows.len() < 19 {
             return Err(invalid(
                 R,
-                format!("expected at least 19 §17 [[slo]] rows, found {}", rows.len()),
+                format!(
+                    "expected at least 19 §17 [[slo]] rows, found {}",
+                    rows.len()
+                ),
             ));
         }
 
@@ -1317,7 +1320,11 @@ mod tests {
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
 
         // Planted negative 1 (fa-i5s): an slo row typed `invariant` fails the claims lint.
-        let bad_claim = SLO_TOML.replacen("claim_class = \"benchmark\"", "claim_class = \"invariant\"", 1);
+        let bad_claim = SLO_TOML.replacen(
+            "claim_class = \"benchmark\"",
+            "claim_class = \"invariant\"",
+            1,
+        );
         let err = SloRegistry::parse(&bad_claim, &op_costs).expect_err("invariant claim on slo");
         assert!(
             err.to_string().contains("claims_lint") && err.to_string().contains("invariant"),
@@ -1325,8 +1332,7 @@ mod tests {
         );
 
         // Planted negative 2 (§17 derivability law): a posting gate below barrier_count * fsync_p50 fails.
-        let bad_derivability =
-            SLO_TOML.replacen("target_p50_us = 2000", "target_p50_us = 1500", 1);
+        let bad_derivability = SLO_TOML.replacen("target_p50_us = 2000", "target_p50_us = 1500", 1);
         let err =
             SloRegistry::parse(&bad_derivability, &op_costs).expect_err("below barrier floor");
         assert!(
@@ -1340,8 +1346,8 @@ mod tests {
             "name = \"balance_read_watermark\"\ndomain = \"Balance read at watermark (SnapshotQuery class)\"\noperation_class = \"balance_read_at_watermark\"\nclaim_class = \"benchmark\"\ncounting_unit = \"balance_read\"\npinned_fsync_p50_us = 1000\ntarget_p50_us = 10\ntarget_p99_us = 50\nrequires_watermark_disclosure = false",
             1,
         );
-        let err =
-            SloRegistry::parse(&bad_watermark, &op_costs).expect_err("missing watermark disclosure");
+        let err = SloRegistry::parse(&bad_watermark, &op_costs)
+            .expect_err("missing watermark disclosure");
         assert!(
             err.to_string().contains("requires_watermark_disclosure"),
             "{err}"
@@ -1357,4 +1363,3 @@ mod tests {
         assert!(err.to_string().contains("Appendix G Law 3"), "{err}");
     }
 }
-

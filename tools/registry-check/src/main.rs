@@ -122,7 +122,6 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "workspace_topology.toml",
 ];
 
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckSummary {
     pub files_checked: usize,
@@ -660,8 +659,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         RelationshipBases::parse(&read("relationship_bases.toml")?).map_err(|e| e.to_string())?;
     let op_costs =
         OperationCosts::parse(&read("operation_costs.toml")?).map_err(|e| e.to_string())?;
-    let slo_reg =
-        SloRegistry::parse(&read("slo.toml")?, &op_costs).map_err(|e| e.to_string())?;
+    let slo_reg = SloRegistry::parse(&read("slo.toml")?, &op_costs).map_err(|e| e.to_string())?;
     let claims_config =
         ClaimsLintConfig::parse(&read("claims_lint.toml")?).map_err(|e| e.to_string())?;
 
@@ -721,7 +719,6 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     for s in &slo_reg.rows {
         known_markers.insert(s.id.clone());
     }
-
 
     let mut loaded_docs = Vec::new();
     for rel_doc in &claims_config.scanned_docs {
@@ -1016,16 +1013,18 @@ mod tests {
         // Planted negative 4 (fa-i5s): an slo row typed `invariant` or below barrier floor fails.
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         let slo_text = fs::read_to_string(root.join("registries/slo.toml")).expect("slo.toml");
-        let bad_slo_claim =
-            slo_text.replacen("claim_class = \"benchmark\"", "claim_class = \"invariant\"", 1);
+        let bad_slo_claim = slo_text.replacen(
+            "claim_class = \"benchmark\"",
+            "claim_class = \"invariant\"",
+            1,
+        );
         let err =
             SloRegistry::parse(&bad_slo_claim, &op_costs).expect_err("slo row typed invariant");
         assert!(
             err.to_string().contains("claims_lint") && err.to_string().contains("invariant"),
             "{err}"
         );
-        let bad_slo_floor =
-            slo_text.replacen("target_p50_us = 2000", "target_p50_us = 1500", 1);
+        let bad_slo_floor = slo_text.replacen("target_p50_us = 2000", "target_p50_us = 1500", 1);
         let err =
             SloRegistry::parse(&bad_slo_floor, &op_costs).expect_err("slo row below barrier floor");
         assert!(
@@ -1034,4 +1033,3 @@ mod tests {
         );
     }
 }
-
