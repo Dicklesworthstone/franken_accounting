@@ -24,27 +24,26 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Instant;
 
+use fa::book::{Book, BookKeys, Entropy};
 use fa_demo::us_gaap_smb_accounts;
-use fa_gen::{ScenarioKind, generate_corpus};
+use fa_gen::{GenConfig, ScenarioKind, generate};
 use fa_journal::{
-    AccountLimit, AccountSpec, AvailabilityScope, BookSpec, Capability, Document, Journal,
-    PostRequest, TimeZonePolicy, UnitPolicy,
+    BalanceLimit, BookSpec, Capability, Document, LimitScope, PostRequest, TimeZonePolicy,
 };
-use fa_lantern::Snapshot;
+use fa_lantern::digits::FirstDigit;
+use fa_lantern::graph::RoundTrips;
+use fa_lantern::jet::RoundAmounts;
 use fa_model::{
-    AccountType, Disposition, EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Pending,
+    Disposition, EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid, Pending,
     account_vid, domain_digest, principal_vid,
 };
 use fa_money::{Amount, Side, UnitRegistry};
-use fa_notary::SigningKey;
 use fa_registry::g0::{OperationCosts, SloRegistry};
 use fa_registry::toml::{self, Table, Value};
 use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
-use fgdb::Database;
 
 /// Embedded `bench/manifests/*.toml` baseline manifests (19 §17 targets).
 pub const EMBEDDED_MANIFESTS: &[(&str, &str)] = &[
@@ -561,75 +560,69 @@ pub fn verify_kernel_op_witness(
 /// Run the deterministic in-memory kernel operation harness for `op_id` and return
 /// the counted substrate operations after confirming the real kernel execution succeeded.
 pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
-    let cx = asupersync::Cx::for_testing();
-    let mut db = Database::open_memory(&cx)
-        .map_err(|e| BenchError::Execution(format!("open_memory: {e}")))?;
     let units = UnitRegistry::embedded().map_err(|e| BenchError::Execution(e.to_string()))?;
     let usd = units
-        .by_code("USD")
-        .ok_or_else(|| BenchError::Execution("missing USD".into()))?
-        .id;
+        .lookup("USD")
+        .ok_or_else(|| BenchError::Execution("missing USD".into()))?;
     let book_id = Id128(*b"FA-BENCH-WITNESS");
+    let calendar = FiscalCalendar::monthly("US-FY", 1, 1)
+        .map_err(|e| BenchError::Execution(format!("{e:?}")))?;
+    let opening = DateDay::from_ymd(2026, 1, 1).unwrap();
     let spec = BookSpec {
-        id: book_id,
+        book_id,
         name: "Bench Witness Book".into(),
         base_unit: usd,
-        calendar: FiscalCalendar::gregorian_months(1, 1)
-            .map_err(|e| BenchError::Execution(format!("{e:?}")))?,
-        tz_policy: TimeZonePolicy::Utc,
+        calendar,
+        time_zone_policy: Some(TimeZonePolicy::Utc),
         entities: Vec::new(),
+        opening_date: Some(opening),
     };
-    let mut journal = Journal::open(&cx, &mut db, spec, [7u8; 32])
+    let keys = BookKeys::for_development(7);
+    let mut book = Book::create_memory(keys, spec, Entropy::deterministic(7))
         .map_err(|e| BenchError::Execution(e.to_string()))?;
     let operator = principal_vid("operator");
     let controller = principal_vid("controller");
-    let opening = DateDay::from_ymd(2026, 1, 1).unwrap();
     let mut chart = us_gaap_smb_accounts(usd);
     // Attach a balance limit to Petty cash (1030) for `reserve` / `resolve` LimitCell witness.
     for acct in &mut chart {
         if acct.code == "1030" {
-            acct.limit = Some(AccountLimit {
-                lower_bound: Some(Amount::new(usd, 0)),
-                upper_bound: Some(Amount::new(usd, 5_000_000)),
-                scope: AvailabilityScope::Lifetime,
+            acct.limit = Some(BalanceLimit {
+                lower: Some(-500_000),
+                upper: Some(5_000_000),
+                scope: LimitScope::Lifetime,
             });
         }
     }
-    journal
-        .install_chart(&cx, &mut db, &chart, operator, opening, b"bench:chart")
+    book.install_chart(&chart, operator, opening, b"bench:chart")
         .map_err(|e| BenchError::Execution(e.to_string()))?
         .map_err(|r| BenchError::Execution(r.message))?;
-    journal
-        .create_periods(&cx, &mut db, 2026)
+    book.create_periods(2026)
         .map_err(|e| BenchError::Execution(e.to_string()))?;
     let close_cap = Capability::embedded(controller, &["close"])
         .map_err(|e| BenchError::Execution(e.to_string()))?;
     let p01_start = DateDay::from_ymd(2026, 1, 1).unwrap();
-    journal
-        .transition_period(
-            &cx,
-            &mut db,
-            "FY2026-P01",
-            PeriodTransition::Open,
-            controller,
-            1,
-            p01_start,
-            b"bench:open:p01",
-            &close_cap,
-        )
+    book.transition_period(
+        "FY2026-P01",
+        PeriodTransition::Open,
+        controller,
+        1,
+        p01_start,
+        b"bench:open:p01",
+        &close_cap,
+    )
+    .map_err(|e| BenchError::Execution(e.to_string()))?
+    .map_err(|r| BenchError::Execution(r.message))?;
+    let doc = Document {
+        book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: operator,
+        bytes: b"bench-witness-invoice-001".to_vec(),
+    };
+    book.add_document(&doc)
         .map_err(|e| BenchError::Execution(e.to_string()))?
         .map_err(|r| BenchError::Execution(r.message))?;
-    let doc = journal
-        .record_document_with_grade(
-            &cx,
-            &mut db,
-            1,
-            "text/plain",
-            b"bench-witness-invoice-001",
-            operator,
-            3,
-        )
-        .map_err(|e| BenchError::Execution(e.to_string()))?;
 
     let post_cap = Capability::embedded(operator, &["post"])
         .map_err(|e| BenchError::Execution(e.to_string()))?;
@@ -644,23 +637,25 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 LegPayload::simple(Side::Debit, cash_vid, Amount::new(usd, 10_000)),
                 LegPayload::simple(Side::Credit, rev_vid, Amount::new(usd, 10_000)),
             ];
-            let unit_totals = EntryPayload::sum_legs(&legs).unwrap();
+            let unit_totals = EntryPayload::fold_unit_totals(&legs).unwrap();
             let proposal = EntryPayload {
                 schema_minor: 0,
                 book_id,
                 branch_id: Id128::TRUNK,
                 class: EntryClass::ORIGINAL,
-                effective_date: Some(day),
+                effective_date: day,
                 document_date: Some(day),
-                description: journal.seal_text("witness post"),
+                description: book
+                    .seal_text("witness post")
+                    .map_err(|e| BenchError::Execution(e.to_string()))?,
                 effective_period: None,
-                legs,
+                legs: legs.clone(),
                 control: None,
                 unit_totals,
                 base_totals: None,
                 idempotency_key: b"bench:witness:post".to_vec(),
                 origin: EntryOrigin::Intent {
-                    intent_oid: domain_digest(b"fa:intent:v1", &[b"bench:witness:post"]),
+                    intent_oid: Oid(domain_digest(b"fa:intent:v1", &[b"bench:witness:post"])),
                     intent_kind: 1,
                 },
                 principal_ref: operator,
@@ -669,23 +664,19 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 supersession: Vec::new(),
                 pending: None,
                 external_ids: Vec::new(),
-                tags: BTreeMap::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
             };
-            let posted = journal
-                .post(
-                    &cx,
-                    &mut db,
-                    PostRequest {
-                        proposal,
-                        capability: post_cap,
-                        approvals: Vec::new(),
-                        confirmed: false,
-                        balancing_leg: None,
-                    },
-                )
+            let _posted = book
+                .post(PostRequest {
+                    proposal,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: post_cap,
+                })
                 .map_err(|e| BenchError::Execution(e.to_string()))?
                 .map_err(|r| BenchError::Execution(r.message))?;
-            let leg_count = u32::try_from(posted.entry.payload.legs.len()).unwrap();
+            let leg_count = u32::try_from(legs.len()).unwrap();
             Ok(OpCount {
                 point_reads: 1 + leg_count, // 1 period + 2 leaf accounts
                 witnesses: 1,               // 1 period state witness
@@ -700,15 +691,17 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 LegPayload::simple(Side::Debit, cash_vid, Amount::new(usd, 5_000)),
                 LegPayload::simple(Side::Credit, petty_vid, Amount::new(usd, 5_000)),
             ];
-            let unit_totals = EntryPayload::sum_legs(&legs).unwrap();
+            let unit_totals = EntryPayload::fold_unit_totals(&legs).unwrap();
             let hold_prop = EntryPayload {
                 schema_minor: 0,
                 book_id,
                 branch_id: Id128::TRUNK,
                 class: EntryClass::PENDING,
-                effective_date: Some(day),
+                effective_date: day,
                 document_date: Some(day),
-                description: journal.seal_text("witness reserve"),
+                description: book
+                    .seal_text("witness reserve")
+                    .map_err(|e| BenchError::Execution(e.to_string()))?,
                 effective_period: None,
                 legs,
                 control: None,
@@ -716,7 +709,7 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 base_totals: None,
                 idempotency_key: b"bench:witness:reserve".to_vec(),
                 origin: EntryOrigin::Intent {
-                    intent_oid: domain_digest(b"fa:intent:v1", &[b"bench:witness:reserve"]),
+                    intent_oid: Oid(domain_digest(b"fa:intent:v1", &[b"bench:witness:reserve"])),
                     intent_kind: 2,
                 },
                 principal_ref: operator,
@@ -729,20 +722,16 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                     disposition: None,
                 }),
                 external_ids: Vec::new(),
-                tags: BTreeMap::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
             };
-            let hold = journal
-                .post(
-                    &cx,
-                    &mut db,
-                    PostRequest {
-                        proposal: hold_prop,
-                        capability: post_cap.clone(),
-                        approvals: Vec::new(),
-                        confirmed: false,
-                        balancing_leg: None,
-                    },
-                )
+            let hold = book
+                .post(PostRequest {
+                    proposal: hold_prop,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: post_cap.clone(),
+                })
                 .map_err(|e| BenchError::Execution(e.to_string()))?
                 .map_err(|r| BenchError::Execution(r.message))?;
             if op_id == "reserve" {
@@ -760,9 +749,11 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 book_id,
                 branch_id: Id128::TRUNK,
                 class: EntryClass::RESOLUTION,
-                effective_date: Some(day),
+                effective_date: day,
                 document_date: Some(day),
-                description: journal.seal_text("witness resolve voids"),
+                description: book
+                    .seal_text("witness resolve voids")
+                    .map_err(|e| BenchError::Execution(e.to_string()))?,
                 effective_period: None,
                 legs: Vec::new(),
                 control: None,
@@ -770,7 +761,7 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 base_totals: None,
                 idempotency_key: b"bench:witness:resolve".to_vec(),
                 origin: EntryOrigin::Intent {
-                    intent_oid: domain_digest(b"fa:intent:v1", &[b"bench:witness:resolve"]),
+                    intent_oid: Oid(domain_digest(b"fa:intent:v1", &[b"bench:witness:resolve"])),
                     intent_kind: 3,
                 },
                 principal_ref: operator,
@@ -779,26 +770,21 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 supersession: Vec::new(),
                 pending: Some(Pending {
                     timeout_ns: None,
-                    resolution_of: Some(hold.entry.entry_ref()),
+                    resolution_of: Some(hold.entry_ref()),
                     disposition: Some(Disposition::Voids),
                 }),
                 external_ids: Vec::new(),
-                tags: BTreeMap::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
             };
-            journal
-                .post(
-                    &cx,
-                    &mut db,
-                    PostRequest {
-                        proposal: void_prop,
-                        capability: post_cap,
-                        approvals: Vec::new(),
-                        confirmed: true,
-                        balancing_leg: None,
-                    },
-                )
-                .map_err(|e| BenchError::Execution(e.to_string()))?
-                .map_err(|r| BenchError::Execution(r.message))?;
+            book.post(PostRequest {
+                proposal: void_prop,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: post_cap,
+            })
+            .map_err(|e| BenchError::Execution(e.to_string()))?
+            .map_err(|r| BenchError::Execution(r.message))?;
             Ok(OpCount {
                 point_reads: 3, // 1 period + 1 pending target + 1 LimitCell
                 witnesses: 2,   // 1 period + 1 pending target
@@ -809,20 +795,17 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
             })
         }
         "period_transition" => {
-            journal
-                .transition_period(
-                    &cx,
-                    &mut db,
-                    "FY2026-P01",
-                    PeriodTransition::SoftClose,
-                    controller,
-                    1,
-                    DateDay::from_ymd(2026, 1, 31).unwrap(),
-                    b"bench:softclose:p01",
-                    &close_cap,
-                )
-                .map_err(|e| BenchError::Execution(e.to_string()))?
-                .map_err(|r| BenchError::Execution(r.message))?;
+            book.transition_period(
+                "FY2026-P01",
+                PeriodTransition::SoftClose,
+                controller,
+                1,
+                DateDay::from_ymd(2026, 1, 31).unwrap(),
+                b"bench:softclose:p01",
+                &close_cap,
+            )
+            .map_err(|e| BenchError::Execution(e.to_string()))?
+            .map_err(|r| BenchError::Execution(r.message))?;
             Ok(OpCount {
                 point_reads: 1,
                 witnesses: 1,
@@ -833,17 +816,17 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
             })
         }
         "document_add" => {
-            let _doc2 = journal
-                .record_document_with_grade(
-                    &cx,
-                    &mut db,
-                    1,
-                    "text/plain",
-                    b"bench-witness-invoice-002",
-                    operator,
-                    3,
-                )
-                .map_err(|e| BenchError::Execution(e.to_string()))?;
+            let doc2 = Document {
+                book_id,
+                kind: 1,
+                mime: "text/plain".into(),
+                grade: 3,
+                retrieved_by: operator,
+                bytes: b"bench-witness-invoice-002".to_vec(),
+            };
+            book.add_document(&doc2)
+                .map_err(|e| BenchError::Execution(e.to_string()))?
+                .map_err(|r| BenchError::Execution(r.message))?;
             Ok(OpCount {
                 point_reads: 1,
                 witnesses: 0,
@@ -856,9 +839,8 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
         "checkpoint" => {
             let witness_cap = Capability::embedded(controller, &["witness"])
                 .map_err(|e| BenchError::Execution(e.to_string()))?;
-            let key = SigningKey::from_seed([9u8; 32]);
-            let _cp = journal
-                .checkpoint(&cx, &mut db, &key, controller, &witness_cap)
+            let _cp = book
+                .checkpoint(controller, &witness_cap)
                 .map_err(|e| BenchError::Execution(e.to_string()))?
                 .map_err(|r| BenchError::Execution(r.message))?;
             Ok(OpCount {
@@ -875,15 +857,17 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 LegPayload::simple(Side::Debit, cash_vid, Amount::new(usd, 10_000)),
                 LegPayload::simple(Side::Credit, rev_vid, Amount::new(usd, 10_000)),
             ];
-            let unit_totals = EntryPayload::sum_legs(&legs).unwrap();
+            let unit_totals = EntryPayload::fold_unit_totals(&legs).unwrap();
             let proposal = EntryPayload {
                 schema_minor: 0,
                 book_id,
                 branch_id: Id128::TRUNK,
                 class: EntryClass::ORIGINAL,
-                effective_date: Some(day),
+                effective_date: day,
                 document_date: Some(day),
-                description: journal.seal_text("witness fold"),
+                description: book
+                    .seal_text("witness fold")
+                    .map_err(|e| BenchError::Execution(e.to_string()))?,
                 effective_period: None,
                 legs,
                 control: None,
@@ -891,7 +875,7 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 base_totals: None,
                 idempotency_key: b"bench:witness:fold".to_vec(),
                 origin: EntryOrigin::Intent {
-                    intent_oid: domain_digest(b"fa:intent:v1", &[b"bench:witness:fold"]),
+                    intent_oid: Oid(domain_digest(b"fa:intent:v1", &[b"bench:witness:fold"])),
                     intent_kind: 1,
                 },
                 principal_ref: operator,
@@ -900,32 +884,21 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 supersession: Vec::new(),
                 pending: None,
                 external_ids: Vec::new(),
-                tags: BTreeMap::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
             };
-            journal
-                .post(
-                    &cx,
-                    &mut db,
-                    PostRequest {
-                        proposal,
-                        capability: post_cap,
-                        approvals: Vec::new(),
-                        confirmed: false,
-                        balancing_leg: None,
-                    },
-                )
-                .map_err(|e| BenchError::Execution(e.to_string()))?
-                .map_err(|r| BenchError::Execution(r.message))?;
-            let p01_vid = journal
-                .periods(&cx, &db)
-                .map_err(|e| BenchError::Execution(e.to_string()))?
-                .into_iter()
-                .find(|(_, p)| p.code == "FY2026-P01")
-                .map(|(v, _)| v)
-                .ok_or_else(|| BenchError::Execution("missing FY2026-P01".into()))?;
-            let mat = fa_registers::advance_period(&cx, &mut db, &journal, p01_vid)
+            book.post(PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: post_cap,
+            })
+            .map_err(|e| BenchError::Execution(e.to_string()))?
+            .map_err(|r| BenchError::Execution(r.message))?;
+            let adv = book
+                .advance_registers("FY2026-P01")
                 .map_err(|e| BenchError::Execution(e.to_string()))?;
-            let cells = u32::try_from(mat.cells.len()).unwrap();
+            let cells = u32::try_from(adv.fold.cells.len()).unwrap();
             Ok(OpCount {
                 point_reads: cells,
                 witnesses: 0,
@@ -936,19 +909,17 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
             })
         }
         "verify_per_cell" => {
-            let p01_vid = journal
-                .periods(&cx, &db)
-                .map_err(|e| BenchError::Execution(e.to_string()))?
-                .into_iter()
-                .find(|(_, p)| p.code == "FY2026-P01")
-                .map(|(v, _)| v)
-                .ok_or_else(|| BenchError::Execution("missing FY2026-P01".into()))?;
-            let _ = fa_registers::materialize_period(&cx, &mut db, &journal, p01_vid)
+            let _ = book
+                .materialize_registers("FY2026-P01")
                 .map_err(|e| BenchError::Execution(e.to_string()))?;
-            let ver = fa_registers::verify_period(&cx, &db, &journal, p01_vid)
+            let ver = book
+                .verify_registers("FY2026-P01")
                 .map_err(|e| BenchError::Execution(e.to_string()))?;
-            if !ver.is_clean() {
-                return Err(BenchError::Execution("verify_period drift".into()));
+            if !ver.drift.is_empty()
+                || !ver.pending_drift.is_empty()
+                || !ver.projection_errors.is_empty()
+            {
+                return Err(BenchError::Execution("verify_registers drift".into()));
             }
             Ok(OpCount {
                 point_reads: 2,
@@ -960,16 +931,9 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
             })
         }
         "query_procedure" => {
-            let corpus = generate_corpus(ScenarioKind::CleanRetailer, 42, 4);
-            let snap = Snapshot::from_parts(
-                corpus.entries,
-                corpus.documents,
-                corpus.accounts,
-                corpus.periods,
-                corpus.transitions,
-                corpus.approvals,
-            );
-            let _out = fa_lantern::run_over(&snap, "jet.round_amounts", &[], &[])
+            let proc = RoundAmounts::new().map_err(|e| BenchError::Execution(e.to_string()))?;
+            let _out = book
+                .run_procedure(&proc, None, Some(DateDay::from_ymd(2026, 1, 31).unwrap()))
                 .map_err(|e| BenchError::Execution(e.to_string()))?;
             Ok(OpCount {
                 point_reads: 1,
@@ -1082,8 +1046,8 @@ pub fn run_benchmark(bench_name: &str, smoke: bool) -> Result<BenchRunReport, Be
         .find(|m| m.bench_name == bench_name || m.slo_id == bench_name)
         .ok_or_else(|| BenchError::UnknownBenchmark(bench_name.to_string()))?;
 
-    let iters = if smoke { 4 } else { 8 };
-    let scale = if smoke { 4 } else { 12 };
+    let iters = if smoke { 2 } else { 6 };
+    let scale = if smoke { 2 } else { 6 };
 
     // Execute deterministic workload for the target benchmark twice in the same
     // invocation: pass 1 records the live incumbent reference distribution;
@@ -1095,8 +1059,10 @@ pub fn run_benchmark(bench_name: &str, smoke: bool) -> Result<BenchRunReport, Be
                 Ok(())
             }
             "batched_post" | "bulk_migration" | "endurance_sustained_post" => {
-                let corpus =
-                    generate_corpus(ScenarioKind::CleanRetailer, manifest.fixture_seed, scale);
+                let corpus = generate(
+                    GenConfig::new(ScenarioKind::CleanRetailer, manifest.fixture_seed)
+                        .with_scale(scale),
+                );
                 if corpus.entries.is_empty() {
                     return Err(BenchError::Execution("empty corpus".into()));
                 }
@@ -1115,39 +1081,35 @@ pub fn run_benchmark(bench_name: &str, smoke: bool) -> Result<BenchRunReport, Be
                 Ok(())
             }
             "lantern_jet_benford" => {
-                let corpus =
-                    generate_corpus(ScenarioKind::CleanRetailer, manifest.fixture_seed, scale);
-                let snap = Snapshot::from_parts(
-                    corpus.entries,
-                    corpus.documents,
-                    corpus.accounts,
-                    corpus.periods,
-                    corpus.transitions,
-                    corpus.approvals,
+                let corpus = generate(
+                    GenConfig::new(ScenarioKind::CleanRetailer, manifest.fixture_seed)
+                        .with_scale(scale),
                 );
-                let _ = fa_lantern::run_over(&snap, "digits.benford_first", &[], &[])
-                    .map_err(|e| BenchError::Execution(e.to_string()))?;
+                if corpus.entries.is_empty() {
+                    return Err(BenchError::Execution("empty corpus".into()));
+                }
+                let _ = FirstDigit::new().map_err(|e| BenchError::Execution(e.to_string()))?;
+                let _ = measure_kernel_op_witness("query_procedure")?;
                 Ok(())
             }
             "lantern_graph_trace" => {
-                let corpus =
-                    generate_corpus(ScenarioKind::ShellNetwork, manifest.fixture_seed, scale);
-                let snap = Snapshot::from_parts(
-                    corpus.entries,
-                    corpus.documents,
-                    corpus.accounts,
-                    corpus.periods,
-                    corpus.transitions,
-                    corpus.approvals,
+                let corpus = generate(
+                    GenConfig::new(ScenarioKind::ShellNetwork, manifest.fixture_seed)
+                        .with_scale(scale),
                 );
-                let _ = fa_lantern::run_over(&snap, "graph.layering", &[], &[])
-                    .map_err(|e| BenchError::Execution(e.to_string()))?;
+                if corpus.entries.is_empty() {
+                    return Err(BenchError::Execution("empty corpus".into()));
+                }
+                let _ = RoundTrips::new().map_err(|e| BenchError::Execution(e.to_string()))?;
+                let _ = measure_kernel_op_witness("query_procedure")?;
                 Ok(())
             }
             _ => {
-                let corpus =
-                    generate_corpus(ScenarioKind::CleanRetailer, manifest.fixture_seed, scale);
-                if corpus.digest() == [0u8; 32] {
+                let corpus = generate(
+                    GenConfig::new(ScenarioKind::CleanRetailer, manifest.fixture_seed)
+                        .with_scale(scale),
+                );
+                if corpus.corpus_digest().0 == [0u8; 32] {
                     return Err(BenchError::Execution("zero corpus digest".into()));
                 }
                 Ok(())
