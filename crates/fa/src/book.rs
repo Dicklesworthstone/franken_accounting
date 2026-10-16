@@ -1790,6 +1790,61 @@ impl Book {
         ))
     }
 
+    /// Certify the exact aging/control comparison and retain both native source closures.
+    pub fn certify_effective_date_aging_reconciliation(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::AgingReconciliationRequest,
+    ) -> Outcome<crate::CertifiedAgingReconciliation> {
+        with_store!(&self.store, core => core.certify_effective_date_aging_reconciliation(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Replay an aging/control certificate against independently fixed recipient expectations.
+    pub fn replay_effective_date_aging_reconciliation(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::AgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<crate::AgingReconciliation> {
+        with_store!(&self.store, core => core.replay_effective_date_aging_reconciliation(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// Replay any AsSupplied-supported report artifact under current authority.
+    /// Families whose correctness depends on recipient-selected parameters
+    /// (cash flow and aging reconciliation) intentionally refuse this shortcut.
+    pub fn replay_report_artifact(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+        expected_digest: Option<&[u8; 32]>,
+    ) -> Outcome<crate::ReplayedReportArtifact> {
+        with_store!(&self.store, core => core.replay_report_artifact(
+            &self.purposes(), principal, capability, bytes, expected_digest
+        ))
+    }
+
+    /// Replay a report artifact with the recipient's independently retained
+    /// scope/classification expectations. The artifact never supplies authority.
+    pub fn replay_report_artifact_for(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+        expected_digest: Option<&[u8; 32]>,
+        expected: crate::ReportArtifactExpectation<'_>,
+    ) -> Outcome<crate::ReplayedReportArtifact> {
+        with_store!(&self.store, core => core.replay_report_artifact_for(
+            &self.purposes(), principal, capability, bytes, expected_digest, expected
+        ))
+    }
+
     /// Fold a summary trial balance by chart roots under current whole-book read authority.
     pub fn summary_trial_balance(
         &self,
