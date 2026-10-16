@@ -1,0 +1,220 @@
+# supersession_kinds.toml — closed registry of supersession kinds, their
+# netting laws, and the target-class admissibility table for Reverses
+# (plan §8.1, §8.2, §18.2, FA-INV-08.net-law, FA-INV-08.replacement-paired;
+# bead fa-oz3).
+#
+# Consumers: fa-registry (g0::SupersessionKinds), fa-palimpsest (netting laws
+# and lineage), fa-journal (reversal/replacement/reclassification/restatement
+# validation), registry-check.
+
+schema_version = 1
+
+# ---- Supersession kinds and registered netting laws (FA-INV-08.net-law) ------
+
+[[kind]]
+tag = 1
+name = "Reverses"
+netting_law = "negation"
+entry_class = "Reversal"
+requires_reason = true
+requires_case = false
+paired_with = "none"
+statement = "Exact leg-by-leg side swap of a witnessed posted target; net effect of (target + Reversal) is zero per account, unit, and dimension."
+
+[[kind]]
+tag = 2
+name = "Replaces"
+netting_law = "paired_replacement"
+entry_class = "Replacement"
+requires_reason = true
+requires_case = false
+paired_with = "Reverses"
+statement = "Paired in one atomic batch with a Reversal of the same target T; the Reversal zeroes T and the Replacement carries the corrected legs, so net effect is the Replacement's legs."
+
+[[kind]]
+tag = 3
+name = "Reclassifies"
+netting_law = "partial_reclassification"
+entry_class = "Reclassification"
+requires_reason = true
+requires_case = false
+paired_with = "none"
+statement = "Moves a specified positive subset of an existing entry's leg amount(s) to new account(s) or dimension(s) in the same unit without negating the entire target; net effect is target plus reclassification delta."
+
+[[kind]]
+tag = 4
+name = "Revises"
+netting_law = "delta"
+entry_class = "Revision"
+requires_reason = true
+requires_case = true
+paired_with = "none"
+statement = "Immaterial revision entry bound to an Approved RestatementCase; net effect is target plus the revision entry's delta legs."
+
+[[kind]]
+tag = 5
+name = "Restates"
+netting_law = "delta"
+entry_class = "Restatement"
+requires_reason = true
+requires_case = true
+paired_with = "none"
+statement = "Material restatement entry in a reopened historical period bound to an Approved RestatementCase; net effect is target plus the restatement entry's delta legs."
+
+[[kind]]
+tag = 6
+name = "Resolves"
+netting_law = "two_phase_resolution"
+entry_class = "Resolution"
+requires_reason = false
+requires_case = false
+paired_with = "none"
+statement = "Two-phase resolution (Posts, Voids, or Expires) of a witnessed Pending entry; releases the full pending reservation once and posts the resolved sub-vector if Disposition::Posts."
+
+# ---- Exhaustive target-class admissibility for Reverses (plan §8.2) ----------
+# Every class in `entry_classes.toml` must appear here so the admissibility of a
+# Reversal's target is total over `EntryClass`.
+
+[[target_class]]
+class = "Original"
+reversible = "yes"
+why = "posted monetary entry"
+corrective_route = "reverse with Reversal or replace with paired (Reversal, Replacement)"
+
+[[target_class]]
+class = "Pending"
+reversible = "no"
+why = "a Pending reserves and posts nothing, so there is nothing to reverse"
+corrective_route = "release the hold with a Resolution(Voids), or resolve it with Posts and reverse that"
+
+[[target_class]]
+class = "Resolution"
+reversible = "posts_only"
+why = "a release posted nothing and is final; only Resolution(Posts) posted monetary legs"
+corrective_route = "reserve again with a new Pending if the hold is still wanted"
+
+[[target_class]]
+class = "Reversal"
+reversible = "yes"
+why = "reversing a reversal revives the original by parity"
+corrective_route = "reverse with Reversal"
+
+[[target_class]]
+class = "Replacement"
+reversible = "yes"
+why = "posted replacement legs"
+corrective_route = "reverse with Reversal or replace with a new paired (Reversal, Replacement)"
+
+[[target_class]]
+class = "Reclassification"
+reversible = "yes"
+why = "posted reclassification legs"
+corrective_route = "reverse with Reversal"
+
+[[target_class]]
+class = "Adjusting"
+reversible = "yes"
+why = "posted adjusting legs"
+corrective_route = "reverse with Reversal"
+
+[[target_class]]
+class = "Closing"
+reversible = "no"
+why = "this class is not reversed through the exact side-swap"
+corrective_route = "use the correction class registered for it"
+
+[[target_class]]
+class = "Allocation"
+reversible = "yes"
+why = "posted allocation legs"
+corrective_route = "reverse with Reversal"
+
+[[target_class]]
+class = "Revaluation"
+reversible = "yes"
+why = "posted revaluation legs"
+corrective_route = "reverse with Reversal"
+
+[[target_class]]
+class = "Elimination"
+reversible = "yes"
+why = "posted elimination legs"
+corrective_route = "reverse with Reversal"
+
+[[target_class]]
+class = "Migration"
+reversible = "yes"
+why = "finalized migration chunk legs"
+corrective_route = "reverse with Reversal after Finalize"
+
+[[target_class]]
+class = "Revision"
+reversible = "yes"
+why = "posted revision delta legs"
+corrective_route = "reverse with Reversal under a RestatementCase"
+
+[[target_class]]
+class = "Restatement"
+reversible = "yes"
+why = "posted restatement delta legs"
+corrective_route = "reverse with Reversal under a RestatementCase"
+
+[[target_class]]
+class = "PriorPeriodAdjustment"
+reversible = "yes"
+why = "posted prior-period adjustment legs"
+corrective_route = "reverse with Reversal"
+
+[[target_class]]
+class = "PeriodControl"
+reversible = "no"
+why = "control records have no monetary legs and are superseded by period transitions"
+corrective_route = "use `fa period reopen` or the appropriate period transition"
+
+[[target_class]]
+class = "SchemaControl"
+reversible = "no"
+why = "control records have no monetary legs"
+corrective_route = "supersede chart metadata with a new chart control operation"
+
+[[target_class]]
+class = "PolicyControl"
+reversible = "no"
+why = "control records have no monetary legs"
+corrective_route = "activate a superseding policy epoch or capability revocation"
+
+[[target_class]]
+class = "TimeControl"
+reversible = "no"
+why = "TimeEvidence ticks are strictly monotonic control records with no legs"
+corrective_route = "record a new monotonic TimeEvidence tick"
+
+[[target_class]]
+class = "SweepControl"
+reversible = "no"
+why = "SweepControl cursors are book-scoped control watermarks with no legs"
+corrective_route = "advance the expiry sweep watermark via `fa sweep`"
+
+[[target_class]]
+class = "ScheduleControl"
+reversible = "no"
+why = "ScheduleControl cancellation records are kernel-minted lineage controls with no legs"
+corrective_route = "reverse the reversal if the scheduled target should be revived"
+
+[[target_class]]
+class = "MigrationControl"
+reversible = "no"
+why = "MigrationControl lifecycle records have no legs"
+corrective_route = "abandon an open MigrationRun or post a correction after Finalize"
+
+[[target_class]]
+class = "ImportControl"
+reversible = "no"
+why = "ImportControl receipts are book-scoped provenance records with no legs"
+corrective_route = "reverse or replace the imported posting entries individually"
+
+[[target_class]]
+class = "HoldControl"
+reversible = "no"
+why = "HoldControl records are legal-hold lifecycle events with no legs"
+corrective_route = "release the legal hold with `fa hold release`"

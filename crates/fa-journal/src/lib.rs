@@ -57,6 +57,9 @@ pub use evidence::{
     add_document_external, document_record, explain_entry_evidence, fetch_document,
     fetch_document_with, read_document,
 };
+pub use fa_palimpsest::{
+    LineageEdgeSummary, LineageEntrySummary, LineageReport, NetPosition, NettingLaw,
+};
 pub use genesis::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, LegalEntitySpec, TimeZonePolicy,
     UnitPolicy, create_book, create_periods, install_chart,
@@ -90,7 +93,7 @@ pub use policy::{
 };
 pub use post::{
     Capability, PostPreparation, PostRequest, Posted, PreparedPost, decide_admissibility_cell,
-    post, prepare_post, superseded_by,
+    explain_entry_lineage, post, post_replacement_pair, prepare_post, superseded_by,
 };
 pub use redaction::{
     DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,

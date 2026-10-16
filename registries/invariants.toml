@@ -670,21 +670,27 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-08"
 id = "net-law"
-status = "dormant"
+status = "live"
 statement = "Every supersession kind has a registered netting law."
 evidence_class = "invariant"
+checker_strength = "unit"
 first_gate = "G2"
-activating = ["fa-oz3"]
+owner = "fa-oz3"
+checkers = ["fa-palimpsest::lib::tests::every_supersession_kind_maps_to_registered_netting_law_and_computes_net_effect"]
+negatives = ["fa-registry::lib::g0::tests::planted_slo_and_operation_cost_violations_fail"]
 waiver = "forbidden"
 
 [[clause]]
 invariant = "FA-INV-08"
 id = "replacement-paired"
-status = "dormant"
+status = "live"
 statement = "A Replacement is paired with its reversal in one batch."
 evidence_class = "invariant"
+checker_strength = "unit"
 first_gate = "G2"
-activating = ["fa-oz3"]
+owner = "fa-oz3"
+checkers = ["fa-journal::tests/genesis.rs::replacement_pair_commits_reversal_and_replacement_in_one_batch_and_explains_net_lineage"]
+negatives = ["fa-journal::tests/genesis.rs::unpaired_or_mismatched_replacement_is_refused_without_mutating_book", "fa-palimpsest::lib::tests::unpaired_replacement_and_over_reclassification_are_refused"]
 waiver = "forbidden"
 
 [[clause]]

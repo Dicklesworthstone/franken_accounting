@@ -1131,6 +1131,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    pub fn explain_entry_lineage(
+        &self,
+        cx: &PurposeContexts,
+        entry_vid: VId,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Option<fa_journal::LineageReport>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::explain_entry_lineage(
+                db, book, entry_vid, known_at,
+            )?)
+        })
+    }
+
     pub fn periods(&self, cx: &PurposeContexts) -> Result<Vec<PeriodRow>, BookError> {
         self.query(cx, |db, _| Ok(fa_journal::genesis::list_periods(db)?))
     }

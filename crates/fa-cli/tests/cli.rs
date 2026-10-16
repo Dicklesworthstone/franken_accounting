@@ -4490,6 +4490,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     run2(&["settle", "--intent", &settle_ev, "--review-only"]);
     run2(&["explain", "entry", &fee_vid]);
+    run2(&["explain", "lineage", &fee_vid]);
     run2(&["explain", "evidence", &fee_vid]);
     run2(&["explain", "period", "FY2026-P03"]);
     run2(&["explain", "refusal", "FA-REF-001"]);
@@ -9988,6 +9989,70 @@ fn lots_cli_fifo_lifo_wac_specific_id_ifrs_refusal_and_over_relief() -> std::io:
         text(&over_err, "message").contains("5.00000000 BTC"),
         "{over_out}"
     );
+
+    Ok(())
+}
+
+/// fa-oz3: `fa explain lineage <vid>` reports the complete `SUPERSEDES`
+/// lineage component containing `<vid>`, each edge's registered `netting_law`
+/// from `supersession_kinds.toml`, and the net economic effect per
+/// `(account, unit)`.
+#[test]
+fn explain_lineage_cli_reports_supersession_component_and_net_effect() -> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("explain-lineage")?;
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    let entry = write(
+        &dir,
+        "rent.json",
+        r#"{"effective_date":"2026-03-10","description":"March rent","idempotency_key":"lin-rent","legs":[{"side":"debit","account":"6000","amount":"150.00 USD"},{"side":"credit","account":"1000","amount":"150.00 USD"}]}"#,
+    );
+    let posted = doc(&ok(&[
+        "post",
+        "--intent",
+        &entry,
+        "--evidence",
+        &ev,
+        "--json",
+    ]));
+    let orig_vid = text(&posted, "vid").to_string();
+
+    // Before reversal, net effect is +150.00 USD on 6000 and -150.00 USD on 1000.
+    let before = doc(&ok(&["explain", "lineage", &orig_vid, "--json"]));
+    assert_eq!(text(&before, "query_entry"), orig_vid);
+    assert_eq!(text(&before, "root_entry"), orig_vid);
+    assert_eq!(before.get("fully_reversed"), Some(&Json::Bool(false)));
+    assert_eq!(arr(&before, "steps").len(), 1);
+
+    // Reverse the entry.
+    let rev = doc(&ok(&[
+        "reverse",
+        &orig_vid,
+        "--reason",
+        "WrongAmount",
+        "--json",
+    ]));
+    let rev_vid = text(&rev, "vid").to_string();
+
+    // After reversal, querying either orig_vid or rev_vid returns the 2-step component
+    // with `netting_law: "negation"` and 0.00 USD net effect on both accounts.
+    let after = doc(&ok(&["explain", "lineage", &rev_vid, "--json"]));
+    assert_eq!(text(&after, "query_entry"), rev_vid);
+    assert_eq!(text(&after, "root_entry"), orig_vid);
+    assert_eq!(after.get("fully_reversed"), Some(&Json::Bool(true)));
+    let steps = arr(&after, "steps");
+    assert_eq!(steps.len(), 2);
+    let sups = arr(&steps[1], "supersedes");
+    assert_eq!(sups.len(), 1);
+    assert_eq!(text(&sups[0], "kind"), "Reverses");
+    assert_eq!(text(&sups[0], "netting_law"), "negation");
+    assert_eq!(text(&sups[0], "reason"), "WrongAmount");
+    for cell in arr(&after, "net_effect") {
+        assert_eq!(text(&cell, "net"), "0.00 USD");
+    }
 
     Ok(())
 }

@@ -1308,6 +1308,16 @@ impl Book {
         with_store!(&self.store, core => core.explain_entry_evidence(&self.purposes(), entry_vid))
     }
 
+    /// Explain the complete `SUPERSEDES` lineage component containing `entry_vid`
+    /// and its net economic effect under `registries/supersession_kinds.toml` (`fa-oz3`).
+    pub fn explain_entry_lineage(
+        &self,
+        entry_vid: VId,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Option<fa_journal::LineageReport>, BookError> {
+        with_store!(&self.store, core => core.explain_entry_lineage(&self.purposes(), entry_vid, known_at))
+    }
+
     /// Every period of the book in calendar order, with its current state.
     pub fn periods(&self) -> Result<Vec<PeriodRow>, BookError> {
         with_store!(&self.store, core => core.periods(&self.purposes()))

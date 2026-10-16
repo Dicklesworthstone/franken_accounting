@@ -29,6 +29,7 @@ const OPERATION_COSTS_TOML: &str = include_str!("../../../registries/operation_c
 const SLO_TOML: &str = include_str!("../../../registries/slo.toml");
 const LOT_LAWS_TOML: &str = include_str!("../../../registries/lot_laws.toml");
 const CONVERSION_LAWS_TOML: &str = include_str!("../../../registries/conversion_laws.toml");
+const SUPERSESSION_KINDS_TOML: &str = include_str!("../../../registries/supersession_kinds.toml");
 
 fn req_bool(registry: &'static str, t: &Table, key: &str) -> Result<bool, RegistryError> {
     t.get(key)
@@ -1617,6 +1618,242 @@ impl ConversionLaws {
     }
 }
 
+// ---------------------------------------------------------------------------
+// supersession_kinds.toml (plan §8.1, §8.2, FA-INV-08.net-law, FA-INV-08.replacement-paired; bead fa-oz3)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SupersessionKindRow {
+    pub tag: u8,
+    pub name: String,
+    pub netting_law: String,
+    pub entry_class: String,
+    pub requires_reason: bool,
+    pub requires_case: bool,
+    pub paired_with: String,
+    pub statement: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReversalTargetClassRow {
+    pub class: String,
+    pub reversible: String,
+    pub why: String,
+    pub corrective_route: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SupersessionKinds {
+    pub kinds: Vec<SupersessionKindRow>,
+    pub target_classes: Vec<ReversalTargetClassRow>,
+}
+
+const VALID_NETTING_LAWS: &[&str] = &[
+    "negation",
+    "paired_replacement",
+    "partial_reclassification",
+    "delta",
+    "two_phase_resolution",
+];
+
+const EXPECTED_SUPERSESSION_KINDS: &[(u8, &str)] = &[
+    (1, "Reverses"),
+    (2, "Replaces"),
+    (3, "Reclassifies"),
+    (4, "Revises"),
+    (5, "Restates"),
+    (6, "Resolves"),
+];
+
+impl SupersessionKinds {
+    pub fn embedded(classes: &crate::EntryClasses) -> Result<Self, RegistryError> {
+        Self::parse(SUPERSESSION_KINDS_TOML, classes)
+    }
+
+    pub fn parse(text: &str, classes: &crate::EntryClasses) -> Result<Self, RegistryError> {
+        const R: &str = "supersession_kinds.toml";
+        let doc = load(R, text)?;
+        if req_int(R, &doc.root, "schema_version")? != 1 {
+            return Err(invalid(R, "schema_version must be 1"));
+        }
+
+        let mut kinds = Vec::new();
+        let mut seen_tags = BTreeSet::new();
+        let mut seen_names = BTreeSet::new();
+        for t in doc
+            .arrays
+            .get("kind")
+            .ok_or_else(|| invalid(R, "missing [[kind]]"))?
+        {
+            let tag = u8::try_from(req_int(R, t, "tag")?)
+                .map_err(|_| invalid(R, "kind tag out of u8 range"))?;
+            let name = req_str(R, t, "name")?.to_string();
+            let netting_law = req_str(R, t, "netting_law")?.to_string();
+            let entry_class = req_str(R, t, "entry_class")?.to_string();
+            let requires_reason = req_bool(R, t, "requires_reason")?;
+            let requires_case = req_bool(R, t, "requires_case")?;
+            let paired_with = req_str(R, t, "paired_with")?.to_string();
+            let statement = req_str(R, t, "statement")?.to_string();
+
+            if !seen_tags.insert(tag) {
+                return Err(invalid(R, format!("duplicate kind tag {tag}")));
+            }
+            if !seen_names.insert(name.clone()) {
+                return Err(invalid(R, format!("duplicate kind `{name}`")));
+            }
+            if !VALID_NETTING_LAWS.contains(&netting_law.as_str()) {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "FA-INV-08.net-law violation on `{name}`: unknown netting_law `{netting_law}`"
+                    ),
+                ));
+            }
+            if classes.by_name(&entry_class).is_none() {
+                return Err(invalid(
+                    R,
+                    format!("`{name}` cites unknown entry_class `{entry_class}`"),
+                ));
+            }
+            if name == "Replaces" {
+                if paired_with != "Reverses" || netting_law != "paired_replacement" {
+                    return Err(invalid(
+                        R,
+                        "FA-INV-08.replacement-paired violation: `Replaces` must set `paired_with = \"Reverses\"` and `netting_law = \"paired_replacement\"`",
+                    ));
+                }
+            } else if paired_with != "none" {
+                return Err(invalid(
+                    R,
+                    format!("`{name}` has unexpected paired_with `{paired_with}`"),
+                ));
+            }
+            if matches!(name.as_str(), "Revises" | "Restates") && !requires_case {
+                return Err(invalid(
+                    R,
+                    format!("`{name}` must require a RestatementCase (`requires_case = true`)"),
+                ));
+            }
+            if statement.trim().is_empty() {
+                return Err(invalid(R, format!("`{name}` requires non-empty statement")));
+            }
+            kinds.push(SupersessionKindRow {
+                tag,
+                name,
+                netting_law,
+                entry_class,
+                requires_reason,
+                requires_case,
+                paired_with,
+                statement,
+            });
+        }
+
+        if kinds.len() != EXPECTED_SUPERSESSION_KINDS.len() {
+            return Err(invalid(
+                R,
+                format!(
+                    "expected {} [[kind]] rows, found {}",
+                    EXPECTED_SUPERSESSION_KINDS.len(),
+                    kinds.len()
+                ),
+            ));
+        }
+        for (expected_tag, expected_name) in EXPECTED_SUPERSESSION_KINDS {
+            let Some(k) = kinds.iter().find(|r| r.tag == *expected_tag) else {
+                return Err(invalid(
+                    R,
+                    format!("missing supersession kind tag {expected_tag} (`{expected_name}`)"),
+                ));
+            };
+            if k.name != *expected_name {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "tag {expected_tag} must be `{expected_name}`, found `{}`",
+                        k.name
+                    ),
+                ));
+            }
+        }
+
+        let mut target_classes = Vec::new();
+        let mut seen_targets = BTreeSet::new();
+        for t in doc
+            .arrays
+            .get("target_class")
+            .ok_or_else(|| invalid(R, "missing [[target_class]]"))?
+        {
+            let class = req_str(R, t, "class")?.to_string();
+            let reversible = req_str(R, t, "reversible")?.to_string();
+            let why = req_str(R, t, "why")?.to_string();
+            let corrective_route = req_str(R, t, "corrective_route")?.to_string();
+            if !seen_targets.insert(class.clone()) {
+                return Err(invalid(R, format!("duplicate [[target_class]] `{class}`")));
+            }
+            if !matches!(reversible.as_str(), "yes" | "posts_only" | "no") {
+                return Err(invalid(
+                    R,
+                    format!("`{class}`: invalid reversible value `{reversible}`"),
+                ));
+            }
+            let Some(class_def) = classes.by_name(&class) else {
+                return Err(invalid(
+                    R,
+                    format!("[[target_class]] cites unknown entry class `{class}`"),
+                ));
+            };
+            if class_def.kind == crate::ClassKind::Control && reversible != "no" {
+                return Err(invalid(
+                    R,
+                    format!("control class `{class}` cannot be reversible (`{reversible}`)"),
+                ));
+            }
+            if why.trim().is_empty() || corrective_route.trim().is_empty() {
+                return Err(invalid(
+                    R,
+                    format!("`{class}` requires non-empty `why` and `corrective_route`"),
+                ));
+            }
+            target_classes.push(ReversalTargetClassRow {
+                class,
+                reversible,
+                why,
+                corrective_route,
+            });
+        }
+
+        for c in &classes.rows {
+            if !seen_targets.contains(&c.name) {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "missing [[target_class]] row for entry class `{}` (plan §8.2 totality)",
+                        c.name
+                    ),
+                ));
+            }
+        }
+
+        Ok(Self {
+            kinds,
+            target_classes,
+        })
+    }
+
+    pub fn by_name(&self, name: &str) -> Option<&SupersessionKindRow> {
+        self.kinds.iter().find(|k| k.name == name)
+    }
+
+    pub fn by_tag(&self, tag: u8) -> Option<&SupersessionKindRow> {
+        self.kinds.iter().find(|k| k.tag == tag)
+    }
+
+    pub fn target_class(&self, class: &str) -> Option<&ReversalTargetClassRow> {
+        self.target_classes.iter().find(|r| r.class == class)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1665,6 +1902,11 @@ mod tests {
         let conversion_laws = ConversionLaws::embedded().expect("conversion_laws.toml");
         assert_eq!(conversion_laws.implicit_conversion, "forbidden");
         assert_eq!(conversion_laws.rows.len(), 8);
+
+        let classes = crate::EntryClasses::embedded().expect("entry_classes.toml");
+        let sup_kinds = SupersessionKinds::embedded(&classes).expect("supersession_kinds.toml");
+        assert_eq!(sup_kinds.kinds.len(), 6);
+        assert_eq!(sup_kinds.target_classes.len(), classes.rows.len());
     }
 
     #[test]
@@ -1729,5 +1971,27 @@ mod tests {
             .replacen("denominator = \"1\"", "", 1);
         let err = ConversionLaws::parse(&bad_conv).expect_err("unreduced conversion factor");
         assert!(err.to_string().contains("coprime"), "{err}");
+
+        // Planted negative 6 (fa-oz3): unregistered netting law or unpaired Replaces fails.
+        let classes = crate::EntryClasses::embedded().expect("entry_classes.toml");
+        let bad_net_law = SUPERSESSION_KINDS_TOML.replacen(
+            "netting_law = \"negation\"",
+            "netting_law = \"ad_hoc\"",
+            1,
+        );
+        let err =
+            SupersessionKinds::parse(&bad_net_law, &classes).expect_err("unregistered netting law");
+        assert!(err.to_string().contains("FA-INV-08.net-law"), "{err}");
+
+        let bad_paired = SUPERSESSION_KINDS_TOML.replacen(
+            "paired_with = \"Reverses\"",
+            "paired_with = \"none\"",
+            1,
+        );
+        let err = SupersessionKinds::parse(&bad_paired, &classes).expect_err("unpaired Replaces");
+        assert!(
+            err.to_string().contains("FA-INV-08.replacement-paired"),
+            "{err}"
+        );
     }
 }

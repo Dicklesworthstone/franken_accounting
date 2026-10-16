@@ -722,6 +722,17 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(policy::refusal(&d)));
     }
     // 1b. The supported subset.
+    // A Replacement with a Replaces supersession is only admissible when paired
+    // with its Reversal in one atomic batch (`post_replacement_pair`, FA-INV-08.replacement-paired).
+    if proposal.class == EntryClass::REPLACEMENT && !proposal.supersession.is_empty() {
+        return Ok(Err(Refusal::new(
+            code::REVERSAL_SHAPE,
+            exit::REFUSAL,
+            "a Replacement entry cannot be posted standalone without its paired Reversal in one batch",
+            "plan §8.2, FA-INV-08.replacement-paired (a Replacement is paired with its reversal in one batch)",
+            "submit the (Reversal, Replacement) pair together via post_replacement_pair",
+        )));
+    }
     let is_reversal = proposal.class == EntryClass::REVERSAL;
     if !POSTED_CLASSES.contains(&proposal.class) {
         return Ok(Err(not_implemented(class_name)));
@@ -2015,7 +2026,12 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             EntryClass::ORIGINAL
             | EntryClass::ADJUSTING
             | EntryClass::REVERSAL
-            | EntryClass::ALLOCATION => true,
+            | EntryClass::REPLACEMENT
+            | EntryClass::RECLASSIFICATION
+            | EntryClass::ALLOCATION
+            | EntryClass::REVISION
+            | EntryClass::RESTATEMENT
+            | EntryClass::PRIOR_PERIOD_ADJUSTMENT => true,
             EntryClass::RESOLUTION => matches!(
                 original.proposal.pending,
                 Some(Pending {
@@ -2764,4 +2780,190 @@ fn entry_of(row: &VertexRow) -> Result<(Entry, CommitSeq), KernelError> {
         }
     };
     Ok((Entry::decode(&payload)?, row.created_at))
+}
+
+/// Post a paired `(Reversal, Replacement)` batch atomically in a single substrate
+/// transaction (`FA-INV-08.replacement-paired`, plan §8.2; bead `fa-oz3`).
+///
+/// Both entries must cite the exact same target `T` (`reversal_req` via
+/// `SupersessionKind::Reverses`, `replacement_req` via `SupersessionKind::Replaces`),
+/// pass `fa_palimpsest::validate_replacement_pair`, and pass all capability,
+/// period-law, leaf-only, unit-policy, balance-law, and evidence-minimum gates.
+/// Either both entries commit at the same `CommitSeq`, or neither commits.
+pub async fn post_replacement_pair<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    reversal_req: PostRequest,
+    replacement_req: PostRequest,
+) -> Outcome<(Posted, Posted)> {
+    let [rev_sup] = reversal_req.proposal.supersession.as_slice() else {
+        return Ok(Err(Refusal::new(
+            code::REVERSAL_SHAPE,
+            exit::REFUSAL,
+            "paired reversal must carry exactly one Reverses supersession",
+            "plan §8.2, FA-INV-08.replacement-paired",
+            "cite the target entry with SupersessionKind::Reverses on the reversal and SupersessionKind::Replaces on the replacement",
+        )));
+    };
+    let target_ref = rev_sup.target;
+    let Some(target_row) = db.vertex(target_ref.vid)? else {
+        return Ok(Err(no_reversal_target(target_ref.vid)));
+    };
+    let (target_entry, _) = checked_entry(db, &target_row)?;
+    if target_entry.entry_digest != target_ref.entry_digest {
+        return Ok(Err(Refusal::new(
+            code::REVERSAL_TARGET,
+            exit::REFUSAL,
+            "target entry_digest does not match the committed target",
+            "plan §8.2",
+            "read the target entry with `fa entry show` and use its committed entry_digest",
+        )));
+    }
+    if let Err(e) = fa_palimpsest::validate_replacement_pair(
+        &target_entry.proposal,
+        target_ref,
+        &reversal_req.proposal,
+        &replacement_req.proposal,
+    ) {
+        return Ok(Err(Refusal::new(
+            code::REVERSAL_SHAPE,
+            exit::REFUSAL,
+            e.to_string(),
+            "plan §8.2, FA-INV-08.replacement-paired",
+            "provide an exact side-swap Reversal paired with a balanced Replacement targeting the same entry",
+        )));
+    }
+
+    // Validate the replacement's own capability, period law, accounts, unit policy,
+    // balance law, and evidence minimum by running the full preparation pipeline
+    // on an Adjusting-equivalent check request, then aborting that check txn.
+    let mut check_req = replacement_req.clone();
+    check_req.proposal.class = EntryClass::ADJUSTING;
+    check_req.proposal.supersession = Vec::new();
+    let rep_period = match prepare_post(db, ctx, book, check_req)? {
+        Err(refusal) => return Ok(Err(refusal)),
+        Ok(PostPreparation::AlreadyRecorded(_)) => {
+            return Ok(Err(identity_conflict(
+                Identity::Key,
+                entry_vid(
+                    book.book_id,
+                    &replacement_req.proposal.principal_ref.0.to_le_bytes(),
+                    &replacement_req.proposal.idempotency_key,
+                ),
+            )));
+        }
+        Ok(PostPreparation::Ready(prep)) => {
+            let p = prep.period().to_string();
+            prep.abort();
+            p
+        }
+    };
+
+    // Prepare the reversal (which checks open-item LIVE_APPLICATIONS on T and
+    // stages the Reversal + any ScheduleCancelled in a single WriteTxn).
+    let mut prepared_rev = match prepare_post(db, ctx, book, reversal_req)? {
+        Err(refusal) => return Ok(Err(refusal)),
+        Ok(PostPreparation::AlreadyRecorded(rev_posted)) => {
+            let rep_evid = entry_vid(
+                book.book_id,
+                &replacement_req.proposal.principal_ref.0.to_le_bytes(),
+                &replacement_req.proposal.idempotency_key,
+            );
+            if let Some(row) = db.vertex(rep_evid)? {
+                let (rep_entry, rep_seq) = checked_entry(db, &row)?;
+                return Ok(Ok((
+                    rev_posted,
+                    Posted::AlreadyRecorded {
+                        entry_ref: rep_entry.entry_ref(rep_evid),
+                        recorded_at: rep_seq,
+                    },
+                )));
+            }
+            return Ok(Err(identity_conflict(
+                Identity::Reversal,
+                rev_posted.entry_ref().vid,
+            )));
+        }
+        Ok(PostPreparation::Ready(prep)) => prep,
+    };
+
+    // Stage the Replacement entry and its edges into the same WriteTxn as the Reversal.
+    let rep_evid = entry_vid(
+        book.book_id,
+        &replacement_req.proposal.principal_ref.0.to_le_bytes(),
+        &replacement_req.proposal.idempotency_key,
+    );
+    if prepared_rev.txn.vertex(db, rep_evid)?.is_some() {
+        prepared_rev.abort();
+        return Ok(Err(identity_conflict(Identity::Key, rep_evid)));
+    }
+    let rep_entry = replacement_req.proposal.clone().seal(
+        replacement_req.approvals.clone(),
+        replacement_req.plan_certificate,
+    )?;
+    let rep_pvid = period_vid(&book.calendar.id, &rep_period);
+    let mut has_leg = WriteBatch::new(relation::HAS_LEG);
+    has_leg.create_vertex(rep_evid, vec![label::ENTRY], entry_mirrors(&rep_entry)?);
+    let leg_edges = crate::projections::stage_legs(&mut has_leg, rep_evid, &rep_entry, book)?;
+    let mut in_period = WriteBatch::new(relation::IN_PERIOD);
+    in_period.add_edge(
+        edge_id(relation::IN_PERIOD, rep_evid, rep_pvid),
+        rep_evid,
+        rep_pvid,
+        vec![],
+    );
+    let mut supersedes = WriteBatch::new(relation::SUPERSEDES);
+    supersedes.add_edge(
+        edge_id(relation::SUPERSEDES, rep_evid, target_ref.vid),
+        rep_evid,
+        target_ref.vid,
+        vec![],
+    );
+    let mut rep_batches = vec![has_leg, in_period, supersedes];
+    rep_batches.extend(leg_edges);
+    rep_batches.retain(|b| !b.is_empty());
+    prepared_rev.txn.write_ordered(db, rep_batches)?;
+
+    let rep_ref = rep_entry.entry_ref(rep_evid);
+    match prepared_rev.commit(db, ctx).await? {
+        Err(refusal) => Ok(Err(refusal)),
+        Ok(rev_posted) => {
+            let seq = rev_posted.recorded_at();
+            Ok(Ok((
+                rev_posted,
+                Posted::Committed {
+                    entry_ref: rep_ref,
+                    recorded_at: seq,
+                    period: rep_period,
+                },
+            )))
+        }
+    }
+}
+
+/// Explain the complete `SUPERSEDES` lineage component containing `vid` and its
+/// net economic effect under `registries/supersession_kinds.toml` (`fa-oz3`).
+pub fn explain_entry_lineage<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    vid: VId,
+    known_at: Option<CommitSeq>,
+) -> Result<Option<fa_palimpsest::LineageReport>, KernelError> {
+    let seq = match known_at {
+        Some(s) => s,
+        None => db.frontier()?,
+    };
+    let mut entries = Vec::new();
+    for row in db.vertices_at(seq)? {
+        if !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
+        let (entry, created_at) = entry_of(&row)?;
+        if entry.proposal.book_id == book.book_id {
+            entries.push((row.vid, entry, created_at));
+        }
+    }
+    fa_palimpsest::explain_lineage(&entries, vid, Some(seq))
+        .map_err(|e| KernelError::Corrupt(e.to_string()))
 }

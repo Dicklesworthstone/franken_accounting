@@ -316,14 +316,14 @@ example = "fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book 
 
 [[verb]]
 name = "explain"
-summary = "Explain a leaf account's balance, a committed entry and its lineage, an entry's evidence closure, a refusal code from the embedded catalog, a fiscal period's state and transitions, or a register cell's fold vs materialized state."
+summary = "Explain a leaf account's balance, a committed entry and its lineage, an entry's complete supersession lineage and net effect, an entry's evidence closure, a refusal code from the embedded catalog, a fiscal period's state and transitions, or a register cell's fold vs materialized state."
 writes = true
-subcommands = ["balance", "entry", "evidence", "refusal", "period", "register"]
+subcommands = ["balance", "entry", "evidence", "refusal", "period", "register", "lineage"]
 flags = ["--period", "--unit", "--as-known-at", "--certificate-out"]
 switches = ["--certify"]
-events = ["balance_explained", "entry_explained", "evidence_explained", "refusal_explained", "period_explained", "register_explained", "report_certificate"]
+events = ["balance_explained", "entry_explained", "evidence_explained", "refusal_explained", "period_explained", "register_explained", "lineage_explained", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 8]
-usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "explain entry <vid|E:vid>", "explain evidence <entry-vid|E:vid>", "explain refusal <FA-REF-nnn>", "explain period <period-code>", "explain register <account-code> --period <code> [--unit <CODE>] [--as-known-at HEAD|<seq>]", "Without certification this is a pure read; `explain refusal` requires no book. --certify (on `explain balance`) retains the exact explanation and native read closure in the book; --certificate-out also creates a new external copy. The certificate binds historical account metadata, contributing entries, evidence references, lineage, cell history, and the whole-period fold."]
+usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "explain entry <vid|E:vid>", "explain lineage <vid|E:vid> [--as-known-at HEAD|<seq>]", "explain evidence <entry-vid|E:vid>", "explain refusal <FA-REF-nnn>", "explain period <period-code>", "explain register <account-code> --period <code> [--unit <CODE>] [--as-known-at HEAD|<seq>]", "Without certification this is a pure read; `explain refusal` requires no book. --certify (on `explain balance`) retains the exact explanation and native read closure in the book; --certificate-out also creates a new external copy. The certificate binds historical account metadata, contributing entries, evidence references, lineage, cell history, and the whole-period fold."]
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -1073,6 +1073,12 @@ doc = "A register cell's fold vs stored materialized state (`fa explain register
 fields = ["account:string", "account_vid:hex", "name:string", "type:string", "period:string", "unit:string?", "known_at:seq", "watermark:seq?", "fold_digest:hex", "green:bool", "cache_status:string", "verified_through:seq?", "stale:bool", "lag_entries:int", "decision_card_digest:hex", "decision_card_bytes:hex", "cells:[explained_cell]", "contributions:[contribution]"]
 
 [[event]]
+name = "lineage_explained"
+book = true
+doc = "The complete `SUPERSEDES` lineage component containing `query_entry` (`fa explain lineage <entry-vid>`): topological steps with their registered `netting_law` (`supersession_kinds.toml`, plan §8.1), root entry, reversal/replacement status, and the net economic effect per `(account, unit)`."
+fields = ["query_entry:hex", "root_entry:hex", "known_at:seq", "fully_reversed:bool", "replaced_by:hex?", "steps:[lineage_step]", "net_effect:[lineage_net_cell]"]
+
+[[event]]
 name = "document_read"
 book = true
 doc = "A document read under the caller's capability (plan §9.7): `view` is `full` or `redacted`, `bytes_hex` carries the full content when unredacted, `text` wraps any UTF-8 content as `untrusted_text` with source `D:<oid>` (plan §9.3 prompt-injection boundary), and `disclosed_chunks`/`withheld_chunks`/`view_commit` describe a redacted view."
@@ -1652,6 +1658,21 @@ name = "lot_disposal_slice"
 doc = "One lot slice relieved by a planned disposal, with before/after open quantities and costs."
 fields = ["entry:hex", "entry_digest:hex", "qty_ordinal:int", "cost_ordinal:int", "effective_date:date", "recorded_at:seq", "quantity_relieved:amount", "cost_relieved:amount", "open_quantity_before:amount", "open_quantity_after:amount", "open_cost_before:amount", "open_cost_after:amount"]
 
+[[shape]]
+name = "lineage_step"
+doc = "One entry in a `SUPERSEDES` lineage component, with its liveness and supersession links and registered netting laws."
+fields = ["entry:hex", "entry_digest:hex", "class:string", "effective_date:date", "recorded_at:seq", "live:bool", "supersedes:[lineage_edge]"]
+
+[[shape]]
+name = "lineage_edge"
+doc = "One `SUPERSEDES` edge with its registered `netting_law` (`supersession_kinds.toml`)."
+fields = ["target:hex", "kind:string", "netting_law:string", "reason_code:int", "reason:string?"]
+
+[[shape]]
+name = "lineage_net_cell"
+doc = "Net economic effect `(debit - credit)` of a `SUPERSEDES` lineage component on one `(account, unit)` cell."
+fields = ["account:string", "account_vid:hex", "account_name:string", "unit:string", "debits:amount", "credits:amount", "net:amount"]
+
 # ---------------------------------------------------------------------------
 # MCP (plan §15.4, bead fa-xex): this registry as tool clusters.
 # ---------------------------------------------------------------------------
@@ -1824,14 +1845,14 @@ mistakes = ["Reading the writer_lease check as another process's lock: under fa-
 cluster = "fa.orient"
 name = "explain"
 verb = "explain"
-subcommands = ["entry", "evidence", "refusal", "period", "register"]
+subcommands = ["entry", "evidence", "refusal", "period", "register", "lineage"]
 selector = "subject"
 positionals = ["target"]
 flags = ["--period", "--unit", "--as-known-at"]
 switches = []
 required = ["target"]
 dont = ["Don't guess what a refusal code means or how to remediate it: `subject: \"refusal\"` with `target: \"FA-REF-nnn\"` prints its law citation, admissibility cells, SoD rules, and exact fix without needing an open book.", "Don't trust a materialized register without checking its fold: `subject: \"register\"` compares the refolded cell against the stored cache."]
-mistakes = ["Calling `subject: \"register\"` without `period`.", "Passing an `entry_digest` instead of the 32-hex `vid` to `subject: \"entry\"` or `subject: \"evidence\"`."]
+mistakes = ["Calling `subject: \"register\"` without `period`.", "Passing an `entry_digest` instead of the 32-hex `vid` to `subject: \"entry\"`, `subject: \"lineage\"`, or `subject: \"evidence\"`."]
 
 
 # ---- fa.book ----------------------------------------------------------------

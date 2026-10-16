@@ -9941,12 +9941,13 @@ fn side_name(side: Side) -> &'static str {
     }
 }
 
-/// `fa explain balance|entry|evidence|refusal|period|register ...`.
+/// `fa explain balance|entry|lineage|evidence|refusal|period|register ...`.
 fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let sub = args.positional.get(1).map(String::as_str);
     match sub {
         Some("balance") => explain_balance_cmd(ctx, args),
         Some("entry") => explain_entry_cmd(ctx, args),
+        Some("lineage") => explain_lineage_cmd(ctx, args),
         Some("evidence") => explain_evidence_cmd(ctx, args),
         Some("refusal") => explain_refusal_cmd(ctx, args),
         Some("period") => explain_period_cmd(ctx, args),
@@ -10133,6 +10134,120 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("supersedes", Json::Arr(supersedes)),
             ("superseded_by", Json::Arr(superseded_by)),
             ("evidence", Json::Arr(evidence)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+fn explain_lineage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    let example = "fa explain lineage <vid|E:vid> [--as-known-at HEAD|<seq>] --book <dir>";
+    let raw = args
+        .positional
+        .get(2)
+        .ok_or_else(|| usage("explain lineage needs an entry vid (32 hex)", example))?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(format!("unexpected argument `{extra}`"), example));
+    }
+    let vid = parse_entry_target(raw, example)?;
+    let book = ctx.books.open(args)?;
+    let (known_at, _) = known_at_flag(args, &book, out)?;
+    let report = book.explain_entry_lineage(vid, known_at)?.ok_or_else(|| {
+        usage(
+            format!("no entry {:032x} in this book", vid.0),
+            "pass a committed entry vid from `fa post` or `fa explain balance`",
+        )
+    })?;
+    let seq = report.known_at.unwrap_or_else(|| {
+        report
+            .entries
+            .iter()
+            .map(|st| st.recorded_at)
+            .max()
+            .unwrap_or(CommitSeq(0))
+    });
+    out.known_at(seq);
+    let accounts: std::collections::BTreeMap<VId, fa_journal::AccountRow> =
+        book.accounts()?.into_iter().map(|a| (a.vid, a)).collect();
+    let units = &book.context().units;
+    let reasons =
+        ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+    let steps: Vec<Json> = report
+        .entries
+        .iter()
+        .map(|st| {
+            let supersedes: Vec<Json> = st
+                .supersedes
+                .iter()
+                .map(|sup| {
+                    let reason = reasons
+                        .get("supersession", sup.reason_code)
+                        .map(|r| r.name.as_str());
+                    obj(vec![
+                        ("target", s(format!("{:032x}", sup.target_vid.0))),
+                        ("kind", s(format!("{:?}", sup.kind))),
+                        ("netting_law", s(sup.netting_law.as_str())),
+                        ("reason_code", Json::Int(i128::from(sup.reason_code))),
+                        ("reason", reason.map_or(Json::Null, s)),
+                    ])
+                })
+                .collect();
+            obj(vec![
+                ("entry", s(format!("{:032x}", st.vid.0))),
+                ("entry_digest", s(hex(&st.entry_digest))),
+                ("class", s(st.class.name().unwrap_or("?"))),
+                ("effective_date", s(st.effective_date.render())),
+                ("recorded_at", Json::Int(i128::from(st.recorded_at.0))),
+                ("live", Json::Bool(st.live)),
+                ("supersedes", Json::Arr(supersedes)),
+            ])
+        })
+        .collect();
+    let mut net_effect = Vec::with_capacity(report.net_positions.len());
+    for pos in &report.net_positions {
+        let (acc_code, acc_name) = match accounts.get(&pos.account_ref) {
+            Some(row) => (row.code.as_str(), row.name.as_str()),
+            None => ("?", "?"),
+        };
+        let unit_code = registered_unit_code(pos.unit, units)?;
+        let debits_str = render_amount(Amount::new(pos.unit, pos.debits), units)?;
+        let credits_str = render_amount(Amount::new(pos.unit, pos.credits), units)?;
+        let net_str = render_amount(Amount::new(pos.unit, pos.net_debit), units)?;
+        net_effect.push(obj(vec![
+            ("account", s(acc_code)),
+            ("account_vid", s(format!("{:032x}", pos.account_ref.0))),
+            ("account_name", s(acc_name)),
+            ("unit", s(unit_code)),
+            ("debits", s(debits_str)),
+            ("credits", s(credits_str)),
+            ("net", s(net_str)),
+        ]));
+    }
+    let human = format!(
+        "lineage of entry {:032x} (root {:032x}) at {} · {} step(s) · fully_reversed={} · {} net cell(s)",
+        vid.0,
+        report.root_vid.0,
+        seq.0,
+        report.entries.len(),
+        report.fully_reversed,
+        net_effect.len()
+    );
+    out.event(
+        "lineage_explained",
+        vec![
+            ("query_entry", s(format!("{:032x}", report.queried_vid.0))),
+            ("root_entry", s(format!("{:032x}", report.root_vid.0))),
+            ("known_at", Json::Int(i128::from(seq.0))),
+            ("fully_reversed", Json::Bool(report.fully_reversed)),
+            (
+                "replaced_by",
+                report
+                    .replaced_by
+                    .map_or(Json::Null, |v| s(format!("{:032x}", v.0))),
+            ),
+            ("steps", Json::Arr(steps)),
+            ("net_effect", Json::Arr(net_effect)),
         ],
         &human,
     );

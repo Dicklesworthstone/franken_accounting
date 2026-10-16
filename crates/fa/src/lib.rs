@@ -110,7 +110,8 @@ pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequ
 pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};
 pub use fa_journal::{
     AllocationPosting, DocumentEvidenceSummary, EvidenceExplanation, InstantSelection,
-    ManualAssertionSummary, PeriodBalance, PeriodCheck, PeriodTransitionRecord, PeriodVerification,
+    LineageEdgeSummary, LineageEntrySummary, LineageReport, ManualAssertionSummary, NetPosition,
+    NettingLaw, PeriodBalance, PeriodCheck, PeriodTransitionRecord, PeriodVerification,
     ReviewedSummary, RevocationRequest, Revoked, Run, RunBody, RunChunk, RunControlRequest,
     RunControlled, RunMode, RunState, ScheduleVerification, SupplementSummary, TieOut, TieOutLine,
     TrialBalanceLine, UploadRequest,

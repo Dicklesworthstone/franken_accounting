@@ -17,6 +17,7 @@ use fa_registry::foundations::Ledger;
 use fa_registry::g0::{
     CheckerIndex, ClaimsLintConfig, Constitution, ConversionLaws, EvidenceRegistry, LotLaws,
     OperationCosts, PeriodStatesRegistry, ProofLanes, RelationshipBases, SloRegistry,
+    SupersessionKinds,
 };
 use fa_registry::intake_sources::IntakeSources;
 use fa_registry::invariants::Invariants;
@@ -117,6 +118,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "scoreboard.toml",
     "slo.toml",
     "sod_policy.toml",
+    "supersession_kinds.toml",
     "symbols.toml",
     "threat_model.toml",
     "units.toml",
@@ -665,6 +667,8 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let _lot_laws = LotLaws::parse(&read("lot_laws.toml")?).map_err(|e| e.to_string())?;
     let _conversion_laws =
         ConversionLaws::parse(&read("conversion_laws.toml")?).map_err(|e| e.to_string())?;
+    let _supersession_kinds = SupersessionKinds::parse(&read("supersession_kinds.toml")?, &classes)
+        .map_err(|e| e.to_string())?;
     let claims_config =
         ClaimsLintConfig::parse(&read("claims_lint.toml")?).map_err(|e| e.to_string())?;
 

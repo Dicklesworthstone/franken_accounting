@@ -6960,3 +6960,131 @@ fn memo_off_balance_and_statistical_legs_obey_fa_inv_01_memo() {
         .expect("single-sided statistical reversal");
     assert!(matches!(reversed, Posted::Committed { .. }));
 }
+
+#[test]
+fn replacement_pair_commits_reversal_and_replacement_in_one_batch_and_explains_net_lineage() {
+    let mut h = harness();
+    let original = h
+        .post(h.request(
+            h.proposal(
+                h.rent_legs(10_000),
+                b"orig-to-replace",
+                EntryClass::ORIGINAL,
+            ),
+            &["post"],
+        ))
+        .expect("original post")
+        .entry_ref();
+
+    let rev_proposal = h.reversal_of(original, 10_000, b"pair-rev");
+    let mut rep_proposal = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, h.rent, Amount::new(h.usd, 12_500)),
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 12_500)),
+        ],
+        b"pair-rep",
+        EntryClass::REPLACEMENT,
+    );
+    rep_proposal.supersession = vec![Supersession {
+        target: original,
+        kind: SupersessionKind::Replaces,
+        reason_code: 1,
+    }];
+
+    let rev_req = h.request(rev_proposal, &["post"]);
+    let rep_req = h.request(rep_proposal, &["post"]);
+    let ctx = h.ctx();
+    let (rev_posted, rep_posted) = h
+        .runtime
+        .block_on(fa_journal::post::post_replacement_pair(
+            &mut h.db, &ctx, &h.book, rev_req, rep_req,
+        ))
+        .expect("kernel")
+        .expect("paired replacement committed");
+
+    // Both entries committed in the exact same transaction at the same CommitSeq.
+    assert_eq!(rev_posted.recorded_at(), rep_posted.recorded_at());
+    assert!(matches!(rev_posted, Posted::Committed { .. }));
+    assert!(matches!(rep_posted, Posted::Committed { .. }));
+
+    // Lineage explanation folds the 3 entries (Original + Reversal + Replacement)
+    // to the Replacement's net legs (+12_500 rent, -12_500 cash).
+    let lineage = fa_journal::post::explain_entry_lineage(&h.db, &h.book, original.vid, None)
+        .expect("explain lineage")
+        .expect("found");
+    assert_eq!(lineage.root_vid, original.vid);
+    assert_eq!(lineage.replaced_by, Some(rep_posted.entry_ref().vid));
+    assert!(!lineage.fully_reversed);
+    assert_eq!(lineage.entries.len(), 3);
+    let net: std::collections::BTreeMap<VId, i128> = lineage
+        .net_positions
+        .iter()
+        .map(|p| (p.account_ref, p.net_debit))
+        .collect();
+    assert_eq!(net.get(&h.rent), Some(&12_500));
+    assert_eq!(net.get(&h.cash), Some(&-12_500));
+}
+
+#[test]
+fn unpaired_or_mismatched_replacement_is_refused_without_mutating_book() {
+    let mut h = harness();
+    let original = h
+        .post(h.request(
+            h.proposal(h.rent_legs(10_000), b"orig-unpaired", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("original post")
+        .entry_ref();
+
+    let mut rep_only = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, h.rent, Amount::new(h.usd, 12_500)),
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 12_500)),
+        ],
+        b"unpaired-rep",
+        EntryClass::REPLACEMENT,
+    );
+    rep_only.supersession = vec![Supersession {
+        target: original,
+        kind: SupersessionKind::Replaces,
+        reason_code: 1,
+    }];
+
+    // 1. Standalone single-entry post of a Replacement with Replaces supersession is refused.
+    let before = h.db.frontier().unwrap();
+    let r = h
+        .post(h.request(rep_only.clone(), &["post"]))
+        .expect_err("unpaired replacement must be refused");
+    assert_eq!((r.code, r.exit), ("FA-REF-051", exit::REFUSAL), "{r}");
+    assert!(
+        r.cite.contains("FA-INV-08.replacement-paired"),
+        "{}",
+        r.cite
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    // 2. Paired batch where Replacement legs are identical to Original is refused.
+    let rev_proposal = h.reversal_of(original, 10_000, b"pair-rev-ident");
+    let mut ident_rep = h.proposal(
+        h.rent_legs(10_000),
+        b"pair-rep-ident",
+        EntryClass::REPLACEMENT,
+    );
+    ident_rep.supersession = vec![Supersession {
+        target: original,
+        kind: SupersessionKind::Replaces,
+        reason_code: 1,
+    }];
+    let rev_req = h.request(rev_proposal, &["post"]);
+    let rep_req = h.request(ident_rep, &["post"]);
+    let ctx = h.ctx();
+    let r = h
+        .runtime
+        .block_on(fa_journal::post::post_replacement_pair(
+            &mut h.db, &ctx, &h.book, rev_req, rep_req,
+        ))
+        .expect("kernel")
+        .expect_err("identical replacement legs must be refused");
+    assert_eq!((r.code, r.exit), ("FA-REF-051", exit::REFUSAL), "{r}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
