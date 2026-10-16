@@ -1048,6 +1048,154 @@ pub fn network_pro_rata_held(
     held_by_acct
 }
 
+/// Independent reference oracle for finite-sample split-conformal quantile
+/// (`fa-dh9g`). Returns `(quantile_rank_1based, calibrated_threshold)`.
+#[must_use]
+pub fn naive_split_conformal_quantile(clean_scores: &[i128], alpha_bps: u32) -> (usize, i128) {
+    let mut s = clean_scores.to_vec();
+    s.sort();
+    let n = s.len();
+    let num = ((n as u128) + 1) * (10_000u128 - u128::from(alpha_bps));
+    let k = num.div_ceil(10_000) as usize;
+    if k == 0 {
+        (1, s[0])
+    } else if k <= n {
+        (k, s[k - 1])
+    } else {
+        (n + 1, i128::MAX)
+    }
+}
+
+/// Independent reference oracle for 95% Wilson confidence interval in basis
+/// points (`fa-dh9g`). Returns `(point_estimate_bps, lower_bps, upper_bps)`.
+#[must_use]
+pub fn naive_wilson_interval_bps(successes: u64, trials: u64) -> (u32, u32, u32) {
+    if trials == 0 {
+        return (0, 0, 10_000);
+    }
+    let k = u128::from(successes.min(trials));
+    let n = u128::from(trials);
+    let pt = ((k * 10_000) / n) as u32;
+    let denom = n * (10_000 * n + 38_416);
+    let center = 10_000 * n * (10_000 * k + 19_208);
+    let rad = n * (40_000 * k * (n - k) + 38_416 * n);
+    let half = 980_000 * rad.isqrt();
+    let lo = ((center.saturating_sub(half)) / denom) as u32;
+    let hi = ((center + half).div_ceil(denom)).min(10_000) as u32;
+    (pt, lo.min(pt), hi.max(pt))
+}
+
+/// Independent reference oracle for Monetary Unit Sampling (`fa-kaf7`).
+///
+/// Given canonical `(item_id, book_value_mantissa)` pairs, `start_mantissa` in
+/// `1..=interval`, and `interval_mantissa`, returns the selected `item_id` list.
+#[must_use]
+pub fn naive_sample_mus(
+    items: &[(String, i128)],
+    start_mantissa: i128,
+    interval_mantissa: i128,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cum: i128 = 0;
+    let mut hit = start_mantissa;
+    for (id, val) in items {
+        if *val >= interval_mantissa {
+            out.push(id.clone());
+            continue;
+        }
+        let next = cum + *val;
+        if hit <= next {
+            out.push(id.clone());
+            while hit <= next {
+                hit += interval_mantissa;
+            }
+        }
+        cum = next;
+    }
+    out
+}
+
+/// Independent reference oracle for the Stringer upper misstatement limit
+/// (`fa-kaf7`) using `Int` limb arithmetic.
+#[must_use]
+pub fn naive_stringer_bound_mantissa(
+    interval_mantissa: i128,
+    confidence_level_bps: u32,
+    audited_pairs: &[(i128, i128)],
+) -> i128 {
+    use crate::Int;
+    let factors: &[i128] = match confidence_level_bps {
+        9_000 => &[
+            23_100, 38_900, 53_300, 66_900, 80_000, 92_800, 105_400, 117_800, 130_000, 142_100,
+            154_100,
+        ],
+        9_500 => &[
+            30_000, 47_500, 63_000, 77_600, 91_600, 105_200, 118_500, 131_500, 144_400, 157_100,
+            169_700,
+        ],
+        _ => &[
+            46_100, 66_400, 84_100, 100_500, 116_100, 131_100, 145_800, 160_000, 174_100, 187_900,
+            201_500,
+        ],
+    };
+
+    let mut top_over: i128 = 0;
+    let mut taints: Vec<(i128, i128)> = Vec::new();
+    for &(bv, av) in audited_pairs {
+        let over = bv - av;
+        if over <= 0 {
+            continue;
+        }
+        if bv >= interval_mantissa {
+            top_over += over;
+        } else {
+            taints.push((over, bv));
+        }
+    }
+    taints.sort_by(|a, b| (b.0 * a.1).cmp(&(a.0 * b.1)));
+
+    // Exact common-denominator sum over (10_000 * prod(bv_i)) using Int limbs:
+    let mut common_den = Int::from_i128(10_000);
+    for &(_, bv) in &taints {
+        common_den = common_den.mul(&Int::from_i128(bv));
+    }
+    let mut prod_bv = Int::from_i128(1);
+    for &(_, bv) in &taints {
+        prod_bv = prod_bv.mul(&Int::from_i128(bv));
+    }
+
+    // Numerator starts with interval * R(0) * prod_bv + top_over * 10_000 * prod_bv
+    let top_term = Int::from_i128(top_over)
+        .mul(&Int::from_i128(10_000))
+        .mul(&prod_bv);
+    let mut num = Int::from_i128(interval_mantissa)
+        .mul(&Int::from_i128(factors[0]))
+        .mul(&prod_bv)
+        .add(&top_term);
+
+    for (idx, &(over, bv)) in taints.iter().enumerate() {
+        let rk = factors[idx + 1];
+        let rk_prev = factors[idx];
+        let delta_r = rk - rk_prev;
+        let mut other_bv = Int::from_i128(1);
+        for (j, &(_, bv_j)) in taints.iter().enumerate() {
+            if j != idx {
+                other_bv = other_bv.mul(&Int::from_i128(bv_j));
+            }
+        }
+        let _ = bv;
+        let term = Int::from_i128(interval_mantissa)
+            .mul(&Int::from_i128(delta_r))
+            .mul(&Int::from_i128(over))
+            .mul(&other_bv);
+        num = num.add(&term);
+    }
+
+    let num_i = num.to_i128().expect("fits i128");
+    let den_i = common_den.to_i128().expect("fits i128");
+    (num_i + den_i - 1) / den_i
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

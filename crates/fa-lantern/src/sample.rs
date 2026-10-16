@@ -1,0 +1,938 @@
+//! Audit sampling: Monetary Unit Sampling (MUS), exact rational Stringer bound
+//! evaluation, deterministic uniform selection, and stratified sampling with
+//! Neyman optimal allocation (plan §11.7, §15.6; bead `fa-kaf7`).
+//!
+//! Constitutional guarantees:
+//! - `#![forbid(unsafe_code)]`
+//! - No entropy capability, no clock, no floats: every sample is a pure,
+//!   deterministic function of `(population_digest, declared_seed, parameters)`
+//!   using [`Pcg64Dxsm`].
+//! - Stringer upper misstatement limits are computed in exact rationals
+//!   ([`fa_money::Rate`]) and rounded conservatively upward (ceiling) to exact
+//!   [`fa_money::Amount`] values.
+//! - Stratified sample allocation under Neyman optimal allocation emits a
+//!   replayable [`fa_policy::DecisionCard`] (`DecisionKind::SamplingStratification`).
+
+use std::collections::BTreeMap;
+
+use asupersync::Cx;
+use fa_model::Oid;
+use fa_money::{Amount, ArithmeticBudget, BudgetLimits, Rate, RateError, UnitId};
+use fa_policy::{
+    BenefitInterval, DecisionCandidate, DecisionCard, DecisionFeature, DecisionKind,
+    evaluate_decision,
+};
+use fgdb_crypto::Hasher;
+use fgdb_types::VId;
+
+use crate::LanternError;
+
+const POPULATION_DIGEST_DOMAIN: &[u8] = b"fa:lantern:sample-population:v1";
+const SAMPLE_CERT_DOMAIN: &[u8] = b"fa:lantern:sample-certificate:v1";
+
+/// Deterministic PCG64-DXSM pseudo-number generator seeded from a declared `u64`
+/// input (no ambient entropy capability, Doctrine 3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pcg64Dxsm {
+    state: u128,
+    inc: u128,
+}
+
+impl Pcg64Dxsm {
+    const MULTIPLIER: u128 = 0xda94_2042_e4dd_58b5;
+
+    /// Construct a deterministic `Pcg64Dxsm` stream from `seed`.
+    #[must_use]
+    pub const fn new(seed: u64) -> Self {
+        let inc = ((seed as u128) << 1) | 1;
+        let state0 = inc.wrapping_add(seed as u128);
+        let state1 = state0.wrapping_mul(Self::MULTIPLIER).wrapping_add(inc);
+        Self { state: state1, inc }
+    }
+
+    /// Advance the state and return the next 64-bit output word using the DXSM
+    /// output permutation.
+    pub fn next_u64(&mut self) -> u64 {
+        let old = self.state;
+        self.state = old.wrapping_mul(Self::MULTIPLIER).wrapping_add(self.inc);
+
+        let mut hi = (old >> 64) as u64;
+        let lo = (old as u64) | 1;
+        hi ^= hi >> 32;
+        hi = hi.wrapping_mul(Self::MULTIPLIER as u64);
+        hi ^= hi >> 48;
+        hi = hi.wrapping_mul(lo);
+        hi
+    }
+
+    /// Draw an unbiased integer in `0..bound` via Lemire's rejection method.
+    pub fn next_bounded_u128(&mut self, bound: u128) -> u128 {
+        if bound <= 1 {
+            return 0;
+        }
+        let zone = u128::MAX - (u128::MAX % bound);
+        loop {
+            let hi = u128::from(self.next_u64());
+            let lo = u128::from(self.next_u64());
+            let v = (hi << 64) | lo;
+            if v < zone {
+                return v % bound;
+            }
+        }
+    }
+}
+
+/// An item in an audit sampling population (an open item or GL detail leg).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PopulationItem {
+    pub item_id: String,
+    pub reference_vid: VId,
+    pub stratum: Option<String>,
+    pub book_value: Amount,
+}
+
+/// Canonical, content-addressed audit sampling population.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SamplePopulation {
+    pub name: String,
+    pub unit: UnitId,
+    pub items: Vec<PopulationItem>,
+    pub total_book_value: Amount,
+    pub population_digest: [u8; 32],
+}
+
+impl SamplePopulation {
+    /// Construct and canonically sort a [`SamplePopulation`] by `(item_id, reference_vid)`,
+    /// refusing empty populations, mixed units, or non-positive book values.
+    pub fn new(
+        name: impl Into<String>,
+        unit: UnitId,
+        mut items: Vec<PopulationItem>,
+    ) -> Result<Self, LanternError> {
+        let name = name.into();
+        if items.is_empty() {
+            return Err(LanternError::Parameter {
+                procedure: "sample.population".into(),
+                name: "items".into(),
+                message: "sampling population must contain at least one positive-value item".into(),
+            });
+        }
+        items.sort_by(|a, b| {
+            a.item_id
+                .cmp(&b.item_id)
+                .then_with(|| a.reference_vid.0.cmp(&b.reference_vid.0))
+        });
+        let mut total: i128 = 0;
+        for item in &items {
+            if item.book_value.unit != unit {
+                return Err(LanternError::Parameter {
+                    procedure: "sample.population".into(),
+                    name: "unit".into(),
+                    message: format!(
+                        "item `{}` has unit {:?}, expected {:?}",
+                        item.item_id, item.book_value.unit, unit
+                    ),
+                });
+            }
+            if item.book_value.mantissa <= 0 {
+                return Err(LanternError::Parameter {
+                    procedure: "sample.population".into(),
+                    name: "book_value".into(),
+                    message: format!(
+                        "item `{}` has non-positive book value {}",
+                        item.item_id, item.book_value.mantissa
+                    ),
+                });
+            }
+            total = total
+                .checked_add(item.book_value.mantissa)
+                .ok_or(LanternError::Overflow("population total book value"))?;
+        }
+
+        let mut h = Hasher::new();
+        h.update(POPULATION_DIGEST_DOMAIN);
+        h.update(&(name.len() as u64).to_le_bytes());
+        h.update(name.as_bytes());
+        h.update(&unit.0.to_le_bytes());
+        h.update(&(items.len() as u64).to_le_bytes());
+        h.update(&total.to_le_bytes());
+        for item in &items {
+            h.update(&(item.item_id.len() as u64).to_le_bytes());
+            h.update(item.item_id.as_bytes());
+            h.update(&item.reference_vid.0.to_le_bytes());
+            h.update(&item.book_value.mantissa.to_le_bytes());
+            if let Some(s) = &item.stratum {
+                h.update(&[1]);
+                h.update(&(s.len() as u64).to_le_bytes());
+                h.update(s.as_bytes());
+            } else {
+                h.update(&[0]);
+            }
+        }
+        let population_digest = h.finalize().0;
+
+        Ok(Self {
+            name,
+            unit,
+            items,
+            total_book_value: Amount::new(unit, total),
+            population_digest,
+        })
+    }
+}
+
+/// Reason an item was selected in a Monetary Unit Sample.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MusSelectionBasis {
+    /// `book_value >= interval`: examined 100% in the top stratum.
+    TopStratumHighValue,
+    /// Selected by systematic cumulative dollar hit at `hit_dollar_mantissa`.
+    SystematicHit { hit_dollar_mantissa: i128 },
+}
+
+/// A selected item in an MUS sample.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MusSelectedItem {
+    pub population_index: usize,
+    pub item_id: String,
+    pub reference_vid: VId,
+    pub book_value: Amount,
+    pub basis: MusSelectionBasis,
+}
+
+/// Reproducible certificate for a sample selection (`fa sample mus|uniform|stratified`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SampleCertificate {
+    pub method: String,
+    pub population_digest: [u8; 32],
+    pub seed: u64,
+    pub parameters_summary: String,
+    pub selected_item_ids: Vec<String>,
+    pub certificate_oid: Oid,
+}
+
+impl SampleCertificate {
+    #[must_use]
+    pub fn compute(
+        method: &str,
+        population_digest: [u8; 32],
+        seed: u64,
+        parameters_summary: &str,
+        selected_item_ids: Vec<String>,
+    ) -> Self {
+        let mut h = Hasher::new();
+        h.update(SAMPLE_CERT_DOMAIN);
+        h.update(&(method.len() as u64).to_le_bytes());
+        h.update(method.as_bytes());
+        h.update(&population_digest);
+        h.update(&seed.to_le_bytes());
+        h.update(&(parameters_summary.len() as u64).to_le_bytes());
+        h.update(parameters_summary.as_bytes());
+        h.update(&(selected_item_ids.len() as u64).to_le_bytes());
+        for id in &selected_item_ids {
+            h.update(&(id.len() as u64).to_le_bytes());
+            h.update(id.as_bytes());
+        }
+        let certificate_oid = Oid(h.finalize().0);
+        Self {
+            method: method.to_owned(),
+            population_digest,
+            seed,
+            parameters_summary: parameters_summary.to_owned(),
+            selected_item_ids,
+            certificate_oid,
+        }
+    }
+}
+
+/// Output of a Monetary Unit Sample (`fa sample mus`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MusSamplePlan {
+    pub population_digest: [u8; 32],
+    pub seed: u64,
+    pub interval: Amount,
+    pub start_dollar_mantissa: i128,
+    pub top_stratum_count: usize,
+    pub systematic_sample_count: usize,
+    pub selected: Vec<MusSelectedItem>,
+    pub certificate: SampleCertificate,
+}
+
+/// Execute a deterministic Monetary Unit Sample (`fa sample mus`) over `population`
+/// with declared `seed` and `interval`.
+pub fn sample_mus(
+    population: &SamplePopulation,
+    seed: u64,
+    interval: Amount,
+) -> Result<MusSamplePlan, LanternError> {
+    if interval.unit != population.unit {
+        return Err(LanternError::Parameter {
+            procedure: "sample.mus".into(),
+            name: "interval".into(),
+            message: "sampling interval unit must match population unit".into(),
+        });
+    }
+    if interval.mantissa <= 0 {
+        return Err(LanternError::Parameter {
+            procedure: "sample.mus".into(),
+            name: "interval".into(),
+            message: "sampling interval must be positive".into(),
+        });
+    }
+
+    let mut prng = Pcg64Dxsm::new(seed);
+    let step = interval.mantissa;
+    let start_dollar_mantissa = (prng.next_bounded_u128(step as u128) as i128) + 1;
+
+    let mut selected = Vec::new();
+    let mut top_stratum_count = 0usize;
+    let mut systematic_sample_count = 0usize;
+
+    let mut cumulative: i128 = 0;
+    let mut next_hit: i128 = start_dollar_mantissa;
+
+    for (idx, item) in population.items.iter().enumerate() {
+        if item.book_value.mantissa >= step {
+            top_stratum_count += 1;
+            selected.push(MusSelectedItem {
+                population_index: idx,
+                item_id: item.item_id.clone(),
+                reference_vid: item.reference_vid,
+                book_value: item.book_value,
+                basis: MusSelectionBasis::TopStratumHighValue,
+            });
+            continue;
+        }
+        let next_cum = cumulative
+            .checked_add(item.book_value.mantissa)
+            .ok_or(LanternError::Overflow("MUS cumulative book value"))?;
+        if next_hit <= next_cum {
+            let hit = next_hit;
+            systematic_sample_count += 1;
+            selected.push(MusSelectedItem {
+                population_index: idx,
+                item_id: item.item_id.clone(),
+                reference_vid: item.reference_vid,
+                book_value: item.book_value,
+                basis: MusSelectionBasis::SystematicHit {
+                    hit_dollar_mantissa: hit,
+                },
+            });
+            while next_hit <= next_cum {
+                next_hit = next_hit
+                    .checked_add(step)
+                    .ok_or(LanternError::Overflow("MUS next_hit"))?;
+            }
+        }
+        cumulative = next_cum;
+    }
+
+    let selected_ids: Vec<String> = selected.iter().map(|s| s.item_id.clone()).collect();
+    let certificate = SampleCertificate::compute(
+        "mus",
+        population.population_digest,
+        seed,
+        &format!(
+            "interval={};start={start_dollar_mantissa}",
+            interval.mantissa
+        ),
+        selected_ids,
+    );
+
+    Ok(MusSamplePlan {
+        population_digest: population.population_digest,
+        seed,
+        interval,
+        start_dollar_mantissa,
+        top_stratum_count,
+        systematic_sample_count,
+        selected,
+        certificate,
+    })
+}
+
+/// An audited sample item observation for Stringer bound evaluation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditedSampleItem {
+    pub item_id: String,
+    pub book_value: Amount,
+    pub audited_value: Amount,
+}
+
+/// Exact rational and law-rounded Stringer bound evaluation result (`fa-kaf7`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StringerEvaluation {
+    pub confidence_level_bps: u32,
+    pub sampling_interval: Amount,
+    pub misstatement_count: usize,
+    /// Ranked overstatement taintings `(item_id, tainting_rate)` in descending order.
+    pub ranked_taintings: Vec<(String, Rate)>,
+    /// Exact dollar overstatement in top-stratum (`book_value >= interval`) items.
+    pub top_stratum_misstatement: Amount,
+    /// Basic precision $I \cdot R(0; 1-\alpha)$ rounded conservatively upward.
+    pub basic_precision: Amount,
+    /// Projected misstatement (most likely error) rounded conservatively upward.
+    pub most_likely_error: Amount,
+    /// Incremental allowance for sampling risk rounded conservatively upward.
+    pub incremental_allowance: Amount,
+    /// Total Stringer upper misstatement limit (UML), exact rational and Ceiling-rounded `Amount`.
+    pub upper_misstatement_limit_exact: Rate,
+    pub upper_misstatement_limit: Amount,
+}
+
+fn poisson_upper_factor_bps(confidence_level_bps: u32, k: usize) -> Result<u128, LanternError> {
+    const FACTORS_90: &[u128] = &[
+        23_100, 38_900, 53_300, 66_900, 80_000, 92_800, 105_400, 117_800, 130_000, 142_100, 154_100,
+    ];
+    const FACTORS_95: &[u128] = &[
+        30_000, 47_500, 63_000, 77_600, 91_600, 105_200, 118_500, 131_500, 144_400, 157_100,
+        169_700,
+    ];
+    const FACTORS_99: &[u128] = &[
+        46_100, 66_400, 84_100, 100_500, 116_100, 131_100, 145_800, 160_000, 174_100, 187_900,
+        201_500,
+    ];
+    let table = match confidence_level_bps {
+        9_000 => FACTORS_90,
+        9_500 => FACTORS_95,
+        9_900 => FACTORS_99,
+        _ => {
+            return Err(LanternError::Parameter {
+                procedure: "sample.stringer".into(),
+                name: "confidence_level_bps".into(),
+                message: "supported confidence_level_bps values are 9000 (90%), 9500 (95%), or 9900 (99%)"
+                    .into(),
+            });
+        }
+    };
+    if let Some(&val) = table.get(k) {
+        Ok(val)
+    } else {
+        let last = table[table.len() - 1];
+        let extra = (k - (table.len() - 1)) as u128;
+        Ok(last + extra * 13_000)
+    }
+}
+
+fn rate_err(_e: RateError) -> LanternError {
+    LanternError::Overflow("stringer exact rational arithmetic")
+}
+
+fn ceil_rate_to_i128(
+    rate: &Rate,
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
+) -> Result<i128, LanternError> {
+    let (q, frac) = rate.floor_and_frac(budget).map_err(rate_err)?;
+    let ceil_u = if frac.is_zero() {
+        q
+    } else {
+        q.checked_add(1)
+            .ok_or(LanternError::Overflow("stringer ceiling"))?
+    };
+    i128::try_from(ceil_u).map_err(|_| LanternError::Overflow("stringer i128 conversion"))
+}
+
+/// Evaluate the Stringer upper misstatement limit (UML) in exact rationals
+/// ([`Rate`]) and round conservatively upward (ceiling) to [`Amount`].
+pub fn evaluate_stringer_bound(
+    sampling_interval: Amount,
+    confidence_level_bps: u32,
+    audited_items: &[AuditedSampleItem],
+) -> Result<StringerEvaluation, LanternError> {
+    let unit = sampling_interval.unit;
+    if sampling_interval.mantissa <= 0 {
+        return Err(LanternError::Parameter {
+            procedure: "sample.stringer".into(),
+            name: "sampling_interval".into(),
+            message: "sampling_interval must be positive".into(),
+        });
+    }
+    let cx = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&cx, BudgetLimits::uniform(1_000_000, 0), 65_536);
+
+    let interval_u = sampling_interval.mantissa as u128;
+    let interval_rate = Rate::new(&mut budget, interval_u, 1).map_err(rate_err)?;
+    let r0_bps = poisson_upper_factor_bps(confidence_level_bps, 0)?;
+    let r0_rate = Rate::new(&mut budget, r0_bps, 10_000).map_err(rate_err)?;
+    let bp_exact = interval_rate
+        .checked_mul(&mut budget, &r0_rate)
+        .map_err(rate_err)?;
+
+    let mut top_stratum_overstatement: i128 = 0;
+    let mut raw_taintings: Vec<(String, u128, u128, Rate)> = Vec::new();
+
+    for item in audited_items {
+        if item.book_value.unit != unit || item.audited_value.unit != unit {
+            return Err(LanternError::Parameter {
+                procedure: "sample.stringer".into(),
+                name: "unit".into(),
+                message: "all audited sample items must match sampling_interval unit".into(),
+            });
+        }
+        if item.book_value.mantissa <= 0 {
+            return Err(LanternError::Parameter {
+                procedure: "sample.stringer".into(),
+                name: "book_value".into(),
+                message: "audited sample item book_value must be positive".into(),
+            });
+        }
+        let overstatement = item
+            .book_value
+            .mantissa
+            .checked_sub(item.audited_value.mantissa)
+            .ok_or(LanternError::Overflow("overstatement difference"))?;
+        if overstatement <= 0 {
+            continue;
+        }
+        if item.book_value.mantissa >= sampling_interval.mantissa {
+            top_stratum_overstatement = top_stratum_overstatement
+                .checked_add(overstatement)
+                .ok_or(LanternError::Overflow("top stratum overstatement"))?;
+        } else {
+            let over_u = overstatement as u128;
+            let bv_u = item.book_value.mantissa as u128;
+            let taint = Rate::new(&mut budget, over_u, bv_u).map_err(rate_err)?;
+            raw_taintings.push((item.item_id.clone(), over_u, bv_u, taint));
+        }
+    }
+
+    // Rank taintings in descending order t_1 >= t_2 >= ... >= t_m; break ties by item_id.
+    raw_taintings.sort_by(|a, b| {
+        let lhs = a.1.saturating_mul(b.2);
+        let rhs = b.1.saturating_mul(a.2);
+        rhs.cmp(&lhs).then_with(|| a.0.cmp(&b.0))
+    });
+
+    let mut projected_lower_exact = Rate::zero(&mut budget).map_err(rate_err)?;
+    let mut incremental_exact = Rate::zero(&mut budget).map_err(rate_err)?;
+
+    for (idx, (_, _, _, taint)) in raw_taintings.iter().enumerate() {
+        let k = idx + 1;
+        let rk_bps = poisson_upper_factor_bps(confidence_level_bps, k)?;
+        let rk_prev_bps = poisson_upper_factor_bps(confidence_level_bps, k - 1)?;
+        let delta_r_bps = rk_bps.saturating_sub(rk_prev_bps);
+
+        let proj_k = interval_rate
+            .checked_mul(&mut budget, taint)
+            .map_err(rate_err)?;
+        projected_lower_exact = projected_lower_exact
+            .checked_add(&mut budget, &proj_k)
+            .map_err(rate_err)?;
+
+        let inc_bps = delta_r_bps.saturating_sub(10_000);
+        let inc_factor = Rate::new(&mut budget, inc_bps, 10_000).map_err(rate_err)?;
+        let inc_k = proj_k
+            .checked_mul(&mut budget, &inc_factor)
+            .map_err(rate_err)?;
+        incremental_exact = incremental_exact
+            .checked_add(&mut budget, &inc_k)
+            .map_err(rate_err)?;
+    }
+
+    let top_exact =
+        Rate::new(&mut budget, top_stratum_overstatement as u128, 1).map_err(rate_err)?;
+    let mle_exact = top_exact
+        .checked_add(&mut budget, &projected_lower_exact)
+        .map_err(rate_err)?;
+    let bp_plus_mle = bp_exact
+        .checked_add(&mut budget, &mle_exact)
+        .map_err(rate_err)?;
+    let uml_exact = bp_plus_mle
+        .checked_add(&mut budget, &incremental_exact)
+        .map_err(rate_err)?;
+
+    let basic_precision = Amount::new(unit, ceil_rate_to_i128(&bp_exact, &mut budget)?);
+    let most_likely_error = Amount::new(unit, ceil_rate_to_i128(&mle_exact, &mut budget)?);
+    let incremental_allowance =
+        Amount::new(unit, ceil_rate_to_i128(&incremental_exact, &mut budget)?);
+    let upper_misstatement_limit = Amount::new(unit, ceil_rate_to_i128(&uml_exact, &mut budget)?);
+
+    let ranked_taintings: Vec<(String, Rate)> = raw_taintings
+        .into_iter()
+        .map(|(id, _, _, r)| (id, r))
+        .collect();
+
+    Ok(StringerEvaluation {
+        confidence_level_bps,
+        sampling_interval,
+        misstatement_count: ranked_taintings.len() + usize::from(top_stratum_overstatement > 0),
+        ranked_taintings,
+        top_stratum_misstatement: Amount::new(unit, top_stratum_overstatement),
+        basic_precision,
+        most_likely_error,
+        incremental_allowance,
+        upper_misstatement_limit_exact: uml_exact,
+        upper_misstatement_limit,
+    })
+}
+
+/// Deterministic uniform sample without replacement (`fa sample uniform`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UniformSamplePlan {
+    pub population_digest: [u8; 32],
+    pub seed: u64,
+    pub sample_size: usize,
+    pub selected: Vec<PopulationItem>,
+    pub certificate: SampleCertificate,
+}
+
+/// Draw a reproducible uniform sample of `sample_size` items without replacement
+/// from `population` using `Pcg64Dxsm::new(seed)`.
+pub fn sample_uniform(
+    population: &SamplePopulation,
+    seed: u64,
+    sample_size: usize,
+) -> Result<UniformSamplePlan, LanternError> {
+    if sample_size == 0 || sample_size > population.items.len() {
+        return Err(LanternError::Parameter {
+            procedure: "sample.uniform".into(),
+            name: "sample_size".into(),
+            message: format!(
+                "sample_size {sample_size} must lie in 1..={}",
+                population.items.len()
+            ),
+        });
+    }
+    let mut indices: Vec<usize> = (0..population.items.len()).collect();
+    let mut prng = Pcg64Dxsm::new(seed);
+    let n = indices.len();
+    for i in 0..sample_size {
+        let offset = prng.next_bounded_u128((n - i) as u128) as usize;
+        indices.swap(i, i + offset);
+    }
+    let mut chosen = indices[..sample_size].to_vec();
+    chosen.sort_unstable();
+    let selected: Vec<PopulationItem> = chosen
+        .into_iter()
+        .map(|idx| population.items[idx].clone())
+        .collect();
+    let selected_ids: Vec<String> = selected.iter().map(|s| s.item_id.clone()).collect();
+    let certificate = SampleCertificate::compute(
+        "uniform",
+        population.population_digest,
+        seed,
+        &format!("sample_size={sample_size}"),
+        selected_ids,
+    );
+    Ok(UniformSamplePlan {
+        population_digest: population.population_digest,
+        seed,
+        sample_size,
+        selected,
+        certificate,
+    })
+}
+
+/// Allocation for a single stratum under stratified sampling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StratumAllocation {
+    pub stratum: String,
+    pub population_count: usize,
+    pub std_dev_mantissa: i128,
+    pub allocated_sample_size: usize,
+}
+
+/// Stratified sample plan with Neyman optimal allocation and replayable
+/// [`DecisionCard`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StratifiedSamplePlan {
+    pub population_digest: [u8; 32],
+    pub seed: u64,
+    pub total_sample_size: usize,
+    pub strata: Vec<StratumAllocation>,
+    pub selected: Vec<PopulationItem>,
+    pub decision_card: DecisionCard,
+    pub certificate: SampleCertificate,
+}
+
+/// Compute Neyman optimal stratum allocation and draw a stratified sample using
+/// `Pcg64Dxsm::new(seed)`, emitting a replayable [`DecisionCard`] with
+/// proportional allocation as the pinned deterministic fallback.
+pub fn sample_stratified_neyman(
+    population: &SamplePopulation,
+    seed: u64,
+    total_sample_size: usize,
+    policy_epoch: Option<[u8; 32]>,
+    enforced_policy_epoch: [u8; 32],
+    _subject: VId,
+) -> Result<StratifiedSamplePlan, LanternError> {
+    let mut by_stratum: BTreeMap<String, Vec<&PopulationItem>> = BTreeMap::new();
+    for item in &population.items {
+        let key = item.stratum.clone().unwrap_or_else(|| "default".into());
+        by_stratum.entry(key).or_default().push(item);
+    }
+    let h_count = by_stratum.len();
+    if total_sample_size < h_count || total_sample_size > population.items.len() {
+        return Err(LanternError::Parameter {
+            procedure: "sample.stratified".into(),
+            name: "total_sample_size".into(),
+            message: format!(
+                "total_sample_size {total_sample_size} must lie in {h_count}..={}",
+                population.items.len()
+            ),
+        });
+    }
+
+    let mut stratum_stats: Vec<(String, usize, i128)> = Vec::with_capacity(h_count);
+    for (name, items) in &by_stratum {
+        let nh = items.len();
+        let sum: i128 = items.iter().map(|i| i.book_value.mantissa).sum();
+        let mean = sum / (nh as i128);
+        let mut sq_sum: u128 = 0;
+        for item in items {
+            let diff = (item.book_value.mantissa - mean).unsigned_abs();
+            sq_sum = sq_sum.saturating_add(diff.saturating_mul(diff));
+        }
+        let variance = sq_sum / (nh as u128);
+        let sigma = (variance.isqrt() as i128).max(1);
+        stratum_stats.push((name.clone(), nh, sigma));
+    }
+
+    let allocate_by_weights = |weights: &[i128]| -> Vec<usize> {
+        let mut alloc = vec![1usize; h_count];
+        let remaining = total_sample_size - h_count;
+        let weight_sum: i128 = weights.iter().sum();
+        if remaining > 0 && weight_sum > 0 {
+            let mut quotas: Vec<(usize, i128)> = Vec::with_capacity(h_count);
+            for (i, &w) in weights.iter().enumerate() {
+                let cap = stratum_stats[i].1 - alloc[i];
+                let exact_num = (remaining as i128) * w;
+                let add = ((exact_num / weight_sum) as usize).min(cap);
+                alloc[i] += add;
+                let rem = exact_num % weight_sum;
+                quotas.push((i, rem));
+            }
+            let used: usize = alloc.iter().sum();
+            let mut left = total_sample_size.saturating_sub(used);
+            quotas.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            for &(i, _) in &quotas {
+                if left == 0 {
+                    break;
+                }
+                if alloc[i] < stratum_stats[i].1 {
+                    alloc[i] += 1;
+                    left -= 1;
+                }
+            }
+            for (i, stat) in stratum_stats.iter().enumerate() {
+                while left > 0 && alloc[i] < stat.1 {
+                    alloc[i] += 1;
+                    left -= 1;
+                }
+            }
+        }
+        alloc
+    };
+
+    let neyman_weights: Vec<i128> = stratum_stats
+        .iter()
+        .map(|(_, nh, sigma)| (*nh as i128) * *sigma)
+        .collect();
+    let prop_weights: Vec<i128> = stratum_stats.iter().map(|(_, nh, _)| *nh as i128).collect();
+
+    let neyman_alloc = allocate_by_weights(&neyman_weights);
+    let prop_alloc = allocate_by_weights(&prop_weights);
+
+    let candidates = vec![
+        DecisionCandidate {
+            action: "monetary_unit_fixed_strata".into(),
+            parameter: 4,
+            analytic_score: 50,
+        },
+        DecisionCandidate {
+            action: "neyman_optimal_strata".into(),
+            parameter: h_count as i128,
+            analytic_score: 150,
+        },
+    ];
+    let features: Vec<DecisionFeature> = stratum_stats
+        .iter()
+        .map(|(name, _, sigma)| DecisionFeature {
+            name: format!("sigma_{name}"),
+            value: *sigma,
+            advisory: false,
+        })
+        .collect();
+
+    let decision_card = evaluate_decision(
+        policy_epoch,
+        enforced_policy_epoch,
+        DecisionKind::SamplingStratification,
+        population.population_digest.to_vec(),
+        candidates,
+        features,
+        BenefitInterval {
+            lower_bps: 150,
+            upper_bps: 650,
+        },
+    );
+
+    let chosen_alloc = if decision_card.used_fallback() {
+        &prop_alloc
+    } else {
+        &neyman_alloc
+    };
+
+    let mut prng = Pcg64Dxsm::new(seed);
+    let mut strata_out = Vec::with_capacity(h_count);
+    let mut selected = Vec::new();
+
+    for ((name, nh, sigma), &nh_sample) in stratum_stats.into_iter().zip(chosen_alloc.iter()) {
+        let items = &by_stratum[&name];
+        let mut idx_pool: Vec<usize> = (0..nh).collect();
+        for i in 0..nh_sample {
+            let offset = prng.next_bounded_u128((nh - i) as u128) as usize;
+            idx_pool.swap(i, i + offset);
+        }
+        let mut picked = idx_pool[..nh_sample].to_vec();
+        picked.sort_unstable();
+        for idx in picked {
+            selected.push(items[idx].clone());
+        }
+        strata_out.push(StratumAllocation {
+            stratum: name,
+            population_count: nh,
+            std_dev_mantissa: sigma,
+            allocated_sample_size: nh_sample,
+        });
+    }
+
+    let selected_ids: Vec<String> = selected.iter().map(|s| s.item_id.clone()).collect();
+    let certificate = SampleCertificate::compute(
+        "stratified_neyman",
+        population.population_digest,
+        seed,
+        &format!("total_sample_size={total_sample_size}"),
+        selected_ids,
+    );
+
+    Ok(StratifiedSamplePlan {
+        population_digest: population.population_digest,
+        seed,
+        total_sample_size,
+        strata: strata_out,
+        selected,
+        decision_card,
+        certificate,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fa_reference::lantern::{naive_sample_mus, naive_stringer_bound_mantissa};
+
+    fn fixture_population() -> SamplePopulation {
+        let usd = UnitId(1);
+        let items = vec![
+            PopulationItem {
+                item_id: "AR-001".into(),
+                reference_vid: VId(1),
+                stratum: Some("small".into()),
+                book_value: Amount::new(usd, 12_000),
+            },
+            PopulationItem {
+                item_id: "AR-002".into(),
+                reference_vid: VId(2),
+                stratum: Some("small".into()),
+                book_value: Amount::new(usd, 18_000),
+            },
+            PopulationItem {
+                item_id: "AR-003".into(),
+                reference_vid: VId(3),
+                stratum: Some("small".into()),
+                book_value: Amount::new(usd, 25_000),
+            },
+            PopulationItem {
+                item_id: "AR-004".into(),
+                reference_vid: VId(4),
+                stratum: Some("large".into()),
+                book_value: Amount::new(usd, 45_000),
+            },
+            PopulationItem {
+                item_id: "AR-005".into(),
+                reference_vid: VId(5),
+                stratum: Some("large".into()),
+                book_value: Amount::new(usd, 60_000),
+            },
+            PopulationItem {
+                item_id: "AR-006".into(),
+                reference_vid: VId(6),
+                stratum: Some("large".into()),
+                book_value: Amount::new(usd, 30_000),
+            },
+        ];
+        SamplePopulation::new("ar-open", usd, items).unwrap()
+    }
+
+    #[test]
+    fn mus_sample_is_bit_reproducible_and_matches_reference_oracle() {
+        let pop = fixture_population();
+        let usd = UnitId(1);
+        let interval = Amount::new(usd, 50_000);
+        let s1 = sample_mus(&pop, 20_260_115, interval).unwrap();
+        let s2 = sample_mus(&pop, 20_260_115, interval).unwrap();
+        assert_eq!(s1, s2);
+        assert_eq!(
+            s1.certificate.certificate_oid,
+            s2.certificate.certificate_oid
+        );
+        assert_eq!(s1.top_stratum_count, 1);
+
+        let raw_items: Vec<(String, i128)> = pop
+            .items
+            .iter()
+            .map(|i| (i.item_id.clone(), i.book_value.mantissa))
+            .collect();
+        let oracle_ids = naive_sample_mus(&raw_items, s1.start_dollar_mantissa, 50_000);
+        let actual_ids: Vec<String> = s1.selected.iter().map(|i| i.item_id.clone()).collect();
+        assert_eq!(actual_ids, oracle_ids);
+    }
+
+    #[test]
+    fn stringer_bound_matches_textbook_example_and_reference_oracle() {
+        let usd = UnitId(1);
+        let interval = Amount::new(usd, 1_000_000);
+        let audited = vec![
+            AuditedSampleItem {
+                item_id: "INV-2".into(),
+                book_value: Amount::new(usd, 200_000),
+                audited_value: Amount::new(usd, 180_000),
+            },
+            AuditedSampleItem {
+                item_id: "INV-1".into(),
+                book_value: Amount::new(usd, 500_000),
+                audited_value: Amount::new(usd, 400_000),
+            },
+        ];
+        let eval = evaluate_stringer_bound(interval, 9_500, &audited).unwrap();
+        assert_eq!(eval.basic_precision.mantissa, 3_000_000);
+        assert_eq!(eval.most_likely_error.mantissa, 300_000);
+        assert_eq!(eval.incremental_allowance.mantissa, 205_000);
+        assert_eq!(eval.upper_misstatement_limit.mantissa, 3_505_000);
+
+        let oracle_uml = naive_stringer_bound_mantissa(
+            1_000_000,
+            9_500,
+            &[(200_000, 180_000), (500_000, 400_000)],
+        );
+        assert_eq!(eval.upper_misstatement_limit.mantissa, oracle_uml);
+    }
+
+    #[test]
+    fn uniform_and_stratified_neyman_samples_are_reproducible_and_emit_decision_cards() {
+        let pop = fixture_population();
+        let u1 = sample_uniform(&pop, 42, 3).unwrap();
+        let u2 = sample_uniform(&pop, 42, 3).unwrap();
+        assert_eq!(u1, u2);
+        assert_eq!(u1.selected.len(), 3);
+
+        let epoch = [0x55; 32];
+        let strat = sample_stratified_neyman(&pop, 42, 4, Some(epoch), epoch, VId(99)).unwrap();
+        assert_eq!(strat.selected.len(), 4);
+        assert_eq!(
+            strat.decision_card.verify_replay(epoch).unwrap(),
+            strat.decision_card.digest().unwrap()
+        );
+    }
+}

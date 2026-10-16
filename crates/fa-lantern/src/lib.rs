@@ -23,6 +23,7 @@
 
 pub mod aging;
 pub mod catalog;
+pub mod conformal;
 pub mod cutoff;
 pub mod digits;
 pub mod duplicates;
@@ -30,6 +31,7 @@ pub mod graph;
 pub mod jet;
 pub mod numbers;
 pub mod projection;
+pub mod sample;
 pub mod snapshot;
 pub mod trace;
 pub mod witness;
@@ -914,6 +916,8 @@ mod tests {
             include_str!("graph.rs"),
             include_str!("trace.rs"),
             include_str!("catalog.rs"),
+            include_str!("conformal.rs"),
+            include_str!("sample.rs"),
         ];
         let forbidden = [
             "std::time",
