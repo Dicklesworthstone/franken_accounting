@@ -27,6 +27,7 @@ members = [
     "crates/fa-steward",
     "crates/fa-reference",
     "crates/fa-verbs",
+    "crates/fa-demo",
     "crates/fa-cli",
     "crates/fa-verify",
     "crates/fa-conformance",

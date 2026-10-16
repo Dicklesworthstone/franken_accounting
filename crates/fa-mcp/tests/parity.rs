@@ -70,12 +70,14 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             });
         }
     }
-    // Exclusions are host-only verbs: today the daemon's, which are not
-    // [[verb]] rows at all. Every exclusion names the reason.
+    // Exclusions are the two plan §15.4 host-only families: `fad serve|status|stop`
+    // and `fa demo init` (which writes outside a book). Every exclusion names the reason.
     for e in &mcp.excluded {
-        assert_eq!(
-            e.verb, reg.daemon.binary,
-            "only host-only daemon verbs are excluded: {e:?}"
+        let is_allowed_host_only = e.verb == reg.daemon.binary
+            || (e.verb == "demo" && e.subcommand.as_deref() == Some("init"));
+        assert!(
+            is_allowed_host_only,
+            "only plan §15.4 registered host-only verbs are excluded: {e:?}"
         );
         assert!(e.reason.contains("host-only"), "{e:?}");
         table.push(format!(

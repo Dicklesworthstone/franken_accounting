@@ -4454,6 +4454,20 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     ]);
     let imp_vid = field(&imp_ev, "run_vid").unwrap_or_default().to_string();
     run2(&["document", "import", "receipt", &imp_vid]);
+    run2(&["verify", "periods"]);
+    let demo_dir = dir.join("demo-ev");
+    let demo_args = [
+        "demo",
+        "init",
+        "--scenario",
+        "retail",
+        "--seed",
+        "7",
+        "--json",
+    ];
+    let (dc, do_, derr) = fa(Some(&demo_dir), &demo_args);
+    assert_eq!(dc, 0, "{do_}\n{derr}");
+    seen.extend(check_robot_output(&demo_args, dc, &do_));
 
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg

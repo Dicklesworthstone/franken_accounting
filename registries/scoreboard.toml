@@ -587,11 +587,10 @@ id = "G3-02"
 gate = "G3"
 criterion = "Interactive sandbox generator (`fa demo init --scenario retail`)"
 probe_kind = "cli"
-argv = ["demo", "init", "--scenario", "retail", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-v6j"
+argv = ["demo", "init", "--scenario", "retail", "--seed", "7", "--book", "{demo_book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "demo_initialized"
 
 [[gate_criterion]]
 id = "G4-01"

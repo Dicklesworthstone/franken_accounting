@@ -53,7 +53,7 @@
 
 ## 2. Convergence Gate Scoreboard (Plan §19: G0, Genesis, G1–G4)
 
-- **Total gate criteria:** 18 (`works`: **13**, `refused` [lawful refusal]: **2**, `absent`: **3**; verified active: **15/18** [83%])
+- **Total gate criteria:** 18 (`works`: **14**, `refused` [lawful refusal]: **2**, `absent`: **2**; verified active: **16/18** [88%])
 
 | Gate | Works | Lawful Refusal | Absent | Total | Verified Active % |
 |---|---:|---:|---:|---:|---:|
@@ -61,7 +61,7 @@
 | `Genesis` | 4 | 2 | 0 | 6 | 100% |
 | `G1` | 3 | 0 | 0 | 3 | 100% |
 | `G2` | 1 | 0 | 1 | 2 | 50% |
-| `G3` | 1 | 0 | 1 | 2 | 50% |
+| `G3` | 2 | 0 | 0 | 2 | 100% |
 | `G4` | 0 | 0 | 1 | 1 | 0% |
 
 ### Gate Criteria Detail
@@ -84,5 +84,5 @@
 | `G2-01` | `G2` | `cli` | `works` | `0` | `period_explained` | `—` | Period explanation with admissibility row and lineage (`fa explain period`) |
 | `G2-02` | `G2` | `cli` | `absent` | `2` | `error` | `fa-5bm` | Selector `AS ORIGINALLY REPORTED` on CLI trial balance (`fa tb --as-originally-reported`) |
 | `G3-01` | `G3` | `cli` | `works` | `0` | `statement` | `—` | Certified balance sheet and income statement (`fa statement balance-sheet --certify`) |
-| `G3-02` | `G3` | `cli` | `absent` | `2` | `error` | `fa-v6j` | Interactive sandbox generator (`fa demo init --scenario retail`) |
+| `G3-02` | `G3` | `cli` | `works` | `0` | `demo_initialized` | `—` | Interactive sandbox generator (`fa demo init --scenario retail`) |
 | `G4-01` | `G4` | `registry` | `absent` | `2` | `error` | `fa-kby` | Every FA-INV clause in `registries/invariants.toml` is live (zero dormant clauses remaining for 1.0) |

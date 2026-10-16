@@ -471,6 +471,18 @@ exits = [0, 2]
 usage = ["help [<verb>]"]
 example = "fa help explain"
 
+[[verb]]
+name = "demo"
+summary = "Initialize a deterministic, realistic demo book directory with chart, periods, migration opening balances, operating entries, planted forensic findings, materialized registers, and a signed transparency checkpoint."
+writes = true
+subcommands = ["init"]
+flags = ["--scenario", "--seed"]
+switches = []
+events = ["demo_initialized"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["demo init [--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing] [--seed <N>]", "Creates a self-contained demo book in --book <dir> (with keys at --keys <file> or <dir>/book.keys), installs the scenario's chart, opens FY2026 periods, finalizes an OpeningOnly MigrationRun, posts operating and planted forensic entries, advances registers, and creates a signed checkpoint."]
+example = "fa demo init --scenario retail --seed 7 --book ./books/retail-demo --json"
+
 # Spellings agents try first (plan §15.3 intent inference). An alias expands
 # in the verb position; it is never a correction of a mistyped write verb.
 
@@ -627,6 +639,16 @@ after = "checkpoint_created"
 command = "fa verify accumulator --json"
 why = "recompute every checkpoint from the journal"
 
+[[next_action]]
+after = "demo_initialized"
+command = "fa tb --period <code> --json"
+why = "inspect the initialized demo book's trial balance"
+
+[[next_action]]
+after = "demo_initialized"
+command = "fa verify registers --period <code> --json"
+why = "verify that every materialized register cell equals the journal's refold"
+
 # ---------------------------------------------------------------------------
 # Events: every `event` a --json line can carry, with exactly its fields.
 # ---------------------------------------------------------------------------
@@ -703,6 +725,12 @@ name = "book_created"
 book = true
 doc = "A new book directory: the store and the key file (keep it; keys are never regenerated)."
 fields = ["book_id:hex", "dir:string", "keys:string", "name:string", "base_unit:string", "calendar:string"]
+
+[[event]]
+name = "demo_initialized"
+book = true
+doc = "`fa demo init`: a deterministic demo book directory initialized with chart, periods, finalized OpeningOnly migration run, operating and planted forensic entries, materialized registers, and a signed transparency checkpoint."
+fields = ["book_id:hex", "dir:string", "keys:string", "readme:string", "name:string", "scenario:string", "seed:int", "base_unit:string", "calendar:string", "chart_template:string", "accounts:int", "periods:int", "documents:int", "entries:int", "migration_run_vid:hex", "checkpoint_oid:hex", "journal_digest:hex", "head_seq:seq", "planted_facts:[planted_fact]"]
 
 [[event]]
 name = "book"
@@ -1565,6 +1593,11 @@ name = "dangerous_op"
 doc = "An operation that cannot be undone in practice: refused with FA-REF-007 (exit 7) unless --yes (or a --plan file) confirms it. `subcommand` is null for a verb without subcommands; `condition` says when it applies; `safe` is the alternative the refusal names."
 fields = ["verb:string", "subcommand:string?", "condition:string", "safe:string"]
 
+[[shape]]
+name = "planted_fact"
+doc = "A planted accounting or forensic ground-truth fact in an initialized demo book (`fa demo init`)."
+fields = ["id:string", "kind:string", "period:string", "entry_vids:[hex]", "summary:string"]
+
 # ---------------------------------------------------------------------------
 # MCP (plan §15.4, bead fa-xex): this registry as tool clusters.
 # ---------------------------------------------------------------------------
@@ -1607,7 +1640,7 @@ hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--versio
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk"]
+integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -1655,6 +1688,11 @@ reason = "host-only: reports on the daemon process, not on a book (plan §15.4 r
 verb = "fad"
 subcommand = "stop"
 reason = "host-only: stops the daemon process that will host fa-mcp (plan §15.4 registered exclusion)"
+
+[[mcp.excluded]]
+verb = "demo"
+subcommand = "init"
+reason = "host-only: writes a new demo book directory outside an existing book (plan §15.4 registered exclusion)"
 
 # ---- fa.orient --------------------------------------------------------------
 
@@ -2157,4 +2195,5 @@ positionals = ["id?"]
 required = []
 dont = ["Don't invent a procedure id or a parameter name: `action: \"list\"` returns every registered procedure with its pinned default and meaning.", "Don't treat a finding as a conclusion: it is a statistic with citations; every cited handle resolves and should be read before anything is asserted.", "Don't pass an instant to known_at: procedures run at HEAD or a recorded sequence."]
 mistakes = ["Passing a parameter in display units (10000.00) instead of the unit's mantissa (1000000 at scale 2); the listing's `meaning` says which.", "Running aging.* or trace.* without effective_through (they are historical folds and are refused naming it).", "Running trace.* without account and source (the commingled account and the deposit entry).", "Overriding a parameter with a float; parameters are integers in the registered unit."]
+
 

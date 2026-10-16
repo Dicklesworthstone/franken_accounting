@@ -103,6 +103,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("capabilities", capabilities_cmd),
     ("robot-docs", robot_docs_cmd),
     ("help", help_cmd),
+    ("demo", demo_cmd),
 ];
 
 /// The registered verbs this build can dispatch (the parity tests compare
@@ -717,6 +718,50 @@ impl BookSource<'_> {
         let book = self.books.open(args, self.cwd.as_deref())?;
         stamp(&self.said, &book)?;
         Ok(book)
+    }
+
+    pub(crate) fn prepare_create(&mut self, dir: &Path) -> Result<(), Fail> {
+        match &mut self.books {
+            Books::Dir => {
+                std::fs::create_dir_all(dir).map_err(|e| BookError::Io(dir.to_path_buf(), e))?;
+                Ok(())
+            }
+            Books::LeasedOnOpen { lease, note, held } => {
+                if dir.exists()
+                    && !crate::lease::Lease::is_book_dir(dir)
+                    && !crate::lease::Lease::is_empty_or_lease_only(dir, lease)
+                {
+                    return Err(Fail::Environment(format!(
+                        "cannot prepare book directory {} for its writer lease: directory is not a book and is not empty",
+                        dir.display()
+                    )));
+                }
+                if let Err(error) = std::fs::create_dir_all(dir) {
+                    return Err(Fail::Environment(format!(
+                        "cannot prepare book directory {} for its writer lease: {error}",
+                        dir.display()
+                    )));
+                }
+                if held.is_none() {
+                    match crate::lease::Lease::acquire(dir, lease, note) {
+                        Ok(acquired) => *held = Some(acquired),
+                        Err(error @ crate::lease::LeaseError::Held { .. }) => {
+                            return Err(Fail::Refusal(error.refusal(dir)));
+                        }
+                        Err(error @ crate::lease::LeaseError::Io { .. }) => {
+                            return Err(Fail::Environment(format!(
+                                "cannot acquire the book's writer lease: {error}"
+                            )));
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Books::Held { .. } => Err(usage(
+                "`fa book create` makes a new book directory; a daemon serves an existing one",
+                "run `fa book create --book <new dir> --name \"My Co\"` without a daemon for that directory",
+            )),
+        }
     }
 
     pub(crate) fn is_held(&self) -> bool {
@@ -2817,7 +2862,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             spec.validate()
                 .map_err(|m| usage(m, "fa book create --book <dir> --name \"My Co\""))?;
             let keys_file = keys_path(args, &dir, ctx.files.cwd.as_deref());
-            std::fs::create_dir_all(&dir).map_err(|e| BookError::Io(dir.clone(), e))?;
+            ctx.books.prepare_create(&dir)?;
             keys.save(&keys_file)?;
             let book = Book::create_dir(&dir, keys, spec, entropy)?;
             out.at_book(&book)?;
@@ -2895,6 +2940,119 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         }
         other => Err(unhandled("book", other)),
+    }
+}
+
+fn demo_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    match args.positional.get(1).map(String::as_str) {
+        Some("init") => {
+            if args.flag_all("--scenario").len() > 1 {
+                return Err(usage(
+                    "--scenario may be supplied only once",
+                    "--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing",
+                ));
+            }
+            if args.flag_all("--seed").len() > 1 {
+                return Err(usage("--seed may be supplied only once", "--seed 7"));
+            }
+            let scenario_name = args.require(
+                "--scenario",
+                "retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing",
+            )?;
+            let scenario = fa_demo::Scenario::parse(scenario_name).ok_or_else(|| {
+                usage(
+                    format!("unknown demo scenario `{scenario_name}`"),
+                    "--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing",
+                )
+            })?;
+            let seed_raw = args.flag("--seed").unwrap_or("7");
+            let seed: u64 = seed_raw.parse().map_err(|_| {
+                usage(
+                    format!("--seed `{seed_raw}` must be an unsigned integer"),
+                    "--seed 7",
+                )
+            })?;
+            if ctx.books.is_held() {
+                return Err(usage(
+                    "`fa demo init` initializes a new demo book directory; a daemon serves an existing one",
+                    "run `fa demo init --scenario retail --seed 7 --book <new dir>` without a daemon for that directory",
+                ));
+            }
+            let dir = book_dir(args, ctx.files.cwd.as_deref())?;
+            let keys_file = keys_path(args, &dir, ctx.files.cwd.as_deref());
+            ctx.books.prepare_create(&dir)?;
+            let initialized = fa_demo::init_dir(&dir, &keys_file, scenario, seed).map_err(
+                |e| match e {
+                    fa_demo::DemoError::Book(b) => Fail::Book(b),
+                    fa_demo::DemoError::Refusal(r) => Fail::Refusal(r),
+                    fa_demo::DemoError::Verification(m) => Fail::Internal(m),
+                },
+            )?;
+            let book = ctx.books.open(args)?;
+            out.at_book(&book)?;
+            let planted_facts: Vec<Json> = initialized
+                .planted_facts
+                .iter()
+                .map(|f| {
+                    Json::Obj(vec![
+                        ("id".into(), s(&f.id)),
+                        ("kind".into(), s(&f.kind)),
+                        ("period".into(), s(&f.period)),
+                        (
+                            "entry_vids".into(),
+                            Json::Arr(
+                                f.entry_vids
+                                    .iter()
+                                    .map(|v| s(format!("{:032x}", v.0)))
+                                    .collect(),
+                            ),
+                        ),
+                        ("summary".into(), s(&f.summary)),
+                    ])
+                })
+                .collect();
+            out.event(
+                "demo_initialized",
+                vec![
+                    ("book_id", s(initialized.book_id.to_hex())),
+                    ("dir", s(dir.display().to_string())),
+                    ("keys", s(keys_file.display().to_string())),
+                    ("readme", s(initialized.readme.display().to_string())),
+                    ("name", s(&initialized.name)),
+                    ("scenario", s(initialized.scenario.as_str())),
+                    ("seed", Json::Int(i128::from(initialized.seed))),
+                    ("base_unit", s(&initialized.base_unit)),
+                    ("calendar", s(&initialized.calendar)),
+                    ("chart_template", s(&initialized.chart_template)),
+                    ("accounts", Json::Int(initialized.accounts as i128)),
+                    ("periods", Json::Int(initialized.periods as i128)),
+                    ("documents", Json::Int(initialized.documents as i128)),
+                    ("entries", Json::Int(initialized.entries as i128)),
+                    (
+                        "migration_run_vid",
+                        s(format!("{:032x}", initialized.migration_run_vid.0)),
+                    ),
+                    ("checkpoint_oid", s(hex(&initialized.checkpoint_oid.0))),
+                    ("journal_digest", s(hex(&initialized.journal_digest))),
+                    ("head_seq", Json::Int(i128::from(initialized.head_seq.0))),
+                    ("planted_facts", Json::Arr(planted_facts)),
+                ],
+                &format!(
+                    "initialized demo book {} ({}, seed {}) in {} · {} accounts · {} periods · {} entries · head #{}",
+                    initialized.book_id.to_hex(),
+                    initialized.scenario.as_str(),
+                    initialized.seed,
+                    dir.display(),
+                    initialized.accounts,
+                    initialized.periods,
+                    initialized.entries,
+                    initialized.head_seq.0
+                ),
+            );
+            Ok(())
+        }
+        other => Err(unhandled("demo", other)),
     }
 }
 
@@ -3009,6 +3167,18 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
         fy.parse::<i32>().map_err(|_| UsageError {
             message: "--fiscal-year must be a year".to_string(),
             fix: "--fiscal-year 2026".to_string(),
+        })?;
+    }
+    if let Some(sc) = args.flag("--scenario") {
+        fa_demo::Scenario::parse(sc).ok_or_else(|| UsageError {
+            message: format!("unknown demo scenario `{sc}`"),
+            fix: "--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing".to_string(),
+        })?;
+    }
+    if let Some(sd) = args.flag("--seed") {
+        sd.parse::<u64>().map_err(|_| UsageError {
+            message: format!("--seed `{sd}` must be an unsigned integer"),
+            fix: "--seed 7".to_string(),
         })?;
     }
     Ok(args)

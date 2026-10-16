@@ -417,6 +417,10 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
 
     let mut vars = BTreeMap::new();
     vars.insert("{book}".into(), book_str);
+    vars.insert(
+        "{demo_book}".into(),
+        dir.join("retail-demo").display().to_string(),
+    );
     vars.insert("{doc_oid}".into(), doc_oid);
     vars.insert("{entry_vid}".into(), entry_vid);
     vars.insert("{post_seq}".into(), post_seq);

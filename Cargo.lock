@@ -820,6 +820,7 @@ version = "0.0.1"
 dependencies = [
  "asupersync",
  "fa",
+ "fa-demo",
  "fa-journal",
  "fa-lantern",
  "fa-model",
@@ -843,6 +844,24 @@ dependencies = [
  "fgdb",
  "fgdb-delta-types",
  "fgdb-gql",
+ "fgdb-types",
+]
+
+[[package]]
+name = "fa-demo"
+version = "0.0.1"
+dependencies = [
+ "fa",
+ "fa-journal",
+ "fa-lantern",
+ "fa-model",
+ "fa-money",
+ "fa-notary",
+ "fa-policy",
+ "fa-registers",
+ "fa-registry",
+ "fa-time",
+ "fgdb-crypto",
  "fgdb-types",
 ]
 

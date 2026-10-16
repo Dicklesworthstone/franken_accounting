@@ -69,25 +69,20 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
     }
     let words = command_words(&parsed, reg);
     let note = format!("fa pid={}", std::process::id());
-    if words == ["book", "create"] {
-        if dir.exists()
-            && !Lease::is_book_dir(&dir)
-            && !Lease::is_empty_or_lease_only(&dir, &reg.daemon.lease)
-        {
+    if words == ["book", "create"] || words == ["demo", "init"] {
+        if !dir.exists() {
+            let books = Books::LeasedOnOpen {
+                lease: reg.daemon.lease.clone(),
+                note,
+                held: None,
+            };
+            return cli::run(argv, books, files, capture);
+        }
+        if !Lease::is_book_dir(&dir) && !Lease::is_empty_or_lease_only(&dir, &reg.daemon.lease) {
             return cli::environment_error(
                 argv,
                 format!(
                     "cannot prepare book directory {} for its writer lease: directory is not a book and is not empty",
-                    dir.display()
-                ),
-                capture,
-            );
-        }
-        if let Err(error) = std::fs::create_dir_all(&dir) {
-            return cli::environment_error(
-                argv,
-                format!(
-                    "cannot prepare book directory {} for its writer lease: {error}",
                     dir.display()
                 ),
                 capture,
