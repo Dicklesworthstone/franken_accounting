@@ -399,14 +399,18 @@ fn anchor(state: &StoredState) -> Checkpoint {
     }
 }
 
-fn verified(bytes: &[u8], state: &StoredState, version: u8, expected: i128) -> Balance {
-    let format = format!("fa:acc-balance-proof:v{version}");
+/// Facade balance exports are payload-complete v3 for every scope (69270c52,
+/// fa-n6fh), with or without migration candidates: every prefix payload is
+/// disclosed, so the independent verifier derives the scope and recomputes.
+fn verified(bytes: &[u8], state: &StoredState, expected: i128) -> Balance {
+    let format: &[u8] = b"fa:acc-balance-proof:v3";
     assert_eq!(
         &bytes[..4],
         &u32::try_from(format.len()).unwrap().to_le_bytes()
     );
-    assert_eq!(&bytes[4..4 + format.len()], format.as_bytes());
+    assert_eq!(&bytes[4..4 + format.len()], format);
     let report = fa_verify::verify_balance(bytes, &anchor(state)).unwrap();
+    assert_eq!(report.scope, "recomputation");
     assert_eq!((report.claim.debits, report.claim.credits), (expected, 0));
     report
 }
@@ -435,23 +439,22 @@ fn persisted_migrations_export_before_and_after_finalize_or_abandon_without_writ
         let head = book.head().unwrap();
         drop(book);
 
-        verified(&fixture.export(&before, "1000", None), &before, 1, 0);
+        verified(&fixture.export(&before, "1000", None), &before, 0);
         let original_staged = fixture.export(&staged, "1000", None);
-        let staged_report = verified(&original_staged, &staged, 2, 0);
+        let staged_report = verified(&original_staged, &staged, 0);
         assert!(staged_report.contributing.is_empty());
         let final_bytes = fixture.export(&after, "1000", Some("2026-01-01"));
-        let final_report = verified(&final_bytes, &after, 2, expected);
+        let final_report = verified(&final_bytes, &after, expected);
         assert_eq!(
             final_report.contributing.len(),
             usize::from(terminal == kind::FINALIZE)
         );
         assert_eq!(fixture.export(&staged, "1000", None), original_staged);
         assert!(fa_verify::verify_balance(&final_bytes, &anchor(&staged)).is_err());
-        verified(&fixture.export(&after, "2000", None), &after, 1, 0);
+        verified(&fixture.export(&after, "2000", None), &after, 0);
         verified(
             &fixture.export(&after, "1000", Some("2025-12-31")),
             &after,
-            1,
             0,
         );
         assert_eq!(
@@ -489,6 +492,6 @@ fn migration_proof_export_keeps_read_and_produce_authority_mandatory() {
         .export_proof(PREPARER, &capability(&["read", "produce"]), request)
         .unwrap()
         .unwrap();
-    verified(&allowed.bytes, &state, 2, 0);
+    verified(&allowed.bytes, &state, 0);
     assert_eq!(book.head().unwrap(), head);
 }

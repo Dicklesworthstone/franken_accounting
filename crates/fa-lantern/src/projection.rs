@@ -7,11 +7,12 @@
 //! law (plan §6.3), using the debit legs' remaining capacities as weights.
 //! Both the credit and debit margins reconcile, including rounding ties.
 
+pub(crate) mod entity;
 mod transport;
 
 use std::collections::BTreeMap;
 
-use fa_model::{EntryClass, Writer};
+use fa_model::{EntryClass, LEGAL_ENTITY_DIMENSION, LegPayload, Writer};
 use fa_money::Side;
 use fa_time::DateDay;
 use fgdb_crypto::Hasher;
@@ -69,50 +70,115 @@ pub struct FlowLeg {
     pub mantissa: i128,
 }
 
-/// One entry's legs of one unit: `(credits as (account, amount), debits as
-/// (account, amount))`.
-type UnitLegs = (Vec<(VId, i128)>, Vec<(VId, i128)>);
+/// An entry-level transfer retaining its legal-entity partition. Procedures
+/// must keep this scope when following edges through more than one entry;
+/// the same chart account can carry different entities' balances.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopedFlowLeg {
+    pub legal_entity: Option<VId>,
+    pub leg: FlowLeg,
+}
 
-/// Every live posting entry's credit→debit allocations under the registered
-/// largest-remainder law, ascending by `(entry, unit, from, to, mantissa)`.
-/// Allocation is capacity-conserving: each debit receives exactly its posted
-/// amount, not merely an independently rounded share of every credit. Empty
-/// or unbalanced sides with nonzero value are corruption, never an empty graph.
-pub fn flow_legs(snapshot: &Snapshot) -> Result<Vec<FlowLeg>, LanternError> {
-    let mut legs = Vec::new();
-    for e in snapshot.live_postings()? {
-        let mut by_unit: BTreeMap<u32, UnitLegs> = BTreeMap::new();
-        for leg in &e.entry.proposal.legs {
-            let slot = by_unit.entry(leg.amount.unit.0).or_default();
-            let value = (leg.account_ref, leg.amount.mantissa);
-            match leg.side {
-                Side::Credit => slot.0.push(value),
-                Side::Debit => slot.1.push(value),
-            }
+/// One entry's credits and debits in one `(unit, legal_entity)` partition.
+type UnitLegs = (Vec<(VId, i128)>, Vec<(VId, i128)>);
+type Partitions = BTreeMap<(u32, Option<VId>), UnitLegs>;
+
+fn named_entity(leg: &LegPayload) -> Result<Option<VId>, LanternError> {
+    let mut values = leg
+        .dimension_set
+        .iter()
+        .filter(|(dimension, _)| *dimension == LEGAL_ENTITY_DIMENSION)
+        .map(|(_, value)| *value);
+    let entity = values.next();
+    if values.next().is_some() {
+        return Err(LanternError::Overflow("duplicate money-flow legal entity"));
+    }
+    Ok(entity)
+}
+
+/// Normalize entity mentions once for the selected, admitted population.
+pub(crate) fn entity_scope<'a>(
+    legs: impl IntoIterator<Item = &'a LegPayload>,
+) -> Result<entity::Scope, LanternError> {
+    let mut scope = entity::Scope::default();
+    for leg in legs {
+        scope.observe(named_entity(leg)?.map(|value| value.0));
+    }
+    Ok(scope)
+}
+
+pub(crate) fn scoped_entity(
+    scope: &entity::Scope,
+    leg: &LegPayload,
+) -> Result<Option<VId>, LanternError> {
+    scope
+        .resolve(named_entity(leg)?.map(|value| value.0))
+        .map(|value| value.map(VId))
+        .map_err(|_| LanternError::Overflow("missing money-flow legal entity"))
+}
+
+fn partition(
+    legs: &[LegPayload],
+    scope: &entity::Scope,
+) -> Result<Partitions, LanternError> {
+    let mut partitions: Partitions = BTreeMap::new();
+    for leg in legs {
+        let entity = scoped_entity(scope, leg)?;
+        let slot = partitions.entry((leg.amount.unit.0, entity)).or_default();
+        let value = (leg.account_ref, leg.amount.mantissa);
+        match leg.side {
+            Side::Credit => slot.0.push(value),
+            Side::Debit => slot.1.push(value),
         }
-        for (unit_id, (credits, debits)) in by_unit {
+    }
+    Ok(partitions)
+}
+
+/// Scope-preserving money flow. The kernel requires explicit legal entities
+/// in multi-entity books; a single-entity book may omit that dimension. Over
+/// an admitted snapshot a sole explicit value therefore also identifies its
+/// omitted values. If no value is explicit, the implicit book scope is kept.
+/// This normalization uses authenticated dimensions, never account names.
+pub fn scoped_flow_legs(snapshot: &Snapshot) -> Result<Vec<ScopedFlowLeg>, LanternError> {
+    let live = snapshot.live_postings()?;
+    let scope = entity_scope(live.iter().flat_map(|entry| &entry.entry.proposal.legs))?;
+    let mut legs = Vec::new();
+    for e in live {
+        let by_partition = partition(&e.entry.proposal.legs, &scope)?;
+        for ((unit_id, legal_entity), (credits, debits)) in by_partition {
             for (from, to, mantissa) in
                 transport::allocate(fa_money::UnitId(unit_id), credits, debits)?
             {
-                legs.push(FlowLeg {
-                    entry: e.vid,
-                    recorded: e.recorded_at,
-                    class: e.entry.proposal.class,
-                    effective_date: e.entry.proposal.effective_date,
-                    period: e.period.clone(),
-                    from,
-                    to,
-                    unit_id,
-                    mantissa,
+                legs.push(ScopedFlowLeg {
+                    legal_entity,
+                    leg: FlowLeg {
+                        entry: e.vid,
+                        recorded: e.recorded_at,
+                        class: e.entry.proposal.class,
+                        effective_date: e.entry.proposal.effective_date,
+                        period: e.period.clone(),
+                        from,
+                        to,
+                        unit_id,
+                        mantissa,
+                    },
                 });
             }
         }
     }
-    legs.sort_by(|a, b| {
-        (a.entry, a.unit_id, a.from, a.to, a.mantissa)
-            .cmp(&(b.entry, b.unit_id, b.from, b.to, b.mantissa))
+    legs.sort_by_key(|scoped| {
+        let leg = &scoped.leg;
+        (leg.entry, leg.unit_id, leg.from, leg.to, leg.mantissa, scoped.legal_entity)
     });
     Ok(legs)
+}
+
+/// Every live posting entry's credit→debit allocations, ascending by
+/// `(entry, unit, from, to, mantissa)`. Each debit and credit margin reconciles
+/// within its own legal entity. Use `scoped_flow_legs` for path analysis;
+/// this compatibility view intentionally aggregates away the entity label.
+pub fn flow_legs(snapshot: &Snapshot) -> Result<Vec<FlowLeg>, LanternError> {
+    Ok(scoped_flow_legs(snapshot)?.into_iter().map(|scoped| scoped.leg).collect())
 }
 
 /// The money-flow projection of every live posting entry in the snapshot: the
@@ -155,7 +221,7 @@ pub fn money_flow(snapshot: &Snapshot) -> Result<MoneyFlow, LanternError> {
     });
     // Do not label the corrected two-margin allocation with the historical
     // independent-credit projection's digest domain.
-    let digest = digest("money-flow:capacity-v2", w.finish()?);
+    let digest = digest("money-flow:capacity-entity-v3", w.finish()?);
     Ok(MoneyFlow {
         edges,
         entries,
@@ -311,4 +377,61 @@ pub fn documents(snapshot: &Snapshot) -> Result<Documents, LanternError> {
         entries_without_evidence,
         digest,
     })
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use fa_money::{Amount, UnitId};
+
+    fn leg(side: Side, account: u128, entity: Option<u128>, unit: u32) -> LegPayload {
+        let mut leg = LegPayload::simple(side, VId(account), Amount::new(UnitId(unit), 1));
+        if let Some(entity) = entity {
+            leg.dimension_set.push((LEGAL_ENTITY_DIMENSION, VId(entity)));
+        }
+        leg
+    }
+
+    #[test]
+    fn allocations_cannot_invent_transfers_between_entities_or_units() {
+        let legs = [
+            leg(Side::Credit, 10, Some(1), 0), leg(Side::Debit, 20, Some(1), 0),
+            leg(Side::Credit, 30, Some(2), 0), leg(Side::Debit, 40, Some(2), 0),
+            leg(Side::Credit, 50, Some(1), 1), leg(Side::Debit, 60, Some(1), 1),
+        ];
+        let mut edges = Vec::new();
+        for ((unit, entity), (credits, debits)) in partition(&legs, &entity_scope(&legs).unwrap()).unwrap() {
+            for (from, to, value) in transport::allocate(UnitId(unit), credits, debits).unwrap() {
+                edges.push((entity, unit, from, to, value));
+            }
+        }
+        assert_eq!(edges, vec![
+            (Some(VId(1)), 0, VId(10), VId(20), 1),
+            (Some(VId(2)), 0, VId(30), VId(40), 1),
+            (Some(VId(1)), 1, VId(50), VId(60), 1),
+        ]);
+    }
+
+    #[test]
+    fn a_single_implicit_entity_matches_its_explicit_dimension() {
+        let legs = [leg(Side::Credit, 10, None, 0), leg(Side::Debit, 20, Some(1), 0)];
+        let parts = partition(&legs, &entity_scope(&legs).unwrap()).unwrap();
+        assert_eq!(parts.len(), 1);
+        let (credits, debits) = parts[&(0, Some(VId(1)))].clone();
+        assert_eq!(transport::allocate(UnitId(0), credits, debits).unwrap(), vec![(VId(10), VId(20), 1)]);
+        let mut multiple = entity_scope(&legs).unwrap();
+        multiple.observe(Some(2));
+        assert!(partition(&legs, &multiple).is_err());
+    }
+
+    #[test]
+    fn globally_balanced_but_entity_unbalanced_input_is_refused() {
+        let legs = [leg(Side::Credit, 10, Some(1), 0), leg(Side::Debit, 20, Some(2), 0)];
+        for ((unit, _), (credits, debits)) in partition(&legs, &entity_scope(&legs).unwrap()).unwrap() {
+            assert!(transport::allocate(UnitId(unit), credits, debits).is_err());
+        }
+        let mut duplicate = leg(Side::Debit, 10, Some(1), 0);
+        duplicate.dimension_set.push((LEGAL_ENTITY_DIMENSION, VId(2)));
+        assert!(named_entity(&duplicate).is_err());
+    }
 }

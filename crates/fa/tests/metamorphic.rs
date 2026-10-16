@@ -333,7 +333,19 @@ fn check_reorder_equivalence(
     is_a: &Statement,
     is_b: &Statement,
 ) -> Result<(), String> {
-    if fold_a != fold_b {
+    // The relation (plan §16: "the fold is invariant under reordering of
+    // commutative entries within a period") is over the folded content.
+    // `fold_digest` is NOT part of it: since 8f21a159 it commits to the posted
+    // leg history in (commit_seq, entry vid, ordinal) order, so two orders of
+    // the same legs must digest differently (asserted by the caller). Every
+    // generated entry lands in the folded period, so the watermark (the last
+    // contributing commit) is order-invariant here.
+    if fold_a.period != fold_b.period
+        || fold_a.cells != fold_b.cells
+        || fold_a.pending != fold_b.pending
+        || fold_a.watermark != fold_b.watermark
+        || fold_a.entries != fold_b.entries
+    {
         return Err(replay_diagnostic(
             "metamorphic_fold_invariance_under_commutative_reorder",
             seed,
@@ -438,6 +450,17 @@ fn metamorphic_fold_invariance_under_commutative_reorder() {
             seed, &fold_a, &fold_b, &tb_a, &tb_b, &bs_a, &bs_b, &is_a, &is_b,
         )
         .unwrap_or_else(|e| panic!("{e}"));
+        // The history-bound digest distinguishes exactly the commit orders
+        // (8f21a159): equal iff the permutation left the order unchanged.
+        let reordered = entries
+            .iter()
+            .map(|spec| &spec.key)
+            .ne(permuted.iter().map(|spec| &spec.key));
+        assert_eq!(
+            fold_a.fold_digest != fold_b.fold_digest,
+            reordered,
+            "seed {seed:#018x}: fold_digest must bind the posted leg order"
+        );
     }
 }
 

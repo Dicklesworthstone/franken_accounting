@@ -6,10 +6,10 @@
 //! rule (withdrawals draw the oldest money first); `trace.lifo` draws the
 //! newest first; `trace.pro_rata` lets every withdrawal carry tainted and
 //! clean value in proportion to their shares of the balance, split under
-//! the registered largest-remainder law. One account, one hop; the claim
-//! date is the coordinate's `effective_through`, the source is an entry,
-//! and the result is an exact computation whose evidentiary weight is the
-//! law's, never a finding of fact.
+//! the registered largest-remainder law. One account, one hop, one source
+//! legal entity; the claim date is the coordinate's `effective_through`,
+//! the source is an entry, and the result is an exact computation whose
+//! evidentiary weight is the law's, never a finding of fact.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -20,9 +20,13 @@ use fa_time::DateDay;
 use fgdb_types::VId;
 
 use crate::jet::finding;
+use crate::projection::{entity, entity_scope, scoped_entity};
 use crate::{
     Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
 };
+
+#[cfg(test)]
+mod tests;
 
 /// A registered tracing law.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,7 +66,7 @@ const WITHDRAWALS_FIRST: i128 = 2;
 const DEPOSITS_FIRST: i128 = 3;
 
 /// One tracing run: `law` applied to the deposit `source` made into
-/// `account`.
+/// `account`. A source spanning entities is ambiguous and is refused.
 pub struct Trace {
     law: Law,
     params: Params,
@@ -100,7 +104,7 @@ impl Trace {
     }
 }
 
-/// One entry's net movement on one side of the traced account.
+/// One entry's net movement on one side of the traced account and entity.
 #[derive(Clone, Debug)]
 struct Movement {
     entry: VId,
@@ -113,10 +117,23 @@ struct Movement {
     magnitude: i128,
 }
 
-/// The account's movements in the deposit's unit, ordered under the
-/// intraday rule, with the position of the source deposit.
+impl Movement {
+    fn from_net(entry: VId, date: DateDay, recorded: u64, net: i128) -> Result<Self, LanternError> {
+        Ok(Self {
+            entry,
+            date,
+            recorded,
+            inflow: net > 0,
+            magnitude: net.checked_abs().ok_or(LanternError::Overflow("trace movement magnitude"))?,
+        })
+    }
+}
+
+/// The account's movements in the deposit's unit and entity, ordered under
+/// the intraday rule, with the position of the source deposit.
 struct Stream {
     unit: UnitId,
+    entity: Option<VId>,
     moves: Vec<Movement>,
     source_at: usize,
 }
@@ -151,36 +168,38 @@ impl Trace {
             }
         }
         let live = snapshot.live_postings_through(Some(claim))?;
-        // The deposit's unit comes from the live source entry's inflow leg(s).
-        let mut unit: Option<UnitId> = None;
+        let scope = entity_scope(live.iter().flat_map(|entry| &entry.entry.proposal.legs))?;
+        // Select BOTH the source's unit and legal entity. A shared chart
+        // account is not authority to spend another entity's clean balance.
+        let mut source_scope = entity::Source::default();
         for e in live.iter().filter(|e| e.vid == self.source) {
             for leg in &e.entry.proposal.legs {
                 if leg.account_ref == self.account && leg.side == inflow_side {
-                    match unit {
-                        None => unit = Some(leg.amount.unit),
-                        Some(u) if u == leg.amount.unit => {}
-                        Some(_) => {
-                            return Err(self.refuse(
-                                "source",
-                                "the source deposit carries more than one unit into the account",
-                            ));
-                        }
-                    }
+                    source_scope
+                        .observe(leg.amount.unit.0, scoped_entity(&scope, leg)?.map(|value| value.0))
+                        .map_err(|error| self.refuse("source", match error {
+                            entity::AmbiguousSource::Unit => "the source deposit carries more than one unit into the account",
+                            entity::AmbiguousSource::Entity => "the source deposit spans legal entities; an unambiguous source entity is required",
+                        }))?;
                 }
             }
         }
-        let Some(unit) = unit else {
+        let Some((unit, entity)) = source_scope.selected() else {
             return Err(self.refuse(
                 "source",
                 "the source entry has no live inflow leg on the account (an unreversed entry of the book that deposits into it is required)",
             ));
         };
-        // Net each live entry's legs on the account in that unit.
+        let unit = UnitId(unit);
+        let entity = entity.map(VId);
+        // Net only this account, unit AND entity, retaining recorded order.
         let mut per_entry: BTreeMap<VId, (DateDay, u64, i128)> = BTreeMap::new();
         for e in live {
             work.entry();
             for leg in &e.entry.proposal.legs {
-                if leg.account_ref != self.account || leg.amount.unit != unit {
+                if leg.account_ref != self.account || leg.amount.unit != unit
+                    || scoped_entity(&scope, leg)? != entity
+                {
                     continue;
                 }
                 let magnitude = leg
@@ -209,14 +228,8 @@ impl Trace {
         let mut moves: Vec<Movement> = per_entry
             .into_iter()
             .filter(|(_, (_, _, net))| *net != 0)
-            .map(|(entry, (date, recorded, net))| Movement {
-                entry,
-                date,
-                recorded,
-                inflow: net > 0,
-                magnitude: net.abs(),
-            })
-            .collect();
+            .map(|(entry, (date, recorded, net))| Movement::from_net(entry, date, recorded, net))
+            .collect::<Result<_, LanternError>>()?;
         let rank = |m: &Movement| match intraday {
             WITHDRAWALS_FIRST => u8::from(m.inflow),
             DEPOSITS_FIRST => u8::from(!m.inflow),
@@ -243,6 +256,7 @@ impl Trace {
             })?;
         Ok(Stream {
             unit,
+            entity,
             moves,
             source_at,
         })
@@ -283,36 +297,39 @@ fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, Lantern
     let mut balance = add(opening, deposit, "balance")?;
     let mut lowest = (balance, None);
     let mut carriers: BTreeMap<VId, i128> = BTreeMap::new();
-    // An overdrawn account owes before it holds: an inflow first repays the
-    // overdraft and only the rest becomes money in the account. So a deposit
-    // into an account overdrawn by d is traceable only for what exceeds d,
-    // and a withdrawal beyond the money held deepens the overdraft. With
-    // this, the layers (and the pools) always sum to max(balance, 0).
-    let mut debt = sub(0, opening.min(0), "overdraft")?;
-    let repaid = deposit.min(debt);
-    debt = sub(debt, repaid, "overdraft")?;
-    let traceable = sub(deposit, repaid, "traceable deposit")?;
-    // Layered money for FIFO/LIFO: `(tainted, amount)`, oldest first.
+    // An account owes before it holds: only the increase in max(balance, 0)
+    // becomes held money. Keep overdrafts in the signed balance, not a
+    // second magnitude accumulator: negating i128::MIN would falsely refuse
+    // an otherwise representable opening balance and its repayment.
+    let traceable = deposit.min(balance.max(0));
+    // Only the selected law's state is maintained. In particular, FIFO/LIFO
+    // withdrawals do not reduce a pro-rata clean pool, so updating that
+    // unused pool on deposits would accumulate turnover and overflow even
+    // while the actual account balance remained bounded.
+    let layered = matches!(law, Law::Fifo | Law::Lifo);
     let mut layers: VecDeque<(bool, i128)> = VecDeque::new();
-    if opening > 0 {
-        layers.push_back((false, opening));
+    if layered {
+        if opening > 0 {
+            layers.push_back((false, opening));
+        }
+        if traceable > 0 {
+            layers.push_back((true, traceable));
+        }
     }
-    if traceable > 0 {
-        layers.push_back((true, traceable));
-    }
-    // Pooled money for pro rata and LIBR.
     let mut tainted = traceable;
-    let mut clean = opening.max(0);
+    let mut clean = if law == Law::ProRata { opening.max(0) } else { 0 };
     for m in &stream.moves[stream.source_at + 1..] {
         work.leg();
         if m.inflow {
+            let before = balance.max(0);
             balance = add(balance, m.magnitude, "balance")?;
-            let repaid = m.magnitude.min(debt);
-            debt = sub(debt, repaid, "overdraft")?;
-            let held = sub(m.magnitude, repaid, "inflow")?;
+            let held = sub(balance.max(0), before, "inflow")?;
             if held > 0 {
-                layers.push_back((false, held));
-                clean = add(clean, held, "clean pool")?;
+                match law {
+                    Law::Fifo | Law::Lifo => layers.push_back((false, held)),
+                    Law::ProRata => clean = add(clean, held, "clean pool")?,
+                    Law::Libr => {}
+                }
             }
             continue;
         }
@@ -333,8 +350,7 @@ fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, Lantern
                     } else {
                         layers.back_mut()
                     }) else {
-                        // Nothing held: the rest of the withdrawal overdraws.
-                        debt = add(debt, remaining, "overdraft")?;
+                        // The signed balance already records any overdraft.
                         break;
                     };
                     let take = remaining.min(front.1);
@@ -356,7 +372,6 @@ fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, Lantern
             Law::ProRata => {
                 let pool = add(tainted, clean, "pool")?;
                 let drawn = m.magnitude.min(pool.max(0));
-                debt = add(debt, sub(m.magnitude, drawn, "overdraft")?, "overdraft")?;
                 if drawn == 0 {
                     continue;
                 }
@@ -394,7 +409,7 @@ impl Procedure for Trace {
         self.law.id()
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -460,6 +475,7 @@ impl Procedure for Trace {
             .try_fold(0i128, |acc, v| acc.checked_add(*v))
             .ok_or(LanternError::Overflow("carried"))?;
         let source_date = stream.moves[stream.source_at].date;
+        let entity_text = stream.entity.map_or_else(|| "implicit book entity".into(), |entity| format!("entity {}", hex(entity)));
         Ok(vec![finding(
             self.law.id(),
             Severity::Info,
@@ -471,7 +487,7 @@ impl Procedure for Trace {
             },
             cites,
             format!(
-                "{}: {} (mantissa) deposited {:04}-{:02}-{:02}; {} later movement(s) through {:04}-{:02}-{:02}; lowest balance after the deposit {}; {} withdrawal(s) carried {} tainted; traced {}",
+                "{}: {} (mantissa) deposited {:04}-{:02}-{:02}; {} later movement(s) through {:04}-{:02}-{:02}; lowest balance after the deposit {}; {} withdrawal(s) carried {} tainted; traced {}; {entity_text}",
                 self.law.name(),
                 t.deposit,
                 source_date.year(),

@@ -49,6 +49,9 @@ pub struct Transitioned {
     /// Schedules due in the opened period that the commit examined but did
     /// not mint, with why (live applications, the availability law).
     pub blocked: Vec<(EntryRef, String)>,
+    /// True when this is an identical retry's recorded outcome (FA-INV-09):
+    /// nothing new was written; `minted` and `blocked` are then empty.
+    pub already_recorded: bool,
 }
 
 #[derive(Debug)]
@@ -147,6 +150,7 @@ impl PreparedTransition {
                 control_entry,
                 minted,
                 blocked,
+                already_recorded: false,
             })),
             Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
                 Ok(Err(Refusal::new(
@@ -704,8 +708,74 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
         approvals,
     )? {
         Ok(prepared) => prepared.commit(db, ctx).await,
+        // An identical retry finds the period already moved (FA-INV-09,
+        // fa-l93 D13). The refusal came after authorization, so the caller
+        // may see the recorded outcome of its own request.
+        Err(refusal) if refusal.code == code::TRANSITION => Ok(recorded_transition(
+            db,
+            book,
+            period_code,
+            t,
+            principal_ref,
+            reason_code,
+            effective_date,
+            idempotency_key,
+        )?
+        .ok_or(refusal)),
         Err(refusal) => Ok(Err(refusal)),
     }
+}
+
+/// The recorded outcome of this exact request, when the control entry at
+/// its identity (principal, key) moved `period_code` along `t` with the
+/// same reason and date; `None` otherwise (the caller's refusal stands).
+#[allow(clippy::too_many_arguments)]
+fn recorded_transition<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+    t: PeriodTransition,
+    principal_ref: VId,
+    reason_code: u16,
+    effective_date: DateDay,
+    idempotency_key: &[u8],
+) -> Result<Option<Transitioned>, KernelError> {
+    let evid = entry_vid(
+        book.book_id,
+        &principal_ref.0.to_le_bytes(),
+        idempotency_key,
+    );
+    let Some((entry, recorded_at)) = crate::post::read_entry(db, evid)? else {
+        return Ok(None);
+    };
+    let Some(ControlPayload::PeriodTransition {
+        period_ref,
+        from,
+        to,
+        reason_code: recorded_reason,
+        ..
+    }) = &entry.proposal.control
+    else {
+        return Ok(None);
+    };
+    let (Some(from), Some(to)) = (PeriodState::from_tag(*from), PeriodState::from_tag(*to)) else {
+        return Ok(None);
+    };
+    let same = period_ref.code == period_code
+        && entry.proposal.principal_ref == principal_ref
+        && *recorded_reason == reason_code
+        && entry.proposal.effective_date == effective_date
+        && transition(from, t).ok() == Some(to);
+    Ok(same.then(|| Transitioned {
+        period: period_code.to_string(),
+        from,
+        to,
+        recorded_at,
+        control_entry: evid,
+        minted: Vec::new(),
+        blocked: Vec::new(),
+        already_recorded: true,
+    }))
 }
 
 /// Stage the production transition without publishing it. Its witnesses

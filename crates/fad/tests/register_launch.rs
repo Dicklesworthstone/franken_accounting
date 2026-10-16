@@ -10,15 +10,34 @@ fn run(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn maintenance_is_launch_only_and_requires_explicit_bootstrap() {
+fn maintenance_is_a_serve_only_launch_choice_independent_of_bootstrap() {
+    // 807e821f: `serve --register-period` no longer requires
+    // --bootstrap-system (maintenance-only work holds no System capability;
+    // see timed::tests). It is valid launch syntax, so the absent book refuses
+    // it as environment (exit 4), never as usage, and nothing is created.
+    let book = "/this-book-must-not-be-opened/register-launch";
+    let result = run(&[
+        "serve",
+        "--register-period",
+        "FY2026-P03",
+        "--book",
+        book,
+        "--json",
+    ]);
+    assert_eq!(result.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains("\"class\":\"environment\""),
+        "{result:?}"
+    );
+    assert!(!std::path::Path::new(book).exists());
     for args in [
-        vec!["serve", "--register-period", "FY2026-P03"],
         vec![
             "status",
             "--bootstrap-system",
             "--register-period",
             "FY2026-P03",
         ],
+        vec!["status", "--register-period", "FY2026-P03"],
         vec!["stop", "--register-period", "FY2026-P03"],
     ] {
         let mut args = args;

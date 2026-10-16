@@ -1146,7 +1146,23 @@ fn balance_proofs_refold_exactly_the_register_balances_and_refuse_tampering() {
                 .find(|r| r.account == account && r.unit_id == h.usd.0)
                 .map_or((0, 0), |r| (r.debits, r.credits));
             assert_eq!((report.claim.debits, report.claim.credits), expected);
-            assert_eq!(report.scope, "recomputation");
+            // Legacy v1 omits the out-of-scope payloads, so the verifier cannot
+            // derive its scope itself (23f9118b, fa-n6fh): membership only.
+            assert_eq!(report.scope, "membership_only");
+            // The payload-complete v3 producer is the §13.3 recomputation proof.
+            let complete = fa_notary::migration_balance::prove_balance_complete(
+                &h.db,
+                &h.book,
+                &a.state,
+                account,
+                h.usd.0,
+                Some(cutoff.0),
+            )
+            .unwrap()
+            .unwrap();
+            let complete = fa_verify::verify_balance(&complete, &trusted).expect("v3 refolds");
+            assert_eq!((complete.claim.debits, complete.claim.credits), expected);
+            assert_eq!(complete.scope, "recomputation");
         }
     }
     // The hold reserved 7,000 against cash and utilities but posted nothing.
