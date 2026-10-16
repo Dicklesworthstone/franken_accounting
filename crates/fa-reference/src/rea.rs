@@ -383,7 +383,7 @@ pub fn validate_event_citation(
     existing_events: &BTreeMap<u128, RefEvent>,
 ) -> Result<(), (&'static str, u8)> {
     let Some(ev) = existing_events.get(&cited_vid) else {
-        return Err(("FA-REF-100", 2));
+        return Err(("FA-REF-080", 3));
     };
     if ev.evidence.is_empty() {
         return Err(("FA-REF-080", 3));

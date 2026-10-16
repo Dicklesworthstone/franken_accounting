@@ -1023,30 +1023,33 @@ fn rea_event_recording_and_post_derived_from_linkage_match_oracle() {
     // Cross-check with reference oracle validate_event.
     let parties_set = [vendor_rec.target_vid.0].into_iter().collect();
     let inst_set = [inst_rec.target_vid.0].into_iter().collect();
-    let docs_set = [doc_oid].into_iter().collect();
-    let ext_map = BTreeMap::new();
+    let units_set = [usd.0].into_iter().collect();
+    let ev_ref = doc.evidence_ref(1);
+    let docs_map: BTreeMap<[u8; 32], [u8; 32]> =
+        [(doc_oid.0, ev_ref.doc_commit)].into_iter().collect();
+    let existing_events = BTreeMap::new();
     assert_eq!(
         fa_reference::rea::validate_event(
             &fa_reference::rea::RefEvent {
                 vid: ev_rec.target_vid.0,
                 code: "EV-1001".into(),
-                kind: "purchase".into(),
+                kind_tag: 2,
                 occurred_on: d_jan14,
                 participants: vec![vendor_rec.target_vid.0],
                 resources: vec![fa_reference::rea::RefEventResource {
                     label: "cash_outflow".into(),
-                    instrument_vid: Some(inst_rec.target_vid.0),
-                    unit: usd,
+                    unit_id: usd.0,
                     mantissa: 15_000,
+                    instrument: Some(inst_rec.target_vid.0),
                 }],
-                evidence_oids: vec![doc_oid],
-                external_ids: vec![("stripe".into(), "ch_1001".into())],
+                evidence: vec![(doc_oid.0, ev_ref.doc_commit, 1)],
                 event_digest: ev_digest,
             },
             &parties_set,
             &inst_set,
-            &docs_set,
-            &ext_map,
+            &units_set,
+            &docs_map,
+            &existing_events,
             false,
         ),
         Ok(())
@@ -1133,7 +1136,7 @@ fn rea_event_missing_or_unevidenced_event_citation_is_refused() {
     let cap = Capability::embedded(controller, &["post", "schema_change", "close"]).expect("cap");
     let d_jan14 = DateDay::from_ymd(2026, 1, 14).unwrap();
 
-    // 1. Recording an Event with empty evidence is refused with FA-REF-030 (exit 3).
+    // 1. Recording an Event with empty evidence is refused with FA-REF-080 (exit 3).
     let no_ev_spec = fa_model::EventSpec {
         code: "EV-NO-DOC".into(),
         kind: fa_model::EventKind::Sale,
@@ -1158,21 +1161,21 @@ fn rea_event_missing_or_unevidenced_event_citation_is_refused() {
         ))
         .unwrap()
         .expect_err("Event without evidence must be refused");
-    assert_eq!(no_ev_err.code, "FA-REF-030");
+    assert_eq!(no_ev_err.code, "FA-REF-080");
     assert_eq!(no_ev_err.exit, fa_journal::exit::REFUSAL);
     assert_eq!(
         fa_reference::rea::validate_event(
             &fa_reference::rea::RefEvent {
                 vid: 1,
                 code: "EV-NO-DOC".into(),
-                kind: "sale".into(),
+                kind_tag: 1,
                 occurred_on: d_jan14,
                 participants: Vec::new(),
                 resources: Vec::new(),
-                evidence_oids: Vec::new(),
-                external_ids: Vec::new(),
+                evidence: Vec::new(),
                 event_digest: [0; 32],
             },
+            &Default::default(),
             &Default::default(),
             &Default::default(),
             &Default::default(),
@@ -1182,7 +1185,7 @@ fn rea_event_missing_or_unevidenced_event_citation_is_refused() {
         Err((no_ev_err.code, no_ev_err.exit))
     );
 
-    // 2. Posting an entry citing a nonexistent Event is refused with FA-REF-030 (exit 3).
+    // 2. Posting an entry citing a nonexistent Event is refused with FA-REF-080 (exit 3).
     let doc = fa_journal::Document {
         book_id: book.book_id,
         kind: 1,
@@ -1247,13 +1250,12 @@ fn rea_event_missing_or_unevidenced_event_citation_is_refused() {
         ))
         .unwrap()
         .expect_err("posting with nonexistent event citation must be refused");
-    assert_eq!(post_err.code, "FA-REF-030");
+    assert_eq!(post_err.code, "FA-REF-080");
     assert_eq!(post_err.exit, fa_journal::exit::REFUSAL);
     assert_eq!(
         fa_reference::rea::validate_event_citation(
             missing_ev_vid.0,
-            [0u8; 32],
-            &Default::default(),
+            Some([0u8; 32]),
             &Default::default(),
         ),
         Err((post_err.code, post_err.exit))
