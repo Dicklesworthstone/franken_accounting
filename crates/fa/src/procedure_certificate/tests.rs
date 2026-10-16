@@ -180,7 +180,7 @@ fn rewriting_an_approval_outside_the_entry_accumulator_blocks_historical_replay(
     let approval = approval.expect("a real recorded approval");
     let mut batch = fgdb::WriteBatch::new(fa_model::symbols::relation::SUPERSEDES);
     batch.set_vertex_property(approval, property::FA_DIGEST,
-        Some(fgdb_types::CanonicalScalar::Bytes(vec![0; 32])));
+        Some(fgdb_types::CanonicalScalar::bytes(vec![0; 32]).unwrap()));
     let cx = f.cx();
     f.runtime.block_on(f.book.db.write(&cx.commit(), batch)).unwrap();
     // Native historical replay alone still sees the old row. The additional
@@ -206,4 +206,35 @@ fn revocation_after_certification_cannot_be_undone_by_a_historical_selector() {
         .unwrap().unwrap_err();
     assert_ne!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
     assert!(refusal.message.to_lowercase().contains("revok"));
+}
+
+#[test]
+fn incomplete_or_misspecified_runs_never_receive_a_certificate() {
+    let mut f = Fixture::new(90);
+    let (source, _) = f.post(1, "3000", "1000", 100, false);
+    f.post(2, "1000", "1010", 80, false);
+    let before = f.head();
+    let capability = cap(&["read", "produce"]);
+    for id in ["trace.network_fifo", "trace.network_lifo", "trace.network_libr", "trace.network_pro_rata"] {
+        let mut request = f.request(id, source);
+        request.parameters = request.parameters.set("max_hops", 1).unwrap();
+        let error = f.book.certify_procedure(&f.cx(), PRINCIPAL, &capability, &request)
+            .expect_err("a partial bounded computation cannot be a CertifiedProcedure");
+        assert!(matches!(error, BookError::Lantern(fa_lantern::LanternError::Parameter { name, .. }) if name == "max_hops"));
+        assert_eq!(f.head(), before);
+        request.parameters = Params::defaults(id).unwrap();
+        request.inputs.source = None;
+        assert!(f.book.certify_procedure(&f.cx(), PRINCIPAL, &capability, &request)
+            .unwrap().is_err(), "required source handle: {id}");
+        assert_eq!(f.head(), before);
+    }
+    let mut request = f.request("jet.round_amounts", source);
+    request.inputs.account = Some(f.id("1000"));
+    assert!(f.book.certify_procedure(&f.cx(), PRINCIPAL, &capability, &request)
+        .unwrap().is_err(), "an undeclared handle cannot silently change scope");
+    request.inputs = catalog::Inputs::default();
+    request.parameters = Params::defaults("jet.thin_descriptions").unwrap();
+    assert!(matches!(f.book.certify_procedure(&f.cx(), PRINCIPAL, &capability, &request),
+        Err(BookError::Lantern(fa_lantern::LanternError::Parameter { name, .. })) if name == "params"));
+    assert_eq!(f.head(), before);
 }

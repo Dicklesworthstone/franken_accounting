@@ -26,7 +26,7 @@
 //! Their graph certificates are retained atomically with the resulting entry;
 //! this slice requires an unchanged book sequence and existing approvals.
 //! Explicit receivable/payable allocations can be prepared for approval and
-//! rehearsased through that same kernel with [`SettlementPostRequest`]. The
+//! rehearsed through that same kernel with [`SettlementPostRequest`]. The
 //! unchanged portable plan supports atomic publication and exact retries.
 //! [`SettlementGroupRequest`] prepares disjoint selections on multiple legs of
 //! one complete entry; the kernel publishes all applications atomically.
@@ -66,9 +66,9 @@ pub mod evidence_disclosure;
 pub mod general_ledger;
 pub mod indirect_cash_flow;
 pub mod intake;
+pub mod procedure_certificate;
 pub mod projections;
 pub mod proof;
-pub mod procedure_certificate;
 pub mod report_artifact;
 pub mod roll_forward;
 pub mod settlement;
@@ -152,6 +152,10 @@ pub use indirect_cash_flow::{
     MAX_INDIRECT_CASH_FLOW_BYTES, MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
 };
 pub use intake::IntakeAction;
+pub use procedure_certificate::{
+    CERTIFIABLE_PROCEDURES, CertifiedProcedure, MAX_PROCEDURE_CERTIFICATE_BYTES,
+    PROCEDURE_CERTIFICATE_FORMAT, PROCEDURE_OUTPUT_FORMAT, ProcedureCertificate, ProcedureRequest,
+};
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use report_artifact::{
