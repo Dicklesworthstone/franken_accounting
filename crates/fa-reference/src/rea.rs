@@ -262,3 +262,151 @@ pub fn naive_effective_ownership_as_of(
     let rn = i128::try_from(n / g).ok()?;
     Some((rn, d / g))
 }
+
+/// Registered event kinds (`registries/object_schemas/event.toml`, bead `fa-f3bo`).
+pub const EVENT_KINDS: &[(u8, &str)] = &[
+    (1, "sale"),
+    (2, "purchase"),
+    (3, "receipt"),
+    (4, "payment"),
+    (5, "shipment"),
+    (6, "return"),
+    (7, "accrual"),
+    (8, "depreciation"),
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefEventResource {
+    pub label: String,
+    pub unit_id: u32,
+    pub mantissa: i128,
+    pub instrument: Option<u128>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefEvent {
+    pub vid: u128,
+    pub code: String,
+    pub kind_tag: u8,
+    pub occurred_on: DateDay,
+    pub participants: Vec<u128>,
+    pub resources: Vec<RefEventResource>,
+    /// `(document_oid, doc_commit, role)`
+    pub evidence: Vec<([u8; 32], [u8; 32], u8)>,
+    pub event_digest: [u8; 32],
+}
+
+/// Independent reference check for `RecordEvent` admission (`FA-INV-05.event-closure`,
+/// bead `fa-f3bo`). Returns `Err((refusal_code, exit_class))` on refusal.
+pub fn validate_event(
+    event: &RefEvent,
+    known_participants: &BTreeSet<u128>,
+    known_instruments: &BTreeSet<u128>,
+    known_units: &BTreeSet<u32>,
+    known_documents: &BTreeMap<[u8; 32], [u8; 32]>,
+    existing_events: &BTreeMap<u128, RefEvent>,
+    is_agent_on_trunk: bool,
+) -> Result<(), (&'static str, u8)> {
+    if is_agent_on_trunk {
+        return Err(("FA-REF-013", 7));
+    }
+    if event.code.is_empty() || event.code.len() > 64 {
+        return Err(("FA-REF-100", 2));
+    }
+    if !EVENT_KINDS.iter().any(|(tag, _)| *tag == event.kind_tag) {
+        return Err(("FA-REF-100", 2));
+    }
+    if event.participants.len() > 32
+        || event
+            .participants
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(("FA-REF-100", 2));
+    }
+    if event.resources.len() > 32 {
+        return Err(("FA-REF-100", 2));
+    }
+    for res in &event.resources {
+        if res.label.is_empty() || res.label.len() > 64 {
+            return Err(("FA-REF-100", 2));
+        }
+        if !known_units.contains(&res.unit_id) {
+            return Err(("FA-REF-006", 3));
+        }
+        if res.mantissa <= 0 {
+            return Err(("FA-REF-100", 2));
+        }
+    }
+    if event.evidence.is_empty() {
+        return Err(("FA-REF-080", 3));
+    }
+    if event.evidence.len() > 32
+        || event.evidence.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(("FA-REF-100", 2));
+    }
+    if existing_events.contains_key(&event.vid) {
+        return Err(("FA-REF-100", 2));
+    }
+    for p in &event.participants {
+        if !known_participants.contains(p) {
+            return Err(("FA-REF-100", 2));
+        }
+    }
+    for res in &event.resources {
+        if let Some(inst) = res.instrument
+            && !known_instruments.contains(&inst)
+        {
+            return Err(("FA-REF-100", 2));
+        }
+    }
+    for (oid, commit, role) in &event.evidence {
+        if *role == 0 || *role > 6 {
+            return Err(("FA-REF-100", 2));
+        }
+        let Some(stored_commit) = known_documents.get(oid) else {
+            return Err(("FA-REF-081", 3));
+        };
+        if stored_commit != commit {
+            return Err(("FA-REF-082", 3));
+        }
+    }
+    Ok(())
+}
+
+/// Independent reference check for an `Entry`'s `cited_event` (`FA-INV-05.event-closure`,
+/// bead `fa-f3bo`).
+pub fn validate_event_citation(
+    cited_vid: u128,
+    cited_digest: Option<[u8; 32]>,
+    existing_events: &BTreeMap<u128, RefEvent>,
+) -> Result<(), (&'static str, u8)> {
+    let Some(ev) = existing_events.get(&cited_vid) else {
+        return Err(("FA-REF-100", 2));
+    };
+    if ev.evidence.is_empty() {
+        return Err(("FA-REF-080", 3));
+    }
+    if let Some(expected) = cited_digest
+        && ev.event_digest != expected
+    {
+        return Err(("FA-REF-100", 2));
+    }
+    Ok(())
+}
+
+/// Independent reference check for rule-origin entry reproduction
+/// (`FA-INV-05.rule-reproduction`, bead `fa-f3bo` / `fa-c34`).
+pub fn validate_rule_reproduction(
+    event_vid: u128,
+    expected_proposal_digest: [u8; 32],
+    recomputed_proposal_digest: [u8; 32],
+    existing_events: &BTreeMap<u128, RefEvent>,
+) -> Result<(), (&'static str, u8)> {
+    validate_event_citation(event_vid, None, existing_events)?;
+    if expected_proposal_digest != recomputed_proposal_digest {
+        return Err(("FA-REF-100", 2));
+    }
+    Ok(())
+}
