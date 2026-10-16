@@ -6679,3 +6679,86 @@ fn period_verification_detects_planted_state_and_topology_drift_without_mutation
         assert!(v_clean.is_green(), "{plant}: {:?}", v_clean.drift);
     }
 }
+
+#[test]
+fn instant_before_book_genesis_and_non_increasing_ticks_are_refused() {
+    use fa_journal::genesis::BookSpec;
+    use fa_journal::sweep::{SOURCE_DAEMON_CLOCK, TickRequest, latest_tick, record_tick};
+    use fa_policy::Capability;
+    use fa_time::UtcInstant;
+
+    let mut h = harness();
+    let march_15 = UtcInstant::parse("2026-03-15T12:00:00Z").unwrap().unix_ns();
+    let first = h.tick(march_15, b"tick-1", 1);
+    assert_eq!(latest_tick(&h.db).unwrap(), Some(first.tick));
+
+    // Equal or decreasing ticks are refused with FA-REF-094 (TICK_ORDER) and
+    // never move the book's latest tick or append a commit.
+    let head_before = h.db.frontier().unwrap();
+    for (bad_ns, key, nonce) in [
+        (march_15, &b"tick-equal"[..], 2u8),
+        (march_15 - 1, &b"tick-rollback"[..], 3u8),
+    ] {
+        let ctx = h.ctx();
+        let req = TickRequest {
+            observed_utc_ns: bad_ns,
+            source: SOURCE_DAEMON_CLOCK,
+            monotonic_ok: true,
+            principal_ref: PRINCIPAL,
+            capability: Capability::embedded(PRINCIPAL, &["witness"]).expect("witness"),
+            idempotency_key: key.to_vec(),
+            description: h.statement("bad-tick", nonce),
+        };
+        let refusal = h
+            .runtime
+            .block_on(record_tick(&mut h.db, &ctx, &h.book, req))
+            .expect("kernel")
+            .expect_err("non-increasing tick must be refused");
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            ("FA-REF-094", exit::REFUSAL),
+            "{refusal}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), head_before);
+        assert_eq!(latest_tick(&h.db).unwrap(), Some(first.tick));
+    }
+
+    // On a book with an opening_date (migration genesis), any instant before
+    // the book's migration genesis is refused with BeforeBookGenesis (FA-REF-151)
+    // rather than reconstructing legacy known-at.
+    let mut spec = fa_journal::genesis::read_book_spec(&h.db)
+        .unwrap()
+        .expect("book spec");
+    spec.opening_date = Some(DateDay::from_ymd(2026, 4, 1).unwrap());
+    let mut batch = fgdb::WriteBatch::new(relation::IN_BOOK);
+    batch.set_vertex_property(
+        book_root(),
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(BookSpec::canonical_bytes(&spec).unwrap()).unwrap()),
+    );
+    h.write_raw(batch);
+    let april_tick = UtcInstant::parse("2026-04-02T00:00:00Z").unwrap().unix_ns();
+    let second = h.tick(april_tick, b"tick-2", 4);
+
+    let legacy_instant = UtcInstant::parse("2025-12-31T23:59:59Z").unwrap().unix_ns();
+    let refusal = resolve_instant_at(&h.db, &h.ctx().query(), &h.book, legacy_instant, None)
+        .expect("kernel")
+        .expect_err("legacy instant before opening_date must be refused");
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        ("FA-REF-151", exit::REFUSAL),
+        "{refusal}"
+    );
+    assert!(
+        refusal.message.contains("BeforeBookGenesis"),
+        "expected BeforeBookGenesis in refusal message: {refusal}"
+    );
+    assert!(refusal.cite.contains("§8.6"), "{refusal}");
+
+    // An instant at or after the migration genesis and retained tick resolves cleanly.
+    let resolved = resolve_instant_at(&h.db, &h.ctx().query(), &h.book, april_tick + 50, None)
+        .expect("kernel")
+        .expect("resolved after migration genesis");
+    assert_eq!(resolved.lower_entry, second.entry_ref.vid);
+}
+
