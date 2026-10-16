@@ -2280,6 +2280,10 @@ fn capabilities_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let class_names: Vec<Json> = classes.rows.iter().map(|c| s(&c.name)).collect();
     let invariants =
         fa_registry::invariants::Invariants::embedded().map_err(BookError::Registry)?;
+    let op_costs =
+        fa_registry::g0::OperationCosts::embedded().map_err(BookError::Registry)?;
+    let slo =
+        fa_registry::g0::SloRegistry::embedded(&op_costs).map_err(BookError::Registry)?;
     let fields = vec![
         ("version", s(VERSION)),
         (
@@ -2348,7 +2352,12 @@ fn capabilities_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ),
             ]),
         ),
+        (
+            "slo_manifests",
+            Json::Arr(slo.activated_manifest_ids().iter().map(s).collect()),
+        ),
     ];
+
     if out.json {
         out.event("capabilities", fields, "");
     } else {

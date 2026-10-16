@@ -1,0 +1,441 @@
+# =============================================================================
+# registries/operation_costs.toml — Appendix G Operation Cost Registry
+# (plan §1.12, §17, §18.2, Appendix G; beads fa-tu58, fa-i5s)
+# =============================================================================
+#
+# Laws enforced by `fa-registry` and `tools/registry-check`:
+# 1. Derivability: every `slo.toml` gate names its `operation_class` and
+#    `counting_unit` and is consistent with the class's `barrier_count` floor
+#    (`target_p50_us >= barrier_count * pinned_fsync_p50_us`).
+# 2. Same-change update: any change adding a substrate transaction, synchronous
+#    external authority, or per-entry derived object updates this registry and
+#    the counted lab witness test in the same commit.
+# 3. No hot object on the write path: only the two registered exceptions below
+#    (`LimitCell` and `UsageCell`) may appear in `hot_object_exceptions`, each
+#    scoped to its specific operation class and carrying its retirement rule.
+
+schema_version = 1
+
+# ---- Registered Hot-Object Exceptions (Appendix G Law 3) --------------------
+
+[[hot_object_exception]]
+name = "LimitCell"
+plan_ref = "§5.5, §0.4 decision 7, Appendix H R-ESC"
+allowed_classes = ["release_only_resolution", "expiry_sweep_tick"]
+allowed_kernel_ops = ["reserve", "resolve"]
+retirement_condition = "Retire when substrate Escrow domains (Appendix H R-ESC) land and replace per-limited-account CAS cells."
+
+[[hot_object_exception]]
+name = "UsageCell"
+plan_ref = "§14.2, Appendix H R-WARDEN"
+allowed_classes = ["ceiling_bearing_post"]
+allowed_kernel_ops = ["post"]
+retirement_condition = "Retire when substrate compiled capability caveats and escrow ceilings (Appendix H R-WARDEN / R-ESC) land."
+
+# ---- Appendix G Operation Classes (19 normative rows) -----------------------
+
+[[operation_class]]
+id = "balance_read_at_watermark"
+name = "Balance read at watermark"
+substrate_class = "SnapshotQuery"
+substrate_transactions = "0"
+today_posture = "SnapshotQuery over published snapshot; 0 publications"
+today_transactions = 0
+barrier_count = 0
+today_barrier_count = 0
+derived_objects = "0"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(1) register cell lookup + O(tail_legs) bounded tail fold"
+notes = "register cell + bounded tail fold"
+
+[[operation_class]]
+id = "certified_report"
+name = "Certified report (TB, statement)"
+substrate_class = "SnapshotQuery (reads) + 0 writes"
+substrate_transactions = "0"
+today_posture = "SnapshotQuery reads; optional lazy Certificate persistence on --certify"
+today_transactions = 0
+barrier_count = 0
+today_barrier_count = 0
+derived_objects = "1 Certificate (persisted lazily on request)"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(accounts + tail_legs) pure over registers and tail"
+notes = "pure over registers and tail"
+
+[[operation_class]]
+id = "single_entry_post"
+name = "Single-entry post"
+substrate_class = "Autocommit write, fused arm"
+substrate_transactions = "1"
+today_posture = "One publication (capsule-first, marker-last, two ordered syncs), no group commit (Appendix H R-GC)"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 Entry + n Leg + edges + ExternalIds + 1 IntentOutcome"
+hot_object_exceptions = []
+external_authorities = "none; a rate lookup is a document already in the book, never a synchronous call"
+complexity_witness = "O(legs) point reads + 1 period witness + 1 Entry vertex + O(legs) Leg vertices and projection edges"
+notes = "group-commit amortized"
+
+[[operation_class]]
+id = "portable_single_entry_plan_and_commit"
+name = "Portable single-entry plan and confirmed commit (R-POST-PLAN)"
+substrate_class = "Full posting preparation, aborted; revalidated preparation and one commit"
+substrate_transactions = "0 for planning; 1 for commit, with no additional publication"
+today_posture = "0 publications for dry-run planning (aborted WriteTxn); 1 publication (2 syncs) for confirmed commit"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "admitted posting census + 1 immutable graph Certificate containing the bounded plan bytes + 1 CITES edge"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(legs) rehearsed and aborted on plan; O(legs) + 1 Certificate vertex + 1 CITES edge on commit"
+notes = "same-basis native effects comparison; certificate retention extends the same transaction; no shared mutable object; durable IntentOutcome remains a separate unimplemented contract"
+
+[[operation_class]]
+id = "batch_post"
+name = "Batch post (N entries)"
+substrate_class = "Autocommit write, fused arm (one WriteBatch)"
+substrate_transactions = "1"
+today_posture = "One WriteTxn committing N entries in one publication (two ordered syncs)"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "N Entry/Leg censuses + one outcome per keyed intent + any separately keyed batch outcome + one retained EffectManifest per approved effect set"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(N * legs) point reads, witnesses, and projection writes in one WriteTxn bounded by max_batch_entries"
+notes = "bounded by max_batch_entries"
+
+[[operation_class]]
+id = "admitted_durable_refusal"
+name = "Admitted durable refusal"
+substrate_class = "Authorized refusal publication"
+substrate_transactions = "1 when published"
+today_posture = "One publication when durable IntentOutcome refusal is persisted"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 immutable IntentOutcome"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(1) IntentOutcome vertex write when published"
+notes = "refusal registry classifies which failures can be durable (§5.9)"
+
+[[operation_class]]
+id = "release_only_resolution"
+name = "Release-only resolution"
+substrate_class = "Same bounded resolution publication"
+substrate_transactions = "1"
+today_posture = "One publication (two ordered syncs) recording ReservationRelease control and RESOLVES lineage"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 Resolution + 0 Leg projections + outcome/lineage effects"
+hot_object_exceptions = ["LimitCell"]
+external_authorities = "none"
+complexity_witness = "1 pending target witness + 1 Resolution control vertex + 1 RESOLVES edge + bounded LimitCell release"
+notes = "full original pending decrement; no posted increment (§5.4)"
+
+[[operation_class]]
+id = "effect_manifest_closure"
+name = "Effect-manifest closure"
+substrate_class = "Canonical ordered manifest retained before its approvals"
+substrate_transactions = "1 additional pre-approval publication if separately persisted; 0 extra if canonically embedded in the existing plan publication"
+today_posture = "0 extra publications when canonically embedded in the sealed plan artifact"
+today_transactions = 0
+barrier_count = 0
+today_barrier_count = 0
+derived_objects = "1 manifest per effect set; O(N) bounded ProposalRefs plus target/authorization references; bytes charged to plan/approval closure"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(N) ProposalRefs hashed into effects_digest"
+notes = "never multiply the full manifest per member unless those duplicated bytes are charged; persist/embedding choice is a schema row"
+
+[[operation_class]]
+id = "draft_promotion"
+name = "Draft promotion (N planned intents)"
+substrate_class = "Autocommit write, fused arm"
+substrate_transactions = "1"
+today_posture = "One publication replaying N planned intents with current-state revalidation"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "batch census + DraftSet transition"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(N * legs) intent replay + 1 DraftSet LifecycleTransition"
+notes = "intent replay with revalidation"
+
+[[operation_class]]
+id = "period_transition"
+name = "Period transition"
+substrate_class = "Autocommit write, fused arm"
+substrate_transactions = "1"
+today_posture = "One publication updating Period state mirror and journaling 1 PeriodControl entry"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 PeriodControl entry"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "1 Period point read + 1 point-read witness + 1 PeriodControl entry + 1 Period state update"
+notes = "SSI witness for racing posts"
+
+[[operation_class]]
+id = "close_run_execute"
+name = "Close run (execute)"
+substrate_class = "sequence of batch posts + transitions"
+substrate_transactions = "k (task count + 1)"
+today_posture = "k publications (task batch posts + final PeriodControl transition); rehearsal is 0 writes on scratch book"
+today_transactions = 2
+barrier_count = 4
+today_barrier_count = 4
+derived_objects = "per task"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(tasks) batch posts + 1 PeriodControl transition"
+notes = "rehearsal is reads over a draft/scratch book"
+
+[[operation_class]]
+id = "restatement_case_post"
+name = "Restatement case post"
+substrate_class = "Batch post"
+substrate_transactions = "1 — the case's entries and its Posted LifecycleTransition are one write_ordered transaction, so a crash leaves either nothing or everything"
+today_posture = "One write_ordered publication committing case entries, LifecycleTransition(Posted), and diff Certificate"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "case entries + diff Certificate"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(case_entries * legs) + 1 LifecycleTransition + 1 diff Certificate in one transaction"
+notes = "dual-control approvals are prior transactions"
+
+[[operation_class]]
+id = "register_maintenance_flush"
+name = "Register maintenance flush"
+substrate_class = "Autocommit write, fused arm (maintenance class)"
+substrate_transactions = "1 per flush tick"
+today_posture = "One maintenance publication per advance/materialize call off the posting path"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "touched Register cells; periodic RegisterCheckpoint"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(delta_legs) fold + O(touched_cells) Register cell writes + 1 RegisterCheckpoint"
+notes = "off the posting path; amortized"
+
+[[operation_class]]
+id = "accumulator_checkpoint"
+name = "Accumulator checkpoint"
+substrate_class = "Autocommit write, fused arm"
+substrate_transactions = "1 per cadence"
+today_posture = "One publication appending LeafEnvelopes, AccumulatorState, ScopeIndex, and signed TransparencyCheckpoint"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 AccumulatorState + 1 TransparencyCheckpoint"
+hot_object_exceptions = []
+external_authorities = "witnesses episodic, never synchronous"
+complexity_witness = "O(delta_entries) LeafEnvelopes + O(log N) MMR peaks + 1 Ed25519 signature"
+notes = "peaks derived in commit order"
+
+[[operation_class]]
+id = "expiry_sweep_tick"
+name = "Expiry sweep tick"
+substrate_class = "Autocommit write, fused arm"
+substrate_transactions = "1 per tick"
+today_posture = "One publication per sweep tick under journaled TimeEvidence"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "Resolution(Expires) entries"
+hot_object_exceptions = ["LimitCell"]
+external_authorities = "time evidence (substrate's profiled observation)"
+complexity_witness = "O(expired_batch) Resolution(Expires) entries + SweepCursor under TimeEvidence"
+notes = "bounded batch per tick"
+
+[[operation_class]]
+id = "bundle_production"
+name = "Bundle production"
+substrate_class = "reads"
+substrate_transactions = "0"
+today_posture = "SnapshotQuery reads over committed checkpoint prefix; 0 book writes"
+today_transactions = 0
+barrier_count = 0
+today_barrier_count = 0
+derived_objects = "1 Bundle object (optional persist)"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(scope_entries * log N) MMR inclusion/scope proofs + deterministic closure assembly"
+notes = "deterministic"
+
+[[operation_class]]
+id = "external_profile_read"
+name = "External-profile read (Auditor/Regulator/Investigator/Production)"
+substrate_class = "SnapshotQuery + 1 maintenance publication"
+substrate_transactions = "1 (the AccessEvent, committed before the first protected byte streams; batched per request)"
+today_posture = "1 AccessEvent publication before protected read bytes stream; 0 for internal profiles"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 AccessEvent"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "1 AccessEvent vertex write + SnapshotQuery read"
+notes = "internal profiles stay at 0"
+
+[[operation_class]]
+id = "ceiling_bearing_post"
+name = "Ceiling-bearing post"
+substrate_class = "Autocommit write, fused arm"
+substrate_transactions = "1 (same transaction)"
+today_posture = "One publication combining single-entry posting census and UsageCell generation-checked CAS"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "single-entry census + UsageCell CAS"
+hot_object_exceptions = ["UsageCell"]
+external_authorities = "none"
+complexity_witness = "O(legs) posting + 1 UsageCell read/witness/CAS"
+notes = "the second registered hot-object exception (§14.2)"
+
+[[operation_class]]
+id = "bulk_migration"
+name = "Bulk migration (M lines)"
+substrate_class = "substrate bulk protocol (staged chunks, one finalizing transaction)"
+substrate_transactions = "1 + chunk staging"
+today_posture = "Bounded staged Migration chunks + 1 finalizing tie-out publication"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "Migration entries; opening attestation"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(chunks * legs) staged migration entries + 1 finalizing MigrationControl(Finalize) with tie_out_digest"
+notes = "gap-free chunk manifests"
+
+# ---- Counted Kernel Operation Witnesses (bead fa-i5s) -----------------------
+# Checked against the deterministic operation counter in `fa-bench` / `fa-sim`
+# so any extra point read, witness, CAS move, or edge write fails CI.
+
+[[kernel_op_witness]]
+id = "post"
+operation_class = "single_entry_post"
+description = "Balanced 2-leg ordinary PostEntry into an open period without balance limits or ceilings"
+hot_object_exceptions = []
+point_reads = 3
+witnesses = 1
+cas_moves = 0
+edges_written = 8
+vertices_written = 3
+transactions = 1
+complexity_witness = "1 period read/witness + 2 leaf account reads + 1 Entry vertex + 2 Leg vertices + 8 projection edges (2 * HAS_LEG/POSTS_TO/FOR/IN_UNIT)"
+
+[[kernel_op_witness]]
+id = "reserve"
+operation_class = "single_entry_post"
+description = "2-leg Pending reservation entry into an open period with 1 LimitCell account"
+hot_object_exceptions = ["LimitCell"]
+point_reads = 4
+witnesses = 2
+cas_moves = 1
+edges_written = 8
+vertices_written = 3
+transactions = 1
+complexity_witness = "1 period read/witness + 2 leaf account reads + 1 LimitCell read/witness/CAS + 1 Entry vertex + 2 Leg vertices + 8 projection edges"
+
+[[kernel_op_witness]]
+id = "resolve"
+operation_class = "release_only_resolution"
+description = "Release-only Resolution(Voids) of a 2-leg Pending entry with 1 LimitCell account"
+hot_object_exceptions = ["LimitCell"]
+point_reads = 3
+witnesses = 2
+cas_moves = 1
+edges_written = 1
+vertices_written = 1
+transactions = 1
+complexity_witness = "1 period read/witness + 1 pending target read/witness + 1 LimitCell CAS release + 1 Resolution entry vertex + 1 RESOLVES edge"
+
+[[kernel_op_witness]]
+id = "period_transition"
+operation_class = "period_transition"
+description = "Period state transition (Open -> SoftClosed) via PeriodControl entry"
+hot_object_exceptions = []
+point_reads = 1
+witnesses = 1
+cas_moves = 1
+edges_written = 1
+vertices_written = 1
+transactions = 1
+complexity_witness = "1 Period vertex read/witness/state-CAS + 1 PeriodControl entry vertex + 1 FOR edge"
+
+[[kernel_op_witness]]
+id = "document_add"
+operation_class = "single_entry_post"
+description = "Content-addressed Document intake with initial custody event"
+hot_object_exceptions = []
+point_reads = 1
+witnesses = 0
+cas_moves = 0
+edges_written = 1
+vertices_written = 2
+transactions = 1
+complexity_witness = "1 OID uniqueness probe + 1 Document vertex + 1 CustodyEvent vertex + 1 CUSTODY_OF edge"
+
+[[kernel_op_witness]]
+id = "checkpoint"
+operation_class = "accumulator_checkpoint"
+description = "Journal accumulator advance over 1 new entry and signed TransparencyCheckpoint publication"
+hot_object_exceptions = []
+point_reads = 2
+witnesses = 0
+cas_moves = 0
+edges_written = 2
+vertices_written = 3
+transactions = 1
+complexity_witness = "1 prior state read + 1 entry read + 1 LeafEnvelope + 1 AccumulatorState + 1 TransparencyCheckpoint + 2 lineage edges"
+
+[[kernel_op_witness]]
+id = "fold_per_entry"
+operation_class = "register_maintenance_flush"
+description = "Incremental register fold over 1 newly committed 2-leg entry"
+hot_object_exceptions = []
+point_reads = 2
+witnesses = 0
+cas_moves = 2
+edges_written = 0
+vertices_written = 0
+transactions = 1
+complexity_witness = "2 Register cell lookups + 2 Register cell updates + fold_digest recomputation"
+
+[[kernel_op_witness]]
+id = "verify_per_cell"
+operation_class = "certified_report"
+description = "Register verification of 1 cell against journal refold (fa verify registers)"
+hot_object_exceptions = []
+point_reads = 2
+witnesses = 0
+cas_moves = 0
+edges_written = 0
+vertices_written = 0
+transactions = 0
+complexity_witness = "1 Register cell read + 1 journal leg fold read + BLAKE3 fold_digest comparison (0 writes)"
+
+[[kernel_op_witness]]
+id = "query_procedure"
+operation_class = "certified_report"
+description = "Read-only Lantern procedure execution over visible snapshot legs under stripped Cx"
+hot_object_exceptions = []
+point_reads = 1
+witnesses = 0
+cas_moves = 0
+edges_written = 0
+vertices_written = 0
+transactions = 0
+complexity_witness = "1 snapshot frontier read + O(legs) deterministic scan under stripped Cx (0 writes)"

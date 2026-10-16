@@ -15,8 +15,8 @@ use fa_registry::document_stores::DocumentStores;
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::foundations::Ledger;
 use fa_registry::g0::{
-    CheckerIndex, ClaimsLintConfig, Constitution, EvidenceRegistry, PeriodStatesRegistry,
-    ProofLanes, RelationshipBases,
+    CheckerIndex, ClaimsLintConfig, Constitution, EvidenceRegistry, OperationCosts,
+    PeriodStatesRegistry, ProofLanes, RelationshipBases, SloRegistry,
 };
 use fa_registry::intake_sources::IntakeSources;
 use fa_registry::invariants::Invariants;
@@ -103,6 +103,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "invariants.toml",
     "limits.toml",
     "mutants.toml",
+    "operation_costs.toml",
     "period_states.toml",
     "procedures.toml",
     "proof_lanes.toml",
@@ -112,6 +113,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "relationship_bases.toml",
     "rounding_laws.toml",
     "scoreboard.toml",
+    "slo.toml",
     "sod_policy.toml",
     "symbols.toml",
     "threat_model.toml",
@@ -119,6 +121,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "verbs.toml",
     "workspace_topology.toml",
 ];
+
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckSummary {
@@ -655,6 +658,10 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     }
     let _rel_bases =
         RelationshipBases::parse(&read("relationship_bases.toml")?).map_err(|e| e.to_string())?;
+    let op_costs =
+        OperationCosts::parse(&read("operation_costs.toml")?).map_err(|e| e.to_string())?;
+    let slo_reg =
+        SloRegistry::parse(&read("slo.toml")?, &op_costs).map_err(|e| e.to_string())?;
     let claims_config =
         ClaimsLintConfig::parse(&read("claims_lint.toml")?).map_err(|e| e.to_string())?;
 
@@ -711,6 +718,10 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     for lane in &proof_lanes.lanes {
         known_markers.insert(lane.id.clone());
     }
+    for s in &slo_reg.rows {
+        known_markers.insert(s.id.clone());
+    }
+
 
     let mut loaded_docs = Vec::new();
     for rel_doc in &claims_config.scanned_docs {
@@ -1001,5 +1012,26 @@ mod tests {
             parsed_tm.unresolved_test_refs(|rel| fs::read_to_string(root.join(rel)).ok());
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0].0, "FA-THR-01");
+
+        // Planted negative 4 (fa-i5s): an slo row typed `invariant` or below barrier floor fails.
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        let slo_text = fs::read_to_string(root.join("registries/slo.toml")).expect("slo.toml");
+        let bad_slo_claim =
+            slo_text.replacen("claim_class = \"benchmark\"", "claim_class = \"invariant\"", 1);
+        let err =
+            SloRegistry::parse(&bad_slo_claim, &op_costs).expect_err("slo row typed invariant");
+        assert!(
+            err.to_string().contains("claims_lint") && err.to_string().contains("invariant"),
+            "{err}"
+        );
+        let bad_slo_floor =
+            slo_text.replacen("target_p50_us = 2000", "target_p50_us = 1500", 1);
+        let err =
+            SloRegistry::parse(&bad_slo_floor, &op_costs).expect_err("slo row below barrier floor");
+        assert!(
+            err.to_string().contains("derivability law violation"),
+            "{err}"
+        );
     }
 }
+

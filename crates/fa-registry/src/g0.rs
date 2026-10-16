@@ -1,4 +1,4 @@
-//! G0 constitutional registries (plan §18.2, §19 G0, bead `fa-szi`):
+//! G0 constitutional registries (plan §18.2, §19 G0, beads `fa-szi`, `fa-tu58`, `fa-i5s`):
 //! - `registries/constitution.toml` (`FA-CON-01..14`, `A1..A6`, claim classes)
 //! - `registries/evidence.toml` (`FA-EVID-*`, `FA-CAL-*`, `FA-CFG-*`)
 //! - `registries/checker_index.toml` (`CHK-*`)
@@ -6,8 +6,10 @@
 //! - `registries/period_states.toml` (`PeriodState`, `PeriodKind`, `PeriodTransition`)
 //! - `registries/relationship_bases.toml` (`OWNS`, `CONTROLS`, `RELATED_TO` bases)
 //! - `registries/claims_lint.toml` (marker resolution families + §18.2 37-registry inventory)
+//! - `registries/operation_costs.toml` (Appendix G operation classes, hot-object exceptions, kernel op witnesses)
+//! - `registries/slo.toml` (§17 empirical gates and capacity SLOs derived from operation costs)
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_time::period::transition;
 use fa_time::{PeriodKind, PeriodState, PeriodTransition};
@@ -23,6 +25,8 @@ const PROOF_LANES_TOML: &str = include_str!("../../../registries/proof_lanes.tom
 const PERIOD_STATES_TOML: &str = include_str!("../../../registries/period_states.toml");
 const RELATIONSHIP_BASES_TOML: &str = include_str!("../../../registries/relationship_bases.toml");
 const CLAIMS_LINT_TOML: &str = include_str!("../../../registries/claims_lint.toml");
+const OPERATION_COSTS_TOML: &str = include_str!("../../../registries/operation_costs.toml");
+const SLO_TOML: &str = include_str!("../../../registries/slo.toml");
 
 fn req_bool(registry: &'static str, t: &Table, key: &str) -> Result<bool, RegistryError> {
     t.get(key)
@@ -770,6 +774,502 @@ impl ClaimsLintConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// operation_costs.toml (Appendix G, beads fa-tu58, fa-i5s)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HotObjectExceptionRow {
+    pub name: String,
+    pub plan_ref: String,
+    pub allowed_classes: Vec<String>,
+    pub allowed_kernel_ops: Vec<String>,
+    pub retirement_condition: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationClassRow {
+    pub id: String,
+    pub name: String,
+    pub substrate_class: String,
+    pub substrate_transactions: String,
+    pub today_posture: String,
+    pub today_transactions: u32,
+    pub barrier_count: u64,
+    pub today_barrier_count: u64,
+    pub derived_objects: String,
+    pub hot_object_exceptions: Vec<String>,
+    pub external_authorities: String,
+    pub complexity_witness: String,
+    pub notes: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KernelOpWitnessRow {
+    pub id: String,
+    pub operation_class: String,
+    pub description: String,
+    pub hot_object_exceptions: Vec<String>,
+    pub point_reads: u32,
+    pub witnesses: u32,
+    pub cas_moves: u32,
+    pub edges_written: u32,
+    pub vertices_written: u32,
+    pub transactions: u32,
+    pub complexity_witness: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationCosts {
+    pub hot_object_exceptions: Vec<HotObjectExceptionRow>,
+    pub classes: Vec<OperationClassRow>,
+    pub kernel_op_witnesses: Vec<KernelOpWitnessRow>,
+}
+
+impl OperationCosts {
+    pub fn embedded() -> Result<Self, RegistryError> {
+        Self::parse(OPERATION_COSTS_TOML)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, RegistryError> {
+        const R: &str = "operation_costs.toml";
+        let doc = load(R, text)?;
+        if req_int(R, &doc.root, "schema_version")? != 1 {
+            return Err(invalid(R, "schema_version must be 1"));
+        }
+
+        let mut exc_by_name: BTreeMap<String, HotObjectExceptionRow> = BTreeMap::new();
+        let mut hot_object_exceptions = Vec::new();
+        for t in doc
+            .arrays
+            .get("hot_object_exception")
+            .ok_or_else(|| invalid(R, "missing [[hot_object_exception]]"))?
+        {
+            let name = req_str(R, t, "name")?.to_string();
+            if !matches!(name.as_str(), "LimitCell" | "UsageCell") {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "unregistered hot_object_exception `{name}` (Appendix G Law 3 admits only LimitCell and UsageCell)"
+                    ),
+                ));
+            }
+            let allowed_classes = req_str_vec(R, t, "allowed_classes")?;
+            let allowed_kernel_ops = req_str_vec(R, t, "allowed_kernel_ops")?;
+            if allowed_classes.is_empty() || allowed_kernel_ops.is_empty() {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "hot_object_exception `{name}` must have non-empty allowed_classes and allowed_kernel_ops"
+                    ),
+                ));
+            }
+            let row = HotObjectExceptionRow {
+                name: name.clone(),
+                plan_ref: req_str(R, t, "plan_ref")?.to_string(),
+                allowed_classes,
+                allowed_kernel_ops,
+                retirement_condition: req_str(R, t, "retirement_condition")?.to_string(),
+            };
+            if exc_by_name.insert(name.clone(), row.clone()).is_some() {
+                return Err(invalid(
+                    R,
+                    format!("duplicate hot_object_exception `{name}`"),
+                ));
+            }
+            hot_object_exceptions.push(row);
+        }
+        if hot_object_exceptions.len() != 2 {
+            return Err(invalid(
+                R,
+                format!(
+                    "expected exactly 2 hot_object_exception rows (LimitCell, UsageCell), found {}",
+                    hot_object_exceptions.len()
+                ),
+            ));
+        }
+
+        let mut class_ids = BTreeSet::new();
+        let mut class_names = BTreeSet::new();
+        let mut classes = Vec::new();
+        for t in doc
+            .arrays
+            .get("operation_class")
+            .ok_or_else(|| invalid(R, "missing [[operation_class]]"))?
+        {
+            let id = req_str(R, t, "id")?.to_string();
+            let name = req_str(R, t, "name")?.to_string();
+            let today_transactions = u32::try_from(req_int(R, t, "today_transactions")?)
+                .map_err(|_| invalid(R, format!("{id}: today_transactions must be >= 0")))?;
+            let barrier_count = u64::try_from(req_int(R, t, "barrier_count")?)
+                .map_err(|_| invalid(R, format!("{id}: barrier_count must be >= 0")))?;
+            let today_barrier_count = u64::try_from(req_int(R, t, "today_barrier_count")?)
+                .map_err(|_| invalid(R, format!("{id}: today_barrier_count must be >= 0")))?;
+            let exceptions = req_str_vec(R, t, "hot_object_exceptions")?;
+            for exc in &exceptions {
+                let Some(exc_row) = exc_by_name.get(exc) else {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "operation_class `{id}` cites unregistered hot-object exception `{exc}` (Appendix G Law 3)"
+                        ),
+                    ));
+                };
+                if !exc_row.allowed_classes.contains(&id) {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "operation_class `{id}` is not scoped for hot-object exception `{exc}` (Appendix G Law 3)"
+                        ),
+                    ));
+                }
+            }
+            if !class_ids.insert(id.clone()) {
+                return Err(invalid(R, format!("duplicate operation_class id `{id}`")));
+            }
+            if !class_names.insert(name.clone()) {
+                return Err(invalid(
+                    R,
+                    format!("duplicate operation_class name `{name}`"),
+                ));
+            }
+            classes.push(OperationClassRow {
+                id,
+                name,
+                substrate_class: req_str(R, t, "substrate_class")?.to_string(),
+                substrate_transactions: req_str(R, t, "substrate_transactions")?.to_string(),
+                today_posture: req_str(R, t, "today_posture")?.to_string(),
+                today_transactions,
+                barrier_count,
+                today_barrier_count,
+                derived_objects: req_str(R, t, "derived_objects")?.to_string(),
+                hot_object_exceptions: exceptions,
+                external_authorities: req_str(R, t, "external_authorities")?.to_string(),
+                complexity_witness: req_str(R, t, "complexity_witness")?.to_string(),
+                notes: req_str(R, t, "notes")?.to_string(),
+            });
+        }
+        if classes.len() != 19 {
+            return Err(invalid(
+                R,
+                format!(
+                    "expected 19 Appendix G [[operation_class]] rows, found {}",
+                    classes.len()
+                ),
+            ));
+        }
+
+        let required_kernel_ops = [
+            "post",
+            "reserve",
+            "resolve",
+            "period_transition",
+            "document_add",
+            "checkpoint",
+            "fold_per_entry",
+            "verify_per_cell",
+            "query_procedure",
+        ];
+        let mut witness_ids = BTreeSet::new();
+        let mut kernel_op_witnesses = Vec::new();
+        for t in doc
+            .arrays
+            .get("kernel_op_witness")
+            .ok_or_else(|| invalid(R, "missing [[kernel_op_witness]]"))?
+        {
+            let id = req_str(R, t, "id")?.to_string();
+            let op_class = req_str(R, t, "operation_class")?.to_string();
+            if !class_ids.contains(&op_class) {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "kernel_op_witness `{id}` references unknown operation_class `{op_class}`"
+                    ),
+                ));
+            }
+            let exceptions = req_str_vec(R, t, "hot_object_exceptions")?;
+            for exc in &exceptions {
+                let Some(exc_row) = exc_by_name.get(exc) else {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "kernel_op_witness `{id}` cites unregistered hot-object exception `{exc}`"
+                        ),
+                    ));
+                };
+                if !exc_row.allowed_kernel_ops.contains(&id) {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "kernel_op_witness `{id}` is not scoped for hot-object exception `{exc}`"
+                        ),
+                    ));
+                }
+            }
+            let point_reads = u32::try_from(req_int(R, t, "point_reads")?)
+                .map_err(|_| invalid(R, format!("{id}: point_reads must be >= 0")))?;
+            let witnesses = u32::try_from(req_int(R, t, "witnesses")?)
+                .map_err(|_| invalid(R, format!("{id}: witnesses must be >= 0")))?;
+            let cas_moves = u32::try_from(req_int(R, t, "cas_moves")?)
+                .map_err(|_| invalid(R, format!("{id}: cas_moves must be >= 0")))?;
+            let edges_written = u32::try_from(req_int(R, t, "edges_written")?)
+                .map_err(|_| invalid(R, format!("{id}: edges_written must be >= 0")))?;
+            let vertices_written = u32::try_from(req_int(R, t, "vertices_written")?)
+                .map_err(|_| invalid(R, format!("{id}: vertices_written must be >= 0")))?;
+            let transactions = u32::try_from(req_int(R, t, "transactions")?)
+                .map_err(|_| invalid(R, format!("{id}: transactions must be >= 0")))?;
+            if !witness_ids.insert(id.clone()) {
+                return Err(invalid(R, format!("duplicate kernel_op_witness `{id}`")));
+            }
+            kernel_op_witnesses.push(KernelOpWitnessRow {
+                id,
+                operation_class: op_class,
+                description: req_str(R, t, "description")?.to_string(),
+                hot_object_exceptions: exceptions,
+                point_reads,
+                witnesses,
+                cas_moves,
+                edges_written,
+                vertices_written,
+                transactions,
+                complexity_witness: req_str(R, t, "complexity_witness")?.to_string(),
+            });
+        }
+        for req_op in required_kernel_ops {
+            if !witness_ids.contains(req_op) {
+                return Err(invalid(
+                    R,
+                    format!("missing required [[kernel_op_witness]] `{req_op}`"),
+                ));
+            }
+        }
+
+        Ok(Self {
+            hot_object_exceptions,
+            classes,
+            kernel_op_witnesses,
+        })
+    }
+
+    pub fn class(&self, id: &str) -> Option<&OperationClassRow> {
+        self.classes.iter().find(|c| c.id == id)
+    }
+
+    pub fn witness(&self, id: &str) -> Option<&KernelOpWitnessRow> {
+        self.kernel_op_witnesses.iter().find(|w| w.id == id)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// slo.toml (§17 Performance Doctrine and Targets, beads fa-tu58, fa-i5s)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReferenceMachine {
+    pub id: String,
+    pub cpu: String,
+    pub ram_gb: u32,
+    pub storage: String,
+    pub pinned_fsync_p50_us: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SloRow {
+    pub id: String,
+    pub name: String,
+    pub domain: String,
+    pub operation_class: String,
+    pub claim_class: String,
+    pub counting_unit: String,
+    pub pinned_fsync_p50_us: u64,
+    pub target_p50_us: u64,
+    pub target_p99_us: u64,
+    pub max_bytes_per_leg: Option<u64>,
+    pub requires_watermark_disclosure: bool,
+    pub activated: bool,
+    pub provisional_gate: String,
+    pub derivation: String,
+    pub measurement_command: String,
+    pub manifest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SloRegistry {
+    pub reference_machine: ReferenceMachine,
+    pub rows: Vec<SloRow>,
+}
+
+const BALANCE_READ_NAMES: &[&str] = &[
+    "balance_read_watermark",
+    "trial_balance_100k",
+    "known_at_trial_balance",
+    "register_watermark_lag",
+];
+
+impl SloRegistry {
+    pub fn embedded(op_costs: &OperationCosts) -> Result<Self, RegistryError> {
+        Self::parse(SLO_TOML, op_costs)
+    }
+
+    pub fn parse(text: &str, op_costs: &OperationCosts) -> Result<Self, RegistryError> {
+        const R: &str = "slo.toml";
+        let doc = load(R, text)?;
+        if req_int(R, &doc.root, "schema_version")? != 1 {
+            return Err(invalid(R, "schema_version must be 1"));
+        }
+
+        let rm_table = doc
+            .tables
+            .get("reference_machine")
+            .ok_or_else(|| invalid(R, "missing [reference_machine]"))?;
+        let ram_gb = u32::try_from(req_int(R, rm_table, "ram_gb")?)
+            .map_err(|_| invalid(R, "reference_machine.ram_gb must be positive"))?;
+        let ref_fsync = u64::try_from(req_int(R, rm_table, "pinned_fsync_p50_us")?)
+            .map_err(|_| invalid(R, "reference_machine.pinned_fsync_p50_us must be positive"))?;
+        if ram_gb == 0 || ref_fsync == 0 {
+            return Err(invalid(
+                R,
+                "reference_machine ram_gb and pinned_fsync_p50_us must be > 0",
+            ));
+        }
+        let reference_machine = ReferenceMachine {
+            id: req_str(R, rm_table, "id")?.to_string(),
+            cpu: req_str(R, rm_table, "cpu")?.to_string(),
+            ram_gb,
+            storage: req_str(R, rm_table, "storage")?.to_string(),
+            pinned_fsync_p50_us: ref_fsync,
+        };
+
+        let mut ids = BTreeSet::new();
+        let mut names = BTreeSet::new();
+        let mut rows = Vec::new();
+        for t in doc
+            .arrays
+            .get("slo")
+            .ok_or_else(|| invalid(R, "missing [[slo]]"))?
+        {
+            let id = req_str(R, t, "id")?.to_string();
+            let name = req_str(R, t, "name")?.to_string();
+            let claim_class = req_str(R, t, "claim_class")?.to_string();
+            if !matches!(claim_class.as_str(), "slo" | "benchmark") {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "claims_lint: `{id}` (`{name}`) has forbidden claim_class `{claim_class}` (measured targets must be `slo` or `benchmark`, never `invariant`)"
+                    ),
+                ));
+            }
+            let op_class_id = req_str(R, t, "operation_class")?.to_string();
+            let Some(op_class) = op_costs.class(&op_class_id) else {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "`{id}` (`{name}`) references unknown operation_class `{op_class_id}` (not in operation_costs.toml)"
+                    ),
+                ));
+            };
+            let pinned_fsync_p50_us = u64::try_from(req_int(R, t, "pinned_fsync_p50_us")?)
+                .map_err(|_| invalid(R, format!("{id}: pinned_fsync_p50_us must be > 0")))?;
+            let target_p50_us = u64::try_from(req_int(R, t, "target_p50_us")?)
+                .map_err(|_| invalid(R, format!("{id}: target_p50_us must be > 0")))?;
+            let target_p99_us = u64::try_from(req_int(R, t, "target_p99_us")?)
+                .map_err(|_| invalid(R, format!("{id}: target_p99_us must be > 0")))?;
+            if pinned_fsync_p50_us == 0 || target_p50_us == 0 || target_p99_us < target_p50_us {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "`{id}` (`{name}`): requires pinned_fsync_p50_us > 0 and target_p99_us >= target_p50_us > 0"
+                    ),
+                ));
+            }
+            // Derivability law (§17 & Appendix G Law 1): a gate below
+            // `barrier_count * pinned_fsync_p50_us` is a registry error.
+            let barrier_floor = op_class.barrier_count.saturating_mul(pinned_fsync_p50_us);
+            if target_p50_us < barrier_floor {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "derivability law violation on `{id}` (`{name}`): target_p50_us ({target_p50_us} us) < barrier_count ({}) * pinned_fsync_p50_us ({pinned_fsync_p50_us} us) = {barrier_floor} us",
+                        op_class.barrier_count
+                    ),
+                ));
+            }
+            let requires_watermark_disclosure = req_bool(R, t, "requires_watermark_disclosure")?;
+            if BALANCE_READ_NAMES.contains(&name.as_str()) && !requires_watermark_disclosure {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "§17 standing law violation on `{id}` (`{name}`): balance-read and trial-balance targets must set `requires_watermark_disclosure = true`"
+                    ),
+                ));
+            }
+            let max_bytes_per_leg = match t.get("max_bytes_per_leg") {
+                Some(v) => Some(
+                    u64::try_from(
+                        v.as_int()
+                            .ok_or_else(|| invalid(R, format!("{id}: max_bytes_per_leg int")))?,
+                    )
+                    .map_err(|_| invalid(R, format!("{id}: max_bytes_per_leg > 0")))?,
+                ),
+                None => None,
+            };
+            let manifest = req_str(R, t, "manifest")?.to_string();
+            if !manifest.starts_with("bench/manifests/") || !manifest.ends_with(".toml") {
+                return Err(invalid(
+                    R,
+                    format!(
+                        "`{id}`: manifest `{manifest}` must live under `bench/manifests/*.toml`"
+                    ),
+                ));
+            }
+            if !ids.insert(id.clone()) {
+                return Err(invalid(R, format!("duplicate slo id `{id}`")));
+            }
+            if !names.insert(name.clone()) {
+                return Err(invalid(R, format!("duplicate slo name `{name}`")));
+            }
+            rows.push(SloRow {
+                id,
+                name,
+                domain: req_str(R, t, "domain")?.to_string(),
+                operation_class: op_class_id,
+                claim_class,
+                counting_unit: req_str(R, t, "counting_unit")?.to_string(),
+                pinned_fsync_p50_us,
+                target_p50_us,
+                target_p99_us,
+                max_bytes_per_leg,
+                requires_watermark_disclosure,
+                activated: req_bool(R, t, "activated")?,
+                provisional_gate: req_str(R, t, "provisional_gate")?.to_string(),
+                derivation: req_str(R, t, "derivation")?.to_string(),
+                measurement_command: req_str(R, t, "measurement_command")?.to_string(),
+                manifest,
+            });
+        }
+        if rows.len() < 19 {
+            return Err(invalid(
+                R,
+                format!("expected at least 19 §17 [[slo]] rows, found {}", rows.len()),
+            ));
+        }
+
+        Ok(Self {
+            reference_machine,
+            rows,
+        })
+    }
+
+    /// Activated §17 manifest IDs reported by `fa capabilities --json`.
+    pub fn activated_manifest_ids(&self) -> Vec<String> {
+        self.rows
+            .iter()
+            .filter(|r| r.activated)
+            .map(|r| r.id.clone())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -801,5 +1301,60 @@ mod tests {
 
         let claims_lint = ClaimsLintConfig::embedded().expect("claims_lint.toml");
         assert_eq!(claims_lint.g0_registries.len(), 37);
+
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        assert_eq!(op_costs.hot_object_exceptions.len(), 2);
+        assert_eq!(op_costs.classes.len(), 19);
+        assert_eq!(op_costs.kernel_op_witnesses.len(), 9);
+
+        let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
+        assert_eq!(slo.rows.len(), 20);
+        assert_eq!(slo.activated_manifest_ids().len(), 20);
+    }
+
+    #[test]
+    fn planted_slo_and_operation_cost_violations_fail() {
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+
+        // Planted negative 1 (fa-i5s): an slo row typed `invariant` fails the claims lint.
+        let bad_claim = SLO_TOML.replacen("claim_class = \"benchmark\"", "claim_class = \"invariant\"", 1);
+        let err = SloRegistry::parse(&bad_claim, &op_costs).expect_err("invariant claim on slo");
+        assert!(
+            err.to_string().contains("claims_lint") && err.to_string().contains("invariant"),
+            "{err}"
+        );
+
+        // Planted negative 2 (§17 derivability law): a posting gate below barrier_count * fsync_p50 fails.
+        let bad_derivability =
+            SLO_TOML.replacen("target_p50_us = 2000", "target_p50_us = 1500", 1);
+        let err =
+            SloRegistry::parse(&bad_derivability, &op_costs).expect_err("below barrier floor");
+        assert!(
+            err.to_string().contains("derivability law violation"),
+            "{err}"
+        );
+
+        // Planted negative 3 (§17 standing law): balance read without watermark disclosure fails.
+        let bad_watermark = SLO_TOML.replacen(
+            "name = \"balance_read_watermark\"\ndomain = \"Balance read at watermark (SnapshotQuery class)\"\noperation_class = \"balance_read_at_watermark\"\nclaim_class = \"benchmark\"\ncounting_unit = \"balance_read\"\npinned_fsync_p50_us = 1000\ntarget_p50_us = 10\ntarget_p99_us = 50\nrequires_watermark_disclosure = true",
+            "name = \"balance_read_watermark\"\ndomain = \"Balance read at watermark (SnapshotQuery class)\"\noperation_class = \"balance_read_at_watermark\"\nclaim_class = \"benchmark\"\ncounting_unit = \"balance_read\"\npinned_fsync_p50_us = 1000\ntarget_p50_us = 10\ntarget_p99_us = 50\nrequires_watermark_disclosure = false",
+            1,
+        );
+        let err =
+            SloRegistry::parse(&bad_watermark, &op_costs).expect_err("missing watermark disclosure");
+        assert!(
+            err.to_string().contains("requires_watermark_disclosure"),
+            "{err}"
+        );
+
+        // Planted negative 4 (Appendix G Law 3): unregistered hot object on single_entry_post fails.
+        let bad_hot_obj = OPERATION_COSTS_TOML.replacen(
+            "id = \"single_entry_post\"\nname = \"Single-entry post\"\nsubstrate_class = \"Autocommit write, fused arm\"\nsubstrate_transactions = \"1\"\ntoday_posture = \"One publication (capsule-first, marker-last, two ordered syncs), no group commit (Appendix H R-GC)\"\ntoday_transactions = 1\nbarrier_count = 2\ntoday_barrier_count = 2\nderived_objects = \"1 Entry + n Leg + edges + ExternalIds + 1 IntentOutcome\"\nhot_object_exceptions = []",
+            "id = \"single_entry_post\"\nname = \"Single-entry post\"\nsubstrate_class = \"Autocommit write, fused arm\"\nsubstrate_transactions = \"1\"\ntoday_posture = \"One publication (capsule-first, marker-last, two ordered syncs), no group commit (Appendix H R-GC)\"\ntoday_transactions = 1\nbarrier_count = 2\ntoday_barrier_count = 2\nderived_objects = \"1 Entry + n Leg + edges + ExternalIds + 1 IntentOutcome\"\nhot_object_exceptions = [\"LimitCell\"]",
+            1,
+        );
+        let err = OperationCosts::parse(&bad_hot_obj).expect_err("unscoped hot object");
+        assert!(err.to_string().contains("Appendix G Law 3"), "{err}");
     }
 }
+

@@ -726,7 +726,7 @@ fields = ["class:string", "exit:int", "refusal_id:string?", "message:string", "c
 [[event]]
 name = "capabilities"
 doc = "What this build can do."
-fields = ["version:string", "verbs:[string]", "aliases:[alias]", "exit_codes:[exit_code]", "entry_classes:[string]", "robot_mode:robot_mode", "stdout:string", "stderr:string", "tui:bool", "capability:capability_model", "dangerous:[dangerous_op]", "invariants:invariant_clauses"]
+fields = ["version:string", "verbs:[string]", "aliases:[alias]", "exit_codes:[exit_code]", "entry_classes:[string]", "robot_mode:robot_mode", "stdout:string", "stderr:string", "tui:bool", "capability:capability_model", "dangerous:[dangerous_op]", "invariants:invariant_clauses", "slo_manifests:[string]"]
 
 [[event]]
 name = "robot_docs"

@@ -1,0 +1,367 @@
+# =============================================================================
+# registries/slo.toml — Section 17 Performance Targets and Capacity SLOs
+# (plan §1.12, §17, §18.2, §20, Appendix G; beads fa-tu58, fa-i5s)
+# =============================================================================
+#
+# Constitutional rules enforced by `fa-registry` and `tools/registry-check`:
+# 1. Claim typing: every row in `slo.toml` must have `claim_class` in
+#    `["slo", "benchmark"]` (ranks 5 and 6 of `constitution.toml`). Any row
+#    claiming `invariant`, `proof`, `bounded_model`, or `statistical` is a
+#    constitutional violation and fails `registry-check`.
+# 2. Derivability from `operation_costs.toml`: every row names a valid
+#    `operation_class` in `operation_costs.toml` and satisfies
+#    `target_p50_us >= barrier_count * pinned_fsync_p50_us`.
+# 3. Balance-read disclosure law (§17): every balance-read or trial-balance
+#    row must set `requires_watermark_disclosure = true` so `fa-bench` reports
+#    whether the read was served at the watermark or with a tail fold and the
+#    exact `tail_length`.
+
+schema_version = 1
+
+[reference_machine]
+id = "ref-nvme-pcie4-32c"
+cpu = "32-core/64-thread reference server"
+ram_gb = 256
+storage = "PCIe-4 NVMe single node"
+pinned_fsync_p50_us = 1000
+
+[[slo]]
+id = "FA-BENCH-01"
+name = "single_entry_post"
+domain = "Single-entry post (one publication, two ordered syncs, with projections, 2–6 legs)"
+operation_class = "single_entry_post"
+claim_class = "benchmark"
+counting_unit = "entry"
+pinned_fsync_p50_us = 1000
+target_p50_us = 2000
+target_p99_us = 15000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "p50 <= 2 * pinned fsync p50; p99 < 15 ms warm; unbatched rate bounded by 1 / (2 * fsync p50) reported until R-GC"
+derivation = "single_entry_post has barrier_count = 2 (capsule sync + marker sync); target_p50_us (2000) >= 2 * pinned_fsync_p50_us (1000)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench single_entry_post"
+manifest = "bench/manifests/single_entry_post.toml"
+
+[[slo]]
+id = "FA-BENCH-02"
+name = "batched_post"
+domain = "Batched post (PostBatch, N <= max_batch_entries)"
+operation_class = "batch_post"
+claim_class = "benchmark"
+counting_unit = "batch_100_entries"
+pinned_fsync_p50_us = 1000
+target_p50_us = 5000
+target_p99_us = 60000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = ">= 20k entries/s sustained at N = 100 on one writer with full durability, encryption, and FEC on; batch p99 < 60 ms"
+derivation = "batch_post amortizes barrier_count = 2 across N = 100 entries in one WriteBatch; target_p50_us (5000) >= 2 * 1000"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench batched_post"
+manifest = "bench/manifests/batched_post.toml"
+
+[[slo]]
+id = "FA-BENCH-03"
+name = "bulk_migration"
+domain = "Bulk migration (50M legacy lines)"
+operation_class = "bulk_migration"
+claim_class = "benchmark"
+counting_unit = "chunk_1000_legs"
+pinned_fsync_p50_us = 1000
+target_p50_us = 2000
+target_p99_us = 100000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = ">= 500k legs/s into sealed storage via the substrate bulk protocol; opening-balance attestation computed in the same run"
+derivation = "bulk_migration stages chunks and finalizes in 1 transaction (barrier_count = 2); target_p50_us (2000) >= 2 * 1000"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench bulk_migration"
+manifest = "bench/manifests/bulk_migration.toml"
+
+[[slo]]
+id = "FA-BENCH-04"
+name = "balance_read_watermark"
+domain = "Balance read at watermark (SnapshotQuery class)"
+operation_class = "balance_read_at_watermark"
+claim_class = "benchmark"
+counting_unit = "balance_read"
+pinned_fsync_p50_us = 1000
+target_p50_us = 10
+target_p99_us = 50
+requires_watermark_disclosure = true
+activated = true
+provisional_gate = "p99 < 50 us warm; tail fold <= 1 us per tail leg, tail length reported"
+derivation = "balance_read_at_watermark has barrier_count = 0 (SnapshotQuery cell read + bounded tail fold)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench balance_read_watermark"
+manifest = "bench/manifests/balance_read_watermark.toml"
+
+[[slo]]
+id = "FA-BENCH-05"
+name = "trial_balance_100k"
+domain = "Trial balance, 100k leaf accounts, at watermark"
+operation_class = "certified_report"
+claim_class = "benchmark"
+counting_unit = "trial_balance"
+pinned_fsync_p50_us = 1000
+target_p50_us = 100000
+target_p99_us = 200000
+requires_watermark_disclosure = true
+activated = true
+provisional_gate = "< 200 ms; certified against fold"
+derivation = "certified_report has barrier_count = 0; pure scan over register cells + tail fold"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench trial_balance_100k"
+manifest = "bench/manifests/trial_balance_100k.toml"
+
+[[slo]]
+id = "FA-BENCH-06"
+name = "register_rebuild_10m"
+domain = "Full register rebuild from journal (10M legs)"
+operation_class = "register_maintenance_flush"
+claim_class = "benchmark"
+counting_unit = "rebuild_run"
+pinned_fsync_p50_us = 1000
+target_p50_us = 5000000
+target_p99_us = 10000000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "< 10 s on the reference machine; digest-equal to maintained registers"
+derivation = "register_maintenance_flush folds visible journal stream and writes checkpoints (barrier_count = 2)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench register_rebuild_10m"
+manifest = "bench/manifests/register_rebuild_10m.toml"
+
+[[slo]]
+id = "FA-BENCH-07"
+name = "register_watermark_lag"
+domain = "Register watermark lag under sustained post gate"
+operation_class = "register_maintenance_flush"
+claim_class = "slo"
+counting_unit = "flush_tick"
+pinned_fsync_p50_us = 1000
+target_p50_us = 50000
+target_p99_us = 250000
+requires_watermark_disclosure = true
+activated = true
+provisional_gate = "p99 < 250 ms behind head; lag is a reported slo row, never an invariant"
+derivation = "register_maintenance_flush runs off the write path with barrier_count = 2 per flush tick; target_p50_us (50000) >= 2 * 1000"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench register_watermark_lag"
+manifest = "bench/manifests/register_watermark_lag.toml"
+
+[[slo]]
+id = "FA-BENCH-08"
+name = "known_at_trial_balance"
+domain = "Known-at trial balance (any retained seq)"
+operation_class = "certified_report"
+claim_class = "benchmark"
+counting_unit = "known_at_tb"
+pinned_fsync_p50_us = 1000
+target_p50_us = 250000
+target_p99_us = 500000
+requires_watermark_disclosure = true
+activated = true
+provisional_gate = "< 2.5x the head trial balance for the pinned retention fixture"
+derivation = "certified_report at nearest prior RegisterCheckpoint + bounded delta fold (barrier_count = 0)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench known_at_trial_balance"
+manifest = "bench/manifests/known_at_trial_balance.toml"
+
+[[slo]]
+id = "FA-BENCH-09"
+name = "close_dry_run"
+domain = "Close dry-run (1M-entry period, 40 tasks)"
+operation_class = "close_run_execute"
+claim_class = "benchmark"
+counting_unit = "close_dry_run"
+pinned_fsync_p50_us = 1000
+target_p50_us = 15000000
+target_p99_us = 30000000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "< 30 s to statements and diff"
+derivation = "close_run_execute rehearsal over scratch/draft book + statement diff (barrier_count = 4); target_p50_us >= 4 * 1000"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench close_dry_run"
+manifest = "bench/manifests/close_dry_run.toml"
+
+[[slo]]
+id = "FA-BENCH-10"
+name = "restatement_diff_certificate"
+domain = "Restatement diff certificate (3 periods, 200 statement lines)"
+operation_class = "restatement_case_post"
+claim_class = "benchmark"
+counting_unit = "restatement_diff"
+pinned_fsync_p50_us = 1000
+target_p50_us = 2000000
+target_p99_us = 5000000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "< 5 s"
+derivation = "restatement_case_post computes dual-coordinate statements and diff Certificate (barrier_count = 2)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench restatement_diff_certificate"
+manifest = "bench/manifests/restatement_diff_certificate.toml"
+
+[[slo]]
+id = "FA-BENCH-11"
+name = "bundle_production_and_verify"
+domain = "Bundle production (10k entries with evidence heads and proofs) + fa-verify"
+operation_class = "bundle_production"
+claim_class = "benchmark"
+counting_unit = "bundle_and_verify"
+pinned_fsync_p50_us = 1000
+target_p50_us = 1000000
+target_p99_us = 5000000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "< 5 s bundle production; fa-verify < 2 s on laptop class machine; per-entry inclusion proof verify < 100 us"
+derivation = "bundle_production has barrier_count = 0; O(N log N) MMR inclusion proofs + BLAKE3/Ed25519 verification"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench bundle_production_and_verify"
+manifest = "bench/manifests/bundle_production_and_verify.toml"
+
+[[slo]]
+id = "FA-BENCH-12"
+name = "lantern_jet_benford"
+domain = "Lantern: JET suite over 10M legs"
+operation_class = "certified_report"
+claim_class = "benchmark"
+counting_unit = "jet_suite"
+pinned_fsync_p50_us = 1000
+target_p50_us = 10000000
+target_p99_us = 20000000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "< 20 s total; Benford first-two-digits < 3 s; duplicates < 10 s"
+derivation = "certified_report read-only scan over visible legs under stripped Cx (barrier_count = 0)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench lantern_jet_benford"
+manifest = "bench/manifests/lantern_jet_benford.toml"
+
+[[slo]]
+id = "FA-BENCH-13"
+name = "lantern_graph_trace"
+domain = "Lantern: graph.layering over a 1M-party, 20M-flow projection, 6 hops; trace.libr over 1 instrument-year"
+operation_class = "certified_report"
+claim_class = "benchmark"
+counting_unit = "trace_procedure"
+pinned_fsync_p50_us = 1000
+target_p50_us = 500000
+target_p99_us = 1000000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "< 60 s with CGSE witness for graph.layering; trace.libr over 1 instrument-year < 1 s"
+derivation = "certified_report bounded hop traversal and LIBR queue trace (barrier_count = 0)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench lantern_graph_trace"
+manifest = "bench/manifests/lantern_graph_trace.toml"
+
+[[slo]]
+id = "FA-BENCH-14"
+name = "consolidation_branch"
+domain = "Consolidation (20 entities, 2M entries each) on a branch"
+operation_class = "draft_promotion"
+claim_class = "benchmark"
+counting_unit = "consolidation_run"
+pinned_fsync_p50_us = 1000
+target_p50_us = 60000000
+target_p99_us = 120000000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "< 2 min to certified consolidated statements"
+derivation = "draft_promotion + multi-entity fold + intercompany elimination (barrier_count = 2)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench consolidation_branch"
+manifest = "bench/manifests/consolidation_branch.toml"
+
+[[slo]]
+id = "FA-BENCH-15"
+name = "accumulator_checkpoint"
+domain = "Accumulator checkpoint"
+operation_class = "accumulator_checkpoint"
+claim_class = "benchmark"
+counting_unit = "checkpoint"
+pinned_fsync_p50_us = 1000
+target_p50_us = 2000
+target_p99_us = 10000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "O(log n) peaks; signing < 10 ms; witness round-trip reported, never gated"
+derivation = "accumulator_checkpoint has barrier_count = 2 + 1 constant-time Ed25519 signature; target_p50_us (2000) >= 2 * 1000"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench accumulator_checkpoint"
+manifest = "bench/manifests/accumulator_checkpoint.toml"
+
+[[slo]]
+id = "FA-BENCH-16"
+name = "cli_first_try_latency"
+domain = "CLI first-try latency (fa triage --json, warm daemon; bare fa with no book)"
+operation_class = "balance_read_at_watermark"
+claim_class = "benchmark"
+counting_unit = "cli_invocation"
+pinned_fsync_p50_us = 1000
+target_p50_us = 25000
+target_p99_us = 100000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "< 100 ms warm daemon; bare fa with no book < 50 ms"
+derivation = "balance_read_at_watermark SnapshotQuery read + robot JSON serialization (barrier_count = 0)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench cli_first_try_latency"
+manifest = "bench/manifests/cli_first_try_latency.toml"
+
+[[slo]]
+id = "FA-BENCH-17"
+name = "mcp_tool_round_trip"
+domain = "MCP tool round-trip (read-class)"
+operation_class = "balance_read_at_watermark"
+claim_class = "benchmark"
+counting_unit = "mcp_call"
+pinned_fsync_p50_us = 1000
+target_p50_us = 5000
+target_p99_us = 20000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "< 20 ms over stdio excluding the read itself"
+derivation = "balance_read_at_watermark stdio JSON-RPC dispatch + SnapshotQuery read (barrier_count = 0)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench mcp_tool_round_trip"
+manifest = "bench/manifests/mcp_tool_round_trip.toml"
+
+[[slo]]
+id = "FA-BENCH-18"
+name = "memory_bytes_per_leg"
+domain = "Memory: bytes per live leg (payload + projections + indexes + registers + accumulator)"
+operation_class = "single_entry_post"
+claim_class = "slo"
+counting_unit = "bytes_per_leg"
+pinned_fsync_p50_us = 1000
+target_p50_us = 2000
+target_p99_us = 15000
+max_bytes_per_leg = 400
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "reported with component breakdown; provisional ceiling 400 B/leg at steady state"
+derivation = "single_entry_post Entry wire payload + Leg projection vertices/edges + Register cell + LeafEnvelope <= 400 B/leg"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench memory_bytes_per_leg"
+manifest = "bench/manifests/memory_bytes_per_leg.toml"
+
+[[slo]]
+id = "FA-BENCH-19"
+name = "endurance_sustained_post"
+domain = "Endurance: 24 h sustained post at 50% of gate"
+operation_class = "single_entry_post"
+claim_class = "slo"
+counting_unit = "endurance_window"
+pinned_fsync_p50_us = 1000
+target_p50_us = 2000
+target_p99_us = 15000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "no unexplained RSS drift; register lag bounded; compaction debt bounded in the substrate's model terms"
+derivation = "sustained single_entry_post + periodic register_maintenance_flush + accumulator_checkpoint (barrier_count = 2)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench endurance_sustained_post"
+manifest = "bench/manifests/endurance_sustained_post.toml"
+
+[[slo]]
+id = "FA-BENCH-20"
+name = "checkpoint_cadence_retention_floor"
+domain = "Register checkpoint cadence vs delta retention floor (§20)"
+operation_class = "register_maintenance_flush"
+claim_class = "slo"
+counting_unit = "commits"
+pinned_fsync_p50_us = 1000
+target_p50_us = 2000
+target_p99_us = 250000
+requires_watermark_disclosure = false
+activated = true
+provisional_gate = "checkpoint_cadence <= retention_floor so delta_since never hits DeltaCursorRetired in steady state"
+derivation = "register_maintenance_flush emits RegisterCheckpoint every checkpoint_cadence <= retention_floor commits (barrier_count = 2)"
+measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench register_watermark_lag"
+manifest = "bench/manifests/register_watermark_lag.toml"
