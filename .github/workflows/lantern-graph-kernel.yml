@@ -6,7 +6,10 @@ on:
     paths:
       - 'crates/fa-lantern/src/graph/cycles.rs'
       - 'crates/fa-lantern/src/projection/entity.rs'
-      - 'crates/fa-lantern/src/catalog/network/engine.rs'
+      - 'crates/fa-lantern/src/catalog.rs'
+      - 'crates/fa-lantern/src/catalog/**'
+      - 'crates/fa-lantern/tests/network.rs'
+      - 'registries/procedures.toml'
       - '.github/workflows/lantern-graph-kernel.yml'
   workflow_dispatch:
 
@@ -45,3 +48,26 @@ jobs:
           set -euo pipefail
           rustup run stable rustc --edition=2024 --test crates/fa-lantern/src/catalog/network/engine.rs -o "$RUNNER_TEMP/lantern-network"
           "$RUNNER_TEMP/lantern-network" --nocapture
+  journal-integration:
+    # Focused hosted feedback only; not the repository's RCH/full-workspace gate.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Fetch the exact public commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Install the pinned compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2026-08-31 --profile minimal
+      - name: Test Lantern with real journal entries and the existing corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -p fa-lantern --lib --test network --test lantern --no-fail-fast --jobs 2

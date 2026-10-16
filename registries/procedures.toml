@@ -432,3 +432,118 @@ procedure = "trace.pro_rata"
 name = "intraday_order"
 default = 0
 meaning = "How same-day movements are sequenced: 0 StatementOrdinal (recorded order), 2 WithdrawalsFirst, 3 DepositsFirst; 1 ValueDate is reserved until value dates are retained."
+
+# ---- Multi-account tracing schedules (plan §11.5; fa-fk5) -----------------
+# Separate ids preserve the existing one-account procedure contracts.
+# Accounting counterparty attribution, not observed bank transfers. Net each
+# entry per (account, unit, entity), then allocate credit margins in account-id
+# order to remaining debit capacities under LargestRemainder. Withdrawn lots
+# use that same allocation law for branching; overdraft repayment is allocated
+# proportionally across arrivals. Days follow effective date, then recorded
+# sequence and entry id. Only debit-normal Asset accounts retain traced value;
+# all other destinations are terminal. No currency conversion or cross-entity
+# attribution is inferred. Full ordered (entry, from, to) triples are in cites.
+
+[[procedure]]
+id = "trace.network_fifo"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L19"
+tie_break = "entry_vid"
+complexity = "O(input_legs log input_legs + max_steps log max_transfers + max_fragments * max_hops)"
+calibration = "uncalibrated"
+summary = "Follow a source deposit through a network of commingled asset accounts under FIFO. Final path positions partition the source into held, spent and overdraft-repaid amounts; no duplicated path totals. Exact integer, source-unit and source-entity isolated. Every work/path bound refuses the entire run on exhaustion, never returns partial findings."
+
+[[input]]
+procedure = "trace.network_fifo"
+name = "account"
+kind = "account"
+meaning = "Debit-normal Asset account receiving the source deposit; this determines the unambiguous unit and legal entity."
+
+[[input]]
+procedure = "trace.network_fifo"
+name = "source"
+kind = "entry"
+meaning = "Live source entry as known at the snapshot and effective through its explicit cutoff. Its net deposit in account is the source amount."
+
+[[parameter]]
+procedure = "trace.network_fifo"
+name = "max_input_legs"
+default = 100000
+meaning = "Maximum legs admitted from the snapshot, before projection (1..1000000); does not bound the separately executed snapshot read."
+
+[[parameter]]
+procedure = "trace.network_fifo"
+name = "max_transfers"
+default = 25000
+meaning = "Maximum nonzero net-account transfer cells (1..250000); allocation work is also bounded before emitting cells."
+
+[[parameter]]
+procedure = "trace.network_fifo"
+name = "max_fragments"
+default = 10000
+meaning = "Maximum cumulative lot fragments created, including clean funding and split paths (1..100000)."
+
+[[parameter]]
+procedure = "trace.network_fifo"
+name = "max_hops"
+default = 16
+meaning = "Maximum path length including the source deposit (1..64). Exceeding it refuses, rather than stopping and pretending the money remains there."
+
+[[parameter]]
+procedure = "trace.network_fifo"
+name = "max_steps"
+default = 5000000
+meaning = "Projection and tracing work budget (1..100000000), including allocation, lot visitation and path copies; exhaustion refuses with no partial output."
+
+[[procedure]]
+id = "trace.network_lifo"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L20"
+tie_break = "entry_vid"
+complexity = "O(input_legs log input_legs + max_steps log max_transfers + max_fragments * max_hops)"
+calibration = "uncalibrated"
+summary = "Follow a source deposit through a network of commingled asset accounts under LIFO. Final path positions partition the source into held, spent and overdraft-repaid amounts; no duplicated path totals. Exact integer, source-unit and source-entity isolated. Every work/path bound refuses the entire run on exhaustion, never returns partial findings."
+
+[[input]]
+procedure = "trace.network_lifo"
+name = "account"
+kind = "account"
+meaning = "Debit-normal Asset account receiving the source deposit; this determines the unambiguous unit and legal entity."
+
+[[input]]
+procedure = "trace.network_lifo"
+name = "source"
+kind = "entry"
+meaning = "Live source entry as known at the snapshot and effective through its explicit cutoff. Its net deposit in account is the source amount."
+
+[[parameter]]
+procedure = "trace.network_lifo"
+name = "max_input_legs"
+default = 100000
+meaning = "Maximum legs admitted from the snapshot, before projection (1..1000000); does not bound the separately executed snapshot read."
+
+[[parameter]]
+procedure = "trace.network_lifo"
+name = "max_transfers"
+default = 25000
+meaning = "Maximum nonzero net-account transfer cells (1..250000); allocation work is also bounded before emitting cells."
+
+[[parameter]]
+procedure = "trace.network_lifo"
+name = "max_fragments"
+default = 10000
+meaning = "Maximum cumulative lot fragments created, including clean funding and split paths (1..100000)."
+
+[[parameter]]
+procedure = "trace.network_lifo"
+name = "max_hops"
+default = 16
+meaning = "Maximum path length including the source deposit (1..64). Exceeding it refuses, rather than stopping and pretending the money remains there."
+
+[[parameter]]
+procedure = "trace.network_lifo"
+name = "max_steps"
+default = 5000000
+meaning = "Projection and tracing work budget (1..100000000), including allocation, lot visitation and path copies; exhaustion refuses with no partial output."
