@@ -6678,7 +6678,7 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
     let listed = ok(&["procedure", "list"]);
     let listed_doc = doc(&listed);
     let rows = arr(&listed_doc, "procedures");
-    assert_eq!(rows.len(), 18, "{listed}");
+    assert_eq!(rows.len(), 51, "{listed}");
     assert!(
         rows.iter()
             .any(|r| r.get("id").and_then(Json::as_str) == Some("jet.round_amounts")),
@@ -10163,7 +10163,7 @@ fn rea_event_cli_record_show_list_and_post_provenance() -> std::io::Result<()> {
     );
     assert_eq!(bad_code, 3, "{bad_out}");
     let bad_err = doc(&bad_out);
-    assert_eq!(text(&bad_err, "refusal_id"), "FA-REF-030", "{bad_out}");
+    assert_eq!(text(&bad_err, "refusal_id"), "FA-REF-080", "{bad_out}");
 
     Ok(())
 }
