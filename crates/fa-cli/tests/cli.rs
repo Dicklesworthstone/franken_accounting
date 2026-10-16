@@ -941,8 +941,11 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
         out.contains("\"event\":\"period_transitioned\"") && out.contains("\"to\":\"Locked\""),
         "{out}"
     );
-    // The plan is spent: the period is Locked now, so replaying it is an
-    // illegal transition.
+    let locked = field(&out, "control_entry").unwrap_or_default().to_string();
+    // Replaying the exact plan with the same approval is the identical
+    // request (FA-INV-09, fa-l93 D13): it returns the recorded lock and
+    // writes nothing, although the period is Locked now.
+    let (_, before, _) = fa(Some(&book), &["book", "info", "--json"]);
     let (code, out, _) = fa(
         Some(&book),
         &[
@@ -956,6 +959,13 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
             "--json",
         ],
     );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("recorded"), "{out}");
+    assert_eq!(field(&out, "vid"), Some(locked.as_str()), "{out}");
+    let (_, after, _) = fa(Some(&book), &["book", "info", "--json"]);
+    assert_eq!(after, before, "the replay wrote nothing");
+    // A different request after the lock is still the illegal transition.
+    let (code, out, _) = fa(Some(&book), &["period", "close", march, "--yes", "--json"]);
     assert_eq!(code, 7, "{out}");
     assert!(out.contains("\"refusal_id\":\"FA-REF-040\""), "{out}");
     Ok(())
