@@ -630,24 +630,39 @@ impl Books<'_> {
                 )?)))
             }
             Self::LeasedOnOpen { lease, note, held } => {
-                let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
-                if !crate::lease::Lease::is_book_dir(&dir) {
-                    return Ok(BookRef::Owned(Box::new(Book::open_dir(
-                        &dir,
-                        keys,
-                        Entropy::production(),
-                    )?)));
+                if held.is_none() {
+                    // Lease admission comes first and writes nothing. A lease
+                    // another writer holds (a fad, a direct command, a genesis
+                    // in progress) is a conflict, exit 6, ahead of every check
+                    // that reads the book: the precedence the front door
+                    // gives a held book (its key pre-check runs only when
+                    // nobody holds the lease).
+                    if let Some(holder) = crate::lease::Lease::holder(&dir, lease) {
+                        let error = crate::lease::LeaseError::Held {
+                            path: dir.join(lease.as_str()),
+                            holder,
+                        };
+                        return Err(Fail::Refusal(leased_on_open_held(&error, &dir)));
+                    }
+                    // Fail closed: a directory that is not a book (missing,
+                    // empty, populated, or reached through a symlink) is never
+                    // opened without its lease, and no lease file is written
+                    // into it.
+                    if !crate::lease::Lease::is_book_dir(&dir) {
+                        return Err(Fail::Environment(format!(
+                            "cannot take the book's writer lease: {} is not a FrankenAccounting book directory",
+                            dir.display()
+                        )));
+                    }
                 }
+                // A key file that fails its 0600/owner check is refused
+                // (FA-REF-155) before the lease note is rewritten.
+                let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
                 if held.is_none() {
                     match crate::lease::Lease::acquire(&dir, lease, note) {
                         Ok(acquired) => *held = Some(acquired),
                         Err(error @ crate::lease::LeaseError::Held { .. }) => {
-                            let mut refusal = error.refusal(&dir);
-                            refusal.message.push_str(
-                                "; launch-bound authority cannot be forwarded through the unauthenticated fad protocol",
-                            );
-                            refusal.fix = "ask the operator to release the book's writer lease, then retry this launch-bound session; authenticated daemon sessions are not yet available (fa-r3q)".into();
-                            return Err(Fail::Refusal(refusal));
+                            return Err(Fail::Refusal(leased_on_open_held(&error, &dir)));
                         }
                         Err(error @ crate::lease::LeaseError::Io { .. }) => {
                             return Err(Fail::Environment(format!(
@@ -680,6 +695,59 @@ impl Books<'_> {
     fn is_held(&self) -> bool {
         matches!(self, Self::Held { .. })
     }
+
+    /// Genesis: once `book create` has validated every argument, prepare
+    /// `dir` and take its writer lease before any key or store byte is
+    /// written, so a refused create leaves no directory, lease note or key.
+    /// `Dir` already holds the lease (the front door took it for an existing
+    /// directory) and a daemon's `Held` book never reaches genesis.
+    fn lease_for_genesis(&mut self, dir: &Path) -> Result<(), Fail> {
+        let Self::LeasedOnOpen { lease, note, held } = self else {
+            return Ok(());
+        };
+        if held.is_some() {
+            return Ok(());
+        }
+        if dir.exists()
+            && !crate::lease::Lease::is_book_dir(dir)
+            && !crate::lease::Lease::is_empty_or_lease_only(dir, lease)
+        {
+            return Err(Fail::Environment(format!(
+                "cannot prepare book directory {} for its writer lease: directory is not a book and is not empty",
+                dir.display()
+            )));
+        }
+        std::fs::create_dir_all(dir).map_err(|error| {
+            Fail::Environment(format!(
+                "cannot prepare book directory {} for its writer lease: {error}",
+                dir.display()
+            ))
+        })?;
+        match crate::lease::Lease::acquire(dir, lease, note) {
+            Ok(acquired) => {
+                *held = Some(acquired);
+                Ok(())
+            }
+            Err(error @ crate::lease::LeaseError::Held { .. }) => {
+                Err(Fail::Refusal(error.refusal(dir)))
+            }
+            Err(error @ crate::lease::LeaseError::Io { .. }) => Err(Fail::Environment(format!(
+                "cannot acquire the book's writer lease: {error}"
+            ))),
+        }
+    }
+}
+
+/// FA-REF-018 for a lease held while [`Books::LeasedOnOpen`] admits a
+/// command: launch-bound authority is never forwarded through the
+/// unauthenticated fad protocol, so the fix names the operator's remedy.
+fn leased_on_open_held(error: &crate::lease::LeaseError, dir: &Path) -> Refusal {
+    let mut refusal = error.refusal(dir);
+    refusal.message.push_str(
+        "; launch-bound authority cannot be forwarded through the unauthenticated fad protocol",
+    );
+    refusal.fix = "ask the operator to release the book's writer lease, then retry this launch-bound session; authenticated daemon sessions are not yet available (fa-r3q)".into();
+    refusal
 }
 
 /// A command's book source: its [`Books`], stamping the envelope coordinate
@@ -721,6 +789,10 @@ impl BookSource<'_> {
 
     pub(crate) fn is_held(&self) -> bool {
         self.books.is_held()
+    }
+
+    pub(crate) fn lease_for_genesis(&mut self, dir: &Path) -> Result<(), Fail> {
+        self.books.lease_for_genesis(dir)
     }
 }
 
@@ -2817,6 +2889,9 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             spec.validate()
                 .map_err(|m| usage(m, "fa book create --book <dir> --name \"My Co\""))?;
             let keys_file = keys_path(args, &dir, ctx.files.cwd.as_deref());
+            // Every argument is valid: only now prepare the directory and
+            // take its writer lease, before any key or store byte.
+            ctx.books.lease_for_genesis(&dir)?;
             std::fs::create_dir_all(&dir).map_err(|e| BookError::Io(dir.clone(), e))?;
             keys.save(&keys_file)?;
             let book = Book::create_dir(&dir, keys, spec, entropy)?;

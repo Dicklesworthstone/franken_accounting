@@ -1,8 +1,10 @@
 //! The `fa` front door: run a command directly under the book's writer
 //! lease, or through the `fad` daemon that holds it (plan §5.10, §15.3).
 //!
-//! - A new book directory is created before taking its writer lease. Genesis,
-//!   key creation and ordinary commands all run under that same lease.
+//! - `fa book create` validates every argument before anything is written;
+//!   only then does its handler create the directory and take the writer
+//!   lease, and key creation and genesis run under that same lease. A refused
+//!   create leaves no directory, lease note or key.
 //! - Lease I/O failures refuse execution; they never authorize an unlocked
 //!   book open. Only book-independent discovery may run without a lease.
 //! - The lease is free: take it, run directly, release it. Every direct
@@ -83,15 +85,16 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
                 capture,
             );
         }
-        if let Err(error) = std::fs::create_dir_all(&dir) {
-            return cli::environment_error(
-                argv,
-                format!(
-                    "cannot prepare book directory {} for its writer lease: {error}",
-                    dir.display()
-                ),
-                capture,
-            );
+        if !Lease::is_book_dir(&dir) {
+            // Genesis: the handler validates every argument, then prepares
+            // the directory and takes this same writer lease before any key
+            // or store byte (`Books::lease_for_genesis`).
+            let books = Books::LeasedOnOpen {
+                lease: reg.daemon.lease.clone(),
+                note,
+                held: None,
+            };
+            return cli::run(argv, books, files, capture);
         }
     } else if !Lease::is_book_dir(&dir) {
         let books = Books::LeasedOnOpen {
