@@ -66,6 +66,7 @@ pub mod evidence_disclosure;
 pub mod general_ledger;
 pub mod indirect_cash_flow;
 pub mod intake;
+pub mod procedure_certificate;
 pub mod projections;
 pub mod proof;
 pub mod report_artifact;
@@ -157,6 +158,10 @@ pub use indirect_cash_flow::{
     MAX_INDIRECT_CASH_FLOW_BYTES, MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
 };
 pub use intake::IntakeAction;
+pub use procedure_certificate::{
+    CERTIFIABLE_PROCEDURES, CertifiedProcedure, MAX_PROCEDURE_CERTIFICATE_BYTES,
+    PROCEDURE_CERTIFICATE_FORMAT, PROCEDURE_OUTPUT_FORMAT, ProcedureCertificate, ProcedureRequest,
+};
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use report_artifact::{

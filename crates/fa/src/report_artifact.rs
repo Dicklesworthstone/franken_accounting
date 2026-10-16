@@ -36,12 +36,14 @@ pub enum ReportArtifactFamily {
     CashFlow,
     IndirectCashFlow,
     AgingReconciliation,
+    Procedure,
 }
 
 impl ReportArtifactFamily {
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
+            Self::Procedure => "procedure",
             Self::Native => "native",
             Self::Summary => "summary",
             Self::EffectiveDateAging => "effective-date-aging",
@@ -71,6 +73,7 @@ pub enum ReportArtifactExpectation<'a> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Artifact {
+    Procedure(Box<crate::procedure_certificate::ProcedureCertificate>),
     Native(Box<ReportCertificate>),
     Summary(Box<SummaryCertificate>),
     Aging(Box<AgingCertificate>),
@@ -124,7 +127,9 @@ impl ReportArtifact {
         let format = reader
             .bytes(64, "report artifact format")
             .map_err(|error| invalid(format!("malformed report artifact: {error}")))?;
-        let inner = if format == crate::summary_certificate::CERTIFICATE_FORMAT {
+        let inner = if format == crate::procedure_certificate::PROCEDURE_CERTIFICATE_FORMAT {
+            Artifact::Procedure(Box::new(crate::procedure_certificate::ProcedureCertificate::decode(bytes)?))
+        } else if format == crate::summary_certificate::CERTIFICATE_FORMAT {
             Artifact::Summary(Box::new(SummaryCertificate::decode(bytes)?))
         } else if format == crate::AGING_CERTIFICATE_FORMAT {
             Artifact::Aging(Box::new(AgingCertificate::decode(bytes)?))
@@ -145,6 +150,7 @@ impl ReportArtifact {
     #[must_use]
     pub fn family(&self) -> ReportArtifactFamily {
         match &self.inner {
+            Artifact::Procedure(_) => ReportArtifactFamily::Procedure,
             Artifact::Native(_) => ReportArtifactFamily::Native,
             Artifact::Summary(_) => ReportArtifactFamily::Summary,
             Artifact::Aging(_) => ReportArtifactFamily::EffectiveDateAging,
@@ -160,6 +166,7 @@ impl ReportArtifact {
     #[must_use]
     pub fn source_certificate(&self) -> &ReportCertificate {
         match &self.inner {
+            Artifact::Procedure(c) => c.source_certificate(),
             Artifact::Native(c) => c,
             Artifact::Summary(c) => c.source_certificate(),
             Artifact::Aging(c) => c.source(),
@@ -186,6 +193,7 @@ impl ReportArtifact {
     #[must_use]
     pub fn digest(&self) -> &[u8; 32] {
         match &self.inner {
+            Artifact::Procedure(c) => c.digest(),
             Artifact::Native(c) => &c.digest,
             Artifact::Summary(c) => c.digest(),
             Artifact::Aging(c) => c.digest(),
@@ -200,6 +208,7 @@ impl ReportArtifact {
     #[must_use]
     pub fn output(&self) -> &[u8] {
         match &self.inner {
+            Artifact::Procedure(c) => c.output(),
             Artifact::Native(c) => &c.output,
             Artifact::Summary(c) => c.output(),
             Artifact::Aging(c) => c.output(),
@@ -212,6 +221,7 @@ impl ReportArtifact {
 
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
         match &self.inner {
+            Artifact::Procedure(c) => c.canonical_bytes(),
             Artifact::Native(c) => c.canonical_bytes().map_err(|e| invalid(e.to_string())),
             Artifact::Summary(c) => c.canonical_bytes(),
             Artifact::Aging(c) => c.canonical_bytes(),
@@ -237,6 +247,7 @@ macro_rules! from_certificate {
     )+};
 }
 from_certificate!(
+    crate::procedure_certificate::ProcedureCertificate,
     ReportCertificate,
     SummaryCertificate,
     AgingCertificate,
@@ -324,6 +335,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         }
         let replayed = match (&artifact.inner, expected) {
+            (Artifact::Procedure(c), ReportArtifactExpectation::AsSupplied) => self
+                .replay_procedure(cx, principal, capability, c)?.map(|_| ()),
             (Artifact::Native(c), ReportArtifactExpectation::AsSupplied) => {
                 self.replay_report(cx, c)?.map(|_| ())
             }
