@@ -894,6 +894,10 @@ pub struct Oracle {
     /// `7` (`Statistical`), and `8` (`OffBalance`) sit outside the monetary balance law
     /// and trial-balance footing.
     account_types: BTreeMap<String, u8>,
+    /// Optional `(opened, closed, promoted_on)` per account code (`fa-up7`, `FA-INV-01.account-effective`).
+    account_effectivity: BTreeMap<String, (Option<DateDay>, Option<DateDay>, Option<DateDay>)>,
+    /// Optional parent code per account code (`fa-up7`).
+    account_parents: BTreeMap<String, String>,
 }
 
 impl Oracle {
@@ -939,6 +943,8 @@ impl Oracle {
             epoch: 0,
             minting_scheduled: false,
             account_types: BTreeMap::new(),
+            account_effectivity: BTreeMap::new(),
+            account_parents: BTreeMap::new(),
         }
     }
 
@@ -1031,6 +1037,162 @@ impl Oracle {
 
     pub fn add_account(&mut self, a: Account) {
         self.accounts.insert(a.code.clone(), a);
+    }
+
+    /// Set the half-open `[opened, closed)` effective interval for `code` (`fa-up7`).
+    pub fn set_account_effectivity(
+        &mut self,
+        code_str: &str,
+        opened: Option<DateDay>,
+        closed: Option<DateDay>,
+    ) {
+        let promoted = self
+            .account_effectivity
+            .get(code_str)
+            .and_then(|(_, _, p)| *p);
+        self.account_effectivity
+            .insert(code_str.to_string(), (opened, closed, promoted));
+    }
+
+    /// Open a new account in the reference oracle (`fa-up7`, plan §5.6).
+    pub fn open_account(
+        &mut self,
+        a: Account,
+        parent: Option<&str>,
+        opened: DateDay,
+        closed: Option<DateDay>,
+    ) -> Result<(), &'static str> {
+        if a.code.is_empty() || a.code.len() > 64 {
+            return Err(code::STRUCTURE);
+        }
+        if closed.is_some_and(|c| opened >= c) {
+            return Err(code::STRUCTURE);
+        }
+        if self.accounts.contains_key(&a.code) {
+            return Err(code::STRUCTURE);
+        }
+        if let Some(unit) = a.unit
+            && !self.units.contains(&unit)
+        {
+            return Err(code::UNIT_UNREGISTERED);
+        }
+        if let Some(p) = parent {
+            let Some(parent_acc) = self.accounts.get(p) else {
+                return Err(code::UNKNOWN_ACCOUNT);
+            };
+            if parent_acc.is_leaf {
+                return Err(code::NOT_A_LEAF);
+            }
+            self.account_parents.insert(a.code.clone(), p.to_string());
+        }
+        let code_str = a.code.clone();
+        self.accounts.insert(code_str.clone(), a);
+        self.account_effectivity
+            .insert(code_str, (Some(opened), closed, None));
+        Ok(())
+    }
+
+    /// Close an account at `closed_on` in the reference oracle (`fa-up7`, plan §5.6).
+    pub fn close_account(
+        &mut self,
+        code_str: &str,
+        closed_on: DateDay,
+    ) -> Result<(), &'static str> {
+        if code_str.is_empty() || code_str.len() > 64 {
+            return Err(code::STRUCTURE);
+        }
+        if !self.accounts.contains_key(code_str) {
+            return Err(code::UNKNOWN_ACCOUNT);
+        }
+        let (opened, existing_close, promoted) = self
+            .account_effectivity
+            .get(code_str)
+            .copied()
+            .unwrap_or((None, None, None));
+        if existing_close.is_some() {
+            return Err(code::NOT_A_LEAF);
+        }
+        if opened.is_some_and(|o| o >= closed_on) || promoted.is_some_and(|p| p > closed_on) {
+            return Err(code::STRUCTURE);
+        }
+        let known = self.known();
+        let mut net_balances: BTreeMap<u32, Int> = BTreeMap::new();
+        for (idx, e) in self.journal.iter().enumerate() {
+            let touches = e.legs.iter().any(|l| l.account == code_str);
+            if !touches {
+                continue;
+            }
+            if e.date >= closed_on {
+                return Err(code::NOT_A_LEAF);
+            }
+            if e.class == "Pending" && !self.resolved.contains_key(&idx) {
+                return Err(code::NOT_A_LEAF);
+            }
+            if e.class == "Pending" || !self.visible(e, known) {
+                continue;
+            }
+            for l in &e.legs {
+                if l.account != code_str {
+                    continue;
+                }
+                let signed = match l.side {
+                    Side::Debit => Int::from_i128(l.mantissa),
+                    Side::Credit => Int::from_i128(-l.mantissa),
+                };
+                let bal = net_balances.entry(l.unit).or_insert_with(Int::zero);
+                *bal = bal.add(&signed);
+            }
+        }
+        if net_balances.values().any(|b| !b.is_zero()) {
+            return Err(code::NOT_A_LEAF);
+        }
+        self.account_effectivity
+            .insert(code_str.to_string(), (opened, Some(closed_on), promoted));
+        Ok(())
+    }
+
+    /// Promote a leaf account to a summary account at `promotion_date` in the
+    /// reference oracle (`fa-up7`, plan §5.6).
+    pub fn promote_to_summary(
+        &mut self,
+        code_str: &str,
+        promotion_date: DateDay,
+    ) -> Result<(), &'static str> {
+        if code_str.is_empty() || code_str.len() > 64 {
+            return Err(code::STRUCTURE);
+        }
+        let Some(acc) = self.accounts.get(code_str) else {
+            return Err(code::UNKNOWN_ACCOUNT);
+        };
+        if !acc.is_leaf {
+            return Err(code::NOT_A_LEAF);
+        }
+        if self.limits.contains_key(code_str) {
+            return Err(code::STRUCTURE);
+        }
+        let (opened, closed, promoted) = self
+            .account_effectivity
+            .get(code_str)
+            .copied()
+            .unwrap_or((None, None, None));
+        if promoted.is_some() {
+            return Err(code::NOT_A_LEAF);
+        }
+        if opened.is_some_and(|o| o > promotion_date) || closed.is_some_and(|c| promotion_date > c)
+        {
+            return Err(code::STRUCTURE);
+        }
+        for e in &self.journal {
+            if e.date > promotion_date && e.legs.iter().any(|l| l.account == code_str) {
+                return Err(code::NOT_A_LEAF);
+            }
+        }
+        if let Some(acc_mut) = self.accounts.get_mut(code_str) {
+            acc_mut.is_leaf = false;
+        }
+        self.account_effectivity
+            .insert(code_str.to_string(), (opened, closed, Some(promotion_date)));
+        Ok(())
     }
 
     /// Give an account a balance limit (plan §5.4); the chart declares it.
@@ -2048,6 +2210,14 @@ impl Oracle {
                 };
             };
             if !a.is_leaf {
+                return Verdict::Refused {
+                    code: code::NOT_A_LEAF,
+                };
+            }
+            if let Some(&(opened, closed, _)) = self.account_effectivity.get(&l.account)
+                && (opened.is_some_and(|o| intent.date < o)
+                    || closed.is_some_and(|c| intent.date >= c))
+            {
                 return Verdict::Refused {
                     code: code::NOT_A_LEAF,
                 };

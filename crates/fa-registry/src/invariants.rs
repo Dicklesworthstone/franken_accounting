@@ -907,13 +907,13 @@ mod tests {
             ),
             (
                 "dormant with no activating bead",
-                good.replacen("activating = [\"fa-up7\"]", "activating = []", 1),
+                good.replacen("activating = [\"fa-ficc\"]", "activating = []", 1),
             ),
             (
                 "activating twice",
                 good.replacen(
-                    "activating = [\"fa-up7\"]",
-                    "activating = [\"fa-up7\", \"fa-up7\"]",
+                    "activating = [\"fa-ficc\"]",
+                    "activating = [\"fa-ficc\", \"fa-ficc\"]",
                     1,
                 ),
             ),

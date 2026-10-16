@@ -7088,3 +7088,561 @@ fn unpaired_or_mismatched_replacement_is_refused_without_mutating_book() {
     assert_eq!((r.code, r.exit), ("FA-REF-051", exit::REFUSAL), "{r}");
     assert_eq!(h.db.frontier().unwrap(), before);
 }
+
+#[test]
+fn account_lifecycle_open_close_promote_and_historical_chart_replay_match_oracle() {
+    let mut h = harness();
+    let mut oracle = fa_reference::Oracle::new(h.book.calendar.clone());
+    oracle.create_periods(2026);
+    oracle.transition(&h.march, PeriodTransition::Open).unwrap();
+    oracle.add_account(fa_reference::Account {
+        code: "1".into(),
+        is_leaf: false,
+        unit: Some(h.usd.0),
+    });
+    oracle.add_account(fa_reference::Account {
+        code: "1000".into(),
+        is_leaf: true,
+        unit: Some(h.usd.0),
+    });
+    oracle.add_account(fa_reference::Account {
+        code: "6000".into(),
+        is_leaf: true,
+        unit: Some(h.usd.0),
+    });
+
+    let cap = Capability::embedded(PRINCIPAL, &["schema_change", "post"]).expect("ops");
+    let ctx = h.ctx();
+    let seal_key = h.book.seal_key.clone();
+    let seal = move |s: &str| Erasable::seal(&s.to_string(), None, &seal_key, [5; 32], [6; 24]);
+    let mar10 = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let mar12 = DateDay::from_ymd(2026, 3, 12).unwrap();
+    let mar15 = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let mar20 = DateDay::from_ymd(2026, 3, 20).unwrap();
+
+    // 1. Open leaf account 6200 on 2026-03-10.
+    let spec_6200 = AccountSpec {
+        code: "6200".into(),
+        name: "Utilities".into(),
+        account_type: 5,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: None,
+        limit: None,
+    };
+    let desc_open_6200 = seal("open 6200");
+    let opened_6200 = h
+        .runtime
+        .block_on(fa_journal::open_account(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &spec_6200,
+            mar10,
+            None,
+            PRINCIPAL,
+            mar10,
+            b"open-6200",
+            desc_open_6200.clone(),
+            &cap,
+        ))
+        .unwrap()
+        .expect("open 6200");
+    assert!(!opened_6200.already_recorded);
+    oracle
+        .open_account(
+            fa_reference::Account {
+                code: "6200".into(),
+                is_leaf: true,
+                unit: Some(h.usd.0),
+            },
+            None,
+            mar10,
+            None,
+        )
+        .unwrap();
+
+    // Idempotent retry returns already_recorded = true.
+    let retry_6200 = h
+        .runtime
+        .block_on(fa_journal::open_account(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &spec_6200,
+            mar10,
+            None,
+            PRINCIPAL,
+            mar10,
+            b"open-6200",
+            desc_open_6200,
+            &cap,
+        ))
+        .unwrap()
+        .expect("idempotent retry");
+    assert!(retry_6200.already_recorded);
+    assert_eq!(retry_6200.recorded_at, opened_6200.recorded_at);
+
+    // 2. Post to 6200 on 2026-03-10.
+    let mut p1 = h.proposal(
+        vec![
+            LegPayload::simple(
+                Side::Debit,
+                opened_6200.account_vid,
+                Amount::new(h.usd, 3_000),
+            ),
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 3_000)),
+        ],
+        b"post-6200-mar10",
+        EntryClass::ORIGINAL,
+    );
+    p1.effective_date = mar10;
+    h.post(h.request(p1, &["post"])).expect("post on mar10");
+    assert_eq!(
+        oracle.post(&fa_reference::Intent {
+            class: "Original".into(),
+            date: mar10,
+            discriminator: None,
+            legs: vec![
+                fa_reference::Leg {
+                    side: fa_reference::Side::Debit,
+                    account: "6200".into(),
+                    unit: h.usd.0,
+                    mantissa: 3_000,
+                    entity: None,
+                },
+                fa_reference::Leg {
+                    side: fa_reference::Side::Credit,
+                    account: "1000".into(),
+                    unit: h.usd.0,
+                    mantissa: 3_000,
+                    entity: None,
+                },
+            ],
+            reverses: None,
+            supersession_reason: 0,
+            resolves: None,
+            settles: vec![],
+            ops: vec!["post".into()],
+            approvals: 0,
+            key: b"post-6200-mar10".to_vec(),
+        }),
+        fa_reference::Verdict::Posted {
+            index: 0,
+            period: h.march.clone(),
+        }
+    );
+
+    // 3. Promote 6200 to a summary on 2026-03-15, then open child leaf 6200.01 under 6200.
+    let seq_before_promote = h.db.frontier().unwrap();
+    let promoted = h
+        .runtime
+        .block_on(fa_journal::promote_to_summary(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            "6200",
+            mar15,
+            PRINCIPAL,
+            mar15,
+            b"promote-6200",
+            seal("promote 6200"),
+            &cap,
+        ))
+        .unwrap()
+        .expect("promote 6200");
+    assert!(!promoted.already_recorded);
+    oracle.promote_to_summary("6200", mar15).unwrap();
+
+    let spec_6200_child = AccountSpec {
+        code: "6200.01".into(),
+        name: "Electric".into(),
+        account_type: 5,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: Some("6200".into()),
+        limit: None,
+    };
+    let opened_child = h
+        .runtime
+        .block_on(fa_journal::open_account(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &spec_6200_child,
+            mar15,
+            None,
+            PRINCIPAL,
+            mar15,
+            b"open-6200-01",
+            seal("open 6200.01"),
+            &cap,
+        ))
+        .unwrap()
+        .expect("open child under promoted summary");
+    oracle
+        .open_account(
+            fa_reference::Account {
+                code: "6200.01".into(),
+                is_leaf: true,
+                unit: Some(h.usd.0),
+            },
+            Some("6200"),
+            mar15,
+            None,
+        )
+        .unwrap();
+
+    // 4. Open leaf 6300 on 2026-03-10, post and reverse to zero balance on 2026-03-12, and close on 2026-03-20.
+    let spec_6300 = AccountSpec {
+        code: "6300".into(),
+        name: "Temp Clearing".into(),
+        account_type: 5,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: None,
+        limit: None,
+    };
+    let opened_6300 = h
+        .runtime
+        .block_on(fa_journal::open_account(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &spec_6300,
+            mar10,
+            None,
+            PRINCIPAL,
+            mar10,
+            b"open-6300",
+            seal("open 6300"),
+            &cap,
+        ))
+        .unwrap()
+        .expect("open 6300");
+    oracle
+        .open_account(
+            fa_reference::Account {
+                code: "6300".into(),
+                is_leaf: true,
+                unit: Some(h.usd.0),
+            },
+            None,
+            mar10,
+            None,
+        )
+        .unwrap();
+
+    let mut p_clear = h.proposal(
+        vec![
+            LegPayload::simple(
+                Side::Debit,
+                opened_6300.account_vid,
+                Amount::new(h.usd, 1_500),
+            ),
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 1_500)),
+        ],
+        b"post-6300-dr",
+        EntryClass::ORIGINAL,
+    );
+    p_clear.effective_date = mar12;
+    let posted_clear = h.post(h.request(p_clear, &["post"])).expect("post 6300 dr");
+    let (clear_ref, _) = committed(&posted_clear).expect("fresh commit");
+    let mut p_rev = h.reversal_of_entry(clear_ref, b"post-6300-rev");
+    p_rev.effective_date = mar12;
+    h.post(h.request(p_rev, &["post"])).expect("reverse 6300");
+
+    let closed_6300 = h
+        .runtime
+        .block_on(fa_journal::close_account(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            "6300",
+            mar20,
+            PRINCIPAL,
+            mar20,
+            b"close-6300",
+            seal("close 6300"),
+            &cap,
+        ))
+        .unwrap()
+        .expect("close 6300");
+    assert!(!closed_6300.already_recorded);
+    oracle.close_account("6300", mar20).unwrap();
+
+    // 5. Historical chart replay (`chart::read_at`) at both pre-promote and head frontiers.
+    let snap_before =
+        fa_journal::chart::read_at(&h.db, &h.book, seq_before_promote).expect("snap before");
+    assert!(snap_before.accounts()[&opened_6200.account_vid].is_leaf);
+    assert_eq!(
+        snap_before.account_effectivity(opened_6200.account_vid),
+        Some(fa_journal::AccountEffectivity {
+            opened: Some(mar10),
+            closed: None,
+            promoted_on: None,
+        })
+    );
+
+    let head = h.db.frontier().unwrap();
+    let snap_head = fa_journal::chart::read_at(&h.db, &h.book, head).expect("snap head");
+    assert!(!snap_head.accounts()[&opened_6200.account_vid].is_leaf);
+    assert_eq!(
+        snap_head.account_effectivity(opened_6200.account_vid),
+        Some(fa_journal::AccountEffectivity {
+            opened: Some(mar10),
+            closed: None,
+            promoted_on: Some(mar15),
+        })
+    );
+    assert_eq!(
+        snap_head
+            .leaves_under(opened_6200.account_vid)
+            .expect("leaves under 6200"),
+        std::collections::BTreeSet::from([opened_child.account_vid])
+    );
+    assert_eq!(
+        snap_head.account_effectivity(opened_6300.account_vid),
+        Some(fa_journal::AccountEffectivity {
+            opened: Some(mar10),
+            closed: Some(mar20),
+            promoted_on: None,
+        })
+    );
+}
+
+#[test]
+fn posting_outside_account_effective_interval_or_invalid_close_and_promote_is_refused() {
+    let mut h = harness();
+    let mut oracle = fa_reference::Oracle::new(h.book.calendar.clone());
+    oracle.create_periods(2026);
+    oracle.transition(&h.march, PeriodTransition::Open).unwrap();
+    oracle.add_account(fa_reference::Account {
+        code: "1000".into(),
+        is_leaf: true,
+        unit: Some(h.usd.0),
+    });
+
+    let cap = Capability::embedded(PRINCIPAL, &["schema_change", "post"]).expect("ops");
+    let ctx = h.ctx();
+    let seal_key = h.book.seal_key.clone();
+    let seal = move |s: &str| Erasable::seal(&s.to_string(), None, &seal_key, [5; 32], [6; 24]);
+    let mar05 = DateDay::from_ymd(2026, 3, 5).unwrap();
+    let mar10 = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let mar12 = DateDay::from_ymd(2026, 3, 12).unwrap();
+    let mar15 = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let mar20 = DateDay::from_ymd(2026, 3, 20).unwrap();
+    let mar25 = DateDay::from_ymd(2026, 3, 25).unwrap();
+
+    // Open account 6400 with half-open interval [2026-03-10, 2026-03-20).
+    let spec_6400 = AccountSpec {
+        code: "6400".into(),
+        name: "Seasonal Account".into(),
+        account_type: 5,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: None,
+        limit: None,
+    };
+    let opened_6400 = h
+        .runtime
+        .block_on(fa_journal::open_account(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &spec_6400,
+            mar10,
+            Some(mar20),
+            PRINCIPAL,
+            mar10,
+            b"open-6400",
+            seal("open 6400"),
+            &cap,
+        ))
+        .unwrap()
+        .expect("open 6400");
+    oracle
+        .open_account(
+            fa_reference::Account {
+                code: "6400".into(),
+                is_leaf: true,
+                unit: Some(h.usd.0),
+            },
+            None,
+            mar10,
+            Some(mar20),
+        )
+        .unwrap();
+
+    // 1. Posting before opened (mar05 < mar10) is refused with FA-REF-002 in both kernel and oracle.
+    let before = h.db.frontier().unwrap();
+    let mut p_early = h.proposal(
+        vec![
+            LegPayload::simple(
+                Side::Debit,
+                opened_6400.account_vid,
+                Amount::new(h.usd, 500),
+            ),
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 500)),
+        ],
+        b"post-6400-early",
+        EntryClass::ORIGINAL,
+    );
+    p_early.effective_date = mar05;
+    let r_early = h
+        .post(h.request(p_early, &["post"]))
+        .expect_err("posting before opened must be refused");
+    assert_eq!((r_early.code, r_early.exit), ("FA-REF-002", exit::REFUSAL));
+    assert!(r_early.cite.contains("FA-INV-01.account-effective"));
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(
+        oracle.post(&fa_reference::Intent {
+            class: "Original".into(),
+            date: mar05,
+            discriminator: None,
+            legs: vec![
+                fa_reference::Leg {
+                    side: fa_reference::Side::Debit,
+                    account: "6400".into(),
+                    unit: h.usd.0,
+                    mantissa: 500,
+                    entity: None,
+                },
+                fa_reference::Leg {
+                    side: fa_reference::Side::Credit,
+                    account: "1000".into(),
+                    unit: h.usd.0,
+                    mantissa: 500,
+                    entity: None,
+                },
+            ],
+            reverses: None,
+            supersession_reason: 0,
+            resolves: None,
+            settles: vec![],
+            ops: vec!["post".into()],
+            approvals: 0,
+            key: b"post-6400-early".to_vec(),
+        }),
+        fa_reference::Verdict::Refused { code: "FA-REF-002" }
+    );
+
+    // 2. Posting at or after closed (mar20 and mar25) is refused with FA-REF-002 in both kernel and oracle.
+    for (day, key) in [
+        (mar20, &b"post-6400-at-close"[..]),
+        (mar25, &b"post-6400-after"[..]),
+    ] {
+        let mut p_late = h.proposal(
+            vec![
+                LegPayload::simple(
+                    Side::Debit,
+                    opened_6400.account_vid,
+                    Amount::new(h.usd, 500),
+                ),
+                LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 500)),
+            ],
+            key,
+            EntryClass::ORIGINAL,
+        );
+        p_late.effective_date = day;
+        let r_late = h
+            .post(h.request(p_late, &["post"]))
+            .expect_err("posting at/after closed must be refused");
+        assert_eq!((r_late.code, r_late.exit), ("FA-REF-002", exit::REFUSAL));
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert_eq!(
+            oracle.post(&fa_reference::Intent {
+                class: "Original".into(),
+                date: day,
+                discriminator: None,
+                legs: vec![
+                    fa_reference::Leg {
+                        side: fa_reference::Side::Debit,
+                        account: "6400".into(),
+                        unit: h.usd.0,
+                        mantissa: 500,
+                        entity: None,
+                    },
+                    fa_reference::Leg {
+                        side: fa_reference::Side::Credit,
+                        account: "1000".into(),
+                        unit: h.usd.0,
+                        mantissa: 500,
+                        entity: None,
+                    },
+                ],
+                reverses: None,
+                supersession_reason: 0,
+                resolves: None,
+                settles: vec![],
+                ops: vec!["post".into()],
+                approvals: 0,
+                key: key.to_vec(),
+            }),
+            fa_reference::Verdict::Refused { code: "FA-REF-002" }
+        );
+    }
+
+    // 3. Posting inside [mar10, mar20) on mar15 succeeds; then attempting to promote_to_summary
+    //    on mar12 (< mar15) is refused naming the blocking entry VId.
+    let mut p_ok = h.proposal(
+        vec![
+            LegPayload::simple(
+                Side::Debit,
+                opened_6400.account_vid,
+                Amount::new(h.usd, 500),
+            ),
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 500)),
+        ],
+        b"post-6400-ok",
+        EntryClass::ORIGINAL,
+    );
+    p_ok.effective_date = mar15;
+    let posted_ok = h.post(h.request(p_ok, &["post"])).expect("post on mar15");
+    let (ok_ref, _) = committed(&posted_ok).expect("fresh commit");
+    let r_prom = h
+        .runtime
+        .block_on(fa_journal::promote_to_summary(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            "6400",
+            mar12,
+            PRINCIPAL,
+            mar15,
+            b"bad-promote-6400",
+            seal("bad promote"),
+            &cap,
+        ))
+        .unwrap()
+        .expect_err("promote before latest posting must be refused");
+    assert_eq!((r_prom.code, r_prom.exit), ("FA-REF-002", exit::REFUSAL));
+    assert!(r_prom.message.contains(&format!("{:032x}", ok_ref.vid.0)));
+
+    // 4. Attempting to close_account on 6000 while it has a non-zero balance is refused.
+    let mut p_rent = h.proposal(h.rent_legs(1_000), b"rent-nonzero", EntryClass::ORIGINAL);
+    p_rent.effective_date = mar10;
+    h.post(h.request(p_rent, &["post"])).expect("post rent");
+    let r_close = h
+        .runtime
+        .block_on(fa_journal::close_account(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            "6000",
+            mar20,
+            PRINCIPAL,
+            mar20,
+            b"bad-close-6000",
+            seal("bad close"),
+            &cap,
+        ))
+        .unwrap()
+        .expect_err("closing non-zero account must be refused");
+    assert_eq!((r_close.code, r_close.exit), ("FA-REF-002", exit::REFUSAL));
+    assert!(r_close.message.contains("non-zero posted balance"));
+}

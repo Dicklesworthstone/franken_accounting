@@ -1662,6 +1662,23 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 format!("post to a leaf under `{}`", account.code),
             )));
         }
+        let effectivity = crate::chart::AccountEffectivity::decode_from_row(&row)?;
+        if !effectivity.is_effective_at(proposal.effective_date) {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::NOT_A_LEAF,
+                exit::REFUSAL,
+                format!(
+                    "leg {i} posts to `{}` on {}, outside its effective interval [opened: {:?}, closed: {:?})",
+                    account.code, proposal.effective_date, effectivity.opened, effectivity.closed
+                ),
+                "FA-INV-01.account-effective (plan §4.3, §5.6: every leg's account is open at the entry's effective date)",
+                format!(
+                    "choose an effective date within `{}`'s open interval or post to an open leaf account",
+                    account.code
+                ),
+            )));
+        }
         if book.units.get(leg.amount.unit).is_none() {
             txn.abort();
             return Ok(Err(Refusal::new(

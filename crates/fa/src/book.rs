@@ -731,6 +731,59 @@ impl Book {
         )))
     }
 
+    /// Open a new account as a journaled `SchemaChange` (`kind = 2`, plan §5.6).
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_account(
+        &mut self,
+        spec: &AccountSpec,
+        opened: DateDay,
+        closed: Option<DateDay>,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::AccountLifecycleRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.open_account(
+            &purposes, spec, opened, closed, principal, effective_date, idempotency_key, capability,
+        )))
+    }
+
+    /// Close an account at `closed_on` as a journaled `SchemaChange` (`kind = 3`, plan §5.6).
+    #[allow(clippy::too_many_arguments)]
+    pub fn close_account(
+        &mut self,
+        code: &str,
+        closed_on: DateDay,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::AccountLifecycleRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.close_account(
+            &purposes, code, closed_on, principal, effective_date, idempotency_key, capability,
+        )))
+    }
+
+    /// Promote a leaf account to a summary account at `promotion_date` as a
+    /// journaled `SchemaChange` (`kind = 4`, plan §5.6).
+    #[allow(clippy::too_many_arguments)]
+    pub fn promote_to_summary(
+        &mut self,
+        code: &str,
+        promotion_date: DateDay,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::AccountLifecycleRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.promote_to_summary(
+            &purposes, code, promotion_date, principal, effective_date, idempotency_key, capability,
+        )))
+    }
+
     /// Create one fiscal year's periods in state `Future`.
     pub fn create_periods(
         &mut self,

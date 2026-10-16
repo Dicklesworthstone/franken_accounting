@@ -26,5 +26,6 @@ fgdb-delta-types = { workspace = true }
 fgdb-crypto = { workspace = true }
 
 [dev-dependencies]
+fa-reference = { path = "../fa-reference", version = "=0.0.1" }
 # The lab VFS for the blob store's crash regression (dev only).
 fgdb-sim = { workspace = true }

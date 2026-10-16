@@ -305,6 +305,12 @@ fn aggregate(
             rows: Vec::new(),
         });
     }
+    let root_to_group: BTreeMap<VId, usize> = roots
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(i, r)| (r, i))
+        .collect();
     let mut all_sums: BTreeMap<u32, [i128; 4]> = BTreeMap::new();
     let mut selected_sums: BTreeMap<u32, [i128; 4]> = BTreeMap::new();
     let mut group_sums = vec![BTreeMap::<u32, [i128; 4]>::new(); groups.len()];
@@ -316,7 +322,11 @@ fn aggregate(
                 row.code
             ))
         })?;
-        if !account.is_leaf
+        let is_promoted_summary = !account.is_leaf
+            && chart
+                .account_effectivity(row.account)
+                .is_some_and(|e| e.promoted_on.is_some());
+        if (!account.is_leaf && !is_promoted_summary)
             || account.code != row.code
             || account.name != row.name
             || account.account_type != row.account_type.0
@@ -330,8 +340,21 @@ fn aggregate(
         if !row.account_type.is_memo() {
             add(all_sums.entry(row.unit_id).or_insert([0; 4]), row)?;
         }
-        if let Some(index) = owners.get(&row.account) {
-            add(group_sums[*index].entry(row.unit_id).or_insert([0; 4]), row)?;
+        let group_index = owners.get(&row.account).copied().or_else(|| {
+            if !is_promoted_summary {
+                return None;
+            }
+            let mut cur = Some(row.account);
+            while let Some(node) = cur {
+                if let Some(&idx) = root_to_group.get(&node) {
+                    return Some(idx);
+                }
+                cur = chart.parents().get(&node).copied();
+            }
+            None
+        });
+        if let Some(index) = group_index {
+            add(group_sums[index].entry(row.unit_id).or_insert([0; 4]), row)?;
             if !row.account_type.is_memo() {
                 add(selected_sums.entry(row.unit_id).or_insert([0; 4]), row)?;
             }

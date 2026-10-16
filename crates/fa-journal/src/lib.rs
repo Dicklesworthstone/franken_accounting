@@ -50,6 +50,10 @@ pub use attestation::{
     AttestationClaim, Attested, read_attestation, record_manual_assertion, record_review,
 };
 pub use blob::BlobStore;
+pub use chart::{
+    AccountEffectivity, AccountLifecycleRecorded, ChartSnapshot, close_account, open_account,
+    promote_to_summary,
+};
 pub use custody::{CustodyBody, CustodyEvent, CustodyMoved, custody_chain, transfer_custody};
 pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{

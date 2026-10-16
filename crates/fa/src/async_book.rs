@@ -262,6 +262,93 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_account(
+        &mut self,
+        cx: &PurposeContexts,
+        spec: &AccountSpec,
+        opened: DateDay,
+        closed: Option<DateDay>,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::AccountLifecycleRecorded> {
+        let description =
+            self.seal_text(cx, &format!("open account `{}` on {opened}", spec.code))?;
+        Ok(fa_journal::open_account(
+            &mut self.db,
+            cx,
+            &self.context,
+            spec,
+            opened,
+            closed,
+            principal,
+            effective_date,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn close_account(
+        &mut self,
+        cx: &PurposeContexts,
+        code: &str,
+        closed_on: DateDay,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::AccountLifecycleRecorded> {
+        let description = self.seal_text(cx, &format!("close account `{code}` on {closed_on}"))?;
+        Ok(fa_journal::close_account(
+            &mut self.db,
+            cx,
+            &self.context,
+            code,
+            closed_on,
+            principal,
+            effective_date,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn promote_to_summary(
+        &mut self,
+        cx: &PurposeContexts,
+        code: &str,
+        promotion_date: DateDay,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::AccountLifecycleRecorded> {
+        let description = self.seal_text(
+            cx,
+            &format!("promote account `{code}` to summary on {promotion_date}"),
+        )?;
+        Ok(fa_journal::promote_to_summary(
+            &mut self.db,
+            cx,
+            &self.context,
+            code,
+            promotion_date,
+            principal,
+            effective_date,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
     pub async fn create_periods(
         &mut self,
         cx: &PurposeContexts,

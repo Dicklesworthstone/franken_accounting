@@ -175,11 +175,15 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-01"
 id = "account-effective"
-status = "dormant"
+status = "live"
 statement = "Every leg posts to a Leaf account whose effectivity interval covers the entry's effective date."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G2"
-activating = ["fa-up7"]
+owner = "fa-up7"
+checkers = ["fa-journal::tests/genesis.rs::account_lifecycle_open_close_promote_and_historical_chart_replay_match_oracle"]
+negatives = ["fa-journal::tests/genesis.rs::posting_outside_account_effective_interval_or_invalid_close_and_promote_is_refused"]
+depends = ["FA-INV-01.leaf-only"]
 waiver = "forbidden"
 
 [[clause]]
@@ -434,11 +438,15 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-04"
 id = "mapping-partition"
-status = "dormant"
+status = "live"
 statement = "A statement definition's mappings partition the leaf accounts it covers."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G3"
-activating = ["fa-9ae"]
+owner = "fa-9ae"
+checkers = ["fa-statements::lib::tests::financial_statements_tie_out_and_retain_zero_leaf_mapping"]
+negatives = ["fa-statements::lib::tests::missing_and_repeated_mapping_are_refused_even_for_zero_accounts"]
+depends = ["FA-INV-04.core"]
 waiver = "forbidden"
 
 [[clause]]
