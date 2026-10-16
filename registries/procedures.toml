@@ -746,3 +746,567 @@ name = "max_steps"
 default = 5000000
 meaning = "Projection and tracing work budget in network scope (1..100000000)."
 
+# ---- Remaining JET procedures (plan §11.2; bead fa-ac78) ------------------
+
+[[procedure]]
+id = "jet.unusual_accounts"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L24"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Live posting entries whose undirected account-pair co-occurrence appears at most max_pair_count times in the snapshot (or below min_pair_bps of live postings): rare debit/credit account combinations (AS 2401 ¶61)."
+
+[[parameter]]
+procedure = "jet.unusual_accounts"
+name = "max_pair_count"
+default = 1
+meaning = "Maximum occurrences of an account pair in the snapshot for it to be flagged as unusual when the population has at least min_population postings."
+
+[[parameter]]
+procedure = "jet.unusual_accounts"
+name = "min_population"
+default = 5
+meaning = "Minimum live posting entries in the snapshot before rare account pairs are flagged."
+
+[[procedure]]
+id = "jet.unusual_preparers"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L25"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Live posting entries prepared by a principal who has posted to that account at most max_preparer_count times when the account has at least min_account_entries postings across at least two preparers."
+
+[[parameter]]
+procedure = "jet.unusual_preparers"
+name = "max_preparer_count"
+default = 1
+meaning = "Maximum postings by a preparer on an account for those postings to be flagged as unusual."
+
+[[parameter]]
+procedure = "jet.unusual_preparers"
+name = "min_account_entries"
+default = 3
+meaning = "Minimum live postings on an account before preparer rarity is evaluated."
+
+[[procedure]]
+id = "jet.manual_vs_rule"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L26"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Manual live postings on accounts whose postings are predominantly rule-derived (at least min_rule_share_bps of postings on the account carry EntryOrigin::Rule)."
+
+[[parameter]]
+procedure = "jet.manual_vs_rule"
+name = "min_rule_share_bps"
+default = 6000
+meaning = "Minimum basis points (6000 = 60.00%) of rule-derived postings on an account for a manual posting on that account to be flagged."
+
+[[parameter]]
+procedure = "jet.manual_vs_rule"
+name = "min_account_entries"
+default = 3
+meaning = "Minimum live postings on an account before rule-vs-manual share is evaluated."
+
+[[procedure]]
+id = "jet.large_round_reversals"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L27"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Round-amount postings (magnitude a multiple of 10^round_power whole units) that are reversed in the next period within window_days of the period boundary."
+
+[[parameter]]
+procedure = "jet.large_round_reversals"
+name = "round_power"
+default = 3
+meaning = "Power of ten in whole units defining a round leg (3 = 1,000.00)."
+
+[[parameter]]
+procedure = "jet.large_round_reversals"
+name = "window_days"
+default = 15
+meaning = "Maximum civil days between the original entry and its cross-period reversal."
+
+[[procedure]]
+id = "jet.suspense_aging"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L28"
+tie_break = "account_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Suspense, clearing, and wash accounts (identified by code/name tokens `suspense`, `clearing`, `wash`, `9999`, `unallocated`) that retain a non-zero balance or uncleared postings older than max_age_days as of the coordinate's effective date."
+
+[[parameter]]
+procedure = "jet.suspense_aging"
+name = "max_age_days"
+default = 7
+meaning = "Maximum civil days a suspense or clearing balance may remain open before being flagged."
+
+[[procedure]]
+id = "jet.intercompany_unmatched"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L29"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Live postings on intercompany accounts (codes starting with `IC` or names containing `intercompany` / `due to` / `due from`) or carrying both legal_entity and counterparty party dimensions without a matching mirror posting in the same period."
+
+# ---- Remaining Benford and number tests (plan §11.3; bead fa-ac78) --------
+
+[[procedure]]
+id = "benford.second_digit"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L30"
+tie_break = "none"
+complexity = "O(legs)"
+calibration = "planted"
+summary = "Second-digit (0..=9) distribution of live posted leg magnitudes on one side in one currency unit of at least ten whole units against Benford's second-digit law: Nigrini MAD conformity bands (0.008 / 0.010 / 0.012), per-digit Z-score, and 10-bucket chi-square (df=9) in fixed point."
+
+[[parameter]]
+procedure = "benford.second_digit"
+name = "min_population"
+default = 500
+meaning = "Below this many eligible legs no conformity score is claimed; the finding reports the population only."
+
+[[parameter]]
+procedure = "benford.second_digit"
+name = "mad_close"
+default = 8
+meaning = "Nigrini second-digit MAD upper bound for close conformity, in thousandths (0.008)."
+
+[[parameter]]
+procedure = "benford.second_digit"
+name = "mad_acceptable"
+default = 10
+meaning = "Nigrini second-digit MAD upper bound for acceptable conformity, in thousandths (0.010)."
+
+[[parameter]]
+procedure = "benford.second_digit"
+name = "mad_marginal"
+default = 12
+meaning = "Nigrini second-digit MAD upper bound for marginal conformity, in thousandths (0.012); above it is nonconformity."
+
+[[parameter]]
+procedure = "benford.second_digit"
+name = "currency_iso4217"
+default = 840
+meaning = "ISO 4217 numeric code of the currency examined (840 = USD)."
+
+[[parameter]]
+procedure = "benford.second_digit"
+name = "side"
+default = 0
+meaning = "0 = debit legs, 1 = credit legs."
+
+[[procedure]]
+id = "benford.first_two_digits"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L31"
+tie_break = "none"
+complexity = "O(legs)"
+calibration = "planted"
+summary = "First-two-digits (10..=99) distribution of live posted leg magnitudes on one side in one currency unit of at least ten whole units against Benford's first-two-digits law: Nigrini 90-bucket MAD conformity bands (0.0012 / 0.0018 / 0.0022 in ten-thousandths), max per-bucket Z-score, and chi-square (df=89) in fixed point."
+
+[[parameter]]
+procedure = "benford.first_two_digits"
+name = "min_population"
+default = 500
+meaning = "Below this many eligible legs no conformity score is claimed; the finding reports the population only."
+
+[[parameter]]
+procedure = "benford.first_two_digits"
+name = "mad_close"
+default = 12
+meaning = "Nigrini first-two-digits MAD upper bound for close conformity, in ten-thousandths (0.0012)."
+
+[[parameter]]
+procedure = "benford.first_two_digits"
+name = "mad_acceptable"
+default = 18
+meaning = "Nigrini first-two-digits MAD upper bound for acceptable conformity, in ten-thousandths (0.0018)."
+
+[[parameter]]
+procedure = "benford.first_two_digits"
+name = "mad_marginal"
+default = 22
+meaning = "Nigrini first-two-digits MAD upper bound for marginal conformity, in ten-thousandths (0.0022); above it is nonconformity."
+
+[[parameter]]
+procedure = "benford.first_two_digits"
+name = "currency_iso4217"
+default = 840
+meaning = "ISO 4217 numeric code of the currency examined (840 = USD)."
+
+[[parameter]]
+procedure = "benford.first_two_digits"
+name = "side"
+default = 0
+meaning = "0 = debit legs, 1 = credit legs."
+
+[[procedure]]
+id = "numbers.relative_size_factor"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L32"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Relative Size Factor (Nigrini RSF): ratio of the largest to the second-largest live debit leg magnitude per party (or per expense/asset account when no party dimension is present) in one unit; flags subsets with at least min_subset_size legs whose RSF in basis points reaches min_rsf_bps."
+
+[[parameter]]
+procedure = "numbers.relative_size_factor"
+name = "min_rsf_bps"
+default = 50000
+meaning = "Minimum ratio of largest to second-largest amount in basis points (50000 = 5.00x)."
+
+[[parameter]]
+procedure = "numbers.relative_size_factor"
+name = "min_subset_size"
+default = 3
+meaning = "Minimum postings in a subset before RSF is evaluated."
+
+[[procedure]]
+id = "numbers.threshold_splitting"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L33"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Regulatory and approval threshold splitting (including 31 CFR 1010.311 $10,000.00 USD CTR cash reporting rule and approval threshold bands): groups of sub-threshold postings by the same party or account pair within window_days that individually lie in [floor, threshold) and aggregate to at least threshold."
+
+[[parameter]]
+procedure = "numbers.threshold_splitting"
+name = "threshold"
+default = 1000000
+meaning = "Statutory or policy reporting threshold in the unit's mantissa scale (1,000,000 = $10,000.00 USD under 31 CFR 1010.311)."
+
+[[parameter]]
+procedure = "numbers.threshold_splitting"
+name = "floor"
+default = 250000
+meaning = "Smallest individual posting counted toward a split aggregate, in the unit's mantissa scale (250,000 = $2,500.00 USD)."
+
+[[parameter]]
+procedure = "numbers.threshold_splitting"
+name = "window_days"
+default = 5
+meaning = "Maximum civil days spanning a split group."
+
+[[parameter]]
+procedure = "numbers.threshold_splitting"
+name = "min_count"
+default = 2
+meaning = "Minimum individual sub-threshold postings in a split group."
+
+[[parameter]]
+procedure = "numbers.threshold_splitting"
+name = "currency_iso4217"
+default = 840
+meaning = "ISO 4217 numeric code of the currency examined (840 = USD)."
+
+# ---- Graph procedures via fnx with CGSE witnesses (plan §11.6; bead fa-ac78) --
+
+[[procedure]]
+id = "graph.circular_flows"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L34"
+tie_break = "entry_vid"
+complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
+calibration = "planted"
+summary = "Directed k-cycles (2..=max_hops) in the money-flow DiGraph within window_days where the bottleneck flow retains at least min_retention_bps of the initial outbound leg, decomposed by fnx strongly_connected_components with a CGSE witness."
+
+[[parameter]]
+procedure = "graph.circular_flows"
+name = "window_days"
+default = 14
+meaning = "Maximum civil days from the cycle's first transfer to its closing transfer."
+
+[[parameter]]
+procedure = "graph.circular_flows"
+name = "max_hops"
+default = 6
+meaning = "Maximum cycle length in directed transfers (2..=8)."
+
+[[parameter]]
+procedure = "graph.circular_flows"
+name = "min_retention_bps"
+default = 7000
+meaning = "Minimum ratio of cycle bottleneck flow to first-hop flow in basis points (7000 = 70.00%)."
+
+[[procedure]]
+id = "graph.layering"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L35"
+tie_break = "entry_vid"
+complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
+calibration = "planted"
+summary = "Multi-hop pass-through chains of at least min_hops directed transfers within window_days through intermediary accounts that forward at least min_passthrough_bps of the incoming transfer without round-trip closure, backed by fnx DiGraph traversal and a CGSE witness."
+
+[[parameter]]
+procedure = "graph.layering"
+name = "min_hops"
+default = 3
+meaning = "Minimum directed hops in a layering chain (2..=8)."
+
+[[parameter]]
+procedure = "graph.layering"
+name = "window_days"
+default = 10
+meaning = "Maximum civil days from the first hop to the last hop of the chain."
+
+[[parameter]]
+procedure = "graph.layering"
+name = "min_passthrough_bps"
+default = 8500
+meaning = "Minimum basis points of incoming transfer forwarded at each intermediary hop (8500 = 85.00%)."
+
+[[procedure]]
+id = "graph.communities"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L36"
+tie_break = "account_vid"
+complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
+calibration = "planted"
+summary = "Community detection over the money-flow projection via fnx louvain_communities and connected_components with a CGSE witness: flags multi-account communities whose internal transfer share reaches min_internal_share_bps."
+
+[[parameter]]
+procedure = "graph.communities"
+name = "min_community_size"
+default = 2
+meaning = "Minimum accounts in a reported community."
+
+[[parameter]]
+procedure = "graph.communities"
+name = "min_internal_share_bps"
+default = 7000
+meaning = "Minimum share of community total volume that stays inside the community, in basis points (7000 = 70.00%)."
+
+[[procedure]]
+id = "graph.related_party_exposure"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L37"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Valid-time traversal of OWNS, CONTROLS, and RELATED_TO edges in the REA graph (ReaSnapshot::related_as_of and fnx bfs_layers_directed with a CGSE witness) intersected with live postings carrying the party or legal_entity dimension of a reached related party."
+
+[[parameter]]
+procedure = "graph.related_party_exposure"
+name = "max_depth"
+default = 4
+meaning = "Maximum relationship hops from each declared legal entity or party root."
+
+[[procedure]]
+id = "graph.shell_signature"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L38"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Shell-entity and pass-through conduit signatures over the REA party graph and money-flow projection (with fnx CGSE witness): parties sharing opened identifiers (tax_id, bank_account, address, phone) or accounts with high pass-through ratio (>= min_passthrough_bps) and zero third-party document citations."
+
+[[parameter]]
+procedure = "graph.shell_signature"
+name = "min_passthrough_bps"
+default = 9000
+meaning = "Minimum pass-through flow ratio in basis points (9000 = 90.00%) for an uncorroborated conduit account."
+
+[[procedure]]
+id = "graph.concentration"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L39"
+tie_break = "account_vid"
+complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
+calibration = "planted"
+summary = "Counterparty and account concentration over the money-flow DiGraph via fnx betweenness_centrality_directed and degree_centrality_directed with a CGSE witness, reporting exact flow share in basis points for nodes at or above min_share_bps."
+
+[[parameter]]
+procedure = "graph.concentration"
+name = "min_share_bps"
+default = 5000
+meaning = "Minimum share of total unit flow in basis points (5000 = 50.00%) for an account or counterparty to be flagged."
+
+[[procedure]]
+id = "graph.identity_resolution"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L40"
+tie_break = "none"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Deterministic entity-resolution candidate generator over Party identifiers (tax_id, bank_account, address, phone, external_id) using fnx connected_components with a CGSE witness: emits SAME_AS candidate findings for distinct Party vertices sharing a normalized identifier."
+
+# ---- Reconciliation, completeness, and audit procedures (plan §11.4, §11.7; bead fa-g6rj) --
+
+[[procedure]]
+id = "recon.intercompany"
+version = 1
+claim = "invariant"
+evidence = "FA-EVID-L41"
+tie_break = "account_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Exact intercompany reciprocal balance reconciliation across legal entities and intercompany accounts per period and unit: any non-zero net reciprocal imbalance is an invariant violation."
+
+[[procedure]]
+id = "recon.lapping"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L42"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Receivables/payables lapping detector: sequential settlements on a control account where party B's cash receipt is recorded within window_days of party A's open item while party A's settlement is delayed or applied after subsequent receipts."
+
+[[parameter]]
+procedure = "recon.lapping"
+name = "window_days"
+default = 10
+meaning = "Maximum civil days between overlapping counterparty receipts/applications in a lapping sequence."
+
+[[procedure]]
+id = "recon.book_to_book"
+version = 1
+claim = "invariant"
+evidence = "FA-EVID-L43"
+tie_break = "account_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Exact reconciliation between Instrument vertices that mirror GL accounts (and RegisterEquals attestations) and the journal fold at the snapshot coordinate: any divergence between a mirrored instrument/attested register cell and the posted account balance is an invariant violation."
+
+[[procedure]]
+id = "completeness.unrecorded_liabilities"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L44"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Search for unrecorded liabilities (AU-C 500 / ISA 500): cash disbursements or payable entries recorded after a period's end within window_days whose document date or service period lies in the prior period."
+
+[[parameter]]
+procedure = "completeness.unrecorded_liabilities"
+name = "window_days"
+default = 45
+meaning = "Post-period lookahead window in civil days for subsequent disbursements or invoices."
+
+[[procedure]]
+id = "events.subsequent"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L45"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Subsequent events review (AS 2801 / IAS 10): material postings, reversals, or restatements effective or recorded within window_days after a closed or soft-closed period boundary."
+
+[[parameter]]
+procedure = "events.subsequent"
+name = "window_days"
+default = 30
+meaning = "Window in civil days after a period end to scan for subsequent events."
+
+[[parameter]]
+procedure = "events.subsequent"
+name = "min_amount"
+default = 100000
+meaning = "Minimum leg magnitude in unit mantissa scale (100,000 = 1,000.00 at scale 2) for a post-period event to be flagged."
+
+[[procedure]]
+id = "party.master_changes"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L46"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Vendor/party master-data changes (`UpdatePartyIdentifiers` schema controls) followed by disbursements or postings to that party within window_commits commits or window_days civil days."
+
+[[parameter]]
+procedure = "party.master_changes"
+name = "window_commits"
+default = 25
+meaning = "Maximum CommitSeq distance between a party identifier update and a subsequent posting to that party."
+
+[[procedure]]
+id = "payroll.ghost"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L47"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "corpus"
+summary = "Ghost-employee and anomalous payroll detector: payroll postings (accounts matching `payroll` / `wage` / `salary` or descriptions matching `payroll`) citing parties with shared bank/tax identifiers, missing employee master records, or duplicate payroll disbursements to the same party in one period."
+
+[[procedure]]
+id = "expense.capitalization"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L48"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "corpus"
+summary = "Improper expense capitalization detector (WorldCom motif): entries that credit an operating expense account and debit a fixed/capital asset account (or reclassify operating costs to capital assets near period end)."
+
+[[procedure]]
+id = "aging.inventory"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L49"
+tie_break = "account_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Slow-moving and obsolete inventory aging (ASC 330 / IAS 2): inventory asset accounts whose net debit balance has had no credit relief (cost-of-sales or relief movement) for more than stale_days civil days through the coordinate's effective date."
+
+[[parameter]]
+procedure = "aging.inventory"
+name = "stale_days"
+default = 90
+meaning = "Civil days without inventory relief movement after which an inventory balance is flagged as slow-moving."
+
+[[procedure]]
+id = "reversal.patterns"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L50"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Systematic reversal and re-aging patterns: chains of Reversal or Replacement entries, cross-period reversals of manual adjustments, or accounts with repeated post-and-reverse cycles."
+
+[[procedure]]
+id = "confirm.coverage"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L51"
+tie_break = "account_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "External confirmation and attestation coverage (AS 2310 / ISA 505): measures the share of cash and receivable balances covered by a journaled RegisterEquals or Reviewed attestation, flagging accounts whose corroborated share in basis points falls below min_coverage_bps."
+
+[[parameter]]
+procedure = "confirm.coverage"
+name = "min_coverage_bps"
+default = 8000
+meaning = "Minimum corroborated balance coverage in basis points (8000 = 80.00%) before an uncorroborated receivable or cash balance is flagged."
+

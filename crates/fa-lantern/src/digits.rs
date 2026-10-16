@@ -214,6 +214,381 @@ impl Procedure for FirstDigit {
     }
 }
 
+/// Benford second-digit (`0..=9`) expected proportions at 10^9 scale, summing
+/// to 10^9 and matching the column marginals of [`BENFORD_FIRST_TWO_1E9`].
+pub const BENFORD_SECOND_1E9: [i128; 10] = [
+    119_679_269,
+    113_890_104,
+    108_821_499,
+    104_329_561,
+    100_308_203,
+    96_677_237,
+    93_374_735,
+    90_351_990,
+    87_570_054,
+    84_997_348,
+];
+
+/// Benford first-two-digits (`10..=99`) expected proportions at 10^9 scale,
+/// summing to 10^9 and matching [`BENFORD_1E9`] row marginals and
+/// [`BENFORD_SECOND_1E9`] column marginals.
+pub const BENFORD_FIRST_TWO_1E9: [i128; 90] = [
+    41_392_685, 37_788_561, 34_762_106, 32_184_683, 29_963_223, 28_028_724, 26_328_939, 24_823_584,
+    23_481_096, 22_276_395, 21_189_299, 20_203_386, 19_305_155, 18_483_406, 17_728_767, 17_033_339,
+    16_390_416, 15_794_267, 15_239_967, 14_723_257, 14_240_439, 13_788_284, 13_363_962, 12_964_977,
+    12_589_127, 12_234_456, 11_899_223, 11_581_873, 11_281_010, 10_995_386, 10_723_865, 10_465_434,
+    10_219_165, 9_984_221, 9_759_837, 9_545_318, 9_340_026, 9_143_379, 8_954_843, 8_773_925,
+    8_600_172, 8_433_168, 8_272_526, 8_117_890, 7_968_930, 7_825_338, 7_686_829, 7_553_138,
+    7_424_018, 7_299_237, 7_178_585, 7_061_854, 6_948_860, 6_839_425, 6_733_383, 6_630_579,
+    6_530_867, 6_434_110, 6_340_178, 6_248_949, 6_160_309, 6_074_148, 5_990_364, 5_908_860,
+    5_829_544, 5_752_329, 5_677_133, 5_603_878, 5_532_489, 5_462_893, 5_395_032, 5_328_834,
+    5_264_240, 5_201_194, 5_139_640, 5_079_526, 5_020_801, 4_963_420, 4_907_334, 4_852_501,
+    4_798_883, 4_746_435, 4_695_121, 4_644_905, 4_595_752, 4_547_628, 4_500_501, 4_454_341,
+    4_409_119, 4_364_805,
+];
+
+/// The first two decimal digits (`10..=99`) of a magnitude `>= 10`.
+#[must_use]
+pub fn first_two_digits(mut m: u128) -> u8 {
+    while m >= 100 {
+        m /= 10;
+    }
+    m as u8
+}
+
+/// The second decimal digit (`0..=9`) of a magnitude `>= 10`.
+#[must_use]
+pub fn second_digit(m: u128) -> u8 {
+    first_two_digits(m) % 10
+}
+
+/// Nigrini's MAD over a bucket table of expected proportions at 10^9 scale.
+pub fn mad_table_1e9(counts: &[u64], expected_1e9: &[i128]) -> Result<i128, LanternError> {
+    let k = i128::try_from(expected_1e9.len()).map_err(|_| LanternError::Overflow("buckets"))?;
+    let n = i128::from(counts.iter().sum::<u64>());
+    if n == 0 || k == 0 {
+        return Ok(0);
+    }
+    let mut sum: i128 = 0;
+    for (&c, &p) in counts.iter().zip(expected_1e9.iter()) {
+        let observed = i128::from(c)
+            .checked_mul(1_000_000_000)
+            .ok_or(LanternError::Overflow("benford observed"))?;
+        let expected = n
+            .checked_mul(p)
+            .ok_or(LanternError::Overflow("benford expected"))?;
+        sum = sum
+            .checked_add((observed - expected).abs())
+            .ok_or(LanternError::Overflow("benford deviation"))?;
+    }
+    Ok(sum / (k * n))
+}
+
+/// Pearson's chi-square at six decimal places over `expected_1e9`.
+pub fn chi_square_table_1e6(counts: &[u64], expected_1e9: &[i128]) -> Result<i128, LanternError> {
+    let total: u64 = counts.iter().sum();
+    if total == 0 {
+        return Ok(0);
+    }
+    if total > MAX_POPULATION {
+        return Err(LanternError::Overflow("benford population above 10^6 legs"));
+    }
+    let n = i128::from(total);
+    let mut sum: i128 = 0;
+    for (&c, &p) in counts.iter().zip(expected_1e9.iter()) {
+        let diff = i128::from(c) * 1_000_000_000 - n * p;
+        let numerator = diff
+            .checked_mul(diff)
+            .and_then(|sq| sq.checked_mul(1_000_000))
+            .ok_or(LanternError::Overflow("chi-square numerator"))?;
+        let denominator = n * p * 1_000_000_000;
+        sum = sum
+            .checked_add(numerator / denominator)
+            .ok_or(LanternError::Overflow("chi-square sum"))?;
+    }
+    Ok(sum)
+}
+
+/// Maximum per-bucket Nigrini Z-score at 3 decimal places (`1000 = 1.000`).
+pub fn max_z_milli(counts: &[u64], expected_1e9: &[i128]) -> Result<i128, LanternError> {
+    let total: u64 = counts.iter().sum();
+    if total == 0 {
+        return Ok(0);
+    }
+    let n = u128::from(total);
+    let mut max_z: i128 = 0;
+    for (&c, &p_i128) in counts.iter().zip(expected_1e9.iter()) {
+        let p = p_i128 as u128;
+        let obs_1e9 = u128::from(c) * 1_000_000_000;
+        let exp_1e9 = n * p;
+        let diff_1e9 = obs_1e9.abs_diff(exp_1e9);
+        let cont_1e9 = 500_000_000u128;
+        let adj_diff_1e9 = diff_1e9.saturating_sub(cont_1e9);
+        let var_num = n.saturating_mul(p).saturating_mul(1_000_000_000 - p);
+        let denom = var_num.isqrt().max(1);
+        let z_milli = (adj_diff_1e9.saturating_mul(1_000)) / denom;
+        let z_i128 = i128::try_from(z_milli).map_err(|_| LanternError::Overflow("z-score"))?;
+        if z_i128 > max_z {
+            max_z = z_i128;
+        }
+    }
+    Ok(max_z)
+}
+
+/// `benford.second_digit`.
+pub struct SecondDigit {
+    params: Params,
+}
+procedure_boilerplate!(SecondDigit, "benford.second_digit");
+
+impl Procedure for SecondDigit {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let min_population = u64::from(self.params.get_u32("min_population")?);
+        let close = i128::from(self.params.get_u32("mad_close")?) * 1_000_000;
+        let acceptable = i128::from(self.params.get_u32("mad_acceptable")?) * 1_000_000;
+        let marginal = i128::from(self.params.get_u32("mad_marginal")?) * 1_000_000;
+        let currency = u16::try_from(self.params.get_u32("currency_iso4217")?).map_err(|_| {
+            LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "currency_iso4217".into(),
+                message: "must be an ISO 4217 numeric code in 1..=999".into(),
+            }
+        })?;
+        if !(1..=999).contains(&currency) {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "currency_iso4217".into(),
+                message: "must be an ISO 4217 numeric code in 1..=999".into(),
+            });
+        }
+        let target_side = match self.params.get("side")? {
+            0 => Side::Debit,
+            1 => Side::Credit,
+            _ => {
+                return Err(LanternError::Parameter {
+                    procedure: Self::ID.into(),
+                    name: "side".into(),
+                    message: "must be 0 (debit) or 1 (credit)".into(),
+                });
+            }
+        };
+        let mut counts = [0u64; 10];
+        for e in snapshot.live_postings()? {
+            work.entry();
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                let Some(unit) = book.units.get(leg.amount.unit) else {
+                    return Err(
+                        KernelError::Corrupt("a leg names an unregistered unit".into()).into(),
+                    );
+                };
+                if leg.side != target_side
+                    || !matches!(unit.kind, UnitKind::Currency { iso4217 } if iso4217 == currency)
+                {
+                    continue;
+                }
+                let magnitude = leg.amount.mantissa.unsigned_abs();
+                let min_mag = unit.one().unsigned_abs().saturating_mul(10).max(10);
+                if magnitude < min_mag {
+                    continue;
+                }
+                let d2 = second_digit(magnitude);
+                counts[usize::from(d2)] += 1;
+            }
+        }
+        let population: u64 = counts.iter().sum();
+        if population < min_population {
+            return Ok(vec![finding(
+                Self::ID,
+                Severity::Info,
+                Statistic::count("population", population, population),
+                Vec::new(),
+                format!(
+                    "population {population} is below the registered minimum {min_population}; no conformity is claimed"
+                ),
+            )]);
+        }
+        let mad = mad_table_1e9(&counts, &BENFORD_SECOND_1E9)?;
+        let max_z = max_z_milli(&counts, &BENFORD_SECOND_1E9)?;
+        let chi = if population <= MAX_POPULATION {
+            format!(
+                "chi-square {}e-6 with 9 degrees of freedom, max Z {}e-3",
+                chi_square_table_1e6(&counts, &BENFORD_SECOND_1E9)?,
+                max_z
+            )
+        } else {
+            format!(
+                "chi-square not computed above {MAX_POPULATION} legs; max Z {max_z}e-3; MAD is the scored statistic"
+            )
+        };
+        let severity = if mad <= close {
+            Severity::Info
+        } else if mad <= acceptable {
+            Severity::Low
+        } else if mad <= marginal {
+            Severity::Medium
+        } else {
+            Severity::High
+        };
+        Ok(vec![finding(
+            Self::ID,
+            severity,
+            Statistic {
+                name: "mad".into(),
+                value: mad,
+                scale: 9,
+                population,
+            },
+            Vec::new(),
+            format!(
+                "second-digit counts {counts:?} over {population} legs; MAD {mad}e-9 (close ≤ {close}e-9, acceptable ≤ {acceptable}e-9, marginal ≤ {marginal}e-9); {chi}"
+            ),
+        )])
+    }
+}
+
+/// `benford.first_two_digits`.
+pub struct FirstTwoDigits {
+    params: Params,
+}
+procedure_boilerplate!(FirstTwoDigits, "benford.first_two_digits");
+
+impl Procedure for FirstTwoDigits {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let min_population = u64::from(self.params.get_u32("min_population")?);
+        let close = i128::from(self.params.get_u32("mad_close")?) * 100_000;
+        let acceptable = i128::from(self.params.get_u32("mad_acceptable")?) * 100_000;
+        let marginal = i128::from(self.params.get_u32("mad_marginal")?) * 100_000;
+        let currency = u16::try_from(self.params.get_u32("currency_iso4217")?).map_err(|_| {
+            LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "currency_iso4217".into(),
+                message: "must be an ISO 4217 numeric code in 1..=999".into(),
+            }
+        })?;
+        if !(1..=999).contains(&currency) {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "currency_iso4217".into(),
+                message: "must be an ISO 4217 numeric code in 1..=999".into(),
+            });
+        }
+        let target_side = match self.params.get("side")? {
+            0 => Side::Debit,
+            1 => Side::Credit,
+            _ => {
+                return Err(LanternError::Parameter {
+                    procedure: Self::ID.into(),
+                    name: "side".into(),
+                    message: "must be 0 (debit) or 1 (credit)".into(),
+                });
+            }
+        };
+        let mut counts = [0u64; 90];
+        for e in snapshot.live_postings()? {
+            work.entry();
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                let Some(unit) = book.units.get(leg.amount.unit) else {
+                    return Err(
+                        KernelError::Corrupt("a leg names an unregistered unit".into()).into(),
+                    );
+                };
+                if leg.side != target_side
+                    || !matches!(unit.kind, UnitKind::Currency { iso4217 } if iso4217 == currency)
+                {
+                    continue;
+                }
+                let magnitude = leg.amount.mantissa.unsigned_abs();
+                let min_mag = unit.one().unsigned_abs().saturating_mul(10).max(10);
+                if magnitude < min_mag {
+                    continue;
+                }
+                let d12 = first_two_digits(magnitude);
+                if (10..=99).contains(&d12) {
+                    counts[usize::from(d12 - 10)] += 1;
+                }
+            }
+        }
+        let population: u64 = counts.iter().sum();
+        if population < min_population {
+            return Ok(vec![finding(
+                Self::ID,
+                Severity::Info,
+                Statistic::count("population", population, population),
+                Vec::new(),
+                format!(
+                    "population {population} is below the registered minimum {min_population}; no conformity is claimed"
+                ),
+            )]);
+        }
+        let mad = mad_table_1e9(&counts, &BENFORD_FIRST_TWO_1E9)?;
+        let max_z = max_z_milli(&counts, &BENFORD_FIRST_TWO_1E9)?;
+        let chi = if population <= MAX_POPULATION {
+            format!(
+                "chi-square {}e-6 with 89 degrees of freedom, max Z {}e-3",
+                chi_square_table_1e6(&counts, &BENFORD_FIRST_TWO_1E9)?,
+                max_z
+            )
+        } else {
+            format!(
+                "chi-square not computed above {MAX_POPULATION} legs; max Z {max_z}e-3; MAD is the scored statistic"
+            )
+        };
+        let severity = if mad <= close {
+            Severity::Info
+        } else if mad <= acceptable {
+            Severity::Low
+        } else if mad <= marginal {
+            Severity::Medium
+        } else {
+            Severity::High
+        };
+        Ok(vec![finding(
+            Self::ID,
+            severity,
+            Statistic {
+                name: "mad".into(),
+                value: mad,
+                scale: 9,
+                population,
+            },
+            Vec::new(),
+            format!(
+                "first-two-digits over {population} legs; MAD {mad}e-9 (close ≤ {close}e-9, acceptable ≤ {acceptable}e-9, marginal ≤ {marginal}e-9); {chi}"
+            ),
+        )])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +597,18 @@ mod tests {
     fn the_expected_proportions_sum_to_one() {
         assert_eq!(BENFORD_1E9.iter().sum::<i128>(), 1_000_000_000);
         assert!(BENFORD_1E9.windows(2).all(|w| w[0] > w[1]));
+        assert_eq!(BENFORD_SECOND_1E9.iter().sum::<i128>(), 1_000_000_000);
+        assert!(BENFORD_SECOND_1E9.windows(2).all(|w| w[0] > w[1]));
+        assert_eq!(BENFORD_FIRST_TWO_1E9.iter().sum::<i128>(), 1_000_000_000);
+        assert!(BENFORD_FIRST_TWO_1E9.windows(2).all(|w| w[0] > w[1]));
+        for d1 in 0..9 {
+            let row_sum: i128 = BENFORD_FIRST_TWO_1E9[d1 * 10..(d1 + 1) * 10].iter().sum();
+            assert_eq!(row_sum, BENFORD_1E9[d1]);
+        }
+        for d2 in 0..10 {
+            let col_sum: i128 = (0..9).map(|d1| BENFORD_FIRST_TWO_1E9[d1 * 10 + d2]).sum();
+            assert_eq!(col_sum, BENFORD_SECOND_1E9[d2]);
+        }
     }
 
     #[test]
@@ -229,10 +616,17 @@ mod tests {
         assert_eq!(first_digit(1), 1);
         assert_eq!(first_digit(9_999), 9);
         assert_eq!(first_digit(123_456_789_012), 1);
+        assert_eq!(first_two_digits(10), 10);
+        assert_eq!(first_two_digits(98_765), 98);
+        assert_eq!(second_digit(98_765), 8);
         // A population distributed exactly per the table (scaled by 1e9
         // legs) deviates by nothing but the table's own rounding.
         let counts: [u64; 9] = core::array::from_fn(|d| BENFORD_1E9[d] as u64);
         assert_eq!(mad_1e9(&counts).unwrap(), 0);
+        let counts2: [u64; 10] = core::array::from_fn(|d| BENFORD_SECOND_1E9[d] as u64);
+        assert_eq!(mad_table_1e9(&counts2, &BENFORD_SECOND_1E9).unwrap(), 0);
+        let counts12: [u64; 90] = core::array::from_fn(|d| BENFORD_FIRST_TWO_1E9[d] as u64);
+        assert_eq!(mad_table_1e9(&counts12, &BENFORD_FIRST_TWO_1E9).unwrap(), 0);
         // A uniform population is far from Benford: MAD = Σ|1/9 − P_d| / 9
         // ≈ 0.0597 (0.53745 / 9), exactly 59_717_035e-9 in this arithmetic.
         let uniform = [100u64; 9];

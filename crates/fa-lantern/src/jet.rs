@@ -484,3 +484,574 @@ impl Procedure for ThinDescriptions {
         Ok(out)
     }
 }
+
+/// `jet.unusual_accounts`: live postings whose account-pair co-occurrence is
+/// rare in the snapshot population.
+pub struct UnusualAccounts {
+    params: Params,
+}
+procedure_boilerplate!(UnusualAccounts, "jet.unusual_accounts");
+
+impl Procedure for UnusualAccounts {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        _book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let max_pair_count = u64::from(self.params.get_u32("max_pair_count")?);
+        let min_population = u64::from(self.params.get_u32("min_population")?);
+        let mut live = snapshot.live_postings()?;
+        live.sort_by_key(|e| e.vid);
+        let population = live.len() as u64;
+        let mut freq: BTreeMap<Vec<VId>, u64> = BTreeMap::new();
+        let mut entry_keys: Vec<(VId, Vec<VId>)> = Vec::with_capacity(live.len());
+        for e in &live {
+            work.entry();
+            let mut accts: Vec<VId> = Vec::with_capacity(e.entry.proposal.legs.len());
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                if snapshot.accounts.contains_key(&leg.account_ref) {
+                    accts.push(leg.account_ref);
+                }
+            }
+            accts.sort_unstable();
+            accts.dedup();
+            if accts.len() >= 2 {
+                *freq.entry(accts.clone()).or_insert(0) += 1;
+            }
+            entry_keys.push((e.vid, accts));
+        }
+        if population < min_population {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for (vid, accts) in entry_keys {
+            work.compare(1);
+            if accts.len() < 2 {
+                continue;
+            }
+            let count = freq.get(&accts).copied().unwrap_or(0);
+            if count <= max_pair_count {
+                let mut cites = vec![Cite::Entry(vid)];
+                cites.extend(accts.iter().take(MAX_CITES - 1).copied().map(Cite::Account));
+                out.push(finding(
+                    Self::ID,
+                    Severity::Low,
+                    Statistic::count("pair_occurrences", count, population),
+                    cites,
+                    format!(
+                        "account combination ({} accounts) occurs {count} time(s) in {population} live postings (max_pair_count {max_pair_count})",
+                        accts.len()
+                    ),
+                ));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `jet.unusual_preparers`: postings to an account by a principal who rarely
+/// posts to that account.
+pub struct UnusualPreparers {
+    params: Params,
+}
+procedure_boilerplate!(UnusualPreparers, "jet.unusual_preparers");
+
+impl Procedure for UnusualPreparers {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        _book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let max_prep_count = u64::from(self.params.get_u32("max_preparer_count")?);
+        let min_acct_entries = u64::from(self.params.get_u32("min_account_entries")?);
+        let mut live = snapshot.live_postings()?;
+        live.sort_by_key(|e| e.vid);
+        let mut acct_totals: BTreeMap<VId, u64> = BTreeMap::new();
+        let mut acct_prep_counts: BTreeMap<(VId, VId), u64> = BTreeMap::new();
+        let mut acct_preps: BTreeMap<VId, std::collections::BTreeSet<VId>> = BTreeMap::new();
+        let mut entry_accts: Vec<(VId, VId, Vec<VId>)> = Vec::with_capacity(live.len());
+        for e in &live {
+            work.entry();
+            let prep = e.entry.proposal.principal_ref;
+            let mut accts: Vec<VId> = Vec::new();
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                if snapshot.accounts.contains_key(&leg.account_ref) {
+                    accts.push(leg.account_ref);
+                }
+            }
+            accts.sort_unstable();
+            accts.dedup();
+            for &acct in &accts {
+                *acct_totals.entry(acct).or_insert(0) += 1;
+                *acct_prep_counts.entry((acct, prep)).or_insert(0) += 1;
+                acct_preps.entry(acct).or_default().insert(prep);
+            }
+            entry_accts.push((e.vid, prep, accts));
+        }
+        let mut out = Vec::new();
+        for (vid, prep, accts) in entry_accts {
+            work.compare(1);
+            for acct in accts {
+                let total = acct_totals.get(&acct).copied().unwrap_or(0);
+                let distinct_preps = acct_preps.get(&acct).map_or(0, |s| s.len());
+                let count = acct_prep_counts.get(&(acct, prep)).copied().unwrap_or(0);
+                if total >= min_acct_entries && distinct_preps >= 2 && count <= max_prep_count {
+                    out.push(finding(
+                        Self::ID,
+                        Severity::Low,
+                        Statistic::count("preparer_account_postings", count, total),
+                        vec![Cite::Entry(vid), Cite::Account(acct)],
+                        format!(
+                            "preparer has {count} of {total} live posting(s) on this account across {distinct_preps} preparers"
+                        ),
+                    ));
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `jet.manual_vs_rule`: manual entries on accounts predominantly posted by
+/// deterministic rules.
+pub struct ManualVsRule {
+    params: Params,
+}
+procedure_boilerplate!(ManualVsRule, "jet.manual_vs_rule");
+
+impl Procedure for ManualVsRule {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        _book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let min_rule_bps = i128::from(self.params.get_u32("min_rule_share_bps")?);
+        let min_acct_entries = u64::from(self.params.get_u32("min_account_entries")?);
+        let mut live = snapshot.live_postings()?;
+        live.sort_by_key(|e| e.vid);
+        let mut acct_totals: BTreeMap<VId, u64> = BTreeMap::new();
+        let mut acct_rules: BTreeMap<VId, u64> = BTreeMap::new();
+        let mut manual_entries: Vec<(VId, Vec<VId>)> = Vec::new();
+        for e in &live {
+            work.entry();
+            let is_rule = matches!(e.entry.proposal.origin, EntryOrigin::Rule { .. });
+            let is_manual = matches!(e.entry.proposal.origin, EntryOrigin::Manual { .. });
+            let mut accts: Vec<VId> = Vec::new();
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                if snapshot.accounts.contains_key(&leg.account_ref) {
+                    accts.push(leg.account_ref);
+                }
+            }
+            accts.sort_unstable();
+            accts.dedup();
+            for &acct in &accts {
+                *acct_totals.entry(acct).or_insert(0) += 1;
+                if is_rule {
+                    *acct_rules.entry(acct).or_insert(0) += 1;
+                }
+            }
+            if is_manual {
+                manual_entries.push((e.vid, accts));
+            }
+        }
+        let mut out = Vec::new();
+        for (vid, accts) in manual_entries {
+            work.compare(1);
+            for acct in accts {
+                let total = acct_totals.get(&acct).copied().unwrap_or(0);
+                if total < min_acct_entries {
+                    continue;
+                }
+                let rules = acct_rules.get(&acct).copied().unwrap_or(0);
+                let share_bps = (i128::from(rules) * 10_000) / i128::from(total);
+                if share_bps >= min_rule_bps {
+                    out.push(finding(
+                        Self::ID,
+                        Severity::Medium,
+                        Statistic {
+                            name: "rule_share_bps".into(),
+                            value: share_bps,
+                            scale: 0,
+                            population: total,
+                        },
+                        vec![Cite::Entry(vid), Cite::Account(acct)],
+                        format!(
+                            "manual entry on an account where {rules} of {total} postings ({share_bps} bps) are rule-derived"
+                        ),
+                    ));
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `jet.large_round_reversals`: round-amount postings that are reversed in a
+/// subsequent period within `window_days`.
+pub struct LargeRoundReversals {
+    params: Params,
+}
+procedure_boilerplate!(LargeRoundReversals, "jet.large_round_reversals");
+
+impl Procedure for LargeRoundReversals {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let power = self.params.get_u32("round_power")?;
+        if power > 30 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "round_power".into(),
+                message: "must be at most 30".into(),
+            });
+        }
+        let factor = 10i128
+            .checked_pow(power)
+            .ok_or(LanternError::Overflow("round factor"))?;
+        let window = i32::try_from(self.params.get_u32("window_days")?)
+            .map_err(|_| LanternError::Overflow("window_days"))?;
+        let mut by_vid: BTreeMap<VId, & crate::snapshot::SnapshotEntry> = BTreeMap::new();
+        for e in &snapshot.entries {
+            work.entry();
+            by_vid.insert(e.vid, e);
+        }
+        let population = snapshot.entries.len() as u64;
+        let mut out = Vec::new();
+        for (&rev_vid, &rev) in &by_vid {
+            if rev.entry.proposal.class != fa_model::EntryClass::REVERSAL {
+                continue;
+            }
+            for sup in &rev.entry.proposal.supersession {
+                if sup.kind != fa_model::SupersessionKind::Reverses {
+                    continue;
+                }
+                let Some(&orig) = by_vid.get(&sup.target.vid) else {
+                    continue;
+                };
+                work.compare(1);
+                if orig.period.is_empty() || rev.period.is_empty() || orig.period == rev.period {
+                    continue;
+                }
+                let days = rev.entry.proposal.effective_date.0 - orig.entry.proposal.effective_date.0;
+                if !(0..=window).contains(&days) {
+                    continue;
+                }
+                let mut has_round = false;
+                for leg in &orig.entry.proposal.legs {
+                    work.leg();
+                    let Some(unit) = book.units.get(leg.amount.unit) else {
+                        return Err(
+                            KernelError::Corrupt("a leg names an unregistered unit".into()).into(),
+                        );
+                    };
+                    let base = unit
+                        .one()
+                        .checked_mul(factor)
+                        .ok_or(LanternError::Overflow("round base"))?;
+                    let m = leg.amount.mantissa;
+                    if m != 0 && m % base == 0 {
+                        has_round = true;
+                    }
+                }
+                if has_round {
+                    let mut cites = vec![Cite::Entry(orig.vid), Cite::Entry(rev_vid)];
+                    cites.sort_by_key(|c| match c {
+                        Cite::Entry(v) => v.0,
+                        _ => 0,
+                    });
+                    out.push(finding(
+                        Self::ID,
+                        Severity::High,
+                        Statistic::count("days_to_reversal", days as u64, population),
+                        cites,
+                        format!(
+                            "round-amount entry in {} reversed {} day(s) later in {}",
+                            orig.period, days, rev.period
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `jet.suspense_aging`: suspense, clearing, and wash accounts with uncleared
+/// balances older than `max_age_days`.
+pub struct SuspenseAging {
+    params: Params,
+}
+procedure_boilerplate!(SuspenseAging, "jet.suspense_aging");
+
+impl SuspenseAging {
+    #[must_use]
+    pub fn is_suspense_account(code: &str, name: &str) -> bool {
+        let c = code.to_ascii_lowercase();
+        let n = name.to_ascii_lowercase();
+        for token in ["suspense", "clearing", "wash", "9999", "unallocated"] {
+            if c.contains(token) || n.contains(token) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+impl Procedure for SuspenseAging {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        _book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let max_age = i32::try_from(self.params.get_u32("max_age_days")?)
+            .map_err(|_| LanternError::Overflow("max_age_days"))?;
+        let suspense_vids: std::collections::BTreeSet<VId> = snapshot
+            .accounts
+            .values()
+            .filter(|a| Self::is_suspense_account(&a.code, &a.name))
+            .map(|a| a.vid)
+            .collect();
+        if suspense_vids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut live = snapshot.live_postings_through(snapshot.coordinate.effective_through)?;
+        live.sort_by_key(|e| e.vid);
+        let population = live.len() as u64;
+        let as_of = snapshot.coordinate.effective_through.or_else(|| {
+            live.iter()
+                .map(|e| e.entry.proposal.effective_date)
+                .max()
+        });
+        let Some(as_of) = as_of else {
+            return Ok(Vec::new());
+        };
+        let mut balances: BTreeMap<(VId, fa_money::UnitId), (i128, fa_time::DateDay, Vec<VId>)> =
+            BTreeMap::new();
+        for e in &live {
+            work.entry();
+            let eff = e.entry.proposal.effective_date;
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                if !suspense_vids.contains(&leg.account_ref) {
+                    continue;
+                }
+                let signed = match leg.side {
+                    fa_money::Side::Debit => leg.amount.mantissa,
+                    fa_money::Side::Credit => -leg.amount.mantissa,
+                };
+                let entry = balances
+                    .entry((leg.account_ref, leg.amount.unit))
+                    .or_insert((0, eff, Vec::new()));
+                entry.0 = entry
+                    .0
+                    .checked_add(signed)
+                    .ok_or(LanternError::Overflow("suspense balance"))?;
+                if eff < entry.1 {
+                    entry.1 = eff;
+                }
+                if entry.2.last().copied() != Some(e.vid) {
+                    entry.2.push(e.vid);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for ((acct_vid, _unit), (net, oldest, mut entry_vids)) in balances {
+            work.compare(1);
+            if net == 0 {
+                continue;
+            }
+            let age = as_of.0 - oldest.0;
+            if age > max_age {
+                entry_vids.sort_unstable();
+                entry_vids.dedup();
+                let mut cites = vec![Cite::Account(acct_vid)];
+                cites.extend(
+                    entry_vids
+                        .into_iter()
+                        .take(MAX_CITES - 1)
+                        .map(Cite::Entry),
+                );
+                let severity = if age > max_age.saturating_mul(2) {
+                    Severity::High
+                } else {
+                    Severity::Medium
+                };
+                out.push(finding(
+                    Self::ID,
+                    severity,
+                    Statistic::count("age_days", age as u64, population),
+                    cites,
+                    format!(
+                        "suspense/clearing account retains non-zero net balance {net} aged {age} day(s) (max_age_days {max_age})"
+                    ),
+                ));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `jet.intercompany_unmatched`: live postings on intercompany accounts
+/// without a reciprocal matching balance in the same period and unit.
+pub struct IntercompanyUnmatched {
+    params: Params,
+}
+procedure_boilerplate!(IntercompanyUnmatched, "jet.intercompany_unmatched");
+
+impl IntercompanyUnmatched {
+    #[must_use]
+    pub fn is_intercompany_account(code: &str, name: &str) -> bool {
+        let c = code.to_ascii_lowercase();
+        let n = name.to_ascii_lowercase();
+        c.starts_with("ic")
+            || c.contains("interco")
+            || n.contains("intercompany")
+            || n.contains("due to")
+            || n.contains("due from")
+    }
+}
+
+impl Procedure for IntercompanyUnmatched {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let ic_vids: std::collections::BTreeSet<VId> = snapshot
+            .accounts
+            .values()
+            .filter(|a| Self::is_intercompany_account(&a.code, &a.name))
+            .map(|a| a.vid)
+            .collect();
+        if ic_vids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut live = snapshot.live_postings()?;
+        live.sort_by_key(|e| e.vid);
+        let population = live.len() as u64;
+        let mut by_period_unit: BTreeMap<(String, fa_money::UnitId), (i128, Vec<VId>, Vec<VId>)> =
+            BTreeMap::new();
+        for e in &live {
+            work.entry();
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                if !ic_vids.contains(&leg.account_ref) {
+                    continue;
+                }
+                let signed = match leg.side {
+                    fa_money::Side::Debit => leg.amount.mantissa,
+                    fa_money::Side::Credit => -leg.amount.mantissa,
+                };
+                let bucket = by_period_unit
+                    .entry((e.period.clone(), leg.amount.unit))
+                    .or_insert((0, Vec::new(), Vec::new()));
+                bucket.0 = bucket
+                    .0
+                    .checked_add(signed)
+                    .ok_or(LanternError::Overflow("intercompany balance"))?;
+                bucket.1.push(e.vid);
+                bucket.2.push(leg.account_ref);
+            }
+        }
+        let mut out = Vec::new();
+        for ((period, unit_id), (net, mut entry_vids, mut acct_vids)) in by_period_unit {
+            work.compare(1);
+            if net == 0 {
+                continue;
+            }
+            let scale = book.units.get(unit_id).map_or(2, |u| u.scale);
+            entry_vids.sort_unstable();
+            entry_vids.dedup();
+            acct_vids.sort_unstable();
+            acct_vids.dedup();
+            let mut cites: Vec<Cite> = entry_vids.into_iter().map(Cite::Entry).collect();
+            cites.extend(acct_vids.into_iter().map(Cite::Account));
+            if !period.is_empty() && snapshot.periods.contains_key(&period) {
+                cites.push(Cite::Period(period.clone()));
+            }
+            cites.truncate(MAX_CITES);
+            out.push(finding(
+                Self::ID,
+                Severity::High,
+                Statistic {
+                    name: "unmatched_mantissa".into(),
+                    value: net.abs(),
+                    scale,
+                    population,
+                },
+                cites,
+                format!(
+                    "intercompany postings in period `{period}` have unmatched net balance {net}"
+                ),
+            ));
+        }
+        Ok(out)
+    }
+}

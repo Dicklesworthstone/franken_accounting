@@ -77,6 +77,12 @@ pub struct Snapshot {
     /// fa-registers' historical open-item fold through the coordinate's
     /// effective date; `None` when the run declared no effective date.
     pub open_items_as_of: Option<OpenItemSnapshot>,
+    /// Validated REA graph snapshot (`Party`, `Instrument`, `LegalEntity`,
+    /// `ExternalId`, and valid-time `OWNS`/`CONTROLS`/`RELATED_TO` edges) at `known_at`.
+    pub rea: fa_journal::rea::ReaSnapshot,
+    /// Journaled attestations (`Reviewed`, `ManualAssertion`, `RegisterEquals`)
+    /// belonging to this book as known at `known_at`.
+    pub attestations: BTreeMap<VId, fa_journal::attestation::StoredAttestation>,
     /// `H(domain ‖ known_at ‖ (vid, entry_digest, recorded_at)*)`.
     pub inputs_digest: [u8; 32],
 }
@@ -153,6 +159,7 @@ impl Snapshot {
         }
         let mut accounts = BTreeMap::new();
         let mut periods = BTreeMap::new();
+        let mut attestations = BTreeMap::new();
         for row in db.vertices_at(seq)? {
             if row.labels.contains(&label::ACCOUNT) {
                 let same_book = matches!(
@@ -168,8 +175,32 @@ impl Snapshot {
                 if p.calendar_id == book.calendar.id {
                     periods.insert(p.code.clone(), p);
                 }
+            } else if row.labels.contains(&label::ATTESTATION) {
+                let same_book = matches!(
+                    prop(&row, property::BOOK_ID),
+                    Some(CanonicalScalar::Bytes(b)) if b.as_slice() == &book.book_id.0[..]
+                );
+                if same_book {
+                    let payload = bytes(&row, property::FA_PAYLOAD, "attestation.payload")?;
+                    let att = fa_journal::attestation::StoredAttestation::decode(&payload)?;
+                    attestations.insert(row.vid, att);
+                }
             }
         }
+        let rea = match fa_journal::rea::read_rea_at(db, book, seq) {
+            Ok(s) => s,
+            Err(KernelError::Corrupt(msg)) if msg.contains("no book spec") => {
+                fa_journal::rea::ReaSnapshot {
+                    known_at: seq,
+                    parties: BTreeMap::new(),
+                    instruments: BTreeMap::new(),
+                    legal_entities: BTreeMap::new(),
+                    external_ids: BTreeMap::new(),
+                    relationships: Vec::new(),
+                }
+            }
+            Err(e) => return Err(e.into()),
+        };
         let open_items_as_of = match effective_through {
             Some(through) => Some(open_items_as_of(db, book, None, through, Some(seq))?),
             None => None,
@@ -200,6 +231,8 @@ impl Snapshot {
             periods,
             transitions,
             open_items_as_of,
+            rea,
+            attestations,
             inputs_digest,
         })
     }
