@@ -1,0 +1,274 @@
+//! One bounded decoder and current-authority replay entrypoint for retained-history
+//! report artifacts. The original family encodings, digests and replay laws are
+//! unchanged; this is dispatch, not another accounting fold or certificate format.
+//!
+//! Decoding establishes content integrity only. Replay checks the original book
+//! through each family's existing implementation. Neither a saved producer nor a
+//! capability commitment supplies authority to this caller. All currently supported
+//! families contain whole-book native inputs and require whole-book read authority.
+//! No signature, outsider completeness, freshness, retention or economic-truth claim
+//! follows from decoding or from the local retained-history replay receipt.
+
+use asupersync::fs::Vfs;
+use fa_journal::{KernelError, Refusal, exit};
+use fa_model::{Id128, Reader};
+use fa_policy::Capability;
+use fgdb_types::context::PurposeContexts;
+use fgdb_types::{CommitSeq, VId};
+
+use crate::{
+    AgingCertificate, AsyncBook, BookError, Outcome, ReportCertificate,
+    RollForwardCertificate, SummaryCertificate,
+};
+
+/// Total encoded input bound, including the complete nested native closure.
+pub const MAX_REPORT_ARTIFACT_BYTES: usize = crate::certificate::MAX_CERTIFICATE_BYTES;
+
+/// A dispatch label, not a new durable discriminant or a verification grade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportArtifactFamily {
+    Native,
+    Summary,
+    EffectiveDateAging,
+    RollForward,
+}
+
+impl ReportArtifactFamily {
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Summary => "summary",
+            Self::EffectiveDateAging => "effective-date-aging",
+            Self::RollForward => "roll-forward",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Artifact {
+    Native(Box<ReportCertificate>),
+    Summary(Box<SummaryCertificate>),
+    Aging(Box<AgingCertificate>),
+    RollForward(Box<RollForwardCertificate>),
+}
+
+/// An intact canonical artifact, NOT a successful replay. Private variants keep
+/// hand-modified ReportCertificate fields from bypassing the family decoder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReportArtifact {
+    inner: Artifact,
+}
+
+/// Exact output returned only after the selected family's full historical replay.
+/// The digest is the original family digest, not a digest of a replacement wrapper.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayedReportArtifact {
+    pub family: ReportArtifactFamily,
+    pub book_id: Id128,
+    pub known_at: CommitSeq,
+    pub certificate_digest: [u8; 32],
+    pub output: Vec<u8>,
+}
+
+fn invalid(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        crate::certificate::code::CERTIFICATE_INVALID,
+        exit::VERIFICATION,
+        message,
+        "plan §13.6; fa-oimc (family-specific canonical bytes and retained-history replay)",
+        "supply the complete supported report certificate from its original book; retain the independently expected digest when checking a delivered artifact",
+    )
+}
+
+impl ReportArtifact {
+    /// Select EXACTLY one decoder from a bounded, borrowed format field. Unknown
+    /// versions are refused; a failed decoder is never retried as another family.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Refusal> {
+        if bytes.len() > MAX_REPORT_ARTIFACT_BYTES {
+            return Err(invalid("report artifact exceeds the 64 MiB total limit"));
+        }
+        let mut reader = Reader::new(bytes);
+        let format = reader
+            .bytes(64, "report artifact format")
+            .map_err(|error| invalid(format!("malformed report artifact: {error}")))?;
+        let inner = if [
+            crate::certificate::CERTIFICATE_FORMAT,
+            crate::certificate::INSTANT_CERTIFICATE_FORMAT,
+            crate::certificate::REPORT_CERTIFICATE_FORMAT,
+            crate::certificate::STATEMENT_CERTIFICATE_FORMAT,
+        ]
+        .contains(&format)
+        {
+            Artifact::Native(Box::new(ReportCertificate::decode(bytes)?))
+        } else if format == crate::summary_certificate::CERTIFICATE_FORMAT {
+            Artifact::Summary(Box::new(SummaryCertificate::decode(bytes)?))
+        } else if format == crate::AGING_CERTIFICATE_FORMAT {
+            Artifact::Aging(Box::new(AgingCertificate::decode(bytes)?))
+        } else if format == crate::ROLL_FORWARD_CERTIFICATE_FORMAT {
+            Artifact::RollForward(Box::new(RollForwardCertificate::decode(bytes)?))
+        } else {
+            return Err(invalid("unsupported report artifact family or version"));
+        };
+        Ok(Self { inner })
+    }
+
+    #[must_use]
+    pub fn family(&self) -> ReportArtifactFamily {
+        match &self.inner {
+            Artifact::Native(_) => ReportArtifactFamily::Native,
+            Artifact::Summary(_) => ReportArtifactFamily::Summary,
+            Artifact::Aging(_) => ReportArtifactFamily::EffectiveDateAging,
+            Artifact::RollForward(_) => ReportArtifactFamily::RollForward,
+        }
+    }
+
+    /// Inspect the source immutably. A nested source is not interchangeable with
+    /// its outer certificate: it omits the outer selector and exact derived output.
+    #[must_use]
+    pub fn source_certificate(&self) -> &ReportCertificate {
+        match &self.inner {
+            Artifact::Native(c) => c,
+            Artifact::Summary(c) => c.source_certificate(),
+            Artifact::Aging(c) => c.source(),
+            Artifact::RollForward(c) => c.source_certificate(),
+        }
+    }
+
+    #[must_use]
+    pub fn book_id(&self) -> Id128 {
+        self.source_certificate().book_id
+    }
+
+    #[must_use]
+    pub fn known_at(&self) -> CommitSeq {
+        self.source_certificate().known_at
+    }
+
+    #[must_use]
+    pub fn digest(&self) -> &[u8; 32] {
+        match &self.inner {
+            Artifact::Native(c) => &c.digest,
+            Artifact::Summary(c) => c.digest(),
+            Artifact::Aging(c) => c.digest(),
+            Artifact::RollForward(c) => c.digest(),
+        }
+    }
+
+    /// Original family output, not accepted as a historical result until replay.
+    #[must_use]
+    pub fn output(&self) -> &[u8] {
+        match &self.inner {
+            Artifact::Native(c) => &c.output,
+            Artifact::Summary(c) => c.output(),
+            Artifact::Aging(c) => c.output(),
+            Artifact::RollForward(c) => c.output(),
+        }
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
+        match &self.inner {
+            Artifact::Native(c) => c.canonical_bytes().map_err(|e| invalid(e.to_string())),
+            Artifact::Summary(c) => c.canonical_bytes(),
+            Artifact::Aging(c) => c.canonical_bytes(),
+            Artifact::RollForward(c) => c.canonical_bytes(),
+        }
+    }
+}
+
+// Typed entrypoints still validate the complete family encoding. In particular,
+// ReportCertificate has public fields and its encoder alone is not validation.
+macro_rules! from_certificate {
+    ($($ty:ty),+ $(,)?) => {$(
+        impl TryFrom<&$ty> for ReportArtifact {
+            type Error = Refusal;
+            fn try_from(certificate: &$ty) -> Result<Self, Self::Error> {
+                let bytes = certificate.canonical_bytes().map_err(|e| invalid(e.to_string()))?;
+                Self::decode(&bytes)
+            }
+        }
+    )+};
+}
+from_certificate!(
+    ReportCertificate,
+    SummaryCertificate,
+    AgingCertificate,
+    RollForwardCertificate,
+);
+
+fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
+    book: &AsyncBook<V, B>,
+    cx: &PurposeContexts,
+    principal: VId,
+    capability: &Capability,
+) -> Outcome<()> {
+    if let Err(denial) = fa_policy::admit_read(capability, principal, book.context().book_id) {
+        return Ok(Err(fa_journal::policy::refusal(&denial)));
+    }
+    book.query(cx, |db, context| {
+        let head = db.frontier().map_err(KernelError::from)?;
+        if let Err(denial) = fa_policy::current(capability, head) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        Ok(fa_journal::policy::capability_admitted(db, context, capability)?)
+    })
+}
+
+impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Replay canonical bytes under CURRENT caller authority. Admission happens
+    /// before decoding even malformed input. An expected digest, when supplied,
+    /// must be selected independently of the delivered bytes; matching it does
+    /// not bypass replay. None requests local replay of the artifact as supplied,
+    /// not verification that it answers a separately specified business scope.
+    /// This method publishes nothing and never replaces known-at with HEAD.
+    pub fn replay_report_artifact(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        bytes: &[u8],
+        expected_digest: Option<&[u8; 32]>,
+    ) -> Outcome<ReplayedReportArtifact> {
+        if let Err(refusal) = authorize(self, cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        let artifact = match ReportArtifact::decode(bytes) {
+            Ok(artifact) => artifact,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if artifact.book_id() != self.context().book_id {
+            return Ok(Err(invalid("report artifact belongs to another book")));
+        }
+        if expected_digest.is_some_and(|expected| expected != artifact.digest()) {
+            return Ok(Err(invalid(
+                "report artifact differs from the independently expected digest",
+            )));
+        }
+        let replayed = match &artifact.inner {
+            Artifact::Native(c) => self.replay_report(cx, c)?.map(|_| ()),
+            Artifact::Summary(c) => self
+                .replay_summary_trial_balance(cx, principal, capability, c)?
+                .map(|_| ()),
+            Artifact::Aging(c) => self
+                .replay_effective_date_aging(cx, principal, capability, c)?
+                .map(|_| ()),
+            Artifact::RollForward(c) => self
+                .replay_roll_forward(cx, principal, capability, c)?
+                .map(|_| ()),
+        };
+        if let Err(refusal) = replayed {
+            return Ok(Err(refusal));
+        }
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        Ok(Ok(ReplayedReportArtifact {
+            family: artifact.family(),
+            book_id: artifact.book_id(),
+            known_at: artifact.known_at(),
+            certificate_digest: *artifact.digest(),
+            output: artifact.output().to_vec(),
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests;

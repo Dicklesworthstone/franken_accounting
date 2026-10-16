@@ -68,6 +68,7 @@ pub mod indirect_cash_flow;
 pub mod intake;
 pub mod projections;
 pub mod proof;
+pub mod report_artifact;
 pub mod roll_forward;
 pub mod settlement;
 pub mod settlement_group;
@@ -149,6 +150,9 @@ pub use indirect_cash_flow::{
 pub use intake::IntakeAction;
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
+pub use report_artifact::{
+    MAX_REPORT_ARTIFACT_BYTES, ReportArtifact, ReportArtifactFamily, ReplayedReportArtifact,
+};
 pub use roll_forward::{
     CertifiedRollForward, MAX_ROLL_FORWARD_CERTIFICATE_BYTES, MAX_ROLL_FORWARD_WORKPAPER_BYTES,
     ROLL_FORWARD_CERTIFICATE_FORMAT, RollForward, RollForwardCertificate, RollForwardRequest,
