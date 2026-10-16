@@ -1,3 +1,5 @@
+mod cash_flow;
+
 use super::*;
 use std::path::Path;
 

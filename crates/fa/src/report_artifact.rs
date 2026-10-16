@@ -17,8 +17,9 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    AgingCertificate, AsyncBook, BookError, Outcome, ReportCertificate,
-    RollForwardCertificate, SummaryCertificate,
+    AgingCertificate, AsyncBook, BookError, CashFlowCertificate, CashFlowDefinition,
+    IndirectCashFlowCertificate, IndirectCashFlowRequest, Outcome, ReportCertificate,
+    RollForwardCertificate, RollForwardRequest, SummaryCertificate,
 };
 
 /// Total encoded input bound, including the complete nested native closure.
@@ -31,6 +32,8 @@ pub enum ReportArtifactFamily {
     Summary,
     EffectiveDateAging,
     RollForward,
+    CashFlow,
+    IndirectCashFlow,
 }
 
 impl ReportArtifactFamily {
@@ -41,8 +44,25 @@ impl ReportArtifactFamily {
             Self::Summary => "summary",
             Self::EffectiveDateAging => "effective-date-aging",
             Self::RollForward => "roll-forward",
+            Self::CashFlow => "cash-flow",
+            Self::IndirectCashFlow => "indirect-cash-flow",
         }
     }
+}
+
+/// Independently retained recipient expectations, never decoded from a delivery.
+/// Cash-flow families require their fixed scope and accounting definitions;
+/// neither an optional digest nor AsSupplied substitutes for those requirements.
+#[derive(Clone, Copy, Debug)]
+pub enum ReportArtifactExpectation<'a> {
+    /// Local replay for native, summary, aging and roll-forward artifacts.
+    /// This does not certify that the artifact answers a separate request.
+    AsSupplied,
+    CashFlow {
+        request: &'a RollForwardRequest,
+        definition: &'a CashFlowDefinition,
+    },
+    IndirectCashFlow(&'a IndirectCashFlowRequest),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +71,8 @@ enum Artifact {
     Summary(Box<SummaryCertificate>),
     Aging(Box<AgingCertificate>),
     RollForward(Box<RollForwardCertificate>),
+    CashFlow(Box<CashFlowCertificate>),
+    IndirectCashFlow(Box<IndirectCashFlowCertificate>),
 }
 
 /// An intact canonical artifact, NOT a successful replay. Private variants keep
@@ -107,6 +129,10 @@ impl ReportArtifact {
             Artifact::Aging(Box::new(AgingCertificate::decode(bytes)?))
         } else if format == crate::ROLL_FORWARD_CERTIFICATE_FORMAT {
             Artifact::RollForward(Box::new(RollForwardCertificate::decode(bytes)?))
+        } else if format == crate::CASH_FLOW_CERTIFICATE_FORMAT {
+            Artifact::CashFlow(Box::new(CashFlowCertificate::decode(bytes)?))
+        } else if format == crate::INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT {
+            Artifact::IndirectCashFlow(Box::new(IndirectCashFlowCertificate::decode(bytes)?))
         } else {
             return Err(invalid("unsupported report artifact family or version"));
         };
@@ -120,6 +146,8 @@ impl ReportArtifact {
             Artifact::Summary(_) => ReportArtifactFamily::Summary,
             Artifact::Aging(_) => ReportArtifactFamily::EffectiveDateAging,
             Artifact::RollForward(_) => ReportArtifactFamily::RollForward,
+            Artifact::CashFlow(_) => ReportArtifactFamily::CashFlow,
+            Artifact::IndirectCashFlow(_) => ReportArtifactFamily::IndirectCashFlow,
         }
     }
 
@@ -132,6 +160,10 @@ impl ReportArtifact {
             Artifact::Summary(c) => c.source_certificate(),
             Artifact::Aging(c) => c.source(),
             Artifact::RollForward(c) => c.source_certificate(),
+            Artifact::CashFlow(c) => c.source_certificate().source_certificate(),
+            Artifact::IndirectCashFlow(c) => {
+                c.source_certificate().source_certificate().source_certificate()
+            }
         }
     }
 
@@ -152,6 +184,8 @@ impl ReportArtifact {
             Artifact::Summary(c) => c.digest(),
             Artifact::Aging(c) => c.digest(),
             Artifact::RollForward(c) => c.digest(),
+            Artifact::CashFlow(c) => c.digest(),
+            Artifact::IndirectCashFlow(c) => c.digest(),
         }
     }
 
@@ -163,6 +197,8 @@ impl ReportArtifact {
             Artifact::Summary(c) => c.output(),
             Artifact::Aging(c) => c.output(),
             Artifact::RollForward(c) => c.output(),
+            Artifact::CashFlow(c) => c.output(),
+            Artifact::IndirectCashFlow(c) => c.output(),
         }
     }
 
@@ -172,6 +208,8 @@ impl ReportArtifact {
             Artifact::Summary(c) => c.canonical_bytes(),
             Artifact::Aging(c) => c.canonical_bytes(),
             Artifact::RollForward(c) => c.canonical_bytes(),
+            Artifact::CashFlow(c) => c.canonical_bytes(),
+            Artifact::IndirectCashFlow(c) => c.canonical_bytes(),
         }
     }
 }
@@ -194,6 +232,8 @@ from_certificate!(
     SummaryCertificate,
     AgingCertificate,
     RollForwardCertificate,
+    CashFlowCertificate,
+    IndirectCashFlowCertificate,
 );
 
 fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
@@ -220,6 +260,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// must be selected independently of the delivered bytes; matching it does
     /// not bypass replay. None requests local replay of the artifact as supplied,
     /// not verification that it answers a separately specified business scope.
+    /// Cash-flow families require replay_report_artifact_for with independently
+    /// supplied expectations; this convenience method refuses those families.
     /// This method publishes nothing and never replaces known-at with HEAD.
     pub fn replay_report_artifact(
         &self,
@@ -228,6 +270,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         bytes: &[u8],
         expected_digest: Option<&[u8; 32]>,
+    ) -> Outcome<ReplayedReportArtifact> {
+        self.replay_report_artifact_for(
+            cx,
+            principal,
+            capability,
+            bytes,
+            expected_digest,
+            ReportArtifactExpectation::AsSupplied,
+        )
+    }
+
+    /// The same bounded dispatch with independent expected scope/definitions.
+    /// Expectations must name the delivered family and preserve its existing
+    /// fixed-prefix requirements. A matching artifact digest cannot waive scope
+    /// checks. No request, classification or adjustment is taken from the artifact.
+    pub fn replay_report_artifact_for(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        bytes: &[u8],
+        expected_digest: Option<&[u8; 32]>,
+        expected: ReportArtifactExpectation<'_>,
     ) -> Outcome<ReplayedReportArtifact> {
         if let Err(refusal) = authorize(self, cx, principal, capability)? {
             return Ok(Err(refusal));
@@ -244,17 +309,34 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "report artifact differs from the independently expected digest",
             )));
         }
-        let replayed = match &artifact.inner {
-            Artifact::Native(c) => self.replay_report(cx, c)?.map(|_| ()),
-            Artifact::Summary(c) => self
+        let replayed = match (&artifact.inner, expected) {
+            (Artifact::Native(c), ReportArtifactExpectation::AsSupplied) => {
+                self.replay_report(cx, c)?.map(|_| ())
+            }
+            (Artifact::Summary(c), ReportArtifactExpectation::AsSupplied) => self
                 .replay_summary_trial_balance(cx, principal, capability, c)?
                 .map(|_| ()),
-            Artifact::Aging(c) => self
+            (Artifact::Aging(c), ReportArtifactExpectation::AsSupplied) => self
                 .replay_effective_date_aging(cx, principal, capability, c)?
                 .map(|_| ()),
-            Artifact::RollForward(c) => self
+            (Artifact::RollForward(c), ReportArtifactExpectation::AsSupplied) => self
                 .replay_roll_forward(cx, principal, capability, c)?
                 .map(|_| ()),
+            (
+                Artifact::CashFlow(c),
+                ReportArtifactExpectation::CashFlow { request, definition },
+            ) => self
+                .replay_cash_flow(cx, principal, capability, c, request, definition)?
+                .map(|_| ()),
+            (
+                Artifact::IndirectCashFlow(c),
+                ReportArtifactExpectation::IndirectCashFlow(request),
+            ) => self
+                .replay_indirect_cash_flow(cx, principal, capability, c, request)?
+                .map(|_| ()),
+            _ => return Ok(Err(invalid(
+                "report artifact requires matching independently supplied replay expectations",
+            ))),
         };
         if let Err(refusal) = replayed {
             return Ok(Err(refusal));
