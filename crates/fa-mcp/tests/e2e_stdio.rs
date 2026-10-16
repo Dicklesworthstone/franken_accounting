@@ -1523,18 +1523,31 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
 
     // Valid accounting/evidence reaches Profile::Agent in the kernel; this
     // must not be replaced by a blanket adapter write ban or an owner call.
-    for dry_run in [false, true] {
-        let (error, text, _) = call_tool(
-            &mut mcp,
-            "fa_post_post",
-            json!({"intent": intent, "evidence": [oid], "dry_run": dry_run}),
-        );
-        assert!(error, "an Agent must not plan or post to trunk: {text}");
-        let refused = structured_error(&text);
-        assert_eq!(refused["refusal_id"], "FA-REF-013", "{refused}");
-        assert_eq!(refused["exit"], 7);
-        assert_eq!(refused["authority"], authority);
-    }
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": intent, "evidence": [oid], "dry_run": false}),
+    );
+    assert!(error, "an Agent must not post to trunk: {text}");
+    let refused = structured_error(&text);
+    assert_eq!(refused["refusal_id"], "FA-REF-013", "{refused}");
+    assert_eq!(refused["exit"], 7);
+    assert_eq!(refused["authority"], authority);
+    // Plan §15.3: the Agent may rehearse the same post. The kernel runs every
+    // posting law, the plan binds the Agent's capability (so it commits for
+    // no one), and the book is unchanged (checked against `before` below).
+    let (error, text, result) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": intent, "evidence": [oid], "dry_run": true}),
+    );
+    assert!(!error, "an Agent rehearses a trunk post: {text}");
+    eprintln!("agent rehearsal over MCP: {text}");
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["authority"], authority);
+    assert!(text.contains("plan_digest"), "{text}");
+    assert_eq!(cli_data(&["book", "info", "--book", &b, "--json"]), before);
 
     // Presence is refused even for null/false and before float detection.
     for argument in fa_mcp::registry::FORBIDDEN_ARGUMENTS {

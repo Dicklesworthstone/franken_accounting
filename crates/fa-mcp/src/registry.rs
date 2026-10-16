@@ -981,7 +981,7 @@ impl McpRegistry {
     #[must_use]
     pub fn instructions(&self) -> String {
         let mut text = String::from(
-            "FrankenAccounting over MCP: each call runs the accounting dispatcher under one trusted launch-bound principal, profile, capability and book. Start with `fa_orient_capabilities`. Tool arguments cannot contain as, grant, yes, keys, book, principal, profile or via; even null or false is refused as forbidden_argument. Input content travels inline: file, intent_file, plan_file, plan_out, review_out and certificate_out are refused as forbidden_path before dispatch unless the operator launched the server with an explicit --files <dir> containment root (fa-yha). Use dry_run: true on a period transition to receive its sealed proposal bytes without writing a file or changing the book. The Agent default reads but cannot publish accounting entries to trunk (FA-REF-013); an operator may explicitly launch the bounded Preparer profile. Dangerous commits remain unavailable through MCP until a separate confirmation exchange exists; planning does not authorize a commit. This is launch-time trust, not authenticated capability issuance. A book held by fad is refused until its transport can preserve this authority. Rules: amounts are strings with their unit (\"1500.00 USD\"), never JSON numbers; effective dates are civil YYYY-MM-DD; historical report instant selectors remain available; recorded time is assigned by the journal; corrections are new entries — nothing is edited in place; never invent balancing legs, re-date entries to dodge period law, approve your own proposal, or cite a placeholder. A tool's first content block is the robot envelope's data; the second adds book, coordinate, certificate, warnings, next_actions and authority. Resources retain their data first and return launch authority in a second JSON block. Tool errors carry {type, message, recoverable, fix_hint, suggested_tool_calls, exit, refusal_id, cite, detail, authority}. A different identity or stronger authority requires an operator to launch a separate appropriately bound session.\n\nClusters:\n",
+            "FrankenAccounting over MCP: each call runs the accounting dispatcher under one trusted launch-bound principal, profile, capability and book. Start with `fa_orient_capabilities`. Tool arguments cannot contain as, grant, yes, keys, book, principal, profile or via; even null or false is refused as forbidden_argument. Input content travels inline: file, intent_file, plan_file, plan_out, review_out and certificate_out are refused as forbidden_path before dispatch unless the operator launched the server with an explicit --files <dir> containment root (fa-yha). Use dry_run: true on a period transition to receive its sealed proposal bytes without writing a file or changing the book. The Agent default reads but cannot publish accounting entries to trunk (FA-REF-013); it may rehearse a post, reverse, reserve or resolve with dry_run: true, and that plan commits for no one. An operator may explicitly launch the bounded Preparer profile. Dangerous commits remain unavailable through MCP until a separate confirmation exchange exists; planning does not authorize a commit. This is launch-time trust, not authenticated capability issuance. A book held by fad is refused until its transport can preserve this authority. Rules: amounts are strings with their unit (\"1500.00 USD\"), never JSON numbers; effective dates are civil YYYY-MM-DD; historical report instant selectors remain available; recorded time is assigned by the journal; corrections are new entries — nothing is edited in place; never invent balancing legs, re-date entries to dodge period law, approve your own proposal, or cite a placeholder. A tool's first content block is the robot envelope's data; the second adds book, coordinate, certificate, warnings, next_actions and authority. Resources retain their data first and return launch authority in a second JSON block. Tool errors carry {type, message, recoverable, fix_hint, suggested_tool_calls, exit, refusal_id, cite, detail, authority}. A different identity or stronger authority requires an operator to launch a separate appropriately bound session.\n\nClusters:\n",
         );
         for c in &self.clusters {
             let names: Vec<String> = self.tools_of(&c.name).map(ToolSpec::wire_name).collect();
@@ -1306,24 +1306,40 @@ impl ToolSpec {
                         admitted.push(format!("{label} (ops: {req})"));
                     }
                     Err(reason) => {
-                        if self.verb == "period"
+                        let transition = self.verb == "period"
                             && matches!(
                                 sub,
                                 Some("open" | "soft-close" | "close" | "lock" | "reopen")
-                            )
-                        {
+                            );
+                        // An Agent may rehearse a trunk post (plan §15.3).
+                        let rehearsal = matches!(
+                            self.verb.as_str(),
+                            "post" | "reverse" | "reserve" | "resolve"
+                        );
+                        if transition || rehearsal {
                             let mut dry = argv.clone();
                             dry.push("--dry-run".into());
                             if let Ok(dry_args) =
                                 args::parse(&dry, &reg.value_flags(), &reg.switches())
-                                && fa_cli::cli::bound_command_admissible(
+                                && let Ok(ops) = fa_cli::cli::bound_command_admissible(
                                     reg, &self.verb, &dry_args, authority,
                                 )
-                                .is_ok()
                             {
+                                let req = if transition {
+                                    "read".to_string()
+                                } else {
+                                    ops.iter()
+                                        .map(|op| op.name())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                };
                                 admitted.push(format!(
-                                    "{} with dry_run=true (ops: read; live commit refused: {reason})",
-                                    sub.unwrap_or("transition")
+                                    "{} with dry_run=true (ops: {req}; live commit refused: {reason})",
+                                    sub.unwrap_or(if transition {
+                                        "transition"
+                                    } else {
+                                        self.verb.as_str()
+                                    })
                                 ));
                                 continue;
                             }

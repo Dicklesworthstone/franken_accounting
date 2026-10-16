@@ -206,6 +206,8 @@ pub struct PreparedPost {
     identity: Identity,
     seal_key: SealKey,
     paired_reversal: Option<PairMember>,
+    /// Prepared by [`prepare_plan`] for a dry run: never published.
+    planning: bool,
 }
 
 /// The earlier member staged in this exact transaction. Its capability is
@@ -304,7 +306,15 @@ impl PreparedPost {
             identity,
             seal_key,
             paired_reversal,
+            planning,
         } = self;
+        if planning {
+            txn.abort();
+            return Err(KernelError::Corrupt(
+                "a dry-run preparation is never published; commit a plan through commit_plan"
+                    .into(),
+            ));
+        }
         if let Some(member) = &paired_reversal
             && let Err(d) = fa_policy::current(&member.capability, db.frontier()?)
         {
@@ -642,6 +652,7 @@ fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     req: &PostRequest,
+    planning: bool,
 ) -> Outcome<Option<fa_policy::AccountScope>> {
     let proposal = &req.proposal;
     let explicit: Vec<(fa_money::UnitId, i128)> = proposal
@@ -649,7 +660,14 @@ fn authorize_request<V: asupersync::fs::Vfs + Clone>(
         .iter()
         .map(|leg| (leg.amount.unit, leg.amount.mantissa))
         .collect();
-    if let Err(denial) = fa_policy::admit_base(
+    // A dry run writes nothing, so an Agent may rehearse a trunk post
+    // (plan §15.3); every other admission check still runs.
+    let admit_base = if planning {
+        fa_policy::admit_base_for_plan
+    } else {
+        fa_policy::admit_base
+    };
+    if let Err(denial) = admit_base(
         &req.capability,
         &fa_policy::Intent {
             principal: proposal.principal_ref,
@@ -710,7 +728,20 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None)
+    prepare_post_in(db, ctx, book, req, None, false)
+}
+
+/// [`prepare_post`] for a dry run (plan §15.3): the same pipeline and
+/// witnesses, admitted by [`fa_policy::admit_base_for_plan`], so an Agent
+/// may rehearse a trunk post. The preparation is never published: its
+/// caller aborts it, and [`PreparedPost::commit`] refuses it.
+pub(crate) fn prepare_plan<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: PostRequest,
+) -> Outcome<PostPreparation> {
+    prepare_post_in(db, ctx, book, req, None, true)
 }
 
 /// Prepare the actual class over an optional already-staged reversal.
@@ -723,6 +754,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
     replacement_basis: Option<ReplacementBasis>,
+    planning: bool,
 ) -> Outcome<PostPreparation> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let proposal = &req.proposal;
@@ -811,7 +843,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     //      token expired or revoked now learns nothing, not even which
     //      accounts its caveat covers. Nothing commits between here and the
     //      transaction, which witnesses the revocation again for FCW.
-    let scope = match authorize_request(db, book, &req)? {
+    let scope = match authorize_request(db, book, &req, planning)? {
         Ok(scope) => scope,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -1411,15 +1443,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             txn.abort();
             return Ok(Err(replacement_shape()));
         }
-        let reversal = pair_proposal.as_ref().ok_or_else(|| {
-            KernelError::Corrupt("replacement lost its paired reversal".into())
-        })?;
-        if let Err(error) = fa_palimpsest::validate_replacement_pair(
-            &original.proposal,
-            target,
-            reversal,
-            proposal,
-        ) {
+        let reversal = pair_proposal
+            .as_ref()
+            .ok_or_else(|| KernelError::Corrupt("replacement lost its paired reversal".into()))?;
+        if let Err(error) =
+            fa_palimpsest::validate_replacement_pair(&original.proposal, target, reversal, proposal)
+        {
             txn.abort();
             let mut refusal = replacement_shape();
             refusal.message = error.to_string();
@@ -2996,6 +3025,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         identity,
         seal_key: book.seal_key.clone(),
         paired_reversal,
+        planning,
     }))))
 }
 
@@ -3212,7 +3242,7 @@ fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
                 "fix the named field and resubmit",
             )));
         }
-        if let Err(refusal) = authorize_request(db, book, request)? {
+        if let Err(refusal) = authorize_request(db, book, request, false)? {
             return Ok(Err(refusal));
         }
     }
@@ -3245,8 +3275,10 @@ fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
         }
         Ok(PostPreparation::Ready(prepared)) => (None, ReplacementBasis::Staged(prepared)),
     };
-    Ok(prepare_post_in(db, ctx, book, replacement_req, Some(basis))?
-        .map(|prepared| (prior, prepared)))
+    Ok(
+        prepare_post_in(db, ctx, book, replacement_req, Some(basis), false)?
+            .map(|prepared| (prior, prepared)),
+    )
 }
 
 /// Explain the complete `SUPERSEDES` lineage component containing `vid` and its

@@ -24,7 +24,7 @@ use fgdb_types::context::PurposeContexts;
 
 use crate::genesis::BookContext;
 use crate::policy;
-use crate::post::{PostPreparation, PostRequest, Posted, prepare_post};
+use crate::post::{PostPreparation, PostRequest, Posted, prepare_plan, prepare_post};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{edge_id, resolution_vid, reversal_vid, scalar_bytes};
 
@@ -72,7 +72,12 @@ fn request(intent: &PostIntent, capability: Capability) -> PostRequest {
 /// are refused: a fresh plan must describe an actual prospective effect.
 /// A token with a scope caveat (plan §14.2) is refused before anything is
 /// read, because [`commit_plan`] admits only whole-book tokens: no plan is
-/// issued that its own token could never commit.
+/// issued that its own token could never commit, with one deliberate
+/// exception. An Agent-profile token may rehearse a trunk post (plan §15.3:
+/// `fa post --dry-run` is implied for Agents), so the full law can be checked
+/// before a Human acts. That plan binds the Agent's capability, and
+/// [`commit_plan`] refuses it (FA-REF-013), so it is a rehearsal only: no
+/// Agent plan can publish to trunk.
 pub fn plan_post<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -87,7 +92,7 @@ pub fn plan_post<V: Vfs + Clone>(
         .commitment()
         .map_err(|e| KernelError::Corrupt(format!("capability commitment: {e}")))?;
     let expires_at = capability.expires_at();
-    match prepare_post(db, ctx, book, request(&intent, capability))? {
+    match prepare_plan(db, ctx, book, request(&intent, capability))? {
         Err(refusal) => Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => Ok(Err(invalidated(format!(
             "this intent is already recorded as {:032x} at sequence {}; no new effects were planned",

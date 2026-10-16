@@ -29,8 +29,8 @@ pub mod op;
 pub mod sod;
 
 pub use admit::{
-    AccountScope, Intent, Observes, Reach, admit, admit_base, admit_read, admit_within, current,
-    reach, require, scope,
+    AccountScope, Intent, Observes, Reach, admit, admit_base, admit_base_for_plan, admit_read,
+    admit_within, current, reach, require, scope,
 };
 pub use approval::Approval;
 pub use capability::{Capability, CapabilityError, Profile};

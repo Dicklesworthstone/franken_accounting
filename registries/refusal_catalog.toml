@@ -129,7 +129,7 @@ name = "AGENT_TRUNK"
 owners = ["fa-policy"]
 exit = "safety"
 cite = "plan §14.4 Agent profile (branch-confined); drafts and promotion: fa-s7x"
-fix = "ask a Human principal to post this intent, or post it under a Human-profile capability"
+fix = "rehearse the intent with --dry-run (an Agent's plan commits for no one), then ask a Human principal to post it, or post it under a Human-profile capability"
 
 [[refusal]]
 code = "FA-REF-014"

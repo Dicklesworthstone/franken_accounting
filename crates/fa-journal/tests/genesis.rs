@@ -5887,6 +5887,94 @@ fn a_scoped_token_cannot_commit_a_whole_book_plan() {
     assert_eq!(posted.recorded_at().0, basis.0 + 1);
 }
 
+/// Plan §15.3: an Agent-profile capability may rehearse a trunk post. The
+/// rehearsal runs every posting law and writes nothing. Its plan binds the
+/// Agent's capability, so the Agent's commit is still FA-REF-013, a Human's
+/// is refused because it does not hold the proposal's principal, and a
+/// direct post by the Agent is still FA-REF-013. Nothing is recorded by any
+/// of them.
+#[test]
+fn an_agent_rehearses_a_trunk_post_that_commits_for_no_one() {
+    let mut h = harness();
+    let agent_vid = VId(31);
+    let agent = fa_policy::Capability::new(
+        agent_vid,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Read, fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .expect("an agent may hold post");
+    let mut proposal = h.proposal(
+        h.rent_legs(12_345),
+        b"agent-rehearsal",
+        EntryClass::ORIGINAL,
+    );
+    proposal.principal_ref = agent_vid;
+    let request = PostRequest {
+        proposal: proposal.clone(),
+        approvals: Vec::new(),
+        capability: agent.clone(),
+        plan_certificate: None,
+    };
+    let basis = h.db.frontier().unwrap();
+    let before_vertices = h.db.vertices().unwrap();
+    let plan = h
+        .post_plan(request.clone())
+        .expect("an Agent rehearses a trunk post under every posting law");
+    let hex = |bytes: &[u8; 32]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
+    eprintln!(
+        "agent rehearsal: proposal {} effects {} basis {}",
+        hex(&plan.certificate().proposal_digest),
+        hex(&plan.certificate().effects_digest),
+        plan.certificate().snapshot_seq.0
+    );
+    assert_eq!(plan.certificate().principal, agent_vid);
+    assert_eq!(plan.certificate().snapshot_seq, basis);
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        basis,
+        "the rehearsal writes nothing"
+    );
+    assert_eq!(h.db.vertices().unwrap(), before_vertices);
+
+    let r = h.publish_plan(plan.clone(), &agent).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-013", exit::SAFETY), "{r}");
+    assert!(r.fix.contains("--dry-run"), "{}", r.fix);
+    let human = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let r = h.publish_plan(plan, &human).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY), "{r}");
+    let r = h.post(request).unwrap_err();
+    assert_eq!(r.code, "FA-REF-013", "{r}");
+    assert_eq!(h.db.frontier().unwrap(), basis, "nothing was recorded");
+    assert_eq!(h.db.vertices().unwrap(), before_vertices);
+
+    // A rehearsal is not a weaker law: an unbalanced Agent intent is refused
+    // exactly as a Human's is.
+    let mut unbalanced = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, h.rent, Amount::new(h.usd, 100)),
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 99)),
+        ],
+        b"agent-unbalanced",
+        EntryClass::ORIGINAL,
+    );
+    unbalanced.principal_ref = agent_vid;
+    let r = h
+        .post_plan(PostRequest {
+            proposal: unbalanced,
+            approvals: Vec::new(),
+            capability: agent,
+            plan_certificate: None,
+        })
+        .unwrap_err();
+    eprintln!("agent rehearsal: unbalanced -> {} {}", r.code, r.message);
+    assert_ne!(
+        r.code, "FA-REF-013",
+        "the posting law refuses, not the profile: {r}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), basis);
+}
+
 #[test]
 fn portable_post_plan_is_zero_write_and_retains_exact_evidence_with_its_entry() {
     let mut h = harness();

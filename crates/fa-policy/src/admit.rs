@@ -131,13 +131,26 @@ pub fn admit_within(
 /// `accounts` caveat (compiling reads the chart) runs this first, so
 /// nothing is read for a token that may not act here at all, then [`reach`].
 pub fn admit_base(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
+    admit_base_as(cap, intent, false)
+}
+
+/// [`admit_base`] for a dry run, which writes nothing: every check except
+/// the Agent's trunk denial (plan §15.3, `fa post --dry-run` is implied for
+/// Agent-profile capabilities). The plan binds this capability, and
+/// committing it runs [`admit`] again, which still refuses an Agent on
+/// trunk, so no Agent plan can publish.
+pub fn admit_base_for_plan(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
+    admit_base_as(cap, intent, true)
+}
+
+fn admit_base_as(cap: &Capability, intent: &Intent<'_>, planning: bool) -> Result<(), Denial> {
     if cap.holder() != intent.principal {
         return Err(Denial::NotHolder {
             holder: cap.holder(),
             principal: intent.principal,
         });
     }
-    if cap.profile() == Profile::Agent && intent.trunk {
+    if cap.profile() == Profile::Agent && intent.trunk && !planning {
         return Err(Denial::AgentOnTrunk);
     }
     require(
@@ -607,6 +620,48 @@ mod tests {
         assert_eq!(
             admit(&agent, &intent(VId(5), &[(USD, 1)])).unwrap_err(),
             Denial::AgentOnTrunk
+        );
+    }
+
+    /// Planning lifts only the Agent's trunk denial (plan §15.3): the
+    /// holder, op, book and ceiling checks still run in the same order, and
+    /// committing re-admits through [`admit`], which still refuses.
+    #[test]
+    fn an_agent_may_plan_on_trunk_within_every_other_admission_check() {
+        let agent = Capability::new(VId(5), Profile::Agent, &[Op::Read, Op::Post], VId(1))
+            .unwrap()
+            .for_books(&[BOOK])
+            .unwrap()
+            .with_ceiling(USD, 10)
+            .unwrap();
+        assert_eq!(
+            admit_base_for_plan(&agent, &intent(VId(5), &[(USD, 10)])),
+            Ok(())
+        );
+        assert_eq!(
+            admit_base(&agent, &intent(VId(5), &[(USD, 10)])).unwrap_err(),
+            Denial::AgentOnTrunk
+        );
+        assert_eq!(
+            admit_base_for_plan(&agent, &intent(VId(6), &[(USD, 10)])).unwrap_err(),
+            Denial::NotHolder {
+                holder: VId(5),
+                principal: VId(6),
+            }
+        );
+        assert!(matches!(
+            admit_base_for_plan(&agent, &intent(VId(5), &[(USD, 11)])).unwrap_err(),
+            Denial::CeilingExceeded { leg: 0, .. }
+        ));
+        let reader = Capability::new(VId(5), Profile::Agent, &[Op::Read], VId(1))
+            .unwrap()
+            .for_books(&[BOOK])
+            .unwrap();
+        assert_eq!(
+            admit_base_for_plan(&reader, &intent(VId(5), &[(USD, 1)]))
+                .unwrap_err()
+                .kind(),
+            "missing_op"
         );
     }
 

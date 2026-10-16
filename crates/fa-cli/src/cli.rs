@@ -251,6 +251,8 @@ struct Said {
     warnings: Vec<String>,
     time_selection: Option<fa::InstantSelection>,
     authority: Option<Json>,
+    /// The launch template is Agent: trunk plans are rehearsals (FA-REF-013).
+    agent: bool,
     owner_principal: Option<String>,
 }
 
@@ -400,12 +402,22 @@ impl Out {
     }
 
     fn with_authority(self, authority: Option<&LaunchAuthority>) -> Self {
-        self.said.borrow_mut().authority = authority.map(LaunchAuthority::envelope_json);
+        {
+            let mut said = self.said.borrow_mut();
+            said.authority = authority.map(LaunchAuthority::envelope_json);
+            said.agent =
+                authority.is_some_and(|a| a.profile() == crate::authority::LaunchProfile::Agent);
+        }
         self
     }
 
     fn is_bound(&self) -> bool {
         self.said.borrow().authority.is_some()
+    }
+
+    /// The launch-bound Agent template, whose trunk plans commit for no one.
+    fn is_bound_agent(&self) -> bool {
+        self.said.borrow().agent
     }
 
     fn styled_format(format: OutputFormat, capture: bool, style: Style) -> Self {
@@ -1680,7 +1692,16 @@ pub fn bound_command_admissible(
             || (matches!(verb, "allocate" | "settle")
                 && sub != Some("approve")
                 && !args.switch("--approve"));
-    if authority.profile() == crate::authority::LaunchProfile::Agent && is_monetary_trunk_post {
+    // An Agent may rehearse a trunk post (plan §15.3): the kernel admits the
+    // dry run and its plan binds the Agent's capability, so no one can commit
+    // it. Allocation and settlement plans keep their own planners and
+    // remain refused.
+    let agent_rehearsal =
+        matches!(verb, "post" | "reverse" | "reserve" | "resolve") && args.switch("--dry-run");
+    if authority.profile() == crate::authority::LaunchProfile::Agent
+        && is_monetary_trunk_post
+        && !agent_rehearsal
+    {
         return Err(format!(
             "`{}` writes or plans monetary entries on trunk, which the Agent profile cannot perform (FA-REF-013)",
             command_name(verb, sub)
@@ -2415,7 +2436,7 @@ fn capability_model(
         (
             "agent_trunk",
             s(
-                "an Agent-profile capability never writes trunk (FA-REF-013); drafts land with the branch slice",
+                "an Agent-profile capability never writes trunk (FA-REF-013); it may rehearse post, reverse, reserve and resolve with --dry-run (plan §15.3), and that plan commits for no one; drafts land with the branch slice",
             ),
         ),
         (
@@ -5199,6 +5220,10 @@ fn emit_post_plan(
         "embedded-owner"
     };
     let bound_void = bound && disposition == Some("voids");
+    // An Agent's trunk plan is a rehearsal (plan §15.3): it binds the
+    // Agent's capability, which commit_plan refuses (FA-REF-013), so no
+    // commit is suggested; a Human principal posts the intent.
+    let rehearsal = out.is_bound_agent();
     let command = if bound {
         "fa_post_commit_plan".to_string()
     } else {
@@ -5218,12 +5243,14 @@ fn emit_post_plan(
         command.push_str(" --json");
         command
     };
-    let commit_guidance = if bound_void {
+    let commit_guidance = if rehearsal {
+        "This Agent-profile plan is a rehearsal: it commits for no one (FA-REF-013). A Human principal posts the same intent; drafts (fa-s7x) will carry it once they land.".to_string()
+    } else if bound_void {
         "MCP cannot commit this void plan. Ask the operator to separately prepare, review and confirm the release.".to_string()
     } else {
         command.clone()
     };
-    let next_actions = if bound_void {
+    let next_actions = if bound_void || rehearsal {
         Vec::new()
     } else {
         vec![(command, if bound {
@@ -5272,7 +5299,7 @@ fn emit_post_plan(
     if let Some(path) = args.flag("--plan-out") {
         write_post_plan(files, path, &bytes)?;
     }
-    if bound_void {
+    if bound_void || rehearsal {
         out.warn(&commit_guidance);
     }
     out.known_at(certificate.snapshot_seq);

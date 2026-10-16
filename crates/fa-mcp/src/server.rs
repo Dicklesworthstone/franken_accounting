@@ -2038,9 +2038,12 @@ mod tests {
         let prep_post_tool = VerbTool::new(Arc::new(preparer), post_spec);
         let agent_desc = agent_post_tool.definition().description.unwrap();
         let prep_desc = prep_post_tool.definition().description.unwrap();
+        // An Agent may rehearse a post (plan §15.3); the live commit is refused.
         assert!(
             agent_desc.contains("Launch admission (profile `agent`")
-                && agent_desc.contains("not admitted in this session"),
+                && agent_desc.contains("admitted for post with dry_run=true")
+                && agent_desc.contains("live commit refused")
+                && agent_desc.contains("FA-REF-013"),
             "{agent_desc}"
         );
         assert!(

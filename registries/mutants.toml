@@ -299,8 +299,8 @@ description = "Disable holder == principal check in fa_policy::admit_base."
 [[mutant]]
 id = "MUT-030"
 file = "crates/fa-policy/src/admit.rs"
-find = "if cap.profile() == Profile::Agent && intent.trunk {"
-replace = "if false && cap.profile() == Profile::Agent && intent.trunk {"
+find = "if cap.profile() == Profile::Agent && intent.trunk && !planning {"
+replace = "if false && cap.profile() == Profile::Agent && intent.trunk && !planning {"
 law = "FA-INV-10.core"
 killed_by = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings"]
 description = "Allow Agent-profile capabilities to write directly to trunk."
