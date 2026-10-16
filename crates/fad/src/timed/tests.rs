@@ -592,3 +592,34 @@ fn partial_prefix_and_payload_survive_multiple_real_timed_cycles_and_idle_is_bou
         .expect("lab completed");
     }
 }
+
+
+#[test]
+fn register_maintenance_alone_never_bootstraps_timed_authority() {
+    lab(139, |root| async move {
+        let work = TimedWork::maintenance_only(
+            &root,
+            POLICY,
+            vec!["FY2026-P03".to_string()],
+        )
+        .unwrap();
+        assert!(!work.timing_enabled());
+        assert!(work.capability.is_none());
+        assert_eq!(work.cycles, 0);
+        assert_eq!(work.last_tick_utc_ns, None);
+        assert_eq!(work.last_tick_monotonic_ok, None);
+        assert!(work.register_maintenance().is_some());
+
+        let fields = status_fields(Some(&work));
+        let status = obj(fields);
+        assert_eq!(status.get("timed_work_enabled"), Some(&Json::Bool(false)));
+        assert_eq!(status.get("timed_authority"), Some(&Json::Null));
+        assert_eq!(status.get("tick_ns"), Some(&Json::Null));
+        assert_eq!(status.get("sweep_batch"), Some(&Json::Null));
+        assert_eq!(status.get("clock_drift_ns"), Some(&Json::Null));
+        assert!(status.get("register_maintenance").is_some_and(|value| value != &Json::Null));
+        assert!(status_text(Some(&work)).contains("no System authority was bootstrapped"));
+    })
+    .unwrap()
+    .expect("lab completed");
+}
