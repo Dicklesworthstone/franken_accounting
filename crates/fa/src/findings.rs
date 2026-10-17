@@ -11,6 +11,9 @@
 //! Ordered, repeated citations (including tracing paths) remain in the original
 //! certificate; graph CITES edges are the distinct-target membership projection.
 
+pub mod workpaper;
+pub use workpaper::{FindingWorkpaper, FINDING_WORKPAPER_FORMAT, MAX_FINDING_WORKPAPER_BYTES};
+
 use std::collections::BTreeSet;
 
 use asupersync::fs::Vfs;
@@ -330,10 +333,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 else { (relation::DERIVED_FROM, &mut derived) };
             batch.add_edge(edge_id(rel, link.from, link.to), link.from, link.to, vec![]);
         }
-        if let Err(e) = txn.write(&self.db, derived) { txn.abort(); return refused_write(e); }
+        if let Err(e) = txn.write(&mut self.db, derived) { txn.abort(); return refused_write(e); }
         // Avoid an empty relation batch for a legitimately empty finding set.
         if prepared.links.iter().any(|link| link.cite)
-            && let Err(e) = txn.write(&self.db, citations)
+            && let Err(e) = txn.write(&mut self.db, citations)
         { txn.abort(); return refused_write(e); }
         cx.commit().checkpoint().map_err(BookError::Context)?;
         match txn.commit(&mut self.db, &cx.commit()).await {

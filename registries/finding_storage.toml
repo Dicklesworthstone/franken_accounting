@@ -24,3 +24,15 @@ max_citations = 65536
 # CITES is only a distinct-target membership projection, not a tracing schedule.
 # This version records Open observations only. It does not encode human reviews,
 # escalation decisions, accusations, or an offline outsider completeness proof.
+
+# Deterministic complete-package export over a checked original publication.
+# id = FA-<book hex>-WP-<native run birth>; no mutable counter or new publication.
+# Length-prefixed format/id/certificate/JSONL/Markdown, LE u64 publication, then
+# domain-separated 32-byte body digest. Decode is integrity, not source replay.
+[workpaper]
+format = "fa:finding-workpaper:v1"
+digest_domain = "fa:finding-workpaper-digest:v1"
+max_bytes = 67108864
+numbering = "original_native_run_publication"
+presentations = ["complete_jsonl", "escaped_markdown"]
+proof_class = "retained_history_replay"
