@@ -1,4 +1,5 @@
 mod cash_flow;
+mod retention;
 
 use super::*;
 use std::path::Path;
@@ -31,6 +32,8 @@ struct Harness {
     runtime: Runtime,
     root: Cx,
     book: AsyncBook<MemVfs>,
+    vfs: MemVfs,
+    seed: u8,
     unit: UnitId,
     evidence: Vec<EvidenceRef>,
 }
@@ -46,7 +49,7 @@ impl Harness {
         let mut book = runtime
             .block_on(AsyncBook::create_with_vfs(
                 &cx,
-                vfs,
+                vfs.clone(),
                 Path::new("artifact-book"),
                 BookKeys::for_development(seed),
                 BookSpec {
@@ -108,6 +111,8 @@ impl Harness {
             runtime,
             root,
             book,
+            vfs,
+            seed,
             unit,
             evidence: vec![document.evidence_ref(1)],
         };

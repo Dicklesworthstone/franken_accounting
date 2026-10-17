@@ -10,6 +10,9 @@ on:
       - 'crates/fa/src/procedure_certificate/**'
       - 'crates/fa/src/lib.rs'
       - 'crates/fa/src/report_artifact.rs'
+      - 'crates/fa/src/report_artifact/**'
+      - 'crates/fa/src/certificate_store.rs'
+      - 'crates/fa/src/certificate_store/**'
       - 'crates/fa-cli/src/notary.rs'
       - 'crates/fa-cli/src/notary/**'
       - 'crates/fa-cli/tests/procedure_replay.rs'
@@ -59,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           target="$RUNNER_TEMP/format-proposal"
-          files=(crates/fa/src/procedure_certificate.rs crates/fa/src/procedure_certificate/tests.rs crates/fa/src/report_artifact.rs crates/fa-cli/src/notary.rs crates/fa-cli/src/notary/procedure.rs crates/fa-cli/tests/procedure_replay.rs crates/fa-cli/tests/network.rs)
+          files=(crates/fa/src/procedure_certificate.rs crates/fa/src/procedure_certificate/tests.rs crates/fa/src/report_artifact.rs crates/fa/src/report_artifact/retention.rs crates/fa/src/report_artifact/tests.rs crates/fa/src/report_artifact/tests/retention.rs crates/fa/src/report_artifact/tests/cash_flow.rs crates/fa/src/certificate_store.rs crates/fa-cli/src/notary.rs crates/fa-cli/src/notary/procedure.rs crates/fa-cli/tests/procedure_replay.rs crates/fa-cli/tests/network.rs)
           for file in "${files[@]}"; do
             mkdir -p "$target/$(dirname "$file")"
             cp "$file" "$target/$file"
@@ -94,6 +97,12 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib report_artifact --jobs 2
+      - name: Regress native certificate storage and fragment corruption refusal
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib certificate_store --jobs 2
       - name: Test network engine, real journal and complete Lantern corpus
         if: ${{ !cancelled() }}
         shell: bash

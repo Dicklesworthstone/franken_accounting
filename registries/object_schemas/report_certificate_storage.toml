@@ -1,5 +1,5 @@
 # Physical retention of report certificates (plan §13.6; fa-9ae/fa-cqk).
-# This does not change any fa:report-certificate:v1..v4 export format.
+# This does not change any report family's existing canonical export format.
 # The existing Certificate maintenance label covers roots and fragments;
 # only the root-identity domain is a public report lookup. Scratch replay
 # excludes both, because source-native certificate identities cannot certify
@@ -30,7 +30,7 @@ fragment_format = "fa:certificate-fragment:v1"
 # Every part must be its original native row version at the root's creating
 # sequence. A read uses one pinned snapshot; a missing/retired/rewritten,
 # differently scoped, reordered or substituted part refuses the whole read.
-# The reconstructed bytes still undergo full ReportCertificate decoding,
+# The reconstructed bytes still undergo exact ReportArtifact family decoding,
 # content-digest, canonical-encoding, book and report-known-at validation.
 # No individual part is an inclusion proof or a report certificate.
 
@@ -41,3 +41,12 @@ fragment_format = "fa:certificate-fragment:v1"
 # operation; this registry is a format bound, not a measured 64 MiB SLO.
 # Exact retry verifies the full original storage record and returns its
 # original sequence without replaying, rewriting or repairing any record.
+# The authorized multi-family facade additionally replays on each retry. Its
+# private replay admission pins the current head before storage begins. Native,
+# summary, effective-date aging, roll-forward, direct/indirect cash-flow,
+# aging-reconciliation and procedure artifacts retain their own full digest and
+# output. A native-only lookup refuses other families rather than substituting
+# their nested source. Cash-flow/reconciliation retention and replay require
+# independently supplied scope/definitions, even for a matching retained digest.
+# Whole-book current read/produce authority admits multi-family retention;
+# current whole-book read authority admits retrieval before any bytes escape.

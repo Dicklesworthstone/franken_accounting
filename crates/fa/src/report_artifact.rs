@@ -6,8 +6,12 @@
 //! through each family's existing implementation. Neither a saved producer nor a
 //! capability commitment supplies authority to this caller. All currently supported
 //! families contain whole-book native inputs and require whole-book read authority.
-//! No signature, outsider completeness, freshness, retention or economic-truth claim
-//! follows from decoding or from the local retained-history replay receipt.
+//! No signature, outsider completeness, freshness or economic-truth claim follows
+//! from decoding or from the local retained-history replay receipt. Explicit
+//! retention replays the complete family before publishing its immutable bytes.
+
+mod retention;
+pub(crate) use retention::ValidatedArtifact;
 
 use asupersync::fs::Vfs;
 use fa_journal::{KernelError, Refusal, exit};

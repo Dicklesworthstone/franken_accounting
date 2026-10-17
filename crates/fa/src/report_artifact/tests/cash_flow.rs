@@ -286,3 +286,50 @@ fn repaired_cash_output_hashes_cannot_bypass_native_replay() {
     }
     assert_eq!(h.head(), head);
 }
+
+#[test]
+fn retained_cash_artifacts_still_require_independent_classifications_on_every_replay() {
+    let mut h = Harness::new(97);
+    let fixture = CashFixture::new(&h);
+    let original = h.head();
+    for artifact in [&fixture.direct, &fixture.indirect] {
+        let cx = h.cx();
+        let bytes = artifact.canonical_bytes().unwrap();
+        let before = h.head();
+        assert!(h.runtime.block_on(h.book.retain_report_artifact(
+            &cx, PRINCIPAL, &cap(&["read", "produce"]), &bytes, Some(artifact.digest()),
+        )).unwrap().is_err());
+        assert_eq!(h.head(), before);
+        let mut wrong = fixture.expected.clone();
+        wrong.cash_definition.assignments[0].activity = CashFlowActivity::Investing;
+        let wrong = if artifact.family() == ReportArtifactFamily::CashFlow {
+            ReportArtifactExpectation::CashFlow { request: &wrong.cash, definition: &wrong.cash_definition }
+        } else {
+            ReportArtifactExpectation::IndirectCashFlow(&wrong)
+        };
+        assert!(h.runtime.block_on(h.book.retain_report_artifact_for(
+            &cx, PRINCIPAL, &cap(&["read", "produce"]), &bytes, Some(artifact.digest()), wrong,
+        )).unwrap().is_err());
+        assert_eq!(h.head(), before);
+        let receipt = h.runtime.block_on(h.book.retain_report_artifact_for(
+            &cx, PRINCIPAL, &cap(&["read", "produce"]), &bytes, Some(artifact.digest()), fixture.expectation(artifact.family()),
+        )).unwrap().unwrap();
+        assert_eq!(receipt.recorded_at.0, before.0 + 1);
+        assert_eq!(h.runtime.block_on(h.book.read_report_artifact(
+            &cx, PRINCIPAL, &cap(&["read"]), artifact.digest(),
+        )).unwrap().unwrap(), *artifact);
+        assert!(h.runtime.block_on(h.book.replay_retained_report_artifact(
+            &cx, PRINCIPAL, &cap(&["read"]), artifact.digest(), ReportArtifactExpectation::AsSupplied,
+        )).unwrap().is_err());
+        let replay = h.runtime.block_on(h.book.replay_retained_report_artifact(
+            &cx, PRINCIPAL, &cap(&["read"]), artifact.digest(), fixture.expectation(artifact.family()),
+        )).unwrap().unwrap();
+        assert_eq!(replay.known_at, original);
+        assert_eq!(replay.output, artifact.output());
+        assert_eq!(h.head(), receipt.recorded_at);
+        assert_eq!(h.runtime.block_on(h.book.retain_report_artifact_for(
+            &cx, PRINCIPAL, &cap(&["read", "produce"]), &bytes, Some(artifact.digest()), fixture.expectation(artifact.family()),
+        )).unwrap().unwrap(), receipt);
+        assert_eq!(h.head(), receipt.recorded_at);
+    }
+}

@@ -32,7 +32,8 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 
 use crate::certificate::{MAX_CERTIFICATE_BYTES, ReportCertificate};
-use crate::{BookError, Outcome};
+use crate::{BookError, Outcome, ReportArtifact, ReportArtifactFamily};
+use crate::report_artifact::ValidatedArtifact;
 
 mod chunks;
 
@@ -86,8 +87,8 @@ fn unavailable(message: impl Into<String>) -> Refusal {
     )
 }
 
-fn canonical(certificate: &ReportCertificate) -> Result<Vec<u8>, Refusal> {
-    if certificate.output.len() > MAX_CERTIFICATE_BYTES {
+fn canonical(certificate: &ReportArtifact) -> Result<Vec<u8>, Refusal> {
+    if certificate.output().len() > MAX_CERTIFICATE_BYTES {
         return Err(invalid(
             "report certificate exceeds the 64 MiB format limit",
         ));
@@ -102,7 +103,7 @@ fn canonical(certificate: &ReportCertificate) -> Result<Vec<u8>, Refusal> {
     }
     // Public fields can be hand-constructed. Decode independently verifies the
     // format, complete native closure and full content digest before storage.
-    ReportCertificate::decode(&bytes)?;
+    ReportArtifact::decode(&bytes)?;
     Ok(bytes)
 }
 
@@ -151,7 +152,7 @@ async fn fetched<W: Vfs + Clone>(
     created_at: CommitSeq,
     store: u16,
     size: u64,
-) -> Outcome<ReportCertificate> {
+) -> Outcome<ReportArtifact> {
     if store != blobs.id() {
         return Ok(Err(unavailable(format!(
             "the retained certificate's bytes are in store {store}, not store {}",
@@ -225,14 +226,14 @@ fn verified_bytes(
     book: &BookContext,
     digest: &[u8; 32],
     recorded_at: CommitSeq,
-) -> Result<ReportCertificate, Refusal> {
-    let certificate = ReportCertificate::decode(bytes)?;
-    if certificate.digest != *digest || certificate.book_id != book.book_id {
+) -> Result<ReportArtifact, Refusal> {
+    let certificate = ReportArtifact::decode(bytes)?;
+    if certificate.digest() != digest || certificate.book_id() != book.book_id {
         return Err(invalid(
             "the retained certificate payload does not match its full digest and book",
         ));
     }
-    if recorded_at <= certificate.known_at {
+    if recorded_at <= certificate.known_at() {
         return Err(invalid(
             "a retained certificate must be recorded after the report's fixed known-at sequence",
         ));
@@ -297,7 +298,7 @@ async fn unchanged_row<V: Vfs + Clone, W: Vfs + Clone>(
     digest: &[u8; 32],
     row: &VertexRow,
     at: CommitSeq,
-) -> Outcome<ReportCertificate> {
+) -> Outcome<ReportArtifact> {
     let payload = match record_payload(row, book, digest, certificate_vid(book.book_id, digest)) {
         Ok(payload) => payload,
         Err(refusal) => return Ok(Err(refusal)),
@@ -333,6 +334,26 @@ pub(crate) async fn read<V: Vfs + Clone, W: Vfs + Clone>(
     blobs: &BlobStore<W>,
     digest: &[u8; 32],
 ) -> Outcome<ReportCertificate> {
+    match read_artifact(db, cx, book, blobs, digest).await? {
+        Ok(artifact) if artifact.family() == ReportArtifactFamily::Native => {
+            Ok(Ok(artifact.source_certificate().clone()))
+        }
+        Ok(_) => Ok(Err(invalid(
+            "the retained artifact is not a native report certificate; use read_report_artifact to preserve its outer selector and output",
+        ))),
+        Err(refusal) => Ok(Err(refusal)),
+    }
+}
+
+/// Decode the original family rather than silently returning a nested source.
+/// The facade must authorize whole-book reads before entering this storage path.
+pub(crate) async fn read_artifact<V: Vfs + Clone, W: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    blobs: &BlobStore<W>,
+    digest: &[u8; 32],
+) -> Outcome<ReportArtifact> {
     cx.checkpoint().map_err(BookError::Context)?;
     let at = db.frontier().map_err(KernelError::from)?;
     let vid = certificate_vid(book.book_id, digest);
@@ -402,25 +423,66 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
     blobs: &BlobStore<W>,
     certificate: &ReportCertificate,
 ) -> Outcome<RetainedCertificate> {
+    if certificate.output.len() > MAX_CERTIFICATE_BYTES {
+        return Ok(Err(invalid("report certificate exceeds the 64 MiB format limit")));
+    }
+    let artifact = match ReportArtifact::try_from(certificate) {
+        Ok(artifact) => artifact,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    retain_inner(db, cx, book, blobs, &artifact, None).await
+}
+
+/// Only the facade's private successful-replay witness can admit other families.
+/// It also pins the head at which authority and the complete replay were checked.
+pub(crate) async fn retain_validated<V: Vfs + Clone, W: Vfs + Clone>(
+    db: &mut Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    blobs: &BlobStore<W>,
+    validated: &ValidatedArtifact,
+) -> Outcome<RetainedCertificate> {
+    retain_inner(db, cx, book, blobs, validated.artifact(), Some(validated)).await
+}
+
+async fn retain_inner<V: Vfs + Clone, W: Vfs + Clone>(
+    db: &mut Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    blobs: &BlobStore<W>,
+    certificate: &ReportArtifact,
+    validated: Option<&ValidatedArtifact>,
+) -> Outcome<RetainedCertificate> {
     let query_cx = cx.query();
     query_cx.checkpoint().map_err(BookError::Context)?;
-    if certificate.book_id != book.book_id {
+    if certificate.book_id() != book.book_id {
         return Ok(Err(invalid("the certificate belongs to a different book")));
     }
     let payload = match canonical(certificate) {
         Ok(payload) => payload,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let vid = certificate_vid(book.book_id, &certificate.digest);
+    let digest = certificate.digest();
+    let vid = certificate_vid(book.book_id, digest);
     let txn_cx = cx.txn();
     let mut txn = db.begin(&txn_cx).map_err(KernelError::from)?;
+    if validated.is_some_and(|v| v.verified_at() != txn.basis()) {
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            fa_journal::refusal::code::CONFLICT,
+            exit::CONFLICT,
+            "the book changed after artifact replay and authority validation",
+            "FA-INV-10 / FA-INV-11 (retention binds the current authorization and replay basis)",
+            "retry retention with the same artifact and independently selected expectations",
+        )));
+    }
     if let Some(row) = txn.vertex(db, vid).map_err(KernelError::from)? {
         let stored = unchanged_row(
             db,
             &query_cx,
             book,
             blobs,
-            &certificate.digest,
+            digest,
             &row,
             txn.basis(),
         )
@@ -442,16 +504,24 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
             )));
         }
         return Ok(Ok(RetainedCertificate {
-            digest: certificate.digest,
+            digest: *digest,
             recorded_at: row.created_at,
         }));
     }
-    if let Err(refusal) = crate::certificate::replay_report(db, &query_cx, book, certificate)? {
-        txn.abort();
-        return Ok(Err(refusal));
+    if validated.is_none() {
+        if certificate.family() != ReportArtifactFamily::Native {
+            txn.abort();
+            return Ok(Err(invalid("non-native retention requires a full family replay")));
+        }
+        if let Err(refusal) = crate::certificate::replay_report(
+            db, &query_cx, book, certificate.source_certificate(),
+        )? {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
     }
     query_cx.checkpoint().map_err(BookError::Context)?;
-    let batch = match chunks::stage(&query_cx, book, &certificate.digest, vid, payload)? {
+    let batch = match chunks::stage(&query_cx, book, digest, vid, payload)? {
         Ok(batch) => batch,
         Err(refusal) => {
             txn.abort();
@@ -465,7 +535,7 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
     cx.commit().checkpoint().map_err(BookError::Context)?;
     match txn.commit(db, &cx.commit()).await {
         Ok(recorded_at) => Ok(Ok(RetainedCertificate {
-            digest: certificate.digest,
+            digest: *digest,
             recorded_at,
         })),
         Err(error) => refused_write(error),
