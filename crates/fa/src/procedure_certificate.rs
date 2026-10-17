@@ -2,11 +2,15 @@
 //!
 //! A native report certificate binds the complete journal/chart/calendar/unit
 //! closure; a supplementary native Approval read binds the inputs used by JET.
+//! V2 also binds REA populations and independently immutable attestations.
 //! The outer certificate fixes the exact procedure, parameters, handles, recorded
 //! frontier, effective cutoff, decision card and ordered findings. Decoding is an
 //! integrity check, NOT a replay, signature, or independent completeness proof.
 //! Current whole-book read/produce authority admits creation; current whole-book
 //! read authority admits replay. Saved principal/commitment fields grant nothing.
+
+mod extended;
+pub use extended::EXTENDED_CERTIFIABLE_PROCEDURES;
 
 use std::collections::BTreeSet;
 use asupersync::fs::Vfs;
@@ -25,6 +29,7 @@ use fgdb_types::{CommitSeq, VId};
 use crate::{AsyncBook, BookError, Outcome, ReportCertificate, ReportSelection};
 
 pub const PROCEDURE_CERTIFICATE_FORMAT: &[u8] = b"fa:procedure-certificate:v1";
+pub const EXTENDED_PROCEDURE_CERTIFICATE_FORMAT: &[u8] = extended::FORMAT;
 pub const PROCEDURE_OUTPUT_FORMAT: &[u8] = b"fa:procedure-output:v1";
 pub const MAX_PROCEDURE_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_OUTPUT: usize = 32 * 1024 * 1024;
@@ -75,6 +80,7 @@ impl ProcedureRequest {
 pub struct ProcedureCertificate {
     source: ReportCertificate,
     approvals: NativeResultCertificate,
+    extended_inputs: Vec<NativeResultCertificate>,
     registry: [u8; 32],
     producer: VId,
     capability_commitment: [u8; 32],
@@ -230,6 +236,12 @@ impl ProcedureCertificate {
     #[must_use] pub fn digest(&self) -> &[u8;32] { &self.digest }
     #[must_use] pub fn producer(&self) -> VId { self.producer }
     #[must_use] pub fn capability_commitment(&self) -> &[u8;32] { &self.capability_commitment }
+    /// Original procedures use v1. Extended procedures carry six additional
+    /// native population witnesses and use v2; neither format is auto-upgraded.
+    #[must_use] pub fn format(&self) -> &'static [u8] {
+        if self.extended_inputs.is_empty() { PROCEDURE_CERTIFICATE_FORMAT } else { extended::FORMAT }
+    }
+    #[must_use] pub fn supplemental_inputs(&self) -> &[NativeResultCertificate] { &self.extended_inputs }
     #[must_use] pub fn known_at(&self) -> CommitSeq { self.source.known_at }
     #[must_use] pub fn book_id(&self) -> Id128 { self.source.book_id }
 
@@ -239,6 +251,7 @@ impl ProcedureCertificate {
             || self.report.coordinate.book_id != self.source.book_id
             || self.report.coordinate.known_at != self.source.known_at
         { return Err(invalid("procedure and complete native source coordinates disagree")); }
+        extended::validate(self)?;
         let source = self.source.canonical_bytes().map_err(encode_error)?;
         ReportCertificate::decode(&source)?;
         let native = self.approvals.canonical_bytes();
@@ -249,12 +262,19 @@ impl ProcedureCertificate {
             || self.approvals.database_identity != basis.database_identity
         { return Err(invalid("approval read is not the same certified native snapshot")); }
         if encode_run(&self.report)? != self.output { return Err(invalid("procedure output record differs")); }
+        let supplementary = if self.extended_inputs.is_empty() { 0 } else {
+            4 + self.extended_inputs.iter().map(|input| 4 + input.canonical_bytes().len()).sum::<usize>()
+        };
         let total = source.len().checked_add(native.len()).and_then(|n| n.checked_add(self.output.len()))
-            .and_then(|n| n.checked_add(4 + PROCEDURE_CERTIFICATE_FORMAT.len() + 4*3 + 32*3 + 16))
+            .and_then(|n| n.checked_add(4 + self.format().len() + 4*3 + 32*3 + 16 + supplementary))
             .ok_or_else(|| invalid("procedure certificate length overflow"))?;
         if total > MAX_PROCEDURE_CERTIFICATE_BYTES { return Err(invalid("procedure certificate exceeds 64 MiB")); }
         let mut w = Writer::with_capacity(total);
-        w.bytes(PROCEDURE_CERTIFICATE_FORMAT).bytes(&source).bytes(&native).fixed(&self.registry)
+        w.bytes(self.format()).bytes(&source).bytes(&native);
+        if !self.extended_inputs.is_empty() {
+            w.list(&self.extended_inputs, |w, input| { w.bytes(&input.canonical_bytes()); });
+        }
+        w.fixed(&self.registry)
             .u128(self.producer.0).fixed(&self.capability_commitment).bytes(&self.output);
         w.finish().map_err(encode_error)
     }
@@ -267,10 +287,20 @@ impl ProcedureCertificate {
     pub fn decode(bytes: &[u8]) -> Result<Self,Refusal> {
         if bytes.len() > MAX_PROCEDURE_CERTIFICATE_BYTES { return Err(invalid("procedure certificate exceeds 64 MiB")); }
         let mut r = Reader::new(bytes);
-        if r.bytes(64,"procedure certificate format").map_err(decode_error)? != PROCEDURE_CERTIFICATE_FORMAT { return Err(invalid("unsupported procedure certificate version")); }
+        let format = r.bytes(64,"procedure certificate format").map_err(decode_error)?;
+        if format != PROCEDURE_CERTIFICATE_FORMAT && format != extended::FORMAT { return Err(invalid("unsupported procedure certificate version")); }
         let source = ReportCertificate::decode(r.bytes(MAX_PROCEDURE_CERTIFICATE_BYTES,"native source").map_err(decode_error)?)?;
         let approvals = NativeResultCertificate::decode(r.bytes(MAX_NATIVE,"approval source").map_err(decode_error)?)
             .map_err(|_| invalid("malformed native approval source"))?;
+        let mut extended_inputs = Vec::new();
+        if format == extended::FORMAT {
+            let count = r.count(extended::COUNT, "extended native inputs").map_err(decode_error)?;
+            if count != extended::COUNT { return Err(invalid("incomplete extended native input closure")); }
+            for _ in 0..count {
+                extended_inputs.push(NativeResultCertificate::decode(r.bytes(MAX_NATIVE, "extended native source").map_err(decode_error)?)
+                    .map_err(|_| invalid("malformed extended native input"))?);
+            }
+        }
         let registry = r.fixed("registry").map_err(decode_error)?;
         let producer = VId(r.u128("producer").map_err(decode_error)?);
         let capability_commitment = r.fixed("capability commitment").map_err(decode_error)?;
@@ -278,12 +308,12 @@ impl ProcedureCertificate {
         let report = decode_run(&output)?;
         let digest = r.fixed("certificate digest").map_err(decode_error)?;
         r.finish().map_err(decode_error)?;
-        let certificate = Self { source, approvals, registry, producer, capability_commitment, report, output, digest };
+        let certificate = Self { source, approvals, extended_inputs, registry, producer, capability_commitment, report, output, digest };
         if certificate.canonical_bytes()?.as_slice() != bytes { return Err(invalid("noncanonical procedure certificate")); }
         Ok(certificate)
     }
     fn request(&self) -> Result<ProcedureRequest, Refusal> {
-        if !supported(&self.report.procedure, self.report.version) {
+        if !supported(&self.report.procedure, self.report.version) && !extended::supported(&self.report.procedure, self.report.version) {
             return Err(invalid("this procedure version has no complete registered native certificate closure"));
         }
         if self.registry != registry_digest() { return Err(invalid("procedure registry/foundation closure is unavailable in this executable")); }
@@ -351,7 +381,7 @@ impl<V:Vfs+Clone,B:Vfs+Clone> AsyncBook<V,B> {
         if let Err(r)=authorize(self,cx,principal,capability,true)? { return Ok(Err(r)); }
         let built=match catalog::build(&request.procedure,request.parameters.clone(),request.inputs) { Ok(p)=>p,Err(e)=>return Ok(Err(lantern_error(e))) };
         let row=fa_lantern::bind(built.id())?;
-        if !supported(&row.id, row.version) {
+        if !supported(&row.id, row.version) && !extended::supported(&row.id, row.version) {
             return Ok(Err(invalid("this procedure version has no complete registered native certificate closure; ordinary procedure execution is unchanged")));
         }
         for (name,present) in [("account",request.inputs.account.is_some()),("source",request.inputs.source.is_some())] {
@@ -360,11 +390,17 @@ impl<V:Vfs+Clone,B:Vfs+Clone> AsyncBook<V,B> {
         let result=self.query(cx,|db,book| {
             let source=match crate::certificate::certify_report(db,&cx.query(),book,ReportSelection::OpenItems { account:None },request.known_at)? { Ok(s)=>s.certificate,Err(r)=>return Ok(Err(r)) };
             let (_,approvals)=db.execute_certified(&cx.query(),&approval_statement(source.known_at),&GqlParameters::new(),book.symbols.clone(),policy()).map_err(BookError::CertifiedRead)?;
+            let extended_inputs = if extended::supported(&row.id, row.version) {
+                extended::capture(db, cx, book, source.known_at)?
+            } else { Vec::new() };
             let snapshot=Snapshot::read(db,book,Some(source.known_at),request.effective_through)?;
+            if !extended_inputs.is_empty()
+                && let Err(r) = extended::unchanged_attestations(db, cx, &snapshot)?
+            { return Ok(Err(r)); }
             if let Err(r)=unchanged_approvals(db,&snapshot)? { return Ok(Err(r)); }
             let report=fa_lantern::run_over(&snapshot,book,built.as_ref())?;
             let output=match encode_run(&report) { Ok(b)=>b,Err(r)=>return Ok(Err(r)) };
-            let mut certificate=ProcedureCertificate { source,approvals,registry:registry_digest(),producer:principal,
+            let mut certificate=ProcedureCertificate { source,approvals,extended_inputs,registry:registry_digest(),producer:principal,
                 capability_commitment:capability.commitment().map_err(|e| BookError::Kernel(KernelError::Corrupt(e.to_string())))?,
                 report:report.clone(),output,digest:[0;32] };
             let body=match certificate.body() { Ok(b)=>b,Err(r)=>return Ok(Err(r)) };
@@ -386,7 +422,11 @@ impl<V:Vfs+Clone,B:Vfs+Clone> AsyncBook<V,B> {
         let result=self.query(cx,|db,book| {
             if let Err(r)=crate::certificate::replay_report(db,&cx.query(),book,&certificate.source)? { return Ok(Err(r)); }
             if let Err(e)=db.replay(&cx.query(),&certificate.approvals,&GqlParameters::new(),book.symbols.clone(),policy()) { return Ok(Err(invalid(format!("native approval read does not replay: {e}")))); }
+            if let Err(r) = extended::replay(db, cx, book, certificate)? { return Ok(Err(r)); }
             let snapshot=Snapshot::read(db,book,Some(certificate.known_at()),request.effective_through)?;
+            if !certificate.extended_inputs.is_empty()
+                && let Err(r) = extended::unchanged_attestations(db, cx, &snapshot)?
+            { return Ok(Err(r)); }
             if let Err(r)=unchanged_approvals(db,&snapshot)? { return Ok(Err(r)); }
             let report=fa_lantern::run_over(&snapshot,book,built.as_ref())?;
             let actual=match encode_run(&report) { Ok(b)=>b,Err(r)=>return Ok(Err(r)) };

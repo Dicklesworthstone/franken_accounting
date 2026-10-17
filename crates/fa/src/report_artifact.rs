@@ -168,7 +168,9 @@ impl ReportArtifact {
         let format = reader
             .bytes(64, "report artifact format")
             .map_err(|error| invalid(format!("malformed report artifact: {error}")))?;
-        let inner = if format == crate::procedure_certificate::PROCEDURE_CERTIFICATE_FORMAT {
+        let inner = if format == crate::procedure_certificate::PROCEDURE_CERTIFICATE_FORMAT
+            || format == crate::procedure_certificate::EXTENDED_PROCEDURE_CERTIFICATE_FORMAT
+        {
             Artifact::Procedure(Box::new(crate::procedure_certificate::ProcedureCertificate::decode(bytes)?))
         } else if format == crate::summary_certificate::CERTIFICATE_FORMAT {
             Artifact::Summary(Box::new(SummaryCertificate::decode(bytes)?))

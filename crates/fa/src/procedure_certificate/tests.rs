@@ -22,6 +22,7 @@ struct Fixture {
     runtime: Runtime,
     root: Cx,
     book: AsyncBook<MemVfs>,
+    vfs: MemVfs,
     unit: UnitId,
     evidence: Vec<EvidenceRef>,
     next: u8,
@@ -37,7 +38,7 @@ impl Fixture {
         let mut book = runtime
             .block_on(AsyncBook::create_with_vfs(
                 &cx,
-                vfs,
+                vfs.clone(),
                 Path::new("procedures"),
                 BookKeys::for_development(seed),
                 BookSpec {
@@ -105,6 +106,7 @@ impl Fixture {
             runtime,
             root,
             book,
+            vfs,
             unit,
             evidence: vec![source.evidence_ref(1)],
             next: 1,
@@ -294,14 +296,18 @@ fn new_catalog_rows_cannot_silently_omit_their_additional_native_inputs() {
     {
         let before = f.head();
         let req = f.request(&row.id, source);
-        assert!(
-            f.book
-                .certify_procedure(&f.cx(), PRINCIPAL, &cap(&["read", "produce"]), &req)
-                .unwrap()
-                .is_err()
-        );
+        let result = f.book.certify_procedure(&f.cx(), PRINCIPAL, &cap(&["read", "produce"]), &req).unwrap();
+        if extended::supported(&row.id, row.version) {
+            let mut certificate = result.unwrap().certificate;
+            assert_eq!(certificate.supplemental_inputs().len(), extended::COUNT);
+            certificate.extended_inputs.clear();
+            assert!(certificate.body().is_err(), "a v1 downgrade cannot erase {} inputs", row.id);
+        } else {
+            assert!(result.is_err(), "unaudited new procedures must remain refused");
+        }
         assert_eq!(f.head(), before);
     }
+    assert!(!supported("future.unaudited", 1) && !extended::supported("future.unaudited", 1));
 }
 
 #[test]
@@ -596,3 +602,6 @@ fn incomplete_or_misspecified_runs_never_receive_a_certificate() {
     );
     assert_eq!(f.head(), before);
 }
+
+#[path = "tests/extended.rs"]
+mod input_cases;
