@@ -6,6 +6,7 @@
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::evidence::{Document, add_document};
+use fa_journal::fx::FxRateTerms;
 use fa_journal::rows::edge_id;
 use fa_journal::*;
 use fa_model::symbols::{label, property, relation};
@@ -3031,11 +3032,13 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
 
     // 1. SpotClose with rounding residual (Dr 0.01 EUR, Dr 0.01 EUR / Cr 0.02 EUR at 1/2 USD/EUR under HalfUp).
     let rate_half = FxRateDocument::new(
-        usd,
-        eur,
-        1,
-        2,
-        RoundingLaw::HalfUp,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 1,
+            rate_den: 2,
+            rounding: RoundingLaw::HalfUp,
+        },
         mar_05,
         1_700_000_000_000_000_000,
         FxRatePurpose::SpotClose,
@@ -3141,11 +3144,13 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
 
     // 2. SpotClose invoice of 100.00 EUR at 1.10 USD/EUR (110.00 USD) on 2026-03-10.
     let rate_spot = FxRateDocument::new(
-        usd,
-        eur,
-        110,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 110,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         mar_10,
         1_700_100_000_000_000_000,
         FxRatePurpose::SpotClose,
@@ -3198,11 +3203,13 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
 
     // 3. PeriodEndRevaluation of the 100.00 EUR receivable at period-close rate 1.15 USD/EUR (+5.00 USD).
     let rate_close = FxRateDocument::new(
-        usd,
-        eur,
-        115,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 115,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         mar_25,
         1_700_200_000_000_000_000,
         FxRatePurpose::PeriodClose,
@@ -3254,11 +3261,13 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
     // 4. Realized FX settlement of the 100.00 EUR receivable (now carried at 115.00 USD)
     //    into USD cash at settlement rate 1.18 USD/EUR (118.00 USD; +3.00 USD realized gain).
     let rate_settle = FxRateDocument::new(
-        usd,
-        eur,
-        118,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 118,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         mar_28,
         1_700_300_000_000_000_000,
         FxRatePurpose::Settlement,
@@ -3470,11 +3479,13 @@ fn fx_unbalanced_base_amounts_are_refused_without_mutating_book() {
     let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
 
     let rate_half = FxRateDocument::new(
-        usd,
-        eur,
-        1,
-        2,
-        RoundingLaw::HalfUp,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 1,
+            rate_den: 2,
+            rounding: RoundingLaw::HalfUp,
+        },
         mar_05,
         1_700_000_000_000_000_000,
         FxRatePurpose::SpotClose,
@@ -3605,11 +3616,13 @@ fn fx_wrong_or_excessive_base_residual_is_refused_without_mutating_book() {
     let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
 
     let rate_half = FxRateDocument::new(
-        usd,
-        eur,
-        1,
-        2,
-        RoundingLaw::HalfUp,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 1,
+            rate_den: 2,
+            rounding: RoundingLaw::HalfUp,
+        },
         mar_05,
         1_700_000_000_000_000_000,
         FxRatePurpose::SpotClose,
@@ -3753,11 +3766,13 @@ fn fx_unpaired_realized_fx_settlement_is_refused_without_mutating_book() {
     let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
 
     let rate_settle = FxRateDocument::new(
-        usd,
-        eur,
-        118,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 118,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         mar_05,
         1_700_000_000_000_000_000,
         FxRatePurpose::Settlement,
@@ -3911,11 +3926,13 @@ fn fx_tampered_functional_fold_is_detected_by_verify_functional_fold() {
     let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
 
     let rate_half = FxRateDocument::new(
-        usd,
-        eur,
-        1,
-        2,
-        RoundingLaw::HalfUp,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 1,
+            rate_den: 2,
+            rounding: RoundingLaw::HalfUp,
+        },
         mar_05,
         1_700_000_000_000_000_000,
         FxRatePurpose::SpotClose,
@@ -4013,11 +4030,13 @@ fn fx_current_rate_translation_two_period_cta_roll_forward_and_recycling_match_o
     // - PeriodClose 2026-02-28: 1.15 (115 / 100)
     // - PeriodClose 2026-03-31: 1.15 (115 / 100) for posting recycling in h.march
     let doc_spot_jan01 = FxRateDocument::new(
-        usd,
-        eur,
-        108,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 108,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         jan_01,
         1_700_000_000_000_000_000,
         FxRatePurpose::SpotClose,
@@ -4025,11 +4044,13 @@ fn fx_current_rate_translation_two_period_cta_roll_forward_and_recycling_match_o
     )
     .unwrap();
     let doc_spot_jan20 = FxRateDocument::new(
-        usd,
-        eur,
-        111,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 111,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         jan_20,
         1_700_000_000_000_000_000,
         FxRatePurpose::SpotClose,
@@ -4037,11 +4058,13 @@ fn fx_current_rate_translation_two_period_cta_roll_forward_and_recycling_match_o
     )
     .unwrap();
     let doc_avg_jan = FxRateDocument::new(
-        usd,
-        eur,
-        110,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 110,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         jan_31,
         1_700_000_000_000_000_000,
         FxRatePurpose::PeriodAverage,
@@ -4049,11 +4072,13 @@ fn fx_current_rate_translation_two_period_cta_roll_forward_and_recycling_match_o
     )
     .unwrap();
     let doc_close_jan = FxRateDocument::new(
-        usd,
-        eur,
-        112,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 112,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         jan_31,
         1_700_000_000_000_000_000,
         FxRatePurpose::PeriodClose,
@@ -4061,11 +4086,13 @@ fn fx_current_rate_translation_two_period_cta_roll_forward_and_recycling_match_o
     )
     .unwrap();
     let doc_avg_feb = FxRateDocument::new(
-        usd,
-        eur,
-        113,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 113,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         feb_28,
         1_700_000_000_000_000_000,
         FxRatePurpose::PeriodAverage,
@@ -4073,11 +4100,13 @@ fn fx_current_rate_translation_two_period_cta_roll_forward_and_recycling_match_o
     )
     .unwrap();
     let doc_close_feb = FxRateDocument::new(
-        usd,
-        eur,
-        115,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 115,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         feb_28,
         1_700_000_000_000_000_000,
         FxRatePurpose::PeriodClose,
@@ -4085,11 +4114,13 @@ fn fx_current_rate_translation_two_period_cta_roll_forward_and_recycling_match_o
     )
     .unwrap();
     let doc_close_mar = FxRateDocument::new(
-        usd,
-        eur,
-        115,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 115,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         mar_31,
         1_700_000_000_000_000_000,
         FxRatePurpose::PeriodClose,
@@ -4497,11 +4528,13 @@ fn fx_temporal_remeasurement_two_period_monetary_vs_non_monetary_matches_oracle(
     let mar_31 = DateDay::from_ymd(2026, 3, 31).unwrap();
 
     let doc_spot_jan01 = FxRateDocument::new(
-        usd,
-        eur,
-        105,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 105,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         jan_01,
         1_700_000_000_000_000_000,
         FxRatePurpose::SpotClose,
@@ -4509,11 +4542,13 @@ fn fx_temporal_remeasurement_two_period_monetary_vs_non_monetary_matches_oracle(
     )
     .unwrap();
     let doc_avg_mar = FxRateDocument::new(
-        usd,
-        eur,
-        110,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 110,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         mar_31,
         1_700_000_000_000_000_000,
         FxRatePurpose::PeriodAverage,
@@ -4521,11 +4556,13 @@ fn fx_temporal_remeasurement_two_period_monetary_vs_non_monetary_matches_oracle(
     )
     .unwrap();
     let doc_close_mar = FxRateDocument::new(
-        usd,
-        eur,
-        115,
-        100,
-        RoundingLaw::HalfEven,
+        FxRateTerms {
+            base_unit: usd,
+            quote_unit: eur,
+            rate_num: 115,
+            rate_den: 100,
+            rounding: RoundingLaw::HalfEven,
+        },
         mar_31,
         1_700_000_000_000_000_000,
         FxRatePurpose::PeriodClose,

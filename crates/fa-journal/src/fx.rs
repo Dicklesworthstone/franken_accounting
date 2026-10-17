@@ -169,6 +169,16 @@ impl FxRatePurpose {
     }
 }
 
+/// Exact conversion terms, separate from when and where a rate was observed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FxRateTerms {
+    pub base_unit: UnitId,
+    pub quote_unit: UnitId,
+    pub rate_num: u128,
+    pub rate_den: u128,
+    pub rounding: RoundingLaw,
+}
+
 /// Canonical content-addressed `Rate` document payload (plan §6.4).
 ///
 /// Expresses the exact rational conversion rate `rate_num / rate_den` in
@@ -189,16 +199,19 @@ pub struct FxRateDocument {
 impl FxRateDocument {
     /// Construct a canonical `FxRateDocument`, reducing `(rate_num, rate_den)` to lowest terms.
     pub fn new(
-        base_unit: UnitId,
-        quote_unit: UnitId,
-        rate_num: u128,
-        rate_den: u128,
-        rounding: RoundingLaw,
+        terms: FxRateTerms,
         as_of: DateDay,
         retrieved_at_ns: u64,
         purpose: FxRatePurpose,
         source: impl Into<String>,
     ) -> Result<Self, Refusal> {
+        let FxRateTerms {
+            base_unit,
+            quote_unit,
+            rate_num,
+            rate_den,
+            rounding,
+        } = terms;
         let source = source.into();
         if base_unit == quote_unit {
             return Err(fx_structure(

@@ -74,6 +74,17 @@ pub fn reversal_vid(target: VId) -> VId {
     vid_from(h)
 }
 
+/// `vid(Replacement of T) = H("fa:vid:replacement:v1" ‖ T.vid)`:
+/// the corrected member of an atomic pair has one identity regardless of
+/// the caller's chosen idempotency key (plan §8.2).
+#[must_use]
+pub fn replacement_vid(target: VId) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:replacement:v1");
+    h.update(&target.0.to_le_bytes());
+    vid_from(h)
+}
+
 /// The `applied` mirror of a Leg vertex: the sum of live applications
 /// against it (plan §5.7), kept as a point-read witness so a concurrent
 /// application is a first-committer-wins conflict. Derived; `fa verify

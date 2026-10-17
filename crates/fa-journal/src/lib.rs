@@ -67,8 +67,9 @@ pub use fa_palimpsest::{
     LineageEdgeSummary, LineageEntrySummary, LineageReport, NetPosition, NettingLaw,
 };
 pub use fx::{
-    FxLawId, FxRateDocument, FxRatePurpose, RATE_DOCUMENT_KIND, RATE_EVIDENCE_ROLE, fx_law_oid,
-    is_registered_fx_law_oid, plan_realized_fx_settlement, plan_revaluation, value_proposal,
+    FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, RATE_DOCUMENT_KIND, RATE_EVIDENCE_ROLE,
+    fx_law_oid, is_registered_fx_law_oid, plan_realized_fx_settlement, plan_revaluation,
+    value_proposal,
 };
 pub use genesis::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, LegalEntitySpec, TimeZonePolicy,

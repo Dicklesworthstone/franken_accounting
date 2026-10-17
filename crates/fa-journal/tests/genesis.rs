@@ -269,6 +269,23 @@ impl Harness {
             .expect("kernel")
     }
 
+    fn post_pair(
+        &mut self,
+        reversal: PostRequest,
+        replacement: PostRequest,
+    ) -> Result<(Posted, Posted), Refusal> {
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(fa_journal::post::post_replacement_pair(
+                &mut self.db,
+                &ctx,
+                &self.book,
+                reversal,
+                replacement,
+            ))
+            .expect("kernel")
+    }
+
     fn transition(
         &mut self,
         code: &str,
@@ -374,6 +391,16 @@ fn committed(p: &Posted) -> Option<(EntryRef, String)> {
         } => Some((*entry_ref, period.clone())),
         Posted::AlreadyRecorded { .. } => None,
     }
+}
+
+fn replacement_proposal(target: EntryRef, mut proposal: EntryPayload) -> EntryPayload {
+    proposal.class = EntryClass::REPLACEMENT;
+    proposal.supersession = vec![Supersession {
+        target,
+        kind: SupersessionKind::Replaces,
+        reason_code: 1,
+    }];
+    proposal
 }
 
 fn harness() -> Harness {
@@ -7024,6 +7051,314 @@ fn replacement_pair_commits_reversal_and_replacement_in_one_batch_and_explains_n
         .collect();
     assert_eq!(net.get(&h.rent), Some(&12_500));
     assert_eq!(net.get(&h.cash), Some(&-12_500));
+}
+
+#[test]
+fn replacement_pair_reuses_released_settlement_capacity_and_retains_its_evidence() {
+    let mut h = harness();
+    let invoice = h
+        .post(h.request(h.invoice(10_000, b"pair-invoice"), &["post"]))
+        .unwrap()
+        .entry_ref();
+    let applies = |amount| Settlement {
+        target: invoice,
+        ordinal: 0,
+        amount: Amount::new(h.usd, amount),
+    };
+    let receipt_proposal = h.receipt(8_000, vec![applies(8_000)], b"pair-receipt");
+    let corrected = h.receipt(6_000, vec![applies(6_000)], b"pair-corrected-receipt");
+    let receipt = h.post(h.request(receipt_proposal, &["post"])).unwrap().entry_ref();
+    assert_eq!(h.applied_to(invoice.vid, 0), 8_000);
+    let reversal = h.request(h.reversal_of_entry(receipt, b"pair-undo-receipt"), &["post"]);
+    let replacement = h.request(replacement_proposal(receipt, corrected), &["post"]);
+    let (reversed, replaced) = h.post_pair(reversal, replacement).unwrap();
+    assert_eq!(reversed.recorded_at(), replaced.recorded_at());
+    assert_eq!(h.applied_to(invoice.vid, 0), 6_000);
+    let invoice_leg = leg_vid(invoice.vid, 0);
+    for (relation, source) in [
+        (relation::UNSETTLES, leg_vid(reversed.entry_ref().vid, 1)),
+        (relation::SETTLES, leg_vid(replaced.entry_ref().vid, 1)),
+    ] {
+        assert!(h.db.edge(edge_id(relation, source, invoice_leg)).unwrap().is_some());
+    }
+    let document = document_vid(&h.evidence[0].document_oid);
+    assert!(
+        h.db
+            .edge(edge_id(relation::EVIDENCED_BY, replaced.entry_ref().vid, document))
+            .unwrap()
+            .is_some()
+    );
+    let remaining = Settlement {
+        target: invoice,
+        ordinal: 0,
+        amount: Amount::new(h.usd, 4_000),
+    };
+    h.post(h.request(h.receipt(4_000, vec![remaining], b"pair-final-receipt"), &["post"]))
+        .unwrap();
+    assert_eq!(h.applied_to(invoice.vid, 0), 10_000);
+}
+
+#[test]
+fn replacement_pair_updates_limited_cash_from_the_reversal_overlay() {
+    let mut h = harness_configured(
+        Vec::new(),
+        None,
+        Some(BalanceLimit {
+            lower: Some(0),
+            upper: None,
+            scope: limit::LimitScope::Lifetime,
+        }),
+    );
+    h.post(h.request(h.receipt(10_000, Vec::new(), b"pair-cash-funding"), &["post"]))
+        .unwrap();
+    let target = h
+        .post(h.request(h.proposal(h.rent_legs(8_000), b"pair-cash-spend", EntryClass::ORIGINAL), &["post"]))
+        .unwrap()
+        .entry_ref();
+    let cell = limit::limit_cell_vid(h.cash);
+    let before = limit::LimitCell::decode_for(&h.db.vertex(cell).unwrap().unwrap(), h.cash).unwrap();
+    assert_eq!(before.availability(Side::Debit).unwrap().0, 2_000);
+    let reversal = h.request(h.reversal_of_entry(target, b"pair-cash-reversal"), &["post"]);
+    let replacement = h.request(
+        replacement_proposal(
+            target,
+            h.proposal(h.rent_legs(9_000), b"pair-cash-replacement", EntryClass::REPLACEMENT),
+        ),
+        &["post"],
+    );
+    let (reversed, replaced) = h.post_pair(reversal, replacement).unwrap();
+    assert_eq!(reversed.recorded_at(), replaced.recorded_at());
+    let after = limit::LimitCell::decode_for(&h.db.vertex(cell).unwrap().unwrap(), h.cash).unwrap();
+    assert_eq!(after.generation, before.generation + 2);
+    assert_eq!((after.debits_posted, after.credits_posted), (18_000, 17_000));
+    assert_eq!(after.availability(Side::Debit).unwrap().0, 1_000);
+    let head = h.db.frontier().unwrap();
+    let refused = h
+        .post(h.request(h.proposal(h.rent_legs(1_001), b"pair-cash-overdraft", EntryClass::ORIGINAL), &["post"]))
+        .unwrap_err();
+    assert_eq!(refused.code, "FA-REF-090", "{refused}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    h.post(h.request(h.proposal(h.rent_legs(1_000), b"pair-cash-exact", EntryClass::ORIGINAL), &["post"]))
+        .unwrap();
+    let exhausted = limit::LimitCell::decode_for(&h.db.vertex(cell).unwrap().unwrap(), h.cash).unwrap();
+    assert_eq!(exhausted.availability(Side::Debit).unwrap().0, 0);
+}
+
+#[test]
+fn replacement_pair_retries_bind_both_proposals_and_approval_envelopes() {
+    let mut h = harness();
+    let target = h
+        .post(h.request(h.proposal(h.rent_legs(100), b"pair-retry-original", EntryClass::ORIGINAL), &["post"]))
+        .unwrap()
+        .entry_ref();
+    let reversal = h.request(h.reversal_of_entry(target, b"pair-retry-reversal"), &["post"]);
+    let replacement = h.request(
+        replacement_proposal(target, h.proposal(h.rent_legs(125), b"pair-retry-replacement", EntryClass::REPLACEMENT)),
+        &["post"],
+    );
+    let (first_reversal, first_replacement) = h.post_pair(reversal.clone(), replacement.clone()).unwrap();
+    assert_eq!(first_replacement.entry_ref().vid, fa_journal::rows::replacement_vid(target.vid));
+    let head = h.db.frontier().unwrap();
+    let (retry_reversal, retry_replacement) = h.post_pair(reversal.clone(), replacement.clone()).unwrap();
+    assert!(matches!(retry_reversal, Posted::AlreadyRecorded { .. }));
+    assert!(matches!(retry_replacement, Posted::AlreadyRecorded { .. }));
+    assert_eq!(retry_reversal.entry_ref(), first_reversal.entry_ref());
+    assert_eq!(retry_replacement.entry_ref(), first_replacement.entry_ref());
+    assert_eq!(retry_replacement.recorded_at(), first_replacement.recorded_at());
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    // Re-sealing identical text changes prepared bytes, but the same
+    // principal's semantic retry still returns the original pair.
+    let mut resealed_reversal = reversal.clone();
+    let mut resealed_replacement = replacement.clone();
+    resealed_reversal.proposal.description = h.statement("March rent", 221);
+    resealed_replacement.proposal.description = h.statement("March rent", 222);
+    assert_ne!(resealed_reversal.proposal.proposal_digest().unwrap(), reversal.proposal.proposal_digest().unwrap());
+    assert_ne!(resealed_replacement.proposal.proposal_digest().unwrap(), replacement.proposal.proposal_digest().unwrap());
+    let (resealed_rev, resealed_rep) = h.post_pair(resealed_reversal, resealed_replacement).unwrap();
+    assert!(matches!(resealed_rev, Posted::AlreadyRecorded { .. }));
+    assert!(matches!(resealed_rep, Posted::AlreadyRecorded { .. }));
+    assert_eq!(resealed_rev.entry_ref(), first_reversal.entry_ref());
+    assert_eq!(resealed_rep.entry_ref(), first_replacement.entry_ref());
+    assert_eq!(resealed_rev.recorded_at(), first_reversal.recorded_at());
+    assert_eq!(resealed_rep.recorded_at(), first_replacement.recorded_at());
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let mut changed = replacement.clone();
+    changed.proposal.idempotency_key = b"pair-retry-another-key".to_vec();
+    assert_eq!(h.post_pair(reversal.clone(), changed).unwrap_err().exit, exit::CONFLICT);
+    let mut changed = replacement.clone();
+    changed.proposal.legs = h.rent_legs(126);
+    changed.proposal.unit_totals = EntryPayload::fold_unit_totals(&changed.proposal.legs).unwrap();
+    assert_eq!(h.post_pair(reversal.clone(), changed).unwrap_err().exit, exit::CONFLICT);
+    let mut changed = reversal.clone();
+    changed.proposal.supersession[0].reason_code = 2;
+    assert_eq!(h.post_pair(changed, replacement.clone()).unwrap_err().exit, exit::CONFLICT);
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    for change_reversal in [true, false] {
+        let mut rev = reversal.clone();
+        let mut rep = replacement.clone();
+        let request = if change_reversal { &mut rev } else { &mut rep };
+        request.approvals.push(h.approve_transition(request.proposal.proposal_digest().unwrap()));
+        let head = h.db.frontier().unwrap();
+        assert_eq!(h.post_pair(rev, rep).unwrap_err().exit, exit::CONFLICT);
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+}
+
+#[test]
+fn replacement_pair_uses_its_actual_class_approval_digest_in_a_closed_period() {
+    let mut h = harness();
+    let target = h
+        .post(h.request(h.proposal(h.rent_legs(100), b"pair-closed-original", EntryClass::ORIGINAL), &["post"]))
+        .unwrap()
+        .entry_ref();
+    h.transition(&h.march.clone(), PeriodTransition::Close, b"pair-close-march").unwrap();
+    let reversal = h.request(h.reversal_of_entry(target, b"pair-closed-reversal"), &["post", "post_closed"]);
+    let mut replacement = h.request(
+        replacement_proposal(target, h.proposal(h.rent_legs(125), b"pair-closed-replacement", EntryClass::REPLACEMENT)),
+        &["post", "post_closed"],
+    );
+    let head = h.db.frontier().unwrap();
+    assert_eq!(h.post_pair(reversal.clone(), replacement.clone()).unwrap_err().code, "FA-REF-012");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    let digest = replacement.proposal.proposal_digest().unwrap();
+    replacement.approvals.push(h.approve_transition(digest));
+    let (reversed, replaced) = h.post_pair(reversal, replacement.clone()).unwrap();
+    assert_eq!(reversed.recorded_at(), replaced.recorded_at());
+    let (stored, _) = read_entry(&h.db, replaced.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(stored.proposal.class, EntryClass::REPLACEMENT);
+    assert_eq!(stored.proposal_digest, digest);
+    assert_eq!(stored.approvals, replacement.approvals);
+}
+
+#[test]
+fn replacement_pair_failure_publishes_neither_member_and_authorizes_before_target_reads() {
+    let mut h = harness();
+    let target = h
+        .post(h.request(h.proposal(h.rent_legs(100), b"pair-refused-original", EntryClass::ORIGINAL), &["post"]))
+        .unwrap()
+        .entry_ref();
+    let reversal = h.request(h.reversal_of_entry(target, b"pair-refused-reversal"), &["post"]);
+    let replacement = h.request(
+        replacement_proposal(target, h.proposal(h.rent_legs(125), b"pair-refused-replacement", EntryClass::REPLACEMENT)),
+        &["post"],
+    );
+    let head = h.db.frontier().unwrap();
+    let mut no_evidence = replacement.clone();
+    no_evidence.proposal.evidence.clear();
+    let refusal = h.post_pair(reversal.clone(), no_evidence).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-080", "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    assert!(h.db.vertex(fa_journal::rows::replacement_vid(target.vid)).unwrap().is_none());
+
+    let denied = h.request(replacement.proposal.clone(), &[]);
+    let existing = h.post_pair(reversal.clone(), denied.clone()).unwrap_err();
+    let mut missing_rev = reversal.clone();
+    let mut missing_rep = denied;
+    let missing = EntryRef { vid: VId(0xffff_ffff), entry_digest: [0x91; 32] };
+    missing_rev.proposal.supersession[0].target = missing;
+    missing_rep.proposal.supersession[0].target = missing;
+    let absent = h.post_pair(missing_rev, missing_rep).unwrap_err();
+    assert_eq!(existing, absent);
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    // An already published standalone reversal cannot gain a replacement
+    // in a later commit, even with otherwise valid requests.
+    h.post(reversal.clone()).unwrap();
+    let head = h.db.frontier().unwrap();
+    assert_eq!(h.post_pair(reversal, replacement).unwrap_err().exit, exit::CONFLICT);
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn legacy_replacement_pair_retry_preserves_the_recorded_identity_without_new_writes() {
+    // Immutable history produced by the earlier pair writer used a
+    // principal/key-derived Replacement VID. Seed that representation in
+    // one native commit; every subsequent action uses the public kernel.
+    let mut h = harness();
+    let target = h
+        .post(h.request(h.proposal(h.rent_legs(100), b"legacy-pair-original", EntryClass::ORIGINAL), &["post"]))
+        .unwrap()
+        .entry_ref();
+    let reversal = h.request(h.reversal_of_entry(target, b"legacy-pair-reversal"), &["post"]);
+    let replacement = h.request(
+        replacement_proposal(target, h.proposal(h.rent_legs(125), b"legacy-pair-replacement", EntryClass::REPLACEMENT)),
+        &["post"],
+    );
+    let legacy_vid = entry_vid(
+        h.book.book_id,
+        &replacement.proposal.principal_ref.0.to_le_bytes(),
+        &replacement.proposal.idempotency_key,
+    );
+    let mut entries = fgdb::WriteBatch::new(relation::HAS_LEG);
+    let mut supersedes = fgdb::WriteBatch::new(relation::SUPERSEDES);
+    let mut in_period = fgdb::WriteBatch::new(relation::IN_PERIOD);
+    let mut evidence = fgdb::WriteBatch::new(relation::EVIDENCED_BY);
+    let mut posts_to = fgdb::WriteBatch::new(relation::POSTS_TO);
+    let mut in_unit = fgdb::WriteBatch::new(relation::IN_UNIT);
+    let source = document_vid(&h.evidence[0].document_oid);
+    for (vid, request) in [(reversal_vid(target.vid), &reversal), (legacy_vid, &replacement)] {
+        let entry = request.proposal.clone().seal(request.approvals.clone(), None).unwrap();
+        entries.create_vertex(vid, vec![fa_model::symbols::label::ENTRY], fa_model::entry_mirrors(&entry).unwrap());
+        for (i, leg) in entry.proposal.legs.iter().enumerate() {
+            let ordinal = u16::try_from(i).unwrap();
+            let lvid = leg_vid(vid, ordinal);
+            let mut props = fa_model::leg_mirrors(leg, ordinal, entry.proposal.effective_date, &h.book.units).unwrap();
+            props.push((property::APPLIED, fa_journal::rows::mantissa_scalar("applied", 0).unwrap()));
+            entries.create_vertex(lvid, vec![fa_model::symbols::label::LEG], props);
+            entries.add_edge(
+                edge_id(relation::HAS_LEG, vid, lvid),
+                vid,
+                lvid,
+                vec![(property::ORDINAL, CanonicalScalar::Int(i64::from(ordinal)))],
+            );
+            posts_to.add_edge(edge_id(relation::POSTS_TO, lvid, leg.account_ref), lvid, leg.account_ref, vec![]);
+            let unit = h.book.units.get(leg.amount.unit).unwrap();
+            let uvid = fa_model::unit_vid(h.book.book_id, &format!("{}@v{}", unit.code, unit.version));
+            in_unit.add_edge(edge_id(relation::IN_UNIT, lvid, uvid), lvid, uvid, vec![]);
+        }
+        let period = period_vid(&h.book.calendar.id, &h.march);
+        in_period.add_edge(edge_id(relation::IN_PERIOD, vid, period), vid, period, vec![]);
+        supersedes.add_edge(edge_id(relation::SUPERSEDES, vid, target.vid), vid, target.vid, vec![]);
+        evidence.add_edge(edge_id(relation::EVIDENCED_BY, vid, source), vid, source, vec![]);
+    }
+    let ctx = h.ctx();
+    let mut txn = h.db.begin(&ctx.txn()).unwrap();
+    txn.write_ordered(&mut h.db, vec![entries, posts_to, in_unit, in_period, supersedes, evidence]).unwrap();
+    let recorded_at = h.runtime.block_on(txn.commit(&mut h.db, &ctx.commit())).unwrap();
+    assert!(h.db.vertex(fa_journal::rows::replacement_vid(target.vid)).unwrap().is_none());
+    let (reversed, replaced) = h.post_pair(reversal.clone(), replacement.clone()).unwrap();
+    assert!(matches!(reversed, Posted::AlreadyRecorded { .. }));
+    assert!(matches!(replaced, Posted::AlreadyRecorded { .. }));
+    assert_eq!(replaced.entry_ref().vid, legacy_vid);
+    assert_eq!(reversed.recorded_at(), recorded_at);
+    assert_eq!(replaced.recorded_at(), recorded_at);
+    assert_eq!(h.db.frontier().unwrap(), recorded_at);
+    let mut resealed_reversal = reversal.clone();
+    let mut resealed_replacement = replacement.clone();
+    resealed_reversal.proposal.description = h.statement("March rent", 223);
+    resealed_replacement.proposal.description = h.statement("March rent", 224);
+    let (resealed_rev, resealed_rep) = h.post_pair(resealed_reversal, resealed_replacement).unwrap();
+    assert!(matches!(resealed_rev, Posted::AlreadyRecorded { .. }));
+    assert!(matches!(resealed_rep, Posted::AlreadyRecorded { .. }));
+    assert_eq!(resealed_rev.entry_ref(), reversed.entry_ref());
+    assert_eq!(resealed_rep.entry_ref(), replaced.entry_ref());
+    assert_eq!(resealed_rev.recorded_at(), recorded_at);
+    assert_eq!(resealed_rep.recorded_at(), recorded_at);
+    assert_eq!(h.db.frontier().unwrap(), recorded_at);
+    let mut altered = replacement.clone();
+    altered.proposal.idempotency_key = b"legacy-pair-different-key".to_vec();
+    assert_eq!(h.post_pair(reversal.clone(), altered).unwrap_err().exit, exit::CONFLICT);
+    assert_eq!(h.db.frontier().unwrap(), recorded_at);
+    let mut altered = replacement;
+    altered.approvals.push(h.approve_transition(altered.proposal.proposal_digest().unwrap()));
+    let head = h.db.frontier().unwrap();
+    assert_eq!(h.post_pair(reversal, altered).unwrap_err().exit, exit::CONFLICT);
+    assert_eq!(h.db.frontier().unwrap(), head);
 }
 
 #[test]

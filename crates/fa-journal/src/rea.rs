@@ -370,7 +370,7 @@ fn check_rea_idempotency(
 fn open_external_ids(
     book: &BookContext,
     ext_ids: &[ExternalId],
-) -> Result<Result<Vec<(VId, String, ExternalId)>, Refusal>, KernelError> {
+) -> Outcome<Vec<(VId, String, ExternalId)>> {
     if ext_ids.len() > fa_model::limits::MAX_EXTERNAL_IDS {
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
