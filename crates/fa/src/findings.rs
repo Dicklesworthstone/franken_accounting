@@ -11,6 +11,8 @@
 //! Ordered, repeated citations (including tracing paths) remain in the original
 //! certificate; graph CITES edges are the distinct-target membership projection.
 
+pub mod lookup;
+pub use lookup::RecordedFinding;
 pub mod workpaper;
 pub use workpaper::{FindingWorkpaper, FINDING_WORKPAPER_FORMAT, MAX_FINDING_WORKPAPER_BYTES};
 
@@ -333,11 +335,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 else { (relation::DERIVED_FROM, &mut derived) };
             batch.add_edge(edge_id(rel, link.from, link.to), link.from, link.to, vec![]);
         }
-        if let Err(e) = txn.write(&mut self.db, derived) { txn.abort(); return refused_write(e); }
-        // Avoid an empty relation batch for a legitimately empty finding set.
-        if prepared.links.iter().any(|link| link.cite)
-            && let Err(e) = txn.write(&mut self.db, citations)
-        { txn.abort(); return refused_write(e); }
+        // CITES depends on the vertices created by DERIVED_FROM's batch.
+        // The substrate's ordinary write() deliberately rejects introducing a
+        // second relation; ordered staging preserves one atomic publication.
+        let batches = if prepared.links.iter().any(|link| link.cite) {
+            vec![derived, citations]
+        } else {
+            vec![derived]
+        };
+        if let Err(e) = txn.write_ordered(&mut self.db, batches) {
+            txn.abort();
+            return refused_write(e);
+        }
         cx.commit().checkpoint().map_err(BookError::Context)?;
         match txn.commit(&mut self.db, &cx.commit()).await {
             Ok(seq) => Ok(Ok(prepared.result(seq))), Err(e) => refused_write(e),
