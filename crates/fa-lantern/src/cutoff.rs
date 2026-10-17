@@ -1,6 +1,8 @@
 //! Cutoff, reconciliation, completeness, and audit procedures (plan §11.4, §11.7;
 //! beads fa-nlu, fa-g6rj).
 
+mod reconciliation_arithmetic;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::attestation::{AttestationClaim, review_vid};
@@ -167,7 +169,8 @@ impl Procedure for ReconIntercompany {
                 }
             }
             let scale = crate::unit_scale(book, unit_id)?;
-            let mag = net.unsigned_abs() as i128;
+            let mag = reconciliation_arithmetic::discrepancy(net, 0)
+                .ok_or(LanternError::Overflow("intercompany imbalance magnitude"))?;
             out.push(finding(
                 Self::ID,
                 Severity::Critical,
@@ -423,7 +426,8 @@ impl Procedure for ReconBookToBook {
                 }
             }
             if fold_net != claim.mantissa {
-                let diff = (fold_net - claim.mantissa).unsigned_abs() as i128;
+                let diff = reconciliation_arithmetic::discrepancy(fold_net, claim.mantissa)
+                    .ok_or(LanternError::Overflow("book_to_book discrepancy magnitude"))?;
                 let mut cites = vec![Cite::Account(claim.account)];
                 if snapshot.periods.contains_key(&claim.period) {
                     cites.push(Cite::Period(claim.period.clone()));

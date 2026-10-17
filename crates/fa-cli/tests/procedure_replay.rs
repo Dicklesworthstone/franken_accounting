@@ -320,3 +320,6 @@ fn analytic_artifacts_replay_after_reopen_with_no_partial_output_or_new_authorit
         }
     }
 }
+
+#[path = "procedure_replay/extended.rs"]
+mod extended;

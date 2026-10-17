@@ -155,3 +155,26 @@ fn attestation_rewrites_and_restoration_refuse_replay_and_fresh_certification() 
         assert!(fresh.message.contains("attestation"));
     }
 }
+
+#[test]
+fn a_discrepancy_beyond_signed_statistic_capacity_has_no_certificate_or_wrapped_finding() {
+    let mut f = Fixture::new(96);
+    let (source, _) = f.post(1, "3000", "1000", 1, false);
+    let cx = f.cx();
+    let key = fa_registers::EntityCellKey {
+        account: f.id("1000"), unit_id: f.unit.0, period: "FY2026-P01".into(), entity: None,
+    };
+    let claim = f.book.evaluate_register_equals(&cx, &key, None).unwrap();
+    assert_eq!(claim.mantissa, 1);
+    f.runtime.block_on(f.book.record_register_equals(&cx, &cap(&["reconcile"]), &claim, f.evidence.iter().map(|e| e.document_oid).collect()))
+        .unwrap().unwrap();
+    f.post(1, "1000", "6000", i128::MAX, false);
+    let exact = f.certify(&f.request("recon.book_to_book", source));
+    assert_eq!(exact.report.findings[0].statistic.value, i128::MAX);
+    f.post(1, "1000", "3000", 1, false);
+    let head = f.head();
+    assert!(matches!(f.book.certify_procedure(&cx, PRINCIPAL, &cap(&["read", "produce"]), &f.request("recon.book_to_book", source)),
+        Err(crate::BookError::Lantern(fa_lantern::LanternError::Overflow("book_to_book discrepancy magnitude")))));
+    assert_eq!(f.head(), head);
+    assert_eq!(f.book.replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &exact.certificate).unwrap().unwrap(), exact.report);
+}
