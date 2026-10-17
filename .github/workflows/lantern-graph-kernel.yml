@@ -20,6 +20,10 @@ on:
       - 'crates/fa-cli/src/notary/**'
       - 'crates/fa-cli/tests/procedure_replay.rs'
       - 'crates/fa-cli/tests/statements.rs'
+      - 'crates/fa-cli/tests/retained_report_storage.rs'
+      - 'crates/fa-mcp/src/registry.rs'
+      - 'registries/verbs.toml'
+      - 'registries/robot_schema/1.jsonl'
       - 'crates/fa-journal/src/post.rs'
       - 'crates/fa-journal/src/rows.rs'
       - 'crates/fa-journal/src/fx.rs'
@@ -139,7 +143,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test procedure_replay --test network --no-fail-fast --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test procedure_replay --test statements --test retained_report_storage --test robot_schema --test network --no-fail-fast --jobs 2
+      - name: Regress MCP report schemas and capability refusal parity
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --lib --test parity --test deny_rows --no-fail-fast --jobs 2
       - name: Regress existing native certificate replay through the CLI
         if: ${{ !cancelled() }}
         shell: bash

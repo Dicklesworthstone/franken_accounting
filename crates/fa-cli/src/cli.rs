@@ -1551,6 +1551,12 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
     if period_plan_only(verb, args) {
         return Some(&[Op::Read]);
     }
+    if verb == "statement"
+        && matches!(sub, Some("diff" | "trace"))
+        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
+    {
+        return Some(&[Op::Read, Op::Produce]);
+    }
     let ops: &'static [Op] = match (verb, sub) {
         // The chart templates are data embedded in this build; listing
         // them reads nothing from the book.
@@ -1745,6 +1751,7 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
         "--plan-out",
         "--certificate-out",
         "--out",
+        "--output",
         "--review-out",
         "--receipt-out",
     ] {
@@ -1875,6 +1882,7 @@ fn admit_daemon_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fai
         "--plan-out",
         "--certificate-out",
         "--out",
+        "--output",
         "--review-out",
         "--receipt-out",
     ] {
@@ -7332,6 +7340,18 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let mode = args.positional[1].as_str();
     if matches!(mode, "diff" | "trace") {
+        if args.flag("--known-at").is_some() || args.flag("--as-known-at").is_some() {
+            return Err(usage(
+                "statement diff and trace select two frontiers with --before and --after; --known-at and --as-known-at do not select this workflow",
+                "fa statement diff --definition balance-sheet --for <period> --before <seq> --after <seq> --json",
+            ));
+        }
+        if mode == "diff" && args.flag("--max-publications").is_some() {
+            return Err(usage(
+                "--max-publications bounds a statement trace, not a two-frontier diff",
+                "use statement trace with --max-publications, or omit that flag for statement diff",
+            ));
+        }
         let def_name = args.require("--definition", "balance-sheet|income-statement")?;
         let definition = StatementDefinition::embedded(def_name).map_err(|error| {
             usage(
@@ -7365,16 +7385,46 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .collect(),
         };
         let who = ctx.principal(args);
-        let capability = ctx.capability(args, &["read"])?;
-        let book = ctx.books.open(args)?;
+        let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+        let capability = ctx.capability(
+            args,
+            if certify { &["read", "produce"] } else { &["read"] },
+        )?;
+        let mut book = ctx.books.open(args)?;
         let comparison = StatementDiffRequest {
             selection,
             before,
             after,
         };
         if mode == "diff" {
+            if certify {
+                let certified = book.certify_statement_diff(who, &capability, &comparison)??;
+                let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+                let (bytes, retained) = notary::retain_report_artifact(
+                    &mut book,
+                    &ctx.files,
+                    args,
+                    &artifact,
+                    &capability,
+                )?;
+                render_statement_diff(
+                    &ctx.out,
+                    &book,
+                    &certified.report,
+                    Some(&hex(artifact.digest())),
+                )?;
+                notary::emit_report_artifact(
+                    &ctx.out,
+                    args,
+                    &artifact,
+                    "fa:statement-diff:v1",
+                    &bytes,
+                    &retained,
+                );
+                return Ok(());
+            }
             let diff = book.statement_diff(who, &capability, &comparison)??;
-            return render_statement_diff(&ctx.out, &book, &diff);
+            return render_statement_diff(&ctx.out, &book, &diff, None);
         }
         let max_publications: usize = args
             .flag("--max-publications")
@@ -7386,15 +7436,38 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "--max-publications 64",
                 )
             })?;
-        let trace = book.statement_trace(
-            who,
-            &capability,
-            &StatementTraceRequest {
-                comparison,
-                max_publications,
-            },
-        )??;
-        return render_statement_trace(&ctx.out, &book, &trace);
+        let request = StatementTraceRequest {
+            comparison,
+            max_publications,
+        };
+        if certify {
+            let certified = book.certify_statement_trace(who, &capability, &request)??;
+            let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+            let (bytes, retained) = notary::retain_report_artifact(
+                &mut book,
+                &ctx.files,
+                args,
+                &artifact,
+                &capability,
+            )?;
+            render_statement_trace(
+                &ctx.out,
+                &book,
+                &certified.report,
+                Some(&hex(artifact.digest())),
+            )?;
+            notary::emit_report_artifact(
+                &ctx.out,
+                args,
+                &artifact,
+                "fa:statement-trace:v1",
+                &bytes,
+                &retained,
+            );
+            return Ok(());
+        }
+        let trace = book.statement_trace(who, &capability, &request)??;
+        return render_statement_trace(&ctx.out, &book, &trace, None);
     }
     let definition = StatementDefinition::embedded(mode).map_err(|error| {
         usage(
@@ -7549,7 +7622,12 @@ fn statement_mapping_changes_json(
         .collect()
 }
 
-fn render_statement_diff(out: &Out, book: &Book, diff: &fa::StatementDiff) -> Result<(), Fail> {
+pub(crate) fn render_statement_diff(
+    out: &Out,
+    book: &Book,
+    diff: &fa::StatementDiff,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
     let units = &book.context().units;
     let before = diff.before();
     let after = diff.after();
@@ -7563,7 +7641,7 @@ fn render_statement_diff(out: &Out, book: &Book, diff: &fa::StatementDiff) -> Re
     let columns = statement_columns_json(after);
     let lines = statement_line_changes_json(diff.lines(), units)?;
     let mapping_changes = statement_mapping_changes_json(diff.mapping_changes())?;
-    out.event(
+    out.event_with_certificate(
         "statement_diff",
         vec![
             ("name", s(&after.definition_name)),
@@ -7587,11 +7665,17 @@ fn render_statement_diff(out: &Out, book: &Book, diff: &fa::StatementDiff) -> Re
             after.known_at,
             diff.is_unchanged()
         ),
+        certificate,
     );
     Ok(())
 }
 
-fn render_statement_trace(out: &Out, book: &Book, trace: &fa::StatementTrace) -> Result<(), Fail> {
+pub(crate) fn render_statement_trace(
+    out: &Out,
+    book: &Book,
+    trace: &fa::StatementTrace,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
     let units = &book.context().units;
     let summary = trace.summary();
     let before = summary.before();
@@ -7661,7 +7745,7 @@ fn render_statement_trace(out: &Out, book: &Book, trace: &fa::StatementTrace) ->
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
-    out.event(
+    out.event_with_certificate(
         "statement_trace",
         vec![
             ("name", s(&after.definition_name)),
@@ -7690,6 +7774,7 @@ fn render_statement_trace(out: &Out, book: &Book, trace: &fa::StatementTrace) ->
             trace.publications().len(),
             trace.had_changes()
         ),
+        certificate,
     );
     Ok(())
 }

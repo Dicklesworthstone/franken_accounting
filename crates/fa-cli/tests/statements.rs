@@ -346,3 +346,332 @@ fn statement_selectors_are_explicit_and_output_files_are_never_replaced() {
         certified[0]
     );
 }
+
+
+#[test]
+fn certified_comparisons_and_traces_retain_the_complete_family_across_processes() {
+    let fixture = Fixture::new();
+    let snapshot = ok(
+        &fixture.book,
+        &["statement", "income-statement", "--for", "FY2026-P03"],
+    );
+    let before = data(&snapshot[0]).get("known_at").unwrap().render();
+    fixture.post("bridge-sale", "2026-03-14", "1000", "4000", "17.00 USD");
+    let snapshot = ok(
+        &fixture.book,
+        &["statement", "income-statement", "--for", "FY2026-P03"],
+    );
+    let after = data(&snapshot[0]).get("known_at").unwrap().render();
+    let mut originals = Vec::new();
+    for mode in ["diff", "trace"] {
+        let path = fixture.dir.join(format!("{mode}.cert"));
+        let args = [
+            "statement",
+            mode,
+            "--definition",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--before",
+            &before,
+            "--after",
+            &after,
+            "--certify",
+            "--certificate-out",
+            path.to_str().unwrap(),
+        ];
+        let original = ok(&fixture.book, &args);
+        assert_eq!(original.len(), 2, "{mode}: {original:?}");
+        assert_eq!(text(&original[0], "event"), format!("statement_{mode}"));
+        assert_eq!(text(&original[1], "event"), "report_certificate");
+        let oid = text(data(&original[1]), "oid").to_string();
+        assert_eq!(text(&original[0], "certificate"), oid);
+        let bytes = std::fs::read(&path).unwrap();
+        let artifact = fa::ReportArtifact::decode(&bytes).unwrap();
+        assert_eq!(artifact.family().name(), format!("statement-{mode}"));
+        assert_eq!(artifact.known_at().0.to_string(), after);
+        let handle = format!("C:{oid}");
+        assert_eq!(
+            ok(&fixture.book, &["replay", &handle]),
+            vec![original[0].clone()],
+        );
+        assert_eq!(
+            ok(&fixture.book, &["replay", path.to_str().unwrap()]),
+            vec![original[0].clone()],
+        );
+        let output_path = fixture.dir.join(format!("{mode}.report"));
+        let replay = ok(
+            &fixture.book,
+            &["replay", &handle, "--output", output_path.to_str().unwrap()],
+        );
+        assert_eq!(replay.len(), 2);
+        assert_eq!(replay[0], original[0]);
+        assert_eq!(text(&replay[1], "event"), "report_replayed");
+        assert_eq!(text(data(&replay[1]), "family"), artifact.family().name());
+        assert_eq!(std::fs::read(&output_path).unwrap(), artifact.output());
+        assert_eq!(
+            data(&replay[1]).get("output_bytes"),
+            Some(&Json::Int(artifact.output().len() as i128)),
+        );
+        assert_eq!(
+            data(&replay[1]).get("output_digest"),
+            data(&original[1]).get("output_digest"),
+        );
+        // Fixed endpoints produce the same certificate after retention
+        // advances the metadata frontier. Exact retry publishes nothing.
+        let retry = ok(
+            &fixture.book,
+            &[
+                "statement",
+                mode,
+                "--definition",
+                "income-statement",
+                "--for",
+                "FY2026-P03",
+                "--before",
+                &before,
+                "--after",
+                &after,
+                "--certify",
+            ],
+        );
+        assert_eq!(text(data(&retry[1]), "oid"), oid);
+        assert_eq!(
+            data(&retry[1]).get("recorded_at"),
+            data(&original[1]).get("recorded_at"),
+        );
+        let status = ok(&fixture.book, &["certificate", "status", &handle]);
+        assert_eq!(text(data(&status[0]), "status"), "Current");
+        assert_eq!(text(data(&status[0]), "oid"), oid);
+        assert_eq!(data(&status[0]).get("known_at").unwrap().render(), after);
+
+        // Forge the derived output and recompute its unsigned content hash.
+        // The container still decodes, so refusal must come from full source
+        // replay and reconstruction of the bridge or publication attribution.
+        let mut forged = bytes.clone();
+        let body_end = forged.len() - 32;
+        forged[body_end - 1] ^= 1;
+        let domain: &[u8] = if mode == "diff" {
+            b"fa:statement-diff-certificate-digest:v1"
+        } else {
+            b"fa:statement-trace-certificate-digest:v1"
+        };
+        let digest = fa_model::domain_digest(domain, &[&forged[..body_end]]);
+        forged[body_end..].copy_from_slice(&digest);
+        fa::ReportArtifact::decode(&forged)
+            .expect("an intact unsigned container is not a replay proof");
+        let forged_path = fixture.dir.join(format!("{mode}-forged.cert"));
+        std::fs::write(&forged_path, forged).unwrap();
+        let refused_output = fixture.dir.join(format!("{mode}-must-not-exist.report"));
+        for command in [
+            vec![
+                "replay",
+                forged_path.to_str().unwrap(),
+                "--output",
+                refused_output.to_str().unwrap(),
+            ],
+            vec!["certificate", "status", forged_path.to_str().unwrap()],
+        ] {
+            let (exit, events, _) = run(&fixture.book, &command);
+            assert_eq!(exit, 8, "{command:?}: {events:?}");
+            assert_eq!(events.len(), 1);
+            assert_eq!(text(&events[0], "event"), "error");
+            assert!(!refused_output.exists());
+        }
+        let (exit, events, _) = run(
+            &fixture.book,
+            &["replay", &handle, "--output", output_path.to_str().unwrap()],
+        );
+        assert_eq!(exit, 2);
+        assert_eq!(events.len(), 1);
+        assert_eq!(text(&events[0], "event"), "error");
+        assert_eq!(std::fs::read(output_path).unwrap(), artifact.output());
+        originals.push((handle, original[0].clone()));
+    }
+    // A late February entry does not affect this March activity selector.
+    // A backdated March entry does, without changing the historical bytes.
+    fixture.post(
+        "unrelated-late-sale",
+        "2026-02-14",
+        "1000",
+        "4000",
+        "23.00 USD",
+    );
+    for (handle, _) in &originals {
+        let status = ok(&fixture.book, &["certificate", "status", handle]);
+        assert_eq!(text(data(&status[0]), "status"), "Current");
+    }
+    fixture.post("backdated-sale", "2026-03-12", "1000", "4000", "29.00 USD");
+    for (handle, original) in &originals {
+        let status = ok(&fixture.book, &["certificate", "status", handle]);
+        assert_eq!(text(data(&status[0]), "status"), "SupersededBy");
+        assert!(!array(data(&status[0]), "later_entries").is_empty());
+        assert_eq!(
+            ok(&fixture.book, &["replay", handle]),
+            vec![original.clone()],
+        );
+    }
+}
+
+#[test]
+fn comparison_scope_and_certification_authority_are_never_silently_ignored() {
+    let fixture = Fixture::new();
+    for extra in [
+        vec!["--known-at", "HEAD"],
+        vec!["--as-known-at", "HEAD"],
+        vec!["--max-publications", "1"],
+    ] {
+        let mut args = vec![
+            "statement",
+            "diff",
+            "--definition",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--before",
+            "1",
+        ];
+        args.extend(extra);
+        let (exit, events, _) = run(&fixture.book, &args);
+        assert_eq!(exit, 2, "{args:?}: {events:?}");
+        assert_eq!(events.len(), 1);
+        assert_eq!(text(&events[0], "event"), "error");
+    }
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        fixture.book.clone(),
+        None,
+        "report-reader",
+        fa_cli::authority::LaunchProfile::Agent,
+        &["read"],
+    )
+    .unwrap();
+    let args = [
+        "statement",
+        "diff",
+        "--definition",
+        "income-statement",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        "1",
+        "--certify",
+        "--json",
+    ]
+    .map(String::from);
+    let (exit, captured) = fa_cli::entry::fa_with_authority(
+        &args,
+        fa_cli::cli::Files::default(),
+        &authority,
+        true,
+    );
+    assert_eq!(exit, 7, "{}{}", captured.stdout, captured.stderr);
+    let events: Vec<_> = captured
+        .stdout
+        .lines()
+        .map(|line| json::parse(line).unwrap())
+        .collect();
+    assert_eq!(events.len(), 1);
+    assert_eq!(text(&events[0], "event"), "error");
+    assert!(captured.stdout.contains("produce"));
+}
+
+
+#[test]
+fn generic_aging_artifacts_replay_by_digest_and_export_through_the_held_dispatcher() {
+    let fixture = Fixture::new();
+    let keys = fa::BookKeys::load(&fixture.book.join("book.keys")).unwrap();
+    let mut book = fa::Book::open_dir(
+        &fixture.book,
+        keys.clone(),
+        fa::Entropy::deterministic(117),
+    )
+    .unwrap();
+    let principal = fa_model::principal_vid("aging-producer");
+    let capability = fa::Capability::embedded(principal, &["read", "produce"]).unwrap();
+    let certified = book
+        .certify_effective_date_aging(
+            principal,
+            &capability,
+            &fa::AgingRequest {
+                account: None,
+                effective_through: fa_time::DateDay::parse("2026-03-31").unwrap(),
+                known_at: None,
+                buckets: fa::AgingBuckets::thirty_day(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let artifact = fa::ReportArtifact::try_from(&certified.certificate).unwrap();
+    let bytes = artifact.canonical_bytes().unwrap();
+    let retained = book
+        .retain_report_artifact(principal, &capability, &bytes, Some(artifact.digest()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(&retained.digest, artifact.digest());
+    let handle = format!(
+        "C:{}",
+        artifact.digest().iter().map(|b| format!("{b:02x}")).collect::<String>(),
+    );
+    drop(book);
+    let output = fixture.dir.join("aging.report");
+    let replay = ok(
+        &fixture.book,
+        &["replay", &handle, "--output", output.to_str().unwrap()],
+    );
+    assert_eq!(replay.len(), 1);
+    assert_eq!(text(&replay[0], "event"), "report_replayed");
+    assert_eq!(text(data(&replay[0]), "family"), "effective-date-aging");
+    assert_eq!(std::fs::read(output).unwrap(), artifact.output());
+    let (exit, events, _) = run(&fixture.book, &["certificate", "status", &handle]);
+    assert_eq!(exit, 8, "{events:?}");
+    assert_eq!(events.len(), 1);
+    assert_eq!(text(&events[0], "event"), "error");
+
+    let mut book = fa::Book::open_dir(
+        &fixture.book,
+        keys,
+        fa::Entropy::deterministic(118),
+    )
+    .unwrap();
+    let original_head = book.head().unwrap();
+    let args = ["replay".to_string(), handle.clone(), "--json".into()];
+    let (exit, captured) = fa_cli::cli::run_for_daemon(
+        &args,
+        &mut book,
+        fixture.book.clone(),
+        None,
+        None,
+        fa_cli::cli::Stdin::Missing,
+        true,
+    );
+    assert_eq!(exit, 0, "{}{}", captured.stdout, captured.stderr);
+    let event = json::parse(captured.stdout.trim()).unwrap();
+    fa_cli::verbs::registry().unwrap().check_line(captured.stdout.trim()).unwrap();
+    assert_eq!(text(data(&event), "family"), "effective-date-aging");
+    assert_eq!(data(&event).get("output_digest"), data(&replay[0]).get("output_digest"));
+    assert_eq!(book.head().unwrap(), original_head);
+
+    // The new output flag follows the same daemon file-containment admission
+    // as every other output path, before the replay handler can create a file.
+    let escaped = fixture.dir.join("daemon-must-not-create.report");
+    let args = [
+        "replay".to_string(),
+        handle,
+        "--output".into(),
+        escaped.to_str().unwrap().into(),
+        "--json".into(),
+    ];
+    let (exit, captured) = fa_cli::cli::run_for_daemon(
+        &args,
+        &mut book,
+        fixture.book.clone(),
+        None,
+        None,
+        fa_cli::cli::Stdin::Missing,
+        true,
+    );
+    assert_eq!(exit, 2, "{}{}", captured.stdout, captured.stderr);
+    assert_eq!(captured.stdout.lines().count(), 1);
+    assert!(!escaped.exists());
+    assert_eq!(book.head().unwrap(), original_head);
+}

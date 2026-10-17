@@ -11,10 +11,11 @@ use std::io::Read;
 use crate::json::{Json, obj, s};
 use fa::certificate::{AUTHORITY, MAX_CERTIFICATE_BYTES, REPLAY_SCOPE};
 use fa::{
-    Book, CertificateStatus, ReportCertificate, ReportOutput, ReportSelection, RetainedCertificate,
-    TrialBalanceSelection,
+    Book, CertificateStatus, ReportArtifact, ReportArtifactFamily, ReportCertificate, ReportOutput,
+    ReportSelection, RetainedCertificate, TrialBalanceSelection,
 };
-use fa_policy::Op;
+use fa_policy::{Capability, Op};
+use fgdb_types::VId;
 
 use crate::args::Args;
 use crate::cli::{
@@ -61,9 +62,14 @@ fn read_certificate_bytes(
     book: &Book,
     files: &Files,
     path: &str,
+    principal: VId,
+    capability: &Capability,
 ) -> Result<Vec<u8>, Fail> {
     if let Some(digest) = certificate_digest(path)? {
-        return book.read_certificate(&digest)??.canonical_bytes().map_err(|e| certificate_invalid(e.to_string()));
+        return book
+            .read_report_artifact(principal, capability, &digest)??
+            .canonical_bytes()
+            .map_err(Into::into);
     }
     let limit = MAX_CERTIFICATE_BYTES * 2 + 2; // hex plus a final CRLF
     let read = |reader: &mut dyn Read| -> Result<Vec<u8>, Fail> {
@@ -111,17 +117,21 @@ fn read_certificate_bytes(
             "report certificate input exceeds its bounded wire size",
         ));
     }
-    let procedure_format = fa::procedure_certificate::PROCEDURE_CERTIFICATE_FORMAT;
-    let is_procedure = bytes.get(..4).is_some_and(|length| length == (procedure_format.len() as u32).to_le_bytes())
-        && bytes.get(4..4 + procedure_format.len()).is_some_and(|format| format == procedure_format);
-    if bytes.starts_with(b"fa:report-certificate:") || is_procedure {
+    // This recognizes binary transport only. The selected family decoder
+    // still validates its full format, bounds and digest before replay.
+    if bytes.starts_with(b"fa:report-certificate:")
+        || bytes.get(4..).is_some_and(|body| body.starts_with(b"fa:"))
+    {
         return Ok(bytes);
     }
     let text = std::str::from_utf8(&bytes).ok().map(str::trim);
     if let Some(text) = text
         && let Some(digest) = certificate_digest(text)?
     {
-        return book.read_certificate(&digest)??.canonical_bytes().map_err(|e| certificate_invalid(e.to_string()));
+        return book
+            .read_report_artifact(principal, capability, &digest)??
+            .canonical_bytes()
+            .map_err(Into::into);
     }
     let Some(text) = text.filter(|text| {
         !text.is_empty() && text.len() % 2 == 0 && text.bytes().all(|b| b.is_ascii_hexdigit())
@@ -148,10 +158,6 @@ fn read_certificate_bytes(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(decoded)
-}
-
-fn read_report_certificate(book: &Book, files: &Files, path: &str) -> Result<ReportCertificate, Fail> {
-    ReportCertificate::decode(&read_certificate_bytes(book, files, path)?).map_err(Into::into)
 }
 
 /// Save an optional external copy, then retain the immutable certificate in
@@ -185,6 +191,41 @@ pub(crate) fn retain_report_certificate(
     Ok((bytes, retained))
 }
 
+/// Retain the complete outer family after replay under current authority.
+/// An external copy never substitutes the last native source for a complete
+/// comparison or the source chain of a publication trace.
+pub(crate) fn retain_report_artifact(
+    book: &mut Book,
+    files: &Files,
+    args: &Args,
+    artifact: &ReportArtifact,
+    capability: &Capability,
+) -> Result<(Vec<u8>, RetainedCertificate), Fail> {
+    let bytes = artifact.canonical_bytes()?;
+    if let Some(path) = args.flag("--certificate-out") {
+        if path.is_empty() || path == "-" {
+            return Err(usage(
+                "--certificate-out names a new file; - is not an output file",
+                "use --certify to receive the complete certificate as hex on stdout",
+            ));
+        }
+        book.replay_report_artifact(
+            capability.holder(),
+            capability,
+            &bytes,
+            Some(artifact.digest()),
+        )??;
+        crate::cli::write_new_output_file(files, path, &bytes, "certificate", "--certificate-out")?;
+    }
+    let retained = book.retain_report_artifact(
+        capability.holder(),
+        capability,
+        &bytes,
+        Some(artifact.digest()),
+    )??;
+    Ok((bytes, retained))
+}
+
 fn quoted_word(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
@@ -196,7 +237,58 @@ pub(crate) fn emit_report_certificate(
     bytes: &[u8],
     retained: &RetainedCertificate,
 ) {
-    let digest = hex(&certificate.digest);
+    emit_certificate(
+        out,
+        args,
+        CertificatePresentation {
+            source: certificate,
+            digest: &certificate.digest,
+            output_format: certificate.output_format(),
+            output_digest: certificate.output_digest,
+        },
+        bytes,
+        retained,
+    );
+}
+
+pub(crate) fn emit_report_artifact(
+    out: &Out,
+    args: &Args,
+    artifact: &ReportArtifact,
+    output_format: &str,
+    bytes: &[u8],
+    retained: &RetainedCertificate,
+) {
+    emit_certificate(
+        out,
+        args,
+        CertificatePresentation {
+            source: artifact.source_certificate(),
+            digest: artifact.digest(),
+            output_format,
+            output_digest: artifact.output_digest(),
+        },
+        bytes,
+        retained,
+    );
+}
+
+struct CertificatePresentation<'a> {
+    source: &'a ReportCertificate,
+    digest: &'a [u8; 32],
+    output_format: &'a str,
+    output_digest: [u8; 32],
+}
+
+fn emit_certificate(
+    out: &Out,
+    args: &Args,
+    presentation: CertificatePresentation<'_>,
+    bytes: &[u8],
+    retained: &RetainedCertificate,
+) {
+    let certificate = presentation.source;
+    let digest = hex(presentation.digest);
     let encoded = hex(bytes);
     let file = args.flag("--certificate-out");
     let environment: String = ["--book", "--keys"]
@@ -228,8 +320,8 @@ pub(crate) fn emit_report_certificate(
             ("replay_command", s(command)),
             ("replay_scope", s(REPLAY_SCOPE)),
             ("authority", s(AUTHORITY)),
-            ("output_format", s(certificate.output_format())),
-            ("output_digest", s(hex(&certificate.output_digest))),
+            ("output_format", s(presentation.output_format)),
+            ("output_digest", s(hex(&presentation.output_digest))),
             ("native_inputs", Json::Int(certificate.inputs.len() as i128)),
             ("journal_root", s(hex(&certificate.journal_root))),
             (
@@ -249,45 +341,129 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa replay <C:oid|oid|certificate-file|-> --book <dir> --json",
         ));
     }
+    if args.flag_all("--output").len() > 1
+        || args
+            .flag("--output")
+            .is_some_and(|path| path.is_empty() || path == "-")
+    {
+        return Err(usage(
+            "--output names exactly one new file for the replayed canonical report",
+            "fa replay C:<oid> --output <new-file> --json",
+        ));
+    }
     let principal = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
     let book = ctx.books.open(args)?;
-    // A saved capability commitment grants no current authority. Admission
-    // precedes decoding or fetching a retained artifact, including malformed input.
+    // Saved provenance grants no current authority. Admission precedes
+    // fetching retained bytes or reading/decoding a caller-supplied file.
     fa_policy::admit_read(&capability, principal, book.context().book_id)
         .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
         .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     book.read_scope(principal, &capability)??;
-    let bytes = read_certificate_bytes(&book, &ctx.files, &args.positional[1])?;
-    if !bytes.starts_with(b"fa:report-certificate:") {
-        let certificate = fa::procedure_certificate::ProcedureCertificate::decode(&bytes)?;
-        // Unified artifact replay verifies the native report and Approval
-        // closures and byte-identical analytic output before anything is emitted.
-        book.replay_report_artifact(principal, &capability, &bytes, Some(certificate.digest()))??;
-        procedure::render(&ctx.out, certificate.report(), &hex(certificate.digest()));
-        return Ok(());
+    let bytes = read_certificate_bytes(
+        &book,
+        &ctx.files,
+        &args.positional[1],
+        principal,
+        &capability,
+    )?;
+    let artifact = ReportArtifact::decode(&bytes)?;
+    let replayed = book.replay_report_artifact(
+        principal,
+        &capability,
+        &bytes,
+        Some(artifact.digest()),
+    )??;
+    // Resolve typed reports before an output file or success event is emitted.
+    // A generic receipt always identifies the original family's exact bytes.
+    let native = if artifact.family() == ReportArtifactFamily::Native {
+        Some(book.replay_report(artifact.source_certificate())??)
+    } else {
+        None
+    };
+    let diff = if artifact.family() == ReportArtifactFamily::StatementDiff {
+        let certificate = fa::StatementDiffCertificate::decode(&bytes)?;
+        Some(book.replay_statement_diff(principal, &capability, &certificate)??)
+    } else {
+        None
+    };
+    let trace = if artifact.family() == ReportArtifactFamily::StatementTrace {
+        let certificate = fa::StatementTraceCertificate::decode(&bytes)?;
+        Some(book.replay_statement_trace(principal, &capability, &certificate)??)
+    } else {
+        None
+    };
+    let procedure = if artifact.family() == ReportArtifactFamily::Procedure {
+        Some(fa::procedure_certificate::ProcedureCertificate::decode(&bytes)?)
+    } else {
+        None
+    };
+    if let Some(path) = args.flag("--output") {
+        crate::cli::write_new_output_file(
+            &ctx.files,
+            path,
+            &replayed.output,
+            "replayed report",
+            "--output",
+        )?;
     }
-    let certificate = ReportCertificate::decode(&bytes)?;
-    let report = book.replay_report(&certificate)??;
-    ctx.out.time_selection(certificate.time_selection.as_ref());
-    let digest = hex(&certificate.digest);
-    match (&report, &certificate.selection) {
-        (ReportOutput::TrialBalance(report), ReportSelection::TrialBalance(selection)) => {
-            render_trial_balance(&ctx.out, &book, report, selection, Some(&digest))
+    let digest = hex(artifact.digest());
+    let rendered = if let Some(report) = native {
+        let certificate = artifact.source_certificate();
+        ctx.out.time_selection(certificate.time_selection.as_ref());
+        match (&report, &certificate.selection) {
+            (ReportOutput::TrialBalance(report), ReportSelection::TrialBalance(selection)) => {
+                render_trial_balance(&ctx.out, &book, report, selection, Some(&digest))?
+            }
+            (ReportOutput::ExplainBalance(report), ReportSelection::ExplainBalance { .. }) => {
+                render_balance_explanation(&ctx.out, &book, report, Some(&digest))?
+            }
+            (ReportOutput::OpenItems(report), ReportSelection::OpenItems { .. }) => {
+                render_open_items(&ctx.out, &book, report, Some(&digest))?
+            }
+            (ReportOutput::Statement(report), ReportSelection::Statement(_)) => {
+                crate::cli::render_statement(&ctx.out, &book, report, Some(&digest))?
+            }
+            _ => {
+                return Err(certificate_invalid(
+                    "replayed report kind differs from the retained certificate selector",
+                ));
+            }
         }
-        (ReportOutput::ExplainBalance(report), ReportSelection::ExplainBalance { .. }) => {
-            render_balance_explanation(&ctx.out, &book, report, Some(&digest))
-        }
-        (ReportOutput::OpenItems(report), ReportSelection::OpenItems { .. }) => {
-            render_open_items(&ctx.out, &book, report, Some(&digest))
-        }
-        (ReportOutput::Statement(report), ReportSelection::Statement(_)) => {
-            crate::cli::render_statement(&ctx.out, &book, report, Some(&digest))
-        }
-        _ => Err(certificate_invalid(
-            "replayed report kind differs from the retained certificate selector",
-        )),
+        true
+    } else if let Some(diff) = diff {
+        crate::cli::render_statement_diff(&ctx.out, &book, &diff, Some(&digest))?;
+        true
+    } else if let Some(trace) = trace {
+        crate::cli::render_statement_trace(&ctx.out, &book, &trace, Some(&digest))?;
+        true
+    } else if let Some(certificate) = procedure {
+        procedure::render(&ctx.out, certificate.report(), &digest);
+        true
+    } else {
+        false
+    };
+    if !rendered || args.flag("--output").is_some() {
+        ctx.out.known_at(replayed.known_at);
+        ctx.out.event_with_certificate(
+            "report_replayed",
+            vec![
+                ("family", s(replayed.family.name())),
+                ("known_at", Json::Int(i128::from(replayed.known_at.0))),
+                ("output_bytes", Json::Int(replayed.output.len() as i128)),
+                ("output_digest", s(hex(&artifact.output_digest()))),
+                ("file", args.flag("--output").map_or(Json::Null, s)),
+            ],
+            &format!(
+                "Replayed {} certificate {digest} at sequence {} ({} canonical output bytes)",
+                replayed.family.name(),
+                replayed.known_at.0,
+                replayed.output.len(),
+            ),
+            Some(&digest),
+        );
     }
+    Ok(())
 }
 
 pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -297,9 +473,36 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             "fa certificate status <C:oid|oid|certificate-file|-> --book <dir> --json",
         ));
     }
+    let principal = ctx.principal(args);
+    let capability = ctx.capability(args, &["read"])?;
     let book = ctx.books.open(args)?;
-    let certificate = read_report_certificate(&book, &ctx.files, &args.positional[2])?;
-    let status = book.certificate_status(&certificate)??;
+    fa_policy::admit_read(&capability, principal, book.context().book_id)
+        .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    book.read_scope(principal, &capability)??;
+    let bytes = read_certificate_bytes(
+        &book,
+        &ctx.files,
+        &args.positional[2],
+        principal,
+        &capability,
+    )?;
+    let artifact = ReportArtifact::decode(&bytes)?;
+    if !matches!(
+        artifact.family(),
+        ReportArtifactFamily::Native
+            | ReportArtifactFamily::StatementDiff
+            | ReportArtifactFamily::StatementTrace
+    ) {
+        return Err(certificate_invalid(
+            "selector status is available for native reports and statement comparisons/traces; use fa replay for this family's historical verification",
+        ));
+    }
+    // Status is meaningful only after the WHOLE artifact verifies. For a
+    // comparison or trace, relevance starts at its final statement frontier.
+    book.replay_report_artifact(principal, &capability, &bytes, Some(artifact.digest()))??;
+    let certificate = artifact.source_certificate();
+    let status = book.certificate_status(certificate)??;
     let (name, checked_at, later_entries) = match status {
         CertificateStatus::Current { checked_at } => ("Current", checked_at, Vec::new()),
         CertificateStatus::SupersededBy {
@@ -324,7 +527,7 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             ctx.out.effective(periods_selector(&selection.periods));
         }
     }
-    let digest = hex(&certificate.digest);
+    let digest = hex(artifact.digest());
     ctx.out.event_with_certificate(
         "certificate_status",
         vec![

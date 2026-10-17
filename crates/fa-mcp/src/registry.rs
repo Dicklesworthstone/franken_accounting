@@ -189,6 +189,7 @@ impl MacroSpec {
                 | "review_out"
                 | "certificate_out"
                 | "out"
+                | "output"
         )
     }
 
@@ -833,7 +834,7 @@ impl McpRegistry {
         {
             return None;
         }
-        if ["--plan-out", "--certificate-out", "--review-out"]
+        if ["--plan-out", "--certificate-out", "--review-out", "--output"]
             .iter()
             .any(|flag| parsed.flag(flag).is_some())
         {
@@ -1054,7 +1055,7 @@ impl ToolSpec {
     pub fn is_host_path_property(&self, property: &str) -> bool {
         matches!(
             property,
-            "file" | "intent_file" | "plan_file" | "plan_out" | "review_out" | "certificate_out"
+            "file" | "intent_file" | "plan_file" | "plan_out" | "review_out" | "certificate_out" | "output"
         ) || self
             .stdin
             .as_ref()
@@ -1072,6 +1073,7 @@ impl ToolSpec {
                 "plan_out" => "omit plan_out; use dry_run: true to receive the complete plan bytes inline".to_string(),
                 "review_out" => "omit review_out; use review_only: true to receive the complete review bytes inline".to_string(),
                 "certificate_out" => "omit certificate_out; use certify: true and receive the retained certificate oid and bytes inline".to_string(),
+                "output" => "omit output; MCP returns the replay result inline and does not write canonical report bytes to a host file".to_string(),
                 _ => self.stdin.as_ref().map_or_else(
                     || "supply the content inline; host filesystem paths are unavailable".to_string(),
                     |stdin| format!("omit {argument}; pass the complete content in the inline `{}` property", stdin.property),
@@ -2359,6 +2361,16 @@ mod tests {
                 json!({"name": "balance-sheet", "for": "P", "compare": "Q", "certify": true}),
                 "statement",
             ),
+            (
+                "fa_read_statement",
+                json!({"name": "diff", "definition": "income-statement", "for": "P", "before": "5", "after": "9", "certify": true}),
+                "statement",
+            ),
+            (
+                "fa_read_statement",
+                json!({"name": "trace", "definition": "income-statement", "for": "P", "before": "5", "after": "9", "certify": true}),
+                "statement",
+            ),
         ] {
             let tool = mcp.tool_by_wire(wire).expect("certifiable report");
             let schema = tool.input_schema(&mcp, reg);
@@ -2498,6 +2510,7 @@ mod tests {
             let schema = tool.input_schema(&mcp, reg);
             assert_eq!(schema["properties"]["certificate"]["type"], json!("string"));
             assert!(schema["properties"].get("file").is_none());
+            assert!(schema["properties"].get("output").is_none());
             assert_eq!(schema["required"], json!(["certificate"]));
             let inline = tool
                 .invocation(&mcp, reg, &json!({"certificate": "abcd"}))
@@ -2520,6 +2533,7 @@ mod tests {
             for args in [
                 json!({}),
                 json!({"file": "report.cert", "certificate": "abcd"}),
+                json!({"output": "/host/report.bin", "certificate": "abcd"}),
             ] {
                 assert!(tool.invocation(&mcp, reg, &args).is_err());
             }

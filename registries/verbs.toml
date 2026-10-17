@@ -280,26 +280,26 @@ example = "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --ce
 
 [[verb]]
 name = "replay"
-summary = "Verify a retained report certificate's complete native read closure and reproduce its original trial balance, statement, balance explanation, or open-items report."
+summary = "Replay a complete retained report artifact under current authority and reproduce its original native report, statement comparison, publication trace, procedure, or canonical output."
 writes = false
 subcommands = []
-flags = []
+flags = ["--output"]
 switches = []
-events = ["trial_balance", "statement", "balance_explained", "open_items"]
-exits = [0, 2, 3, 4, 5, 8]
-usage = ["replay <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the immutable certificate retained in this book. A file holds canonical binary certificate bytes; stdin also accepts the oid or complete bytes hex string from a report_certificate event. Prefix a 64-hex filename with ./ to read it as a file. The certificate fixes the selector and known-at; replay never substitutes today's frontier."]
+events = ["trial_balance", "statement", "balance_explained", "open_items", "statement_diff", "statement_trace", "procedure_run", "report_replayed"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["replay <C:oid|oid|certificate-file|-> [--output <new-file>]", "A 64-hex oid resolves the complete immutable artifact retained in this book, including its outer family. A file holds canonical binary certificate bytes; stdin also accepts the oid or complete bytes hex string from a report_certificate event. Prefix a 64-hex filename with ./ to read it as a file. The certificate fixes the selector and known-at; replay never substitutes today's frontier.", "--output writes the original canonical report bytes only after the complete artifact replays, then emits report_replayed with its family, length and output digest. Existing files are never replaced. Summary, effective-date aging, roll-forward and other supported generic families emit this receipt even without a file. Families requiring independently selected cash classifications or reconciliation scopes refuse until those expectations are supplied through the library replay API."]
 example = "fa replay trial-balance.cert --book ./books/myco --json"
 
 [[verb]]
 name = "certificate"
-summary = "Check whether later entries affect a retained report certificate's selector."
+summary = "Verify a complete native report, statement comparison or publication trace, then check whether later entries affect its final report selector."
 writes = false
 subcommands = ["status"]
 flags = []
 switches = []
 events = ["certificate_status"]
-exits = [0, 2, 3, 4, 5, 8]
-usage = ["certificate status <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the certificate retained in this book; file and inline bytes are also accepted. Current or SupersededBy is evaluated against the current book after the original certificate verifies; supersession does not erase the historical report, which still replays."]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["certificate status <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the complete certificate retained in this book; file and inline bytes are also accepted. Current or SupersededBy is evaluated against the current book after the complete artifact verifies; supersession does not erase the historical report. For a statement diff or trace, relevance begins at the final statement frontier and the returned oid remains the outer certificate. Other report families can be replayed but refuse selector status until their own relevance law is implemented."]
 example = "fa certificate status trial-balance.cert --book ./books/myco --json"
 
 [[verb]]
@@ -937,8 +937,14 @@ fields = ["account:string", "account_vid:hex", "name:string", "base_unit:string"
 [[event]]
 name = "report_certificate"
 book = true
-doc = "The certificate retained in this book for the preceding trial_balance, statement, balance_explained, or open_items report. oid resolves through fa replay or certificate status; recorded_at is the immutable certificate object's sequence, distinct from the report's known_at. bytes is the complete canonical certificate in hex and file is an optional external copy. output_digest commits the exact binary result named by output_format. Retention advances the metadata frontier without posting accounting entries. The explicit replay_scope and authority limit the claim."
+doc = "The complete certificate retained in this book for the preceding trial balance, statement, statement diff or trace, balance explanation, or open-items report. oid resolves through fa replay or certificate status; recorded_at is the immutable certificate object's sequence, distinct from the report's known_at. bytes is the complete canonical certificate in hex and file is an optional external copy. output_digest commits the exact binary result named by output_format. For a multi-source comparison or trace, journal_root, journal_leaves and native_inputs describe the final native source; the outer certificate retains every source and replay verifies all of them. Retention advances the metadata frontier without posting accounting entries. The explicit replay_scope and authority limit the claim."
 fields = ["oid:hex", "known_at:seq", "recorded_at:seq", "bytes:hex", "file:string?", "replay_command:string", "replay_scope:string", "authority:string", "output_format:string", "output_digest:hex", "native_inputs:int", "journal_root:hex", "journal_leaves:int"]
+
+[[event]]
+name = "report_replayed"
+book = true
+doc = "The complete report artifact replayed against its original history under current authority. output_bytes is the exact canonical output length; output_digest is BLAKE3 of fa:report-output:v1 followed by the canonical bytes. file names the new output file when requested. This is local historical replay, not a signature, freshness, accounting-truth or outsider-completeness assertion."
+fields = ["family:string", "known_at:seq", "output_bytes:int", "output_digest:hex", "file:string?"]
 
 [[event]]
 name = "certificate_status"
@@ -2162,7 +2168,7 @@ subcommands = []
 positionals = ["name"]
 flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at"]
 required = ["name", "--for"]
-dont = ["Use name balance-sheet or income-statement (or diff|trace with definition and before), for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate and replay it with fa_read_replay. certificate_out is forbidden; certificate bytes and oid are returned inline."]
+dont = ["Use name balance-sheet or income-statement (or diff|trace with definition and before), for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate, including diff and trace, and replay it with fa_read_replay. Certified comparisons and traces require read and produce on the launch capability. certificate_out is forbidden; certificate bytes and oid are returned inline."]
 mistakes = ["Omitting for, passing multiple for or compare periods, or using a date where a period code is required.", "Supplying known_at and as_known_at together: they name the same selector.", "Treating a later-period comparative as a different known-at snapshot; use a separate statement call for that question."]
 
 [[mcp.tool]]
@@ -2171,6 +2177,7 @@ name = "replay"
 verb = "replay"
 subcommands = []
 positionals = ["file?"]
+flags = []
 stdin_property = "certificate"
 stdin_kind = "string"
 stdin_via = "file"
