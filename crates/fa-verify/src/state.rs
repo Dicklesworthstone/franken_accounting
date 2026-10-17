@@ -26,6 +26,7 @@ use crate::tree::{Digest, bag_peaks};
 pub const STATE_OID_DOMAIN: &[u8] = b"fa:accumulator-state:v1";
 pub const STATE_SCHEMA_MAJOR: u16 = 1;
 pub const STATE_SCHEMA_MINOR: u16 = 0;
+pub const STATE_SCHEMA_MINOR_BOUNDARY: u16 = 1;
 
 /// Whether the checkpoint carries signatures a verifier checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,7 +60,7 @@ fn decode(bytes: &[u8]) -> Result<(Checkpoint, Vec<Digest>, Option<Digest>), Dec
         return Err(r.error("state.schema_major", Reason::BadTag(major.to_le_bytes()[0])));
     }
     let minor = r.u16("state.schema_minor")?;
-    if minor != STATE_SCHEMA_MINOR {
+    if minor > STATE_SCHEMA_MINOR_BOUNDARY {
         return Err(r.error("state.schema_minor", Reason::BadTag(minor.to_le_bytes()[0])));
     }
     let checkpoint = Checkpoint {
@@ -79,6 +80,12 @@ fn decode(bytes: &[u8]) -> Result<(Checkpoint, Vec<Digest>, Option<Digest>), Dec
     } else {
         None
     };
+    if minor == STATE_SCHEMA_MINOR_BOUNDARY {
+        let boundary = r.u64("state.evidence_after_seq")?;
+        if boundary == 0 || boundary > checkpoint.through_seq {
+            return Err(r.error("state.evidence_after_seq", Reason::BadTag(0)));
+        }
+    }
     r.finish("accumulator state")?;
     Ok((checkpoint, peaks, prev_state_oid))
 }

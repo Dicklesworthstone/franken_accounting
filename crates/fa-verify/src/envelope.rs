@@ -25,12 +25,22 @@
 use crate::blake3::hash_parts;
 use crate::codec::{DecodeError, Reader, Reason, Writer};
 
-/// Record kinds. Only journal entries are accumulated today; attestations
-/// and document receipts take the next tags when they exist.
+/// Record kinds covered by the accumulator (plan §13.2, bead `fa-va02`):
+/// journal entries (posting and control classes), attestations (`Reviewed`,
+/// `ManualAssertion`, `RegisterEquals`), custody receipts and transfers, and
+/// supplemental evidence attachments.
 pub const KIND_ENTRY: u8 = 1;
+pub const KIND_ATTESTATION: u8 = 2;
+pub const KIND_IMPORT_RECEIPT: u8 = 3;
+pub const KIND_CUSTODY_TRANSFER: u8 = 4;
+pub const KIND_SUPPLEMENTAL_EVIDENCE: u8 = 5;
 
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
 pub const ENTRY_DIGEST_DOMAIN: &[u8] = b"fa:entry:v1";
+pub const ATTESTATION_DIGEST_DOMAIN: &[u8] = b"fa:attestation:v1";
+pub const CUSTODY_DIGEST_DOMAIN: &[u8] = b"fa:custody:v1";
+pub const SUPPLEMENTAL_DIGEST_DOMAIN: &[u8] = b"fa:supplemental-evidence:v1";
+pub const REGISTER_CELL_DOMAIN: &[u8] = b"fa:register-cell:v1";
 
 /// The entry classes that are book-scoped and undated (`SchemaControl`,
 /// `PolicyControl`, `TimeControl`, `SweepControl`, `ScheduleControl`,
@@ -68,7 +78,14 @@ impl LeafEnvelope {
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
         let kind = r.u8("envelope.kind")?;
-        if kind != KIND_ENTRY {
+        if !matches!(
+            kind,
+            KIND_ENTRY
+                | KIND_ATTESTATION
+                | KIND_IMPORT_RECEIPT
+                | KIND_CUSTODY_TRANSFER
+                | KIND_SUPPLEMENTAL_EVIDENCE
+        ) {
             return Err(r.error("envelope.kind", Reason::BadTag(kind)));
         }
         let book_id = r.fixed("envelope.book_id")?;
@@ -533,6 +550,389 @@ pub fn entry_record_digest(payload: &[u8], proposal_len: usize) -> Result<[u8; 3
     Ok(entry_digest)
 }
 
+/// `BLAKE3(domain ‖ u32::le(body.len()) ‖ body)`.
+fn framed_digest(domain: &[u8], body: &[u8]) -> [u8; 32] {
+    let len = u32::try_from(body.len()).unwrap_or(u32::MAX).to_le_bytes();
+    hash_parts(domain, &[&len, body])
+}
+
+fn register_cell_digest(
+    account: u128,
+    unit_id: u32,
+    period: &[u8],
+    entity: Option<&[u8]>,
+) -> [u8; 32] {
+    let account_bytes = account.to_le_bytes();
+    let unit_bytes = unit_id.to_le_bytes();
+    let entity_bytes: Vec<u8> = match entity {
+        None => vec![0],
+        Some(e) => {
+            let mut v = Vec::with_capacity(1 + e.len());
+            v.push(1);
+            v.extend_from_slice(e);
+            v
+        }
+    };
+    let a_len = 16u32.to_le_bytes();
+    let u_len = 4u32.to_le_bytes();
+    let p_len = u32::try_from(period.len()).unwrap_or(u32::MAX).to_le_bytes();
+    let e_len = u32::try_from(entity_bytes.len())
+        .unwrap_or(u32::MAX)
+        .to_le_bytes();
+    hash_parts(
+        REGISTER_CELL_DOMAIN,
+        &[
+            &a_len,
+            &account_bytes,
+            &u_len,
+            &unit_bytes,
+            &p_len,
+            period,
+            &e_len,
+            &entity_bytes,
+        ],
+    )
+}
+
+fn non_empty_str<'a>(
+    r: &mut Reader<'a>,
+    max: usize,
+    what: &'static str,
+) -> Result<&'a [u8], DecodeError> {
+    let bytes = r.bytes(max, what)?;
+    if bytes.is_empty() || std::str::from_utf8(bytes).is_err() {
+        return Err(r.error(what, Reason::BadTag(0)));
+    }
+    Ok(bytes)
+}
+
+fn attestation_record(
+    payload: &[u8],
+    proposal_len: usize,
+    commit_seq: u64,
+    within_commit_ordinal: u32,
+) -> Result<LeafEnvelope, RecordError> {
+    let n = payload.len();
+    if proposal_len > n || n - proposal_len != 66 {
+        return Err(RecordError::Split);
+    }
+    let body = &payload[..proposal_len];
+    let stored_digest = &payload[proposal_len..proposal_len + 32];
+    let scheme = payload[proposal_len + 32];
+    let profile = payload[proposal_len + 33];
+    if scheme != 0 {
+        return Err(RecordError::Decode(DecodeError {
+            offset: proposal_len + 32,
+            what: "attestation.scheme",
+            reason: Reason::BadTag(scheme),
+        }));
+    }
+    if !(1..=7).contains(&profile) {
+        return Err(RecordError::Decode(DecodeError {
+            offset: proposal_len + 33,
+            what: "attestation.profile",
+            reason: Reason::BadTag(profile),
+        }));
+    }
+    let record_digest = framed_digest(ATTESTATION_DIGEST_DOMAIN, body);
+    if record_digest[..] != *stored_digest {
+        return Err(RecordError::Digest {
+            which: "attestation.signed_digest",
+        });
+    }
+    let (book_id, claim_tag) = (|| -> Result<([u8; 16], u8), DecodeError> {
+        let mut r = Reader::new(body);
+        let version = r.u16("attestation.version")?;
+        if version != 1 {
+            return Err(r.error(
+                "attestation.version",
+                Reason::BadTag(version.to_le_bytes()[0]),
+            ));
+        }
+        let book_id = r.fixed("attestation.book_id")?;
+        let claim_tag = r.u8("attestation.claim")?;
+        let mut expected_cell = None;
+        match claim_tag {
+            2 => {
+                let count = r.count(1024, 32, "attestation.against")?;
+                let mut prev: Option<[u8; 32]> = None;
+                for _ in 0..count {
+                    let oid = r.fixed::<32>("attestation.against")?;
+                    if prev.is_some_and(|p| p >= oid) {
+                        return Err(r.error("attestation.against", Reason::Unsorted));
+                    }
+                    prev = Some(oid);
+                }
+            }
+            8 => {
+                r.u16("attestation.reason_code")?;
+                skip_erasable(&mut r, "attestation.statement")?;
+            }
+            4 => {
+                let account = r.u128("register_equals.account")?;
+                let unit_id = r.u32("register_equals.unit_id")?;
+                let period = non_empty_str(&mut r, 64, "register_equals.period")?;
+                let entity = if r.present("register_equals.entity")? {
+                    Some(non_empty_str(&mut r, 64, "register_equals.entity")?)
+                } else {
+                    None
+                };
+                r.i128("register_equals.mantissa")?;
+                r.i32("register_equals.as_of_effective")?;
+                r.u64("register_equals.evaluated_known_at")?;
+                r.fixed::<32>("register_equals.fold_digest")?;
+                expected_cell = Some(register_cell_digest(account, unit_id, period, entity));
+            }
+            t => return Err(r.error("attestation.claim", Reason::BadTag(t))),
+        }
+        let subjects = r.count(1, 33, "attestation.subject_refs")?;
+        if subjects != 1 {
+            return Err(r.error("attestation.subject_refs", Reason::BadTag(subjects as u8)));
+        }
+        let subject_tag = r.u8("attestation.subject")?;
+        let subject_bytes = r.fixed::<32>("attestation.subject")?;
+        let valid_subject = match (claim_tag, subject_tag) {
+            (2, 1) | (8, 2) => true,
+            (4, 3) => expected_cell == Some(subject_bytes),
+            _ => false,
+        };
+        if !valid_subject {
+            return Err(r.error("attestation.subject", Reason::BadTag(subject_tag)));
+        }
+        r.u128("attestation.principal")?;
+        if claim_tag == 4 {
+            let count = r.count(1024, 32, "attestation.evidence_refs")?;
+            let mut prev: Option<[u8; 32]> = None;
+            for _ in 0..count {
+                let oid = r.fixed::<32>("attestation.evidence_ref")?;
+                if prev.is_some_and(|p| p >= oid) {
+                    return Err(r.error("attestation.evidence_refs", Reason::Unsorted));
+                }
+                prev = Some(oid);
+            }
+        } else {
+            let count = r.count(0, 32, "attestation.evidence_refs")?;
+            if count != 0 {
+                return Err(r.error("attestation.evidence_refs", Reason::BadTag(count as u8)));
+            }
+        }
+        r.finish("attestation.body")?;
+        Ok((book_id, claim_tag))
+    })()
+    .map_err(RecordError::Decode)?;
+    Ok(LeafEnvelope {
+        kind: KIND_ATTESTATION,
+        book_id,
+        branch_id: [0; 16],
+        commit_seq,
+        within_commit_ordinal,
+        record_digest,
+        class: u16::from(claim_tag),
+        effective_day: None,
+        account_vids: Vec::new(),
+        unit_ids: Vec::new(),
+    })
+}
+
+fn import_receipt_record(
+    payload: &[u8],
+    proposal_len: usize,
+    commit_seq: u64,
+    within_commit_ordinal: u32,
+) -> Result<LeafEnvelope, RecordError> {
+    let n = payload.len();
+    if proposal_len > n || n - proposal_len != 32 {
+        return Err(RecordError::Split);
+    }
+    let body = &payload[..proposal_len];
+    let stored_digest = &payload[proposal_len..];
+    let record_digest = framed_digest(CUSTODY_DIGEST_DOMAIN, body);
+    if record_digest[..] != *stored_digest {
+        return Err(RecordError::Digest {
+            which: "custody.digest",
+        });
+    }
+    let (book_id, source_tag) = (|| -> Result<([u8; 16], u8), DecodeError> {
+        let mut r = Reader::new(body);
+        let version = r.u16("custody.version")?;
+        if version != 1 {
+            return Err(r.error("custody.version", Reason::BadTag(version.to_le_bytes()[0])));
+        }
+        let book_id = r.fixed("custody.book_id")?;
+        r.fixed::<32>("custody.document_oid")?;
+        let index = r.u32("custody.index")?;
+        if index != 0 {
+            return Err(r.error("custody.index", Reason::BadTag(index.to_le_bytes()[0])));
+        }
+        let prev_digest = r.fixed::<32>("custody.prev_digest")?;
+        if prev_digest != [0; 32] {
+            return Err(r.error("custody.prev_digest", Reason::BadTag(1)));
+        }
+        let body_tag = r.u8("custody.body")?;
+        if body_tag != 1 {
+            return Err(r.error("custody.body", Reason::BadTag(body_tag)));
+        }
+        let source_tag = r.u8("intake.tag")?;
+        match source_tag {
+            1 => {
+                r.u128("intake.principal")?;
+            }
+            2 => {
+                non_empty_str(&mut r, 256, "intake.name")?;
+                non_empty_str(&mut r, 256, "intake.version")?;
+            }
+            3 => {
+                non_empty_str(&mut r, 256, "intake.message_id")?;
+            }
+            4 => {
+                non_empty_str(&mut r, 256, "intake.device")?;
+            }
+            t => return Err(r.error("intake.tag", Reason::BadTag(t))),
+        }
+        r.u128("custody.received_by")?;
+        r.fixed::<32>("custody.digest_at_receipt")?;
+        opt_u128(&mut r, "custody.run_ref")?;
+        let count = r.count(0, 1, "custody.transformations")?;
+        if count != 0 {
+            return Err(r.error("custody.transformations", Reason::BadTag(count as u8)));
+        }
+        r.finish("custody.body")?;
+        Ok((book_id, source_tag))
+    })()
+    .map_err(RecordError::Decode)?;
+    Ok(LeafEnvelope {
+        kind: KIND_IMPORT_RECEIPT,
+        book_id,
+        branch_id: [0; 16],
+        commit_seq,
+        within_commit_ordinal,
+        record_digest,
+        class: u16::from(source_tag),
+        effective_day: None,
+        account_vids: Vec::new(),
+        unit_ids: Vec::new(),
+    })
+}
+
+fn custody_transfer_record(
+    payload: &[u8],
+    proposal_len: usize,
+    commit_seq: u64,
+    within_commit_ordinal: u32,
+) -> Result<LeafEnvelope, RecordError> {
+    let n = payload.len();
+    if proposal_len > n || n - proposal_len != 32 {
+        return Err(RecordError::Split);
+    }
+    let body = &payload[..proposal_len];
+    let stored_digest = &payload[proposal_len..];
+    let record_digest = framed_digest(CUSTODY_DIGEST_DOMAIN, body);
+    if record_digest[..] != *stored_digest {
+        return Err(RecordError::Digest {
+            which: "custody.digest",
+        });
+    }
+    let book_id = (|| -> Result<[u8; 16], DecodeError> {
+        let mut r = Reader::new(body);
+        let version = r.u16("custody.version")?;
+        if version != 1 {
+            return Err(r.error("custody.version", Reason::BadTag(version.to_le_bytes()[0])));
+        }
+        let book_id = r.fixed("custody.book_id")?;
+        r.fixed::<32>("custody.document_oid")?;
+        let index = r.u32("custody.index")?;
+        if index == 0 {
+            return Err(r.error("custody.index", Reason::BadTag(0)));
+        }
+        r.fixed::<32>("custody.prev_digest")?;
+        let body_tag = r.u8("custody.body")?;
+        if body_tag != 2 {
+            return Err(r.error("custody.body", Reason::BadTag(body_tag)));
+        }
+        r.u128("custody.from")?;
+        r.u128("custody.to")?;
+        r.finish("custody.body")?;
+        Ok(book_id)
+    })()
+    .map_err(RecordError::Decode)?;
+    Ok(LeafEnvelope {
+        kind: KIND_CUSTODY_TRANSFER,
+        book_id,
+        branch_id: [0; 16],
+        commit_seq,
+        within_commit_ordinal,
+        record_digest,
+        class: 2,
+        effective_day: None,
+        account_vids: Vec::new(),
+        unit_ids: Vec::new(),
+    })
+}
+
+fn supplemental_evidence_record(
+    payload: &[u8],
+    proposal_len: usize,
+    commit_seq: u64,
+    within_commit_ordinal: u32,
+) -> Result<LeafEnvelope, RecordError> {
+    let n = payload.len();
+    if proposal_len > n || n - proposal_len != 32 {
+        return Err(RecordError::Split);
+    }
+    let body = &payload[..proposal_len];
+    let stored_digest = &payload[proposal_len..];
+    let record_digest = framed_digest(SUPPLEMENTAL_DIGEST_DOMAIN, body);
+    if record_digest[..] != *stored_digest {
+        return Err(RecordError::Digest {
+            which: "supplement.body_digest",
+        });
+    }
+    let book_id = (|| -> Result<[u8; 16], DecodeError> {
+        let mut r = Reader::new(body);
+        let version = r.u16("supplement.version")?;
+        if version != 1 {
+            return Err(r.error(
+                "supplement.version",
+                Reason::BadTag(version.to_le_bytes()[0]),
+            ));
+        }
+        let book_id = r.fixed("supplement.book_id")?;
+        r.u128("supplement.entry_vid")?;
+        r.fixed::<32>("supplement.entry_digest")?;
+        let count = r.count(1024, 65, "supplement.documents")?;
+        if count == 0 {
+            return Err(r.error("supplement.documents", Reason::BadTag(0)));
+        }
+        let mut prev: Option<([u8; 32], [u8; 32], u8)> = None;
+        for _ in 0..count {
+            let doc_oid = r.fixed::<32>("supplement.document_oid")?;
+            let doc_commit = r.fixed::<32>("supplement.doc_commit")?;
+            let role = r.u8("supplement.role")?;
+            let cur = (doc_oid, doc_commit, role);
+            if prev.is_some_and(|p| p >= cur) {
+                return Err(r.error("supplement.documents", Reason::Unsorted));
+            }
+            prev = Some(cur);
+        }
+        r.u128("supplement.attached_by")?;
+        r.finish("supplement.body")?;
+        Ok(book_id)
+    })()
+    .map_err(RecordError::Decode)?;
+    Ok(LeafEnvelope {
+        kind: KIND_SUPPLEMENTAL_EVIDENCE,
+        book_id,
+        branch_id: [0; 16],
+        commit_seq,
+        within_commit_ordinal,
+        record_digest,
+        class: 1,
+        effective_day: None,
+        account_vids: Vec::new(),
+        unit_ids: Vec::new(),
+    })
+}
+
 /// The envelope a journal entry's payload determines at journal position
 /// `(commit_seq, ordinal)`.
 pub fn envelope_of_entry(
@@ -542,6 +942,39 @@ pub fn envelope_of_entry(
     within_commit_ordinal: u32,
 ) -> Result<LeafEnvelope, RecordError> {
     record_of_entry(payload, proposal_len, commit_seq, within_commit_ordinal).map(|(e, _)| e)
+}
+
+/// The envelope a journaled record of `kind` (`KIND_ENTRY`,
+/// `KIND_ATTESTATION`, `KIND_IMPORT_RECEIPT`, `KIND_CUSTODY_TRANSFER`,
+/// `KIND_SUPPLEMENTAL_EVIDENCE`) determines at journal position
+/// `(commit_seq, ordinal)`.
+pub fn envelope_of_record(
+    kind: u8,
+    payload: &[u8],
+    proposal_len: usize,
+    commit_seq: u64,
+    within_commit_ordinal: u32,
+) -> Result<LeafEnvelope, RecordError> {
+    match kind {
+        KIND_ENTRY => envelope_of_entry(payload, proposal_len, commit_seq, within_commit_ordinal),
+        KIND_ATTESTATION => {
+            attestation_record(payload, proposal_len, commit_seq, within_commit_ordinal)
+        }
+        KIND_IMPORT_RECEIPT => {
+            import_receipt_record(payload, proposal_len, commit_seq, within_commit_ordinal)
+        }
+        KIND_CUSTODY_TRANSFER => {
+            custody_transfer_record(payload, proposal_len, commit_seq, within_commit_ordinal)
+        }
+        KIND_SUPPLEMENTAL_EVIDENCE => {
+            supplemental_evidence_record(payload, proposal_len, commit_seq, within_commit_ordinal)
+        }
+        other => Err(RecordError::Decode(DecodeError {
+            offset: 0,
+            what: "envelope.kind",
+            reason: Reason::BadTag(other),
+        })),
+    }
 }
 
 /// The envelope and the legs of an `fa:entry:v1` payload at a journal
@@ -570,18 +1003,30 @@ fn record_of_entry(
 }
 
 /// Check that `envelope` is exactly the envelope its record determines, and
-/// return the record's legs.
+/// return the record's legs (empty for non-entry evidence records).
 pub fn check_record(
     envelope: &LeafEnvelope,
     payload: &[u8],
     proposal_len: usize,
 ) -> Result<Vec<Leg>, RecordError> {
-    let (rebuilt, legs) = record_of_entry(
-        payload,
-        proposal_len,
-        envelope.commit_seq,
-        envelope.within_commit_ordinal,
-    )?;
+    let (rebuilt, legs) = match envelope.kind {
+        KIND_ENTRY => record_of_entry(
+            payload,
+            proposal_len,
+            envelope.commit_seq,
+            envelope.within_commit_ordinal,
+        )?,
+        kind => (
+            envelope_of_record(
+                kind,
+                payload,
+                proposal_len,
+                envelope.commit_seq,
+                envelope.within_commit_ordinal,
+            )?,
+            Vec::new(),
+        ),
+    };
     if rebuilt != *envelope {
         return Err(RecordError::Envelope);
     }
@@ -619,6 +1064,19 @@ mod tests {
         undated.effective_day = None;
         assert_eq!(LeafEnvelope::decode(&undated.encode()).unwrap(), undated);
 
+        for kind in [
+            KIND_ATTESTATION,
+            KIND_IMPORT_RECEIPT,
+            KIND_CUSTODY_TRANSFER,
+            KIND_SUPPLEMENTAL_EVIDENCE,
+        ] {
+            let mut evidence = undated.clone();
+            evidence.kind = kind;
+            evidence.account_vids.clear();
+            evidence.unit_ids.clear();
+            assert_eq!(LeafEnvelope::decode(&evidence.encode()).unwrap(), evidence);
+        }
+
         let mut unsorted = e.clone();
         unsorted.account_vids = vec![9, 5];
         assert_eq!(
@@ -634,10 +1092,10 @@ mod tests {
             Reason::Unsorted
         );
         let mut foreign = bytes.clone();
-        foreign[0] = 2;
+        foreign[0] = 6;
         assert_eq!(
             LeafEnvelope::decode(&foreign).unwrap_err().reason,
-            Reason::BadTag(2)
+            Reason::BadTag(6)
         );
         let mut long = bytes.clone();
         long.push(0);
