@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           target="$RUNNER_TEMP/format-proposal"
-          files=(crates/fa/src/findings.rs crates/fa/src/findings/tests.rs crates/fa/src/procedure_certificate.rs crates/fa/src/procedure_certificate/tests.rs crates/fa/src/report_artifact.rs crates/fa/src/report_artifact/retention.rs crates/fa/src/report_artifact/tests.rs crates/fa/src/report_artifact/tests/retention.rs crates/fa/src/report_artifact/tests/cash_flow.rs crates/fa/src/certificate_store.rs crates/fa-cli/src/notary.rs crates/fa-cli/src/notary/procedure.rs crates/fa-cli/tests/procedure_replay.rs crates/fa-cli/tests/network.rs)
+          files=(crates/fa/src/findings/workpaper.rs crates/fa/src/findings/tests/workpaper.rs crates/fa/src/findings.rs crates/fa/src/findings/tests.rs crates/fa/src/procedure_certificate.rs crates/fa/src/procedure_certificate/tests.rs crates/fa/src/report_artifact.rs crates/fa/src/report_artifact/retention.rs crates/fa/src/report_artifact/tests.rs crates/fa/src/report_artifact/tests/retention.rs crates/fa/src/report_artifact/tests/cash_flow.rs crates/fa/src/certificate_store.rs crates/fa-cli/src/notary.rs crates/fa-cli/src/notary/procedure.rs crates/fa-cli/tests/procedure_replay.rs crates/fa-cli/tests/network.rs)
           for file in "${files[@]}"; do
             mkdir -p "$target/$(dirname "$file")"
             cp "$file" "$target/$file"

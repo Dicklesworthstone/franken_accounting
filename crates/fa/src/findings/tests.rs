@@ -234,3 +234,5 @@ fn orphan_identity_aborts_the_entire_transaction_without_a_run_index() {
     assert_eq!(f.count(), 1, "no root or first finding leaked on failed staging");
     assert!(f.read(cert.digest()).is_err());
 }
+
+mod workpaper;
