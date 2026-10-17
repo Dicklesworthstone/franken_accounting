@@ -5,7 +5,7 @@ use fgdb_types::CanonicalScalar;
 fn review(f: &mut Fixture) -> fa_journal::Attested {
     let cx = f.cx();
     f.runtime.block_on(f.book.record_review(
-        &cx, &Capability::embedded(VId(74), &["review"]).unwrap(),
+        &cx, &Capability::embedded(VId(74), &["approve"]).unwrap(),
         &f.evidence[0].document_oid, Vec::new(),
     )).unwrap().unwrap()
 }
@@ -177,4 +177,35 @@ fn a_discrepancy_beyond_signed_statistic_capacity_has_no_certificate_or_wrapped_
         Err(crate::BookError::Lantern(fa_lantern::LanternError::Overflow("book_to_book discrepancy magnitude")))));
     assert_eq!(f.head(), head);
     assert_eq!(f.book.replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &exact.certificate).unwrap().unwrap(), exact.report);
+}
+
+#[test]
+fn extended_input_reads_never_inherit_attester_or_saved_producer_authority() {
+    let mut f = Fixture::new(97);
+    let (source, _) = f.post(1, "3000", "1000", 100, false);
+    let attested = review(&mut f);
+    let request = f.request("confirm.coverage", source);
+    let c = f.certify(&request).certificate;
+    assert_eq!(c.supplemental_inputs().len(), 6);
+    let before = f.head();
+    let bytes = c.canonical_bytes().unwrap();
+    for reader in [
+        cap(&["post"]), cap(&["approve"]), cap(&["produce"]),
+        cap(&["read"]).expiring_at(before),
+        cap(&["read"]).for_accounts(&["1000"]).unwrap(),
+    ] {
+        let denial = f.book.replay_procedure(&f.cx(), PRINCIPAL, &reader, &c).unwrap().unwrap_err();
+        assert_ne!(denial.code, crate::certificate::code::CERTIFICATE_INVALID);
+        let denial = f.book.replay_report_artifact(&f.cx(), PRINCIPAL, &reader, b"not an artifact", None).unwrap().unwrap_err();
+        assert_ne!(denial.code, crate::certificate::code::CERTIFICATE_INVALID);
+        assert_eq!(f.head(), before);
+    }
+    assert!(f.book.certify_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &request).unwrap().is_err());
+    let actual = f.book.replay_report_artifact(&f.cx(), PRINCIPAL, &cap(&["read"]), &bytes, Some(c.digest())).unwrap().unwrap();
+    assert_eq!(actual.output, c.output);
+    // An actual approver and intact native attestation do not authorize replay
+    // of the whole book. Only the current requesting principal's scope does.
+    assert!(f.book.replay_procedure(&f.cx(), VId(74), &Capability::embedded(VId(74), &["approve"]).unwrap(), &c).unwrap().is_err());
+    assert!(f.book.db.vertex(attested.vid).unwrap().is_some());
+    assert_eq!(f.head(), before);
 }
