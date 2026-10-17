@@ -38,6 +38,7 @@ mod certificate;
 pub use certificate::{
     CertifiedStatementTrace, MAX_STATEMENT_TRACE_CERTIFICATE_BYTES, StatementTraceCertificate,
 };
+pub(crate) use certificate::CERTIFICATE_FORMAT;
 
 pub const OUTPUT_FORMAT: &[u8] = b"fa:statement-trace:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-trace-source:v1";

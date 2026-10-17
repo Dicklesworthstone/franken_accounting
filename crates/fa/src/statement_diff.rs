@@ -19,6 +19,7 @@ mod certificate;
 pub use certificate::{
     CertifiedStatementDiff, MAX_STATEMENT_DIFF_CERTIFICATE_BYTES, StatementDiffCertificate,
 };
+pub(crate) use certificate::CERTIFICATE_FORMAT;
 
 pub const OUTPUT_FORMAT: &[u8] = b"fa:statement-diff:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-diff-source:v1";

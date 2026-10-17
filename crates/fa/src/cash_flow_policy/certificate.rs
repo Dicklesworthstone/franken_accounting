@@ -181,6 +181,13 @@ impl CashFlowPolicyCertificate {
     pub fn request(&self) -> &RollForwardRequest {
         self.source.request()
     }
+    /// Complete policy-report bytes, including financial output, policy and
+    /// decision transcript. This is content reconstruction, not a replay verdict.
+    pub fn output(&self) -> Result<Vec<u8>, Refusal> {
+        canonical_report_bytes(&self.policy, self.source.output(), &self.decisions)
+            .map_err(as_invalid)
+    }
+
     #[must_use]
     pub fn known_at(&self) -> CommitSeq {
         self.source.known_at()

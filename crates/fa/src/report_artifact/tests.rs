@@ -347,6 +347,118 @@ fn intact_but_wrong_artifacts_and_repaired_false_outputs_do_not_pass() {
 }
 
 #[test]
+fn statement_bridges_retain_and_replay_both_endpoints_and_the_complete_trace() {
+    let mut h = Harness::new(75);
+    let before = h.head();
+    h.post(b"bridge correction", 17);
+    let after = h.head();
+    let request = crate::StatementDiffRequest {
+        selection: crate::StatementSelection {
+            definition: crate::StatementDefinition::embedded("balance-sheet").unwrap(),
+            periods: vec!["FY2026-P01".into()],
+            comparative: Vec::new(),
+        },
+        before,
+        after: Some(after),
+    };
+    let authority = cap(&["read", "produce"]);
+    let diff = h.book.certify_statement_diff(&h.cx(), PRINCIPAL, &authority, &request)
+        .unwrap().unwrap();
+    let trace = h.book.certify_statement_trace(
+        &h.cx(), PRINCIPAL, &authority,
+        &crate::StatementTraceRequest { comparison: request, max_publications: 16 },
+    ).unwrap().unwrap();
+    assert_eq!(trace.report.publications().len(), 1);
+    let artifacts = [
+        (ReportArtifact::try_from(&diff.certificate).unwrap(),
+         b"fa:statement-diff-certificate-digest:v1".as_slice()),
+        (ReportArtifact::try_from(&trace.certificate).unwrap(),
+         b"fa:statement-trace-certificate-digest:v1".as_slice()),
+    ];
+    h.post(b"later correction outside saved trace", 9);
+    for (artifact, domain) in artifacts {
+        assert_eq!(artifact.known_at(), after, "terminal source, not first source");
+        let bytes = artifact.canonical_bytes().unwrap();
+        assert_eq!(ReportArtifact::decode(&bytes).unwrap(), artifact);
+        let cx = h.cx();
+        let retained = h.runtime.block_on(h.book.retain_report_artifact(
+            &cx, PRINCIPAL, &authority, &bytes, Some(artifact.digest()),
+        )).unwrap().unwrap();
+        let head = h.head();
+        let retry = h.runtime.block_on(h.book.retain_report_artifact(
+            &cx, PRINCIPAL, &authority, &bytes, Some(artifact.digest()),
+        )).unwrap().unwrap();
+        assert_eq!(retry, retained);
+        assert_eq!(h.head(), head);
+        let read = h.runtime.block_on(h.book.read_report_artifact(
+            &cx, PRINCIPAL, &cap(&["read"]), artifact.digest(),
+        )).unwrap().unwrap();
+        assert_eq!(read, artifact);
+        let replay = h.book.replay_report_artifact(
+            &cx, PRINCIPAL, &cap(&["read"]), &bytes, Some(artifact.digest()),
+        ).unwrap().unwrap();
+        assert_eq!(replay.output, artifact.output());
+        assert_eq!(replay.known_at, after);
+        assert_ne!(replay.certificate_digest, artifact.source_certificate().digest);
+
+        // Rehashing a false outer output must not authenticate a bridge or its
+        // publication attribution, even when both native endpoints are intact.
+        let mut forged = bytes;
+        let end = forged.len() - 32;
+        forged[end - 1] ^= 1;
+        let forged_digest = domain_digest(domain, &[&forged[..end]]);
+        forged[end..].copy_from_slice(&forged_digest);
+        assert!(ReportArtifact::decode(&forged).is_ok());
+        assert!(h.runtime.block_on(h.book.retain_report_artifact(
+            &cx, PRINCIPAL, &authority, &forged, Some(&forged_digest),
+        )).unwrap().is_err());
+        assert_eq!(h.head(), head, "failed replay cannot publish a forged artifact");
+    }
+}
+
+#[test]
+fn portfolio_dispatch_binds_the_full_independent_account_coverage() {
+    use crate::aging::portfolio::{AgingAccountScope, AgingPortfolioRequest};
+    let mut h = Harness::new(76);
+    let request = AgingPortfolioRequest {
+        scope: AgingAccountScope::AllPosting,
+        effective_through: day(20),
+        known_at: Some(h.head()),
+        buckets: AgingBuckets::new(vec![30, 60, 90]).unwrap(),
+    };
+    let authority = cap(&["read", "produce"]);
+    let certified = h.book.certify_aging_portfolio(
+        &h.cx(), PRINCIPAL, &authority, &request,
+    ).unwrap().unwrap();
+    let artifact = ReportArtifact::try_from(&certified.certificate).unwrap();
+    assert_eq!(artifact.family(), ReportArtifactFamily::AgingPortfolio);
+    let bytes = artifact.canonical_bytes().unwrap();
+    let cx = h.cx();
+    let head = h.head();
+    assert!(h.runtime.block_on(h.book.retain_report_artifact(
+        &cx, PRINCIPAL, &authority, &bytes, Some(artifact.digest()),
+    )).unwrap().is_err());
+    assert_eq!(h.head(), head, "a hash cannot waive independent coverage");
+    let mut wrong = request.clone();
+    wrong.scope = AgingAccountScope::Selected(vec![h.id("1000")]);
+    assert!(h.book.replay_report_artifact_for(
+        &cx, PRINCIPAL, &cap(&["read"]), &bytes, Some(artifact.digest()),
+        ReportArtifactExpectation::AgingPortfolio(&wrong),
+    ).unwrap().is_err());
+    h.runtime.block_on(h.book.retain_report_artifact_for(
+        &cx, PRINCIPAL, &authority, &bytes, Some(artifact.digest()),
+        ReportArtifactExpectation::AgingPortfolio(&request),
+    )).unwrap().unwrap();
+    h.post(b"later portfolio history", 13);
+    let replay = h.runtime.block_on(h.book.replay_retained_report_artifact(
+        &cx, PRINCIPAL, &cap(&["read"]), artifact.digest(),
+        ReportArtifactExpectation::AgingPortfolio(&request),
+    )).unwrap().unwrap();
+    assert_eq!(replay.output, certified.report.canonical_bytes().unwrap());
+    assert_eq!(Some(replay.known_at), request.known_at);
+}
+
+#[test]
 fn current_authority_precedes_decoding_and_cannot_come_from_the_artifact() {
     let h = Harness::new(73);
     let head = h.head();

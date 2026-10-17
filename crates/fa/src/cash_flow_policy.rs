@@ -99,35 +99,44 @@ impl PolicyCashFlow {
     /// Exact cash output, canonical policy and derivation transcript. These
     /// bytes are a report, not a source-completeness proof or policy approval.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
-        let policy = self.policy.canonical_bytes()?;
-        let report = self.report.canonical_bytes()?;
-        let size = self
-            .decisions
-            .len()
-            .checked_mul(38)
-            .and_then(|decisions| {
-                [
-                    4,
-                    POLICY_CASH_FLOW_FORMAT.len(),
-                    4,
-                    policy.len(),
-                    4,
-                    report.len(),
-                    4,
-                    decisions,
-                ]
-                .into_iter()
-                .try_fold(0usize, usize::checked_add)
-            })
-            .filter(|n| *n <= MAX_POLICY_CASH_FLOW_BYTES)
-            .ok_or_else(|| invalid("policy cash-flow report exceeds its 64 MiB bound"))?;
-        let mut w = Writer::with_capacity(size);
-        w.bytes(POLICY_CASH_FLOW_FORMAT)
-            .bytes(&policy)
-            .bytes(&report);
-        write_decisions(&mut w, &self.decisions);
-        w.finish().map_err(|e| invalid(e.to_string()))
+        canonical_report_bytes(&self.policy, &self.report.canonical_bytes()?, &self.decisions)
     }
+}
+
+/// One encoding for a live report and its intact certificate's output. The
+/// certificate can reproduce these bytes without inventing another report
+/// format; historical correctness still requires full native replay.
+fn canonical_report_bytes(
+    policy: &CashFlowPolicy,
+    report: &[u8],
+    decisions: &[CashFlowPolicyDecision],
+) -> Result<Vec<u8>, Refusal> {
+    let policy = policy.canonical_bytes()?;
+    let size = decisions
+        .len()
+        .checked_mul(38)
+        .and_then(|decisions| {
+            [
+                4,
+                POLICY_CASH_FLOW_FORMAT.len(),
+                4,
+                policy.len(),
+                4,
+                report.len(),
+                4,
+                decisions,
+            ]
+            .into_iter()
+            .try_fold(0usize, usize::checked_add)
+        })
+        .filter(|n| *n <= MAX_POLICY_CASH_FLOW_BYTES)
+        .ok_or_else(|| invalid("policy cash-flow report exceeds its 64 MiB bound"))?;
+    let mut w = Writer::with_capacity(size);
+    w.bytes(POLICY_CASH_FLOW_FORMAT)
+        .bytes(&policy)
+        .bytes(report);
+    write_decisions(&mut w, decisions);
+    w.finish().map_err(|e| invalid(e.to_string()))
 }
 
 fn invalid(message: impl Into<String>) -> Refusal {

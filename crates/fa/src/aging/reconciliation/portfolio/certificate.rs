@@ -11,7 +11,7 @@ use fa_model::{DecodeError, Reader, domain_digest};
 
 mod workpaper;
 
-const FORMAT: &[u8] = b"fa:aging-portfolio-certificate:v1";
+pub(crate) const FORMAT: &[u8] = b"fa:aging-portfolio-certificate:v1";
 const DIGEST: &[u8] = b"fa:aging-portfolio-digest:v1";
 
 #[derive(Clone, PartialEq, Eq)]

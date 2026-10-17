@@ -1664,6 +1664,71 @@ impl Book {
         with_store!(&self.store, core => self.runtime.block_on(core.read_certificate(&purposes, digest)))
     }
 
+    /// Read the original retained artifact under current whole-book authority.
+    /// This supports every report family without substituting a nested source.
+    /// Storage integrity alone is not a historical replay verdict.
+    pub fn read_report_artifact(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        digest: &[u8; 32],
+    ) -> Outcome<crate::ReportArtifact> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.read_report_artifact(
+            &purposes, principal, capability, digest
+        )))
+    }
+
+    /// Replay and retain an entire original artifact with current read/produce
+    /// authority. Cash and reconciliation families require independent inputs
+    /// through `retain_report_artifact_for`. Exact retries publish nothing.
+    pub fn retain_report_artifact(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+        expected_digest: Option<&[u8; 32]>,
+    ) -> Outcome<crate::RetainedCertificate> {
+        self.retain_report_artifact_for(
+            principal,
+            capability,
+            bytes,
+            expected_digest,
+            crate::ReportArtifactExpectation::AsSupplied,
+        )
+    }
+
+    /// Retain an artifact only after its full family-specific replay agrees
+    /// with the recipient's independent fixed scope and accounting definitions.
+    pub fn retain_report_artifact_for(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+        expected_digest: Option<&[u8; 32]>,
+        expected: crate::ReportArtifactExpectation<'_>,
+    ) -> Outcome<crate::RetainedCertificate> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_report_artifact_for(
+            &purposes, principal, capability, bytes, expected_digest, expected
+        )))
+    }
+
+    /// Resolve a retained artifact and replay the full original computation
+    /// without changing its historical coordinate or accepting saved authority.
+    pub fn replay_retained_report_artifact(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        digest: &[u8; 32],
+        expected: crate::ReportArtifactExpectation<'_>,
+    ) -> Outcome<crate::ReplayedReportArtifact> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.replay_retained_report_artifact(
+            &purposes, principal, capability, digest, expected
+        )))
+    }
+
     /// Materialize a period's registers from a fresh fold.
     pub fn materialize_registers(
         &mut self,

@@ -19,6 +19,13 @@ on:
       - 'crates/fa-cli/src/notary.rs'
       - 'crates/fa-cli/src/notary/**'
       - 'crates/fa-cli/tests/procedure_replay.rs'
+      - 'crates/fa-cli/tests/statements.rs'
+      - 'crates/fa-journal/src/post.rs'
+      - 'crates/fa-journal/src/rows.rs'
+      - 'crates/fa-journal/src/fx.rs'
+      - 'crates/fa-journal/src/rea.rs'
+      - 'crates/fa-journal/tests/genesis.rs'
+      - 'crates/fa-registers/tests/registers.rs'
       - 'registries/procedures.toml'
       - '.github/workflows/lantern-graph-kernel.yml'
   workflow_dispatch:
@@ -112,6 +119,13 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib certificate_store --jobs 2
+      - name: Regress exact FX arithmetic and journal posting semantics
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --test registers --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test genesis --jobs 2
       - name: Test network engine, real journal and complete Lantern corpus
         if: ${{ !cancelled() }}
         shell: bash

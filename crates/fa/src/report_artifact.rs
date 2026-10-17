@@ -24,8 +24,11 @@ use crate::{
     AgingCertificate, AgingReconciliationCertificate, AgingReconciliationRequest, AsyncBook,
     BookError, CashFlowCertificate, CashFlowDefinition, IndirectCashFlowCertificate,
     IndirectCashFlowRequest, Outcome, ReportCertificate, RollForwardCertificate,
-    RollForwardRequest, SummaryCertificate,
+    RollForwardRequest, StatementDiffCertificate, StatementTraceCertificate, SummaryCertificate,
 };
+use crate::aging::portfolio::{AgingPortfolioCertificate, AgingPortfolioRequest};
+use crate::cash_flow_policy::{CashFlowPolicy, CashFlowPolicyCertificate};
+use crate::cash_flow_split::{CashFlowSplitCertificate, CashFlowSplitDefinition};
 
 /// Total encoded input bound, including the complete nested native closure.
 pub const MAX_REPORT_ARTIFACT_BYTES: usize = crate::certificate::MAX_CERTIFICATE_BYTES;
@@ -41,6 +44,11 @@ pub enum ReportArtifactFamily {
     IndirectCashFlow,
     AgingReconciliation,
     Procedure,
+    StatementDiff,
+    StatementTrace,
+    AgingPortfolio,
+    SplitCashFlow,
+    PolicyCashFlow,
 }
 
 impl ReportArtifactFamily {
@@ -55,6 +63,11 @@ impl ReportArtifactFamily {
             Self::CashFlow => "cash-flow",
             Self::IndirectCashFlow => "indirect-cash-flow",
             Self::AgingReconciliation => "aging-reconciliation",
+            Self::StatementDiff => "statement-diff",
+            Self::StatementTrace => "statement-trace",
+            Self::AgingPortfolio => "aging-portfolio",
+            Self::SplitCashFlow => "split-cash-flow",
+            Self::PolicyCashFlow => "policy-cash-flow",
         }
     }
 }
@@ -64,7 +77,8 @@ impl ReportArtifactFamily {
 /// neither an optional digest nor AsSupplied substitutes for those requirements.
 #[derive(Clone, Copy, Debug)]
 pub enum ReportArtifactExpectation<'a> {
-    /// Local replay for native, summary, aging and roll-forward artifacts.
+    /// Local replay for native, summary, aging, roll-forward, procedure,
+    /// statement-diff and statement-trace artifacts.
     /// This does not certify that the artifact answers a separate request.
     AsSupplied,
     CashFlow {
@@ -73,6 +87,15 @@ pub enum ReportArtifactExpectation<'a> {
     },
     IndirectCashFlow(&'a IndirectCashFlowRequest),
     AgingReconciliation(&'a AgingReconciliationRequest),
+    AgingPortfolio(&'a AgingPortfolioRequest),
+    SplitCashFlow {
+        request: &'a RollForwardRequest,
+        definition: &'a CashFlowSplitDefinition,
+    },
+    PolicyCashFlow {
+        request: &'a RollForwardRequest,
+        policy: &'a CashFlowPolicy,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +108,20 @@ enum Artifact {
     CashFlow(Box<CashFlowCertificate>),
     IndirectCashFlow(Box<IndirectCashFlowCertificate>),
     AgingReconciliation(Box<AgingReconciliationCertificate>),
+    StatementDiff(Box<StatementDiffCertificate>),
+    StatementTrace(Box<StatementTraceCertificate>),
+    AgingPortfolio(Box<AgingPortfolioCertificate>),
+    SplitCashFlow(Box<CashFlowSplitCertificate>),
+    PolicyCashFlow(Box<PolicyArtifact>),
+}
+
+// Policy certificates retain their exact financial source and derivation inputs.
+// Cache their complete canonical report on decode so output() also includes the
+// policy and decision transcript, without changing the original durable format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PolicyArtifact {
+    certificate: CashFlowPolicyCertificate,
+    output: Vec<u8>,
 }
 
 /// An intact canonical artifact, NOT a successful replay. Private variants keep
@@ -145,6 +182,18 @@ impl ReportArtifact {
             Artifact::IndirectCashFlow(Box::new(IndirectCashFlowCertificate::decode(bytes)?))
         } else if format == crate::aging::AGING_RECONCILIATION_CERTIFICATE_FORMAT {
             Artifact::AgingReconciliation(Box::new(AgingReconciliationCertificate::decode(bytes)?))
+        } else if format == crate::statement_diff::CERTIFICATE_FORMAT {
+            Artifact::StatementDiff(Box::new(StatementDiffCertificate::decode(bytes)?))
+        } else if format == crate::statement_trace::CERTIFICATE_FORMAT {
+            Artifact::StatementTrace(Box::new(StatementTraceCertificate::decode(bytes)?))
+        } else if format == crate::aging::portfolio::CERTIFICATE_FORMAT {
+            Artifact::AgingPortfolio(Box::new(AgingPortfolioCertificate::decode(bytes)?))
+        } else if format == crate::cash_flow_split::CASH_FLOW_SPLIT_CERTIFICATE_FORMAT.as_bytes() {
+            Artifact::SplitCashFlow(Box::new(CashFlowSplitCertificate::decode(bytes)?))
+        } else if format == crate::cash_flow_policy::CASH_FLOW_POLICY_CERTIFICATE_FORMAT {
+            let certificate = CashFlowPolicyCertificate::decode(bytes)?;
+            let output = certificate.output()?;
+            Artifact::PolicyCashFlow(Box::new(PolicyArtifact { certificate, output }))
         } else {
             return Err(invalid("unsupported report artifact family or version"));
         };
@@ -162,11 +211,19 @@ impl ReportArtifact {
             Artifact::CashFlow(_) => ReportArtifactFamily::CashFlow,
             Artifact::IndirectCashFlow(_) => ReportArtifactFamily::IndirectCashFlow,
             Artifact::AgingReconciliation(_) => ReportArtifactFamily::AgingReconciliation,
+            Artifact::StatementDiff(_) => ReportArtifactFamily::StatementDiff,
+            Artifact::StatementTrace(_) => ReportArtifactFamily::StatementTrace,
+            Artifact::AgingPortfolio(_) => ReportArtifactFamily::AgingPortfolio,
+            Artifact::SplitCashFlow(_) => ReportArtifactFamily::SplitCashFlow,
+            Artifact::PolicyCashFlow(_) => ReportArtifactFamily::PolicyCashFlow,
         }
     }
 
     /// Inspect the source immutably. A nested source is not interchangeable with
     /// its outer certificate: it omits the outer selector and exact derived output.
+    /// Comparisons and traces expose their final source here; replay still checks
+    /// both endpoints or every publication, respectively. This accessor alone
+    /// does not define a family's complete scope or freshness.
     #[must_use]
     pub fn source_certificate(&self) -> &ReportCertificate {
         match &self.inner {
@@ -181,6 +238,15 @@ impl ReportArtifact {
                 .source_certificate()
                 .source_certificate(),
             Artifact::AgingReconciliation(c) => c.aging_source().source(),
+            Artifact::StatementDiff(c) => c.sources().1,
+            // The bounded family decoder requires a nonempty contiguous chain.
+            Artifact::StatementTrace(c) => &c.sources()[c.sources().len() - 1],
+            Artifact::AgingPortfolio(c) => c.control_source(),
+            Artifact::SplitCashFlow(c) => c.source_certificate().source_certificate(),
+            Artifact::PolicyCashFlow(c) => c.certificate
+                .source_certificate()
+                .source_certificate()
+                .source_certificate(),
         }
     }
 
@@ -205,6 +271,11 @@ impl ReportArtifact {
             Artifact::CashFlow(c) => c.digest(),
             Artifact::IndirectCashFlow(c) => c.digest(),
             Artifact::AgingReconciliation(c) => c.digest(),
+            Artifact::StatementDiff(c) => c.digest(),
+            Artifact::StatementTrace(c) => c.digest(),
+            Artifact::AgingPortfolio(c) => c.digest(),
+            Artifact::SplitCashFlow(c) => c.digest(),
+            Artifact::PolicyCashFlow(c) => c.certificate.digest(),
         }
     }
 
@@ -220,7 +291,22 @@ impl ReportArtifact {
             Artifact::CashFlow(c) => c.output(),
             Artifact::IndirectCashFlow(c) => c.output(),
             Artifact::AgingReconciliation(c) => c.output(),
+            Artifact::StatementDiff(c) => c.output(),
+            Artifact::StatementTrace(c) => c.output(),
+            Artifact::AgingPortfolio(c) => c.output(),
+            Artifact::SplitCashFlow(c) => c.output(),
+            Artifact::PolicyCashFlow(c) => &c.output,
         }
+    }
+
+    /// Digest of the complete canonical output using the native report recipe.
+    /// This is content identity only; replay must still establish the result.
+    #[must_use]
+    pub fn output_digest(&self) -> [u8; 32] {
+        let mut hash = fgdb_crypto::Hasher::new();
+        hash.update(b"fa:report-output:v1");
+        hash.update(self.output());
+        hash.finalize().0
     }
 
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
@@ -233,6 +319,11 @@ impl ReportArtifact {
             Artifact::CashFlow(c) => c.canonical_bytes(),
             Artifact::IndirectCashFlow(c) => c.canonical_bytes(),
             Artifact::AgingReconciliation(c) => c.canonical_bytes(),
+            Artifact::StatementDiff(c) => c.canonical_bytes(),
+            Artifact::StatementTrace(c) => c.canonical_bytes(),
+            Artifact::AgingPortfolio(c) => c.canonical_bytes(),
+            Artifact::SplitCashFlow(c) => c.canonical_bytes(),
+            Artifact::PolicyCashFlow(c) => c.certificate.canonical_bytes(),
         }
     }
 }
@@ -259,6 +350,11 @@ from_certificate!(
     CashFlowCertificate,
     IndirectCashFlowCertificate,
     AgingReconciliationCertificate,
+    StatementDiffCertificate,
+    StatementTraceCertificate,
+    AgingPortfolioCertificate,
+    CashFlowSplitCertificate,
+    CashFlowPolicyCertificate,
 );
 
 fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
@@ -353,6 +449,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             (Artifact::RollForward(c), ReportArtifactExpectation::AsSupplied) => self
                 .replay_roll_forward(cx, principal, capability, c)?
                 .map(|_| ()),
+            (Artifact::StatementDiff(c), ReportArtifactExpectation::AsSupplied) => self
+                .replay_statement_diff(cx, principal, capability, c)?
+                .map(|_| ()),
+            (Artifact::StatementTrace(c), ReportArtifactExpectation::AsSupplied) => self
+                .replay_statement_trace(cx, principal, capability, c)?
+                .map(|_| ()),
             (
                 Artifact::CashFlow(c),
                 ReportArtifactExpectation::CashFlow {
@@ -373,6 +475,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 ReportArtifactExpectation::AgingReconciliation(request),
             ) => self
                 .replay_effective_date_aging_reconciliation(cx, principal, capability, c, request)?
+                .map(|_| ()),
+            (Artifact::AgingPortfolio(c), ReportArtifactExpectation::AgingPortfolio(request)) => self
+                .replay_aging_portfolio(cx, principal, capability, c, request)?
+                .map(|_| ()),
+            (
+                Artifact::SplitCashFlow(c),
+                ReportArtifactExpectation::SplitCashFlow { request, definition },
+            ) => self
+                .replay_split_cash_flow(cx, principal, capability, c, request, definition)?
+                .map(|_| ()),
+            (
+                Artifact::PolicyCashFlow(c),
+                ReportArtifactExpectation::PolicyCashFlow { request, policy },
+            ) => self
+                .replay_cash_flow_with_policy(cx, principal, capability, &c.certificate, request, policy)?
                 .map(|_| ()),
             _ => {
                 return Ok(Err(invalid(

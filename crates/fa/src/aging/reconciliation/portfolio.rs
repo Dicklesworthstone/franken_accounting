@@ -17,6 +17,7 @@ pub const MAX_AGING_PORTFOLIO_ROWS: usize = 100_000;
 pub const MAX_AGING_PORTFOLIO_BYTES: usize = 64 * 1024 * 1024;
 mod certificate;
 pub use certificate::{AgingPortfolioCertificate, CertifiedAgingPortfolio};
+pub(crate) use certificate::FORMAT as CERTIFICATE_FORMAT;
 
 const OUTPUT_FORMAT: &[u8] = b"fa:aging-portfolio:v1";
 
