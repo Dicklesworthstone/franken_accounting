@@ -1,0 +1,26 @@
+# Physical projection of plan §11.8 over an ALREADY retained full procedure
+# certificate. A run and every finding/CITES edge publish atomically. The source
+# certificate was retained separately; no certificate-plus-findings atomicity claim.
+schema_version = 1
+label = "Finding"
+properties = ["fa_payload", "fa_digest", "book_id"]
+run_format = "fa:finding-run:v1"
+finding_format = "fa:finding-record:v1"
+run_identity_domain = "fa:vid:finding-run:v1"
+finding_identity_domain = "fa:vid:finding:v1"
+record_digest_domain = "fa:finding-record-digest:v1"
+value_digest_domain = "fa:finding-value:v1"
+max_findings = 4096
+max_citations = 65536
+# Run: fixed format + 16-byte book + 32-byte certificate digest + LE u32 count
+# + 32-byte ordered findings digest. Finding: fixed format + book + certificate
+# + zero-based LE u32 ordinal + 32-byte canonical finding value digest.
+# Identities take low 16 hash bytes as LE u128; the ordinal is domain-separated
+# from the run identity. Hashes supply integrity, never reader/writer authority.
+# All immutable records use one native birth. Reads recompute expected contents
+# from full historical replay, reject predecessor versions and require all edges.
+# DERIVED_FROM: run -> certificate, finding -> run. CITES: finding -> unique
+# target VIds. Exact citation order and multiplicity remain in the certificate;
+# CITES is only a distinct-target membership projection, not a tracing schedule.
+# This version records Open observations only. It does not encode human reviews,
+# escalation decisions, accusations, or an offline outsider completeness proof.

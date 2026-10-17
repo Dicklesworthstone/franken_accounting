@@ -161,13 +161,15 @@ fn rehashed_false_output_wrong_digest_and_wrong_book_never_publish_a_storage_rec
 #[test]
 fn fragmented_outer_artifacts_have_one_birth_and_cannot_be_rewritten_or_repaired() {
     let mut h = Harness::new(95);
-    for i in 0..60u64 { h.post(&i.to_le_bytes(), 3); }
-    let certified = h.book.certify_summary_trial_balance(
-        &h.cx(), PRINCIPAL, &cap(&["read", "produce"]), &SummaryRequest {
-            selection: TrialBalanceSelection::AsOf(day(20)),
-            scope: SummaryScope::AllRoots, known_at: Some(h.head()),
-        },
+    // A summary is compact regardless of posting count. Weekend findings retain
+    // one real observation per Saturday posting and exercise the outer fragments.
+    for i in 0..120u64 { h.post(&i.to_le_bytes(), 3); }
+    let mut request = ProcedureRequest::new("jet.weekend", fa_lantern::catalog::Inputs::default()).unwrap();
+    request.effective_through = Some(day(20));
+    let certified = h.book.certify_procedure(
+        &h.cx(), PRINCIPAL, &cap(&["read", "produce"]), &request,
     ).unwrap().unwrap();
+    assert!(certified.report.findings.len() >= 120);
     let artifact = ReportArtifact::try_from(&certified.certificate).unwrap();
     assert!(artifact.canonical_bytes().unwrap().len() > crate::MAX_INLINE_CERTIFICATE_BYTES);
     let receipt = retain(&mut h, &artifact);

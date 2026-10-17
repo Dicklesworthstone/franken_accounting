@@ -63,6 +63,7 @@ pub mod certificate;
 mod certificate_store;
 pub mod document_disclosure;
 pub mod evidence_disclosure;
+pub mod findings;
 pub mod general_ledger;
 pub mod indirect_cash_flow;
 pub mod intake;
@@ -127,7 +128,7 @@ pub use fa_money::allocation::{
     AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
 };
 pub use fa_notary::{
-    AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, ScopeRequest,
+    AccumulatorVerification, BalanceRequest, BundleScope, BundleRequest, Checkpointed, ScopeRequest,
 };
 pub use fa_policy::{
     BenefitInterval, Capability, DECISION_CARD_DOMAIN, DecisionCandidate, DecisionCard,
@@ -144,6 +145,7 @@ pub use fa_statements::{
     AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementKind,
     StatementLine,
 };
+pub use findings::{RecordedFindings, finding_run_vid, finding_vid};
 pub use general_ledger::{
     CASH_FLOW_FORMAT, CashFlow, CashFlowActivity, CashFlowAssignment, CashFlowDefinition,
     CashFlowSection, CashFlowUnit, CertifiedGeneralLedger, GENERAL_LEDGER_FORMAT,
