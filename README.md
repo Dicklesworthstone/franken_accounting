@@ -615,16 +615,18 @@ fa explain balance 1200 --period FY2026-P03 --as-known-at '2026-04-02T00:00:00Z'
 
 # The books as they stood on a date, for a period — a selector, not a restore (available today with `--period` / `--fiscal-year`).
 fa tb --fiscal-year 2025 --as-known-at '2026-02-01T00:00:00Z' --book acme.fabook --json
-# Target (fa-9ae): `--as-originally-reported` selector on `fa tb`.
-fa tb --fiscal-year 2025 --as-originally-reported --json
+# As originally reported: one period at its first Lock (available today; the StatementIssuance basis is target fa-wrrw).
+fa tb --period FY2025-P12 --as-originally-reported --book acme.fabook --json
 
 # Corrections are lineage. The original stays (`fa reverse <vid> --reason <name|code>` available today).
 fa reverse <vid> --reason WrongAccount --book acme.fabook --json
+# One-step correction: the reversal and the corrected entry commit together, both or neither (available today).
+fa reverse <vid> --reason WrongAmount --replace-with corrected.json --book acme.fabook --json
 # Target (fa-oz3): `fa case` for restatement cases.
 fa case open --kind Restatement --periods FY2024-Q4 --narrative restatement-memo.pdf
 
-# Target (fa-s7x, fa-4o0): rehearse the close on a draft, diff it, let a human promote it.
-fa draft new close-2026-03
+# Rehearse the close on a draft, diff it, let a human promote it (drafts available today; close dry-run and diff are target fa-4o0 / fa-s7x).
+fa draft new close-2026-03 --book acme.fabook --json
 # Target (fa-4o0):
 fa close dry-run --period 2026-03 --draft close-2026-03 --json
 # Target (fa-s7x):
@@ -641,6 +643,15 @@ fa procedure run graph.related_party_exposure --param entity=ACME --json
 # Proofs an outsider can check without the book (`fa bundle produce` and `fa-verify bundle` available today).
 fa bundle produce --account 1000 --from 2025-01-01 --to 2025-12-31 --inline-documents --out fy2025-cash.fab --receipt-out fy2025-cash.receipt --book acme.fabook --json
 fa-verify bundle fy2025-cash.fab --key <checkpoint_public_key> --receipt fy2025-cash.receipt --json
+
+# The auditor's extract: the AICPA ADS GL package (also saft, csv-gl, beancount, hledger), what the trial balance folds, with its export coordinate certificate (available today).
+fa export ads --period FY2025-P12 --out ads-fy2025-12 --book acme.fabook --json
+
+# Who and what the events name: parties, a relationship, an instrument mirrored by a GL leaf, and a new account (available today).
+fa party add vendor.json --book acme.fabook --json
+fa party relate O-1 ACME --kind owns --basis equity_voting --valid-from 2025-01-01 --pct 51/100 --book acme.fabook --json
+fa instrument add operating-account.json --book acme.fabook --json
+fa chart open office-supplies.json --opened 2026-03-01 --book acme.fabook --json
 ```
 
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.
