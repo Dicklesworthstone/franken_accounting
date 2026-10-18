@@ -1618,6 +1618,9 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
     {
         return Some(&[Op::Read, Op::Produce]);
     }
+    if verb == "gl" && (args.switch("--certify") || args.flag("--certificate-out").is_some()) {
+        return Some(&[Op::Read, Op::Produce]);
+    }
     let ops: &'static [Op] = match (verb, sub) {
         // The chart templates are data embedded in this build; listing
         // them reads nothing from the book.
@@ -10310,11 +10313,79 @@ fn parse_indirect_cash_flow_definition(
     ))
 }
 
+/// Admit certification before observing report inputs or an external output
+/// path. Retention repeats the native authority checks at publication; this
+/// preflight never reserves authority or creates an empty output artifact.
+fn gl_certificate_preflight(
+    book: &Book,
+    files: &Files,
+    args: &Args,
+    capability: &Capability,
+) -> Result<(), Fail> {
+    fa_policy::admit_read(capability, capability.holder(), book.context().book_id)
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| {
+            fa_policy::require(
+                capability,
+                fa_policy::Op::Produce,
+                "certifying and retaining a general-ledger report",
+            )
+        })
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    book.read_scope(capability.holder(), capability)??;
+    if let Some(path) = args.flag("--certificate-out") {
+        if path.is_empty() || path == "-" {
+            return Err(usage(
+                "--certificate-out names a new file; - is not an output file",
+                "use --certify to receive the complete certificate as hex on stdout",
+            ));
+        }
+        match std::fs::symlink_metadata(files.resolve(path)) {
+            Ok(_) => {
+                return Err(usage(
+                    format!("certificate output {path} already exists"),
+                    "choose a new --certificate-out path; an existing file is never overwritten",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(usage(
+                    format!("cannot inspect certificate output {path}: {error}"),
+                    "choose a new --certificate-out path in a writable directory",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["read"])?;
-    let out = &ctx.out;
+    if args.flag_all("--certificate-out").len() > 1 {
+        return Err(usage(
+            "--certificate-out may be supplied only once",
+            "use --certify or --certificate-out <new-file>",
+        ));
+    }
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let sub = args.positional.get(1).map(String::as_str);
+    if certify
+        && (!matches!(sub, Some("detail" | "roll-forward" | "aging")) || args.switch("--reconcile"))
+    {
+        return Err(usage(
+            "certification is available for gl detail, roll-forward and effective-date aging; cash-flow and aging reconciliation require a separately supplied replay request",
+            "use gl detail|roll-forward|aging --certify without --reconcile, or run the requested report without certification",
+        ));
+    }
+    let who = ctx.principal(args);
+    let capability = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
+    let out = &ctx.out;
     match sub {
         Some("detail") => {
             if args.positional.len() != 2 {
@@ -10323,7 +10394,10 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa gl detail --account <code> --from YYYY-MM-DD --to YYYY-MM-DD --book <dir>",
                 ));
             }
-            let book = ctx.books.open(args)?;
+            let mut book = ctx.books.open(args)?;
+            if certify {
+                gl_certificate_preflight(&book, &ctx.files, args, &capability)?;
+            }
             let req = parse_gl_scope(
                 args,
                 &book,
@@ -10331,7 +10405,13 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "gl-detail",
                 "fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book <dir>",
             )?;
-            let gl = book.general_ledger(who, &capability, &req)??;
+            let (gl, artifact) = if certify {
+                let certified = book.certify_general_ledger(who, &capability, &req)??;
+                let artifact = fa::ReportArtifact::try_from(certified.source_certificate())?;
+                (certified.report().clone(), Some(artifact))
+            } else {
+                (book.general_ledger(who, &capability, &req)??, None)
+            };
             out.known_at(gl.known_at());
             let units = &book.context().units;
             let accounts_by_id: std::collections::BTreeMap<u128, _> =
@@ -10414,7 +10494,20 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 gl.cells().len(),
                 gl.lines().len()
             );
-            out.event(
+            let retained = artifact
+                .as_ref()
+                .map(|artifact| {
+                    notary::retain_report_artifact(
+                        &mut book,
+                        &ctx.files,
+                        args,
+                        artifact,
+                        &capability,
+                    )
+                })
+                .transpose()?;
+            let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+            out.event_with_certificate(
                 "general_ledger",
                 vec![
                     ("label", s(gl.label())),
@@ -10425,7 +10518,20 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("lines", Json::Arr(lines)),
                 ],
                 &human,
+                digest.as_deref(),
             );
+            if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+                // Detail is the deterministic view of this complete source,
+                // not a newly invented general-ledger certificate format.
+                notary::emit_report_artifact(
+                    out,
+                    args,
+                    artifact,
+                    "fa:roll-forward:v1",
+                    &bytes,
+                    &retained,
+                );
+            }
             Ok(())
         }
         Some("roll-forward") => {
@@ -10435,7 +10541,10 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa gl roll-forward --account <code> --from YYYY-MM-DD --to YYYY-MM-DD --book <dir>",
                 ));
             }
-            let book = ctx.books.open(args)?;
+            let mut book = ctx.books.open(args)?;
+            if certify {
+                gl_certificate_preflight(&book, &ctx.files, args, &capability)?;
+            }
             let req = parse_gl_scope(
                 args,
                 &book,
@@ -10443,7 +10552,13 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "roll-forward",
                 "fa gl roll-forward --account 1000 --from 2026-03-01 --to 2026-03-31 --book <dir>",
             )?;
-            let rf = book.roll_forward(who, &capability, &req)??;
+            let (rf, artifact) = if certify {
+                let certified = book.certify_roll_forward(who, &capability, &req)??;
+                let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+                (certified.report, Some(artifact))
+            } else {
+                (book.roll_forward(who, &capability, &req)??, None)
+            };
             out.known_at(CommitSeq(rf.known_at));
             let units = &book.context().units;
             let accounts_by_id: std::collections::BTreeMap<u128, _> =
@@ -10503,7 +10618,20 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 rf.rows.len(),
                 rf.movements.len()
             );
-            out.event(
+            let retained = artifact
+                .as_ref()
+                .map(|artifact| {
+                    notary::retain_report_artifact(
+                        &mut book,
+                        &ctx.files,
+                        args,
+                        artifact,
+                        &capability,
+                    )
+                })
+                .transpose()?;
+            let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+            out.event_with_certificate(
                 "roll_forward",
                 vec![
                     ("label", s(&rf.label)),
@@ -10515,7 +10643,18 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("movement_count", Json::Int(rf.movements.len() as i128)),
                 ],
                 &human,
+                digest.as_deref(),
             );
+            if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+                notary::emit_report_artifact(
+                    out,
+                    args,
+                    artifact,
+                    "fa:roll-forward:v1",
+                    &bytes,
+                    &retained,
+                );
+            }
             Ok(())
         }
         Some("aging") => {
@@ -10525,7 +10664,10 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa gl aging [--account <code>] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] --book <dir>",
                 ));
             }
-            let book = ctx.books.open(args)?;
+            let mut book = ctx.books.open(args)?;
+            if certify {
+                gl_certificate_preflight(&book, &ctx.files, args, &capability)?;
+            }
             let as_of = args.require("--as-of", "YYYY-MM-DD")?;
             let day = DateDay::parse(as_of).map_err(|e| {
                 usage(
@@ -10645,7 +10787,25 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 );
                 Ok(())
             } else {
-                let aging = book.effective_date_aging(account, day, known_at, &buckets)?;
+                let (aging, artifact) = if certify {
+                    let certified = book.certify_effective_date_aging(
+                        who,
+                        &capability,
+                        &fa::AgingRequest {
+                            account,
+                            effective_through: day,
+                            known_at,
+                            buckets: buckets.clone(),
+                        },
+                    )??;
+                    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+                    (certified.report, Some(artifact))
+                } else {
+                    (
+                        book.effective_date_aging(account, day, known_at, &buckets)?,
+                        None,
+                    )
+                };
                 out.known_at(aging.known_at);
                 let chart = book.accounts()?;
                 let accounts_by_vid: std::collections::BTreeMap<VId, String> = chart
@@ -10760,7 +10920,20 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     aging.items.len(),
                     aging.cells.len()
                 );
-                out.event(
+                let retained = artifact
+                    .as_ref()
+                    .map(|artifact| {
+                        notary::retain_report_artifact(
+                            &mut book,
+                            &ctx.files,
+                            args,
+                            artifact,
+                            &capability,
+                        )
+                    })
+                    .transpose()?;
+                let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+                out.event_with_certificate(
                     "aging",
                     vec![
                         ("account", account_code.map_or(Json::Null, s)),
@@ -10772,7 +10945,18 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("totals", Json::Arr(totals)),
                     ],
                     &human,
+                    digest.as_deref(),
                 );
+                if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+                    notary::emit_report_artifact(
+                        out,
+                        args,
+                        artifact,
+                        "fa:effective-date-aging:v1",
+                        &bytes,
+                        &retained,
+                    );
+                }
                 Ok(())
             }
         }

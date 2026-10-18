@@ -2603,6 +2603,45 @@ mod tests {
     }
 
     #[test]
+    fn gl_certification_schema_routes_inline_and_requires_produce() {
+        let (mcp, reg) = embedded();
+        let tool = mcp.tool_by_wire("fa_proof_gl").expect("GL tool");
+        let schema = tool.input_schema(&mcp, reg);
+        assert_eq!(schema["properties"]["certify"]["type"], json!("boolean"));
+        assert!(schema["properties"].get("certificate_out").is_none());
+        for view in ["detail", "roll-forward", "aging"] {
+            let invocation = tool
+                .invocation(&mcp, reg, &json!({"view": view, "certify": true}))
+                .expect("inline certification");
+            let parsed = args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+                .expect("registered command");
+            assert_eq!(&parsed.positional[..2], &["gl", view]);
+            assert!(parsed.switch("--certify"));
+            assert_eq!(
+                fa_cli::cli::bound_command_ops("gl", &parsed),
+                Some(&[fa_policy::Op::Read, fa_policy::Op::Produce][..])
+            );
+            let ordinary = tool
+                .invocation(&mcp, reg, &json!({"view": view}))
+                .expect("ordinary read");
+            let parsed = args::parse(&ordinary.argv, &reg.value_flags(), &reg.switches())
+                .expect("registered read");
+            assert_eq!(
+                fa_cli::cli::bound_command_ops("gl", &parsed),
+                Some(&[fa_policy::Op::Read][..])
+            );
+        }
+        assert!(
+            tool.invocation(
+                &mcp,
+                reg,
+                &json!({"view": "detail", "certificate_out": "/host/private"})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn arguments_map_to_argv_with_stdin_forwarding_and_usage_errors() {
         let (mcp, reg) = embedded();
         let post = mcp.tool_by_wire("fa_post_post").expect("post");
