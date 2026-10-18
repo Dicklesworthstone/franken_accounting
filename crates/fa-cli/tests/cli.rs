@@ -11054,6 +11054,11 @@ fn parties_instruments_and_relationships_are_recorded_from_the_cli() -> std::io:
     let (code, out) = run(&["instrument", "add", &account, "--json"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(field(&out, "object"), Some("instrument"));
+    let instrument_vid = field(&out, "target").unwrap().to_string();
+    let (code, out) = run(&["instrument", "add", &account, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("true"));
+    assert_eq!(field(&out, "target"), Some(instrument_vid.as_str()));
     let unmirrored = write(
         &dir,
         "unmirrored.json",

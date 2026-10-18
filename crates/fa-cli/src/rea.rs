@@ -109,9 +109,9 @@ fn instrument_kind(name: &str) -> Result<InstrumentKind, Fail> {
         })
 }
 
-/// `external_ids: [{"system": "...", "id": "..."}]`, sealed and in the
-/// kernel's order (`(system, field_digest)`).
-fn external_ids(book: &fa::Book, doc: &Json) -> Result<Vec<ExternalId>, Fail> {
+/// `external_ids: [{"system": "...", "id": "..."}]` as plaintext pairs,
+/// sorted, which is what a retry compares.
+fn requested_ids(doc: &Json) -> Result<Vec<(String, String)>, Fail> {
     let rows = match doc.get("external_ids") {
         None | Some(Json::Null) => return Ok(Vec::new()),
         Some(Json::Arr(rows)) => rows,
@@ -133,13 +133,67 @@ fn external_ids(book: &fa::Book, doc: &Json) -> Result<Vec<ExternalId>, Fail> {
                 "external_ids: [{\"system\": \"qbo\", \"id\": \"55\"}]",
             ));
         };
-        ids.push(ExternalId {
-            system: system.to_string(),
+        ids.push((system.to_string(), id.to_string()));
+    }
+    ids.sort();
+    Ok(ids)
+}
+
+/// The requested external ids, sealed and in the kernel's order
+/// (`(system, field_digest)`).
+fn sealed_ids(book: &fa::Book, ids: &[(String, String)]) -> Result<Vec<ExternalId>, Fail> {
+    let mut sealed = Vec::with_capacity(ids.len());
+    for (system, id) in ids {
+        sealed.push(ExternalId {
+            system: system.clone(),
             id: book.seal_text(id)?,
         });
     }
-    ids.sort_by(|a, b| (&a.system, a.id.field_digest()).cmp(&(&b.system, b.id.field_digest())));
-    Ok(ids)
+    sealed.sort_by(|a, b| (&a.system, a.id.field_digest()).cmp(&(&b.system, b.id.field_digest())));
+    Ok(sealed)
+}
+
+/// Recorded external ids opened with the book's key, sorted; `None` when one
+/// does not open (erased), so it never equals a request.
+fn opened_ids(ids: &[ExternalId], key: &fa_model::SealKey) -> Option<Vec<(String, String)>> {
+    let mut opened = ids
+        .iter()
+        .map(|e| {
+            Some((
+                e.system.clone(),
+                e.id.open(key, fa_model::limits::MAX_DESCRIPTION_BYTES)
+                    .ok()?,
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    opened.sort();
+    Some(opened)
+}
+
+/// Codes are identities, and every add seals its text with fresh entropy,
+/// so an exact retry cannot be judged by the kernel's digest. When the code
+/// already exists, its opened fields are compared with the request. If they
+/// are equal and the control entry under this principal and key exists, that
+/// is the recorded outcome. Anything else goes to the kernel, which refuses it.
+fn recorded_retry(
+    book: &fa::Book,
+    who: VId,
+    key: &str,
+    target: VId,
+    equal: bool,
+) -> Result<Option<fa_journal::ReaControlRecorded>, Fail> {
+    if !equal {
+        return Ok(None);
+    }
+    let control = fa_model::entry_vid(book.context().book_id, &who.0.to_le_bytes(), key.as_bytes());
+    Ok(book
+        .read_entry(control)?
+        .map(|(_, recorded_at)| fa_journal::ReaControlRecorded {
+            recorded_at,
+            control_entry: control,
+            target_vid: target,
+            already_recorded: true,
+        }))
 }
 
 /// A party (or legal entity) named by code, or by its 32-hex vertex id.
@@ -229,23 +283,45 @@ fn party_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         Some(_) => return Err(usage("`identifiers` must be an object of strings", FIX)),
     }
+    let ids = requested_ids(&doc)?;
+    let key = args
+        .flag("--key")
+        .map_or_else(|| format!("party:{code}"), str::to_string);
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["schema_change"])?;
     let mut book = ctx.books.open(args)?;
+    if let Some(existing) = book
+        .rea_snapshot(None)?
+        .parties
+        .into_values()
+        .find(|p| p.code == code)
+    {
+        let seal = &book.context().seal_key;
+        let max = fa_model::limits::MAX_DESCRIPTION_BYTES;
+        let opened: Option<BTreeMap<String, String>> = existing
+            .identifiers
+            .iter()
+            .map(|(k, v)| Some((k.clone(), v.open(seal, max).ok()?)))
+            .collect();
+        let equal = existing.kind == kind
+            && existing.name.open(seal, max).ok().as_deref() == Some(name.as_str())
+            && opened.as_ref() == Some(&identifiers)
+            && opened_ids(&existing.external_ids, seal).as_ref() == Some(&ids);
+        if let Some(recorded) = recorded_retry(&book, who, &key, existing.vid, equal)? {
+            return emit_recorded(&ctx.out, &book, "party", &code, &recorded);
+        }
+    }
     let mut sealed = Vec::with_capacity(identifiers.len());
-    for (key, value) in &identifiers {
-        sealed.push((key.clone(), book.seal_text(value)?));
+    for (field, value) in &identifiers {
+        sealed.push((field.clone(), book.seal_text(value)?));
     }
     let spec = PartySpec {
         code: code.clone(),
         kind,
         name: book.seal_text(&name)?,
         identifiers: sealed,
-        external_ids: external_ids(&book, &doc)?,
+        external_ids: sealed_ids(&book, &ids)?,
     };
-    let key = args
-        .flag("--key")
-        .map_or_else(|| format!("party:{code}"), str::to_string);
     let date = date_flag(args, DateDay(0))?;
     let recorded = book.create_party(&spec, who, date, key.as_bytes(), &capability)??;
     emit_recorded(&ctx.out, &book, "party", &code, &recorded)
@@ -289,18 +365,37 @@ fn instrument_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "mirrors: the GL leaf account this instrument mirrors (fa chart list --json)",
         ));
     }
+    let ids = requested_ids(&doc)?;
+    let key = args
+        .flag("--key")
+        .map_or_else(|| format!("instrument:{code}"), str::to_string);
+    let held_at_party = party_ref(&book, held_at)?;
+    let mirrors_account = account_vid(book_id, mirrors);
+    if let Some(existing) = book
+        .rea_snapshot(None)?
+        .instruments
+        .into_values()
+        .find(|i| i.code == code)
+    {
+        let equal = existing.name == name
+            && existing.kind == kind
+            && existing.unit == unit
+            && existing.held_at_party == held_at_party
+            && existing.mirrors_account == mirrors_account
+            && opened_ids(&existing.external_ids, &book.context().seal_key).as_ref() == Some(&ids);
+        if let Some(recorded) = recorded_retry(&book, who, &key, existing.vid, equal)? {
+            return emit_recorded(&ctx.out, &book, "instrument", &code, &recorded);
+        }
+    }
     let spec = InstrumentSpec {
         code: code.clone(),
         name,
         kind,
         unit,
-        held_at_party: party_ref(&book, held_at)?,
-        mirrors_account: account_vid(book_id, mirrors),
-        external_ids: external_ids(&book, &doc)?,
+        held_at_party,
+        mirrors_account,
+        external_ids: sealed_ids(&book, &ids)?,
     };
-    let key = args
-        .flag("--key")
-        .map_or_else(|| format!("instrument:{code}"), str::to_string);
     let date = date_flag(args, DateDay(0))?;
     let recorded = book.create_instrument(&spec, who, date, key.as_bytes(), &capability)??;
     emit_recorded(&ctx.out, &book, "instrument", &code, &recorded)
