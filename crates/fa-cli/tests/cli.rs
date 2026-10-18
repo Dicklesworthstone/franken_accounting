@@ -4905,6 +4905,66 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["reverse", &vid, "--reason", "WrongAccount"]).0,
         0
     );
+    // A correction pair (corrected), an export (journal_exported), the chart
+    // and REA controls (account_lifecycle, rea_recorded) and their lists
+    // (parties, instruments).
+    let rent2 = write(
+        &dir,
+        "rent2.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"rent-2","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    let (code, out) = run(true, &["post", "--intent", &rent2, "--evidence", &ev]);
+    assert_eq!(code, 0, "{out}");
+    let vid2 = field(&out, "vid").unwrap_or_default().to_string();
+    let corrected = write(
+        &dir,
+        "corrected.json",
+        r#"{"legs":[{"side":"debit","account":"6000","amount":"12.00 USD"},{"side":"credit","account":"1000","amount":"12.00 USD"}]}"#,
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "reverse",
+                &vid2,
+                "--reason",
+                "WrongAmount",
+                "--replace-with",
+                &corrected,
+                "--evidence",
+                &ev,
+            ],
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(true, &["export", "csv-gl", "--period", "FY2026-P03"]).0,
+        0
+    );
+    let office = write(
+        &dir,
+        "office.json",
+        r#"{"code":"6100","name":"Office","type":"Expense","unit":"USD"}"#,
+    );
+    assert_eq!(
+        run(true, &["chart", "open", &office, "--opened", "2026-03-01"]).0,
+        0
+    );
+    let bank = write(
+        &dir,
+        "bank-party.json",
+        r#"{"code":"BANK-1","kind":"Bank","name":"First Bank"}"#,
+    );
+    assert_eq!(run(true, &["party", "add", &bank]).0, 0);
+    assert_eq!(run(true, &["party", "list"]).0, 0);
+    let account = write(
+        &dir,
+        "instrument.json",
+        r#"{"code":"BA-1","name":"Operating","kind":"BankAccount","unit":"USD","held_at":"BANK-1","mirrors":"1000"}"#,
+    );
+    assert_eq!(run(true, &["instrument", "add", &account]).0, 0);
+    assert_eq!(run(true, &["instrument", "list"]).0, 0);
     let certificate = dir.join("events.cert").display().to_string();
     assert_eq!(
         run(
