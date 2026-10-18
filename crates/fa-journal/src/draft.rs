@@ -721,6 +721,16 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
             "plan the intent with this book's id and the trunk branch",
         )));
     }
+    // Its promotion is one batch, so only a batchable class is planned.
+    if !crate::batch::batchable(p.class) {
+        return Ok(Err(usage(
+            format!(
+                "a {} entry cannot join a draft: its promotion is one batch of PostEntry intents",
+                p.class.name().unwrap_or("?")
+            ),
+            "plan Original, Adjusting, Reversal, Pending or Resolution entries; post allocations and migration chunks through their own verbs",
+        )));
+    }
     let Some(view) = read_draft(db, book, name)? else {
         return Ok(Err(unknown(name)));
     };

@@ -241,7 +241,7 @@ fn judge_retry<V: Vfs + Clone>(
 
 /// The classes a batch member may post in this slice: an allocation has its
 /// own planner and a migration chunk belongs to its run.
-fn batchable(class: fa_model::EntryClass) -> bool {
+pub(crate) fn batchable(class: fa_model::EntryClass) -> bool {
     use fa_model::EntryClass as C;
     [
         C::ORIGINAL,
