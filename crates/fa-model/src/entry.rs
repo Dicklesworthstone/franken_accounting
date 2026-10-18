@@ -2202,7 +2202,9 @@ mod tests {
                 }
             );
         }
-        for id in [0, 10, 11, u16::MAX] {
+        // Unregistered ids (10 and 11 are now capability_issuance and
+        // draft_transition; the probe stays past the registered range).
+        for id in [0, 12, 13, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"
@@ -2784,8 +2786,9 @@ mod tests {
     /// by the digests either way.
     #[test]
     fn extensions_follow_the_additive_minor_law() {
+        // An unregistered tag (7–9 are registered since fa-v62/fa-s7x).
         let mut p = proposal(two_legs());
-        p.extensions = vec![(7, vec![1, 2, 3])];
+        p.extensions = vec![(999, vec![1, 2, 3])];
         assert!(matches!(
             p.validate().unwrap_err(),
             EntryError::Invalid {
@@ -2796,12 +2799,12 @@ mod tests {
         p.schema_minor = SCHEMA_MINOR + 1;
         let e = p.clone().seal(vec![], None).unwrap();
         let back = Entry::decode(&e.encode().unwrap()).unwrap();
-        assert_eq!(back.proposal.extensions, vec![(7, vec![1, 2, 3])]);
+        assert_eq!(back.proposal.extensions, vec![(999, vec![1, 2, 3])]);
         let mut q = p.clone();
-        q.extensions = vec![(7, vec![1, 2, 4])];
+        q.extensions = vec![(999, vec![1, 2, 4])];
         assert_ne!(q.proposal_digest().unwrap(), p.proposal_digest().unwrap());
         let mut unsorted = p.clone();
-        unsorted.extensions = vec![(9, vec![]), (7, vec![])];
+        unsorted.extensions = vec![(1000, vec![]), (999, vec![])];
         assert!(unsorted.validate().is_err());
         // A registered tag validates at this reader's minor.
         let mut known = proposal(two_legs());

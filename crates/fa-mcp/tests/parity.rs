@@ -77,7 +77,14 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
     for e in &mcp.excluded {
         let is_allowed_host_only = e.verb == reg.daemon.binary
             || (e.verb == "demo" && e.subcommand.as_deref() == Some("init"))
-            || (e.verb == "capability" && e.subcommand.as_deref() == Some("revoke"));
+            || (e.verb == "capability"
+                && matches!(
+                    e.subcommand.as_deref(),
+                    Some("revoke" | "issue" | "list" | "show")
+                ))
+            // fa-s7x: promotion needs a principal holding approve who is not
+            // the draft's owner, and --yes; no bound session holds either.
+            || (e.verb == "draft" && e.subcommand.as_deref() == Some("promote"));
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"

@@ -1256,6 +1256,8 @@ mod tests {
                 (7, "legal_hold"),
                 (8, "capability_revocation"),
                 (9, "migration_run"),
+                (10, "capability_issuance"),
+                (11, "draft_transition"),
             ]
         );
         assert_eq!(

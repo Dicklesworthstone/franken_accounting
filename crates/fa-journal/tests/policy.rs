@@ -2910,7 +2910,9 @@ impl Harness {
 #[test]
 fn an_issued_holder_bound_capability_is_admitted_only_against_its_journaled_issuance() {
     let mut h = harness();
-    let steward = human(PREPARER, &["post", "issue_capability"]);
+    // The steward holds every op it grants below (the grant law refuses a
+    // widening, as the `close` probe shows).
+    let steward = human(PREPARER, &["read", "post", "issue_capability"]);
     let secret = [9; 32];
     let token = Capability::new(ALICE, Profile::Human, &[Op::Post], PREPARER)
         .unwrap()

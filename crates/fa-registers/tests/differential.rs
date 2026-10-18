@@ -1640,6 +1640,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         "Receipt",
         "Receipt",
         "Receipt",
+        "Closing",
     ];
     let leaf_codes = ["1000", "6000", "4000"];
     let mut history: Vec<Intent> = Vec::new();
@@ -9108,9 +9109,13 @@ fn drafts_agree_with_the_independent_oracle_across_seeds() {
                     if april_closed || step < 20 {
                         continue;
                     }
-                    for t in [PeriodTransition::SoftClose, PeriodTransition::Close] {
-                        let kt = kernel_transition(&mut k, "FY2026-P04", t, 100 + step)
-                            .expect("April moves");
+                    for (i, t) in [PeriodTransition::SoftClose, PeriodTransition::Close]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let kt =
+                            kernel_transition(&mut k, "FY2026-P04", t, 1000 + 2 * step + i as u64)
+                                .expect("April moves");
                         assert_eq!(
                             Ok((kt.from, kt.to)),
                             oracle.transition("FY2026-P04", t),

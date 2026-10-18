@@ -1282,12 +1282,12 @@ mod tests {
             "14000000",                         //   20 payload bytes:
             "01000000",                         //     one book,
             "02020202020202020202020202020202", //     Id128([2; 16])
-            "08",                               //   tag 8 (unknown)
+            "09",                               //   tag 9 (unknown; 8 is possession)
             "00000000",                         //   empty payload
         ));
         assert_eq!(
             Capability::decode(&v2_unknown),
-            Err(CapabilityError::UnknownCaveat { tag: 8 })
+            Err(CapabilityError::UnknownCaveat { tag: 9 })
         );
         // Tags are strictly ascending, and a v2 names at least one caveat.
         let mut swapped = v2.clone();
