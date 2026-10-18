@@ -2123,7 +2123,15 @@ impl Oracle {
                 code: code::CONTROL_VIA_POST,
             };
         }
-        // 1b. The supported subset, and a Reversal's target presence.
+        // 1b. A Replacement posts only paired with its Reversal in one batch
+        //     (plan §8.2, FA-INV-08.replacement-paired); this entry point
+        //     posts one entry, so it is always the unpaired case.
+        if intent.class == "Replacement" {
+            return Verdict::Refused {
+                code: code::REVERSAL_SHAPE,
+            };
+        }
+        // The supported subset, and a Reversal's target presence.
         let is_reversal = intent.class == "Reversal";
         if !matches!(
             intent.class.as_str(),
@@ -3858,7 +3866,7 @@ mod tests {
         assert_eq!(
             o.post(&intent("Replacement", legs(5, 5), b"c", None)),
             Verdict::Refused {
-                code: code::CLASS_NOT_IMPLEMENTED
+                code: code::REVERSAL_SHAPE
             }
         );
         // Reversal: exact side-swap only, one per target.
