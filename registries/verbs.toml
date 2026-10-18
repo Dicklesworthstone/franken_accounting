@@ -1859,7 +1859,7 @@ fields = ["vid:hex", "entry_digest:hex"]
 [[shape]]
 name = "bank_match_proposal"
 doc = "One retained bank line and its exact unconfirmed candidate, or an unmatched result. Complete canonical DecisionCard bytes and their digest explain selection; proposal_digest binds the proposal. Imported counterparty and reference text remain explicitly untrusted."
-fields = ["line_ordinal:int", "line_document_oid:hex", "bank_line_id:hex", "booking_date:date", "value_date:date", "direction:string", "amount:amount", "counterparty:untrusted_text", "reference:untrusted_text", "status:string", "entry_ref:bank_entry_ref?", "leg_ordinal:int?", "candidate_ordinal:int?", "decision_card:hex", "decision_card_digest:hex", "proposal_digest:hex"]
+fields = ["line_ordinal:int", "line_document_oid:hex", "bank_line_id:hex", "booking_date:date", "value_date:date", "direction:string", "amount:amount", "counterparty:untrusted_text?", "reference:untrusted_text?", "status:string", "entry_ref:bank_entry_ref?", "leg_ordinal:int?", "candidate_ordinal:int?", "decision_card:hex", "decision_card_digest:hex", "proposal_digest:hex"]
 
 [[shape]]
 name = "bank_outstanding_leg"

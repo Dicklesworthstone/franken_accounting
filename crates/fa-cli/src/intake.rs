@@ -190,6 +190,15 @@ pub(crate) fn read_document(files: &Files, path: &str) -> Result<Vec<u8>, Fail> 
     read_one(files, path, document_limit()?)
 }
 
+/// Apply an operation-specific bound while consuming input, before allocation.
+pub(crate) fn read_document_with_limit(
+    files: &Files,
+    path: &str,
+    limit: u64,
+) -> Result<Vec<u8>, Fail> {
+    read_one(files, path, document_limit()?.min(limit))
+}
+
 pub(crate) fn read_documents(files: &Files, paths: &[&str]) -> Result<Vec<Vec<u8>>, Fail> {
     read_documents_with(
         files,

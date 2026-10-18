@@ -122,7 +122,10 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // Current authority is checked before a host reads or consumes the input.
     // The import kernel checks it again and retains its publication witnesses.
     book.preflight_intake(&capability, fa::IntakeAction::ImportRun)??;
-    let bytes = crate::intake::read_document(&ctx.files, path)?;
+    let max_statement_bytes = fa_registry::evidence_policy::EvidencePolicy::embedded()
+        .map_err(|error| Fail::Internal(format!("the embedded evidence policy: {error}")))?
+        .max_document_bytes;
+    let bytes = crate::intake::read_document_with_limit(&ctx.files, path, max_statement_bytes)?;
     let recorded = book.import_bank_statement(
         &capability,
         BankImportRequest {
@@ -244,11 +247,17 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ),
             (
                 "counterparty",
-                untrusted_text_json(Some(line.counterparty.clone()), "bank statement".into()),
+                untrusted_text_json(
+                    Some(line.counterparty.clone()),
+                    format!("D:{}", hex(&report.manifest.line_oids[index].0)),
+                ),
             ),
             (
                 "reference",
-                untrusted_text_json(Some(line.reference.clone()), "bank statement".into()),
+                untrusted_text_json(
+                    Some(line.reference.clone()),
+                    format!("D:{}", hex(&report.manifest.line_oids[index].0)),
+                ),
             ),
             (
                 "status",

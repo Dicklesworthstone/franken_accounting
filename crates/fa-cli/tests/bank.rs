@@ -575,3 +575,46 @@ fn an_ambiguous_candidate_set_cannot_emit_an_undecodable_decision_card() {
     assert!(output.render().contains("decision card"));
     assert_eq!(head(&f.book), before);
 }
+
+#[test]
+fn missing_bank_descriptions_remain_valid_robot_data_and_present_text_cites_its_document() {
+    let f = Fixture::new();
+    let raw = format!(
+        "{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,1.00,2026-03-05,2026-03-05,CRDT,1.00,,\n"
+    );
+    let imported = f.import("no-descriptions.csv", "csv", &raw);
+    let before = head(&f.book);
+    let matched = ok(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            text(data(&imported), "manifest_oid"),
+        ],
+    );
+    let proposal = &rows(data(&matched), "proposals")[0];
+    assert_eq!(proposal.get("counterparty"), Some(&Json::Null));
+    assert_eq!(proposal.get("reference"), Some(&Json::Null));
+    assert_eq!(head(&f.book), before);
+
+    let imported = f.import("described.csv", "csv", &statement_csv("95.00"));
+    let matched = ok(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            text(data(&imported), "manifest_oid"),
+        ],
+    );
+    for proposal in rows(data(&matched), "proposals") {
+        let expected_source = format!("D:{}", text(proposal, "line_document_oid"));
+        for field in ["counterparty", "reference"] {
+            assert_eq!(
+                text(proposal.get(field).unwrap(), "source"),
+                expected_source
+            );
+        }
+    }
+}
