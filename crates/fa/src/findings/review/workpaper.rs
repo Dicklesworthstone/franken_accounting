@@ -8,6 +8,9 @@ use std::fmt::{self, Write as _};
 
 use super::*;
 
+mod delivery;
+pub use delivery::FindingReviewExpectation;
+
 pub const FINDING_REVIEW_WORKPAPER_FORMAT: &[u8] = b"fa:finding-review-workpaper:v1";
 pub const MAX_FINDING_REVIEW_WORKPAPER_BYTES: usize = 64 * 1024 * 1024;
 const DOMAIN: &[u8] = b"fa:finding-review-workpaper-digest:v1";
@@ -259,6 +262,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(Ok(result))
     }
 
+    /// Local as-supplied replay; this does not establish that a delivery answers
+    /// a separately requested cutoff. Use replay_finding_review_workpaper_for
+    /// with an independently retained expectation for recipient verification.
     /// Verify the original certificate-backed observations and recompute every
     /// displayed decision, including omission-sensitive Open states. Only read
     /// authority is required. The returned receipt names today's checked_through;

@@ -207,3 +207,86 @@ fn empty_review_workpapers_replay_and_wrong_book_or_prepublication_cutoffs_refus
     assert!(!matches!(result, Ok(Ok(_))));
     assert_eq!(other.head(), other_head);
 }
+
+#[test]
+fn genuine_historical_packets_cannot_substitute_for_the_recipients_requested_scope() {
+    use crate::findings::review::workpaper::FindingReviewExpectation;
+
+    let (mut f, recorded) = setup(172);
+    let open = export(&mut f, &recorded.certificate_digest, None);
+    let evidence = vec![f.evidence[0].document_oid];
+    let dismissed = apply(&mut f, &request(recorded.finding_ids[0], None,
+        FindingReviewAction::Dismiss(DismissalReason::Explained), evidence));
+    let requested = FindingReviewExpectation { book_id: f.book.context().book_id,
+        certificate_digest: recorded.certificate_digest, review_known_at: dismissed.recorded_at };
+    let current = export(&mut f, &recorded.certificate_digest, Some(requested.review_known_at));
+    let old_bytes = open.canonical_bytes().unwrap();
+    let current_bytes = current.canonical_bytes().unwrap();
+    let head = f.head();
+    let cx = f.cx();
+    // The old packet is genuine and still locally replayable, but does not
+    // answer the request. No malformed frame or checksum is involved.
+    assert!(f.runtime.block_on(f.book.replay_finding_review_workpaper(
+        &cx, PRINCIPAL, &cap(&["read"]), &old_bytes,
+    )).unwrap().is_ok());
+    assert!(f.runtime.block_on(f.book.replay_finding_review_workpaper_for(
+        &cx, PRINCIPAL, &cap(&["read"]), &old_bytes, &requested,
+    )).unwrap().is_err());
+    let accepted = f.runtime.block_on(f.book.replay_finding_review_workpaper_for(
+        &cx, PRINCIPAL, &cap(&["read"]), &current_bytes, &requested,
+    )).unwrap().unwrap();
+    assert_eq!(accepted.known_at, requested.review_known_at);
+    assert!(matches!(accepted.histories[0].status(), FindingReviewStatus::Dismissed { .. }));
+    assert_eq!(f.head(), head);
+
+    // A different, fully replayable source at the SAME review cutoff must also
+    // be refused; both source identity and review cutoff are load-bearing.
+    f.post(11, "3000", "1000", 77);
+    let second_cert = f.certify("jet.weekend", None);
+    f.record(second_cert.digest()).unwrap();
+    let head = f.head();
+    let second = export(&mut f, second_cert.digest(), Some(head));
+    let first_at_head = export(&mut f, &recorded.certificate_digest, Some(head));
+    let requested_second = FindingReviewExpectation { certificate_digest: *second_cert.digest(),
+        review_known_at: head, ..requested };
+    let first_at_head_bytes = first_at_head.canonical_bytes().unwrap();
+    assert!(f.runtime.block_on(f.book.replay_finding_review_workpaper(
+        &cx, PRINCIPAL, &cap(&["read"]), &first_at_head_bytes,
+    )).unwrap().is_ok());
+    assert!(f.runtime.block_on(f.book.replay_finding_review_workpaper_for(
+        &cx, PRINCIPAL, &cap(&["read"]), &first_at_head_bytes, &requested_second,
+    )).unwrap().is_err());
+    assert!(f.runtime.block_on(f.book.replay_finding_review_workpaper_for(
+        &cx, PRINCIPAL, &cap(&["read"]), &second.canonical_bytes().unwrap(), &requested_second,
+    )).unwrap().is_ok());
+    assert_eq!(f.head(), head);
+}
+
+#[test]
+fn recipient_scope_cannot_supply_authority_or_replace_recomputation() {
+    use crate::findings::review::workpaper::FindingReviewExpectation;
+
+    let (mut f, recorded) = setup(173);
+    let paper = export(&mut f, &recorded.certificate_digest, None);
+    let expected = FindingReviewExpectation { book_id: f.book.context().book_id,
+        certificate_digest: recorded.certificate_digest, review_known_at: paper.review_known_at() };
+    let false_text = forged(&paper, paper.review_known_at(), paper.review_jsonl(), "No original finding exists.");
+    let head = f.head();
+    let cx = f.cx();
+    assert!(f.runtime.block_on(f.book.replay_finding_review_workpaper_for(
+        &cx, PRINCIPAL, &cap(&["read"]), &false_text, &expected,
+    )).unwrap().is_err(), "correct external scope cannot excuse a false presentation");
+    let bytes = paper.canonical_bytes().unwrap();
+    let wrong_book = FindingReviewExpectation { book_id: Id128([99; 16]), ..expected };
+    assert!(f.runtime.block_on(f.book.replay_finding_review_workpaper_for(
+        &cx, PRINCIPAL, &cap(&["read"]), &bytes, &wrong_book,
+    )).unwrap().is_err());
+    for denied in [cap(&["produce"]), cap(&["approve"]), cap(&["read"]).expiring_at(head),
+        cap(&["read"]).for_accounts(&["1000"]).unwrap()] {
+        let refusal = f.runtime.block_on(f.book.replay_finding_review_workpaper_for(
+            &cx, PRINCIPAL, &denied, b"not a workpaper", &expected,
+        )).unwrap().unwrap_err();
+        assert_eq!(refusal.exit, exit::SAFETY);
+    }
+    assert_eq!(f.head(), head);
+}

@@ -99,3 +99,13 @@ proof_class = "retained_history_replay"
 # Review appendices alone omit original observations: ship the complete package.
 # Retained Document references are not document-blob bytes. Human reasons and
 # capability bindings are not signatures, accusations or economic-truth claims.
+
+# Recipient expectations live outside delivered artifact bytes. A genuine old
+# Open packet is not an answer to a later review-status request. Matching scope
+# is an additional condition, never a replacement for complete native replay.
+[review_workpaper_delivery]
+expectation = ["book_id", "certificate_digest", "review_known_at"]
+required_ops = ["read"]
+expectation_source = "independently_retained_recipient_request"
+# replay_finding_review_workpaper is local as-supplied replay only.
+# replay_finding_review_workpaper_for additionally binds this external request.
