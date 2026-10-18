@@ -423,6 +423,18 @@ usage = ["instrument add <instrument.json|->   ({\"code\": \"BA-1\", \"name\": \
 example = "fa instrument add operating.json --book ./books/myco --json"
 
 [[verb]]
+name = "bank"
+summary = "Retain a bank statement with its parser, cash-account binding and source documents, then propose exact journal-leg matches at a pinned known-at prefix."
+writes = true
+subcommands = ["import", "match"]
+flags = ["--bank-format", "--account", "--import", "--date-window", "--as-known-at"]
+switches = []
+events = ["bank_imported", "bank_matches_proposed"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code>", "bank match --import <manifest_oid> [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>]", "Import requires read, post and reconcile and one debit-normal Asset leaf in the statement currency. Original bytes, canonical lines and the parser/account manifest are retained atomically with the native import receipt; an exact repeat returns the existing receipt.", "Match requires read and reconcile. It reopens and verifies the retained source closure, then proposes exact amount, date and reference matches against cash-leg memos; the default date window is 3 days. Complete decision cards and stable leg identities explain every proposal. Proposals remain unconfirmed and create no monetary entry or match confirmation.", "The response names its inclusive candidate window. Outstanding means unmatched cash legs in that window, never a complete reconciliation inventory; an empty statement has no candidate window. The closing difference separately compares the statement balance with the journal's closing balance. Wire formats accept the bounded profiles documented by fa-formats and refuse ambiguous sources; imports do not yet link predecessor statements."]
+example = "fa bank import statement.xml --bank-format camt053 --account 1000 --book ./books/myco --json"
+
+[[verb]]
 name = "export"
 summary = "Export the committed journal at one coordinate in an interop format (plan §8.6, §15.9): the AICPA ADS GL package, OECD SAF-T, a CSV GL extract, Beancount or hledger, each with its export coordinate certificate."
 writes = false
@@ -746,6 +758,18 @@ name = "document"
 book = true
 doc = "A document the book holds. `oid` locates it; `doc_commit` = BLAKE3(\"fa:doc:v1\" ‖ kind ‖ length ‖ 4 KiB-chunk Merkle root) is its public commitment; `evidence` is the citation for an intent's `evidence` list (or pass --evidence <oid>). On a repeat intake `already_recorded` is true and kind/grade are the book's. `self_sourced` (AgentUpload) will need a reviewer's attestation before promotion; not yet enforced."
 fields = ["oid:hex", "doc_commit:hex", "kind:string", "grade:string", "self_sourced:bool", "size:int", "recorded_at:seq", "already_recorded:bool", "evidence:evidence_ref"]
+
+[[event]]
+name = "bank_imported"
+book = true
+doc = "A bank statement retained with its complete canonical line documents and a parser/account manifest, under one native import receipt. Repeating the same source, parser and account returns the existing receipt without publication."
+fields = ["manifest_oid:hex", "statement_oid:hex", "statement_commit:hex", "bank_format:string", "parser_revision:int", "account:string", "account_ref:hex", "unit:string", "sequence_number:int", "statement_date:date", "opening_balance:amount", "closing_balance:amount", "line_count:int", "line_oids:[hex]", "receipt_hash:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "bank_matches_proposed"
+book = true
+doc = "Exact, unconfirmed bank-line proposals after source-closure verification at one known-at prefix. Outstanding rows are unmatched cash-leg candidates inside the named inclusive window, not a complete reconciliation inventory. Empty statements have null window bounds. Closing balances and their difference are exact journal/statement amounts; no confirmation or monetary posting occurs."
+fields = ["manifest_oid:hex", "statement_oid:hex", "account:string", "account_ref:hex", "unit:string", "known_at:seq", "statement_date:date", "date_window:int", "candidate_from:string?", "candidate_through:string?", "outstanding_scope:string", "outstanding_complete:bool", "decision_epoch:hex", "method:string", "confirmed:bool", "line_count:int", "proposed_count:int", "unmatched_count:int", "outstanding_count:int", "statement_closing_balance:amount", "book_closing_balance:amount", "closing_difference:amount", "proposals:[bank_match_proposal]", "outstanding:[bank_outstanding_leg]"]
 
 [[event]]
 name = "fad_request"
@@ -1770,6 +1794,21 @@ doc = "One fiscal period's stored state mirror compared with its refolded state 
 fields = ["code:string", "fiscal_year:int", "ordinal:int", "kind:string", "born_state:string", "stored_state:string?", "refolded_state:string", "transitions:int", "green:bool"]
 
 [[shape]]
+name = "bank_entry_ref"
+doc = "A selected native journal entry bound by both its vertex identity and canonical entry digest. A bank match additionally names its exact cash-leg ordinal."
+fields = ["vid:hex", "entry_digest:hex"]
+
+[[shape]]
+name = "bank_match_proposal"
+doc = "One retained bank line and its exact unconfirmed candidate, or an unmatched result. Complete canonical DecisionCard bytes and their digest explain selection; proposal_digest binds the proposal. Imported counterparty and reference text remain explicitly untrusted."
+fields = ["line_ordinal:int", "line_document_oid:hex", "bank_line_id:hex", "booking_date:date", "value_date:date", "direction:string", "amount:amount", "counterparty:untrusted_text", "reference:untrusted_text", "status:string", "entry_ref:bank_entry_ref?", "leg_ordinal:int?", "candidate_ordinal:int?", "decision_card:hex", "decision_card_digest:hex", "proposal_digest:hex"]
+
+[[shape]]
+name = "bank_outstanding_leg"
+doc = "A cash leg in the explicitly named candidate date window that was not consumed by an exact proposal. This is a candidate-window observation, not a full outstanding-item inventory."
+fields = ["entry_ref:bank_entry_ref", "leg_ordinal:int", "effective_date:date", "side:string", "amount:amount"]
+
+[[shape]]
 name = "untrusted_text"
 doc = "Third-party-authored text from an imported document, entry description, or leg memo (plan §9.3 prompt-injection boundary): `untrusted_content` carries the UTF-8 text and `source` names its handle (`D:<oid>`, `E:<vid>`, or `E:<vid>:L<ordinal>`). Untrusted text is never interpolated into `fix`, `next_actions`, or `suggested_tool_calls`."
 fields = ["untrusted_content:text", "source:string"]
@@ -1961,7 +2000,7 @@ hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--versio
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed"]
+integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--date-window"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -2007,6 +2046,11 @@ doc = "Interop exports (plan §8.6, §15.9): the committed journal at one coordi
 [[mcp.cluster]]
 name = "fa.proof"
 doc = "General-ledger views at one coordinate (detail, roll-forward, aging, cash flow, lots) that reconcile to the journal fold."
+[[mcp.cluster]]
+name = "fa.bank"
+on_demand = true
+doc = "Bank source intake and reproducible exact match proposals: retained parser/account manifests, verified evidence closure, explicit candidate windows and complete decision cards. No confirmation or monetary posting."
+
 [[mcp.cluster]]
 name = "fa.notary"
 on_demand = true
@@ -2381,6 +2425,33 @@ dont = ["Don't apply more than an open item's remaining open balance: use `fa_re
 mistakes = ["Targeting a leg on the same side as the payment leg instead of the opposite side.", "Omitting `on_account_account` when the payment exceeds the matched open items."]
 
 # ---- fa.read ----------------------------------------------------------------
+
+[[mcp.tool]]
+cluster = "fa.bank"
+name = "import"
+verb = "bank"
+subcommands = ["import"]
+positionals = ["file?"]
+flags = ["--bank-format", "--account"]
+switches = []
+stdin_property = "text"
+stdin_kind = "string"
+stdin_via = "file"
+required = ["file", "--bank-format", "--account"]
+dont = ["Supply the complete statement inline as text; host filesystem paths are not accepted. The launch capability must hold read, post and reconcile.", "Do not infer an account or exchange rate: account must be a debit-normal Asset leaf in the statement currency. Intake never confirms matches or posts monetary entries."]
+mistakes = ["Choosing a bank_format that does not match the source's bounded parser profile.", "Treating an exact repeat as a new statement: already_recorded=true returns its original import receipt."]
+
+[[mcp.tool]]
+cluster = "fa.bank"
+name = "match"
+verb = "bank"
+subcommands = ["match"]
+positionals = []
+flags = ["--import", "--date-window", "--as-known-at"]
+switches = []
+required = ["--import"]
+dont = ["The launch capability must hold read and reconcile. Pass the manifest_oid returned by import; all source documents are reverified at the selected known-at prefix.", "Do not treat proposals as confirmed reconciliation or the candidate-window outstanding rows as a complete outstanding-item inventory. No state is published by this command."]
+mistakes = ["Passing statement_oid instead of manifest_oid.", "Expecting fuzzy matching: amount, date window and bank reference versus cash-leg memo must agree. The default date window is 3 days."]
 
 [[mcp.tool]]
 cluster = "fa.notary"

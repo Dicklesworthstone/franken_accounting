@@ -2618,8 +2618,9 @@ mod tests {
             assert_eq!(&parsed.positional[..2], &["gl", view]);
             assert!(parsed.switch("--certify"));
             assert_eq!(
-                fa_cli::cli::bound_command_ops("gl", &parsed),
-                Some(&[fa_policy::Op::Read, fa_policy::Op::Produce][..])
+                fa_cli::cli::bound_command_ops("gl", &parsed)
+                    .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+                Some(vec!["read", "produce"])
             );
             let ordinary = tool
                 .invocation(&mcp, reg, &json!({"view": view}))
@@ -2627,8 +2628,9 @@ mod tests {
             let parsed = args::parse(&ordinary.argv, &reg.value_flags(), &reg.switches())
                 .expect("registered read");
             assert_eq!(
-                fa_cli::cli::bound_command_ops("gl", &parsed),
-                Some(&[fa_policy::Op::Read][..])
+                fa_cli::cli::bound_command_ops("gl", &parsed)
+                    .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+                Some(vec!["read"])
             );
         }
         assert!(
@@ -2956,6 +2958,62 @@ mod tests {
             ),
             "tb --period <code> --activity --as-known-at HEAD"
         );
+    }
+
+    #[test]
+    fn bank_tools_forward_complete_sources_and_bind_reconciliation_authority() {
+        let (mcp, reg) = embedded();
+        let import = mcp.tool_by_wire("fa_bank_import").expect("bank import");
+        let schema = import.input_schema(&mcp, reg);
+        assert_eq!(schema["properties"]["text"]["type"], json!("string"));
+        assert!(schema["properties"].get("file").is_none());
+        let invocation = import
+            .invocation(
+                &mcp,
+                reg,
+                &json!({"text": "<Document>source</Document>", "bank_format": "camt053", "account": "1000"}),
+            )
+            .expect("inline bank source");
+        assert_eq!(
+            invocation.stdin,
+            Some(b"<Document>source</Document>".to_vec())
+        );
+        let parsed = fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+            .expect("parse forwarded bank import");
+        assert_eq!(parsed.positional, vec!["bank", "import", "-"]);
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("bank", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read", "post", "reconcile"]),
+        );
+        for arguments in [
+            json!({"bank_format": "camt053", "account": "1000"}),
+            json!({"file": "/etc/passwd", "bank_format": "camt053", "account": "1000"}),
+            json!({"text": "source", "bank_format": "camt053", "account": "1000", "grant": ["reconcile"]}),
+        ] {
+            assert!(
+                import.invocation(&mcp, reg, &arguments).is_err(),
+                "{arguments}"
+            );
+        }
+        let matching = mcp.tool_by_wire("fa_bank_match").expect("bank match");
+        let invocation = matching
+            .invocation(
+                &mcp,
+                reg,
+                &json!({"import": "ab".repeat(32), "date_window": 3, "as_known_at": "17"}),
+            )
+            .expect("pinned match");
+        let parsed = fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+            .expect("parse bank match");
+        assert_eq!(parsed.flag("--date-window"), Some("3"));
+        assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("bank", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read", "reconcile"]),
+        );
+        assert!(invocation.stdin.is_none());
     }
 
     #[test]

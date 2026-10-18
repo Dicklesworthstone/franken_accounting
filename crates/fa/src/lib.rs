@@ -55,6 +55,7 @@ pub mod allocation_review;
 pub mod async_book;
 pub mod balance_allocation;
 pub mod balance_allocation_review;
+pub mod bank;
 pub mod book;
 pub mod cash_flow_certificate;
 pub mod cash_flow_policy;

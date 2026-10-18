@@ -84,6 +84,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("allocate", allocate_cmd),
     ("settle", settle_cmd),
     ("document", document::document_cmd),
+    ("bank", crate::bank::bank_cmd),
     ("event", event_cmd),
     ("migrate", migrate_cmd),
     ("tb", tb_cmd),
@@ -1650,6 +1651,8 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         }
         ("checkpoint", _) => &[Op::Witness],
         ("proof" | "bundle" | "export", _) => &[Op::Read, Op::Produce],
+        ("bank", Some("import")) => &[Op::Read, Op::Post, Op::Reconcile],
+        ("bank", Some("match")) => &[Op::Read, Op::Reconcile],
         ("document", Some("add")) if args.flag("--grade").is_none() => &[Op::Post],
         ("document", Some("read")) => &[Op::Read],
         ("document", Some("redact")) => &[Op::Privileged],
@@ -1888,7 +1891,7 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
         }
     }
     let input = match (verb.name.as_str(), sub) {
-        ("chart", Some("import")) | ("document", Some("add")) => args.positional.get(2),
+        ("chart" | "bank", Some("import")) | ("document", Some("add")) => args.positional.get(2),
         ("replay", _) => args.positional.get(1),
         ("certificate", Some("status")) => args.positional.get(2),
         _ => None,
@@ -2022,7 +2025,7 @@ fn admit_daemon_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fai
         }
     }
     let input = match (verb.name.as_str(), sub) {
-        ("chart", Some("import")) | ("document", Some("add")) => args.positional.get(2),
+        ("chart" | "bank", Some("import")) | ("document", Some("add")) => args.positional.get(2),
         ("replay", _) => args.positional.get(1),
         ("certificate", Some("status")) => args.positional.get(2),
         _ => None,

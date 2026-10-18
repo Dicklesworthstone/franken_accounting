@@ -491,8 +491,9 @@ pub fn match_bank_lines(
             if entry.signed_cash_delta() != line.signed_cash_delta() {
                 continue;
             }
-            let day_delta = (line.booking_date.0 - entry.effective_date.0).abs();
-            if day_delta > config.max_date_window_days {
+            let day_delta =
+                (i64::from(line.booking_date.0) - i64::from(entry.effective_date.0)).abs();
+            if day_delta > i64::from(config.max_date_window_days) {
                 continue;
             }
 
@@ -1112,6 +1113,45 @@ mod tests {
 
     fn fixture_epoch() -> [u8; 32] {
         Steward::embedded().unwrap().policy_oid
+    }
+
+    #[test]
+    fn date_window_comparison_handles_the_complete_civil_day_domain() {
+        let epoch = fixture_epoch();
+        let line = BankStatementLine {
+            statement_oid: Oid([31; 32]),
+            statement_seq: 1,
+            line_ordinal: 1,
+            booking_date: DateDay(i32::MAX),
+            value_date: DateDay(i32::MAX),
+            side: Side::Credit,
+            amount: Amount::new(UnitId(1), 100),
+            counterparty: String::new(),
+            reference: "same".into(),
+        };
+        let entry = BookCandidateEntry {
+            entry_ref: EntryRef {
+                vid: VId(32),
+                entry_digest: [33; 32],
+            },
+            entry_ordinal: 1,
+            effective_date: DateDay(i32::MIN),
+            side: Side::Debit,
+            amount: line.amount,
+            counterparty: String::new(),
+            reference: "same".into(),
+        };
+        let config = MatcherConfig {
+            policy_epoch: None,
+            enforced_policy_epoch: epoch,
+            max_date_window_days: i32::MAX,
+            pinned_fallback_only: true,
+            advisory_learned_scores_bps: BTreeMap::new(),
+        };
+        let proposed = match_bank_lines(&[line], &[entry], &config, VId(7)).unwrap();
+        assert_eq!(proposed.len(), 1);
+        assert!(proposed[0].book_entry_refs.is_empty());
+        proposed[0].decision_card.verify_replay(epoch).unwrap();
     }
 
     #[test]

@@ -1336,6 +1336,36 @@ impl Book {
         )))
     }
 
+    /// Retain one internally balanced bank statement, its canonical parsed
+    /// lines and the parser/account manifest in one atomic Docket import.
+    /// Current read, post and reconcile authority are required; an exact
+    /// repeat returns the original receipt without another publication.
+    pub fn import_bank_statement(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankImportRequest,
+    ) -> Outcome<crate::bank::BankImportRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.import_bank_statement(
+            &purposes, capability, request,
+        )))
+    }
+
+    /// Reopen and verify a retained bank import, then return deterministic
+    /// exact-amount/date/reference proposals at one journal prefix. The
+    /// capability holds read and reconcile; this confirms no match and posts
+    /// no monetary entry or reconciliation lock.
+    pub fn match_bank_statement(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankMatchRequest,
+    ) -> Outcome<crate::bank::BankMatchReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.match_bank_statement(
+            &purposes, capability, request,
+        )))
+    }
+
     /// The receipt of the import run whose control entry is `run`.
     pub fn read_run(&self, run: VId) -> Result<Option<fa_journal::RunReceipt>, BookError> {
         with_store!(&self.store, core => core.read_run(&self.purposes(), run))
@@ -2451,6 +2481,170 @@ impl Book {
         effective_through: Option<fa_time::DateDay>,
     ) -> Result<fa_lantern::ProcedureRun, BookError> {
         with_store!(&self.store, core => core.run_procedure(&self.purposes(), procedure, known_at, effective_through))
+    }
+
+    /// Certify a registered procedure under current read and produce authority.
+    /// The complete source closure is retained only when explicitly published.
+    pub fn certify_procedure(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::ProcedureRequest,
+    ) -> Outcome<crate::CertifiedProcedure> {
+        with_store!(&self.store, core => core.certify_procedure(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Publish every occurrence in a retained procedure run atomically.
+    /// Retrying its certificate returns the original publication and identities.
+    pub fn record_findings(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+    ) -> Outcome<crate::findings::RecordedFindings> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_findings(
+            &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Replay the complete original observations in one recorded run.
+    pub fn read_findings(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+    ) -> Outcome<crate::findings::RecordedFindings> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.read_findings(
+            &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Resolve one immutable finding after replaying its certified source run.
+    pub fn finding_by_vid(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        finding: VId,
+    ) -> Outcome<crate::findings::RecordedFinding> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.finding_by_vid(
+            &purposes, principal, capability, finding
+        )))
+    }
+
+    /// Verify a finding's complete decision chain before selecting a cutoff.
+    /// History hydration may update the substrate's disposable read state.
+    pub fn finding_review_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        finding: VId,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::findings::review::FindingReviewHistory> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.finding_review_history(
+            &purposes, principal, capability, finding, known_at
+        )))
+    }
+
+    /// Read all observations and their verified human decisions at one cutoff.
+    /// This is the inventory of one certified run, including unreviewed findings.
+    pub fn finding_run_review_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::findings::review::FindingRunReviewHistory> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.finding_run_review_history(
+            &purposes, principal, capability, certificate, known_at
+        )))
+    }
+
+    /// Append an independently authorized human review without changing a finding.
+    pub fn review_finding(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::findings::review::FindingReviewRequest,
+    ) -> Outcome<crate::findings::review::FindingReview> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.review_finding(
+            &purposes, principal, capability, request
+        )))
+    }
+
+    /// Produce the original numbered workpaper from a replayed recorded run.
+    pub fn finding_workpaper(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+    ) -> Outcome<crate::findings::FindingWorkpaper> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.finding_workpaper(
+            &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Produce an unchanged source workpaper and its separate review appendix.
+    pub fn finding_review_workpaper(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::findings::review::FindingReviewWorkpaper> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.finding_review_workpaper(
+            &purposes, principal, capability, certificate, known_at
+        )))
+    }
+
+    /// Verify a complete original workpaper against retained native history.
+    pub fn replay_finding_workpaper(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+    ) -> Outcome<crate::findings::RecordedFindings> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.replay_finding_workpaper(
+            &purposes, principal, capability, bytes
+        )))
+    }
+
+    /// Verify both original observations and a fixed-cutoff human review appendix.
+    pub fn replay_finding_review_workpaper(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+    ) -> Outcome<crate::findings::review::FindingRunReviewHistory> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.replay_finding_review_workpaper(
+            &purposes, principal, capability, bytes
+        )))
+    }
+
+    /// Verify that a delivered review workpaper answers an independent source
+    /// and exact review cutoff, then replay every observation and decision.
+    pub fn replay_finding_review_workpaper_for(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+        expected: &crate::findings::review::workpaper::FindingReviewExpectation,
+    ) -> Outcome<crate::findings::review::FindingRunReviewHistory> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.replay_finding_review_workpaper_for(
+            &purposes, principal, capability, bytes, expected
+        )))
     }
 
     /// Stock balances from inception through the latest selected period's end.

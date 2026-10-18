@@ -117,6 +117,8 @@ impl Fixture {
                 source.to_str().unwrap(),
                 "--kind",
                 "Invoice",
+                "--grade",
+                "HumanUpload",
             ],
         );
         let fixture = Self {
