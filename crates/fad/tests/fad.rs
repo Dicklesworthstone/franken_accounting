@@ -1176,7 +1176,8 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
         tokens.push((holder, path, commitment));
     }
     let daemon = start(&book);
-    let rent = write(
+    // Token sessions name host files relative to the daemon's --files-root.
+    write(
         &dir,
         "draft-rent.json",
         r#"{"effective_date":"2026-03-15","idempotency_key":"token-rent","legs":[{"side":"debit","account":"6000","amount":"3.00 USD"},{"side":"credit","account":"1000","amount":"3.00 USD"}]}"#,
@@ -1196,7 +1197,7 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
             token,
             "post",
             "--intent",
-            &rent,
+            "draft-rent.json",
             "--evidence",
             &oid,
             "--draft",
@@ -1212,7 +1213,7 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
             token,
             "post",
             "--intent",
-            &rent,
+            "draft-rent.json",
             "--evidence",
             &oid,
             "--book",
@@ -1228,7 +1229,7 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
         &tokens[0].1,
         "post",
         "--intent",
-        &rent,
+        "draft-rent.json",
         "--evidence",
         &oid,
         "--draft",

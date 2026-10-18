@@ -299,7 +299,7 @@ fn a_held_lease_never_forwards_bound_authority_to_a_listening_daemon() {
     assert!(
         data.get("fix")
             .and_then(Json::as_str)
-            .is_some_and(|fix| fix.contains("authenticated daemon sessions")),
+            .is_some_and(|fix| fix.contains("--token")),
         "{out:?}"
     );
 }

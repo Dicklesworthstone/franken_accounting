@@ -750,7 +750,10 @@ impl Server<'_> {
     /// the kernel's to judge at admission.
     fn session(&self, bytes: &[u8]) -> Result<fa_cli::authority::LaunchAuthority, String> {
         let token = fa_cli::authority::CapabilityToken::decode(bytes).map_err(|e| e.to_string())?;
+        // Host paths stay within the daemon's --files-root, as for every
+        // other request it serves (relative paths only).
         fa_cli::authority::LaunchAuthority::from_token(self.dir.clone(), None, &token)
+            .and_then(|authority| authority.with_files(self.files_root.clone()))
     }
 
     /// The served book at its head, for the envelope of the daemon's own

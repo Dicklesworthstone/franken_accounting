@@ -214,7 +214,12 @@ fn fa_with_token(
     let keys = parsed
         .flag("--keys")
         .map(|_| cli::keys_path(parsed, &dir, files.cwd.as_deref()));
-    let authority = match LaunchAuthority::from_token(dir, keys, &token) {
+    // Host paths are confined to the working directory the holder runs
+    // `fa` in (relative paths only, fa-yha's containment rule): the session
+    // reads and writes no file the same OS user could not already reach.
+    let authority = match LaunchAuthority::from_token(dir, keys, &token)
+        .and_then(|authority| authority.with_files(std::env::current_dir().ok()))
+    {
         Ok(authority) => authority,
         Err(message) => {
             return cli::refuse(

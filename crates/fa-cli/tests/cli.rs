@@ -901,7 +901,8 @@ fn capabilities_and_robot_docs_are_in_tool() {
     let binding = model.get("binding").expect("binding");
     assert_eq!(text(binding, "profile"), "Human");
     assert_eq!(text(binding, "posture"), "embedded-owner");
-    assert!(text(binding, "trust_boundary").contains("no authenticated session"));
+    // fa-r3q: a daemon request carrying an issued token is bound to it.
+    assert!(text(binding, "trust_boundary").contains("issued token"));
     assert!(text(binding, "trust_boundary").contains("does not authenticate the operator"));
     assert_eq!(text(model, "policy_oid").len(), 64);
     let (code, out, _) = fa(None, &["robot-docs", "exit-codes"]);
@@ -5595,6 +5596,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("resolve", None, "disposition:voids"),
     ("registers", Some("materialize"), "existing-cells"),
     ("capability", Some("revoke"), "always"),
+    ("draft", Some("promote"), "always"),
 ];
 
 /// Every operation the plan calls dangerous has a `[[dangerous]]` row
@@ -5781,6 +5783,18 @@ fn dangerous_operations_need_yes_and_name_the_safe_alternative() -> std::io::Res
     unconfirmed(
         &["period", "reopen", "FY2026-P03", "--to", "open", "--json"],
         "never re-date an entry",
+    );
+    // A draft's promotion posts every planned intent to trunk (fa-s7x).
+    unconfirmed(
+        &[
+            "draft",
+            "promote",
+            "close-03",
+            "--as",
+            "controller",
+            "--json",
+        ],
+        "fa draft show",
     );
     // A safe alternative never suggests changing an entry's true effective
     // date to escape the period law (AGENTS.md; CobaltGull 3384).
@@ -10511,11 +10525,24 @@ fn a_draft_reaches_trunk_only_through_another_principals_promotion() -> std::io:
 #[test]
 fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<()> {
     let dir = tmp("token-cli")?;
-    let book = dir.join("book");
+    // A token session confines host paths to its working directory
+    // (relative paths only), so every command runs in `dir`.
     let run = |args: &[&str]| -> (i32, String, String) {
-        let mut argv = args.to_vec();
+        let mut argv = vec!["--book", "book"];
+        argv.extend_from_slice(args);
         argv.push("--json");
-        let (code, out, err) = fa(Some(book.as_path()), &argv);
+        let out = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .current_dir(&dir)
+            .args(&argv)
+            .env_remove("FA_BOOK")
+            .output()
+            .expect("run fa");
+        let code = out.status.code().unwrap_or(-1);
+        let (out, err) = (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        );
+        check_robot_output(&argv, code, &out);
         eprintln!("$ fa {} -> {code}\n{out}{err}", argv.join(" "));
         (code, out, err)
     };
@@ -10568,14 +10595,14 @@ fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<(
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("\"posture\":\"issued-token\""), "{out}");
     assert!(out.contains("\"principal\":\"agent-9\""), "{out}");
-    let rent = write(
+    write(
         &dir,
         "rent.json",
         &format!(
             r#"{{"effective_date":"2026-03-15","idempotency_key":"token-cli-rent","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6000","amount":"4.00 USD"}},{{"side":"credit","account":"1000","amount":"4.00 USD"}}]}}"#
         ),
     );
-    let (code, out, _) = run(&["--token", &token, "post", "--intent", &rent]);
+    let (code, out, _) = run(&["--token", "agent-9.token", "post", "--intent", "rent.json"]);
     assert_eq!(code, 7, "{out}");
     assert!(out.contains("FA-REF-013"), "{out}");
     assert_eq!(run(&["--token", &token, "draft", "new", "agent-9"]).0, 0);
