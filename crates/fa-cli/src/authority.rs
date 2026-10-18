@@ -8,6 +8,9 @@
 use std::path::{Component, Path, PathBuf};
 
 use fa_model::principal_vid;
+/// The holder token an issued capability is presented with (fa-v62), for
+/// hosts that bind a session to one (`fa-mcp --token`).
+pub use fa_policy::CapabilityToken;
 use fa_policy::{Capability, Op, Profile};
 use fgdb_types::VId;
 
@@ -83,6 +86,9 @@ pub struct LaunchAuthority {
     principal: String,
     profile: LaunchProfile,
     capability: Capability,
+    /// The issued capability's commitment when the session is bound to a
+    /// holder's token (`fa-mcp --token`, bead fa-v62), not to a template.
+    issued: Option<[u8; 32]>,
 }
 
 impl LaunchAuthority {
@@ -131,7 +137,61 @@ impl LaunchAuthority {
             principal,
             profile,
             capability,
+            issued: None,
         })
+    }
+
+    /// A session bound to a holder's issued token (plan §14.2, bead fa-v62):
+    /// the token's principal, its journaled capability verbatim (so its
+    /// ceilings, scope caveats and expiry hold), and the profile it was issued
+    /// under. The token's secret has already proven possession
+    /// ([`fa_policy::CapabilityToken`] refuses a mismatched one), and the
+    /// kernel admits the capability only against its journaled issuance
+    /// (FA-REF-156), so an altered or never-issued token reaches nothing.
+    pub fn from_token(
+        book: PathBuf,
+        keys: Option<PathBuf>,
+        token: &CapabilityToken,
+    ) -> Result<Self, String> {
+        let capability = token.capability().clone();
+        let profile = match capability.profile() {
+            Profile::Agent => LaunchProfile::Agent,
+            Profile::Human => LaunchProfile::Preparer,
+            Profile::System => {
+                return Err("a System-profile capability never binds an MCP session".into());
+            }
+        };
+        // An MCP session never holds more than a launch template's ceiling,
+        // however the token was issued: approval, close and issuance stay
+        // with the operator.
+        if let Some(op) = capability
+            .ops()
+            .iter()
+            .find(|op| !profile.ceiling().contains(op))
+        {
+            return Err(format!(
+                "the token grants `{op}`, beyond the {} session ceiling; issue the MCP holder a token within it",
+                profile.name()
+            ));
+        }
+        let issued = capability
+            .commitment()
+            .map_err(|e| format!("token capability: {e}"))?;
+        Ok(Self {
+            book: launch_path(book, "book")?,
+            keys: keys.map(|path| launch_path(path, "keys")).transpose()?,
+            files: None,
+            principal: token.principal().to_string(),
+            profile,
+            capability,
+            issued: Some(issued),
+        })
+    }
+
+    /// The issued capability's commitment when bound to a token.
+    #[must_use]
+    pub fn issued(&self) -> Option<[u8; 32]> {
+        self.issued
     }
 
     /// Attach an optional launch filesystem root (`--files <dir>`). When set,
@@ -279,7 +339,14 @@ impl LaunchAuthority {
     #[must_use]
     pub fn envelope_json(&self) -> Json {
         obj(vec![
-            ("posture", s("mcp-launch-config")),
+            (
+                "posture",
+                s(if self.issued.is_some() {
+                    "mcp-issued-token"
+                } else {
+                    "mcp-launch-config"
+                }),
+            ),
             ("principal", s(&self.principal)),
             ("profile", s(self.profile.name())),
             (
@@ -564,6 +631,47 @@ mod tests {
         assert!(launch(LaunchProfile::Preparer, &["approve"]).is_err());
         assert_eq!(LaunchProfile::from_name("human"), None);
         assert_eq!(LaunchProfile::from_name("system"), None);
+    }
+
+    /// fa-v62: a token binds the session to its own journaled capability
+    /// (possession caveat included), and never beyond a launch ceiling.
+    #[test]
+    fn an_issued_token_binds_its_capability_within_the_launch_ceiling() {
+        let secret = [9; 32];
+        let token = |profile: Profile, ops: &[Op]| {
+            let cap = Capability::new(principal_vid("agent-7"), profile, ops, VId(1))
+                .unwrap()
+                .holder_bound(fa_policy::possession_digest(&secret));
+            CapabilityToken::new("agent-7", cap, secret).unwrap()
+        };
+        let agent = token(Profile::Agent, &[Op::Read, Op::Post]);
+        let bound = LaunchAuthority::from_token(PathBuf::from("/book"), None, &agent).unwrap();
+        assert_eq!(bound.capability(), agent.capability());
+        assert_eq!(bound.principal_vid(), principal_vid("agent-7"));
+        assert_eq!(
+            bound.issued(),
+            Some(agent.capability().commitment().unwrap())
+        );
+        let envelope = bound.envelope_json();
+        assert_eq!(
+            envelope.get("posture").and_then(Json::as_str),
+            Some("mcp-issued-token")
+        );
+        assert_eq!(
+            envelope.get("profile").and_then(Json::as_str),
+            Some("agent")
+        );
+        let preparer = token(Profile::Human, &[Op::Read, Op::PostSoftclosed]);
+        let bound = LaunchAuthority::from_token(PathBuf::from("/book"), None, &preparer).unwrap();
+        assert_eq!(
+            bound.envelope_json().get("profile").and_then(Json::as_str),
+            Some("preparer")
+        );
+        let approver = token(Profile::Human, &[Op::Read, Op::Approve]);
+        let refused = LaunchAuthority::from_token(PathBuf::from("/book"), None, &approver);
+        assert!(refused.unwrap_err().contains("`approve`"));
+        let system = token(Profile::System, &[Op::Read]);
+        assert!(LaunchAuthority::from_token(PathBuf::from("/book"), None, &system).is_err());
     }
 
     #[test]

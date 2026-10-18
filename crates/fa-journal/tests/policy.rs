@@ -33,7 +33,7 @@ use fa_model::{
     SupersessionKind, SymbolTable, account_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
-use fa_policy::{Capability, Op, Profile};
+use fa_policy::{Capability, Op, Profile, possession_digest};
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
@@ -2868,4 +2868,175 @@ fn identical_period_transition_and_period_create_retries_return_recorded_outcome
         }
     );
     assert_eq!(h.db.frontier().unwrap(), head_after_open);
+}
+
+// ---------------------------------------------------------------------------
+// Capability issuance (plan §14.2, bead fa-v62)
+// ---------------------------------------------------------------------------
+
+impl Harness {
+    fn issue(
+        &mut self,
+        issuer: &Capability,
+        issued: &Capability,
+        key: &[u8],
+    ) -> Result<Issued, Refusal> {
+        let ctx = self.ctx();
+        let req = IssuanceRequest {
+            capability: issuer.clone(),
+            issued: issued.clone(),
+            effective_date: DateDay::from_ymd(2026, 3, 1).unwrap(),
+            idempotency_key: key.to_vec(),
+            description: Erasable::seal(
+                &"issue".to_string(),
+                None,
+                &self.book.seal_key,
+                [7; 32],
+                [8; 24],
+            ),
+        };
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { issue_capability(db, &ctx, book, req).await })
+            .expect("kernel")
+    }
+}
+
+/// fa-v62: a steward issues a holder-bound token; the kernel admits it only
+/// against its journaled issuance (a forged body is another commitment), a
+/// retry is the recorded issuance, revocation applies as to any capability,
+/// and an issuance never widens the issuer.
+#[test]
+fn an_issued_holder_bound_capability_is_admitted_only_against_its_journaled_issuance() {
+    let mut h = harness();
+    let steward = human(PREPARER, &["post", "issue_capability"]);
+    let secret = [9; 32];
+    let token = Capability::new(ALICE, Profile::Human, &[Op::Post], PREPARER)
+        .unwrap()
+        .holder_bound(possession_digest(&secret));
+
+    // Before its issuance the holder-bound token is refused; nothing is written.
+    let head = h.db.frontier().unwrap();
+    let r = h
+        .post(
+            h.proposal(ALICE, 1_000, b"alice-1", EntryClass::ORIGINAL),
+            token.clone(),
+            Vec::new(),
+        )
+        .unwrap_err();
+    eprintln!("issuance: unissued token -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-156", exit::SAFETY));
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let issued = h.issue(&steward, &token, b"issue-alice").expect("issued");
+    assert!(!issued.already_recorded);
+    assert_eq!(issued.commitment, token.commitment().unwrap());
+    let again = h.issue(&steward, &token, b"issue-alice").expect("a retry");
+    assert!(again.already_recorded);
+    assert_eq!(again.recorded_at, issued.recorded_at);
+    let read = read_issued(&h.db, &h.book, &issued.commitment)
+        .unwrap()
+        .expect("journaled");
+    assert_eq!(read.capability, token, "the caveats come from the journal");
+    assert_eq!(read.revoked_at, None);
+    assert_eq!(list_issued(&h.db, &h.book).unwrap().len(), 1);
+
+    h.post(
+        h.proposal(ALICE, 1_000, b"alice-1", EntryClass::ORIGINAL),
+        token.clone(),
+        Vec::new(),
+    )
+    .expect("the issued token posts");
+
+    // A body that differs from the journaled one (here: an extra op) is
+    // another commitment, which was never issued.
+    let forged = Capability::new(ALICE, Profile::Human, &[Op::Post, Op::PostClosed], PREPARER)
+        .unwrap()
+        .holder_bound(possession_digest(&secret));
+    let r = h
+        .post(
+            h.proposal(ALICE, 1_000, b"alice-2", EntryClass::ORIGINAL),
+            forged,
+            Vec::new(),
+        )
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-156");
+
+    // Revocation applies to an issued token as to any capability.
+    h.revoke(&steward, &token, b"revoke-alice")
+        .expect("revoked");
+    let r = h
+        .post(
+            h.proposal(ALICE, 1_000, b"alice-3", EntryClass::ORIGINAL),
+            token.clone(),
+            Vec::new(),
+        )
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-023");
+    assert!(
+        read_issued(&h.db, &h.book, &issued.commitment)
+            .unwrap()
+            .unwrap()
+            .revoked_at
+            .is_some()
+    );
+
+    // The grant law: no op the issuer lacks; issue_capability is required;
+    // the body is holder-bound and names its issuer.
+    let head = h.db.frontier().unwrap();
+    let widen = Capability::new(BOB, Profile::Human, &[Op::Post, Op::Close], PREPARER)
+        .unwrap()
+        .holder_bound(possession_digest(&[1; 32]));
+    let r = h.issue(&steward, &widen, b"issue-bob").unwrap_err();
+    eprintln!("issuance: widening -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY));
+    assert!(r.message.contains("close"), "{}", r.message);
+    let narrow = Capability::new(BOB, Profile::Human, &[Op::Post], PREPARER)
+        .unwrap()
+        .holder_bound(possession_digest(&[1; 32]));
+    let r = h
+        .issue(&human(PREPARER, &["post"]), &narrow, b"issue-bob")
+        .unwrap_err();
+    assert_eq!(
+        r.code, "FA-REF-011",
+        "the issuer must hold issue_capability"
+    );
+    let unbound = Capability::new(BOB, Profile::Human, &[Op::Post], PREPARER).unwrap();
+    assert_eq!(
+        h.issue(&steward, &unbound, b"issue-unbound")
+            .unwrap_err()
+            .exit,
+        exit::USAGE
+    );
+    let other_issuer = Capability::new(BOB, Profile::Human, &[Op::Post], CAROL)
+        .unwrap()
+        .holder_bound(possession_digest(&[1; 32]));
+    assert_eq!(
+        h.issue(&steward, &other_issuer, b"issue-other")
+            .unwrap_err()
+            .exit,
+        exit::USAGE
+    );
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        head,
+        "refused issuances write nothing"
+    );
+
+    // An issued Agent token reads and is still never a trunk writer.
+    let agent = Capability::new(AGENT, Profile::Agent, &[Op::Read, Op::Post], PREPARER)
+        .unwrap()
+        .holder_bound(possession_digest(&[2; 32]));
+    h.issue(&steward, &agent, b"issue-agent")
+        .expect("an Agent token is issued");
+    let r = h
+        .post(
+            h.proposal(AGENT, 1_000, b"agent-1", EntryClass::ORIGINAL),
+            agent,
+            Vec::new(),
+        )
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-013");
+    assert_eq!(list_issued(&h.db, &h.book).unwrap().len(), 2);
 }

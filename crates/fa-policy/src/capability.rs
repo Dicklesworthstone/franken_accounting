@@ -58,6 +58,19 @@ pub const CAVEAT_EFFECTIVE: u8 = 5;
 pub const CAVEAT_KNOWN_AT: u8 = 6;
 /// `branch = <draft>`: `id128 branch`.
 pub const CAVEAT_BRANCH: u8 = 7;
+/// `possession = H(secret)` (plan §14.2, bead fa-v62): `[u8; 32]`, the
+/// [`possession_digest`] of the holder's secret. A holder-bound capability
+/// is an *issued* token: the kernel admits it only with its journaled
+/// issuance, and its holder proves possession of the secret.
+pub const CAVEAT_POSSESSION: u8 = 8;
+/// Domain of [`possession_digest`].
+pub const POSSESSION_DOMAIN: &[u8] = b"fa:capability-possession:v1";
+
+/// The digest a holder-bound capability carries for `secret`.
+#[must_use]
+pub fn possession_digest(secret: &[u8; 32]) -> [u8; 32] {
+    domain_digest(POSSESSION_DOMAIN, &[secret])
+}
 /// Books one capability may name, bounded so a decoder never allocates on a claim.
 pub const MAX_BOOKS: usize = 256;
 /// Subtree roots an `accounts` caveat may name, and bytes per account code
@@ -189,6 +202,8 @@ pub enum CapabilityError {
     },
     Decode(DecodeError),
     Encode(EncodeError),
+    /// A capability token file that does not hold together (bead fa-v62).
+    BadToken(&'static str),
 }
 
 impl fmt::Display for CapabilityError {
@@ -236,6 +251,7 @@ impl fmt::Display for CapabilityError {
             ),
             Self::Decode(e) => write!(f, "{e}"),
             Self::Encode(e) => write!(f, "{e}"),
+            Self::BadToken(why) => write!(f, "invalid capability token: {why}"),
         }
     }
 }
@@ -282,6 +298,8 @@ pub struct Capability {
     known_at: Option<CommitSeq>,
     /// `branch = <draft>`: the one branch the token acts on.
     branch: Option<Id128>,
+    /// `possession = H(secret)`: the token is issued and holder-bound.
+    possession: Option<[u8; 32]>,
 }
 
 impl Capability {
@@ -310,6 +328,7 @@ impl Capability {
             effective_through: None,
             known_at: None,
             branch: None,
+            possession: None,
         })
     }
 
@@ -496,6 +515,36 @@ impl Capability {
         self.branch
     }
 
+    /// Bind the capability to a holder secret by its [`possession_digest`]
+    /// (an issued token, plan §14.2). The digest is part of the commitment,
+    /// so the binding cannot be removed or swapped without a new issuance.
+    #[must_use]
+    pub fn holder_bound(mut self, digest: [u8; 32]) -> Self {
+        self.possession = Some(digest);
+        self
+    }
+
+    /// The possession digest of a holder-bound (issued) capability.
+    #[must_use]
+    pub fn possession(&self) -> Option<[u8; 32]> {
+        self.possession
+    }
+
+    /// Whether `secret` proves possession of this holder-bound capability.
+    /// An unbound capability proves nothing.
+    #[must_use]
+    pub fn proves_possession(&self, secret: &[u8; 32]) -> bool {
+        let presented = possession_digest(secret);
+        self.possession.is_some_and(|digest| {
+            // Constant time over the whole digest: no early exit leaks a prefix.
+            digest
+                .iter()
+                .zip(presented.iter())
+                .fold(0_u8, |difference, (a, b)| difference | (a ^ b))
+                == 0
+        })
+    }
+
     /// Whether any scope caveat beyond `books` confines the capability: such
     /// a token reaches only what [`crate::admit::reach`] admits, so an act
     /// on the whole book refuses it.
@@ -634,6 +683,9 @@ impl Capability {
                 payload.finish().map_err(CapabilityError::Encode)?,
             ));
         }
+        if let Some(digest) = self.possession {
+            out.push((CAVEAT_POSSESSION, digest.to_vec()));
+        }
         Ok(out)
     }
 
@@ -700,6 +752,7 @@ impl Capability {
         let mut effective_through = None;
         let mut known_at = None;
         let mut branch = None;
+        let mut possession = None;
         if version == CAPABILITY_VERSION_CAVEATS {
             let caveats = r
                 .list(MAX_CAVEATS, "capability.caveats", |r| {
@@ -769,6 +822,14 @@ impl Capability {
                         p.finish().map_err(CapabilityError::Decode)?;
                         branch = Some(Id128(id));
                     }
+                    CAVEAT_POSSESSION => {
+                        let mut p = Reader::new(payload);
+                        let digest = p
+                            .fixed("capability.possession")
+                            .map_err(CapabilityError::Decode)?;
+                        p.finish().map_err(CapabilityError::Decode)?;
+                        possession = Some(digest);
+                    }
                     tag => return Err(CapabilityError::UnknownCaveat { tag }),
                 }
             }
@@ -801,6 +862,9 @@ impl Capability {
         }
         if let Some(branch) = branch {
             cap = cap.on_branch(branch)?;
+        }
+        if let Some(digest) = possession {
+            cap = cap.holder_bound(digest);
         }
         Ok(cap)
     }
@@ -878,6 +942,120 @@ fn decode_books(payload: &[u8]) -> Result<Vec<Id128>, CapabilityError> {
     Ok(books)
 }
 
+const TOKEN_MAGIC: &[u8; 13] = b"FA-CAP-TOKEN\0";
+const TOKEN_VERSION: u16 = 1;
+/// Bytes a principal name may take in a token (the launch bound).
+pub const MAX_TOKEN_PRINCIPAL_BYTES: usize = 256;
+/// The bound on a whole token file.
+pub const MAX_TOKEN_BYTES: usize = 64 * 1024;
+
+/// What an issued capability's holder keeps (plan §14.2, bead fa-v62): the
+/// principal's name, the holder-bound capability exactly as journaled, and
+/// the secret whose [`possession_digest`] the capability carries. It is
+/// written 0600 and never journaled. Only the issuance makes it usable: the
+/// kernel admits the capability against its journaled issuance.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CapabilityToken {
+    principal: String,
+    capability: Capability,
+    secret: [u8; 32],
+}
+
+impl fmt::Debug for CapabilityToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CapabilityToken")
+            .field("principal", &self.principal)
+            .field("capability", &self.capability)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
+impl CapabilityToken {
+    /// A token whose secret proves the capability's possession digest and
+    /// whose principal derives the capability's holder.
+    pub fn new(
+        principal: impl Into<String>,
+        capability: Capability,
+        secret: [u8; 32],
+    ) -> Result<Self, CapabilityError> {
+        let principal = principal.into();
+        if principal.is_empty() || principal.len() > MAX_TOKEN_PRINCIPAL_BYTES {
+            return Err(CapabilityError::BadToken(
+                "the principal name is 1..=256 bytes",
+            ));
+        }
+        if fa_model::principal_vid(&principal) != capability.holder() {
+            return Err(CapabilityError::BadToken(
+                "the principal does not hold this capability",
+            ));
+        }
+        if !capability.proves_possession(&secret) {
+            return Err(CapabilityError::BadToken(
+                "the secret does not prove the capability's possession digest",
+            ));
+        }
+        Ok(Self {
+            principal,
+            capability,
+            secret,
+        })
+    }
+
+    #[must_use]
+    pub fn principal(&self) -> &str {
+        &self.principal
+    }
+
+    #[must_use]
+    pub fn capability(&self) -> &Capability {
+        &self.capability
+    }
+
+    #[must_use]
+    pub fn secret(&self) -> &[u8; 32] {
+        &self.secret
+    }
+
+    /// `magic ‖ u16 version ‖ str principal ‖ bytes capability ‖ secret[32]`.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, CapabilityError> {
+        let mut w = Writer::with_capacity(512);
+        w.fixed(TOKEN_MAGIC)
+            .u16(TOKEN_VERSION)
+            .str(&self.principal)
+            .bytes(&self.capability.canonical_bytes()?)
+            .fixed(&self.secret);
+        w.finish().map_err(CapabilityError::Encode)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, CapabilityError> {
+        if bytes.len() > MAX_TOKEN_BYTES {
+            return Err(CapabilityError::BadToken("the token exceeds its bound"));
+        }
+        let mut r = Reader::new(bytes);
+        if r.fixed::<13>("token.magic")
+            .map_err(CapabilityError::Decode)?
+            != *TOKEN_MAGIC
+        {
+            return Err(CapabilityError::BadToken("not a capability token"));
+        }
+        if r.u16("token.version").map_err(CapabilityError::Decode)? != TOKEN_VERSION {
+            return Err(CapabilityError::BadToken("unsupported token version"));
+        }
+        let principal = r
+            .str(MAX_TOKEN_PRINCIPAL_BYTES, "token.principal")
+            .map_err(CapabilityError::Decode)?
+            .to_string();
+        let capability = Capability::decode(
+            r.bytes(MAX_TOKEN_BYTES, "token.capability")
+                .map_err(CapabilityError::Decode)?,
+        )?;
+        let secret = r.fixed("token.secret").map_err(CapabilityError::Decode)?;
+        r.finish().map_err(CapabilityError::Decode)?;
+        Self::new(principal, capability, secret)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -913,6 +1091,71 @@ mod tests {
         let mut bad_profile = bytes.clone();
         bad_profile[18] = 9;
         assert!(Capability::decode(&bad_profile).is_err());
+    }
+
+    /// fa-v62: the possession caveat binds a holder secret into the
+    /// commitment, round-trips, leaves the token unscoped, and only the
+    /// secret itself proves possession.
+    #[test]
+    fn a_holder_bound_capability_commits_to_its_secret_and_only_that_secret_proves_it() {
+        let secret = [5; 32];
+        let bound = agent().holder_bound(possession_digest(&secret));
+        let bytes = bound.canonical_bytes().unwrap();
+        assert_eq!(Capability::decode(&bytes).unwrap(), bound);
+        assert_eq!(bound.possession(), Some(possession_digest(&secret)));
+        assert!(bound.proves_possession(&secret));
+        assert!(!bound.proves_possession(&[6; 32]));
+        assert!(
+            !agent().proves_possession(&secret),
+            "an unbound token proves nothing"
+        );
+        assert!(!bound.is_scoped(), "possession is not a scope caveat");
+        // The binding is part of the commitment: another secret, or no
+        // binding at all, is another capability.
+        let c = bound.commitment().unwrap();
+        assert_ne!(agent().commitment().unwrap(), c);
+        assert_ne!(
+            agent()
+                .holder_bound(possession_digest(&[6; 32]))
+                .commitment()
+                .unwrap(),
+            c
+        );
+        // A truncated possession payload does not decode.
+        let short = Capability::decode(&bytes[..bytes.len() - 1]);
+        assert!(short.is_err());
+    }
+
+    /// fa-v62: a token round-trips; it holds only when its secret proves the
+    /// possession digest and its principal derives the holder.
+    #[test]
+    fn a_capability_token_round_trips_and_holds_only_with_its_secret_and_holder() {
+        let secret = [3; 32];
+        let holder = fa_model::principal_vid("agent-7");
+        let cap = Capability::new(holder, Profile::Agent, &[Op::Read, Op::Post], VId(1))
+            .unwrap()
+            .holder_bound(possession_digest(&secret));
+        let token = CapabilityToken::new("agent-7", cap.clone(), secret).unwrap();
+        let bytes = token.canonical_bytes().unwrap();
+        assert_eq!(CapabilityToken::decode(&bytes).unwrap(), token);
+        assert!(
+            !format!("{token:?}").contains("[3, 3"),
+            "the secret is never printed"
+        );
+        assert!(CapabilityToken::new("agent-7", cap.clone(), [4; 32]).is_err());
+        assert!(CapabilityToken::new("agent-8", cap.clone(), secret).is_err());
+        assert!(CapabilityToken::new("agent-7", agent(), secret).is_err());
+        let mut tampered = bytes.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        assert!(
+            CapabilityToken::decode(&tampered).is_err(),
+            "a wrong secret"
+        );
+        assert!(CapabilityToken::decode(&bytes[..bytes.len() - 1]).is_err());
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(CapabilityToken::decode(&trailing).is_err());
     }
 
     #[test]

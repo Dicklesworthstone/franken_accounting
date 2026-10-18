@@ -78,6 +78,9 @@ pub mod code {
     pub const UNKNOWN_ACCOUNT: &str = "FA-REF-004";
     /// A leg's unit id is not a unit version this book registers.
     pub const UNIT_UNREGISTERED: &str = "FA-REF-154";
+    /// A holder-bound capability has no journaled issuance in this book
+    /// (plan §14.2, bead fa-v62).
+    pub const CAPABILITY_NOT_ISSUED: &str = "FA-REF-156";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

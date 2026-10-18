@@ -312,6 +312,14 @@ fix = "chmod 600 {path}"
 
 # ---- Supersession (050–054) ----------------------------------------------
 [[refusal]]
+code = "FA-REF-156"
+name = "CAPABILITY_NOT_ISSUED"
+owners = ["fa-journal"]
+exit = "safety"
+cite = "plan §14.2 (issuance is a journaled control entry; bead fa-v62)"
+fix = "present a capability issued in this book (fa capability list --json), or ask a principal holding issue_capability to run fa capability issue"
+
+[[refusal]]
 code = "FA-REF-050"
 name = "REVERSAL_TARGET"
 owners = ["fa-journal"]

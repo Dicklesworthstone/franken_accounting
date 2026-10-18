@@ -611,6 +611,54 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Issue a holder-bound capability under `capability` (plan §14.2,
+    /// fa-v62): one `PolicyControl` entry carrying `CapabilityEvent { Issue }`
+    /// and the issued capability's canonical body.
+    pub async fn issue_capability(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        issued: fa_journal::Capability,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        description: &str,
+    ) -> Outcome<fa_journal::Issued> {
+        let description = self.seal_text(cx, description)?;
+        Ok(fa_journal::issue_capability(
+            &mut self.db,
+            cx,
+            &self.context,
+            fa_journal::IssuanceRequest {
+                capability,
+                issued,
+                effective_date,
+                idempotency_key: idempotency_key.to_vec(),
+                description,
+            },
+        )
+        .await?)
+    }
+
+    /// Every capability this book issued, from the journal, with its
+    /// revocation state.
+    pub fn issued_capabilities(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<Vec<fa_journal::IssuedCapability>, BookError> {
+        self.query(cx, |db, context| Ok(fa_journal::list_issued(db, context)?))
+    }
+
+    /// The capability issued at `commitment`, from the journal.
+    pub fn issued_capability(
+        &self,
+        cx: &PurposeContexts,
+        commitment: &[u8; 32],
+    ) -> Result<Option<fa_journal::IssuedCapability>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_issued(db, context, commitment)?)
+        })
+    }
+
     pub async fn post(&mut self, cx: &PurposeContexts, req: PostRequest) -> Outcome<Posted> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         Ok(fa_journal::post(&mut self.db, cx, &self.context, req).await?)

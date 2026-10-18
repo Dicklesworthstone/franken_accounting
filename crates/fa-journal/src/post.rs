@@ -3197,7 +3197,7 @@ fn checked_entry_with(
 }
 
 /// Decode an entry row's payload, verifying its digests.
-fn entry_of(row: &VertexRow) -> Result<(Entry, CommitSeq), KernelError> {
+pub(crate) fn entry_of(row: &VertexRow) -> Result<(Entry, CommitSeq), KernelError> {
     let payload = match prop(row, property::FA_PAYLOAD) {
         Some(CanonicalScalar::Bytes(b)) => b.as_slice().to_vec(),
         other => {

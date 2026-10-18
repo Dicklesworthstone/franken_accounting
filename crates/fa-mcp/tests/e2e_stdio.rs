@@ -1895,3 +1895,144 @@ fn a_panicking_server_reports_fa_ref_153_on_stderr_with_exit_5() {
     assert!(stderr.contains("FA-REF-153"), "{stderr}");
     assert!(stderr.contains("FA_TEST_PANIC"), "{stderr}");
 }
+
+/// fa-v62: an operator issues a holder-bound Agent token with the CLI and
+/// launches fa-mcp with it. The session's authority is the token's (posture
+/// mcp-issued-token, its principal, its journaled ops); a rehearsal runs
+/// under it. A tampered token file is refused at launch, before serving.
+/// Once the operator revokes the grant, the kernel refuses the same
+/// rehearsal (FA-REF-023): the session cannot outlive its grant.
+#[test]
+fn an_issued_token_binds_the_session_and_its_revocation_is_enforced() {
+    let dir = tmp("issued-token");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book", "create", "--book", &b, "--name", "Token Co", "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    )
+    .unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        &chart.display().to_string(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let token = dir.join("agent-7.token");
+    let t = token.display().to_string();
+    let issued = cli_data(&[
+        "capability",
+        "issue",
+        "--book",
+        &b,
+        "--holder",
+        "agent-7",
+        "--profile",
+        "agent",
+        "--op",
+        "read",
+        "--op",
+        "post",
+        "--op",
+        "verify",
+        "--out",
+        &t,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "post",
+        "--grant",
+        "verify",
+        "--json",
+    ]);
+    log(format!("issued: {issued}"));
+    let issued = fa_cli::json::parse(&issued).expect("issued data");
+    let commitment = issued
+        .get("commitment")
+        .and_then(Json::as_str)
+        .expect("commitment")
+        .to_string();
+    let listed = cli_data(&["capability", "list", "--book", &b, "--json"]);
+    assert!(listed.contains(&commitment), "{listed}");
+
+    // A tampered token never serves.
+    let mut tampered = std::fs::read(&token).unwrap();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 1;
+    let bad = dir.join("tampered.token");
+    std::fs::write(&bad, &tampered).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_fa-mcp"))
+        .args(["--book", &b, "--token", &bad.display().to_string()])
+        .env_remove("FA_BOOK")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run fa-mcp");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--token"));
+
+    let intent = json!({
+        "class": "Original", "effective_date": "2026-03-15",
+        "description": "issued-token rent", "idempotency_key": "token-rent",
+        "legs": [
+            {"side": "debit", "account": "6000", "amount": "10.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "10.00 USD"},
+        ],
+    });
+    let authority = json!({
+        "posture": "mcp-issued-token", "principal": "agent-7", "profile": "agent",
+        "ops": ["read", "post", "verify"],
+    });
+    let mut mcp = Mcp::start_with(&book, &["--token", &t]);
+    mcp.discover();
+    let (error, text, result) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": intent, "evidence": [oid], "dry_run": true}),
+    );
+    assert!(!error, "the issued Agent token rehearses: {text}");
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["authority"], authority);
+
+    // The operator revokes the grant; the bound session is refused at once.
+    cli_data(&[
+        "capability",
+        "revoke",
+        "--book",
+        &b,
+        "--commitment",
+        &commitment,
+        "--grant",
+        "issue_capability",
+        "--yes",
+        "--json",
+    ]);
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": intent, "evidence": [oid], "dry_run": true}),
+    );
+    assert!(error, "a revoked grant reaches nothing: {text}");
+    let refused = structured_error(&text);
+    assert_eq!(refused["refusal_id"], "FA-REF-023", "{refused}");
+    assert_eq!(mcp.finish(), 0);
+}

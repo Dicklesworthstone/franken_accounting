@@ -24,7 +24,7 @@ use asupersync::runtime::reactor::create_reactor;
 use fa_cli::authority::LaunchProfile;
 use fa_mcp::server::{ServerConfig, build_server};
 
-const USAGE: &str = "fa-mcp — the FrankenAccounting MCP server (stdio)\n\nusage\n  fa-mcp --book <dir> [--keys <file>] [--files <dir>] [--principal <name>]\n         [--profile agent|preparer] [--grant <op>]...\n  fa-mcp --help\n  fa-mcp --version\n\nFA_BOOK may supply the launch book. The default principal is mcp-agent and the\ndefault profile is agent. Default operations are read, post, verify; an explicit\n--grant list narrows the session to the named operations within its profile.\nIdentity, profile, operations, book, keys and optional --files containment root\nare fixed at launch. Tool arguments cannot override them or confirm dangerous\noperations. Agent writes to trunk are refused by the kernel; drafts remain\npending (fa-s7x). Launch configuration is trusted operator input, not\nauthenticated issuance (fa-v62/fa-r3q). A running fad causes a lease refusal\nuntil it can preserve this session's authority.\n";
+const USAGE: &str = "fa-mcp — the FrankenAccounting MCP server (stdio)\n\nusage\n  fa-mcp --book <dir> [--keys <file>] [--files <dir>] [--principal <name>]\n         [--profile agent|preparer] [--grant <op>]...\n  fa-mcp --book <dir> [--keys <file>] [--files <dir>] --token <file>\n  fa-mcp --help\n  fa-mcp --version\n\nFA_BOOK may supply the launch book. The default principal is mcp-agent and the\ndefault profile is agent. Default operations are read, post, verify; an explicit\n--grant list narrows the session to the named operations within its profile.\nIdentity, profile, operations, book, keys and optional --files containment root\nare fixed at launch. Tool arguments cannot override them or confirm dangerous\noperations. Agent writes to trunk are refused by the kernel; drafts remain\npending (fa-s7x). Launch configuration is trusted operator input, not\nauthenticated issuance (fa-v62/fa-r3q). A running fad causes a lease refusal\nuntil it can preserve this session's authority.\n";
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -62,7 +62,8 @@ fn serve(argv: &[String]) -> ExitCode {
                 println!("fa-mcp {}", fa_mcp::VERSION);
                 return ExitCode::SUCCESS;
             }
-            "--book" | "--keys" | "--files" | "--principal" | "--profile" | "--grant" => {
+            "--book" | "--keys" | "--files" | "--principal" | "--profile" | "--grant"
+            | "--token" => {
                 let Some(value) = argv.get(i + 1) else {
                     eprintln!(
                         "usage: {} needs a value\n  fix: {} <value>",
@@ -147,6 +148,13 @@ fn set_option(config: &mut ServerConfig, flag: &str, value: &str) -> Result<(), 
                 .ok_or_else(|| format!("unknown profile `{value}`; use agent or preparer"))?;
         }
         "--grant" => config.grants.push(value.to_string()),
+        "--token" => {
+            let bytes = std::fs::read(value)
+                .map_err(|e| format!("--token {value}: cannot read the token file: {e}"))?;
+            let token = fa_cli::authority::CapabilityToken::decode(&bytes)
+                .map_err(|e| format!("--token {value}: {e}"))?;
+            config.token = Some(token);
+        }
         _ => return Err(format!("unknown launch flag `{flag}`")),
     }
     Ok(())

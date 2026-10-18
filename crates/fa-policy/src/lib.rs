@@ -33,7 +33,7 @@ pub use admit::{
     admit_within, current, reach, require, scope,
 };
 pub use approval::Approval;
-pub use capability::{Capability, CapabilityError, Profile};
+pub use capability::{Capability, CapabilityError, CapabilityToken, Profile, possession_digest};
 pub use decision::{
     BenefitInterval, DECISION_CARD_DOMAIN, DecisionCandidate, DecisionCard, DecisionFeature,
     DecisionKind, DecisionPolicyRow, DecisionReason, DecisionReplayError, amounts_preserved,

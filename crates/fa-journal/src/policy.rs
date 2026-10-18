@@ -739,6 +739,12 @@ pub fn capability_witness<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
 ) -> Outcome<()> {
     let commitment = capability.commitment().map_err(capability_error)?;
+    if capability.possession().is_some() {
+        let issued = txn.vertex(db, issuance_vid(book.book_id, &commitment))?;
+        if let Err(r) = issued_here(issued.as_ref(), &commitment) {
+            return Ok(Err(r));
+        }
+    }
     Ok(not_revoked(
         txn.vertex(db, revocation_vid(book.book_id, &commitment))?,
     ))
@@ -756,6 +762,12 @@ pub fn capability_admitted<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
 ) -> Outcome<()> {
     let commitment = capability.commitment().map_err(capability_error)?;
+    if capability.possession().is_some() {
+        let issued = db.vertex(issuance_vid(book.book_id, &commitment))?;
+        if let Err(r) = issued_here(issued.as_ref(), &commitment) {
+            return Ok(Err(r));
+        }
+    }
     Ok(not_revoked(
         db.vertex(revocation_vid(book.book_id, &commitment))?,
     ))
@@ -1295,4 +1307,337 @@ pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
         },
         Err(e) => Err(e.into()),
     }
+}
+
+/// `ControlPayload::CapabilityEvent.kind` for an issuance (plan Appendix A).
+pub const CAPABILITY_EVENT_ISSUE: u8 = 0;
+
+/// `vid(issuance of C) = H("fa:vid:capability-issuance:v1" ‖ book ‖
+/// commitment(C))`: one issuance per capability by identity, found by a
+/// point read (plan §14.2, bead fa-v62).
+#[must_use]
+pub fn issuance_vid(book: Id128, commitment: &[u8; 32]) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:capability-issuance:v1");
+    h.update(&book.0);
+    h.update(commitment);
+    let d = h.finalize();
+    let mut lo = [0u8; 16];
+    lo.copy_from_slice(&d.0[..16]);
+    VId(u128::from_le_bytes(lo))
+}
+
+/// A holder-bound capability is admitted only when this book journaled its
+/// issuance: the row at its issuance identity is an issuance of exactly
+/// this commitment (plan §14.2: "issuance and revocation are journaled
+/// control entries"). Its caveats are therefore the journaled ones.
+fn issued_here(row: Option<&fgdb::VertexRow>, commitment: &[u8; 32]) -> Result<(), Refusal> {
+    let issued = row.is_some_and(|row| {
+        crate::post::entry_of(row).is_ok_and(|(entry, _)| {
+            matches!(
+                entry.proposal.control,
+                Some(ControlPayload::CapabilityEvent { kind: CAPABILITY_EVENT_ISSUE, commitment: c, .. })
+                    if &c == commitment
+            )
+        })
+    });
+    if issued {
+        Ok(())
+    } else {
+        Err(Refusal::new(
+            code::CAPABILITY_NOT_ISSUED,
+            exit::SAFETY,
+            "this holder-bound capability was never issued in this book",
+            "plan §14.2 (issuance is a journaled control entry; bead fa-v62)",
+            "present a capability issued in this book (`fa capability list --json`), or ask a principal holding issue_capability to run `fa capability issue`",
+        ))
+    }
+}
+
+/// Issue a capability (plan §14.2).
+#[derive(Clone, Debug)]
+pub struct IssuanceRequest {
+    /// The issuer's capability: it must hold `issue_capability` (which no
+    /// Agent- or System-profile capability can).
+    pub capability: Capability,
+    /// The capability being issued: holder-bound, naming the issuer.
+    pub issued: Capability,
+    pub effective_date: DateDay,
+    pub idempotency_key: Vec<u8>,
+    pub description: Erasable<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Issued {
+    pub control_entry: VId,
+    /// The issued capability's commitment, the identity of its grant.
+    pub commitment: [u8; 32],
+    pub recorded_at: CommitSeq,
+    /// This exact capability was already issued; nothing was written.
+    pub already_recorded: bool,
+}
+
+/// Grants only what the issuer holds (plan §14.2: caveats are conjunctive
+/// and attenuable only). An issued capability holds no op the issuer lacks,
+/// no unit beyond the issuer's ceilings and no larger ceiling, no book
+/// beyond the issuer's books, and expires no later than the issuer.
+fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
+    let widen = |what: String| {
+        Some(Refusal::new(
+            code::CAPABILITY,
+            exit::SAFETY,
+            format!("the issued capability would widen the issuer's authority: {what}"),
+            "plan §14.2 (caveats are conjunctive and attenuable only)",
+            "issue only ops, units, ceilings, books and an expiry within the issuing capability",
+        ))
+    };
+    if let Some(op) = issued.ops().iter().find(|op| !issuer.holds(**op)) {
+        return widen(format!("it grants `{op}`, which the issuer does not hold"));
+    }
+    if !issuer.ceilings().is_empty() {
+        for (unit, max) in issued.ceilings() {
+            match issuer.ceilings().get(unit) {
+                Some(bound) if max <= bound => {}
+                _ => {
+                    return widen(format!(
+                        "its ceiling on unit {} exceeds the issuer's",
+                        unit.0
+                    ));
+                }
+            }
+        }
+        if issued.ceilings().is_empty() {
+            return widen("it carries no ceiling where the issuer is bounded".to_string());
+        }
+    }
+    if let Some(books) = issuer.books() {
+        match issued.books() {
+            Some(own) if own.is_subset(books) => {}
+            _ => return widen("it reaches a book the issuer cannot".to_string()),
+        }
+    }
+    if let Some(bound) = issuer.expires_at()
+        && issued.expires_at().is_none_or(|at| at > bound)
+    {
+        return widen(format!(
+            "it outlives the issuer's expiry at sequence {}",
+            bound.0
+        ));
+    }
+    None
+}
+
+/// Journal an issuance (plan §14.2): a PolicyControl entry carrying a
+/// `CapabilityEvent { kind: Issue }` for the issued commitment, with the
+/// issued capability's canonical bytes as extension `fa:capability-body:v1`,
+/// at [`issuance_vid`], in one commit. The kernel admits the holder-bound
+/// token only against this row.
+pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: IssuanceRequest,
+) -> Outcome<Issued> {
+    if let Err(d) = fa_policy::admit(
+        &req.capability,
+        &Intent {
+            principal: req.capability.holder(),
+            trunk: true,
+            op: Op::IssueCapability,
+            book: book.book_id,
+            legs: &[],
+        },
+    ) {
+        return Ok(Err(refusal(&d)));
+    }
+    if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
+        return Ok(Err(refusal(&d)));
+    }
+    let usage = |message: &str| {
+        Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            message.to_string(),
+            "plan §14.2, Appendix A ControlPayload::CapabilityEvent",
+            "issue a holder-bound capability that names the issuing principal as its issuer",
+        )))
+    };
+    if req.issued.issuer() != req.capability.holder() {
+        return usage("the issued capability must name the issuing principal as its issuer");
+    }
+    if req.issued.possession().is_none() {
+        return usage("an issued capability is holder-bound: it carries a possession digest");
+    }
+    if let Some(r) = grant_refusal(&req.capability, &req.issued) {
+        return Ok(Err(r));
+    }
+    let body = req.issued.canonical_bytes().map_err(capability_error)?;
+    let commitment = req.issued.commitment().map_err(capability_error)?;
+    let proposal = EntryPayload {
+        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        book_id: book.book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::POLICY_CONTROL,
+        effective_date: req.effective_date,
+        document_date: None,
+        description: req.description,
+        effective_period: None,
+        legs: Vec::new(),
+        control: Some(ControlPayload::CapabilityEvent {
+            commitment,
+            kind: CAPABILITY_EVENT_ISSUE,
+            caveats_digest: fa_model::domain_digest(b"fa:capability-body:v1", &[&body]),
+        }),
+        unit_totals: Vec::new(),
+        base_totals: None,
+        idempotency_key: req.idempotency_key,
+        origin: EntryOrigin::Control {
+            control_kind: fa_model::ControlKind::CAPABILITY_ISSUANCE,
+            spec_body_digest: commitment,
+        },
+        principal_ref: req.capability.holder(),
+        session_ref: None,
+        evidence: Vec::new(),
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: vec![(fa_model::entry::CAPABILITY_BODY_EXTENSION, body)],
+        tags: Vec::new(),
+    };
+    if proposal.validate().is_err() {
+        return usage(
+            "the issuance is not a valid PolicyControl entry (a non-empty idempotency key is required)",
+        );
+    }
+    let vid = issuance_vid(book.book_id, &commitment);
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if let Some(row) = txn.vertex(db, vid)? {
+        txn.abort();
+        return Ok(Ok(Issued {
+            control_entry: vid,
+            commitment,
+            recorded_at: row.created_at,
+            already_recorded: true,
+        }));
+    }
+    let entry = proposal.seal(Vec::new(), None)?;
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.create_vertex(vid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    txn.write(db, batch)?;
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(Issued {
+            control_entry: vid,
+            commitment,
+            recorded_at: seq,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(Refusal::new(
+                code::CONFLICT,
+                exit::CONFLICT,
+                format!("a concurrent commit invalidated this issuance's witness: {detail}"),
+                "FG-LAW-FCW-01 (first committer wins)",
+                "retry; if the capability is already issued the retry says so",
+            )))
+        }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => match db.vertex(vid)? {
+            Some(row) => Ok(Ok(Issued {
+                control_entry: vid,
+                commitment,
+                recorded_at: row.created_at,
+                already_recorded: true,
+            })),
+            None => Err(KernelError::Corrupt(
+                "issuance identity spent but no live row".into(),
+            )),
+        },
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// One issued capability as the journal records it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssuedCapability {
+    pub capability: Capability,
+    pub commitment: [u8; 32],
+    pub control_entry: VId,
+    pub issued_at: CommitSeq,
+    /// The sequence that revoked it, if any.
+    pub revoked_at: Option<CommitSeq>,
+}
+
+/// The capability issued at `commitment`, decoded from its journaled body
+/// (never from a presenter), with its revocation state.
+pub fn read_issued<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    commitment: &[u8; 32],
+) -> Result<Option<IssuedCapability>, KernelError> {
+    let vid = issuance_vid(book.book_id, commitment);
+    let Some(row) = db.vertex(vid)? else {
+        return Ok(None);
+    };
+    let (entry, issued_at) = crate::post::entry_of(&row)?;
+    let Some((_, body)) = entry
+        .proposal
+        .extensions
+        .iter()
+        .find(|(tag, _)| *tag == fa_model::entry::CAPABILITY_BODY_EXTENSION)
+    else {
+        return Err(KernelError::Corrupt(
+            "a capability issuance without its body".into(),
+        ));
+    };
+    let capability = Capability::decode(body).map_err(capability_error)?;
+    if &capability.commitment().map_err(capability_error)? != commitment {
+        return Err(KernelError::Corrupt(
+            "a capability issuance body does not match its commitment".into(),
+        ));
+    }
+    let revoked_at = db
+        .vertex(revocation_vid(book.book_id, commitment))?
+        .map(|row| row.created_at);
+    Ok(Some(IssuedCapability {
+        capability,
+        commitment: *commitment,
+        control_entry: vid,
+        issued_at,
+        revoked_at,
+    }))
+}
+
+/// Every capability issued in this book, in issuance order. A scan of the
+/// journal's PolicyControl issuances (a slice-1 read; plan §14.2).
+pub fn list_issued<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+) -> Result<Vec<IssuedCapability>, KernelError> {
+    let mut out = Vec::new();
+    for row in db.vertices()? {
+        if !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
+        let Ok((entry, _)) = crate::post::entry_of(&row) else {
+            continue;
+        };
+        if let Some(ControlPayload::CapabilityEvent {
+            kind: CAPABILITY_EVENT_ISSUE,
+            commitment,
+            ..
+        }) = entry.proposal.control
+            && row.vid == issuance_vid(book.book_id, &commitment)
+            && let Some(issued) = read_issued(db, book, &commitment)?
+        {
+            out.push(issued);
+        }
+    }
+    out.sort_by_key(|i| (i.issued_at, i.control_entry));
+    Ok(out)
 }

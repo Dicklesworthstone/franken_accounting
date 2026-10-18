@@ -960,6 +960,36 @@ impl Book {
         )))
     }
 
+    /// Issue a holder-bound capability under `capability` (plan §14.2,
+    /// fa-v62). The capability must hold `issue_capability`, and the issued
+    /// one may not widen it.
+    pub fn issue_capability(
+        &mut self,
+        capability: fa_journal::Capability,
+        issued: fa_journal::Capability,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        description: &str,
+    ) -> Outcome<fa_journal::Issued> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.issue_capability(
+            &purposes, capability, issued, effective_date, idempotency_key, description,
+        )))
+    }
+
+    /// Every capability this book issued, with its revocation state.
+    pub fn issued_capabilities(&self) -> Result<Vec<fa_journal::IssuedCapability>, BookError> {
+        with_store!(&self.store, core => core.issued_capabilities(&self.purposes()))
+    }
+
+    /// The capability issued at `commitment`, from the journal.
+    pub fn issued_capability(
+        &self,
+        commitment: &[u8; 32],
+    ) -> Result<Option<fa_journal::IssuedCapability>, BookError> {
+        with_store!(&self.store, core => core.issued_capability(&self.purposes(), commitment))
+    }
+
     /// Post one entry under the accounting laws (plan §5).
     pub fn post(&mut self, req: PostRequest) -> Outcome<Posted> {
         let purposes = self.purposes();

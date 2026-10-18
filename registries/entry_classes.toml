@@ -251,3 +251,9 @@ id = 9
 name = "migration_run"
 class = "MigrationControl"
 minted_by = "fa-journal migration::open_proposal, migration::plan_run_transition"
+
+[[control_kind]]
+id = 10
+name = "capability_issuance"
+class = "PolicyControl"
+minted_by = "fa-journal policy::issue_capability"

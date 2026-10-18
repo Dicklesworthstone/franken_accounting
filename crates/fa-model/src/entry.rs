@@ -75,6 +75,12 @@ pub const LEGAL_HOLD_SCOPE_EXTENSION: u16 = 4;
 /// bead `fa-f3bo`): binds an `EntryProposal` to a committed REA `Event`
 /// vertex — `event_vid: u128 LE ‖ event_digest: [u8; 32]` (48 bytes).
 pub const EVENT_REF_EXTENSION: u16 = 6;
+/// Extension tag 7, `fa:capability-body:v1` (plan §14.2, bead fa-v62): the
+/// canonical bytes of the capability a `PolicyControl` issuance journals.
+/// Its `CapabilityEvent.commitment` is the commitment of exactly these bytes,
+/// so the kernel derives an issued token's caveats from the journal, never
+/// from the presenter.
+pub const CAPABILITY_BODY_EXTENSION: u16 = 7;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -84,6 +90,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     DATE_BASIS_EXTENSION,
     LEGAL_HOLD_SCOPE_EXTENSION,
     EVENT_REF_EXTENSION,
+    CAPABILITY_BODY_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -218,6 +225,7 @@ impl ControlKind {
     pub const LEGAL_HOLD: Self = Self(7);
     pub const CAPABILITY_REVOCATION: Self = Self(8);
     pub const MIGRATION_RUN: Self = Self(9);
+    pub const CAPABILITY_ISSUANCE: Self = Self(10);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -253,6 +261,11 @@ impl ControlKind {
             Self::MIGRATION_RUN,
             "migration_run",
             EntryClass::MIGRATION_CONTROL,
+        ),
+        (
+            Self::CAPABILITY_ISSUANCE,
+            "capability_issuance",
+            EntryClass::POLICY_CONTROL,
         ),
     ];
 

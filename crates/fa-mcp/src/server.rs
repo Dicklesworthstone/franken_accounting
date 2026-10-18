@@ -91,6 +91,9 @@ pub struct ServerConfig {
     pub profile: LaunchProfile,
     /// Explicit operations attenuate the selected launch profile's ceiling.
     pub grants: Vec<String>,
+    /// A holder's issued token (`--token`, bead fa-v62): it fixes the
+    /// principal, profile and operations instead of a launch template.
+    pub token: Option<fa_cli::authority::CapabilityToken>,
 }
 
 impl Default for ServerConfig {
@@ -102,6 +105,7 @@ impl Default for ServerConfig {
             principal: "mcp-agent".into(),
             profile: LaunchProfile::Agent,
             grants: Vec::new(),
+            token: None,
         }
     }
 }
@@ -165,10 +169,22 @@ impl Adapter {
             ServerError::Launch("a fixed book is required; launch with --book or FA_BOOK".into())
         })?;
         let grants: Vec<&str> = config.grants.iter().map(String::as_str).collect();
-        let authority =
-            LaunchAuthority::new(book, config.keys, config.principal, config.profile, &grants)
-                .and_then(|auth| auth.with_files(config.files))
-                .map_err(ServerError::Launch)?;
+        let authority = match &config.token {
+            Some(token) => {
+                if config.principal != "mcp-agent"
+                    || config.profile != LaunchProfile::Agent
+                    || !grants.is_empty()
+                {
+                    return Err(ServerError::Launch(
+                        "--token fixes the principal, profile and operations; drop --principal, --profile and --grant".into(),
+                    ));
+                }
+                LaunchAuthority::from_token(book, config.keys, token)
+            }
+            None => LaunchAuthority::new(book, config.keys, config.principal, config.profile, &grants),
+        }
+        .and_then(|auth| auth.with_files(config.files))
+        .map_err(ServerError::Launch)?;
         let reg = fa_cli::verbs::registry()
             .map_err(|e| ServerError::Foundation(format!("the embedded verb registry: {e}")))?;
         let mcp =
@@ -1843,6 +1859,7 @@ mod tests {
             principal: "agent-reader".into(),
             profile: LaunchProfile::Agent,
             grants: Vec::new(),
+            token: None,
         })
         .expect("adapter");
 
@@ -1963,6 +1980,7 @@ mod tests {
             principal: "agent-files".into(),
             profile: LaunchProfile::Agent,
             grants: Vec::new(),
+            token: None,
         })
         .expect("adapter with --files");
 

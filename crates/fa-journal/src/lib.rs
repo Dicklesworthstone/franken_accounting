@@ -102,8 +102,9 @@ pub use period::{
 };
 pub use plan::{commit_plan, plan_certificate_vid, plan_post};
 pub use policy::{
-    ActivationRequest, ApprovalRequest, Approved, PolicyActivated, RevocationRequest, Revoked,
-    activate_policy, activation_proposal, record_approval, revoke_capability,
+    ActivationRequest, ApprovalRequest, Approved, IssuanceRequest, Issued, IssuedCapability,
+    PolicyActivated, RevocationRequest, Revoked, activate_policy, activation_proposal,
+    issuance_vid, issue_capability, list_issued, read_issued, record_approval, revoke_capability,
     security_policy_epoch,
 };
 pub use post::{

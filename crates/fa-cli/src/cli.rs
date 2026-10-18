@@ -4074,8 +4074,241 @@ fn capability_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             );
             Ok(())
         }
+        Some("issue") => capability_issue(ctx, args),
+        Some("list") => {
+            let book = ctx.books.open(args)?;
+            let issued = book.issued_capabilities()?;
+            ctx.out.at_book(&book)?;
+            let rows: Vec<Json> = issued.iter().map(issued_json).collect();
+            let human = if issued.is_empty() {
+                "no capability has been issued in this book".to_string()
+            } else {
+                issued
+                    .iter()
+                    .map(|i| {
+                        format!(
+                            "{} holder {:032x} {} ops [{}] issued at {}{}",
+                            hex(&i.commitment),
+                            i.capability.holder().0,
+                            i.capability.profile().name(),
+                            i.capability
+                                .ops()
+                                .iter()
+                                .map(|op| op.name())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                            i.issued_at.0,
+                            i.revoked_at
+                                .map(|at| format!(", revoked at {}", at.0))
+                                .unwrap_or_default()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            ctx.out.event(
+                "capabilities_issued",
+                vec![("capabilities", Json::Arr(rows))],
+                &human,
+            );
+            Ok(())
+        }
+        Some("show") => {
+            let commitment =
+                parse_digest(args.require("--commitment", "<64-hex>")?, "--commitment")?;
+            let book = ctx.books.open(args)?;
+            let Some(issued) = book.issued_capability(&commitment)? else {
+                return Err(Refusal::new(
+                    fa_journal::refusal::code::CAPABILITY_NOT_ISSUED,
+                    exit::SAFETY,
+                    format!(
+                        "no capability with commitment {} was issued in this book",
+                        hex(&commitment)
+                    ),
+                    "plan §14.2 (issuance is a journaled control entry; bead fa-v62)",
+                    "list the book's issued capabilities with `fa capability list --json`",
+                )
+                .into());
+            };
+            ctx.out.at_book(&book)?;
+            let row = issued_json(&issued);
+            ctx.out.event(
+                "capability_issued_detail",
+                vec![("capability", row)],
+                &format!(
+                    "capability {} issued at {} to holder {:032x}",
+                    hex(&issued.commitment),
+                    issued.issued_at.0,
+                    issued.capability.holder().0
+                ),
+            );
+            Ok(())
+        }
         other => Err(unhandled("capability", other)),
     }
+}
+
+/// One journaled issuance as robot data (plan §14.2, fa-v62).
+fn issued_json(i: &fa_journal::IssuedCapability) -> Json {
+    let cap = &i.capability;
+    obj(vec![
+        ("commitment", s(hex(&i.commitment))),
+        ("control_entry", s(format!("{:032x}", i.control_entry.0))),
+        ("holder", s(format!("{:032x}", cap.holder().0))),
+        ("issuer", s(format!("{:032x}", cap.issuer().0))),
+        ("profile", s(cap.profile().name())),
+        (
+            "ops",
+            Json::Arr(cap.ops().iter().map(|op| s(op.name())).collect()),
+        ),
+        (
+            "ceilings",
+            Json::Arr(
+                cap.ceilings()
+                    .iter()
+                    .map(|(unit, max)| {
+                        obj(vec![
+                            ("unit_id", Json::Int(i128::from(unit.0))),
+                            ("max_mantissa", Json::Int(*max)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "expires_at",
+            cap.expires_at()
+                .map_or(Json::Null, |at| Json::Int(i128::from(at.0))),
+        ),
+        ("issued_at", Json::Int(i128::from(i.issued_at.0))),
+        (
+            "revoked_at",
+            i.revoked_at
+                .map_or(Json::Null, |at| Json::Int(i128::from(at.0))),
+        ),
+    ])
+}
+
+/// `fa capability issue` (plan §14.2, bead fa-v62): journal a holder-bound
+/// capability for `--holder` under the caller's capability, then write the
+/// holder's token (principal, capability, secret) to a new 0600 file. The
+/// file is written only after the issuance commits, so a refused issuance
+/// leaves no file; the secret is never journaled or printed.
+fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str = "fa capability issue --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--expires-at <seq>] --out <new-file> --as <issuer> --grant issue_capability --grant <each issued op>";
+    let holder = args.require("--holder", "<principal>")?.to_string();
+    if holder.is_empty() || holder.len() > fa_policy::capability::MAX_TOKEN_PRINCIPAL_BYTES {
+        return Err(usage("--holder is a 1..=256-byte principal name", FIX));
+    }
+    let profile = match args.flag("--profile").unwrap_or("agent") {
+        "agent" => fa_policy::Profile::Agent,
+        "human" => fa_policy::Profile::Human,
+        other => {
+            return Err(usage(
+                format!("--profile `{other}` is not an issuable profile"),
+                "--profile agent|human (the remaining §14.4 templates land with fa-5npo)",
+            ));
+        }
+    };
+    let op_names = args.flag_all("--op");
+    if op_names.is_empty() {
+        return Err(usage("an issued capability names at least one --op", FIX));
+    }
+    let mut ops = Vec::with_capacity(op_names.len());
+    for name in &op_names {
+        ops.push(fa_policy::Op::from_name(name).ok_or_else(|| {
+            usage(
+                format!("--op `{name}` is not a registered op"),
+                "`fa capabilities --json` lists the registered ops",
+            )
+        })?);
+    }
+    let out_path = args.require("--out", "<new token file>")?.to_string();
+    if out_path == "-" {
+        return Err(usage(
+            "--out names a new token file; the secret is never written to stdout",
+            FIX,
+        ));
+    }
+    let issuer = ctx.capability(args, &[])?;
+    let mut book = ctx.books.open(args)?;
+    let holder_vid = fa_model::principal_vid(&holder);
+    let mut issued = Capability::new(holder_vid, profile, &ops, issuer.holder())
+        .map_err(|e| usage(format!("the issued capability: {e}"), FIX))?;
+    for text in args.flag_all("--ceiling") {
+        let amount = Amount::parse(text, &book.context().units).map_err(|e| {
+            usage(
+                format!("--ceiling `{text}`: {e:?}"),
+                "--ceiling \"1000.00 USD\" (an exact amount at the unit's scale)",
+            )
+        })?;
+        issued = issued
+            .with_ceiling(amount.unit, amount.mantissa)
+            .map_err(|e| usage(format!("--ceiling `{text}`: {e}"), FIX))?;
+    }
+    if let Some(text) = args.flag("--expires-at") {
+        let seq = text.parse::<u64>().map_err(|_| {
+            usage(
+                format!("--expires-at `{text}` is not a commit sequence"),
+                "--expires-at <seq> (the token is admitted while the head is below it)",
+            )
+        })?;
+        issued = issued.expiring_at(CommitSeq(seq));
+    }
+    let mut secret = [0u8; 32];
+    Entropy::production()
+        .fill(&mut secret)
+        .map_err(BookError::Entropy)?;
+    let issued = issued.holder_bound(fa_policy::possession_digest(&secret));
+    let token = fa_policy::CapabilityToken::new(holder.clone(), issued.clone(), secret)
+        .map_err(|e| Fail::Internal(format!("capability token: {e}")))?;
+    let token_bytes = token
+        .canonical_bytes()
+        .map_err(|e| Fail::Internal(format!("capability token: {e}")))?;
+    let commitment = issued
+        .commitment()
+        .map_err(|e| Fail::Internal(format!("capability commitment: {e}")))?;
+    let default_date = book
+        .spec()?
+        .opening_date
+        .or_else(|| book.periods().ok()?.first().map(|p| p.start))
+        .unwrap_or(DateDay(0));
+    let date = date_flag(args, default_date)?;
+    let key = args
+        .flag("--key")
+        .map(|k| k.as_bytes().to_vec())
+        .unwrap_or_else(|| commitment.to_vec());
+    let default_desc = format!("capability issue to {holder}");
+    let description = args.flag("--description").unwrap_or(&default_desc);
+    let recorded = book.issue_capability(issuer, issued, date, &key, description)??;
+    write_new_output_file(
+        &ctx.files,
+        &out_path,
+        &token_bytes,
+        "capability token",
+        "--out",
+    )?;
+    ctx.out.at_book(&book)?;
+    ctx.out.event(
+        "capability_issued",
+        vec![
+            ("commitment", s(hex(&commitment))),
+            (
+                "control_entry",
+                s(format!("{:032x}", recorded.control_entry.0)),
+            ),
+            ("holder", s(format!("{holder_vid:032x}", holder_vid = holder_vid.0))),
+            ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
+            ("already_recorded", Json::Bool(recorded.already_recorded)),
+            ("token", s(&out_path)),
+        ],
+        &format!(
+            "issued capability {} to {holder} at {}; token written to {out_path} (keep it 0600; launch fa-mcp with --token {out_path})",
+            hex(&commitment),
+            recorded.recorded_at.0
+        ),
+    );
+    Ok(())
 }
 
 /// A 64-hex digest from a flag.
@@ -7550,7 +7783,11 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
         let capability = ctx.capability(
             args,
-            if certify { &["read", "produce"] } else { &["read"] },
+            if certify {
+                &["read", "produce"]
+            } else {
+                &["read"]
+            },
         )?;
         let mut book = ctx.books.open(args)?;
         let comparison = StatementDiffRequest {

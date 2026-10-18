@@ -124,14 +124,14 @@ example = "fa approve --proposal <proposal_digest> --as controller --book ./book
 
 [[verb]]
 name = "capability"
-summary = "Steward capability controls: journal an irreversible capability revocation by commitment (plan §14.2)."
+summary = "Steward capability controls: issue a holder-bound capability, list or show the book's issued capabilities, and journal an irreversible revocation by commitment (plan §14.2)."
 writes = true
-subcommands = ["revoke"]
-flags = ["--commitment", "--date", "--key", "--description", "--grant"]
+subcommands = ["revoke", "issue", "list", "show"]
+flags = ["--commitment", "--date", "--key", "--description", "--grant", "--holder", "--profile", "--op", "--ceiling", "--expires-at", "--out"]
 switches = []
-events = ["capability_revoked"]
+events = ["capability_revoked", "capability_issued", "capabilities_issued", "capability_issued_detail"]
 exits = [0, 2, 4, 5, 6, 7]
-usage = ["capability revoke --commitment <64-hex> [--date YYYY-MM-DD] [--key K] [--description <text>] --as <principal> [--grant issue_capability] --yes"]
+usage = ["capability revoke --commitment <64-hex> [--date YYYY-MM-DD] [--key K] [--description <text>] --as <principal> [--grant issue_capability] --yes", "capability issue --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--expires-at <seq>] --out <new-file> [--date YYYY-MM-DD] [--key K] --as <issuer> --grant issue_capability   (journals the holder-bound capability, then writes the holder's 0600 token: principal, capability and secret; the issued ops, units, ceilings and expiry never widen the issuer's)", "capability list   (every capability this book issued, from the journal, with its revocation state)", "capability show --commitment <64-hex>", "An issued token is admitted only against its journaled issuance (FA-REF-156 otherwise); launch fa-mcp with --token <file> to bind a session to it."]
 example = "fa capability revoke --commitment 0101010101010101010101010101010101010101010101010101010101010101 --as controller --grant issue_capability --yes --book ./books/myco --json"
 
 [[verb]]
@@ -827,6 +827,24 @@ doc = "An approval of a proposal digest was recorded (or already existed: then n
 fields = ["approval_vid:hex", "approved_digest:hex", "security_policy_epoch:int?", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
+name = "capability_issued"
+book = true
+doc = "A holder-bound capability was issued by a journaled PolicyControl entry (or the identical capability was already issued: then nothing was written). The token file names the holder's 0600 token; the secret is never printed."
+fields = ["commitment:hex", "control_entry:hex", "holder:hex", "recorded_at:seq", "already_recorded:bool", "token:string"]
+
+[[event]]
+name = "capabilities_issued"
+book = true
+doc = "Every capability this book issued, decoded from its journaled body, in issuance order, with its revocation state."
+fields = ["capabilities:[issued_capability]"]
+
+[[event]]
+name = "capability_issued_detail"
+book = true
+doc = "One issued capability, decoded from its journaled body, with its revocation state."
+fields = ["capability:issued_capability"]
+
+[[event]]
 name = "capability_revoked"
 book = true
 doc = "A capability commitment was revoked by a journaled PolicyControl entry (or was already revoked: then nothing was written)."
@@ -1377,7 +1395,7 @@ fields = ["commitment:hex", "flags:[string]", "posture:string", "profile:string"
 
 [[shape]]
 name = "authority"
-doc = "Execution authority: mcp-launch-config names the fixed principal, launch template (agent or preparer), and exact bounded ops. Embedded-owner has Human profile and null ops because it self-issues per command; principal is null until parsed. Launch configuration does not authenticate the operator or supply issued tokens."
+doc = "Execution authority: mcp-launch-config names the fixed principal, launch template (agent or preparer), and exact bounded ops. mcp-issued-token names a session bound at launch to a holder's issued token (fa-mcp --token): the token's principal, the profile it was issued under (an issued Human capability reports preparer) and its exact journaled ops; the kernel admits it only against its journaled issuance. Embedded-owner has Human profile and null ops because it self-issues per command; principal is null until parsed. Launch configuration does not authenticate the operator."
 fields = ["posture:string", "principal:string?", "profile:string", "ops:[string]?"]
 
 [[shape]]
@@ -1414,6 +1432,16 @@ fields = ["code:string", "state:string", "kind:string", "start:date", "end:date"
 name = "batch_member"
 doc = "One entry of a committed PostBatch, in member order."
 fields = ["index:int", "vid:hex", "entry_digest:hex", "class:string?", "period:string?"]
+
+[[shape]]
+name = "issued_capability"
+doc = "A capability as its journaled issuance records it (plan §14.2)."
+fields = ["commitment:hex", "control_entry:hex", "holder:hex", "issuer:hex", "profile:string", "ops:[string]", "ceilings:[capability_ceiling]", "expires_at:seq?", "issued_at:seq", "revoked_at:seq?"]
+
+[[shape]]
+name = "capability_ceiling"
+doc = "A per-leg ceiling: the maximum mantissa at the unit's scale."
+fields = ["unit_id:int", "max_mantissa:int"]
 
 [[shape]]
 name = "tb_row"
@@ -1835,6 +1863,21 @@ reason = "host-only: stops the daemon process that will host fa-mcp (plan §15.4
 verb = "demo"
 subcommand = "init"
 reason = "host-only: creates a new demo book directory and key files on the host filesystem (plan §15.4 registered exclusion)"
+
+[[mcp.excluded]]
+verb = "capability"
+subcommand = "issue"
+reason = "host-only: issuing authority needs --grant issue_capability and writes the holder's secret token file on the host; a bound MCP session never issues capabilities (plan §14.2/§15.4 registered exclusion, fa-v62)"
+
+[[mcp.excluded]]
+verb = "capability"
+subcommand = "list"
+reason = "host-only: the operator's inventory of every grant in the book; a bound session reads its own authority through fa_orient_capabilities (plan §15.4 registered exclusion, fa-v62)"
+
+[[mcp.excluded]]
+verb = "capability"
+subcommand = "show"
+reason = "host-only: the operator's view of one grant in the book; a bound session reads its own authority through fa_orient_capabilities (plan §15.4 registered exclusion, fa-v62)"
 
 [[mcp.excluded]]
 verb = "capability"

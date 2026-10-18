@@ -4638,6 +4638,31 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "issue_capability",
         "--yes",
     ]);
+    // Issuance (fa-v62): the issuer holds every op it grants.
+    let ev_token = dir.join("ev-agent.token").display().to_string();
+    let (_, issued) = run2(&[
+        "capability",
+        "issue",
+        "--holder",
+        "ev-agent",
+        "--profile",
+        "agent",
+        "--op",
+        "read",
+        "--op",
+        "post",
+        "--out",
+        &ev_token,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "post",
+    ]);
+    let ev_commitment = field(&issued, "commitment").unwrap_or_default().to_string();
+    run2(&["capability", "list"]);
+    run2(&["capability", "show", "--commitment", &ev_commitment]);
     let demo_dir = dir.join("demo-ev");
     let demo_args = [
         "demo",
