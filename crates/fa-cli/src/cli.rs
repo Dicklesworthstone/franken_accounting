@@ -4282,6 +4282,14 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             FIX,
         ));
     }
+    // The token is written only after the issuance commits; refuse an
+    // existing path first, so a grant is never journaled with its secret lost.
+    if std::fs::symlink_metadata(ctx.files.resolve(&out_path)).is_ok() {
+        return Err(usage(
+            format!("--out {out_path} already exists; an existing file is never overwritten"),
+            "choose a new --out path for the holder's token",
+        ));
+    }
     let issuer = ctx.capability(args, &[])?;
     let mut book = ctx.books.open(args)?;
     let holder_vid = fa_model::principal_vid(&holder);
