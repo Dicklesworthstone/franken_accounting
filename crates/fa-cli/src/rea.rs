@@ -17,7 +17,7 @@ use fa_time::DateDay;
 use fgdb_types::VId;
 
 use crate::args::Args;
-use crate::cli::{Ctx, Fail, date_flag, parse_json, untrusted_text_json, usage};
+use crate::cli::{Ctx, Fail, Out, date_flag, parse_json, untrusted_text_json, usage};
 use crate::json::{Json, obj, s};
 
 const PARTY_EXAMPLE: &str = "fa party add <party.json|-> | fa party relate <from> <to> --kind owns|controls|related --basis <code> --valid-from YYYY-MM-DD [--valid-to YYYY-MM-DD] [--pct <num>/<den>] | fa party list";
@@ -170,14 +170,14 @@ fn party_ref(book: &fa::Book, raw: &str) -> Result<VId, Fail> {
 }
 
 fn emit_recorded(
-    ctx: &Ctx<'_>,
+    out: &Out,
     book: &fa::Book,
     object: &str,
     code: &str,
     recorded: &fa_journal::ReaControlRecorded,
 ) -> Result<(), Fail> {
-    ctx.out.at_book(book)?;
-    ctx.out.event(
+    out.at_book(book)?;
+    out.event(
         "rea_recorded",
         vec![
             ("object", s(object)),
@@ -248,7 +248,7 @@ fn party_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .map_or_else(|| format!("party:{code}"), str::to_string);
     let date = date_flag(args, DateDay(0))?;
     let recorded = book.create_party(&spec, who, date, key.as_bytes(), &capability)??;
-    emit_recorded(ctx, &book, "party", &code, &recorded)
+    emit_recorded(&ctx.out, &book, "party", &code, &recorded)
 }
 
 fn instrument_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -303,7 +303,7 @@ fn instrument_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .map_or_else(|| format!("instrument:{code}"), str::to_string);
     let date = date_flag(args, DateDay(0))?;
     let recorded = book.create_instrument(&spec, who, date, key.as_bytes(), &capability)??;
-    emit_recorded(ctx, &book, "instrument", &code, &recorded)
+    emit_recorded(&ctx.out, &book, "instrument", &code, &recorded)
 }
 
 fn party_relate(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -410,7 +410,7 @@ fn party_relate(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let date = date_flag(args, DateDay(0))?;
     let recorded = book.record_relationship(&spec, who, date, key.as_bytes(), &capability)??;
     emit_recorded(
-        ctx,
+        &ctx.out,
         &book,
         "relationship",
         &format!("{from}->{to}"),
