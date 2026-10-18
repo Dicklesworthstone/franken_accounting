@@ -1320,12 +1320,18 @@ fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind(
     let r = h.post(h.request(one_leg, &["post"])).unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE));
 
+    // A Replacement posts only paired with its Reversal in one batch
+    // (FA-INV-08.replacement-paired); alone it is refused.
+    let r = h
+        .post(h.request(
+            h.proposal(h.rent_legs(1), b"cls", EntryClass::REPLACEMENT),
+            &["post", "post_closed", "restate", "migrate"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-051", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("paired Reversal"), "{r}");
     // A registered class this slice does not enforce is refused, naming its bead.
-    for class in [
-        EntryClass::REPLACEMENT,
-        EntryClass::CLOSING,
-        EntryClass::RESTATEMENT,
-    ] {
+    for class in [EntryClass::CLOSING, EntryClass::RESTATEMENT] {
         let r = h
             .post(h.request(
                 h.proposal(h.rent_legs(1), b"cls", class),
