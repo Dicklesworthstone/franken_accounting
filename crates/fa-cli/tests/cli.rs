@@ -10237,7 +10237,7 @@ fn explain_lineage_cli_reports_supersession_component_and_net_effect() -> std::i
     assert_eq!(text(&sups[0], "netting_law"), "negation");
     assert_eq!(text(&sups[0], "reason"), "WrongAmount");
     for cell in arr(&after, "net_effect") {
-        assert_eq!(text(&cell, "net"), "0.00 USD");
+        assert_eq!(text(cell, "net"), "0.00 USD");
     }
 
     Ok(())

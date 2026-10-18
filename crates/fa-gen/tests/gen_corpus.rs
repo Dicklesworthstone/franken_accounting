@@ -372,8 +372,8 @@ fn post_corpus(corpus: GeneratedCorpus) -> PostedScenario {
     };
 
     // Phase 1: post all pre-SoftClose entries.
-    for idx in 0..corpus.entries.len() {
-        if !corpus.entries[idx].post_after_soft_close {
+    for (idx, entry) in corpus.entries.iter().enumerate() {
+        if !entry.post_after_soft_close {
             post_one(idx, &mut db);
         }
     }
@@ -410,8 +410,8 @@ fn post_corpus(corpus: GeneratedCorpus) -> PostedScenario {
     }
 
     // Phase 3: post all post-SoftClose entries.
-    for idx in 0..corpus.entries.len() {
-        if corpus.entries[idx].post_after_soft_close {
+    for (idx, entry) in corpus.entries.iter().enumerate() {
+        if entry.post_after_soft_close {
             post_one(idx, &mut db);
         }
     }

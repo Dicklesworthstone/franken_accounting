@@ -332,7 +332,9 @@ fn actual_postings_follow_full_paths_and_historical_cutoffs() {
             .unwrap();
         assert_eq!(
             spent.cites[2..]
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|hop| hop[0].clone())
                 .collect::<Vec<_>>(),
             [

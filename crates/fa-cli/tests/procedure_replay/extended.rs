@@ -106,8 +106,8 @@ fn extended_analytics_replay_from_retained_handles_files_and_stdin_after_new_evi
             )
             .unwrap();
         let mut oid = [0; 32];
-        for (out, pair) in oid.iter_mut().zip(evidence.as_bytes().chunks_exact(2)) {
-            *out = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
+        for (out, pair) in oid.iter_mut().zip(evidence.as_bytes().as_chunks::<2>().0) {
+            *out = u8::from_str_radix(std::str::from_utf8(pair.as_slice()).unwrap(), 16).unwrap();
         }
         runtime
             .block_on(book.record_register_equals(

@@ -166,7 +166,7 @@ fn network_laws_are_discoverable_and_trace_real_postings_with_ordered_path_citat
         assert_eq!(number(spent.get("statistic").unwrap(), "value"), 1000);
         let cites = array(spent, "cites");
         assert_eq!(cites.len(), 2 + 3 * entries.len());
-        for (hop, entry) in cites[2..].chunks_exact(3).zip(&entries) {
+        for (hop, entry) in cites[2..].as_chunks::<3>().0.iter().zip(&entries) {
             assert_eq!(text(&hop[0], "kind"), "entry");
             assert_eq!(text(&hop[0], "entry"), entry);
             assert_eq!(text(&hop[1], "kind"), "account");
