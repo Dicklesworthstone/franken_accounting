@@ -19,13 +19,15 @@ use crate::{AsyncBook, BookError, Outcome};
 pub enum IntakeAction {
     Upload,
     ImportRun,
+    /// Bank parsing and account mapping also require read and reconcile.
+    BankImport,
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Check authority before the host consumes its input stream.
     ///
-    /// No read capability is implied or required: a write-only uploader may
-    /// submit evidence but cannot use this method to look up documents. The
+    /// Ordinary upload/import requires no read capability. Bank import also
+    /// requires whole-book read and reconcile before source consumption. The
     /// admission frontier is the current book head, never a historical report
     /// coordinate. Success must not be cached or substituted for publication.
     pub fn preflight_intake(
@@ -40,7 +42,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let admission = match action {
             IntakeAction::Upload => fa_policy::require(capability, Op::Post, "uploading evidence")
                 .and_then(|()| fa_policy::scope(capability, book.book_id)),
-            IntakeAction::ImportRun => {
+            IntakeAction::ImportRun | IntakeAction::BankImport => {
                 let key = fa_policy::sod::control_key("ImportControl", None, "Import");
                 let op = policy::steward()?.preparer_op(&key).ok_or_else(|| {
                     KernelError::Corrupt("sod_policy.toml has no import-run rule".into())
@@ -59,6 +61,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         if let Err(denial) = admission {
             return Ok(Err(policy::refusal(&denial)));
+        }
+        if action == IntakeAction::BankImport {
+            let bank_admission = fa_policy::admit_read(
+                capability,
+                capability.holder(),
+                book.book_id,
+            )
+            .and_then(|()| fa_policy::require(capability, Op::Reconcile, "importing bank statements"))
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None));
+            if let Err(denial) = bank_admission {
+                return Ok(Err(policy::refusal(&denial)));
+            }
         }
         query.with_restriction(|| -> Outcome<()> {
             Ok(policy::current_at(&self.db, book, capability)?.map(|_| ()))
@@ -237,7 +251,7 @@ mod tests {
         let cx = PurposeContexts::narrow_runtime_root(&root);
         runtime.block_on(async {
             let mut book = create(&cx).await;
-            let cap = capability(Profile::Human, 47, &[Op::Post]);
+            let cap = capability(Profile::Human, 47, &[Op::Post, Op::Read, Op::Reconcile]);
             book.preflight_intake(&cx, &cap, IntakeAction::Upload)
                 .unwrap()
                 .unwrap();
@@ -254,7 +268,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             let before = book.head(&cx).unwrap();
-            for action in [IntakeAction::Upload, IntakeAction::ImportRun] {
+            for action in [IntakeAction::Upload, IntakeAction::ImportRun, IntakeAction::BankImport] {
                 let refusal = book
                     .preflight_intake(&cx, &cap, action)
                     .unwrap()
@@ -268,6 +282,159 @@ mod tests {
                     .is_err()
             );
             assert_eq!(book.head(&cx).unwrap(), before);
+        });
+    }
+
+    #[test]
+    fn bank_preflight_checks_every_required_operation_and_whole_book_scope() {
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        runtime.block_on(async {
+            let book = create(&cx).await;
+            let before = book.head(&cx).unwrap();
+            for ops in [
+                vec![Op::Read, Op::Reconcile],
+                vec![Op::Post, Op::Reconcile],
+                vec![Op::Post, Op::Read],
+            ] {
+                let cap = capability(Profile::Human, 49, &ops);
+                assert!(
+                    book.preflight_intake(&cx, &cap, IntakeAction::BankImport)
+                        .unwrap()
+                        .is_err()
+                );
+            }
+            let full = capability(Profile::Human, 49, &[Op::Post, Op::Read, Op::Reconcile]);
+            book.preflight_intake(&cx, &full, IntakeAction::BankImport)
+                .unwrap()
+                .unwrap();
+            for narrowed in [
+                full.clone().for_accounts(&["1000"]).unwrap(),
+                full.clone().for_periods(&["2026-01"]).unwrap(),
+                full.clone().effective_through(DateDay(0)),
+                full.clone().known_at_most(before),
+                full.clone().on_branch(Id128([42; 16])).unwrap(),
+            ] {
+                assert!(
+                    book.preflight_intake(&cx, &narrowed, IntakeAction::BankImport)
+                        .unwrap()
+                        .is_err()
+                );
+            }
+            let agent = capability(Profile::Agent, 50, &[Op::Post, Op::Read, Op::Reconcile]);
+            assert!(
+                book.preflight_intake(&cx, &agent, IntakeAction::BankImport)
+                    .unwrap()
+                    .is_err()
+            );
+            let expired = full.clone().expiring_at(before);
+            let refusal = book
+                .preflight_intake(&cx, &expired, IntakeAction::BankImport)
+                .unwrap()
+                .unwrap_err();
+            assert!(refusal.message.contains("expir"));
+            assert_eq!(book.head(&cx).unwrap(), before);
+        });
+    }
+
+    #[test]
+    fn bank_account_witness_refuses_changes_on_both_sides_of_preparation() {
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        runtime.block_on(async {
+            let mut book = create(&cx).await;
+            let day = DateDay::from_ymd(2026, 1, 1).unwrap();
+            let cap = capability(Profile::Human, 51, &[Op::Post, Op::Read, Op::Reconcile]);
+            book.install_chart(
+                &cx,
+                &[fa_journal::AccountSpec {
+                    code: "1000".into(),
+                    name: "Cash".into(),
+                    account_type: fa_model::AccountType::ASSET.0,
+                    normal_balance: 0,
+                    is_leaf: true,
+                    unit_policy: fa_journal::UnitPolicy::AnyCurrency,
+                    parent_code: None,
+                    limit: None,
+                }],
+                cap.holder(),
+                day,
+                b"bank-witness-chart",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let account = book.accounts(&cx).unwrap().into_iter()
+                .find(|row| row.code == "1000").unwrap();
+            let context = book.context().clone();
+            let policy = fa_registry::evidence_policy::EvidencePolicy::embedded().unwrap();
+            let document = fa_journal::Document {
+                book_id: context.book_id,
+                kind: policy.kind_by_name("BankStatement").unwrap().tag,
+                mime: "text/plain".into(),
+                grade: fa_journal::upload::upload_grade(&policy, Profile::Human).unwrap(),
+                retrieved_by: cap.holder(),
+                bytes: b"original statement held by the pending import".to_vec(),
+            };
+            let oid = document.oid();
+            let request = fa_journal::ImportRequest {
+                principal: cap.holder(),
+                source: fa_model::IntakeSource::Upload { principal: cap.holder() },
+                idempotency_key: b"bank-account-witness".to_vec(),
+                effective_date: day,
+                description: book.seal_text(&cx, "bank witness regression").unwrap(),
+                documents: vec![document],
+            };
+            let fa_journal::import::ImportPreparation::Ready(mut prepared) =
+                fa_journal::import::prepare_import(
+                    &mut book.db, &cx, &context, &cap, request.clone(),
+                )
+                .unwrap()
+                .unwrap()
+            else {
+                panic!("a fresh import must require publication");
+            };
+            prepared.witness_account(&book.db, &account).unwrap().unwrap();
+            let run = prepared.run();
+            // A competing native client changes the validated cash leaf AFTER
+            // its witness was recorded, but before any import is published.
+            let mut change = fgdb::WriteBatch::new(fa_model::symbols::relation::DERIVED_FROM);
+            change.set_vertex_property(
+                account.vid,
+                fa_model::symbols::property::POSTING,
+                Some(fgdb_types::CanonicalScalar::Int(0)),
+            );
+            book.db.write(&cx.commit(), change).await.unwrap();
+            let after_change = book.head(&cx).unwrap();
+            let refusal = prepared.commit(&mut book.db, &cx).await.unwrap().unwrap_err();
+            assert_eq!(refusal.code, fa_journal::refusal::code::CONFLICT);
+            assert_eq!(book.head(&cx).unwrap(), after_change);
+            assert!(book.query(&cx, |db, _| {
+                Ok(fa_journal::evidence::document_record(db, &oid)?.is_none()
+                    && fa_journal::import::read_run(db, run)?.is_none())
+            }).unwrap());
+
+            // The same stale validation must also refuse when the account
+            // changed BEFORE the next import transaction was prepared.
+            let fa_journal::import::ImportPreparation::Ready(mut prepared) =
+                fa_journal::import::prepare_import(
+                    &mut book.db, &cx, &context, &cap, request,
+                )
+                .unwrap()
+                .unwrap()
+            else {
+                panic!("the refused import cannot have a recorded receipt");
+            };
+            let refusal = prepared.witness_account(&book.db, &account).unwrap().unwrap_err();
+            assert_eq!(refusal.code, fa_journal::refusal::code::CONFLICT);
+            prepared.abort();
+            assert_eq!(book.head(&cx).unwrap(), after_change);
+            assert!(book.query(&cx, |db, _| {
+                Ok(fa_journal::evidence::document_record(db, &oid)?.is_none()
+                    && fa_journal::import::read_run(db, run)?.is_none())
+            }).unwrap());
         });
     }
 }

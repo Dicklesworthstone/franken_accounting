@@ -405,10 +405,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: BankImportRequest,
     ) -> Outcome<BankImportRecorded> {
-        if let Err(refusal) = self.authorize_bank(cx, capability)? {
-            return Ok(Err(refusal));
-        }
-        if let Err(refusal) = self.preflight_intake(cx, capability, IntakeAction::ImportRun)? {
+        if let Err(refusal) = self.preflight_intake(cx, capability, IntakeAction::BankImport)? {
             return Ok(Err(refusal));
         }
         let policy = EvidencePolicy::embedded()?;
@@ -433,9 +430,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "parsed line units differ from the statement's registered book currency",
             )));
         }
-        if let Err(refusal) = self.bank_account(cx, request.account, unit, self.head(cx)?)? {
-            return Ok(Err(refusal));
-        }
+        let account = match self.bank_account(cx, request.account, unit, self.head(cx)?)? {
+            Ok(account) => account,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let source = Document {
             book_id: self.context().book_id,
             kind: policy_kind(&policy, "BankStatement")?,
@@ -508,20 +506,44 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }));
         }
         let key = fa_journal::evidence::hex(&manifest_oid.0);
-        let recorded = self
-            .import_run(
-                cx,
-                capability,
-                IntakeSource::Upload {
-                    principal: capability.holder(),
-                },
-                key.as_bytes(),
-                extract.statement_date,
-                "Bank statement and canonical parsed lines",
-                documents,
-            )
-            .await?;
-        Ok(recorded.map(|receipt| BankImportRecorded {
+        let import_request = fa_journal::ImportRequest {
+            principal: capability.holder(),
+            source: IntakeSource::Upload {
+                principal: capability.holder(),
+            },
+            idempotency_key: key.into_bytes(),
+            effective_date: extract.statement_date,
+            description: self.seal_text(cx, "Bank statement and canonical parsed lines")?,
+            documents,
+        };
+        let context = self.context().clone();
+        let preparation = match fa_journal::import::prepare_import_in_store(
+            &mut self.db,
+            cx,
+            &context,
+            capability,
+            &self.blobs,
+            import_request,
+        )
+        .await?
+        {
+            Ok(preparation) => preparation,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let receipt = match preparation {
+            fa_journal::import::ImportPreparation::AlreadyRecorded(receipt) => receipt,
+            fa_journal::import::ImportPreparation::Ready(mut prepared) => {
+                if let Err(refusal) = prepared.witness_account(&self.db, &account)? {
+                    prepared.abort();
+                    return Ok(Err(refusal));
+                }
+                match prepared.commit(&mut self.db, cx).await? {
+                    Ok(receipt) => receipt,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+        };
+        Ok(Ok(BankImportRecorded {
             manifest_oid,
             manifest,
             receipt,

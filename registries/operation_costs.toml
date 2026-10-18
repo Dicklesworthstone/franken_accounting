@@ -439,3 +439,18 @@ edges_written = 0
 vertices_written = 0
 transactions = 0
 complexity_witness = "1 snapshot frontier read + O(legs) deterministic scan under stripped Cx (0 writes)"
+
+[[operation_class]]
+id = "bank_statement_import"
+name = "Bank statement import with source-linked line documents"
+substrate_class = "Bounded import preparation and one atomic ImportControl transaction"
+substrate_transactions = "1 for a new statement; 0 for an exact retry"
+today_posture = "Original source, versioned account-bound manifest, line documents and custody publish together"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 BankImportManifest workpaper + N canonical BankLine documents and their custody, beside the original BankStatement and ImportRun receipt"
+hot_object_exceptions = []
+external_authorities = "none; bank files are caller-supplied evidence, never a synchronous network call"
+complexity_witness = "O(input bytes + lines) parse, canonical projection and bounded document admission; one witnessed account read; at most 1022 lines and 16 MiB of original input"
+notes = "No monetary entries or match decisions. Re-reading reparses retained source and verifies complete projected bytes. Source custody uses the actual intake profile; derived evidence is conservatively self-sourced."

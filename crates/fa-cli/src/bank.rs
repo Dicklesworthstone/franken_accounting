@@ -122,7 +122,7 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut book = ctx.books.open(args)?;
     // Current authority is checked before a host reads or consumes the input.
     // The import kernel checks it again and retains its publication witnesses.
-    book.preflight_intake(&capability, fa::IntakeAction::ImportRun)??;
+    book.preflight_intake(&capability, fa::IntakeAction::BankImport)??;
     let max_statement_bytes = fa_registry::evidence_policy::EvidencePolicy::embedded()
         .map_err(|error| Fail::Internal(format!("the embedded evidence policy: {error}")))?
         .max_document_bytes;

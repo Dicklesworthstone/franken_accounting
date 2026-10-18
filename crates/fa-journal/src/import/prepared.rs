@@ -81,6 +81,28 @@ impl PreparedImport {
         self.txn.abort();
     }
 
+    /// Bind an already-validated account mapping to this import's original
+    /// transaction. A later account change invalidates the retained read witness.
+    /// This adds no graph effects and never refreshes publication authority.
+    pub fn witness_account<V: Vfs + Clone>(
+        &mut self,
+        db: &Database<V>,
+        expected: &crate::rows::AccountRow,
+    ) -> Outcome<()> {
+        if expected.vid != fa_model::account_vid(self.book.book_id, &expected.code) {
+            return Ok(Err(conflict("the import account mapping belongs to another book")));
+        }
+        let Some(row) = self.txn.vertex(db, expected.vid)? else {
+            return Ok(Err(conflict("the import account disappeared before preparation")));
+        };
+        if !row.labels.contains(&label::ACCOUNT)
+            || crate::rows::AccountRow::decode(&row)? != *expected
+        {
+            return Ok(Err(conflict("the import account changed before preparation")));
+        }
+        Ok(Ok(()))
+    }
+
     /// Recheck expiry and commit the original witnessed transaction. Never
     /// refresh its policy/revocation witnesses after external bytes are written.
     pub async fn commit<V: Vfs + Clone>(
