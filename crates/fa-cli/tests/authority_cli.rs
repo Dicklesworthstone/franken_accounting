@@ -205,6 +205,212 @@ fn derived_report_certification_requires_produce_before_any_book_or_output_obser
 }
 
 #[test]
+fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadata() {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::{Id128, principal_vid};
+    use fa_money::UnitRegistry;
+    use fa_policy::{Capability, CapabilityToken, Op, Profile, possession_digest};
+    use fa_time::{DateDay, FiscalCalendar};
+
+    // Real retained ticks bracket an earlier report coordinate. The same
+    // holder-bound token is first issued, admitted, and then revoked at HEAD.
+    const LOWER_NS: u64 = 1_773_576_000_000_000_000;
+    const UPPER_NS: u64 = 1_773_576_010_000_000_000;
+    const INSTANT: &str = "2026-03-15T12:00:05Z";
+    const ZERO_DIGEST: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+    let dir = fixture();
+    let book_dir = dir.join("held-book");
+    let day = DateDay::parse("2026-03-15").unwrap();
+    let units = UnitRegistry::embedded().unwrap();
+    let mut book = Book::create_memory(
+        BookKeys::for_development(0x3a),
+        BookSpec {
+            book_id: Id128([0x3b; 16]),
+            name: "Current report authority".into(),
+            base_unit: units.lookup("USD").unwrap(),
+            calendar: FiscalCalendar::monthly("report-authority", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(58),
+    )
+    .unwrap();
+    book.create_periods(2026).unwrap();
+    let issuer = Capability::embedded(
+        principal_vid("report-issuer"),
+        &["issue_capability", "read", "produce", "post", "reconcile"],
+    )
+    .unwrap();
+    let secret = [0x39; 32];
+    let issued = Capability::new(
+        principal_vid("report-preparer"),
+        Profile::Human,
+        &[Op::Read, Op::Produce, Op::Post, Op::Reconcile],
+        issuer.holder(),
+    )
+    .unwrap()
+    .holder_bound(possession_digest(&secret));
+    book.issue_capability(
+        issuer.clone(),
+        issued.clone(),
+        day,
+        b"issue-report-preparer",
+        "Read and retain reports and evidence",
+    )
+    .unwrap()
+    .unwrap();
+    let token = CapabilityToken::new("report-preparer", issued.clone(), secret).unwrap();
+    let authority = LaunchAuthority::from_token(book_dir.clone(), None, &token)
+        .unwrap()
+        .with_files(Some(dir.clone()))
+        .unwrap();
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let cx = runtime.request_cx_with_budget(Budget::INFINITE);
+    let witness = Capability::embedded(issuer.holder(), &["witness"]).unwrap();
+    let lower = runtime
+        .block_on(book.record_tick(&cx, LOWER_NS, true, &witness))
+        .unwrap()
+        .unwrap();
+    let upper = runtime
+        .block_on(book.record_tick(&cx, UPPER_NS, true, &witness))
+        .unwrap()
+        .unwrap();
+    let held = |book: &mut Book, argv: &[&str]| {
+        let argv: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
+        run_with_authority(
+            &argv,
+            Books::Held {
+                book,
+                dir: book_dir.clone(),
+            },
+            Files {
+                cwd: None,
+                stdin: Stdin::Missing,
+            },
+            &authority,
+            true,
+        )
+    };
+
+    // An admitted caller gets the explicit unsupported-format refusal and
+    // real resolution evidence. After revocation even that evidence is hidden.
+    let before = book.head().unwrap();
+    let (exit, allowed) = held(
+        &mut book,
+        &[
+            "tb",
+            "--summary",
+            "--as-of",
+            "2026-03-31",
+            "--known-at",
+            INSTANT,
+            "--certify",
+            "--json",
+        ],
+    );
+    assert_eq!(exit, 2, "{allowed:?}");
+    let allowed = event(&authority, &allowed);
+    let coordinate = allowed.get("coordinate").unwrap();
+    assert_eq!(
+        coordinate.get("known_at"),
+        Some(&Json::Int(i128::from(lower.recorded_at.0))),
+    );
+    let time = coordinate.get("time_evidence").unwrap();
+    for (name, tick) in [("lower", &lower), ("upper", &upper)] {
+        assert_eq!(
+            time.get(name).and_then(|tick| tick.get("recorded_at")),
+            Some(&Json::Int(i128::from(tick.recorded_at.0))),
+        );
+    }
+    assert_eq!(book.head().unwrap(), before);
+
+    book.revoke_capability(
+        issuer,
+        issued.commitment().unwrap(),
+        day,
+        b"revoke-report-preparer",
+        "Withdraw report and evidence access",
+    )
+    .unwrap()
+    .unwrap();
+    let revoked_head = book.head().unwrap();
+    let historical = lower.recorded_at.0.to_string();
+    let mut commands = Vec::new();
+    for mode in [
+        vec![],
+        vec!["--certify"],
+        vec!["--certificate-out", "unwritten.cert"],
+    ] {
+        for selector in [
+            vec!["--as-of", "2026-03-31", "--known-at", INSTANT],
+            vec!["--as-of", "2026-03-31", "--known-at", historical.as_str()],
+            vec!["--fiscal-year", "2099"],
+            vec!["--period", "NEVER_REPORTED", "--as-originally-reported"],
+        ] {
+            let mut command = vec!["tb", "--summary"];
+            command.extend(selector);
+            command.extend(mode.iter().copied());
+            commands.push(command);
+        }
+        for sub in ["detail", "roll-forward", "aging"] {
+            let mut command = vec!["gl", sub, "--account", "1000", "--known-at", INSTANT];
+            if sub == "aging" {
+                command.extend(["--as-of", "2026-03-31"]);
+            } else {
+                command.extend(["--from", "2026-03-01", "--to", "2026-03-31"]);
+            }
+            command.extend(mode.iter().copied());
+            commands.push(command);
+        }
+    }
+    commands.extend([
+        vec![
+            "bank",
+            "match",
+            "--import",
+            ZERO_DIGEST,
+            "--as-known-at",
+            INSTANT,
+        ],
+        vec![
+            "bank",
+            "import",
+            "-",
+            "--bank-format",
+            "camt053",
+            "--account",
+            "1000",
+        ],
+        vec!["finding", "list", "--certificate", ZERO_DIGEST],
+        vec!["finding", "export", "--certificate", ZERO_DIGEST],
+        vec!["finding", "replay", "-"],
+    ]);
+    for mut argv in commands {
+        argv.push("--json");
+        let (exit, denied) = held(&mut book, &argv);
+        assert_eq!(exit, 7, "argv={argv:?}\n{denied:?}");
+        let denied = event(&authority, &denied);
+        assert_eq!(denied.get("event").and_then(Json::as_str), Some("error"));
+        assert_eq!(denied.get("book"), Some(&Json::Null), "argv={argv:?}");
+        assert_eq!(denied.get("coordinate"), Some(&Json::Null), "argv={argv:?}");
+        assert_eq!(
+            denied
+                .get("data")
+                .and_then(|data| data.get("refusal_id"))
+                .and_then(Json::as_str),
+            Some("FA-REF-023"),
+            "argv={argv:?}\n{denied:?}",
+        );
+        assert_eq!(book.head().unwrap(), revoked_head);
+        assert!(!dir.join("unwritten.cert").exists());
+    }
+}
+
+#[test]
 fn plan_files_and_plan_output_flags_cannot_confirm_a_dangerous_commit() {
     let authority = authority(LaunchProfile::Preparer, &[]);
     for transition in ["close", "lock", "reopen"] {

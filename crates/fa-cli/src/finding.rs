@@ -318,8 +318,9 @@ fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .transpose()?;
     let who = ctx.principal(args);
     let cap = capability(ctx, args, &["read", "produce"])?;
-    let mut book = ctx.books.open(args)?;
-    admit_book(&book, who, &cap)?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_book(book, who, &cap))?;
     let before = book.head()?;
     let digest = if let Some(digest) = source {
         digest
@@ -511,8 +512,9 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let at = cutoff(args)?;
     let who = ctx.principal(args);
     let cap = capability(ctx, args, &["read"])?;
-    let mut book = ctx.books.open(args)?;
-    admit_book(&book, who, &cap)?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_book(book, who, &cap))?;
     let history = book.finding_run_review_history(who, &cap, &digest, at)??;
     let fields = vec![
         ("certificate", s(hex(&digest))),
@@ -569,8 +571,9 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let at = cutoff(args)?;
     let who = ctx.principal(args);
     let cap = capability(ctx, args, &["read"])?;
-    let mut book = ctx.books.open(args)?;
-    admit_book(&book, who, &cap)?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_book(book, who, &cap))?;
     let history = book.finding_review_history(who, &cap, selected, at)??;
     let fields = vec![
         ("certificate", s(hex(&history.finding.certificate_digest))),
@@ -692,8 +695,9 @@ fn review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let who = ctx.principal(args);
     let cap = capability(ctx, args, &["read", "approve"])?;
-    let mut book = ctx.books.open(args)?;
-    admit_book(&book, who, &cap)?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_book(book, who, &cap))?;
     let before = book.head()?;
     let decision = book.review_finding(who, &cap, &request)??;
     ctx.out.at_book(&book)?;
@@ -749,8 +753,9 @@ fn export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let who = ctx.principal(args);
     let cap = capability(ctx, args, &["read", "produce"])?;
-    let mut book = ctx.books.open(args)?;
-    admit_book(&book, who, &cap)?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_book(book, who, &cap))?;
     let (id, package_digest, original, review_at, bytes) = if reviews {
         let paper = book.finding_review_workpaper(who, &cap, &digest, at)??;
         let original = paper.observation_workpaper().clone();
@@ -926,8 +931,9 @@ fn replay(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let who = ctx.principal(args);
     let cap = capability(ctx, args, &["read"])?;
-    let mut book = ctx.books.open(args)?;
-    admit_book(&book, who, &cap)?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_book(book, who, &cap))?;
     let bytes = read_workpaper(&ctx.files, &args.positional[2])?;
     let reviews = bytes
         .get(4..)

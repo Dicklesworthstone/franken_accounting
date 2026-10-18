@@ -819,6 +819,19 @@ impl BookSource<'_> {
         Ok(book)
     }
 
+    /// Open for native admission without first disclosing the book or its
+    /// frontier in an error envelope. Only admitted reads receive a coordinate.
+    pub(crate) fn open_admitted(
+        &mut self,
+        args: &Args,
+        admit: impl FnOnce(&Book) -> Result<(), Fail>,
+    ) -> Result<BookRef<'_>, Fail> {
+        let book = self.books.open(args, self.cwd.as_deref())?;
+        admit(&book)?;
+        stamp(&self.said, &book)?;
+        Ok(book)
+    }
+
     pub(crate) fn prepare_create(&mut self, dir: &Path) -> Result<(), Fail> {
         match &mut self.books {
             Books::Dir => {
@@ -8210,7 +8223,33 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         None
     };
     let out = &ctx.out;
-    let mut book = ctx.books.open(args)?;
+    let mut book = if let Some(capability) = summary_cap.as_ref() {
+        ctx.books.open_admitted(args, |book| {
+            // A summary retains the whole underlying leaf fold even when
+            // --root selects fewer displayed groups. Admit that reach and
+            // current authority before resolving time, periods or issuance.
+            fa_policy::admit_read(capability, who, book.context().book_id)
+                .and_then(|()| {
+                    fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+                })
+                .and_then(|()| {
+                    if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+                        fa_policy::require(
+                            capability,
+                            fa_policy::Op::Produce,
+                            "certifying and retaining a summary trial balance",
+                        )
+                    } else {
+                        Ok(())
+                    }
+                })
+                .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+            book.read_scope(who, capability)??;
+            Ok(())
+        })?
+    } else {
+        ctx.books.open(args)?
+    };
     if args.positional.len() != 1 {
         return Err(usage("unexpected trial-balance argument", "fa tb --help"));
     }
@@ -10657,6 +10696,16 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         },
     )?;
     let out = &ctx.out;
+    let admit_report = |book: &Book| -> Result<(), Fail> {
+        if certify {
+            return gl_certificate_preflight(book, &ctx.files, args, &capability);
+        }
+        fa_policy::admit_read(&capability, who, book.context().book_id)
+            .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        book.read_scope(who, &capability)??;
+        Ok(())
+    };
     match sub {
         Some("detail") => {
             if args.positional.len() != 2 {
@@ -10665,10 +10714,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa gl detail --account <code> --from YYYY-MM-DD --to YYYY-MM-DD --book <dir>",
                 ));
             }
-            let mut book = ctx.books.open(args)?;
-            if certify {
-                gl_certificate_preflight(&book, &ctx.files, args, &capability)?;
-            }
+            let mut book = ctx.books.open_admitted(args, admit_report)?;
             let req = parse_gl_scope(
                 args,
                 &book,
@@ -10812,10 +10858,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa gl roll-forward --account <code> --from YYYY-MM-DD --to YYYY-MM-DD --book <dir>",
                 ));
             }
-            let mut book = ctx.books.open(args)?;
-            if certify {
-                gl_certificate_preflight(&book, &ctx.files, args, &capability)?;
-            }
+            let mut book = ctx.books.open_admitted(args, admit_report)?;
             let req = parse_gl_scope(
                 args,
                 &book,
@@ -10935,10 +10978,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa gl aging [--account <code>] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] --book <dir>",
                 ));
             }
-            let mut book = ctx.books.open(args)?;
-            if certify {
-                gl_certificate_preflight(&book, &ctx.files, args, &capability)?;
-            }
+            let mut book = ctx.books.open_admitted(args, admit_report)?;
             let as_of = args.require("--as-of", "YYYY-MM-DD")?;
             let day = DateDay::parse(as_of).map_err(|e| {
                 usage(

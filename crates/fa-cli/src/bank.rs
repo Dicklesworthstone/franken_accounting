@@ -119,10 +119,12 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let account_code = required(args, "--account", IMPORT_EXAMPLE)?;
     let capability = ctx.capability(args, &["read", "post", "reconcile"])?;
     admit(&capability, true)?;
-    let mut book = ctx.books.open(args)?;
-    // Current authority is checked before a host reads or consumes the input.
+    // Current authority precedes response metadata as well as source input.
     // The import kernel checks it again and retains its publication witnesses.
-    book.preflight_intake(&capability, fa::IntakeAction::BankImport)??;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.preflight_intake(&capability, fa::IntakeAction::BankImport)??;
+        Ok(())
+    })?;
     let max_statement_bytes = fa_registry::evidence_policy::EvidencePolicy::embedded()
         .map_err(|error| Fail::Internal(format!("the embedded evidence policy: {error}")))?
         .max_document_bytes;
@@ -192,9 +194,11 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         })?;
     let capability = ctx.capability(args, &["read", "reconcile"])?;
     admit(&capability, false)?;
-    let mut book = ctx.books.open(args)?;
-    // Admit current authority before an instant selector can inspect ticks.
-    book.read_scope(capability.holder(), &capability)??;
+    // Admit current authority before response metadata or time evidence.
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(capability.holder(), &capability)??;
+        Ok(())
+    })?;
     let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
     let report = book.match_bank_statement(
         &capability,
@@ -226,8 +230,11 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
         }
     }
-    let ambiguous_count = eligible_counts.iter().zip(&competing)
-        .filter(|(count, contested)| **count > 1 || **contested).count();
+    let ambiguous_count = eligible_counts
+        .iter()
+        .zip(&competing)
+        .filter(|(count, contested)| **count > 1 || **contested)
+        .count();
     let mut consumed = BTreeSet::new();
     let mut rows = Vec::with_capacity(report.lines.len());
     for (index, (line, proposal)) in report.lines.iter().zip(&report.proposals).enumerate() {
@@ -245,9 +252,15 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .map_err(|e| Fail::Internal(format!("bank decision card: {e}")))?;
         rows.push(obj(vec![
             ("line_ordinal", Json::Int(i128::from(line.line_ordinal))),
-            ("eligible_candidate_count", Json::Int(eligible_counts[index] as i128)),
+            (
+                "eligible_candidate_count",
+                Json::Int(eligible_counts[index] as i128),
+            ),
             ("competing_bank_lines", Json::Bool(competing[index])),
-            ("ambiguous", Json::Bool(eligible_counts[index] > 1 || competing[index])),
+            (
+                "ambiguous",
+                Json::Bool(eligible_counts[index] > 1 || competing[index]),
+            ),
             (
                 "line_document_oid",
                 s(hex(&report.manifest.line_oids[index].0)),

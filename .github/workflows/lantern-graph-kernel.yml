@@ -30,6 +30,7 @@ on:
       - 'crates/fa-cli/tests/procedure_replay.rs'
       - 'crates/fa-cli/tests/statements.rs'
       - 'crates/fa-cli/tests/gl_certificates.rs'
+      - 'crates/fa-cli/tests/authority_cli.rs'
       - 'crates/fa-cli/src/cli.rs'
       - 'crates/fa-cli/tests/retained_report_storage.rs'
       - 'crates/fa-mcp/src/registry.rs'
@@ -50,16 +51,17 @@ permissions:
   contents: read
 
 # A single worker keeps one exact checkout and dependency build for all feedback.
-# Supersedes only this workflow's earlier feedback lanes, not official RCH gates.
+# Let a running checkout finish so frequent main commits cannot starve tests.
+# The newest pending checkout follows it; official RCH gates remain unchanged.
 concurrency:
   group: lantern-journal-feedback
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   exact-source-and-journal:
     concurrency:
       group: lantern-procedure-certificates
-      cancel-in-progress: true
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -163,7 +165,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test procedure_replay --test statements --test gl_certificates --test bank --test findings --test retained_report_storage --test robot_schema --test network --no-fail-fast --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test procedure_replay --test statements --test gl_certificates --test bank --test findings --test retained_report_storage --test robot_schema --test network --test authority_cli --no-fail-fast --jobs 2
       - name: Regress MCP report schemas and capability refusal parity
         if: ${{ !cancelled() }}
         shell: bash
