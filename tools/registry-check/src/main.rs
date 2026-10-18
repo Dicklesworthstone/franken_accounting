@@ -412,10 +412,31 @@ pub fn check_verbs(text: &str, exits: &ExitCodes) -> Result<(usize, usize), Stri
         .arrays
         .get("mcp.tool")
         .ok_or_else(|| format!("{F}: missing [[mcp.tool]]"))?;
-    if tools.len() > 40 {
+    // Plan §15.4: at most 40 tools are exposed by default; an on-demand
+    // cluster (`on_demand = true`, `fa-mcp --cluster <name>`) is outside
+    // the default surface.
+    let on_demand: BTreeSet<&str> = doc
+        .arrays
+        .get("mcp.cluster")
+        .map(|clusters| {
+            clusters
+                .iter()
+                .filter(|c| c.get("on_demand").and_then(Value::as_bool) == Some(true))
+                .filter_map(|c| c.get("name").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    let default_tools = tools
+        .iter()
+        .filter(|t| {
+            t.get("cluster")
+                .and_then(Value::as_str)
+                .is_none_or(|c| !on_demand.contains(c))
+        })
+        .count();
+    if default_tools > 40 {
         return Err(format!(
-            "{F}: mcp.tool count {} exceeds plan §15.4 limit of 40",
-            tools.len()
+            "{F}: mcp.tool count {default_tools} on the default surface exceeds plan §15.4 limit of 40"
         ));
     }
     for t in tools {
