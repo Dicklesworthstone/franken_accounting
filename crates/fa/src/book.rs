@@ -2297,6 +2297,18 @@ impl Book {
         ))
     }
 
+    /// Replay historical summary membership and amounts under current read authority.
+    pub fn replay_summary_trial_balance(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::SummaryCertificate,
+    ) -> Outcome<crate::SummaryTrialBalance> {
+        with_store!(&self.store, core => core.replay_summary_trial_balance(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
     /// Read the same stock/activity statement at two fixed recorded frontiers.
     pub fn statement_diff(
         &self,

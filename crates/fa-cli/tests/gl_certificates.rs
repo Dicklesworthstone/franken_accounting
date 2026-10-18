@@ -217,22 +217,36 @@ fn detail_roll_forward_and_aging_retain_their_complete_sources_and_replay_after_
             certificate.get("recorded_at")
         );
         assert_eq!(head(&fixture.book), retained_head);
-        saved.push((sub, oid, artifact));
+        saved.push((sub, oid, artifact, certified[0].clone()));
     }
 
     fixture.post("later-correction", "2026-03-12", "4000", "9.00 USD");
-    for (sub, oid, artifact) in saved {
+    for (sub, oid, artifact, original_report) in saved {
         let output = fixture.dir.join(format!("{sub}.replayed"));
         let selected = format!("C:{oid}");
         let replay = ok(
             &fixture.book,
             &["replay", &selected, "--output", output.to_str().unwrap()],
         );
-        assert_eq!(replay.len(), 1);
-        assert_eq!(text(&replay[0], "event"), "report_replayed");
-        assert_eq!(text(data(&replay[0]), "family"), artifact.family().name());
-        assert_eq!(std::fs::read(output).unwrap(), artifact.output());
+        assert_eq!(replay.len(), 2);
+        let report_event = if sub == "aging" {
+            "aging"
+        } else {
+            "roll_forward"
+        };
+        assert_eq!(text(&replay[0], "event"), report_event);
+        assert_eq!(
+            number(data(&replay[0]), "known_at"),
+            i128::from(artifact.known_at().0),
+        );
         assert_eq!(text(&replay[0], "certificate"), oid);
+        if sub != "detail" {
+            assert_eq!(data(&replay[0]), data(&original_report));
+        }
+        assert_eq!(text(&replay[1], "event"), "report_replayed");
+        assert_eq!(text(data(&replay[1]), "family"), artifact.family().name());
+        assert_eq!(std::fs::read(output).unwrap(), artifact.output());
+        assert_eq!(text(&replay[1], "certificate"), oid);
 
         let mut damaged = artifact.canonical_bytes().unwrap();
         let last = damaged.len() - 1;
@@ -385,6 +399,10 @@ fn held_daemon_dispatcher_certifies_and_replays_without_an_external_path() {
     );
     assert_eq!(exit, 0, "{captured:?}");
     let replay = events(&captured.stdout);
-    assert_eq!(text(data(&replay[0]), "family"), "roll-forward");
+    assert_eq!(replay.len(), 2);
+    assert_eq!(text(&replay[0], "event"), "roll_forward");
+    assert_eq!(data(&replay[0]), data(&certified[0]));
+    assert_eq!(text(&replay[1], "event"), "report_replayed");
+    assert_eq!(text(data(&replay[1]), "family"), "roll-forward");
     assert_eq!(book.head().unwrap(), after_retention);
 }

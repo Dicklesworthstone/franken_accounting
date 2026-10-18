@@ -392,7 +392,86 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
     let denied = structured_error(&output);
     assert_eq!(denied["type"], json!("forbidden_path"));
     assert_eq!(denied["authority"]["profile"], json!("agent"));
+    // The default reader cannot acquire produce authority from a certify flag.
+    for (tool, args) in [
+        (
+            "fa_read_trial_balance",
+            json!({"period": "FY2026-P03", "summary": true, "certify": true}),
+        ),
+        (
+            "fa_proof_gl",
+            json!({"view": "roll-forward", "account": "1000", "from": "2026-03-01", "to": "2026-03-31", "certify": true}),
+        ),
+        (
+            "fa_proof_gl",
+            json!({"view": "aging", "as_of": "2026-03-31", "certify": true}),
+        ),
+    ] {
+        let (error, output, _) = call_tool(&mut mcp, tool, args);
+        assert!(error, "{output}");
+        let refused = structured_error(&output);
+        assert_eq!(refused["refusal_id"], json!("FA-REF-011"));
+        assert!(output.contains("produce"), "{output}");
+    }
     assert_eq!(mcp.finish(), 0);
+
+    let mut producer = Mcp::start_with(&book, &["--grant", "read", "--grant", "produce"]);
+    producer.discover();
+    for (tool, family, event_name, args) in [
+        (
+            "fa_read_trial_balance",
+            "summary",
+            "summary_trial_balance",
+            json!({"period": "FY2026-P03", "summary": true, "root": ["1000"], "certify": true}),
+        ),
+        (
+            "fa_proof_gl",
+            "roll-forward",
+            "roll_forward",
+            json!({"view": "roll-forward", "account": "1000", "from": "2026-03-01", "to": "2026-03-31", "certify": true}),
+        ),
+        (
+            "fa_proof_gl",
+            "effective-date-aging",
+            "aging",
+            json!({"view": "aging", "account": "1000", "as_of": "2026-03-31", "bucket": ["0", "30", "60"], "certify": true}),
+        ),
+    ] {
+        let (error, output, metadata) = call_tool(&mut producer, tool, args);
+        assert!(!error, "{family}: {output}");
+        let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+        assert_eq!(certified.as_array().unwrap().len(), 2);
+        assert_eq!(certified[1]["file"], JsonValue::Null);
+        let envelope: JsonValue =
+            fastmcp_rust::serde_json::from_str(metadata["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(
+            envelope["events"],
+            json!([event_name, "report_certificate"])
+        );
+        assert_eq!(envelope["certificate"], certified[1]["oid"]);
+        for certificate in [
+            format!("C:{}", certified[1]["oid"].as_str().unwrap()),
+            certified[1]["bytes"].as_str().unwrap().to_string(),
+        ] {
+            let (error, output, metadata) = call_tool(
+                &mut producer,
+                "fa_read_replay",
+                json!({"certificate": certificate}),
+            );
+            assert!(!error, "{family}: {output}");
+            let replayed: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+            assert_eq!(replayed[0], certified[0]);
+            assert_eq!(replayed[1]["family"], json!(family));
+            assert_eq!(replayed[1]["output_digest"], certified[1]["output_digest"]);
+            let envelope: JsonValue = fastmcp_rust::serde_json::from_str(
+                metadata["content"][1]["text"].as_str().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(envelope["events"], json!([event_name, "report_replayed"]));
+        }
+    }
+    assert_eq!(producer.finish(), 0);
 }
 
 #[test]

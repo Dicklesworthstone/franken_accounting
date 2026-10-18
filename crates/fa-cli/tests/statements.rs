@@ -612,9 +612,10 @@ fn generic_aging_artifacts_replay_by_digest_and_export_through_the_held_dispatch
         &fixture.book,
         &["replay", &handle, "--output", output.to_str().unwrap()],
     );
-    assert_eq!(replay.len(), 1);
-    assert_eq!(text(&replay[0], "event"), "report_replayed");
-    assert_eq!(text(data(&replay[0]), "family"), "effective-date-aging");
+    assert_eq!(replay.len(), 2);
+    assert_eq!(text(&replay[0], "event"), "aging");
+    assert_eq!(text(&replay[1], "event"), "report_replayed");
+    assert_eq!(text(data(&replay[1]), "family"), "effective-date-aging");
     assert_eq!(std::fs::read(output).unwrap(), artifact.output());
     let (exit, events, _) = run(&fixture.book, &["certificate", "status", &handle]);
     assert_eq!(exit, 8, "{events:?}");
@@ -635,15 +636,21 @@ fn generic_aging_artifacts_replay_by_digest_and_export_through_the_held_dispatch
         true,
     );
     assert_eq!(exit, 0, "{}{}", captured.stdout, captured.stderr);
-    let event = json::parse(captured.stdout.trim()).unwrap();
-    fa_cli::verbs::registry()
-        .unwrap()
-        .check_line(captured.stdout.trim())
-        .unwrap();
-    assert_eq!(text(data(&event), "family"), "effective-date-aging");
+    let events: Vec<_> = captured
+        .stdout
+        .lines()
+        .map(|line| {
+            fa_cli::verbs::registry().unwrap().check_line(line).unwrap();
+            json::parse(line).unwrap()
+        })
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert_eq!(text(&events[0], "event"), "aging");
+    assert_eq!(data(&events[0]), data(&replay[0]));
+    assert_eq!(text(data(&events[1]), "family"), "effective-date-aging");
     assert_eq!(
-        data(&event).get("output_digest"),
-        data(&replay[0]).get("output_digest")
+        data(&events[1]).get("output_digest"),
+        data(&replay[1]).get("output_digest")
     );
     assert_eq!(book.head().unwrap(), original_head);
 

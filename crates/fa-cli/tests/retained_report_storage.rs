@@ -339,6 +339,196 @@ fn large_cli_reports_replay_from_digest_and_file_after_reopen_and_backdated_post
 }
 
 #[test]
+fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report() {
+    let f = Fixture::new();
+    let at = f.source_head.0.to_string();
+    let cases = [
+        (
+            "summary",
+            "summary_trial_balance",
+            vec!["tb", "--period", PERIOD, "--summary", "--root", "1000"],
+        ),
+        (
+            "roll-forward",
+            "roll_forward",
+            vec![
+                "gl",
+                "roll-forward",
+                "--account",
+                "1000",
+                "--from",
+                "2026-01-01",
+                "--to",
+                "2026-01-31",
+            ],
+        ),
+        (
+            "effective-date-aging",
+            "aging",
+            vec![
+                "gl",
+                "aging",
+                "--account",
+                "1000",
+                "--as-of",
+                "2026-01-31",
+                "--bucket",
+                "0,30,60",
+            ],
+        ),
+    ];
+    let mut originals = Vec::new();
+    for (family, event_name, mut args) in cases {
+        args.extend(["--as-known-at", &at]);
+        let before = f.head();
+        let plain = f.ok(&args);
+        assert_eq!(f.head(), before, "{family}: ordinary report is read-only");
+        let file = f.dir.join(format!("{family}.cert"));
+        let mut certify_args = args.clone();
+        certify_args.extend(["--certificate-out", file.to_str().unwrap()]);
+        let events = f.ok(&certify_args);
+        assert_eq!(events.len(), 2, "{family}: report and complete certificate");
+        assert_eq!(data(&events, event_name), data(&plain, event_name));
+        let metadata = data(&events, "report_certificate");
+        let bytes = unhex(text(metadata, "bytes"));
+        let artifact = fa::ReportArtifact::decode(&bytes).unwrap();
+        assert_eq!(artifact.family().name(), family);
+        assert_eq!(artifact.known_at(), f.source_head);
+        assert!(
+            bytes.len() > 16 * 1024,
+            "{family}: exercise chunked retention"
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+        assert_eq!(
+            f.head().0,
+            before.0 + 1,
+            "{family}: one metadata publication"
+        );
+        let digest = text(metadata, "oid");
+        assert_eq!(unhex(digest).as_slice(), artifact.digest().as_slice());
+        assert_eq!(text(event(&events, event_name), "certificate"), digest);
+        assert_eq!(
+            text(event(&events, "report_certificate"), "certificate"),
+            digest
+        );
+        let locator = format!("C:{digest}");
+        let retained_at = f.head();
+        args.push("--certify");
+        let repeated = f.ok(&args);
+        assert_eq!(data(&repeated, event_name), data(&events, event_name));
+        assert_eq!(text(data(&repeated, "report_certificate"), "oid"), digest);
+        assert_eq!(
+            f.head(),
+            retained_at,
+            "{family}: exact retry reuses its retention"
+        );
+        originals.push((event_name, events, bytes, locator, file));
+    }
+    let mut book = f.open();
+    post(&mut book, 64);
+    let later = book.head().unwrap();
+    drop(book);
+    for (event_name, original, bytes, locator, file) in originals {
+        let artifact = fa::ReportArtifact::decode(&bytes).unwrap();
+        for input in [locator.as_str(), file.to_str().unwrap()] {
+            let replayed = f.ok(&["replay", input]);
+            assert_eq!(data(&replayed, event_name), data(&original, event_name));
+            assert_eq!(
+                event(&replayed, event_name).get("coordinate"),
+                event(&original, event_name).get("coordinate"),
+                "replay preserves the report's historical selector",
+            );
+            assert_eq!(
+                event(&replayed, event_name).get("certificate"),
+                event(&original, event_name).get("certificate"),
+            );
+            assert_eq!(
+                text(data(&replayed, "report_replayed"), "family"),
+                artifact.family().name()
+            );
+        }
+        let output = f.dir.join(format!("{event_name}.output"));
+        let replayed = f.ok(&["replay", &locator, "--output", output.to_str().unwrap()]);
+        assert_eq!(std::fs::read(&output).unwrap(), artifact.output());
+        assert_eq!(
+            data(&replayed, "report_replayed").get("output_digest"),
+            data(&original, "report_certificate").get("output_digest"),
+        );
+        let mut book = f.open();
+        let held_replay = held(&mut book, &f.dir, &["replay", "-"], Stdin::Forwarded(bytes));
+        assert_eq!(data(&held_replay, event_name), data(&original, event_name));
+        assert_eq!(book.head().unwrap(), later, "replay never publishes");
+    }
+    assert_eq!(f.head(), later);
+}
+
+#[test]
+fn derived_report_certificates_refuse_tampering_and_existing_outputs_without_success() {
+    let f = Fixture::new();
+    let events = f.ok(&["gl", "aging", "--as-of", "2026-01-31", "--certify"]);
+    let metadata = data(&events, "report_certificate");
+    let original = unhex(text(metadata, "bytes"));
+    let mut damaged = original.clone();
+    let last = damaged.len() - 1;
+    damaged[last] ^= 1;
+    let file = f.dir.join("tampered-aging.cert");
+    std::fs::write(&file, damaged).unwrap();
+    let output = f.dir.join("must-not-write-aging.output");
+    let before = f.head();
+    let (exit, errors) = f.run(&[
+        "replay",
+        file.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 8, "{errors:?}");
+    assert_eq!(errors.len(), 1, "no report can escape after replay fails");
+    assert_eq!(text(&errors[0], "event"), "error");
+    assert!(!output.exists());
+    assert_eq!(f.head(), before);
+    let occupied = f.dir.join("occupied.cert");
+    std::fs::write(&occupied, b"preserved recipient evidence").unwrap();
+    let (exit, errors) = f.run(&[
+        "gl",
+        "roll-forward",
+        "--account",
+        "1000",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--certificate-out",
+        occupied.to_str().unwrap(),
+    ]);
+    assert_ne!(exit, 0);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(text(&errors[0], "event"), "error");
+    assert_eq!(
+        std::fs::read(occupied).unwrap(),
+        b"preserved recipient evidence"
+    );
+    assert_eq!(f.head(), before, "output refusal must precede retention");
+    for args in [
+        vec![
+            "gl",
+            "aging",
+            "--as-of",
+            "2026-01-31",
+            "--reconcile",
+            "--certify",
+        ],
+        vec!["gl", "cash-flow", "--certify"],
+        vec!["gl", "lots", "--certify"],
+    ] {
+        let (exit, errors) = f.run(&args);
+        assert_eq!(exit, 2, "{args:?}: {errors:?}");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(text(&errors[0], "event"), "error");
+        assert_eq!(f.head(), before);
+    }
+}
+
+#[test]
 fn daemon_held_book_dispatch_reuses_the_same_large_certificate_and_forwarded_binary_bytes() {
     let f = Fixture::new();
     let at = f.source_head.0.to_string();

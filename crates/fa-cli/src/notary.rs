@@ -389,6 +389,24 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    let summary = if artifact.family() == ReportArtifactFamily::Summary {
+        let certificate = fa::SummaryCertificate::decode(&bytes)?;
+        Some(book.replay_summary_trial_balance(principal, &capability, &certificate)??)
+    } else {
+        None
+    };
+    let roll_forward = if artifact.family() == ReportArtifactFamily::RollForward {
+        let certificate = fa::RollForwardCertificate::decode(&bytes)?;
+        Some(book.replay_roll_forward(principal, &capability, &certificate)??)
+    } else {
+        None
+    };
+    let aging = if artifact.family() == ReportArtifactFamily::EffectiveDateAging {
+        let certificate = fa::AgingCertificate::decode(&bytes)?;
+        Some(book.replay_effective_date_aging(principal, &capability, &certificate)??)
+    } else {
+        None
+    };
     let procedure = if artifact.family() == ReportArtifactFamily::Procedure {
         Some(fa::procedure_certificate::ProcedureCertificate::decode(
             &bytes,
@@ -435,13 +453,44 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else if let Some(trace) = trace {
         crate::cli::render_statement_trace(&ctx.out, &book, &trace, Some(&digest))?;
         true
+    } else if let Some(summary) = summary {
+        let ReportSelection::TrialBalance(selection) = &artifact.source_certificate().selection
+        else {
+            return Err(certificate_invalid(
+                "summary certificate has no trial-balance source selector",
+            ));
+        };
+        crate::cli::render_summary_trial_balance(
+            &ctx.out,
+            &book,
+            &summary,
+            selection,
+            Some(&digest),
+        )?;
+        true
+    } else if let Some(report) = roll_forward {
+        crate::cli::render_roll_forward(&ctx.out, &book, &report, Some(&digest))?;
+        true
+    } else if let Some(report) = aging {
+        crate::cli::render_aging(&ctx.out, &book, &report, Some(&digest))?;
+        true
     } else if let Some(certificate) = procedure {
         procedure::render(&ctx.out, certificate.report(), &digest);
         true
     } else {
         false
     };
-    if !rendered || args.flag("--output").is_some() {
+    // Preserve the existing generic-family replay receipt while adding the
+    // original report event, so callers can still compare canonical digests.
+    if !rendered
+        || args.flag("--output").is_some()
+        || matches!(
+            artifact.family(),
+            ReportArtifactFamily::Summary
+                | ReportArtifactFamily::RollForward
+                | ReportArtifactFamily::EffectiveDateAging
+        )
+    {
         ctx.out.known_at(replayed.known_at);
         ctx.out.event_with_certificate(
             "report_replayed",

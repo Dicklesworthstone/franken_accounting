@@ -159,6 +159,52 @@ fn handlers_cannot_add_operations_omitted_from_the_launch_grant() {
 }
 
 #[test]
+fn derived_report_certification_requires_produce_before_any_book_or_output_observation() {
+    let reader = authority(LaunchProfile::Agent, &["read"]);
+    for argv in [
+        vec![
+            "tb",
+            "--summary",
+            "--period",
+            "FY2026-P03",
+            "--certify",
+            "--json",
+        ],
+        vec![
+            "tb",
+            "--summary",
+            "--period",
+            "FY2026-P03",
+            "--certificate-out",
+            "unwritten.cert",
+            "--json",
+        ],
+        vec![
+            "gl",
+            "roll-forward",
+            "--account",
+            "1000",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-03-31",
+            "--certify",
+            "--json",
+        ],
+        vec![
+            "gl",
+            "aging",
+            "--as-of",
+            "2026-03-31",
+            "--certify",
+            "--json",
+        ],
+    ] {
+        refused_before_open(&reader, &argv, "FA-REF-011");
+    }
+}
+
+#[test]
 fn plan_files_and_plan_output_flags_cannot_confirm_a_dangerous_commit() {
     let authority = authority(LaunchProfile::Preparer, &[]);
     for transition in ["close", "lock", "reopen"] {

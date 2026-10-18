@@ -84,6 +84,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("allocate", allocate_cmd),
     ("settle", settle_cmd),
     ("document", document::document_cmd),
+    ("finding", crate::finding::finding_cmd),
     ("bank", crate::bank::bank_cmd),
     ("event", event_cmd),
     ("migrate", migrate_cmd),
@@ -95,7 +96,6 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("gl", gl_cmd),
     ("explain", explain_cmd),
     ("procedure", procedure_cmd),
-    ("finding", crate::finding::finding_cmd),
     ("checkpoint", notary::checkpoint_cmd),
     ("proof", crate::proof::proof_cmd),
     ("bundle", crate::proof::bundle_cmd),
@@ -1621,6 +1621,12 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         return Some(&[Op::Read, Op::Produce]);
     }
     if verb == "gl" && (args.switch("--certify") || args.flag("--certificate-out").is_some()) {
+        return Some(&[Op::Read, Op::Produce]);
+    }
+    if verb == "tb"
+        && args.switch("--summary")
+        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
+    {
         return Some(&[Op::Read, Op::Produce]);
     }
     let ops: &'static [Op] = match (verb, sub) {
@@ -8187,7 +8193,12 @@ fn tb_net(code: &str, debits: i128, credits: i128) -> Result<i128, Fail> {
 fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let who = ctx.principal(args);
     let summary_cap = if args.switch("--summary") {
-        Some(ctx.capability(args, &["read"])?)
+        let ops: &[&str] = if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        };
+        Some(ctx.capability(args, ops)?)
     } else {
         None
     };
@@ -8272,10 +8283,14 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         known_at = Some(book.originally_reported(&period)??.known_at);
     }
     if let Some(capability) = summary_cap {
-        if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+        let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+        if certify && requested_utc_ns.is_some() {
             return Err(usage(
-                "--summary does not emit a trial-balance report_certificate event",
-                "omit --certify / --certificate-out when running `fa tb --summary`",
+                "summary certificates bind a recorded sequence; instant-resolution evidence is not part of this certificate format",
+                format!(
+                    "use --as-known-at {} to certify this resolved summary",
+                    known_at.map_or(0, |seq| seq.0)
+                ),
             ));
         }
         let roots: Vec<VId> = args
@@ -8291,16 +8306,35 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         } else {
             SummaryScope::Selected(roots)
         };
-        let summary = book.summary_trial_balance(
-            who,
-            &capability,
-            &SummaryRequest {
-                selection: selection.clone(),
-                scope,
-                known_at,
-            },
-        )??;
-        return render_summary_trial_balance(out, &book, &summary, &selection);
+        let request = SummaryRequest {
+            selection: selection.clone(),
+            scope,
+            known_at,
+        };
+        if certify {
+            let certified = book.certify_summary_trial_balance(who, &capability, &request)??;
+            let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+            let (bytes, retained) = notary::retain_report_artifact(
+                &mut book,
+                &ctx.files,
+                args,
+                &artifact,
+                &capability,
+            )?;
+            let digest = hex(artifact.digest());
+            render_summary_trial_balance(out, &book, &certified.report, &selection, Some(&digest))?;
+            notary::emit_report_artifact(
+                out,
+                args,
+                &artifact,
+                "fa:summary-trial-balance:v1",
+                &bytes,
+                &retained,
+            );
+            return Ok(());
+        }
+        let summary = book.summary_trial_balance(who, &capability, &request)??;
+        return render_summary_trial_balance(out, &book, &summary, &selection, None);
     }
     let (tb, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
     {
@@ -8338,11 +8372,12 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-fn render_summary_trial_balance(
+pub(crate) fn render_summary_trial_balance(
     out: &Out,
     book: &Book,
     summary: &fa::SummaryTrialBalance,
     selection: &TrialBalanceSelection,
+    certificate: Option<&str>,
 ) -> Result<(), Fail> {
     let units = &book.context().units;
     validate_trial_balance_units(&summary.source, units)?;
@@ -8430,7 +8465,7 @@ fn render_summary_trial_balance(
         .iter()
         .map(|l| s(&l.code))
         .collect();
-    out.event(
+    out.event_with_certificate(
         "summary_trial_balance",
         vec![
             ("periods", Json::Arr(periods.iter().map(s).collect())),
@@ -8464,6 +8499,7 @@ fn render_summary_trial_balance(
             summary.is_complete(),
             summary.is_complete_and_balanced()
         ),
+        certificate,
     );
     Ok(())
 }
@@ -10060,6 +10096,232 @@ fn parse_gl_scope(
         effective_through: to,
         known_at,
     })
+}
+
+pub(crate) fn render_roll_forward(
+    out: &Out,
+    book: &Book,
+    report: &fa::RollForward,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    out.known_at(CommitSeq(report.known_at));
+    out.effective(format!(
+        "between:{}..{}",
+        report.effective_from, report.effective_through
+    ));
+    let units = &book.context().units;
+    let accounts: std::collections::BTreeMap<u128, _> = report
+        .accounts
+        .iter()
+        .map(|account| (account.id, account))
+        .collect();
+    let buckets: Vec<Json> = report
+        .buckets
+        .iter()
+        .map(|bucket| {
+            obj(vec![
+                ("class", s(bucket.class.name().unwrap_or("unknown"))),
+                ("reason_code", s(&bucket.reason_code)),
+                (
+                    "rule_digest",
+                    bucket
+                        .rule_digest
+                        .as_ref()
+                        .map_or(Json::Null, |digest| s(hex(digest))),
+                ),
+            ])
+        })
+        .collect();
+    let rows: Vec<Json> = report
+        .rows
+        .iter()
+        .map(|row| {
+            let account = accounts
+                .get(&row.account_id)
+                .ok_or_else(|| Fail::Internal("roll-forward row account missing".into()))?;
+            let unit = fa_money::UnitId(row.unit_id);
+            let render = |mantissa| render_amount(Amount::new(unit, mantissa), units);
+            let activity = row
+                .activity
+                .iter()
+                .map(|amount| Ok(s(render(*amount)?)))
+                .collect::<Result<Vec<_>, Fail>>()?;
+            Ok(obj(vec![
+                ("account", s(&account.code)),
+                ("account_vid", s(format!("{:032x}", row.account_id))),
+                ("name", s(&account.name)),
+                (
+                    "type",
+                    s(AccountType(account.account_type)
+                        .name()
+                        .unwrap_or("unknown")),
+                ),
+                ("unit", s(registered_unit_code(unit, units)?)),
+                ("opening", s(render(row.opening)?)),
+                ("activity", Json::Arr(activity)),
+                ("net_change", s(render(row.net_change)?)),
+                ("closing", s(render(row.closing)?)),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    out.event_with_certificate(
+        "roll_forward",
+        vec![
+            ("label", s(&report.label)),
+            ("known_at", Json::Int(i128::from(report.known_at))),
+            ("effective_from", s(report.effective_from.render())),
+            ("effective_through", s(report.effective_through.render())),
+            ("buckets", Json::Arr(buckets)),
+            ("rows", Json::Arr(rows)),
+            ("movement_count", Json::Int(report.movements.len() as i128)),
+        ],
+        &format!(
+            "roll-forward `{}` ({}..={}): {} row(s), {} movement(s)",
+            report.label,
+            report.effective_from,
+            report.effective_through,
+            report.rows.len(),
+            report.movements.len(),
+        ),
+        certificate,
+    );
+    Ok(())
+}
+
+pub(crate) fn render_aging(
+    out: &Out,
+    book: &Book,
+    aging: &fa::EffectiveDateAging,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    out.known_at(aging.known_at);
+    out.effective(format!("as-of:{}", aging.effective_through));
+    let units = &book.context().units;
+    let accounts: std::collections::BTreeMap<VId, String> = book
+        .accounts()?
+        .into_iter()
+        .filter(|account| account.created_at <= aging.known_at)
+        .map(|account| (account.vid, account.code))
+        .collect();
+    if let Some(account) = aging.account
+        && !accounts.contains_key(&account)
+    {
+        return Err(
+            BookError::Registers(fa_registers::RegisterError::InvalidSelection(format!(
+                "unknown account {:032x} at sequence {}",
+                account.0, aging.known_at.0
+            )))
+            .into(),
+        );
+    }
+    let code_of = |vid: VId| -> Result<&str, Fail> {
+        accounts
+            .get(&vid)
+            .map(String::as_str)
+            .ok_or_else(|| Fail::Internal(format!("aging omits account {:032x}", vid.0)))
+    };
+    let bands = aging
+        .bands
+        .iter()
+        .map(|band| {
+            obj(vec![
+                (
+                    "lower_inclusive",
+                    Json::Int(i128::from(band.lower_inclusive)),
+                ),
+                (
+                    "upper_inclusive",
+                    band.upper_inclusive
+                        .map_or(Json::Null, |upper| Json::Int(i128::from(upper))),
+                ),
+            ])
+        })
+        .collect();
+    let items = aging
+        .items
+        .iter()
+        .map(|aged| {
+            let item = &aged.item;
+            let render =
+                |amount| render_amount(Amount::new(fa_money::UnitId(item.unit_id), amount), units);
+            Ok(obj(vec![
+                ("entry", s(format!("{:032x}", item.entry.0))),
+                ("ordinal", Json::Int(i128::from(item.ordinal))),
+                ("account", s(code_of(item.account)?)),
+                (
+                    "side",
+                    s(if item.side == Side::Debit {
+                        "debit"
+                    } else {
+                        "credit"
+                    }),
+                ),
+                ("effective_date", s(item.effective_date.render())),
+                ("recorded_at", Json::Int(i128::from(item.recorded_at.0))),
+                ("original", s(render(item.original)?)),
+                ("applied", s(render(item.applied)?)),
+                ("applied_out", s(render(item.applied_out)?)),
+                ("open", s(render(item.open)?)),
+                ("age_days", Json::Int(i128::from(aged.age_days))),
+                ("bucket", Json::Int(aged.bucket as i128)),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let cells = aging
+        .cells
+        .iter()
+        .map(|cell| {
+            let unit = fa_money::UnitId(cell.unit_id);
+            let render = |amount| render_amount(Amount::new(unit, amount), units);
+            Ok(obj(vec![
+                ("account", s(code_of(cell.account)?)),
+                ("unit", s(registered_unit_code(unit, units)?)),
+                ("bucket", Json::Int(cell.bucket as i128)),
+                ("debits", s(render(cell.amounts.debits)?)),
+                ("credits", s(render(cell.amounts.credits)?)),
+                ("item_count", Json::Int(i128::from(cell.amounts.item_count))),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let totals = aging
+        .totals
+        .iter()
+        .map(|total| {
+            let unit = fa_money::UnitId(total.unit_id);
+            let render = |amount| render_amount(Amount::new(unit, amount), units);
+            Ok(obj(vec![
+                ("account", s(code_of(total.account)?)),
+                ("unit", s(registered_unit_code(unit, units)?)),
+                ("debits", s(render(total.amounts.debits)?)),
+                ("credits", s(render(total.amounts.credits)?)),
+                (
+                    "item_count",
+                    Json::Int(i128::from(total.amounts.item_count)),
+                ),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let account = aging.account.map(code_of).transpose()?;
+    out.event_with_certificate(
+        "aging",
+        vec![
+            ("account", account.map_or(Json::Null, s)),
+            ("known_at", Json::Int(i128::from(aging.known_at.0))),
+            ("effective_through", s(aging.effective_through.render())),
+            ("bands", Json::Arr(bands)),
+            ("items", Json::Arr(items)),
+            ("cells", Json::Arr(cells)),
+            ("totals", Json::Arr(totals)),
+        ],
+        &format!(
+            "effective-date aging through {}: {} open item(s) across {} cell(s)",
+            aging.effective_through,
+            aging.items.len(),
+            aging.cells.len()
+        ),
+        certificate,
+    );
+    Ok(())
 }
 
 fn parse_digest32(text: &str, what: &str) -> Result<[u8; 32], Fail> {
