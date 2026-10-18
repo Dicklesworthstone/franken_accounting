@@ -90,12 +90,12 @@ example = "fa book create --book ./books/myco --name \"My Co\" --json"
 name = "chart"
 summary = "Install a chart of accounts as one journaled schema effect (from a file or an embedded template), list it, or list the templates."
 writes = true
-subcommands = ["import", "list", "templates"]
-flags = ["--date", "--key", "--template"]
+subcommands = ["import", "list", "templates", "open", "close", "promote"]
+flags = ["--date", "--key", "--template", "--opened", "--closed", "--on"]
 switches = []
-events = ["chart_installed", "accounts", "chart_templates"]
+events = ["chart_installed", "accounts", "chart_templates", "account_lifecycle"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign; \"unit\": \"base\" is the book's base unit)", "chart list", "chart templates   (us-gaap-smb, ifrs-sme, us-bank-call-report: starting points, not GAAP, IFRS or regulatory advice)"]
+usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign; \"unit\": \"base\" is the book's base unit)", "chart list", "chart templates   (us-gaap-smb, ifrs-sme, us-bank-call-report: starting points, not GAAP, IFRS or regulatory advice)", "chart open <account.json|-> --opened YYYY-MM-DD [--closed YYYY-MM-DD] [--key K]   (one account object in the chart format, e.g. {\"code\":\"6100\",\"name\":\"Office supplies\",\"type\":\"Expense\",\"unit\":\"USD\"}; it accepts legs dated in [opened, closed))", "chart close <code> --on YYYY-MM-DD [--key K]   (nothing posts to the account on or after that day; its history stays)", "chart promote <code> --on YYYY-MM-DD [--key K]   (the leaf becomes a summary account from that day; new legs go to its children)", "open, close and promote are journaled SchemaChange controls under schema_change authority; no date defaults to today. The default key is account-open:<code>, or account-<action>:<code>:<day>, so an exact retry returns the recorded control."]
 example = "fa chart import chart.json --book ./books/myco --json"
 
 [[verb]]
@@ -1061,6 +1061,12 @@ doc = "An AccumulatorState over every entry in the named book/branch prefix thro
 fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "checkpoint_oid:hex", "public_key:hex", "scope:string"]
 
 [[event]]
+name = "account_lifecycle"
+book = true
+doc = "An account's life cycle moved by one journaled SchemaChange control (plan §4.3, §5.6): action is open, close or promote; already_recorded is true when an exact retry found the recorded control and wrote nothing."
+fields = ["action:string", "code:string", "account:hex", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
 name = "journal_exported"
 book = true
 doc = "The committed journal at (known_at, effective_through) written in format by fa-formats with its export coordinate certificate (content_digest over the canonical journal, certificate_digest over the coordinate). files lists each output file with its byte length and digest; content carries it inline when no --out was given."
@@ -1944,7 +1950,11 @@ on_demand = true
 doc = "Interop exports (plan §8.6, §15.9): the committed journal at one coordinate as the AICPA ADS GL package, OECD SAF-T, a CSV GL extract, Beancount or hledger, returned inline with its export coordinate certificate."
 [[mcp.cluster]]
 name = "fa.proof"
-doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements), checked independently without book keys."
+doc = "General-ledger views at one coordinate (detail, roll-forward, aging, cash flow, lots) that reconcile to the journal fold."
+[[mcp.cluster]]
+name = "fa.notary"
+on_demand = true
+doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements) and evidence bundles, checked independently without book keys (plan §15.4: discoverable on demand)."
 
 [[mcp.excluded]]
 verb = "fad"
@@ -2187,6 +2197,32 @@ required = []
 dont = ["Don't pick an account by name alone; post by `code`, and only to a `leaf`.", "Don't treat a template as advice: it is a starting chart to adapt, not GAAP, IFRS or a regulatory mapping."]
 mistakes = ["Importing a template into a book that already has those accounts: the codes are identities, so the second import is refused."]
 
+[[mcp.tool]]
+cluster = "fa.chart"
+name = "open_account"
+verb = "chart"
+subcommands = ["open"]
+positionals = ["file?"]
+flags = ["--opened", "--closed", "--key"]
+stdin_property = "account"
+stdin_kind = "object"
+stdin_via = "file"
+required = ["--opened"]
+dont = ["Don't re-import a chart to add one account; open it as one journaled control.", "Don't pass a whole chart: account is one object (code, name, type, unit, optionally leaf, parent and balance bounds)."]
+mistakes = ["Omitting opened: no date defaults to today.", "Opening a code that already exists: codes are identities."]
+
+[[mcp.tool]]
+cluster = "fa.chart"
+name = "change_account"
+verb = "chart"
+subcommands = ["close", "promote"]
+selector = "action"
+positionals = ["code"]
+flags = ["--on", "--key"]
+required = ["code", "--on"]
+dont = ["Don't close an account to hide its history: closing only stops new legs on or after the day; every committed entry stays.", "Don't promote a leaf that still needs direct postings: from the day on, only its children accept legs."]
+mistakes = ["Omitting on: no date defaults to today.", "Closing with a day that precedes legs already posted to it."]
+
 # ---- fa.post ----------------------------------------------------------------
 
 [[mcp.tool]]
@@ -2291,7 +2327,7 @@ mistakes = ["Targeting a leg on the same side as the payment leg instead of the 
 # ---- fa.read ----------------------------------------------------------------
 
 [[mcp.tool]]
-cluster = "fa.proof"
+cluster = "fa.notary"
 name = "export"
 verb = "proof"
 subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance", "evidence-disclosure"]
@@ -2317,7 +2353,7 @@ dont = ["The launch capability must include read and produce. Output paths are f
 mistakes = ["Supplying both period and as_of, or neither: an export has one effective-through date.", "Expecting pending holds in the GL detail: they are not posted activity."]
 
 [[mcp.tool]]
-cluster = "fa.proof"
+cluster = "fa.notary"
 name = "bundle"
 verb = "bundle"
 subcommands = ["produce"]

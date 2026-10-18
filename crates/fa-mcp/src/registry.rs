@@ -2684,7 +2684,7 @@ mod tests {
     #[test]
     fn proof_normalization_preserves_each_scope_without_file_or_authority_overrides() {
         let (mcp, reg) = embedded();
-        let tool = mcp.tool_by_wire("fa_proof_export").expect("proof export");
+        let tool = mcp.tool_by_wire("fa_notary_export").expect("proof export");
         let schema = tool.input_schema(&mcp, reg);
         assert_eq!(
             schema["properties"]["kind"]["enum"],

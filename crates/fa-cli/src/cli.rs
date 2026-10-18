@@ -1688,6 +1688,7 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         ("draft", Some("new" | "plan" | "discard")) => &[Op::Post],
         ("draft", Some("list" | "show")) => &[Op::Read],
         ("draft", Some("promote")) => &[Op::Approve],
+        ("chart", Some("open" | "close" | "promote")) => &[Op::SchemaChange],
         _ => return None,
     };
     Some(ops)
@@ -3414,6 +3415,149 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
 
 /// Parse a chart JSON document into [`AccountSpec`] rows against `base_unit`
 /// and `units` without opening a book or touching disk.
+/// `fa chart open|close|promote` (plan §4.3, §5.6): an account's life cycle
+/// after the chart is installed, each step one journaled `SchemaChange`
+/// under `schema_change` authority. `open` takes one account object in the
+/// chart format and its first effective day. `close` ends an account
+/// (`[opened, closed)`: nothing posts on or after the day). `promote` makes a
+/// leaf a summary account from that day. No date defaults to today: the CLI
+/// never reads a clock.
+fn chart_lifecycle(ctx: &mut Ctx<'_>, args: &Args, action: &str) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa chart open <account.json|-> --opened YYYY-MM-DD [--closed YYYY-MM-DD] | fa chart close <code> --on YYYY-MM-DD | fa chart promote <code> --on YYYY-MM-DD   [--key K]";
+    if args.positional.len() != 3 {
+        return Err(usage(
+            match action {
+                "open" => "chart open needs one account file (or - for stdin)",
+                _ => "chart close and promote need one account code",
+            },
+            EXAMPLE,
+        ));
+    }
+    for flag in ["--opened", "--closed", "--on", "--key", "--date"] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("chart {action} takes only one {flag}"),
+                EXAMPLE,
+            ));
+        }
+    }
+    let applicable: &[&str] = match action {
+        "open" => &["--opened", "--closed"],
+        _ => &["--on"],
+    };
+    for flag in ["--opened", "--closed", "--on", "--template"] {
+        if args.flag(flag).is_some() && !applicable.contains(&flag) {
+            return Err(usage(
+                format!("{flag} does not apply to chart {action}"),
+                EXAMPLE,
+            ));
+        }
+    }
+    let day = |flag: &str| -> Result<Option<DateDay>, Fail> {
+        args.flag(flag)
+            .map(|text| {
+                DateDay::parse(text)
+                    .map_err(|e| usage(format!("{flag} `{text}`: {e:?}"), "YYYY-MM-DD"))
+            })
+            .transpose()
+    };
+    let required_day = |flag: &str| -> Result<DateDay, Fail> {
+        day(flag)?.ok_or_else(|| {
+            usage(
+                format!("chart {action} needs {flag} YYYY-MM-DD (no date defaults to today)"),
+                EXAMPLE,
+            )
+        })
+    };
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["schema_change"])?;
+    let out = &ctx.out;
+    let target = args.positional[2].as_str();
+    let date = date_flag(args, DateDay(0))?;
+    let recorded = match action {
+        "open" => {
+            let opened = required_day("--opened")?;
+            let closed = day("--closed")?;
+            let text = ctx.files.read_text(target)?;
+            let account = parse_json(target, &text)?;
+            if !matches!(account, Json::Obj(_)) || account.get("accounts").is_some() {
+                return Err(usage(
+                    "chart open takes one account object, not a chart",
+                    "{\"code\":\"6100\",\"name\":\"Office supplies\",\"type\":\"Expense\",\"unit\":\"USD\"}; fa chart import installs a whole chart",
+                ));
+            }
+            let mut book = ctx.books.open(args)?;
+            let base_unit = book.spec()?.base_unit;
+            let wrapped = obj(vec![("accounts", Json::Arr(vec![account]))]).render();
+            let specs = parse_chart_specs_fail(target, &wrapped, base_unit, &book.context().units)?;
+            let [spec] = specs.as_slice() else {
+                return Err(Fail::Internal(
+                    "one account object parsed to several specs".into(),
+                ));
+            };
+            let key = args
+                .flag("--key")
+                .map_or_else(|| format!("account-open:{}", spec.code), str::to_string);
+            let recorded =
+                book.open_account(spec, opened, closed, who, date, key.as_bytes(), &capability)??;
+            out.at_book(&book)?;
+            (spec.code.clone(), recorded)
+        }
+        _ => {
+            let on = required_day("--on")?;
+            let mut book = ctx.books.open(args)?;
+            if !book.accounts()?.iter().any(|a| a.code == target) {
+                return Err(usage(
+                    format!("no account `{target}` in this book"),
+                    "fa chart list --json names the accounts",
+                ));
+            }
+            let key = args.flag("--key").map_or_else(
+                || format!("account-{action}:{target}:{}", on.render()),
+                str::to_string,
+            );
+            let recorded = if action == "close" {
+                book.close_account(target, on, who, date, key.as_bytes(), &capability)??
+            } else {
+                book.promote_to_summary(target, on, who, date, key.as_bytes(), &capability)??
+            };
+            out.at_book(&book)?;
+            (target.to_string(), recorded)
+        }
+    };
+    let (code, recorded) = recorded;
+    out.event(
+        "account_lifecycle",
+        vec![
+            ("action", s(action)),
+            ("code", s(&code)),
+            ("account", s(format!("{:032x}", recorded.account_vid.0))),
+            (
+                "control_entry",
+                s(format!("{:032x}", recorded.control_entry.0)),
+            ),
+            ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
+            ("already_recorded", Json::Bool(recorded.already_recorded)),
+        ],
+        &format!(
+            "{} account {code} (control entry {:032x}, recorded at {}){}",
+            match action {
+                "open" => "opened",
+                "close" => "closed",
+                _ => "promoted to summary",
+            },
+            recorded.control_entry.0,
+            recorded.recorded_at.0,
+            if recorded.already_recorded {
+                "; already recorded, nothing new was written"
+            } else {
+                ""
+            },
+        ),
+    );
+    Ok(())
+}
+
 pub fn parse_chart_specs(
     path: &str,
     text: &str,
@@ -3615,6 +3759,7 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             );
             Ok(())
         }
+        Some(action @ ("open" | "close" | "promote")) => chart_lifecycle(ctx, args, action),
         Some("templates") => {
             if let Some(extra) = args.positional.get(2) {
                 return Err(usage(

@@ -2269,6 +2269,112 @@ fn reverse_with_a_replacement_posts_one_atomic_correction() -> std::io::Result<(
     Ok(())
 }
 
+/// Plan §4.3, §5.6: an account's life cycle after the chart is installed,
+/// each step one journaled SchemaChange. `open` admits legs from its first
+/// day, `close` refuses legs on or after its day while the history stays,
+/// and `promote` turns a leaf into a summary account. An exact retry records
+/// nothing new, and no date defaults to today.
+#[test]
+fn chart_open_close_and_promote_are_journaled_lifecycle_controls() -> std::io::Result<()> {
+    let dir = tmp("chart-lifecycle")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Chart Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    let post = |key: &str, date: &str, account: &str| -> (i32, String) {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","description":"{key}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{account}","amount":"3.00 USD"}},{{"side":"credit","account":"1000","amount":"3.00 USD"}}]}}"#
+            ),
+        );
+        let (code, out, _) = fa(
+            Some(&book),
+            &["post", "--intent", &intent, "--evidence", &ev, "--json"],
+        );
+        (code, out)
+    };
+    let office = write(
+        &dir,
+        "office.json",
+        r#"{"code":"6100","name":"Office supplies","type":"Expense","unit":"USD"}"#,
+    );
+
+    // No date defaults to today; a chart is not an account.
+    let (code, out, _) = fa(Some(&book), &["chart", "open", &office, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    let (code, out, _) = fa(
+        Some(&book),
+        &["chart", "open", &chart, "--opened", "2026-03-01", "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    let (code, out) = post("before-open", "2026-03-05", "6100");
+    assert_ne!(code, 0, "no account 6100 yet: {out}");
+
+    let open = ["chart", "open", &office, "--opened", "2026-03-01", "--json"];
+    let (code, out, err) = fa(Some(&book), &open);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("account_lifecycle"), "{out}");
+    assert_eq!(field(&out, "action"), Some("open"));
+    assert_eq!(field(&out, "code"), Some("6100"));
+    assert_eq!(field(&out, "already_recorded"), Some("false"));
+    let control = field(&out, "control_entry").unwrap().to_string();
+    let (code, out, _) = fa(Some(&book), &open);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("true"));
+    assert_eq!(field(&out, "control_entry"), Some(control.as_str()));
+    let (code, listed, _) = fa(Some(&book), &["chart", "list", "--json"]);
+    assert_eq!(code, 0, "{listed}");
+    assert!(listed.contains("\"6100\""), "{listed}");
+    let (code, out) = post("office-1", "2026-03-05", "6100");
+    assert_eq!(code, 0, "{out}");
+
+    // Closing stops new legs on or after the day; earlier days still post.
+    let (code, out, _) = fa(
+        Some(&book),
+        &["chart", "close", "6100", "--on", "2026-03-20", "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "action"), Some("close"));
+    let (code, out) = post("office-late", "2026-03-25", "6100");
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-002"), "{out}");
+    assert!(out.contains("outside its effective interval"), "{out}");
+    let (code, out) = post("office-2", "2026-03-19", "6100");
+    assert_eq!(code, 0, "{out}");
+    let (code, out, _) = fa(
+        Some(&book),
+        &["chart", "close", "9999", "--on", "2026-03-20", "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+
+    // Promotion makes the leaf a summary: it takes no legs from that day.
+    let (code, out, _) = fa(
+        Some(&book),
+        &["chart", "promote", "6000", "--on", "2026-03-01", "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "action"), Some("promote"));
+    let (code, out) = post("rent-after", "2026-03-15", "6000");
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-002"), "{out}");
+    Ok(())
+}
+
 /// fa-formats on the product surface (plan §8.6, §15.9): `fa export` writes
 /// the trial balance's selection in every interop format. Each export
 /// re-imports through fa-formats' own reader (to the same content digest

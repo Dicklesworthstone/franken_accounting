@@ -521,7 +521,8 @@ The embedded entrypoints are `Book::export_proof` and
 `AsyncBook::export_proof`, using `ProofRequest` and `ProofKind`. They check
 the holder, book scope, current expiry and journaled revocation, and require
 both Read and Produce before scanning protected history. MCP exposes
-`fa_proof_export` with a `kind` selector and inline results. Its fixed launch
+`fa_notary_export` with a `kind` selector and inline results in the on-demand
+`fa.notary` cluster (launch `fa-mcp --cluster fa.notary`). Its fixed launch
 capability must include `--grant read --grant produce`; per-call authority
 and host output paths are refused. Complete-prefix and balance proofs disclose
 every journal envelope, so they require whole-book read authority.
