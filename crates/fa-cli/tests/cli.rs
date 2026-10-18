@@ -10607,7 +10607,13 @@ fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<(
     assert!(out.contains("FA-REF-013"), "{out}");
     assert_eq!(run(&["--token", &token, "draft", "new", "agent-9"]).0, 0);
     let (code, out, _) = run(&[
-        "--token", &token, "post", "--intent", &rent, "--draft", "agent-9",
+        "--token",
+        &token,
+        "post",
+        "--intent",
+        "rent.json",
+        "--draft",
+        "agent-9",
     ]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(field(&out, "event"), Some("draft_planned"), "{out}");
