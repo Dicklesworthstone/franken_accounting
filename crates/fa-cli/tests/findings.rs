@@ -205,6 +205,225 @@ impl Fixture {
 }
 
 #[test]
+fn recorded_run_discovery_pages_a_fixed_inventory_across_processes_and_new_publications() {
+    let f = Fixture::new();
+    let before = f.head();
+    let empty = ok(&f.book, &["finding", "runs"]);
+    assert_eq!(text(&empty, "event"), "finding_runs");
+    assert_eq!(text(data(&empty), "scope"), "recorded-runs");
+    assert_eq!(number(data(&empty), "total_recorded_runs"), 0);
+    assert_eq!(number(data(&empty), "page_count"), 0);
+    assert_eq!(data(&empty).get("next_cursor"), Some(&Json::Null));
+    assert_eq!(f.head(), before, "an empty inventory is a read");
+
+    let record = |extra: &[&str]| {
+        let mut args = vec![
+            "finding",
+            "record",
+            "jet.weekend",
+            "--as",
+            "run-investigator",
+        ];
+        args.extend_from_slice(extra);
+        ok(&f.book, &args)
+    };
+    let empty_run = record(&["--effective-through", "2026-01-09"]);
+    let populated = record(&[]);
+    f.post("second-saturday", "2026-01-17", "25.00 USD");
+    let third = record(&[]);
+    let records = [empty_run, populated, third];
+    let frontier = f.head();
+    let cutoff = frontier.to_string();
+    let all = ok(&f.book, &["finding", "runs"]);
+    let all_data = data(&all);
+    let all_rows = all_data.get("runs").and_then(Json::as_arr).unwrap();
+    assert_eq!(number(all_data, "total_recorded_runs"), 3);
+    assert_eq!(number(all_data, "page_count"), 3);
+    assert_eq!(number(all_data, "known_at"), i128::from(frontier));
+    assert_eq!(number(all_data, "checked_through"), i128::from(frontier));
+    assert_eq!(all_data.get("next_cursor"), Some(&Json::Null));
+    for (row, recorded) in all_rows.iter().zip(&records) {
+        for field in [
+            "run_vid",
+            "certificate",
+            "recorded_at",
+            "producer",
+            "source_known_at",
+            "effective_through",
+            "procedure",
+            "version",
+            "finding_count",
+            "findings_digest",
+        ] {
+            assert_eq!(
+                row.get(field),
+                data(recorded).get(field),
+                "{field}: {row:?}"
+            );
+        }
+        assert!(
+            row.get("status").is_none(),
+            "run inventory does not infer review status"
+        );
+    }
+    assert_eq!(number(&all_rows[0], "finding_count"), 0);
+    assert_eq!(number(&all_rows[1], "finding_count"), 1);
+    assert_eq!(number(&all_rows[2], "finding_count"), 2);
+
+    let first = ok(&f.book, &["finding", "runs", "--page-size", "1"]);
+    let first_data = data(&first);
+    assert_eq!(
+        first_data.get("runs").and_then(Json::as_arr).unwrap(),
+        &all_rows[..1]
+    );
+    assert_eq!(
+        first_data.get("inventory_digest"),
+        all_data.get("inventory_digest")
+    );
+    let cursor = text(first_data, "next_cursor").to_string();
+    assert_eq!(cursor.len(), 192, "complete native cursor, not its digest");
+    assert!(cursor.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_eq!(f.head(), frontier, "inventory discovery publishes nothing");
+
+    // Both a new analytic publication and a human review arrive between pages.
+    // Continuation keeps the original inventory while checking current history.
+    f.post("later-sunday", "2026-01-18", "50.00 USD");
+    let fourth = record(&[]);
+    let finding = data(&records[1])
+        .get("finding_ids")
+        .and_then(Json::as_arr)
+        .unwrap()[0]
+        .as_str()
+        .unwrap();
+    ok(
+        &f.book,
+        &[
+            "finding",
+            "review",
+            finding,
+            "--action",
+            "acknowledge",
+            "--note",
+            "Reviewed the original source after inventory selection",
+            "--as",
+            "run-reviewer",
+        ],
+    );
+    let after = f.head();
+    let middle = ok(
+        &f.book,
+        &[
+            "finding",
+            "runs",
+            "--page-size",
+            "1",
+            "--cursor",
+            &cursor,
+            "--known-at",
+            "HEAD",
+        ],
+    );
+    let middle_data = data(&middle);
+    assert_eq!(
+        middle_data.get("runs").and_then(Json::as_arr).unwrap(),
+        &all_rows[1..2]
+    );
+    assert_eq!(number(middle_data, "known_at"), i128::from(frontier));
+    assert_eq!(number(middle_data, "checked_through"), i128::from(after));
+    assert_eq!(number(middle_data, "total_recorded_runs"), 3);
+    assert_eq!(
+        middle_data.get("inventory_digest"),
+        first_data.get("inventory_digest")
+    );
+    assert_eq!(
+        number(middle.get("coordinate").unwrap(), "known_at"),
+        i128::from(frontier)
+    );
+    let repeated = ok(
+        &f.book,
+        &["finding", "runs", "--page-size", "1", "--cursor", &cursor],
+    );
+    assert_eq!(
+        data(&repeated),
+        middle_data,
+        "the same continuation reopens reproducibly"
+    );
+
+    let last = ok(
+        &f.book,
+        &[
+            "finding",
+            "runs",
+            "--page-size",
+            "2",
+            "--cursor",
+            text(middle_data, "next_cursor"),
+            "--known-at",
+            &cutoff,
+        ],
+    );
+    assert_eq!(
+        data(&last).get("runs").and_then(Json::as_arr).unwrap(),
+        &all_rows[2..]
+    );
+    assert_eq!(data(&last).get("next_cursor"), Some(&Json::Null));
+    assert_eq!(number(data(&last), "page_count"), 1);
+    assert_eq!(
+        data(&last).get("inventory_digest"),
+        first_data.get("inventory_digest")
+    );
+    let fresh = ok(&f.book, &["finding", "runs", "--page-size", "32"]);
+    assert_eq!(number(data(&fresh), "total_recorded_runs"), 4);
+    assert_eq!(
+        data(&fresh)
+            .get("runs")
+            .and_then(Json::as_arr)
+            .unwrap()
+            .last()
+            .unwrap()
+            .get("certificate"),
+        data(&fourth).get("certificate"),
+    );
+    assert_ne!(
+        data(&fresh).get("inventory_digest"),
+        first_data.get("inventory_digest")
+    );
+
+    let mut changed = cursor.clone();
+    let tail = changed.pop().unwrap();
+    changed.push(if tail == '0' { '1' } else { '0' });
+    let moved_cutoff = after.to_string();
+    for args in [
+        vec!["finding", "runs", "--cursor", changed.as_str()],
+        vec![
+            "finding",
+            "runs",
+            "--cursor",
+            &cursor,
+            "--known-at",
+            &moved_cutoff,
+        ],
+    ] {
+        let (exit, rejected) = call(&f.book, &args, None);
+        assert_eq!(exit, 8, "{args:?}: {rejected:?}");
+        assert_eq!(text(data(&rejected[0]), "refusal_id"), "FA-REF-150");
+    }
+    for args in [
+        vec!["finding", "runs", "--cursor", ""],
+        vec!["finding", "runs", "--page-size", "0"],
+        vec!["finding", "runs", "--page-size", "33"],
+    ] {
+        let (exit, rejected) = call(&f.book, &args, None);
+        assert_eq!(exit, 2, "{args:?}: {rejected:?}");
+    }
+    assert_eq!(
+        f.head(),
+        after,
+        "pages, retries and invalid continuations are reads"
+    );
+}
+
+#[test]
 fn findings_remain_citable_and_review_history_survives_process_boundaries() {
     let f = Fixture::new();
     let basis = f.head().to_string();

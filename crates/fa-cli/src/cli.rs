@@ -1674,7 +1674,7 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         ("bank", Some("import")) => &[Op::Read, Op::Post, Op::Reconcile],
         ("bank", Some("match")) => &[Op::Read, Op::Reconcile],
         ("finding", Some("record" | "export")) => &[Op::Read, Op::Produce],
-        ("finding", Some("list" | "show" | "replay")) => &[Op::Read],
+        ("finding", Some("runs" | "list" | "show" | "replay")) => &[Op::Read],
         ("finding", Some("review")) => &[Op::Read, Op::Approve],
         ("document", Some("add")) if args.flag("--grade").is_none() => &[Op::Post],
         ("document", Some("read")) => &[Op::Read],

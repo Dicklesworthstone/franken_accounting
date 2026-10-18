@@ -837,15 +837,17 @@ impl Adapter {
                         "certificate_required": true,
                         "cluster": "fa.findings",
                         "launch_option": "--cluster fa.findings",
+                        "runs_tool": "fa_findings_runs",
                         "list_tool": "fa_findings_list",
                         "record_tool": "fa_findings_record",
                         "certificate_argument": "certificate",
-                        "certificate_source": "data.certificate returned by fa_findings_record",
+                        "certificate_source": "data.runs[].certificate from fa_findings_runs, or data.certificate from fa_findings_record",
                         "required_operations": {
+                            "runs": ["read"],
                             "list": ["read"],
                             "record": ["read", "produce"],
                         },
-                        "note": "Select one complete retained run by its certificate. The optional known_at argument selects human review history; it does not change the original certified observation. Reading this resource runs a fresh preview and does not publish findings or review decisions.",
+                        "note": "Discover recorded runs with fa_findings_runs (page_size 1..32, default 16), then select a returned certificate with fa_findings_list. Continue with next_cursor unchanged; omitted known_at or HEAD inherits the cursor's fixed inventory cutoff. Run pages fully replay returned observations, while total_recorded_runs describes the structurally checked inventory; neither current review status nor complete detector coverage is inferred. For fa_findings_list, known_at selects human review history and leaves the original observation unchanged. Reading this resource runs a fresh preview and does not publish findings or review decisions.",
                     },
                 });
                 Ok((json_mime, v.to_string()))

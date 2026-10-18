@@ -2535,6 +2535,21 @@ impl Book {
         )))
     }
 
+    /// Discover recorded procedure runs at one fixed publication frontier.
+    /// Native manifests are checked through HEAD and each returned run is
+    /// replayed before any page is returned. This does not publish a journal entry.
+    pub fn finding_runs(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::findings::lookup::FindingRunPageRequest,
+    ) -> Outcome<crate::findings::lookup::FindingRunPage> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.finding_runs(
+            &purposes, principal, capability, request
+        )))
+    }
+
     /// Resolve one immutable finding after replaying its certified source run.
     pub fn finding_by_vid(
         &self,

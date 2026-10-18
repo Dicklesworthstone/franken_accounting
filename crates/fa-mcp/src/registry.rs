@@ -76,7 +76,7 @@ pub const RESOURCES: &[(&str, &str)] = &[
     ),
     (
         "resource://fa/findings/{book}",
-        "the launch-bound book's forensic procedures and a fresh, unrecorded jet.round_amounts preview; retained findings and review history are selected by certificate with fa_findings_list in on-demand fa.findings (not a global inventory); `{book}` as above",
+        "the launch-bound book's forensic procedures and a fresh, unrecorded jet.round_amounts preview; discover recorded runs with cursor-paged fa_findings_runs in on-demand fa.findings, then select a certificate with fa_findings_list for its observations and review history; recorded-run discovery does not establish detector coverage or current review status; `{book}` as above",
     ),
     (
         "resource://fa/cases/{book}",
@@ -3026,6 +3026,11 @@ mod tests {
                 &["read", "produce"],
             ),
             (
+                "fa_findings_runs",
+                json!({"page_size": 2, "known_at": "17"}),
+                &["read"],
+            ),
+            (
                 "fa_findings_list",
                 json!({"certificate": "ab".repeat(32), "known_at": "17"}),
                 &["read"],
@@ -3108,6 +3113,108 @@ mod tests {
                 .invocation(&mcp, reg, &json!({"file": "/host/workpaper"}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn finding_run_discovery_preserves_cursor_and_cutoff_under_read_only_authority() {
+        use fa_cli::authority::{LaunchAuthority, LaunchProfile};
+
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_by_wire("fa_findings_runs")
+            .expect("recorded run discovery");
+        assert_eq!(mcp.tools_of("fa.findings").count(), 7);
+        assert_eq!(mcp.exposed(&[]).count(), 40);
+        assert!(mcp.cluster("fa.findings").unwrap().on_demand);
+        assert!(
+            !mcp.exposed(&[])
+                .any(|item| item.wire_name() == tool.wire_name())
+        );
+        assert!(!tool.is_dangerous(reg));
+
+        let schema = tool.input_schema(&mcp, reg);
+        assert_eq!(schema["required"], json!([]));
+        assert_eq!(
+            schema["properties"]["page_size"]["type"],
+            json!(["string", "integer"])
+        );
+        assert_eq!(schema["properties"]["cursor"]["type"], json!("string"));
+        let initial = tool.invocation(&mcp, reg, &json!({})).unwrap();
+        assert_eq!(initial.argv, vec!["finding", "runs", "--json"]);
+        assert!(initial.stdin.is_none());
+
+        let cursor = "ab".repeat(96);
+        for (size, cutoff_flag) in [(json!(1), "known_at"), (json!("32"), "as_known_at")] {
+            let mut arguments = json!({"page_size": size, "cursor": cursor});
+            arguments[cutoff_flag] = json!("17");
+            let invocation = tool.invocation(&mcp, reg, &arguments).unwrap();
+            let parsed = args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+                .expect("registered continuation");
+            assert_eq!(parsed.positional, vec!["finding", "runs"]);
+            assert_eq!(parsed.flag("--cursor"), Some(cursor.as_str()));
+            assert_eq!(
+                parsed.flag(&format!("--{}", cutoff_flag.replace('_', "-"))),
+                Some("17")
+            );
+            assert!(matches!(parsed.flag("--page-size"), Some("1" | "32")));
+            assert!(parsed.flag("--as").is_none());
+            assert!(invocation.stdin.is_none());
+            let round_trip = mcp
+                .command_to_call(reg, &format!("fa {}", invocation.argv.join(" ")))
+                .expect("continuation discovery round trip");
+            assert_eq!(round_trip.tool, tool.wire_name());
+            assert_eq!(round_trip.arguments["cursor"], json!(cursor));
+            assert_eq!(round_trip.arguments[cutoff_flag], json!("17"));
+            assert_eq!(
+                tool.invocation(&mcp, reg, &round_trip.arguments)
+                    .unwrap()
+                    .argv,
+                invocation.argv
+            );
+        }
+
+        let continuation = tool
+            .invocation(&mcp, reg, &json!({"cursor": cursor, "known_at": "HEAD"}))
+            .unwrap();
+        let parsed = args::parse(&continuation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.flag("--known-at"), Some("HEAD"));
+        assert_eq!(parsed.flag("--cursor"), Some(cursor.as_str()));
+        // The native cursor owns the cutoff; normalization does not replace
+        // HEAD, strip the cursor, or turn it into a host input file.
+        assert!(continuation.stdin.is_none());
+
+        let call = mcp
+            .command_to_call(reg, "fa finding runs --page-size 2 --known-at 17")
+            .unwrap();
+        for (grants, allowed) in [(&["read"][..], true), (&["post"][..], false)] {
+            let authority = LaunchAuthority::new(
+                std::path::PathBuf::from("unopened-finding-run-discovery-book"),
+                None,
+                "finding-run-reader",
+                LaunchProfile::Agent,
+                grants,
+            )
+            .unwrap();
+            assert_eq!(mcp.is_call_admissible(reg, &call, &authority), allowed);
+        }
+
+        for arguments in [
+            json!({"page_size": 1.5}),
+            json!({"page_size": [1, 2]}),
+            json!({"cursor": [cursor]}),
+            json!({"cursor": false}),
+            json!({"file": "/host/private"}),
+            json!({"out": "/host/overwrite"}),
+            json!({"output": "/host/overwrite"}),
+            json!({"cursor": cursor, "grant": ["read"]}),
+            json!({"cursor": cursor, "token": null}),
+            json!({"cursor": cursor, "book": null}),
+        ] {
+            assert!(
+                tool.invocation(&mcp, reg, &arguments).is_err(),
+                "{arguments}"
+            );
+        }
     }
 
     #[test]

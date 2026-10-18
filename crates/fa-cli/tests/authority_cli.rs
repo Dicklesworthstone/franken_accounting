@@ -386,6 +386,7 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
             "1000",
         ],
         vec!["finding", "list", "--certificate", ZERO_DIGEST],
+        vec!["finding", "runs", "--cursor", "invalid"],
         vec!["finding", "export", "--certificate", ZERO_DIGEST],
         vec!["finding", "replay", "-"],
     ]);

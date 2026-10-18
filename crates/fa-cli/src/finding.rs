@@ -1,13 +1,15 @@
 //! Certified finding publication, human review and source-preserving workpapers.
 //!
 //! Every observation comes from the native replay-backed finding APIs. The
-//! selected run is explicit: listing one certificate never claims to inventory
-//! the book. Reviews keep their own historical cutoff and never rewrite the
-//! original observation. Exported canonical packages replay against the book.
+//! run inventory pages one fixed publication frontier; a certificate-specific
+//! listing reads that run. Reviews keep their own historical cutoff and never
+//! rewrite the original observation. Exported canonical packages replay against
+//! the book.
 
 use std::collections::BTreeSet;
 use std::io::Read;
 
+use fa::findings::lookup::{FindingRunCursor, FindingRunPageRequest, MAX_FINDING_RUN_PAGE};
 use fa::findings::review::workpaper::FindingReviewExpectation;
 use fa::findings::review::{
     DismissalReason, FINDING_REVIEW_WORKPAPER_FORMAT, FindingReview, FindingReviewAction,
@@ -25,8 +27,14 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, Files, Out, Stdin, finding_json, hex, usage, write_new_output_file};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa finding record <procedure-id> | record --certificate C:<digest> | list --certificate C:<digest> | show F:<vid> | review F:<vid> --action acknowledge --note <text> | export --certificate C:<digest> --export-format md|jsonl|canonical | replay <workpaper-file|-> [--certificate C:<expected-digest> --known-at <exact-seq>]";
+const EXAMPLE: &str = "fa finding runs [--page-size 16] [--cursor <hex>] | record <procedure-id> | record --certificate C:<digest> | list --certificate C:<digest> | show F:<vid> | review F:<vid> --action acknowledge --note <text> | export --certificate C:<digest> --export-format md|jsonl|canonical | replay <workpaper-file|-> [--certificate C:<expected-digest> --known-at <exact-seq>]";
+const RUNS_EXAMPLE: &str = "fa finding runs [--page-size 1..32] [--cursor <complete-hex>] [--known-at HEAD|<sequence>] --json";
+// Native fa:finding-run-cursor:v1 has fixed framing. The CLI bounds and
+// decodes its hex transport; only the native inventory validates its meaning.
+const RUN_CURSOR_BYTES: usize = 96;
 const LOCAL_FLAGS: &[&str] = &[
+    "--page-size",
+    "--cursor",
     "--certificate",
     "--param",
     "--account",
@@ -105,6 +113,7 @@ fn has_cutoff(args: &Args) -> bool {
 
 fn check_options(args: &Args, sub: &str) -> Result<(), Fail> {
     let allowed: &[&str] = match sub {
+        "runs" => &["--page-size", "--cursor", "--known-at", "--as-known-at"],
         "record" => &[
             "--certificate",
             "--param",
@@ -235,6 +244,7 @@ pub(crate) fn finding_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .ok_or_else(|| usage("finding needs a subcommand", EXAMPLE))?;
     check_options(args, sub)?;
     match sub {
+        "runs" => runs(ctx, args),
         "record" => record(ctx, args),
         "list" => list(ctx, args),
         "show" => show(ctx, args),
@@ -243,6 +253,118 @@ pub(crate) fn finding_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "replay" => replay(ctx, args),
         _ => Err(usage("finding needs a supported subcommand", EXAMPLE)),
     }
+}
+
+fn runs(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "finding runs accepts no positional selector",
+            RUNS_EXAMPLE,
+        ));
+    }
+    let who = ctx.principal(args);
+    let cap = capability(ctx, args, &["read"])?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_book(book, who, &cap))?;
+    // Neither a historical selector nor a public continuation revives expired
+    // authority. Decode these only after native current-policy admission.
+    let mut request = FindingRunPageRequest {
+        known_at: cutoff(args)?,
+        ..Default::default()
+    };
+    if let Some(value) = args.flag("--page-size") {
+        request.limit = value
+            .parse::<usize>()
+            .ok()
+            .filter(|limit| (1..=MAX_FINDING_RUN_PAGE).contains(limit))
+            .ok_or_else(|| usage("--page-size needs an integer in 1..32", RUNS_EXAMPLE))?;
+    }
+    request.after = args
+        .flag("--cursor")
+        .map(|text| -> Result<_, Fail> {
+            let bytes = fixed_hex::<RUN_CURSOR_BYTES>(text, "--cursor")?;
+            Ok(FindingRunCursor::decode(&bytes)?)
+        })
+        .transpose()?;
+    let page = book.finding_runs(who, &cap, &request)??;
+    let next_cursor = page
+        .next_cursor
+        .as_ref()
+        .map(|cursor| cursor.canonical_bytes().map(|bytes| hex(&bytes)))
+        .transpose()?;
+    let rows = page
+        .runs
+        .iter()
+        .map(|run| {
+            obj(vec![
+                ("run_vid", s(format!("{:032x}", run.run_vid.0))),
+                ("certificate", s(hex(&run.certificate_digest))),
+                ("recorded_at", Json::Int(i128::from(run.recorded_at.0))),
+                ("producer", s(format!("{:032x}", run.producer.0))),
+                (
+                    "source_known_at",
+                    Json::Int(i128::from(run.coordinate.known_at.0)),
+                ),
+                (
+                    "effective_through",
+                    run.coordinate
+                        .effective_through
+                        .map_or(Json::Null, |day| s(day.render())),
+                ),
+                ("procedure", s(&run.procedure)),
+                ("version", Json::Int(i128::from(run.version))),
+                ("finding_count", Json::Int(i128::from(run.finding_count))),
+                ("findings_digest", s(hex(&run.findings_digest))),
+            ])
+        })
+        .collect();
+    let fields = vec![
+        ("scope", s("recorded-runs")),
+        ("known_at", Json::Int(i128::from(page.known_at.0))),
+        (
+            "checked_through",
+            Json::Int(i128::from(page.checked_through.0)),
+        ),
+        ("inventory_digest", s(hex(&page.inventory_digest))),
+        (
+            "total_recorded_runs",
+            Json::Int(i128::from(page.total_recorded_runs)),
+        ),
+        ("page_count", Json::Int(page.runs.len() as i128)),
+        ("runs", Json::Arr(rows)),
+        ("next_cursor", next_cursor.as_deref().map_or(Json::Null, s)),
+    ];
+    ensure_inline(&fields, "repeat fa finding runs with a smaller --page-size")?;
+    let mut human = format!(
+        "Recorded finding runs at sequence {}: {} of {}; native records checked through {}",
+        page.known_at.0,
+        page.runs.len(),
+        page.total_recorded_runs,
+        page.checked_through.0,
+    );
+    for run in &page.runs {
+        human.push_str(&format!(
+            "\n{} v{}: {} original finding(s), published at {}, source at {}, certificate C:{}",
+            run.procedure,
+            run.version,
+            run.finding_count,
+            run.recorded_at.0,
+            run.coordinate.known_at.0,
+            hex(&run.certificate_digest),
+        ));
+    }
+    if let Some(cursor) = &next_cursor {
+        human.push_str(&format!(
+            "\nNext page: fa finding runs --page-size {} --cursor {cursor}",
+            request.limit,
+        ));
+    } else {
+        human.push_str("\nEnd of this recorded-run inventory. Review decisions are available with fa finding list --certificate C:<digest>.");
+    }
+    ctx.out.known_at(page.known_at);
+    ctx.out.event("finding_runs", fields, &human);
+    Ok(())
 }
 
 fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

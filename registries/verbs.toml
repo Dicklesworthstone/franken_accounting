@@ -424,14 +424,14 @@ example = "fa instrument add operating.json --book ./books/myco --json"
 
 [[verb]]
 name = "finding"
-summary = "Record a certified forensic run, inspect its immutable findings, append independent human reviews, and export or replay numbered workpapers."
+summary = "Discover recorded forensic runs, record a certified run, inspect its immutable findings, append independent human reviews, and export or replay numbered workpapers."
 writes = true
-subcommands = ["record", "list", "show", "review", "export", "replay"]
-flags = ["--certificate", "--param", "--account", "--source", "--effective-through", "--known-at", "--as-known-at", "--action", "--note", "--dismissal-reason", "--previous", "--evidence", "--export-format", "--out"]
+subcommands = ["record", "runs", "list", "show", "review", "export", "replay"]
+flags = ["--certificate", "--param", "--account", "--source", "--effective-through", "--known-at", "--as-known-at", "--page-size", "--cursor", "--action", "--note", "--dismissal-reason", "--previous", "--evidence", "--export-format", "--out"]
 switches = ["--include-reviews"]
-events = ["findings_recorded", "finding_list", "finding_shown", "finding_reviewed", "finding_exported", "finding_replayed"]
+events = ["findings_recorded", "finding_runs", "finding_list", "finding_shown", "finding_reviewed", "finding_exported", "finding_replayed"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["finding record <procedure-id> [--param <name=integer>]... [--account <code>] [--source E:<vid>] [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD]", "finding record --certificate C:<digest>   (the exact idempotent retry; a new run at HEAD may select a later source prefix)", "finding list --certificate C:<digest> [--known-at HEAD|<seq>]   (every finding in this certified run, not a global inventory)", "finding show F:<vid> [--known-at HEAD|<seq>]", "finding review F:<vid> --action acknowledge|dismiss|reopen --note <text> [--previous R:<latest-review>] [--dismissal-reason explained|duplicate|data-quality|outside-scope|other] [--evidence D:<oid>]...", "finding export --certificate C:<digest> [--export-format md|jsonl|canonical] [--include-reviews [--known-at HEAD|<seq>]] [--out <new-file>]", "finding replay <canonical-workpaper|-> [--certificate C:<expected-digest> --known-at <exact-seq>]", "Recording and exporting require read and produce; listing, showing and replaying require read. Review requires a Human with read and approve who is independent of the run producer. Dismissal also requires a registered reason and retained evidence. Supply the current --previous after the first decision; stale decisions refuse instead of overwriting history.", "The original numbered workpaper remains unchanged when later reviews are appended. --include-reviews adds a separate review appendix with its own fixed cutoff. Canonical exports replay against retained native evidence; Markdown and JSONL are presentations. Recipient-bound replay requires both the independently expected certificate and exact review cutoff; replay without them states its as-supplied historical scope. Complete responses refuse if they exceed transport limits, never truncate."]
+usage = ["finding record <procedure-id> [--param <name=integer>]... [--account <code>] [--source E:<vid>] [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD]", "finding record --certificate C:<digest>   (the exact idempotent retry; a new run at HEAD may select a later source prefix)", "finding runs [--page-size 1..32] [--cursor <192-hex>] [--known-at HEAD|<seq>]   (discover recorded runs; default page size 16)", "finding list --certificate C:<digest> [--known-at HEAD|<seq>]   (every finding in this certified run, not a global inventory)", "finding show F:<vid> [--known-at HEAD|<seq>]", "finding review F:<vid> --action acknowledge|dismiss|reopen --note <text> [--previous R:<latest-review>] [--dismissal-reason explained|duplicate|data-quality|outside-scope|other] [--evidence D:<oid>]...", "finding export --certificate C:<digest> [--export-format md|jsonl|canonical] [--include-reviews [--known-at HEAD|<seq>]] [--out <new-file>]", "finding replay <canonical-workpaper|-> [--certificate C:<expected-digest> --known-at <exact-seq>]", "Recording and exporting require read and produce; discovering runs, listing, showing and replaying require read. Review requires a Human with read and approve who is independent of the run producer. Dismissal also requires a registered reason and retained evidence. Supply the current --previous after the first decision; stale decisions refuse instead of overwriting history.", "Run discovery has scope recorded-runs: total_recorded_runs counts the structurally checked inventory at known_at; only summaries in the returned page also undergo full certificate and computation replay. It establishes neither current review status nor complete detector coverage. Pass next_cursor unchanged to continue the same book and inventory: omitted known_at or HEAD inherits the cursor cutoff; an explicit sequence must equal it. Current authority is always rechecked, and checked_through names the current validation frontier.", "The original numbered workpaper remains unchanged when later reviews are appended. --include-reviews adds a separate review appendix with its own fixed cutoff. Canonical exports replay against retained native evidence; Markdown and JSONL are presentations. Recipient-bound replay requires both the independently expected certificate and exact review cutoff; replay without them states its as-supplied historical scope. Complete responses refuse if they exceed transport limits, never truncate."]
 example = "fa finding record jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
@@ -776,6 +776,12 @@ name = "findings_recorded"
 book = true
 doc = "The complete immutable finding set from one retained procedure certificate, atomically published with stable run and finding identities. retry_command names the exact idempotent certificate retry; repeating a fresh HEAD run may select a different source prefix."
 fields = ["certificate:hex", "run_vid:hex", "recorded_at:seq", "producer:hex", "procedure:string", "version:int", "source_known_at:seq", "effective_through:date?", "claim:string", "finding_count:int", "findings_digest:hex", "finding_ids:[hex]", "already_recorded:bool", "retry_command:string"]
+
+[[event]]
+name = "finding_runs"
+book = true
+doc = "A bounded page of recorded forensic runs in ascending publication order at one known_at inventory. scope is recorded-runs: the full inventory is structurally checked, while only returned summaries undergo full native certificate and computation replay. checked_through is the current validation frontier. A null next_cursor ends this recorded inventory; it establishes neither current review status nor complete detector coverage."
+fields = ["scope:string", "known_at:seq", "checked_through:seq", "inventory_digest:hex", "total_recorded_runs:int", "page_count:int", "runs:[recorded_finding_run]", "next_cursor:string?"]
 
 [[event]]
 name = "finding_list"
@@ -1842,6 +1848,11 @@ doc = "One fiscal period's stored state mirror compared with its refolded state 
 fields = ["code:string", "fiscal_year:int", "ordinal:int", "kind:string", "born_state:string", "stored_state:string?", "refolded_state:string", "transitions:int", "green:bool"]
 
 [[shape]]
+name = "recorded_finding_run"
+doc = "One recorded forensic run whose original certificate and observations fully replayed for this page. The publication identity and producer remain distinct from its source coordinate. certificate selects its complete finding set; no current human review status is inferred."
+fields = ["run_vid:hex", "certificate:hex", "recorded_at:seq", "producer:hex", "source_known_at:seq", "effective_through:date?", "procedure:string", "version:int", "finding_count:int", "findings_digest:hex"]
+
+[[shape]]
 name = "recorded_finding"
 doc = "One immutable certified observation with its stable native identity, original coordinate and producer, plus its verified human review history at the requested cutoff. The nested finding never changes when its review status changes."
 fields = ["finding_vid:hex", "run_vid:hex", "certificate:hex", "ordinal:int", "recorded_at:seq", "producer:hex", "source_known_at:seq", "effective_through:date?", "status:string", "latest_review:hex?", "finding:finding", "reviews:[finding_review]"]
@@ -2058,7 +2069,7 @@ hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--versio
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--date-window"]
+integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--date-window", "--page-size"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -2107,7 +2118,7 @@ doc = "General-ledger views at one coordinate (detail, roll-forward, aging, cash
 [[mcp.cluster]]
 name = "fa.findings"
 on_demand = true
-doc = "Retained certified forensic findings, independent append-only human decisions, and deterministic numbered workpapers. Reads select an explicit certified run; replay can bind an independently requested source and review cutoff."
+doc = "Discover recorded forensic runs with bounded cursor pages, then inspect retained certified findings, independent append-only human decisions, and deterministic numbered workpapers. Finding lists select an explicit certified run; replay can bind an independently requested source and review cutoff."
 
 [[mcp.cluster]]
 name = "fa.bank"
@@ -2500,6 +2511,18 @@ switches = []
 required = []
 dont = ["The launch capability must hold read and produce. Select either one procedure or a retained certificate; a certificate already fixes every input and source coordinate.", "Use the returned certificate for an exact retry. A fresh procedure run at HEAD may include later publications and is not the same source run."]
 mistakes = ["Passing both procedure and certificate, or changing parameters while retrying a certificate.", "Supplying floating-point parameters: param contains exact name=integer strings, one value per name."]
+
+[[mcp.tool]]
+cluster = "fa.findings"
+name = "runs"
+verb = "finding"
+subcommands = ["runs"]
+positionals = []
+flags = ["--page-size", "--cursor", "--known-at", "--as-known-at"]
+switches = []
+required = []
+dont = ["The launch capability must hold read, and current authority is rechecked on every page. page_size is 1..32, default 16. Pass the complete 192-hex next_cursor unchanged as cursor; this is inline cursor data, never a file path.", "Continuation without known_at, or with HEAD, inherits the cursor's fixed inventory cutoff. An explicit numeric known_at must equal it. Start without a cursor to discover a fresh inventory.", "scope is recorded-runs. total_recorded_runs counts structurally verified manifests, while only returned summaries fully replay their original certificates and observations. Use a row's certificate with fa_findings_list for its findings and review history; this page establishes neither current review status nor complete detector coverage."]
+mistakes = ["Treating an empty recorded inventory as proof that no anomalies exist, or treating the total as a count of reviewed findings.", "Editing a cursor, using it for another book, or changing its pinned known_at; never discard a failed continuation and silently claim a complete inventory."]
 
 [[mcp.tool]]
 cluster = "fa.findings"
