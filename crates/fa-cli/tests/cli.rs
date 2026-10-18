@@ -2106,6 +2106,169 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     Ok(())
 }
 
+/// fa-giar: a correction is one atomic pair. `fa reverse --replace-with`
+/// commits the exact reversal and the corrected Replacement at one sequence
+/// under one reason; an exact retry writes nothing; the forms that cannot
+/// carry a pair yet are refused before anything is published; and a
+/// Replacement posted alone names this command as its fix.
+#[test]
+fn reverse_with_a_replacement_posts_one_atomic_correction() -> std::io::Result<()> {
+    let dir = tmp("correction")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Fix Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    let intent = write(
+        &dir,
+        "entry.json",
+        r#"{"effective_date":"2026-03-15","description":"rent","idempotency_key":"inv-1","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &intent, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let vid = field(&out, "vid").unwrap().to_string();
+    let corrected = write(
+        &dir,
+        "corrected.json",
+        r#"{"description":"rent, corrected","legs":[{"side":"debit","account":"6000","amount":"12.00 USD"},{"side":"credit","account":"1000","amount":"12.00 USD"}]}"#,
+    );
+    let with_class = write(
+        &dir,
+        "with-class.json",
+        r#"{"class":"Original","legs":[{"side":"debit","account":"6000","amount":"12.00 USD"},{"side":"credit","account":"1000","amount":"12.00 USD"}]}"#,
+    );
+
+    // Refused before anything is published.
+    let before = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    for (extra, replacement, expected) in [
+        (vec!["--dry-run"], corrected.as_str(), "no plan form"),
+        (
+            vec!["--draft", "d1"],
+            corrected.as_str(),
+            "cannot be planned into a draft",
+        ),
+        (vec![], with_class.as_str(), "takes no `class`"),
+    ] {
+        let mut args = vec![
+            "reverse",
+            vid.as_str(),
+            "--reason",
+            "WrongAmount",
+            "--replace-with",
+            replacement,
+            "--evidence",
+            &ev,
+            "--json",
+        ];
+        args.extend(extra);
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
+        assert!(out.contains(expected), "{expected}: {out}");
+    }
+    assert_eq!(
+        report(&book, &["tb", "--period", "FY2026-P03", "--json"]),
+        before
+    );
+
+    let args = [
+        "reverse",
+        vid.as_str(),
+        "--reason",
+        "WrongAmount",
+        "--replace-with",
+        corrected.as_str(),
+        "--evidence",
+        &ev,
+        "--json",
+    ];
+    let (code, out, err) = fa(Some(&book), &args);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("corrected"), "{out}");
+    assert_eq!(field(&out, "target"), Some(vid.as_str()));
+    assert_eq!(field(&out, "reason"), Some("WrongAmount"));
+    assert_eq!(field(&out, "already_recorded"), Some("false"));
+    assert_eq!(field(&out, "reversal_period"), Some("FY2026-P03"));
+    assert_eq!(field(&out, "replacement_period"), Some("FY2026-P03"));
+    let reversal = field(&out, "reversal").unwrap().to_string();
+    let replacement = field(&out, "replacement").unwrap().to_string();
+    let recorded_at = field(&out, "recorded_at").unwrap().to_string();
+    assert_ne!(reversal, replacement);
+
+    // Both entries cite the target, one as its reversal, one as its
+    // replacement, under the same reason, and both landed at one sequence.
+    for (entry, kind) in [(&reversal, "Reverses"), (&replacement, "Replaces")] {
+        let (code, shown, err) = fa(Some(&book), &["entry", "show", entry, "--json"]);
+        assert_eq!(code, 0, "{shown}\n{err}");
+        let shown = doc(&shown);
+        let lineage = arr(&shown, "supersedes");
+        assert_eq!(lineage.len(), 1, "{entry}");
+        assert_eq!(text(&lineage[0], "entry"), vid);
+        assert_eq!(text(&lineage[0], "kind"), kind);
+        assert_eq!(text(&lineage[0], "reason"), "WrongAmount");
+        assert_eq!(
+            int(&shown, "recorded_at").map(|n| n.to_string()),
+            Some(recorded_at.clone()),
+            "{entry}"
+        );
+    }
+    // Only the corrected amount remains in effect.
+    let tb = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    for (code_, debits, credits) in [
+        ("1000", "10.00 USD", "22.00 USD"),
+        ("6000", "22.00 USD", "10.00 USD"),
+    ] {
+        let row = tb
+            .split('{')
+            .find(|row| field(row, "code") == Some(code_))
+            .expect("account row in trial balance");
+        assert_eq!(field(row, "debits"), Some(debits), "{tb}");
+        assert_eq!(field(row, "credits"), Some(credits), "{tb}");
+    }
+
+    // An exact retry writes nothing and names the recorded pair.
+    let (code, out, err) = fa(Some(&book), &args);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("corrected"), "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("true"));
+    assert_eq!(field(&out, "reversal"), Some(reversal.as_str()));
+    assert_eq!(field(&out, "replacement"), Some(replacement.as_str()));
+    assert_eq!(field(&out, "replacement_period"), Some("null"));
+    assert_eq!(
+        report(&book, &["tb", "--period", "FY2026-P03", "--json"]),
+        tb
+    );
+
+    // A Replacement alone is refused, and the refusal names this command.
+    let alone = write(
+        &dir,
+        "alone.json",
+        r#"{"class":"Replacement","effective_date":"2026-03-15","idempotency_key":"alone","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &alone, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-160"), "{out}");
+    assert!(out.contains("--replace-with"), "{out}");
+    Ok(())
+}
+
 #[test]
 fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::io::Result<()> {
     let dir = tmp("reversal")?;
@@ -2239,7 +2402,7 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
     );
     assert_eq!(code, 3, "{out}");
     assert!(
-        out.contains("\"refusal_id\":\"FA-REF-051\"") && out.contains("paired Reversal"),
+        out.contains("\"refusal_id\":\"FA-REF-160\"") && out.contains("paired Reversal"),
         "{out}"
     );
     // The pair nets to zero.

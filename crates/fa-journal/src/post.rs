@@ -910,11 +910,11 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // with its Reversal in one atomic batch (`post_replacement_pair`, FA-INV-08.replacement-paired).
     if proposal.class == EntryClass::REPLACEMENT && replacement_basis.is_none() {
         return Ok(Err(Refusal::new(
-            code::REVERSAL_SHAPE,
+            code::REPLACEMENT_UNPAIRED,
             exit::REFUSAL,
             "a Replacement entry cannot be posted standalone without its paired Reversal in one batch",
             "plan §8.2, FA-INV-08.replacement-paired (a Replacement is paired with its reversal in one batch)",
-            "submit the (Reversal, Replacement) pair together via post_replacement_pair",
+            "post the correction as one pair: fa reverse <target vid> --reason <name> --replace-with <corrected entry intent> (library: post_replacement_pair)",
         )));
     }
     let is_reversal = proposal.class == EntryClass::REVERSAL;

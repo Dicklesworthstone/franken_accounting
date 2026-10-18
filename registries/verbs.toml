@@ -175,11 +175,11 @@ name = "reverse"
 summary = "Post the exact reversal of an entry with a registered reason, preserving the original entry and its lineage."
 writes = true
 subcommands = []
-flags = ["--reason", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out", "--draft"]
+flags = ["--reason", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out", "--draft", "--replace-with"]
 switches = ["--dry-run"]
-events = ["reversed", "recorded", "plan", "draft_planned"]
+events = ["reversed", "recorded", "plan", "draft_planned", "corrected"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["reverse <vid|E:vid> --reason <name|code> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--grant <op>]... [--evidence <oid>]... [--dry-run [--plan-out <new-file>]]", "The default effective date and period are the target's; --effective never chooses an open period automatically. The default key is reverse:<target vid>. Repeating the same request returns the original outcome; changing a committed reversal is refused.", "--dry-run rehearses the exact derived reversal without publishing it; commit its reviewed sealed plan with fa commit --plan <file|-> at the same book snapshot.", "Reasons are registered in reason_codes.toml (scope supersession): WrongAccount, WrongPeriod, WrongAmount, Duplicate, and the other listed codes. Other requires --description. A reason records the preparer's statement, not its truth."]
+usage = ["reverse <vid|E:vid> --reason <name|code> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--grant <op>]... [--evidence <oid>]... [--dry-run [--plan-out <new-file>]]", "The default effective date and period are the target's; --effective never chooses an open period automatically. The default key is reverse:<target vid>. Repeating the same request returns the original outcome; changing a committed reversal is refused.", "--dry-run rehearses the exact derived reversal without publishing it; commit its reviewed sealed plan with fa commit --plan <file|-> at the same book snapshot.", "Reasons are registered in reason_codes.toml (scope supersession): WrongAccount, WrongPeriod, WrongAmount, Duplicate, and the other listed codes. Other requires --description. A reason records the preparer's statement, not its truth.", "reverse <vid> --reason <name> --replace-with <file.json|->   (plan §8.2: the exact reversal and the corrected Replacement commit as one pair, both or neither. The replacement intent is an entry intent without class, reverses or reason; its effective_date, period and idempotency_key default to the target's date and period and replace:<vid>. Pairs have no --dry-run or --draft form yet; a Replacement posted alone is refused with FA-REF-160.)"]
 example = "fa reverse <vid> --reason WrongAccount --book ./books/myco --json"
 
 [[verb]]
@@ -927,6 +927,12 @@ name = "reversed"
 book = true
 doc = "A typed reversal committed, negating the target's posted legs exactly and recording the preparer's registered reason. The original remains immutable; an exact retry emits recorded."
 fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string", "target:hex", "reason_code:int", "reason:string"]
+
+[[event]]
+name = "corrected"
+book = true
+doc = "A correction pair committed at one sequence (plan §8.2, FA-INV-08.replacement-paired): the exact reversal of target and its Replacement, both citing it under one registered reason; or, with already_recorded, an identical retry found the recorded pair and wrote nothing (the periods are then null)."
+fields = ["target:hex", "reason_code:int", "reason:string", "reversal:hex", "reversal_digest:hex", "replacement:hex", "replacement_digest:hex", "recorded_at:seq", "already_recorded:bool", "reversal_period:string?", "replacement_period:string?"]
 
 [[event]]
 name = "batch_posted"
@@ -2176,10 +2182,13 @@ name = "reverse"
 verb = "reverse"
 subcommands = []
 positionals = ["vid"]
-flags = ["--reason", "--effective", "--period", "--key", "--description", "--evidence", "--draft"]
+flags = ["--reason", "--effective", "--period", "--key", "--description", "--evidence", "--draft", "--replace-with"]
+stdin_property = "replace_with"
+stdin_kind = "object"
+stdin_via = "--replace-with"
 required = ["vid", "--reason"]
 dont = ["Don't re-enter the target's amounts: the reversal derives its exact opposite legs and preserves its evidence lineage.", "Don't pick an effective date to dodge the period law. The default is the target's date; a supplied date must be in the same or a later admissible period.", "Don't use Other without a description of the stated reason; a reason code does not attest that the explanation is true."]
-mistakes = ["Omitting reason or using an unregistered name (for example, use WrongAccount, WrongAmount or Duplicate).", "Trying to reverse an already reversed entry with a different reason: cite the existing reversal or explicitly reverse that reversal."]
+mistakes = ["Omitting reason or using an unregistered name (for example, use WrongAccount, WrongAmount or Duplicate).", "Trying to reverse an already reversed entry with a different reason: cite the existing reversal or explicitly reverse that reversal.", "Posting a corrected entry as a separate Original after the reversal: pass the corrected entry intent as replace_with so the Reversal and its Replacement commit as one pair (a Replacement alone is FA-REF-160)."]
 
 [[mcp.tool]]
 cluster = "fa.post"

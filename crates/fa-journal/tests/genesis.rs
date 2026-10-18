@@ -1328,8 +1328,9 @@ fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind(
             &["post", "post_closed", "restate", "migrate"],
         ))
         .unwrap_err();
-    assert_eq!((r.code, r.exit), ("FA-REF-051", exit::REFUSAL), "{r}");
+    assert_eq!((r.code, r.exit), ("FA-REF-160", exit::REFUSAL), "{r}");
     assert!(r.message.contains("paired Reversal"), "{r}");
+    assert!(r.fix.contains("fa reverse <target vid>"), "{r}");
     // A registered class this slice does not enforce is refused, naming its bead.
     for class in [EntryClass::CLOSING, EntryClass::RESTATEMENT] {
         let r = h
@@ -7704,7 +7705,7 @@ fn unpaired_or_mismatched_replacement_is_refused_without_mutating_book() {
     let r = h
         .post(h.request(rep_only.clone(), &["post"]))
         .expect_err("unpaired replacement must be refused");
-    assert_eq!((r.code, r.exit), ("FA-REF-051", exit::REFUSAL), "{r}");
+    assert_eq!((r.code, r.exit), ("FA-REF-160", exit::REFUSAL), "{r}");
     assert!(
         r.cite.contains("FA-INV-08.replacement-paired"),
         "{}",

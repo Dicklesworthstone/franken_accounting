@@ -749,6 +749,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::post(&mut self.db, cx, &self.context, req).await?)
     }
 
+    /// Post a correction: the exact Reversal of a target and its corrected
+    /// Replacement, both or neither, at one commit sequence (plan §8.2,
+    /// FA-INV-08.replacement-paired).
+    pub async fn post_replacement_pair(
+        &mut self,
+        cx: &PurposeContexts,
+        reversal: PostRequest,
+        replacement: PostRequest,
+    ) -> Outcome<(Posted, Posted)> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::post_replacement_pair(
+            &mut self.db,
+            cx,
+            &self.context,
+            reversal,
+            replacement,
+        )
+        .await?)
+    }
+
     /// Run the real posting preparation under the caller's transaction
     /// context, then abort it. No runtime or authority is created here.
     pub fn plan(

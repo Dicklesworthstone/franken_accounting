@@ -507,6 +507,7 @@ pub mod code {
     pub const TRANSITION: &str = "FA-REF-040";
     pub const REVERSAL_TARGET: &str = "FA-REF-050";
     pub const REVERSAL_SHAPE: &str = "FA-REF-051";
+    pub const REPLACEMENT_UNPAIRED: &str = "FA-REF-160";
     pub const ALREADY_REVERSED: &str = "FA-REF-052";
     pub const REVERSAL_PERIOD: &str = "FA-REF-053";
     pub const SUPERSESSION_REASON: &str = "FA-REF-054";
@@ -2128,7 +2129,7 @@ impl Oracle {
         //     posts one entry, so it is always the unpaired case.
         if intent.class == "Replacement" {
             return Verdict::Refused {
-                code: code::REVERSAL_SHAPE,
+                code: code::REPLACEMENT_UNPAIRED,
             };
         }
         // The supported subset, and a Reversal's target presence.
@@ -3866,7 +3867,7 @@ mod tests {
         assert_eq!(
             o.post(&intent("Replacement", legs(5, 5), b"c", None)),
             Verdict::Refused {
-                code: code::REVERSAL_SHAPE
+                code: code::REPLACEMENT_UNPAIRED
             }
         );
         // Reversal: exact side-swap only, one per target.

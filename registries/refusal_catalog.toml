@@ -362,6 +362,16 @@ exit = "refusal"
 cite = "plan §4.4 (a side swap with the same mantissa, never a signed storno)"
 fix = "post the same accounts and amounts in the same order with debit and credit exchanged"
 
+# A Replacement commits only with its paired Reversal (bead fa-giar; before
+# it, the standalone case shared 051 and its side-swap fix).
+[[refusal]]
+code = "FA-REF-160"
+name = "REPLACEMENT_UNPAIRED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.2, FA-INV-08.replacement-paired (a Replacement is paired with its reversal in one batch)"
+fix = "post the correction as one pair: fa reverse <target vid> --reason <name> --replace-with <corrected entry intent> (library: post_replacement_pair)"
+
 [[refusal]]
 code = "FA-REF-052"
 name = "ALREADY_REVERSED"

@@ -2302,9 +2302,9 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         "resolutions (posts, voids) {posted_resolutions:?}"
     );
     // FA-REF-102: a registered class this slice does not post. Replacement
-    // alone is FA-REF-051 since fa-oz3, so the generated history no longer
-    // reaches 102; one deterministic Closing intent keeps it compared,
-    // without perturbing the seeded histories above.
+    // alone is refused as unpaired (FA-REF-160, fa-giar), so the generated
+    // history no longer reaches 102; one deterministic Closing intent keeps
+    // it compared, without perturbing the seeded histories above.
     {
         let closing = maintenance_intent(
             "Closing",
@@ -2335,6 +2335,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         "FA-REF-072",
         "FA-REF-073",
         "FA-REF-102",
+        "FA-REF-160",
     ] {
         assert!(
             refused.contains_key(must),

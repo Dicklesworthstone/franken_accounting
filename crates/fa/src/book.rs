@@ -1065,6 +1065,20 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.post(&purposes, req)))
     }
 
+    /// Post a correction: the exact Reversal of a target and its corrected
+    /// Replacement, both or neither, at one commit sequence (plan §8.2,
+    /// FA-INV-08.replacement-paired).
+    pub fn post_replacement_pair(
+        &mut self,
+        reversal: PostRequest,
+        replacement: PostRequest,
+    ) -> Outcome<(Posted, Posted)> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.post_replacement_pair(&purposes, reversal, replacement)
+        ))
+    }
+
     /// Rehearse an intent through the posting kernel without publishing.
     ///
     /// The portable plan retains the original sealed proposal and approvals,

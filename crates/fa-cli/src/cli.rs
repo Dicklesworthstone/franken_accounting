@@ -4920,6 +4920,7 @@ fn reverse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--period",
         "--key",
         "--description",
+        "--replace-with",
     ] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(
@@ -4951,7 +4952,158 @@ fn reverse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             fields.push((field, s(value)));
         }
     }
+    if let Some(path) = args.flag("--replace-with") {
+        return correction(ctx, args, vid, &obj(fields), path);
+    }
     post_document(ctx, args, Some(EntryClass::REVERSAL), obj(fields))
+}
+
+/// `fa reverse <vid> --replace-with <intent>` (plan §8.2, bead fa-giar): the
+/// target's exact Reversal and its corrected Replacement commit as one pair,
+/// both or neither, under the reversal's reason. The replacement intent is an
+/// ordinary entry intent without `class` or a supersession field; its date,
+/// period and key default to the target's date, the target's period and
+/// `replace:<target vid>`.
+fn correction(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    vid: VId,
+    reversal: &Json,
+    path: &str,
+) -> Result<(), Fail> {
+    const FIX: &str = "fa reverse <vid> --reason <name> --replace-with <corrected entry intent>; the intent carries the corrected legs (and optionally effective_date, description, evidence)";
+    if args.switch("--dry-run") || !args.flag_all("--plan-out").is_empty() {
+        return Err(usage(
+            "a correction pair has no plan form yet; nothing was posted",
+            "rehearse the reversal alone with fa reverse <vid> --reason <name> --dry-run, then post the pair",
+        ));
+    }
+    if !args.flag_all("--draft").is_empty() {
+        return Err(usage(
+            "a correction pair cannot be planned into a draft yet; nothing was posted",
+            "plan the reversal into the draft with fa reverse <vid> --reason <name> --draft <name>, or post the pair to trunk",
+        ));
+    }
+    let text = ctx.files.read_text(path)?;
+    let doc = parse_json(path, &text)?;
+    let Json::Obj(supplied) = &doc else {
+        return Err(usage("the replacement intent must be an object", FIX));
+    };
+    for field in ["class", "reverses", "reason", "resolves", "intents"] {
+        if doc.get(field).is_some() {
+            return Err(usage(
+                format!(
+                    "the replacement intent takes no `{field}`: fa reverse supplies the class, the target and the reason"
+                ),
+                FIX,
+            ));
+        }
+    }
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["post"])?;
+    let out = &ctx.out;
+    let mut book = ctx.books.open(args)?;
+    let Some((target, _)) = book.read_entry(vid)? else {
+        return Err(usage(
+            format!("reverse: no entry {:032x} in this book", vid.0),
+            "fa entry show <vid> to check the identity",
+        ));
+    };
+    let mut fields = supplied.clone();
+    fields.push(("class".into(), s("Replacement")));
+    if doc.get("effective_date").is_none() {
+        fields.push((
+            "effective_date".into(),
+            s(target.proposal.effective_date.to_string()),
+        ));
+        if doc.get("effective_period").is_none()
+            && let Some(period) = &target.proposal.effective_period
+        {
+            fields.push(("effective_period".into(), s(&period.code)));
+        }
+    }
+    if doc.get("idempotency_key").is_none() {
+        fields.push((
+            "idempotency_key".into(),
+            s(format!("replace:{:032x}", vid.0)),
+        ));
+    }
+    let BuiltPost {
+        request: reversal_req,
+        reversal_detail,
+        ..
+    } = build_post_request(
+        out,
+        &mut book,
+        args,
+        Some(EntryClass::REVERSAL),
+        reversal,
+        who,
+        capability.clone(),
+    )?;
+    let (target_hex, reason) = reversal_detail
+        .ok_or_else(|| Fail::Internal("a typed reversal was built without its reason".into()))?;
+    let BuiltPost {
+        request: mut replacement_req,
+        ..
+    } = build_post_request(
+        out,
+        &mut book,
+        args,
+        None,
+        &Json::Obj(fields),
+        who,
+        capability,
+    )?;
+    replacement_req
+        .proposal
+        .supersession
+        .push(fa_model::Supersession {
+            target: target.entry_ref(vid),
+            kind: fa_model::SupersessionKind::Replaces,
+            reason_code: reason.code,
+        });
+    let (reversal_posted, replacement_posted) =
+        book.post_replacement_pair(reversal_req, replacement_req)??;
+    out.at_book(&book)?;
+    let entry = |posted: &Posted| match posted {
+        Posted::Committed {
+            entry_ref, period, ..
+        } => (*entry_ref, s(period.as_str())),
+        Posted::AlreadyRecorded { entry_ref, .. } => (*entry_ref, Json::Null),
+    };
+    let (reversal_ref, reversal_period) = entry(&reversal_posted);
+    let (replacement_ref, replacement_period) = entry(&replacement_posted);
+    let already = matches!(replacement_posted, Posted::AlreadyRecorded { .. });
+    let recorded_at = replacement_posted.recorded_at();
+    out.event(
+        "corrected",
+        vec![
+            ("target", s(&target_hex)),
+            ("reason_code", Json::Int(i128::from(reason.code))),
+            ("reason", s(&reason.name)),
+            ("reversal", s(format!("{:032x}", reversal_ref.vid.0))),
+            ("reversal_digest", s(hex(&reversal_ref.entry_digest))),
+            ("replacement", s(format!("{:032x}", replacement_ref.vid.0))),
+            ("replacement_digest", s(hex(&replacement_ref.entry_digest))),
+            ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+            ("already_recorded", Json::Bool(already)),
+            ("reversal_period", reversal_period),
+            ("replacement_period", replacement_period),
+        ],
+        &if already {
+            format!(
+                "correction of {target_hex} already recorded at {} (reversal {:032x}, replacement {:032x}); nothing new was written",
+                recorded_at.0, reversal_ref.vid.0, replacement_ref.vid.0
+            )
+        } else {
+            format!(
+                "corrected {target_hex}: reversal {:032x} and replacement {:032x}, recorded together at {} · reason {}",
+                reversal_ref.vid.0, replacement_ref.vid.0, recorded_at.0, reason.name
+            )
+        },
+    );
+    Ok(())
 }
 
 /// Reason names and numeric codes have one registry-backed meaning. The
