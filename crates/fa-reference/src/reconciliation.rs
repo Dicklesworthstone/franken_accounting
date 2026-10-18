@@ -27,10 +27,10 @@ pub struct RefBookEntry {
     pub reference: String,
 }
 
-/// Naive pinned-fallback matcher:
-/// Exact signed amount + `|booking_date - effective_date| <= max_date_window_days`
-/// + exact trimmed case-insensitive reference equality (when `bank.reference` is non-empty),
-/// breaking ties deterministically by lowest `entry_ordinal`.
+/// Naive pinned-fallback matcher: an exact signed amount,
+/// `|booking_date - effective_date| <= max_date_window_days`, and exact
+/// trimmed case-insensitive reference equality (when `bank.reference` is
+/// non-empty), breaking ties deterministically by lowest `entry_ordinal`.
 #[must_use]
 pub fn naive_fallback_match(
     bank_lines: &[RefBankLine],

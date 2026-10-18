@@ -292,7 +292,7 @@ pub(crate) struct StagedBatch {
 }
 
 pub(crate) enum BatchStage {
-    Staged(StagedBatch),
+    Staged(Box<StagedBatch>),
     /// The identical batch's recorded outcome (FA-INV-09): nothing staged.
     Recorded(BatchPosted),
 }
@@ -404,12 +404,12 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
         stage.add_edge(edge_id(relation::IN_BATCH, evid, ovid), evid, ovid, vec![]);
     }
     txn.write_ordered(db, vec![stage])?;
-    Ok(Ok(BatchStage::Staged(StagedBatch {
+    Ok(Ok(BatchStage::Staged(Box::new(StagedBatch {
         txn,
         outcome: ovid,
         entries: body.entries,
         periods: members.into_iter().map(|m| m.period).collect(),
-    })))
+    }))))
 }
 
 /// Publish a staged batch once. Every member's capability is judged current
@@ -422,14 +422,14 @@ pub(crate) async fn commit_batch<V: Vfs + Clone>(
     capabilities: &[Capability],
     batch: &PostBatch,
     admission: Admission,
-    staged: StagedBatch,
+    staged: Box<StagedBatch>,
 ) -> Outcome<BatchPosted> {
     let StagedBatch {
         mut txn,
         outcome: ovid,
         entries,
         periods,
-    } = staged;
+    } = *staged;
     let commit = ctx.commit();
     commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
     for capability in capabilities {

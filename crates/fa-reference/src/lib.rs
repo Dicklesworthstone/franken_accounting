@@ -889,6 +889,9 @@ pub struct Recorded {
     pub epoch: u64,
 }
 
+/// An account's `(opened, closed, promoted_on)` days (`fa-up7`).
+type Effectivity = (Option<DateDay>, Option<DateDay>, Option<DateDay>);
+
 #[derive(Clone)]
 pub struct Oracle {
     calendar: FiscalCalendar,
@@ -961,7 +964,7 @@ pub struct Oracle {
     /// and trial-balance footing.
     account_types: BTreeMap<String, u8>,
     /// Optional `(opened, closed, promoted_on)` per account code (`fa-up7`, `FA-INV-01.account-effective`).
-    account_effectivity: BTreeMap<String, (Option<DateDay>, Option<DateDay>, Option<DateDay>)>,
+    account_effectivity: BTreeMap<String, Effectivity>,
     /// Optional parent code per account code (`fa-up7`).
     account_parents: BTreeMap<String, String>,
 }

@@ -108,11 +108,11 @@ pub fn relieve_lots_oracle(
         .iter()
         .find(|row| row.name == law_name)
         .ok_or_else(|| format!("unknown lot law `{law_name}`"))?;
-    if let Some(reg) = regime {
-        if law_row.refused_regimes.iter().any(|r| r == reg) {
-            let citation = law_row.refusal_citation.as_deref().unwrap_or("IFRS");
-            return Err(format!("refused in regime `{reg}` under `{citation}`"));
-        }
+    if let Some(reg) = regime
+        && law_row.refused_regimes.iter().any(|r| r == reg)
+    {
+        let citation = law_row.refusal_citation.as_deref().unwrap_or("IFRS");
+        return Err(format!("refused in regime `{reg}` under `{citation}`"));
     }
     let requires_targets = law_row.ordering == "explicit-target-order";
     if requires_targets && targets.is_empty() {

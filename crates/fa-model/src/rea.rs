@@ -999,7 +999,7 @@ mod tests {
             participants: vec![VId(10), VId(20)],
             resources: vec![EventResource {
                 label: "subscription_fee".to_string(),
-                amount: Amount::new(UnitId(1), 120_000_00),
+                amount: Amount::new(UnitId(1), 12_000_000),
                 instrument: Some(VId(30)),
             }],
             evidence: vec![EvidenceRef {

@@ -912,9 +912,11 @@ pub fn network_pro_rata_held(
     }
 
     type Path = Vec<(usize, String, String)>;
-    let mut lots: BTreeMap<String, Vec<(Path, (i128, i128))>> = BTreeMap::new();
+    type Lot = (Path, (i128, i128));
     // Disposition tag: 0 = Held, 1 = Spent, 2 = RepaidOverdraft (matching Disposition order).
-    let mut terminal: BTreeMap<(String, u8, Path), (i128, i128)> = BTreeMap::new();
+    type Terminal = (String, u8, Path);
+    let mut lots: BTreeMap<String, Vec<Lot>> = BTreeMap::new();
+    let mut terminal: BTreeMap<Terminal, (i128, i128)> = BTreeMap::new();
 
     let src_move = &moves[at];
     let deposit = src_move.4;
@@ -1018,7 +1020,7 @@ pub fn network_pro_rata_held(
         }
     }
 
-    let entries: Vec<((String, u8, Path), (i128, i128))> = terminal.into_iter().collect();
+    let entries: Vec<(Terminal, (i128, i128))> = terminal.into_iter().collect();
     let mut floors: Vec<i128> = Vec::with_capacity(entries.len());
     let mut rems: Vec<(usize, i128, i128)> = Vec::with_capacity(entries.len());
     let mut floor_sum = 0i128;
