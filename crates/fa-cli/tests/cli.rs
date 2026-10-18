@@ -539,7 +539,7 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
             assert_eq!(code, 0, "{out}");
             let (code, out, _) = fa(Some(&other), &["replay", &path, "--json"]);
             assert_eq!(code, 8, "{out}");
-            assert!(out.contains("different book"), "{out}");
+            assert!(out.contains("another book"), "{out}");
         }
         retained.push((oid.to_string(), original));
     }
@@ -2225,7 +2225,8 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
     );
     assert_eq!(code, 6, "{out}");
     assert!(out.contains("\"refusal_id\":\"FA-REF-032\""), "{out}");
-    // An unsupported class is refused with the bead that lands it (exit 3).
+    // A Replacement posts only paired with its Reversal in one batch
+    // (FA-INV-08.replacement-paired); alone it is refused (exit 3).
     let repl = write(
         &dir,
         "repl.json",
@@ -2237,7 +2238,7 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
     );
     assert_eq!(code, 3, "{out}");
     assert!(
-        out.contains("\"refusal_id\":\"FA-REF-102\"") && out.contains("fa-omi"),
+        out.contains("\"refusal_id\":\"FA-REF-051\"") && out.contains("paired Reversal"),
         "{out}"
     );
     // The pair nets to zero.
@@ -4268,6 +4269,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["replay", &certificate]).0, 0);
+    // --output writes the replayed bytes and emits the `report_replayed` receipt.
+    let replayed = dir.join("replayed.report").display().to_string();
+    assert_eq!(
+        run(true, &["replay", &certificate, "--output", &replayed]).0,
+        0
+    );
     assert_eq!(run(true, &["certificate", "status", &certificate]).0, 0);
     assert_eq!(
         run(true, &["statement", "balance-sheet", "--for", "FY2026-P03"]).0,

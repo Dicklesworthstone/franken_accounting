@@ -4,7 +4,7 @@
 
 ## 1. Vision Workflow Summary (README Quick Example + Plan §15.6)
 
-- **Total workflow steps:** 30 (`works`: **20** [66%], `refused`: **0**, `absent`: **10**)
+- **Total workflow steps:** 30 (`works`: **21** [70%], `refused`: **0**, `absent`: **9**)
 
 | Workflow | Plan Ref | Reader | Works | Refused | Absent | Total | Delivery % |
 |---|---|---|---:|---:|---:|---:|---:|
@@ -14,7 +14,7 @@
 | `fdic-examiner-positions` (The FDIC examiner needs close-of-business positions) | §15.6.3 | FDIC Examiner / Receiver | 2 | 0 | 1 | 3 | 66% |
 | `trustee-receiver-takeover` (The trustee or receiver takes over) | §15.6.4 | Bankruptcy Trustee / Receiver | 1 | 0 | 1 | 2 | 50% |
 | `litigation-consultant-damages` (The litigation consultant computes but-for damages) | §15.6.5 | Litigation Consultant / Expert Witness | 1 | 0 | 1 | 2 | 50% |
-| `investigator-traces-funds` (The investigator traces funds) | §15.6.6 | Forensic Investigator | 2 | 0 | 1 | 3 | 66% |
+| `investigator-traces-funds` (The investigator traces funds) | §15.6.6 | Forensic Investigator | 3 | 0 | 0 | 3 | 100% |
 
 ### Workflow Steps Detail
 
@@ -49,7 +49,7 @@
 | `WF-LCD-02` | `VC-27` | `litigation-consultant-damages` | `works` | `0` | `statement` | `—` | Certified income statement for a period (`fa statement income-statement --certify`) |
 | `WF-ITF-01` | `VC-28` | `investigator-traces-funds` | `works` | `0` | `procedure_run` | `—` | Run structuring detection procedure (`fa procedure run graph.structuring`) |
 | `WF-ITF-02` | `VC-29` | `investigator-traces-funds` | `works` | `0` | `procedure_run` | `—` | Run FIFO fund tracing (`fa procedure run trace.fifo`) |
-| `WF-ITF-03` | `VC-30` | `investigator-traces-funds` | `absent` | `2` | `error` | `fa-6r2` | Run related-party exposure graph procedure (`fa procedure run graph.related_party_exposure`) |
+| `WF-ITF-03` | `VC-30` | `investigator-traces-funds` | `works` | `0` | `procedure_run` | `—` | Run related-party exposure graph procedure (`fa procedure run graph.related_party_exposure`) |
 
 ## 2. Convergence Gate Scoreboard (Plan §19: G0, Genesis, G1–G4)
 

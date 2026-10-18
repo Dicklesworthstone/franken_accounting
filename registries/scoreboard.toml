@@ -408,10 +408,9 @@ ordinal = 3
 vision_row = "VC-30"
 description = "Run related-party exposure graph procedure (`fa procedure run graph.related_party_exposure`)"
 argv = ["procedure", "run", "graph.related_party_exposure", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-6r2"
+expected = "works"
+expected_exit = 0
+expected_event = "procedure_run"
 
 # -----------------------------------------------------------------------------
 # Part 2 — Convergence Gate Criteria (plan §19: G0, Genesis, G1, G2, G3, G4)

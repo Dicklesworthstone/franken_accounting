@@ -635,7 +635,7 @@ impl Books<'_> {
     /// compares the client's book, not a path in its own directory, with
     /// the one it holds.
     pub(crate) fn open(&mut self, args: &Args, cwd: Option<&Path>) -> Result<BookRef<'_>, Fail> {
-        let dir = book_dir(args, cwd)?;
+        let dir = self.dir_for(args, cwd)?;
         match self {
             Self::Dir => {
                 let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
@@ -705,6 +705,16 @@ impl Books<'_> {
                 }
                 Ok(BookRef::Held(book))
             }
+        }
+    }
+
+    /// The book a command names: `--book` (or `FA_BOOK`). A daemon serves
+    /// exactly the book it holds, so a held request without `--book` names
+    /// that book, never one the daemon's own `FA_BOOK` would.
+    fn dir_for(&self, args: &Args, cwd: Option<&Path>) -> Result<PathBuf, Fail> {
+        match self {
+            Self::Held { dir, .. } if args.flag("--book").is_none() => Ok(dir.clone()),
+            _ => book_dir(args, cwd),
         }
     }
 
@@ -781,7 +791,7 @@ impl BookSource<'_> {
     /// The book directory and key file `args` name, resolved as `open`
     /// resolves them, without opening anything.
     pub(crate) fn locate(&self, args: &Args) -> Result<(PathBuf, PathBuf), Fail> {
-        let dir = book_dir(args, self.cwd.as_deref())?;
+        let dir = self.books.dir_for(args, self.cwd.as_deref())?;
         if let Books::Held { dir: held, .. } = &self.books {
             if !same_dir(&dir, held) {
                 return Err(usage(
