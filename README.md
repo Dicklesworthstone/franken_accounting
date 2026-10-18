@@ -335,7 +335,11 @@ Preparer also permits `post_softclosed`. A grant outside that ceiling refuses
 startup. Preparer is a bounded Human template, not an unrestricted owner.
 
 An Agent's accounting posts to trunk reach the kernel and refuse with
-`FA-REF-013`; draft branches and promotion are still pending. An explicitly
+`FA-REF-013`. Instead it plans them into a draft (`fa draft new <name>`, then
+the same post with `--draft <name>`; over MCP, launch with `--cluster fa.draft`).
+A Human holding `approve` who is not the draft's owner runs `fa draft promote`:
+every planned intent is admitted again against current trunk and posts in one
+batch, with the Agent still the entries' principal. An explicitly
 launched Preparer can make ordinary, evidence-backed posts under its own fixed
 principal. Book creation, chart/period preparation, document intake and approvals
 remain operator work. Both profiles can use the certified report and retained

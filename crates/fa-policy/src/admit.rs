@@ -362,7 +362,8 @@ mod tests {
         let d = admit(&agent, &intent(VId(5), &legs)).unwrap_err();
         assert_eq!((d.code(), d.exit()), ("FA-REF-013", 7));
         assert!(d.cite().contains("fa-s7x"), "{}", d.cite());
-        assert!(!d.fix().contains("fa draft"), "{}", d.fix());
+        // Drafts exist (fa-s7x): the fix names the command an Agent runs.
+        assert!(d.fix().contains("fa draft new"), "{}", d.fix());
         let off_trunk = Intent {
             trunk: false,
             ..intent(VId(5), &legs)
