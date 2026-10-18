@@ -646,15 +646,54 @@ impl Server<'_> {
         let json = request.argv.iter().any(|a| a == "--json");
         match request.op {
             Op::Run => {
-                let (exit, out) = cli::run_for_daemon(
-                    &request.argv,
-                    &mut *self.book,
-                    self.dir.clone(),
-                    self.files_root.clone(),
-                    request.cwd.map(PathBuf::from),
-                    request.stdin.map_or(Stdin::Missing, Stdin::Forwarded),
-                    true,
-                );
+                // A session token binds the request to its holder's
+                // journaled capability (fa-r3q); without one the same-uid
+                // peer runs in the embedded-owner posture.
+                let bound = match request.token.as_deref().map(|bytes| self.session(bytes)) {
+                    None => None,
+                    Some(Ok(authority)) => Some(authority),
+                    Some(Err(message)) => {
+                        let (exit, out) = cli::usage_error(
+                            &request.argv,
+                            format!("fad refused the session token: {message}"),
+                            "present a token issued in this book (`fa capability issue …`), then run `fa --token <file> …`",
+                            true,
+                        );
+                        return (
+                            Response {
+                                op: Op::Run,
+                                exit,
+                                stdout: out.stdout,
+                                stderr: out.stderr,
+                            },
+                            Next::Continue,
+                        );
+                    }
+                };
+                let files_root = self.files_root.clone();
+                let cwd = request.cwd.map(PathBuf::from);
+                let stdin = request.stdin.map_or(Stdin::Missing, Stdin::Forwarded);
+                let (exit, out) = match &bound {
+                    None => cli::run_for_daemon(
+                        &request.argv,
+                        &mut *self.book,
+                        self.dir.clone(),
+                        files_root,
+                        cwd,
+                        stdin,
+                        true,
+                    ),
+                    Some(authority) => cli::run_for_daemon_bound(
+                        &request.argv,
+                        &mut *self.book,
+                        self.dir.clone(),
+                        files_root,
+                        cwd,
+                        stdin,
+                        authority,
+                        true,
+                    ),
+                };
                 (
                     Response {
                         op: Op::Run,
@@ -702,6 +741,16 @@ impl Server<'_> {
                 )
             }
         }
+    }
+
+    /// The authority a session token binds a request to (fa-r3q): the
+    /// token holds together (its secret proves the capability's possession
+    /// digest and its principal derives the holder), and the session stays
+    /// within its launch template. Its journaled issuance and revocation are
+    /// the kernel's to judge at admission.
+    fn session(&self, bytes: &[u8]) -> Result<fa_cli::authority::LaunchAuthority, String> {
+        let token = fa_cli::authority::CapabilityToken::decode(bytes).map_err(|e| e.to_string())?;
+        fa_cli::authority::LaunchAuthority::from_token(self.dir.clone(), None, &token)
     }
 
     /// The served book at its head, for the envelope of the daemon's own

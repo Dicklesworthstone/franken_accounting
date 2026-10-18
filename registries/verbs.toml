@@ -37,13 +37,13 @@ frames = ["fad_request", "fad_response"]
 description = "Robot mode (--json), plan Appendix D: stdout carries one JSON object per line, {v, event, book, coordinate, data, certificate, authority, warnings, next_actions}. `event` names the schema of `data`; `v` is the envelope version. `book` and `coordinate` (branch, known_at, effective) are non-null on book events and may be null before a book opens. `certificate` is the replay certificate oid for certified reports and replay, otherwise null. Post plans identify their canonical artifact and authenticated certificate with data.plan_digest and data.certificate_digest; these are public digests, not native object-store OIDs. `authority` declares embedded-owner or mcp-launch-config; MCP names its fixed principal, bounded launch template and exact ops, while owner ops are null because they are self-issued per command. Launch configuration does not authenticate the operator. `warnings` records non-refusal diagnostics. `next_actions` names follow-up commands and why; owner CLI calls use the same book, while MCP keeps its launch-bound book. Keys are sorted; amounts are exact strings with units, sequences are integers and dates are YYYY-MM-DD. Daemon wire frames are flat protocol objects without this envelope. stderr carries diagnostics; every nonzero command exit emits one error event containing class, exit and refusal_id."
 
 [global]
-flags = ["--book", "--keys", "--as", "--via", "--format"]
+flags = ["--book", "--keys", "--as", "--via", "--format", "--token"]
 switches = ["--json", "--help", "--version", "--no-color", "--yes"]
 events = ["version", "triage", "help", "error"]
 # A mistyped verb, subcommand or flag within this edit distance gets a
 # "did you mean"; correction only ever suggests, it never runs the guess.
 correction_distance = 1
-usage = "--book <dir> (or FA_BOOK) · --keys <file> (default <dir>/book.keys) · --json · --format json|toon|text · --as <principal> (default operator) · --via fad|direct (default: through the book's fad when one holds its writer lease) · --yes (confirm an operation that cannot be undone; `fa capabilities --json` lists them) · --no-color (also NO_COLOR, CI, TERM=dumb, or stdout not a terminal) · --help (also `fa <verb> --help`)"
+usage = "--book <dir> (or FA_BOOK) · --keys <file> (default <dir>/book.keys) · --json · --format json|toon|text · --as <principal> (default operator) · --token <file> (act as the holder of an issued capability token instead of --as/--grant: the session is bound to its journaled capability, directly or through the book's fad) · --via fad|direct (default: through the book's fad when one holds its writer lease) · --yes (confirm an operation that cannot be undone; `fa capabilities --json` lists them) · --no-color (also NO_COLOR, CI, TERM=dumb, or stdout not a terminal) · --help (also `fa <verb> --help`)"
 
 # The fad daemon (plan §15.3, Appendix D, bead fa-i8j). One fad per book
 # directory holds the book's writer lease (an OS lock on <dir>/<lease>, so a
@@ -713,8 +713,8 @@ fields = ["oid:hex", "doc_commit:hex", "kind:string", "grade:string", "self_sour
 
 [[event]]
 name = "fad_request"
-doc = "A frame from a client to fad. op `run` executes `argv` (an `fa` command line, without --via) exactly as `fa` would, with relative paths resolved against `cwd` and `-` reading `stdin` (hex); op `status` and op `stop` take an empty argv."
-fields = ["v:int", "op:string", "argv:[string]", "cwd:string?", "stdin:hex?"]
+doc = "A frame from a client to fad. op `run` executes `argv` (an `fa` command line, without --via) exactly as `fa` would, with relative paths resolved against `cwd` and `-` reading `stdin` (hex); op `status` and op `stop` take an empty argv. `token` (hex, optional) is a holder's issued capability token (fa-r3q): fad binds the request to the token's principal and journaled capability, refuses identity and authority flags in argv, and the kernel admits it only against its journaled issuance; without it the request runs in the embedded-owner posture of the same-uid peer."
+fields = ["v:int", "op:string", "argv:[string]", "cwd:string?", "stdin:hex?", "token:hex?"]
 
 [[event]]
 name = "fad_response"
@@ -1870,7 +1870,7 @@ fields = ["account:string", "account_vid:hex", "account_name:string", "unit:stri
 server = "fa-mcp"
 max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
-hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book"]
+hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book", "--token"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.

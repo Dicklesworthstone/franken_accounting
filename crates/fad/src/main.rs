@@ -387,6 +387,7 @@ fn request(op: Op, json: bool) -> Request {
         },
         cwd: None,
         stdin: None,
+        token: None,
     }
 }
 

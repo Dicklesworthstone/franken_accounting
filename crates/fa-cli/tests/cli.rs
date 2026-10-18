@@ -10495,3 +10495,104 @@ fn a_draft_reaches_trunk_only_through_another_principals_promotion() -> std::io:
     assert!(out.contains("\"state\":\"promoted\""), "{out}");
     Ok(())
 }
+
+/// fa-r3q: `fa --token <file>` without a daemon binds the command to the
+/// token's principal and journaled capability: the envelope says
+/// `issued-token`, an Agent token cannot post to trunk but can plan into its
+/// own draft, `--as`/`--grant` beside a token are refused, and a revoked
+/// token's next write is FA-REF-023.
+#[test]
+fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<()> {
+    let dir = tmp("token-cli")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(book.as_path()), &argv);
+        eprintln!("$ fa {} -> {code}\n{out}{err}", argv.join(" "));
+        (code, out, err)
+    };
+    assert_eq!(run(&["book", "create", "--name", "Token Co"]).0, 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let source = write(&dir, "invoice.txt", "INVOICE 9 (token session)");
+    let (code, out, _) = run(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let ev = field(&out, "oid").unwrap_or_default().to_string();
+    let token = dir.join("agent-9.token").display().to_string();
+    let (code, out, _) = run(&[
+        "capability",
+        "issue",
+        "--holder",
+        "agent-9",
+        "--profile",
+        "agent",
+        "--op",
+        "read",
+        "--op",
+        "post",
+        "--out",
+        &token,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "post",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let commitment = field(&out, "commitment").unwrap_or_default().to_string();
+
+    let (code, out, _) = run(&["--token", &token, "tb", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"posture\":\"issued-token\""), "{out}");
+    assert!(out.contains("\"principal\":\"agent-9\""), "{out}");
+    let rent = write(
+        &dir,
+        "rent.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-15","idempotency_key":"token-cli-rent","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6000","amount":"4.00 USD"}},{{"side":"credit","account":"1000","amount":"4.00 USD"}}]}}"#
+        ),
+    );
+    let (code, out, _) = run(&["--token", &token, "post", "--intent", &rent]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-013"), "{out}");
+    assert_eq!(run(&["--token", &token, "draft", "new", "agent-9"]).0, 0);
+    let (code, out, _) = run(&[
+        "--token", &token, "post", "--intent", &rent, "--draft", "agent-9",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("draft_planned"), "{out}");
+    for flag in ["--as", "--grant"] {
+        let (code, out, _) = run(&["--token", &token, flag, "post", "draft", "list"]);
+        assert_eq!(code, 2, "{flag}: {out}");
+    }
+    let (code, out, _) = run(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &commitment,
+        "--grant",
+        "issue_capability",
+        "--yes",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out, _) = run(&["--token", &token, "draft", "new", "after"]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-023"), "{out}");
+    Ok(())
+}

@@ -23,7 +23,7 @@
 use std::io::Write;
 
 use crate::args;
-use crate::authority::LaunchAuthority;
+use crate::authority::{CapabilityToken, LaunchAuthority};
 use crate::cli::{self, Books, Captured, Files};
 use crate::client::{self, ClientError};
 use crate::lease::{Lease, LeaseError};
@@ -58,6 +58,9 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
             capture,
         );
     }
+    if parsed.flag("--token").is_some() {
+        return fa_with_token(argv, &parsed, files, capture);
+    }
     if discovery(&parsed, reg) {
         return cli::run(argv, Books::Dir, files, capture);
     }
@@ -67,7 +70,7 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
         return cli::run(argv, Books::Dir, files, capture);
     };
     if via == Some("fad") {
-        return through_daemon(argv, &parsed, &dir, None, &files, capture);
+        return through_daemon(argv, &parsed, &dir, None, None, &files, capture);
     }
     let words = command_words(&parsed, reg);
     let note = format!("fa pid={}", std::process::id());
@@ -151,18 +154,94 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
             if via == Some("direct") {
                 cli::refuse(argv, held.refusal(&dir), capture)
             } else {
-                through_daemon(argv, &parsed, &dir, Some(held), &files, capture)
+                through_daemon(argv, &parsed, &dir, Some(held), None, &files, capture)
             }
         }
     }
 }
 
-/// Run a request under the authority fixed when an MCP server starts.
+/// `fa --token <file>` (plan §14.2, bead fa-r3q): act as the holder of an
+/// issued capability token instead of the embedded owner. The token fixes
+/// the principal and its journaled capability, so `--as` and `--grant` are
+/// refused beside it; the session then runs exactly as a token-bound MCP
+/// session does, directly under the writer lease or through the book's fad.
+fn fa_with_token(
+    argv: &[String],
+    parsed: &args::Args,
+    files: Files,
+    capture: bool,
+) -> (u8, Captured) {
+    const FIX: &str = "fa --token <file> --book <dir> <command>   (the token names the principal; drop --as and --grant)";
+    for flag in ["--as", "--grant"] {
+        if parsed.flag(flag).is_some() {
+            return cli::usage_error(
+                argv,
+                format!(
+                    "{flag} cannot be combined with --token: the token fixes the principal and its operations"
+                ),
+                FIX,
+                capture,
+            );
+        }
+    }
+    let path = parsed.flag("--token").unwrap_or_default();
+    if path.is_empty() || path == "-" || parsed.flag_all("--token").len() > 1 {
+        return cli::usage_error(argv, "--token names one holder's token file", FIX, capture);
+    }
+    let bytes = match std::fs::read(files.resolve(path)) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return cli::usage_error(
+                argv,
+                format!("--token {path}: cannot read the token file: {e}"),
+                FIX,
+                capture,
+            );
+        }
+    };
+    let token = match CapabilityToken::decode(&bytes) {
+        Ok(token) => token,
+        Err(e) => return cli::usage_error(argv, format!("--token {path}: {e}"), FIX, capture),
+    };
+    let Some(dir) = cli::named_book(parsed, files.cwd.as_deref()) else {
+        return cli::usage_error(
+            argv,
+            "--token needs --book <dir> (or FA_BOOK)",
+            FIX,
+            capture,
+        );
+    };
+    let keys = parsed
+        .flag("--keys")
+        .map(|_| cli::keys_path(parsed, &dir, files.cwd.as_deref()));
+    let authority = match LaunchAuthority::from_token(dir, keys, &token) {
+        Ok(authority) => authority,
+        Err(message) => {
+            return cli::refuse(
+                argv,
+                fa_journal::Refusal::new(
+                    fa_journal::refusal::code::CAPABILITY,
+                    fa_journal::exit::SAFETY,
+                    message,
+                    "plan §14.2–§14.4 (a token-bound session stays within its launch template)",
+                    "ask the issuer for a token within the agent or preparer ceiling",
+                ),
+                capture,
+            );
+        }
+    };
+    fa_with_authority(&routing::bound_args(parsed), files, &authority, capture)
+}
+
+/// Run a request under the authority fixed when an MCP server starts, or by
+/// `fa --token`.
 ///
 /// The capability is an in-process value, never a command-line argument or
 /// an unauthenticated daemon frame. Discovery needs no book; every command
-/// that may observe the book must take its configured writer lease. A held
-/// lease is refused until the daemon can bind an authenticated session.
+/// that may observe the book must take its configured writer lease. When
+/// the book's fad holds the lease, a token-bound session presents its token
+/// to the daemon, which binds the request to it (fa-r3q); a launch-config
+/// session, which has no token to present, is refused.
 pub fn fa_with_authority(
     argv: &[String],
     files: Files,
@@ -188,6 +267,7 @@ pub fn fa_with_authority(
         "--via",
         "--principal",
         "--profile",
+        "--token",
     ] {
         if parsed.flag(flag).is_some() || parsed.switch(flag) {
             return cli::usage_error_with_authority(
@@ -201,6 +281,23 @@ pub fn fa_with_authority(
     }
     if discovery(&parsed, reg) {
         return cli::run_with_authority(argv, Books::Dir, files, authority, capture);
+    }
+    if let Some(token) = authority.token()
+        && let Some(holder) = Lease::holder(authority.book(), &reg.daemon.lease)
+    {
+        let held = LeaseError::Held {
+            path: authority.book().join(&reg.daemon.lease),
+            holder,
+        };
+        return through_daemon(
+            argv,
+            &parsed,
+            authority.book(),
+            Some(held),
+            Some(token),
+            &files,
+            capture,
+        );
     }
     let note = format!(
         "fa-mcp pid={} principal={}",
@@ -246,13 +343,18 @@ fn through_daemon(
     parsed: &args::Args,
     dir: &std::path::Path,
     held: Option<LeaseError>,
+    token: Option<&CapabilityToken>,
     files: &Files,
     capture: bool,
 ) -> (u8, Captured) {
     let Ok(reg) = verbs::registry() else {
         return cli::run(argv, Books::Dir, files.clone(), capture);
     };
-    let request = match routing::request(parsed, dir, files, &reg.daemon) {
+    let token = match token.map(CapabilityToken::canonical_bytes).transpose() {
+        Ok(token) => token,
+        Err(e) => return cli::foundation_error(argv, format!("capability token: {e}"), capture),
+    };
+    let request = match routing::request(parsed, dir, files, &reg.daemon, token) {
         Ok(request) => request,
         Err(routing::Error::Usage(message)) => {
             return cli::usage_error(

@@ -34,6 +34,23 @@ fn forward_args(parsed: &Args, book: &str) -> Vec<String> {
     argv
 }
 
+/// The argv a token-bound session forwards (fa-r3q): identity, book, keys
+/// and transport are the session's, so those flags are dropped, never
+/// forwarded; every other parsed field travels as `forward_args` sends it.
+pub(super) fn bound_args(parsed: &Args) -> Vec<String> {
+    let mut argv = Vec::new();
+    for (flag, values) in &parsed.flags {
+        if matches!(flag.as_str(), "--via" | "--book" | "--keys" | "--token") {
+            continue;
+        }
+        argv.extend(values.iter().map(|value| format!("{flag}={value}")));
+    }
+    argv.extend(parsed.switches.iter().cloned());
+    argv.push("--".into());
+    argv.extend(parsed.positional.iter().cloned());
+    argv
+}
+
 fn wants_stdin(parsed: &Args) -> bool {
     parsed.positional.iter().any(|word| word == "-")
         || parsed.flags.iter().any(|(flag, values)| {
@@ -121,13 +138,20 @@ pub(super) fn request(
     dir: &Path,
     files: &Files,
     daemon: &Daemon,
+    token: Option<Vec<u8>>,
 ) -> Result<Request, Error> {
     let (book, cwd) = paths(dir, files)?;
+    let argv = if token.is_some() {
+        bound_args(parsed)
+    } else {
+        forward_args(parsed, &book)
+    };
     let mut request = Request {
         op: Op::Run,
-        argv: forward_args(parsed, &book),
+        argv,
         cwd: Some(cwd),
         stdin: None,
+        token,
     };
     let forward = wants_stdin(parsed)
         && match &files.stdin {

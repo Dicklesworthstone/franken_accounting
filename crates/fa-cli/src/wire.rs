@@ -249,6 +249,10 @@ pub struct Request {
     pub cwd: Option<String>,
     /// The client's stdin, for an argument `-`.
     pub stdin: Option<Vec<u8>>,
+    /// A holder's issued capability token (`fa --token`, bead fa-r3q): the
+    /// daemon binds this request to the token's principal and journaled
+    /// capability instead of the embedded-owner posture.
+    pub token: Option<Vec<u8>>,
 }
 
 /// A `fad_response` frame.
@@ -334,6 +338,10 @@ impl Request {
                 "stdin",
                 self.stdin.as_ref().map_or(Json::Null, |b| s(to_hex(b))),
             ),
+            (
+                "token",
+                self.token.as_ref().map_or(Json::Null, |b| s(to_hex(b))),
+            ),
         ])
     }
 
@@ -356,11 +364,26 @@ impl Request {
                     .ok_or_else(|| FrameError::Malformed("`stdin` must be lowercase hex".into()))?,
             ),
         };
+        // An absent token is an owner-posture request from a client that
+        // predates sessions (fa-r3q); null says the same.
+        let token = match v.get("token") {
+            None | Some(Json::Null) => None,
+            Some(Json::Str(h)) => Some(
+                from_hex(h)
+                    .ok_or_else(|| FrameError::Malformed("`token` must be lowercase hex".into()))?,
+            ),
+            Some(_) => {
+                return Err(FrameError::Malformed(
+                    "`token` must be a string or null".into(),
+                ));
+            }
+        };
         Ok(Self {
             op,
             argv,
             cwd: opt_text(v, "cwd")?.map(str::to_string),
             stdin,
+            token,
         })
     }
 }
@@ -523,6 +546,33 @@ mod tests {
         }
     }
 
+    /// fa-r3q: a token rides the request as hex; a frame without the key
+    /// (an older client) or with null is an owner-posture request.
+    #[test]
+    fn a_session_token_round_trips_and_its_absence_is_the_owner_posture() {
+        let req = Request {
+            op: Op::Run,
+            argv: vec!["tb".into()],
+            cwd: None,
+            stdin: None,
+            token: Some(vec![0xfa, 0x00, 0x7e]),
+        };
+        let wire = req.to_json(1).render();
+        assert!(wire.contains("\"token\":\"fa007e\""), "{wire}");
+        let back = Request::from_json(&canonical(wire.as_bytes()).expect("canonical"), 1);
+        assert_eq!(back, Ok(req));
+        let legacy =
+            br#"{"argv":[],"cwd":null,"event":"fad_request","op":"run","stdin":null,"v":1}"#;
+        let back = Request::from_json(&canonical(legacy).expect("canonical"), 1).unwrap();
+        assert_eq!(back.token, None);
+        for bad in [
+            &br#"{"argv":[],"cwd":null,"event":"fad_request","op":"run","stdin":null,"token":"FA","v":1}"#[..],
+            br#"{"argv":[],"cwd":null,"event":"fad_request","op":"run","stdin":null,"token":7,"v":1}"#,
+        ] {
+            assert!(Request::from_json(&canonical(bad).expect("canonical"), 1).is_err());
+        }
+    }
+
     #[test]
     fn requests_and_responses_round_trip_and_refuse_strangers() {
         let req = Request {
@@ -530,6 +580,7 @@ mod tests {
             argv: vec!["tb".into(), "--json".into()],
             cwd: Some("/tmp/x".into()),
             stdin: Some(vec![0, 1, 0xfe]),
+            token: None,
         };
         let wire = req.to_json(1).render();
         let back = Request::from_json(&canonical(wire.as_bytes()).expect("canonical"), 1);
@@ -548,6 +599,7 @@ mod tests {
             argv: Vec::new(),
             cwd: None,
             stdin: None,
+            token: None,
         }
         .to_json(2);
         assert!(Request::from_json(&other_protocol, 1).is_err());

@@ -89,6 +89,8 @@ pub struct LaunchAuthority {
     /// The issued capability's commitment when the session is bound to a
     /// holder's token (`fa-mcp --token`, bead fa-v62), not to a template.
     issued: Option<[u8; 32]>,
+    /// That token, which a session presents to the book's fad (fa-r3q).
+    token: Option<CapabilityToken>,
 }
 
 impl LaunchAuthority {
@@ -138,6 +140,7 @@ impl LaunchAuthority {
             profile,
             capability,
             issued: None,
+            token: None,
         })
     }
 
@@ -185,6 +188,7 @@ impl LaunchAuthority {
             profile,
             capability,
             issued: Some(issued),
+            token: Some(token.clone()),
         })
     }
 
@@ -192,6 +196,12 @@ impl LaunchAuthority {
     #[must_use]
     pub fn issued(&self) -> Option<[u8; 32]> {
         self.issued
+    }
+
+    /// The token this session is bound to, if any.
+    #[must_use]
+    pub fn token(&self) -> Option<&CapabilityToken> {
+        self.token.as_ref()
     }
 
     /// Attach an optional launch filesystem root (`--files <dir>`). When set,

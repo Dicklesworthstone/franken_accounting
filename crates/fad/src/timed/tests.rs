@@ -545,6 +545,7 @@ fn partial_prefix_and_payload_survive_multiple_real_timed_cycles_and_idle_is_bou
                 argv: vec!["--json".into()],
                 cwd: None,
                 stdin: None,
+                token: None,
             };
             let frame = encode(request.to_json(1).render().as_bytes(), 4096).unwrap();
             client.write_all(&frame[..2]).await.unwrap();

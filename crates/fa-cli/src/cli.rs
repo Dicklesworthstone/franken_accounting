@@ -755,14 +755,15 @@ impl Books<'_> {
 }
 
 /// FA-REF-018 for a lease held while [`Books::LeasedOnOpen`] admits a
-/// command: launch-bound authority is never forwarded through the
-/// unauthenticated fad protocol, so the fix names the operator's remedy.
+/// command: a launch-config binding has no token to present to the fad
+/// (a token-bound session is routed to it before this point, fa-r3q), so
+/// the fix names the operator's remedies.
 fn leased_on_open_held(error: &crate::lease::LeaseError, dir: &Path) -> Refusal {
     let mut refusal = error.refusal(dir);
-    refusal.message.push_str(
-        "; launch-bound authority cannot be forwarded through the unauthenticated fad protocol",
-    );
-    refusal.fix = "ask the operator to release the book's writer lease, then retry this launch-bound session; authenticated daemon sessions are not yet available (fa-r3q)".into();
+    refusal
+        .message
+        .push_str("; a launch-config session has no issued token to present to the book's fad");
+    refusal.fix = "ask the operator to release the book's writer lease, or to launch this session with an issued token (fa capability issue …, then --token <file>), which fad binds per request".into();
     refusal
 }
 
@@ -1020,6 +1021,38 @@ pub fn run_for_daemon(
     )
 }
 
+/// [`run_for_daemon`] for a request the daemon bound to a holder's issued
+/// token (fa-r3q): the session's principal and journaled capability, never
+/// the embedded-owner posture or any `--as`/`--grant` in `argv`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_for_daemon_bound(
+    argv: &[String],
+    book: &mut Book,
+    dir: PathBuf,
+    files_root: Option<PathBuf>,
+    client_cwd: Option<PathBuf>,
+    stdin: Stdin,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    let daemon_files = DaemonFiles {
+        book_dir: dir.clone(),
+        files_root,
+    };
+    let files = Files {
+        cwd: client_cwd,
+        stdin,
+    };
+    run_scoped(
+        argv,
+        Books::Held { book, dir },
+        files,
+        Some(authority),
+        Some(daemon_files),
+        capture,
+    )
+}
+
 /// Run under the immutable authority supplied by the host. Hosts opening
 /// a directory should use [`crate::entry::fa_with_authority`] for the
 /// writer lease as well. This route never self-issues an owner capability.
@@ -1111,7 +1144,9 @@ fn run_scoped(
         }
     };
     if let Some(authority) = authority {
-        for flag in ["--as", "--grant", "--yes", "--book", "--keys", "--via"] {
+        for flag in [
+            "--as", "--grant", "--yes", "--book", "--keys", "--via", "--token",
+        ] {
             if args.flags.contains_key(flag) || args.switch(flag) {
                 return usage_error_with_authority(
                     argv,
@@ -2478,7 +2513,7 @@ fn capability_model(
                     s(if authority.is_some() {
                         "MCP binds one capability from trusted operator launch configuration: fixed principal, profile, operations, book and key path. Requests cannot choose identity, grants, confirmation or daemon routing. Launch configuration does not authenticate the operator; issued tokens and authenticated daemon sessions remain fa-v62/fa-r3q. The envelope lists this session's actual launch template and ops."
                     } else {
-                        "embedded-owner posture: the calling process supplies --as and self-issues Human-profile operations per command with --grant, without ceilings or expiry. The current fad argv route has the same owner posture and no authenticated session. MCP uses a separate launch-config binding and refuses this daemon route. The kernel evaluates supplied authority; it does not authenticate the operator."
+                        "embedded-owner posture: the calling process supplies --as and self-issues Human-profile operations per command with --grant, without ceilings or expiry. The fad argv route has the same owner posture for a same-uid peer; a request carrying an issued token (fa --token) is bound to that token's principal and journaled capability instead. MCP uses a separate launch binding: a launch-config session refuses the daemon route, a --token session presents its token to fad. The kernel evaluates supplied authority; it does not authenticate the operator."
                     }),
                 ),
             ]),

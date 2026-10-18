@@ -28,6 +28,7 @@ fn request(op: Op, n: usize) -> Request {
         argv: vec!["tb".into(), format!("--n={n}"), "--json".into()],
         cwd: None,
         stdin: None,
+        token: None,
     }
 }
 

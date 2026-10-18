@@ -438,6 +438,7 @@ fn stdin_and_relative_paths_travel_with_the_request() {
             argv: argv.iter().map(|a| (*a).to_string()).collect(),
             cwd: cwd.map(|c| c.display().to_string()),
             stdin: stdin.map(|s| s.as_bytes().to_vec()),
+            token: None,
         };
         assert_eq!(
             reg.check_line(&request.to_json(reg.daemon.protocol).render()),
@@ -619,6 +620,7 @@ fn every_daemon_event_is_emitted_and_fad_refuses_what_it_does_not_know() {
         argv: vec!["--json".into()],
         cwd: None,
         stdin: None,
+        token: None,
     };
     let response =
         client::call(&book.join(&reg.daemon.socket), &request, &reg.daemon).expect("fad answers");
@@ -782,6 +784,7 @@ fn concurrent_slow_client_does_not_starve_other_clients_and_unauthorized_stop_is
         argv: vec!["--json".into()],
         cwd: None,
         stdin: None,
+        token: None,
     };
     let frame_a = encode(
         req_a.to_json(reg.daemon.protocol).render().as_bytes(),
@@ -841,6 +844,7 @@ fn concurrent_slow_client_does_not_starve_other_clients_and_unauthorized_stop_is
             argv: vec!["--json".into()],
             cwd: None,
             stdin: None,
+            token: None,
         },
         &reg.daemon,
     )
@@ -1076,6 +1080,7 @@ fn fad_confinement_refuses_host_file_paths_without_files_root_and_rejects_escape
         ],
         cwd: Some(outside_dir.display().to_string()),
         stdin: None,
+        token: None,
     };
     let wire_bytes = fa_cli::wire::encode(
         hostile_req.to_json(reg.daemon.protocol).render().as_bytes(),
@@ -1128,4 +1133,173 @@ fn fad_confinement_refuses_host_file_paths_without_files_root_and_rejects_escape
     assert_eq!(code, 0, "{stopped}");
     let (exit, _) = daemon.finish();
     assert_eq!(exit, 0);
+}
+
+/// fa-r3q: `fa --token <file>` sessions through a running fad. Two holders
+/// with their own issued Agent tokens work through one daemon; each request
+/// is bound to its token's principal and journaled capability (the envelope
+/// says `issued-token`; each draft is its holder's). `--as` beside a token
+/// is refused, a tampered token never reaches the book, and a token revoked
+/// mid-session is refused at its next write (FA-REF-023).
+#[test]
+fn token_sessions_through_fad_bind_each_request_to_its_holder() {
+    let dir = tmp("token-sessions");
+    let (book, oid) = book(&dir);
+    let b = book.display().to_string();
+    let mut tokens = Vec::new();
+    for holder in ["agent-a", "agent-b"] {
+        let path = dir.join(format!("{holder}.token")).display().to_string();
+        let issued = ok(&[
+            "capability",
+            "issue",
+            "--holder",
+            holder,
+            "--profile",
+            "agent",
+            "--op",
+            "read",
+            "--op",
+            "post",
+            "--out",
+            &path,
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+            "--grant",
+            "post",
+            "--book",
+            &b,
+            "--json",
+        ]);
+        let commitment = field(&issued, "commitment").unwrap_or_default().to_string();
+        tokens.push((holder, path, commitment));
+    }
+    let daemon = start(&book);
+    let rent = write(
+        &dir,
+        "draft-rent.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"token-rent","legs":[{"side":"debit","account":"6000","amount":"3.00 USD"},{"side":"credit","account":"1000","amount":"3.00 USD"}]}"#,
+    );
+    for (holder, token, _) in &tokens {
+        let draft = format!("{holder}-draft");
+        let opened = ok(&[
+            "--token", token, "draft", "new", &draft, "--book", &b, "--json",
+        ]);
+        assert!(opened.contains("\"posture\":\"issued-token\""), "{opened}");
+        assert!(
+            opened.contains(&format!("\"principal\":\"{holder}\"")),
+            "{opened}"
+        );
+        let planned = ok(&[
+            "--token",
+            token,
+            "post",
+            "--intent",
+            &rent,
+            "--evidence",
+            &oid,
+            "--draft",
+            &draft,
+            "--book",
+            &b,
+            "--json",
+        ]);
+        assert_eq!(field(&planned, "event"), Some("draft_planned"), "{planned}");
+        // An Agent token never posts to trunk, through fad or not.
+        let (code, out, _) = fa(&[
+            "--token",
+            token,
+            "post",
+            "--intent",
+            &rent,
+            "--evidence",
+            &oid,
+            "--book",
+            &b,
+            "--json",
+        ]);
+        assert_eq!(code, 7, "{out}");
+        assert!(out.contains("FA-REF-013"), "{out}");
+    }
+    // Each draft is its holder's: one holder cannot plan into the other's.
+    let (code, out, _) = fa(&[
+        "--token",
+        &tokens[0].1,
+        "post",
+        "--intent",
+        &rent,
+        "--evidence",
+        &oid,
+        "--draft",
+        "agent-b-draft",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-011"), "{out}");
+    // Identity flags beside a token, and a tampered token, are refused.
+    let (code, out, _) = fa(&[
+        "--token",
+        &tokens[0].1,
+        "--as",
+        "controller",
+        "draft",
+        "list",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    let mut tampered = std::fs::read(&tokens[0].1).unwrap();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 1;
+    let bad = dir.join("tampered.token");
+    std::fs::write(&bad, &tampered).unwrap();
+    let (code, out, _) = fa(&[
+        "--token",
+        &bad.display().to_string(),
+        "draft",
+        "list",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    // Revoked mid-session (by the owner, through the same daemon).
+    ok(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &tokens[1].2,
+        "--grant",
+        "issue_capability",
+        "--yes",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let (code, out, _) = fa(&[
+        "--token",
+        &tokens[1].1,
+        "draft",
+        "new",
+        "after-revocation",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-023"), "{out}");
+    // The owner sees both drafts, each owned by its holder.
+    let drafts = ok(&["draft", "list", "--book", &b, "--json"]);
+    assert!(
+        drafts.contains("agent-a-draft") && drafts.contains("agent-b-draft"),
+        "{drafts}"
+    );
+    let (code, stopped, err) = fad(&["stop", "--book", &b, "--json"]);
+    assert_eq!(code, 0, "{stopped}\n{err}");
+    let (exit, rest) = daemon.finish();
+    assert_eq!(exit, 0, "{rest}");
 }
