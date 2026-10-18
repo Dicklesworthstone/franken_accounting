@@ -4,12 +4,12 @@
 
 ## 1. Vision Workflow Summary (README Quick Example + Plan §15.6)
 
-- **Total workflow steps:** 30 (`works`: **21** [70%], `refused`: **0**, `absent`: **9**)
+- **Total workflow steps:** 30 (`works`: **22** [73%], `refused`: **0**, `absent`: **8**)
 
 | Workflow | Plan Ref | Reader | Works | Refused | Absent | Total | Delivery % |
 |---|---|---|---:|---:|---:|---:|---:|
 | `readme-quick` (README Quick Example) | README.md §Quick example | Agent / Operator | 9 | 0 | 3 | 12 | 75% |
-| `agent-closes-month` (The agent closes a month) | §15.6.1 | AI Agent + Controller | 2 | 0 | 2 | 4 | 50% |
+| `agent-closes-month` (The agent closes a month) | §15.6.1 | AI Agent + Controller | 3 | 0 | 1 | 4 | 75% |
 | `cpa-audits-fy2025` (The CPA audits FY2025) | §15.6.2 | External CPA / Auditor | 3 | 0 | 1 | 4 | 75% |
 | `fdic-examiner-positions` (The FDIC examiner needs close-of-business positions) | §15.6.3 | FDIC Examiner / Receiver | 2 | 0 | 1 | 3 | 66% |
 | `trustee-receiver-takeover` (The trustee or receiver takes over) | §15.6.4 | Bankruptcy Trustee / Receiver | 1 | 0 | 1 | 2 | 50% |
@@ -33,7 +33,7 @@
 | `WF-RQ-11` | `VC-11` | `readme-quick` | `works` | `0` | `procedure_run` | `—` | Run LIBR fund tracing (`fa procedure run trace.libr`) |
 | `WF-RQ-12` | `VC-12` | `readme-quick` | `works` | `0` | `bundle_produced` | `—` | Produce a signed offline evidence bundle (`fa bundle produce`) |
 | `WF-ACM-01` | `VC-13` | `agent-closes-month` | `works` | `0` | `next_step` | `—` | Inspect book triage and next recommended step (`fa next --json`) |
-| `WF-ACM-02` | `VC-14` | `agent-closes-month` | `absent` | `2` | `error` | `fa-3gf` | Create a close draft branch (`fa draft new close-03`) |
+| `WF-ACM-02` | `VC-14` | `agent-closes-month` | `works` | `0` | `draft_opened` | `—` | Create a close draft branch (`fa draft new close-03`) |
 | `WF-ACM-03` | `VC-15` | `agent-closes-month` | `absent` | `2` | `error` | `fa-9x4` | Import and match a CAMT.053 bank statement (`fa bank import`) |
 | `WF-ACM-04` | `VC-16` | `agent-closes-month` | `works` | `0` | `period_transitioned` | `—` | Soft-close an open period (`fa period soft-close FY2026-P04`) |
 | `WF-CPA-01` | `VC-17` | `cpa-audits-fy2025` | `absent` | `2` | `error` | `fa-4p7` | Export AICPA Audit Data Standard GL package (`fa export ads`) |

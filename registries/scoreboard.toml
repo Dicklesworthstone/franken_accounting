@@ -216,10 +216,9 @@ ordinal = 2
 vision_row = "VC-14"
 description = "Create a close draft branch (`fa draft new close-03`)"
 argv = ["draft", "new", "close-03", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-3gf"
+expected = "works"
+expected_exit = 0
+expected_event = "draft_opened"
 
 [[workflow_step]]
 id = "WF-ACM-03"
