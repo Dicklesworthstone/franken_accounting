@@ -137,6 +137,9 @@ pub struct CheckSummary {
     pub refusals_checked: usize,
     pub verbs_checked: usize,
     pub mcp_tools_checked: usize,
+    /// Tools on the default MCP surface (plan §15.4: at most 40); tools of
+    /// on-demand clusters are checked but not exposed by default.
+    pub mcp_default_tools: usize,
     pub markers_checked: usize,
 }
 
@@ -316,7 +319,8 @@ pub fn check_refusal_immutability(text: &str, exits: &ExitCodes) -> Result<usize
     Ok(catalog.rows.len())
 }
 
-pub fn check_verbs(text: &str, exits: &ExitCodes) -> Result<(usize, usize), String> {
+/// `(verbs, every mcp.tool row, the default-surface tools)`.
+pub fn check_verbs(text: &str, exits: &ExitCodes) -> Result<(usize, usize, usize), String> {
     const F: &str = "verbs.toml";
     let doc = toml::parse(text).map_err(|e| format!("{F}: {e}"))?;
     if req_int(F, &doc.root, "schema_version")? != 1 {
@@ -456,7 +460,7 @@ pub fn check_verbs(text: &str, exits: &ExitCodes) -> Result<(usize, usize), Stri
             }
         }
     }
-    Ok((verbs.len(), tools.len()))
+    Ok((verbs.len(), tools.len(), default_tools))
 }
 
 /// Extract all `FA-<FAMILY>-<DIGITS>` markers from `text` matching one of the
@@ -723,7 +727,8 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     if root.join("crates").is_dir() {
         mutants.verify_against_workspace(|rel| fs::read_to_string(root.join(rel)).ok())?;
     }
-    let (verbs_checked, mcp_tools_checked) = check_verbs(&read("verbs.toml")?, &exits)?;
+    let (verbs_checked, mcp_tools_checked, mcp_default_tools) =
+        check_verbs(&read("verbs.toml")?, &exits)?;
 
     // 3. Cross-document claims_lint check.
     let mut known_markers = BTreeSet::new();
@@ -832,6 +837,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         refusals_checked,
         verbs_checked,
         mcp_tools_checked,
+        mcp_default_tools,
         markers_checked,
     })
 }
@@ -955,7 +961,8 @@ mod tests {
         assert!(summary.invariants_live >= 18);
         assert!(summary.refusals_checked >= IMMUTABLE_REFUSALS.len());
         assert!(summary.verbs_checked >= 20);
-        assert!(summary.mcp_tools_checked <= 40);
+        assert!(summary.mcp_default_tools <= 40);
+        assert!(summary.mcp_tools_checked >= summary.mcp_default_tools);
         assert!(summary.markers_checked >= 45);
 
         let g0 = check_g0_report(&root).expect("g0 report valid");

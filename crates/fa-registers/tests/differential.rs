@@ -1640,7 +1640,6 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         "Receipt",
         "Receipt",
         "Receipt",
-        "Closing",
     ];
     let leaf_codes = ["1000", "6000", "4000"];
     let mut history: Vec<Intent> = Vec::new();
@@ -2302,6 +2301,27 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         posted_resolutions.0 >= 3 && posted_resolutions.1 >= 3,
         "resolutions (posts, voids) {posted_resolutions:?}"
     );
+    // FA-REF-102: a registered class this slice does not post. Replacement
+    // alone is FA-REF-051 since fa-oz3, so the generated history no longer
+    // reaches 102; one deterministic Closing intent keeps it compared,
+    // without perturbing the seeded histories above.
+    {
+        let closing = maintenance_intent(
+            "Closing",
+            DateDay::from_ymd(2026, 3, 15).unwrap(),
+            100,
+            "closing-plant",
+        );
+        let model = oracle.post(&closing);
+        let kernel = kernel_post(&mut k, &closing, usd, &refs);
+        match (&kernel, &model) {
+            (Err(r), Verdict::Refused { code }) => {
+                assert_eq!(r.code, *code, "closing plant: {r}");
+                *refused.entry(code).or_insert(0) += 1;
+            }
+            _ => panic!("closing plant: kernel {kernel:?}, oracle {model:?}"),
+        }
+    }
     for must in [
         "FA-REF-001",
         "FA-REF-010",
@@ -9000,6 +9020,7 @@ fn drafts_agree_with_the_independent_oracle_across_seeds() {
                     }
                     let expected = oracle.plan_into_draft(&name, "p7", &intent);
                     let actual = kernel_plan_draft(&mut k, &name, &intent, usd, &refs);
+                    eprintln!("{label}: plan into {name}: oracle {expected:?}");
                     match (&expected, &actual) {
                         (DraftVerdict::Recorded, Ok(p)) => {
                             assert!(!p.recorded.already_recorded && p.plan.is_some(), "{label}");
@@ -9038,6 +9059,7 @@ fn drafts_agree_with_the_independent_oracle_across_seeds() {
                     };
                     let expected = oracle.promote_draft(&name, who, &ops);
                     let actual = kernel_promote_draft(&mut k, &name, cap);
+                    eprintln!("{label}: promote {name} by {who}: oracle {expected:?}");
                     match (&expected, &actual) {
                         (DraftVerdict::Promoted { indices, already }, Ok(p)) => {
                             assert_eq!(p.already_recorded, *already, "{label}");
