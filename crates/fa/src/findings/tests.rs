@@ -493,3 +493,5 @@ fn orphan_identity_aborts_the_entire_transaction_without_a_run_index() {
 mod workpaper;
 
 mod review;
+
+mod inventory;

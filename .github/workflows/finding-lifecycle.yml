@@ -1,0 +1,44 @@
+name: Finding lifecycle exact-commit feedback
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fa/src/findings/**'
+      - 'crates/fa/src/findings.rs'
+      - 'registries/finding_storage.toml'
+      - '.github/workflows/finding-lifecycle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Supplemental focused feedback. Broad feature work must not cancel this
+# exact commit before execution; all existing RCH/workspace gates stay intact.
+jobs:
+  findings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Fetch the exact public commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init --initial-branch=main .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Install the pinned compiler
+        shell: bash
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal --component clippy
+      - name: Test all native Finding and review histories
+        shell: bash
+        run: cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib findings --jobs 2 -- --nocapture
+      - name: Regress both procedure certificate versions
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib procedure_certificate --jobs 2 -- --nocapture
+      - name: Lint the selected facade without changing dependency gates
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: cargo +nightly-2026-08-31 clippy --locked -Z bindeps -Z git=shallow-deps -p fa --lib --jobs 2 -- --no-deps -D warnings

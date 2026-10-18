@@ -126,3 +126,19 @@ result_order = "certified_occurrence_order"
 # mixed existing/new set refuses the entire operation before publication. Exact
 # same-publication subsets are valid retries, not claims about original command
 # membership. No observation, journal posting or original workpaper is changed.
+
+# Snapshot-bound discovery of original retained runs; current review status is
+# deliberately separate. The native manifest is complete; only returned page
+# summaries are certificate-replayed. Saved selectors never carry authority.
+[inventory]
+max_page_runs = 32
+cursor_format = "fa:finding-run-cursor:v1"
+digest_domain = "fa:finding-inventory:v1"
+required_ops = ["read"]
+order = "original_publication_then_run_vid"
+source = "complete_native_finding_births"
+summary_verification = "complete_procedure_certificate_replay"
+# Continuations inherit their original cutoff; later runs cannot drift page
+# boundaries. Later Finding-family damage still refuses. Empty recorded runs
+# count; certificates whose findings were never recorded do not. No inferred
+# review disposition, transaction-analysis coverage or outsider proof follows.
