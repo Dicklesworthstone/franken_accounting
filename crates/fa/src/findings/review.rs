@@ -15,6 +15,9 @@ use super::*;
 use fa_model::{Oid, Reader};
 use fa_policy::Profile;
 
+mod run;
+pub use run::{FindingRunReviewHistory, MAX_RUN_REVIEW_DECISIONS, MAX_RUN_REVIEW_NOTE_BYTES};
+
 pub const FINDING_REVIEW_FORMAT: &[u8] = b"fa:finding-review:v1";
 pub const MAX_FINDING_REVIEWS: usize = 256;
 pub const MAX_REVIEW_NOTE_BYTES: usize = 2048;

@@ -67,3 +67,14 @@ dismissal_reasons = ["1:Explained", "2:Duplicate", "3:DataQuality", "4:OutsideSc
 # CITES: review -> evidence. All edges share the review's original native birth.
 # Workpaper v1 continues to show the original observation, not current status.
 # Capability binding is not an external signature or a proof of economic truth.
+
+# Whole-run review reads preserve every certified occurrence in source order,
+# including never-reviewed findings and explicitly empty recorded runs. They
+# enforce the single-occurrence checks and scan native Finding births once.
+[review_run]
+max_decisions = 8192
+max_note_bytes = 8388608
+required_ops = ["read"]
+scope = "one_complete_recorded_procedure_run"
+# Bounds count every selected finding's decisions through the current frontier,
+# before historical filtering. Exhaustion refuses the entire result.
