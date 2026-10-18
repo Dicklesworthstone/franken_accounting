@@ -522,7 +522,7 @@ pub fn match_bank_lines(
                 exact_cash_candidate(line, entry, config.max_date_window_days)?
             else {
                 continue;
-            }
+            };
 
             let entry_ref_norm = normalize_reference(&entry.reference);
             let ref_exact = !norm_ref.is_empty() && norm_ref == entry_ref_norm;
