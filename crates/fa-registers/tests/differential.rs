@@ -8961,6 +8961,22 @@ fn drafts_agree_with_the_independent_oracle_across_seeds() {
             let head = k.db.frontier().unwrap();
             let action = rng.below(10);
             let label = format!("seed {seed} step {step} action {action}");
+            // Live targets, so positives occur as often as the planted
+            // negatives (unknown, empty, closed drafts) do.
+            let open_names: Vec<String> = names
+                .iter()
+                .filter(|n| {
+                    oracle
+                        .draft(n)
+                        .is_some_and(|d| d.state == fa_reference::DraftState::Open)
+                })
+                .cloned()
+                .collect();
+            let ready: Vec<String> = open_names
+                .iter()
+                .filter(|n| oracle.draft(n).is_some_and(|d| !d.intents.is_empty()))
+                .cloned()
+                .collect();
             // Whether the oracle's verdict is a new record (one commit).
             let mut commits = false;
             match action {
@@ -8991,6 +9007,8 @@ fn drafts_agree_with_the_independent_oracle_across_seeds() {
                 2..=5 => {
                     let name = if names.is_empty() || rng.chance(5) {
                         format!("nope-{step}")
+                    } else if !open_names.is_empty() && rng.chance(80) {
+                        open_names[rng.below(open_names.len() as u64) as usize].clone()
                     } else {
                         names[rng.below(names.len() as u64) as usize].clone()
                     };
@@ -9039,9 +9057,12 @@ fn drafts_agree_with_the_independent_oracle_across_seeds() {
                 }
                 // Promote (planted: a clerk without approve, the owner).
                 6 | 7 => {
-                    let Some(name) = (!names.is_empty())
-                        .then(|| names[rng.below(names.len() as u64) as usize].clone())
-                    else {
+                    let Some(name) = (if !ready.is_empty() && rng.chance(70) {
+                        Some(ready[rng.below(ready.len() as u64) as usize].clone())
+                    } else {
+                        (!names.is_empty())
+                            .then(|| names[rng.below(names.len() as u64) as usize].clone())
+                    }) else {
                         continue;
                     };
                     let (who, ops, cap) = match rng.below(6) {
