@@ -138,6 +138,17 @@ pub(super) fn request(
     dir: &Path,
     files: &Files,
     daemon: &Daemon,
+) -> Result<Request, Error> {
+    request_as(parsed, dir, files, daemon, None)
+}
+
+/// [`request`] for a session presenting `token` (fa-r3q): the bound argv,
+/// and the token on the frame.
+pub(super) fn request_as(
+    parsed: &Args,
+    dir: &Path,
+    files: &Files,
+    daemon: &Daemon,
     token: Option<Vec<u8>>,
 ) -> Result<Request, Error> {
     let (book, cwd) = paths(dir, files)?;

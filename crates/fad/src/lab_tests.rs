@@ -473,6 +473,7 @@ fn slow_client_sending_a_frame_every_29s_does_not_starve_other_clients_and_unaut
                 argv: vec!["--json".into()],
                 cwd: None,
                 stdin: Some(OWNER_TOKEN.to_vec()),
+                token: None,
             };
             client_stop.write_all(&frame(&auth_stop)).await.unwrap();
             let reply_stop = read_frame(&cx, &mut client_stop, MAX)
