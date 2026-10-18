@@ -129,10 +129,11 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .map_err(|error| Fail::Internal(format!("the embedded evidence policy: {error}")))?
         .max_document_bytes;
     let bytes = crate::intake::read_document_with_limit(&ctx.files, path, max_statement_bytes)?;
+    let account = account_vid(book.context().book_id, account_code);
     let recorded = book.import_bank_statement(
         &capability,
         BankImportRequest {
-            account: account_vid(book.context().book_id, account_code),
+            account,
             format,
             bytes,
         },

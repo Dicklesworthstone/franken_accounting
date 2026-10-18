@@ -274,15 +274,14 @@ fn camt_blocks<'a>(
         }
         bank_xml_decode(format, &xml[cursor..start])?;
         let suffix = &xml[start..];
-        if suffix.starts_with("<!--") {
-            let end = suffix[4..]
+        if let Some(comment) = suffix.strip_prefix("<!--") {
+            let end = comment
                 .find("-->")
-                .map(|end| end + 4)
                 .ok_or_else(|| camt_error(format, "unterminated bank XML comment"))?;
-            if suffix[4..end].contains("--") {
+            if comment[..end].contains("--") {
                 return Err(camt_error(format, "invalid bank XML comment"));
             }
-            cursor = start + end + 3;
+            cursor = start + 4 + end + 3;
             continue;
         }
         if suffix.starts_with("<?") {
@@ -748,7 +747,11 @@ pub fn parse_bai2(text: &str, units: &UnitCatalog) -> Result<BankStatementExtrac
                 }
             }
             "03" => {
-                if !group_seen || account_seen || fields.len() < 7 || (fields.len() - 3) % 2 != 0 {
+                if !group_seen
+                    || account_seen
+                    || fields.len() < 7
+                    || !(fields.len() - 3).is_multiple_of(2)
+                {
                     return Err(camt_error(
                         FMT,
                         "BAI2 requires exactly one 03 account after its group, with complete summary pairs",
@@ -772,16 +775,14 @@ pub fn parse_bai2(text: &str, units: &UnitCatalog) -> Result<BankStatementExtrac
                             detail: format!("invalid BAI2 summary amount in {raw:?}"),
                         })?;
                     match type_code {
-                        "010" => {
-                            if opening_balance.replace(amt_minor).is_some() {
-                                return Err(camt_error(FMT, "repeated BAI2 opening balance"));
-                            }
+                        "010" if opening_balance.is_some() => {
+                            return Err(camt_error(FMT, "repeated BAI2 opening balance"));
                         }
-                        "015" => {
-                            if closing_balance.replace(amt_minor).is_some() {
-                                return Err(camt_error(FMT, "repeated BAI2 closing balance"));
-                            }
+                        "010" => opening_balance = Some(amt_minor),
+                        "015" if closing_balance.is_some() => {
+                            return Err(camt_error(FMT, "repeated BAI2 closing balance"));
                         }
+                        "015" => closing_balance = Some(amt_minor),
                         _ => {}
                     }
                     idx += 2;
