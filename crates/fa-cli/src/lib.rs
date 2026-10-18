@@ -28,6 +28,7 @@ pub mod lease;
 pub(crate) mod notary;
 pub mod panic;
 mod proof;
+mod rea;
 mod templates;
 mod triage;
 pub mod verbs;

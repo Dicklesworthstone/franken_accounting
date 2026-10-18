@@ -399,6 +399,34 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Journal a valid-time relationship edge (`OWNS`, `CONTROLS` or
+    /// `RELATED_TO`) between two parties or legal entities under a basis
+    /// registered in `relationship_bases.toml` (plan §4.5).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_relationship(
+        &mut self,
+        cx: &PurposeContexts,
+        spec: &fa_model::RelationshipSpec,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let description = self.seal_text(cx, &format!("record relationship `{}`", spec.basis))?;
+        Ok(fa_journal::record_relationship(
+            &mut self.db,
+            cx,
+            &self.context,
+            spec,
+            principal,
+            effective_date,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn record_event(
         &mut self,

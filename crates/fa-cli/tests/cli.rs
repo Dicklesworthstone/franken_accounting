@@ -2438,9 +2438,9 @@ fn export_writes_the_trial_balance_selection_in_every_interop_format() -> std::i
             &["export", format, "--period", "FY2026-P03", "--json"],
         );
         assert_eq!(code, 0, "{format}: {out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("journal_exported"), "{out}");
         let exported = doc(&out);
-        assert_eq!(text(&exported, "event"), "journal_exported", "{out}");
-        let data = exported.get("data").unwrap_or(&exported);
+        let data = &exported;
         assert_eq!(text(data, "format"), format);
         assert_eq!(text(data, "effective_through"), "2026-03-31");
         assert_eq!(
@@ -10905,6 +10905,141 @@ fn explain_lineage_cli_reports_supersession_component_and_net_effect() -> std::i
         assert_eq!(text(cell, "net"), "0.00 USD");
     }
 
+    Ok(())
+}
+
+/// Plan §4.1, §4.5: parties, instruments and relationships are journaled
+/// REA controls a real book can now create from the CLI, so an event can
+/// name its participants and resources. Names are sealed and read back as
+/// untrusted text; ownership is an exact ratio, never a float; codes are
+/// identities, so an exact retry records nothing new.
+#[test]
+fn parties_instruments_and_relationships_are_recorded_from_the_cli() -> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("rea-parties")?;
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, _) = fa(Some(&book), args);
+        (code, out)
+    };
+    let vendor = write(
+        &dir,
+        "vendor.json",
+        r#"{"code":"V-17","kind":"Vendor","name":"Acme Supplies","identifiers":{"ein":"12-3456789"},"external_ids":[{"system":"qbo","id":"55"}]}"#,
+    );
+    let (code, out) = run(&["party", "add", &vendor, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("rea_recorded"));
+    assert_eq!(field(&out, "object"), Some("party"));
+    assert_eq!(field(&out, "already_recorded"), Some("false"));
+    let vendor_vid = field(&out, "target").unwrap().to_string();
+    let (code, out) = run(&["party", "add", &vendor, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("true"));
+    assert_eq!(field(&out, "target"), Some(vendor_vid.as_str()));
+    for (name, body) in [
+        (
+            "bank",
+            r#"{"code":"BANK-1","kind":"Bank","name":"First Bank"}"#,
+        ),
+        (
+            "owner",
+            r#"{"code":"O-1","kind":"BeneficialOwner","name":"J. Doe"}"#,
+        ),
+    ] {
+        let path = write(&dir, &format!("{name}.json"), body);
+        let (code, out) = run(&["party", "add", &path, "--json"]);
+        assert_eq!(code, 0, "{out}");
+    }
+    // Usage errors publish nothing: an unregistered kind, an unknown field.
+    for body in [
+        r#"{"code":"X-1","kind":"Friend","name":"X"}"#,
+        r#"{"code":"X-2","kind":"Vendor","name":"X","nickname":"x"}"#,
+    ] {
+        let path = write(&dir, "bad-party.json", body);
+        let (code, out) = run(&["party", "add", &path, "--json"]);
+        assert_eq!(code, 2, "{out}");
+    }
+
+    // Ownership is an exact ratio under a registered basis.
+    let relate = |extra: &[&str]| {
+        let mut args = vec![
+            "party",
+            "relate",
+            "O-1",
+            "V-17",
+            "--kind",
+            "owns",
+            "--basis",
+            "beneficial_ownership",
+            "--valid-from",
+            "2026-01-01",
+            "--json",
+        ];
+        args.extend_from_slice(extra);
+        run(&args)
+    };
+    for bad in [vec![], vec!["--pct", "0.75"], vec!["--pct", "3/0"]] {
+        let (code, out) = relate(&bad);
+        assert_eq!(code, 2, "{bad:?}: {out}");
+    }
+    let (code, out) = relate(&["--pct", "3/4"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "object"), Some("relationship"));
+
+    // An instrument is held at a party and mirrors a GL leaf.
+    let account = write(
+        &dir,
+        "account.json",
+        r#"{"code":"BA-1","name":"Operating account","kind":"BankAccount","unit":"USD","held_at":"BANK-1","mirrors":"1000"}"#,
+    );
+    let (code, out) = run(&["instrument", "add", &account, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "object"), Some("instrument"));
+    let unmirrored = write(
+        &dir,
+        "unmirrored.json",
+        r#"{"code":"BA-2","name":"Nowhere","kind":"BankAccount","unit":"USD","held_at":"BANK-1","mirrors":"9999"}"#,
+    );
+    let (code, out) = run(&["instrument", "add", &unmirrored, "--json"]);
+    assert_eq!(code, 2, "{out}");
+
+    let (code, out) = run(&["party", "list", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let listed = doc(&out);
+    let parties = arr(&listed, "parties");
+    assert_eq!(parties.len(), 3, "{out}");
+    assert_eq!(int(&listed, "relationships"), Some(1));
+    let acme = parties
+        .iter()
+        .find(|p| text(p, "code") == "V-17")
+        .expect("vendor listed");
+    assert_eq!(text(acme, "kind"), "Vendor");
+    assert_eq!(text(acme, "vid"), vendor_vid);
+    let name = acme.get("name").expect("opened name");
+    assert_eq!(text(name, "untrusted_content"), "Acme Supplies");
+    let (code, out) = run(&["instrument", "list", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(arr(&doc(&out), "instruments").len(), 1, "{out}");
+
+    // The event names both: the participant and the instrument resource.
+    let (code, out) = run(&[
+        "event",
+        "record",
+        "--code",
+        "EV-PAY-1",
+        "--kind",
+        "payment",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &ev,
+        "--participant",
+        "V-17",
+        "--resource",
+        "cash_outflow:40.00 USD:BA-1",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("event_recorded"), "{out}");
     Ok(())
 }
 

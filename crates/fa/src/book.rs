@@ -816,6 +816,22 @@ impl Book {
         )))
     }
 
+    /// Journal a valid-time relationship edge between two parties or legal
+    /// entities (plan §4.5).
+    pub fn record_relationship(
+        &mut self,
+        spec: &fa_model::RelationshipSpec,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_relationship(
+            &purposes, spec, principal, effective_date, idempotency_key, capability,
+        )))
+    }
+
     /// Journal and materialize an REA economic `Event` vertex (`SchemaChange` `kind = 11`,
     /// plan §4.1 `Event`, §4.5, FA-INV-05, bead `fa-f3bo`).
     #[allow(clippy::too_many_arguments)]

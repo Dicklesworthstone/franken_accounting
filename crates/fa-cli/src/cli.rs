@@ -97,6 +97,8 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("checkpoint", notary::checkpoint_cmd),
     ("proof", crate::proof::proof_cmd),
     ("export", crate::export::export_cmd),
+    ("party", crate::rea::party_cmd),
+    ("instrument", crate::rea::instrument_cmd),
     ("bundle", crate::proof::bundle_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
@@ -1688,7 +1690,10 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         ("draft", Some("new" | "plan" | "discard")) => &[Op::Post],
         ("draft", Some("list" | "show")) => &[Op::Read],
         ("draft", Some("promote")) => &[Op::Approve],
-        ("chart", Some("open" | "close" | "promote")) => &[Op::SchemaChange],
+        ("chart", Some("open" | "close" | "promote"))
+        | ("party", Some("add" | "relate"))
+        | ("instrument", Some("add")) => &[Op::SchemaChange],
+        ("party" | "instrument", Some("list")) => &[Op::Read],
         _ => return None,
     };
     Some(ops)
@@ -2809,7 +2814,7 @@ pub(crate) fn principal(args: &Args) -> VId {
     principal_vid(args.flag("--as").unwrap_or("operator"))
 }
 
-fn date_flag(args: &Args, default: DateDay) -> Result<DateDay, Fail> {
+pub(crate) fn date_flag(args: &Args, default: DateDay) -> Result<DateDay, Fail> {
     match args.flag("--date") {
         None => Ok(default),
         Some(d) => DateDay::parse(d)
@@ -11606,7 +11611,7 @@ fn explain_lineage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-fn untrusted_text_json(content: Option<String>, source: String) -> Json {
+pub(crate) fn untrusted_text_json(content: Option<String>, source: String) -> Json {
     match content.filter(|t| !t.is_empty()) {
         Some(text) => obj(vec![("untrusted_content", s(text)), ("source", s(source))]),
         None => Json::Null,
