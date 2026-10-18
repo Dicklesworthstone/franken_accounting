@@ -25,6 +25,7 @@ pub mod custody;
 pub mod entity;
 pub mod entry_history;
 pub mod evidence;
+pub mod finding_history;
 pub mod fx;
 pub mod genesis;
 pub mod import;

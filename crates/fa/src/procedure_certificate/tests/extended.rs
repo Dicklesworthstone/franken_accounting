@@ -165,7 +165,7 @@ fn a_discrepancy_beyond_signed_statistic_capacity_has_no_certificate_or_wrapped_
         account: f.id("1000"), unit_id: f.unit.0, period: "FY2026-P01".into(), entity: None,
     };
     let claim = f.book.evaluate_register_equals(&cx, &key, None).unwrap();
-    assert_eq!(claim.mantissa, 1);
+    assert_eq!(claim.amount.mantissa, 1);
     f.runtime.block_on(f.book.record_register_equals(&cx, &cap(&["reconcile"]), &claim, f.evidence.iter().map(|e| e.document_oid).collect()))
         .unwrap().unwrap();
     f.post(1, "1000", "6000", i128::MAX, false);

@@ -36,3 +36,34 @@ max_bytes = 67108864
 numbering = "original_native_run_publication"
 presentations = ["complete_jsonl", "escaped_markdown"]
 proof_class = "retained_history_replay"
+
+# Review decisions are separate immutable Finding-family control records, never
+# edits to the observation or postings. Their native history is checked from
+# genesis so a retired/relabeled final decision cannot masquerade as Open.
+[review]
+format = "fa:finding-review:v1"
+identity_domain = "fa:vid:finding-review:v1"
+digest_domain = "fa:finding-review-record:v1"
+max_reviews_per_finding = 256
+max_note_bytes = 2048
+max_evidence = 16
+max_record_bytes = 4096
+max_native_finding_records = 100000
+required_ops = ["read", "approve"]
+required_profile = "Human"
+excluded_principal = "original_procedure_certificate_producer"
+actions = ["1:Acknowledge", "2:Dismiss", "3:Reopen"]
+dismissal_reasons = ["1:Explained", "2:Duplicate", "3:DataQuality", "4:OutsideScope", "5:Other"]
+# Dismissal needs >=1 retained Document, and every action needs a nonblank note.
+# Acknowledgement of a dismissal is refused until an explicit Reopen decision.
+# Reopen is admissible only after dismissal. Dismissal may be revised with a new
+# decision/reason/evidence. Escalation awaits the native case lifecycle.
+# Each body binds book, source certificate, finding, slot, actor, capability,
+# expected predecessor, action, note and ordered evidence. Identity binds the
+# book/finding/ordinal slot, independently of content: competing successor
+# proposals conflict. Exact actor/body/capability retries reuse original birth,
+# even after further decisions; renewal of authority does not rewrite binding.
+# RESOLVES: review -> finding. SUPERSEDES: review -> previous review.
+# CITES: review -> evidence. All edges share the review's original native birth.
+# Workpaper v1 continues to show the original observation, not current status.
+# Capability binding is not an external signature or a proof of economic truth.

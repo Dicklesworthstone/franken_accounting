@@ -11,6 +11,7 @@
 //! Ordered, repeated citations (including tracing paths) remain in the original
 //! certificate; graph CITES edges are the distinct-target membership projection.
 
+pub mod review;
 pub mod lookup;
 pub use lookup::RecordedFinding;
 pub mod workpaper;
