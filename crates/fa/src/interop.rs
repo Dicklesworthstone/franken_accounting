@@ -25,7 +25,7 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::{AsyncBook, BookError};
 
-impl<V: Vfs + Clone> AsyncBook<V> {
+impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// The committed journal at `(known_at, effective_through)` as one
     /// interop [`FormatJournal`] carrying its export coordinate certificate.
     pub fn format_journal(
