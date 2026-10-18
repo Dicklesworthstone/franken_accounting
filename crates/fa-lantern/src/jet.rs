@@ -992,8 +992,8 @@ impl Procedure for IntercompanyUnmatched {
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
         let population = live.len() as u64;
-        let mut by_period_unit: BTreeMap<(String, fa_money::UnitId), (i128, Vec<VId>, Vec<VId>)> =
-            BTreeMap::new();
+        type Tally = (i128, Vec<VId>, Vec<VId>);
+        let mut by_period_unit: BTreeMap<(String, fa_money::UnitId), Tally> = BTreeMap::new();
         for e in &live {
             work.entry();
             for leg in &e.entry.proposal.legs {

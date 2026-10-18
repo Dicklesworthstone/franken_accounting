@@ -272,8 +272,9 @@ impl Procedure for ThresholdSplitting {
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
         let population = live.len() as u64;
-        let mut by_key: BTreeMap<(u8, u128, u128, u8), Vec<(fa_time::DateDay, i128, VId)>> =
-            BTreeMap::new();
+        type Key = (u8, u128, u128, u8);
+        type Series = Vec<(fa_time::DateDay, i128, VId)>;
+        let mut by_key: BTreeMap<Key, Series> = BTreeMap::new();
         for e in &live {
             work.entry();
             let mut total_debit = 0i128;

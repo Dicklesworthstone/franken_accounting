@@ -393,6 +393,7 @@ impl LegacyImportBatch {
     /// with `EntryClass::MIGRATION` and `EntryOrigin::Migration` provenance,
     /// dated on `opening_date` (in the Opening period `opening_period_code`)
     /// so all chunks stage into the `MigrationRun` and fold to `self.trial_balance`.
+    #[allow(clippy::too_many_arguments)]
     pub fn to_chunk_proposals(
         &self,
         book: &BookContext,
@@ -1560,7 +1561,7 @@ SAP-501,2025-12-28,2025-12-28T20:00:00Z,0000800000,-1900.25,Year-end AR billing,
                 &book,
                 PRINCIPAL,
                 &run_body,
-                vec![tb_evidence.clone()],
+                vec![tb_evidence],
                 format!("open-{run_key}").as_bytes(),
                 open_desc,
             )

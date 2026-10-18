@@ -168,8 +168,8 @@ pub fn write_saft_xml(journal: &FormatJournal) -> Result<String, FormatError> {
 /// coordinate certificate.
 pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, FormatError> {
     let header_block = extract_first_block(FMT, xml, "Header")?;
-    let book_name = xml_unescape(&extract_first_block(FMT, header_block, "CompanyName")?);
-    let base_unit_code = xml_unescape(&extract_first_block(
+    let book_name = xml_unescape(extract_first_block(FMT, header_block, "CompanyName")?);
+    let base_unit_code = xml_unescape(extract_first_block(
         FMT,
         header_block,
         "DefaultCurrencyCode",

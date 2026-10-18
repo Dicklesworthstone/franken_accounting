@@ -487,7 +487,7 @@ where
             held = add(held, lot.amount, "account held lots")?;
             if !lot.path.is_empty() {
                 positions.push(Position {
-                    account: account,
+                    account,
                     disposition: Disposition::Held,
                     amount: lot.amount,
                     path: lot.path,
@@ -1383,6 +1383,9 @@ fn trace_libr(
     })
 }
 
+/// A path's cost and its `(edge, reversed)` steps.
+type AugmentingPath = (i128, Vec<(usize, bool)>);
+
 #[allow(clippy::too_many_arguments)]
 fn shortest_augmenting_path(
     source: usize,
@@ -1393,7 +1396,7 @@ fn shortest_augmenting_path(
     rev_adj: &[Vec<usize>],
     allow_reverse: bool,
     meter: &mut Meter,
-) -> Result<Option<(i128, Vec<(usize, bool)>)>, Error> {
+) -> Result<Option<AugmentingPath>, Error> {
     let mut dist = vec![i32::MAX; num_vertices];
     let mut parent: Vec<Option<(usize, usize, bool)>> = vec![None; num_vertices];
     let mut in_queue = vec![false; num_vertices];

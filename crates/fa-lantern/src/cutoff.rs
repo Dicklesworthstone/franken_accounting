@@ -123,8 +123,8 @@ impl Procedure for ReconIntercompany {
         live.sort_by_key(|e| e.vid);
 
         // Key: (period, unit_id) -> (signed_net, BTreeSet<Account VId>, BTreeSet<Entry VId>)
-        let mut buckets: BTreeMap<(String, u32), (i128, BTreeSet<VId>, BTreeSet<VId>)> =
-            BTreeMap::new();
+        type Bucket = (i128, BTreeSet<VId>, BTreeSet<VId>);
+        let mut buckets: BTreeMap<(String, u32), Bucket> = BTreeMap::new();
         let mut population = 0u64;
 
         for e in &live {

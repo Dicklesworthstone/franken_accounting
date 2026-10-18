@@ -954,7 +954,7 @@ impl Procedure for Communities {
         for &n in &nodes {
             g.add_node(vid_node(n));
         }
-        for (&(u, v), _) in &edge_weights {
+        for &(u, v) in edge_weights.keys() {
             let _ = g.add_edge(vid_node(u), vid_node(v));
         }
         let (mut comms, _) = fnx_cgse::collect_witnesses(|| {
@@ -1102,13 +1102,13 @@ impl Procedure for RelatedPartyExposure {
                     let Some(&rea_vid) = dim_to_rea.get(val) else {
                         continue;
                     };
-                    for (&root_vid, _) in &snapshot.rea.legal_entities {
+                    for &root_vid in snapshot.rea.legal_entities.keys() {
                         let hits = snapshot.rea.related_as_of(root_vid, eff, max_depth);
                         if let Some(hit) = hits.into_iter().find(|h| h.vid == rea_vid) {
                             related_hits.push((root_vid, hit));
                         }
                     }
-                    for (&root_vid, _) in &snapshot.rea.parties {
+                    for &root_vid in snapshot.rea.parties.keys() {
                         let hits = snapshot.rea.related_as_of(root_vid, eff, max_depth);
                         if let Some(hit) = hits.into_iter().find(|h| h.vid == rea_vid) {
                             related_hits.push((root_vid, hit));

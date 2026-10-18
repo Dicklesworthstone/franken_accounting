@@ -60,10 +60,8 @@ mod tests {
                 let expected = if actual.is_negative() != attested.is_negative() {
                     a.checked_add(b)
                         .expect("signed endpoint difference fits u128")
-                } else if a >= b {
-                    a - b
                 } else {
-                    b - a
+                    a.abs_diff(b)
                 };
                 assert_eq!(discrepancy(actual, attested), i128::try_from(expected).ok());
             }
