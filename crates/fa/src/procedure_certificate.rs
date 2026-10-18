@@ -132,14 +132,29 @@ fn lantern_error(e: fa_lantern::LanternError) -> Refusal {
     invalid(format!("procedure: {e}"))
 }
 
-fn registry_digest() -> [u8; 32] {
-    domain_digest(
-        b"fa:procedure-registry:v1",
-        &[
-            include_bytes!("../../../registries/procedures.toml"),
-            include_bytes!("../../../franken-stack.lock"),
-        ],
-    )
+/// The registries a procedure certificate binds, in commitment order.
+const PROCEDURE_REGISTRIES: &[(&str, &str)] = &[
+    (
+        "procedures",
+        include_str!("../../../registries/procedures.toml"),
+    ),
+    ("foundations", include_str!("../../../franken-stack.lock")),
+];
+
+/// The v2 closure over each registry's canonical content, so a comment or
+/// layout edit never refuses a retained procedure certificate (bead fa-t8gk).
+fn registry_digest() -> Result<[u8; 32], Refusal> {
+    crate::certificate::canonical_closure(b"fa:procedure-registry:v2", PROCEDURE_REGISTRIES)
+}
+
+/// The v1 raw-text closure, accepted only from certificates retained before
+/// fa-t8gk; new certificates never carry it.
+fn legacy_registry_digest() -> [u8; 32] {
+    let sources: Vec<&[u8]> = PROCEDURE_REGISTRIES
+        .iter()
+        .map(|(_, text)| text.as_bytes())
+        .collect();
+    domain_digest(b"fa:procedure-registry:v1", &sources)
 }
 fn approval_statement(at: CommitSeq) -> String {
     format!(
@@ -590,9 +605,13 @@ impl ProcedureCertificate {
                 "this procedure version has no complete registered native certificate closure",
             ));
         }
-        if self.registry != registry_digest() {
-            return Err(invalid(
-                "procedure registry/foundation closure is unavailable in this executable",
+        let current = registry_digest()?;
+        if self.registry != current && self.registry != legacy_registry_digest() {
+            return Err(crate::certificate::registry_unavailable(
+                "procedure certificate",
+                &self.registry,
+                &current,
+                PROCEDURE_REGISTRIES,
             ));
         }
         let mut request = ProcedureRequest::new(&self.report.procedure, catalog::Inputs::default())
@@ -815,11 +834,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Ok(b) => b,
                 Err(r) => return Ok(Err(r)),
             };
+            let registry = match registry_digest() {
+                Ok(closure) => closure,
+                Err(r) => return Ok(Err(r)),
+            };
             let mut certificate = ProcedureCertificate {
                 source,
                 approvals,
                 extended_inputs,
-                registry: registry_digest(),
+                registry,
                 producer: principal,
                 capability_commitment: capability
                     .commitment()

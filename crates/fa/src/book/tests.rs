@@ -3805,6 +3805,66 @@ fn certificate_binds_selectors_registry_native_inputs_and_exact_amounts() {
     assert_ne!(changed_report.canonical_bytes().unwrap(), original.output);
 }
 
+/// fa-t8gk: certificates bind canonical registry content. One retained
+/// before that change carries the raw-text closure and still replays; one
+/// sealed under registries this executable does not carry is a typed
+/// refusal naming both closures, never an opaque mismatch.
+#[test]
+fn replay_takes_the_retained_raw_text_closure_and_names_an_unavailable_one() {
+    use crate::{ReportSelection, TrialBalanceSelection};
+    let hex = |bytes: &[u8; 32]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
+    let (book, _, day, _) = certified_fixture();
+    let trial = book
+        .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+        .unwrap()
+        .unwrap();
+    let open_items = book
+        .certify_report(ReportSelection::OpenItems { account: None }, None)
+        .unwrap()
+        .unwrap();
+    // The trial balance binds no reason codes; every other report does.
+    assert_ne!(
+        trial.certificate.registry_digest,
+        open_items.certificate.registry_digest
+    );
+
+    let legacy = trial
+        .certificate
+        .resealed_under(trial.certificate.legacy_registry_closure());
+    assert_ne!(legacy.registry_digest, trial.certificate.registry_digest);
+    assert_eq!(
+        book.replay_trial_balance(&legacy).unwrap().unwrap(),
+        trial.report
+    );
+    let legacy_items = open_items
+        .certificate
+        .resealed_under(open_items.certificate.legacy_registry_closure());
+    assert_eq!(
+        book.replay_report(&legacy_items).unwrap().unwrap(),
+        open_items.report
+    );
+
+    for (certificate, registries) in [
+        (&trial.certificate, "units, foundations is"),
+        (&open_items.certificate, "foundations, reason_codes is"),
+    ] {
+        let foreign = certificate.resealed_under([7; 32]);
+        let refusal = book.replay_report(&foreign).unwrap().unwrap_err();
+        assert_eq!(
+            refusal.code,
+            crate::certificate::code::CERTIFICATE_REGISTRY_UNAVAILABLE
+        );
+        assert_eq!(refusal.exit, fa_journal::exit::ENVIRONMENT);
+        assert!(refusal.message.contains(&"07".repeat(32)), "{refusal:?}");
+        assert!(
+            refusal.message.contains(&hex(&certificate.registry_digest)),
+            "{refusal:?}"
+        );
+        assert!(refusal.message.contains("account_types"), "{refusal:?}");
+        assert!(refusal.message.contains(registries), "{refusal:?}");
+    }
+}
+
 #[test]
 fn certificate_replay_detects_rewrites_and_retirements_after_its_snapshot() {
     use crate::TrialBalanceSelection;

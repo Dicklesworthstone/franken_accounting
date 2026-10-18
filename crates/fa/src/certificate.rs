@@ -33,6 +33,7 @@ use crate::{BookError, Outcome};
 
 pub mod code {
     pub const CERTIFICATE_INVALID: &str = "FA-REF-150";
+    pub const CERTIFICATE_REGISTRY_UNAVAILABLE: &str = "FA-REF-159";
 }
 
 pub const CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v1";
@@ -341,6 +342,28 @@ pub struct ReportCertificate {
     pub digest: [u8; 32],
 }
 
+#[cfg(test)]
+impl ReportCertificate {
+    /// The same certificate sealed under another registry closure, as an
+    /// executable with other registries would have produced it (fa-t8gk).
+    pub(crate) fn resealed_under(&self, closure: [u8; 32]) -> Self {
+        let mut certificate = self.clone();
+        certificate.registry_digest = closure;
+        certificate.digest = digest(
+            certificate.format(),
+            &certificate
+                .body_bytes()
+                .expect("a decoded certificate encodes"),
+        );
+        certificate
+    }
+
+    /// The v1 raw-text closure a certificate retained before fa-t8gk carries.
+    pub(crate) fn legacy_registry_closure(&self) -> [u8; 32] {
+        legacy_registry_digest(&self.selection)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CertifiedTrialBalance {
     pub report: TrialBalance,
@@ -385,49 +408,126 @@ fn encoding(e: fa_model::EncodeError) -> BookError {
     fa_journal::KernelError::from(fa_model::EntryError::from(e)).into()
 }
 
+/// The registries every report certificate binds, in commitment order.
+const REPORT_REGISTRIES: &[(&str, &str)] = &[
+    (
+        "account_types",
+        include_str!("../../../registries/account_types.toml"),
+    ),
+    (
+        "admissibility",
+        include_str!("../../../registries/admissibility.toml"),
+    ),
+    (
+        "entry_classes",
+        include_str!("../../../registries/entry_classes.toml"),
+    ),
+    ("limits", include_str!("../../../registries/limits.toml")),
+    (
+        "rounding_laws",
+        include_str!("../../../registries/rounding_laws.toml"),
+    ),
+    ("symbols", include_str!("../../../registries/symbols.toml")),
+    ("units", include_str!("../../../registries/units.toml")),
+    ("foundations", include_str!("../../../franken-stack.lock")),
+];
+/// Explanation display includes the committed supersession reason name, so
+/// every report but the trial balance also binds the reason codes.
+const REASON_CODES: (&str, &str) = (
+    "reason_codes",
+    include_str!("../../../registries/reason_codes.toml"),
+);
+
+fn report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static str)> {
+    let mut sources = REPORT_REGISTRIES.to_vec();
+    if !matches!(selection, ReportSelection::TrialBalance(_)) {
+        sources.push(REASON_CODES);
+    }
+    sources
+}
+
+/// The digest of one registry's parsed canonical content (bead fa-t8gk):
+/// comments and layout never reach it, and every key and value does.
+pub(crate) fn canonical_registry_digest(name: &str, text: &str) -> Result<[u8; 32], Refusal> {
+    let document = fa_registry::toml::parse(text)
+        .map_err(|e| invalid(format!("embedded registry {name} does not parse: {e}")))?;
+    Ok(digest(
+        b"fa:registry-canonical-digest:v1",
+        &document.canonical_bytes(),
+    ))
+}
+
 /// Registry identities are explicit inputs, not inferred from the executable's
 /// version. A changed law or native engine pin requires the original environment
-/// to replay this version; it cannot silently substitute new semantics.
-fn registry_digest(selection: &ReportSelection) -> [u8; 32] {
-    const SOURCES: &[(&str, &str)] = &[
-        (
-            "account_types",
-            include_str!("../../../registries/account_types.toml"),
-        ),
-        (
-            "admissibility",
-            include_str!("../../../registries/admissibility.toml"),
-        ),
-        (
-            "entry_classes",
-            include_str!("../../../registries/entry_classes.toml"),
-        ),
-        ("limits", include_str!("../../../registries/limits.toml")),
-        (
-            "rounding_laws",
-            include_str!("../../../registries/rounding_laws.toml"),
-        ),
-        ("symbols", include_str!("../../../registries/symbols.toml")),
-        ("units", include_str!("../../../registries/units.toml")),
-        ("foundations", include_str!("../../../franken-stack.lock")),
-    ];
+/// to replay this version; it cannot silently substitute new semantics. The v2
+/// closure commits to each registry's canonical content, so a comment or layout
+/// edit leaves every certificate and its replay unchanged (bead fa-t8gk).
+fn registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Refusal> {
+    canonical_closure(
+        b"fa:report-registry-closure:v2",
+        &report_registries(selection),
+    )
+}
+
+/// The v1 closure over raw file text, comments included. New certificates
+/// never carry it; it is kept only so certificates retained before fa-t8gk
+/// still replay while their registry text is unchanged.
+fn legacy_registry_digest(selection: &ReportSelection) -> [u8; 32] {
+    let leaves: Vec<(&str, [u8; 32])> = report_registries(selection)
+        .into_iter()
+        .map(|(name, text)| (name, digest(b"fa:report-registry:v1", text.as_bytes())))
+        .collect();
+    registry_closure(b"fa:report-registry-closure:v1", &leaves)
+}
+
+/// The closure over each named registry's canonical digest.
+pub(crate) fn canonical_closure(
+    domain: &[u8],
+    sources: &[(&str, &str)],
+) -> Result<[u8; 32], Refusal> {
+    let leaves = sources
+        .iter()
+        .map(|(name, text)| Ok((*name, canonical_registry_digest(name, text)?)))
+        .collect::<Result<Vec<_>, Refusal>>()?;
+    Ok(registry_closure(domain, &leaves))
+}
+
+fn registry_closure(domain: &[u8], leaves: &[(&str, [u8; 32])]) -> [u8; 32] {
     let mut h = Hasher::new();
-    h.update(b"fa:report-registry-closure:v1");
-    for (name, source) in SOURCES {
+    h.update(domain);
+    for (name, leaf) in leaves {
         h.update(name.as_bytes());
         h.update(&[0]);
-        h.update(&digest(b"fa:report-registry:v1", source.as_bytes()));
-    }
-    if !matches!(selection, ReportSelection::TrialBalance(_)) {
-        // Explanation display includes the committed supersession reason name.
-        // Keep the v1/v2 trial-balance registry commitment byte-for-byte intact.
-        h.update(b"reason_codes\0");
-        h.update(&digest(
-            b"fa:report-registry:v1",
-            include_str!("../../../registries/reason_codes.toml").as_bytes(),
-        ));
+        h.update(leaf);
     }
     h.finalize().0
+}
+
+/// A certificate whose registry closure this executable does not carry: the
+/// certificate may be sound, but replaying it needs its own registries.
+pub(crate) fn registry_unavailable(
+    what: &str,
+    recorded: &[u8; 32],
+    current: &[u8; 32],
+    registries: &[(&str, &str)],
+) -> Refusal {
+    let names: Vec<&str> = registries.iter().map(|(name, _)| *name).collect();
+    Refusal::new(
+        code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+        exit::ENVIRONMENT,
+        format!(
+            "the {what} binds registry closure {} but this executable's closure over {} is {}; a registry's content differs",
+            hex(recorded),
+            names.join(", "),
+            hex(current),
+        ),
+        "plan §13.6 / FA-INV-11 (a certificate binds the canonical content of the registries it was computed under)",
+        "replay with the fa executable whose registries produced the certificate, or recreate the certificate under this executable's registries",
+    )
+}
+
+fn hex(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn statements(at: CommitSeq) -> Vec<String> {
@@ -894,7 +994,10 @@ fn certify_selected<V: Vfs + Clone>(
         branch_id: Id128::TRUNK,
         known_at: at,
         time_selection,
-        registry_digest: registry_digest(&selection),
+        registry_digest: match registry_digest(&selection) {
+            Ok(closure) => closure,
+            Err(refusal) => return Ok(Err(refusal)),
+        },
         selection,
         journal_root: journal.root(),
         journal_leaves: journal.len(),
@@ -984,9 +1087,18 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
     if certificate.book_id != book.book_id {
         return Ok(Err(invalid("the certificate belongs to a different book")));
     }
-    if certificate.registry_digest != registry_digest(&certificate.selection) {
-        return Ok(Err(invalid(
-            "the certificate's registry or foundation versions are unavailable in this executable",
+    let current = match registry_digest(&certificate.selection) {
+        Ok(closure) => closure,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if certificate.registry_digest != current
+        && certificate.registry_digest != legacy_registry_digest(&certificate.selection)
+    {
+        return Ok(Err(registry_unavailable(
+            "report certificate",
+            &certificate.registry_digest,
+            &current,
+            &report_registries(&certificate.selection),
         )));
     }
     if let Some(expected) = &certificate.time_selection {
@@ -2083,6 +2195,78 @@ mod tests {
             &with_time[..time_offset]
         );
         assert_eq!(without_time.last(), Some(&0));
+    }
+
+    /// fa-t8gk planted negatives: the v2 closure ignores a comment-only and
+    /// layout-only registry edit (the v1 raw-text closure did not), and a
+    /// changed normal side always moves it.
+    #[test]
+    fn registry_closure_binds_canonical_content_not_file_text() {
+        let trial = ReportSelection::TrialBalance(TrialBalanceSelection::AsOf(DateDay(0)));
+        let open_items = ReportSelection::OpenItems { account: None };
+        fn with<'a>(
+            name: &str,
+            text: &'a str,
+            selection: &ReportSelection,
+        ) -> Vec<(&'a str, &'a str)> {
+            report_registries(selection)
+                .into_iter()
+                .map(|(n, t)| (n, if n == name { text } else { t }))
+                .collect()
+        }
+        let (name, text) = REPORT_REGISTRIES[0];
+        assert_eq!(name, "account_types");
+        let annotated: String = text
+            .lines()
+            .map(|line| format!("{line}   # a reviewer's note\n\n"))
+            .collect();
+        let restyled = format!("# a new header comment\n{annotated}");
+        assert_ne!(restyled, text);
+        let first = text
+            .lines()
+            .position(|l| l.trim() == "normal_balance = 0")
+            .expect("an account type with a debit normal side");
+        let flipped: String = text
+            .lines()
+            .enumerate()
+            .map(|(i, l)| {
+                if i == first {
+                    "normal_balance = 1\n".to_string()
+                } else {
+                    format!("{l}\n")
+                }
+            })
+            .collect();
+        for selection in [&trial, &open_items] {
+            let current = registry_digest(selection).unwrap();
+            let v2 = |sources: &[(&str, &str)]| {
+                canonical_closure(b"fa:report-registry-closure:v2", sources).unwrap()
+            };
+            assert_eq!(v2(&report_registries(selection)), current);
+            assert_eq!(v2(&with(name, &restyled, selection)), current);
+            assert_ne!(v2(&with(name, &flipped, selection)), current);
+            // The defect: the raw-text closure moved on the same cosmetic edit.
+            let raw = |sources: &[(&str, &str)]| {
+                let leaves: Vec<(&str, [u8; 32])> = sources
+                    .iter()
+                    .map(|(n, t)| (*n, digest(b"fa:report-registry:v1", t.as_bytes())))
+                    .collect();
+                registry_closure(b"fa:report-registry-closure:v1", &leaves)
+            };
+            assert_eq!(
+                raw(&report_registries(selection)),
+                legacy_registry_digest(selection)
+            );
+            assert_ne!(
+                raw(&with(name, &restyled, selection)),
+                legacy_registry_digest(selection)
+            );
+            assert_ne!(current, legacy_registry_digest(selection));
+        }
+        // Every embedded registry parses, so no certificate is refused for it.
+        for (name, text) in report_registries(&open_items) {
+            canonical_registry_digest(name, text).unwrap();
+        }
     }
 
     #[test]

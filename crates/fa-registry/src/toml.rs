@@ -59,6 +59,79 @@ pub struct Document {
     pub arrays: BTreeMap<String, Vec<Table>>,
 }
 
+impl Document {
+    /// Domain tag of [`Document::canonical_bytes`]; a change to the encoding
+    /// is a new tag, never a reinterpretation.
+    pub const CANONICAL_FORMAT: &'static [u8] = b"fa:registry-document:v1";
+
+    /// The parsed content as injective canonical bytes. Comments, blank lines,
+    /// whitespace, key order and integer separators do not reach them. Every
+    /// key and value does, and so does every table name and array-of-tables
+    /// row, in file order. Certificates commit to these bytes instead of the
+    /// file text, so a cosmetic registry edit leaves every certificate alone
+    /// while any semantic edit moves it (bead fa-t8gk).
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Self::CANONICAL_FORMAT.to_vec();
+        write_table(&mut out, &self.root);
+        write_len(&mut out, self.tables.len());
+        for (name, table) in &self.tables {
+            write_str(&mut out, name);
+            write_table(&mut out, table);
+        }
+        write_len(&mut out, self.arrays.len());
+        for (name, rows) in &self.arrays {
+            write_str(&mut out, name);
+            write_len(&mut out, rows.len());
+            for row in rows {
+                write_table(&mut out, row);
+            }
+        }
+        out
+    }
+}
+
+fn write_len(out: &mut Vec<u8>, len: usize) {
+    out.extend_from_slice(&(len as u64).to_le_bytes());
+}
+
+fn write_str(out: &mut Vec<u8>, s: &str) {
+    write_len(out, s.len());
+    out.extend_from_slice(s.as_bytes());
+}
+
+fn write_table(out: &mut Vec<u8>, table: &Table) {
+    write_len(out, table.len());
+    for (key, value) in table {
+        write_str(out, key);
+        write_value(out, value);
+    }
+}
+
+fn write_value(out: &mut Vec<u8>, value: &Value) {
+    match value {
+        Value::Str(s) => {
+            out.push(1);
+            write_str(out, s);
+        }
+        Value::Int(i) => {
+            out.push(2);
+            out.extend_from_slice(&i.to_le_bytes());
+        }
+        Value::Bool(b) => {
+            out.push(3);
+            out.push(u8::from(*b));
+        }
+        Value::Array(items) => {
+            out.push(4);
+            write_len(out, items.len());
+            for item in items {
+                write_value(out, item);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TomlError {
     pub line: usize,
@@ -274,6 +347,39 @@ name = "neg"
         assert_eq!(doc.tables["registry"]["ok"].as_bool(), Some(true));
         assert_eq!(doc.arrays["row"].len(), 2);
         assert_eq!(doc.arrays["row"][1]["code"].as_int(), Some(-2000));
+    }
+
+    #[test]
+    fn canonical_bytes_ignore_presentation_and_track_every_value() {
+        let canonical = |text: &str| parse(text).unwrap().canonical_bytes();
+        let base = canonical(
+            "schema_version = 1\n[t]\nb = \"x\"\na = 1000\n[[row]]\nk = [1, 2]\n[[row]]\nk = []\n",
+        );
+        // Comments, blank lines, spacing, key order, integer separators and
+        // a trailing array comma are presentation only.
+        let restyled = canonical(
+            "# a comment\n\nschema_version   = 1   # trailing\n[ t ]\na = 1_000\nb = \"x\"  # \"y\"\n\n[[row]]\nk = [ 1,2, ]\n[[row]]\nk = [ ]\n",
+        );
+        assert_eq!(restyled, base);
+        // Every semantic change moves the bytes.
+        for changed in [
+            "schema_version = 2\n[t]\nb = \"x\"\na = 1000\n[[row]]\nk = [1, 2]\n[[row]]\nk = []\n",
+            "schema_version = 1\n[t]\nb = \"y\"\na = 1000\n[[row]]\nk = [1, 2]\n[[row]]\nk = []\n",
+            "schema_version = 1\n[t]\nb = \"x\"\na = 1001\n[[row]]\nk = [1, 2]\n[[row]]\nk = []\n",
+            // Row order is content.
+            "schema_version = 1\n[t]\nb = \"x\"\na = 1000\n[[row]]\nk = []\n[[row]]\nk = [1, 2]\n",
+            // A key moved from a table to the root.
+            "schema_version = 1\na = 1000\n[t]\nb = \"x\"\n[[row]]\nk = [1, 2]\n[[row]]\nk = []\n",
+            // A table renamed to an array of tables with the same content.
+            "schema_version = 1\n[[t]]\nb = \"x\"\na = 1000\n[[row]]\nk = [1, 2]\n[[row]]\nk = []\n",
+            // Type changes with the same spelling.
+            "schema_version = \"1\"\n[t]\nb = \"x\"\na = 1000\n[[row]]\nk = [1, 2]\n[[row]]\nk = []\n",
+            "schema_version = 1\n[t]\nb = \"x\"\na = 1000\n[[row]]\nk = [\"1\", \"2\"]\n[[row]]\nk = []\n",
+            "schema_version = 1\n[t]\nb = \"x\"\na = 1000\n[[row]]\nk = [12]\n[[row]]\nk = []\n",
+        ] {
+            assert_ne!(canonical(changed), base, "{changed}");
+        }
+        assert!(base.starts_with(Document::CANONICAL_FORMAT));
     }
 
     #[test]

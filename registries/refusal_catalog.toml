@@ -273,6 +273,17 @@ exit = "verification"
 cite = "plan §13.6 / FA-INV-11"
 fix = "recreate the certificate from the original book and selector; retain its certified history and registry versions"
 
+# A certificate binds the canonical content of the registries it was computed
+# under (bead fa-t8gk); one whose registry closure this executable does not
+# carry needs its own environment to replay, so the exit is environment.
+[[refusal]]
+code = "FA-REF-159"
+name = "CERTIFICATE_REGISTRY_UNAVAILABLE"
+owners = ["fa"]
+exit = "environment"
+cite = "plan §13.6 / FA-INV-11 (a certificate binds the canonical content of the registries it was computed under)"
+fix = "replay with the fa executable whose registries produced the certificate, or recreate the certificate under this executable's registries"
+
 # ---- TimeEvidence selection (151) ---------------------------------------
 [[refusal]]
 code = "FA-REF-151"
