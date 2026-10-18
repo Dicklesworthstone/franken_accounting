@@ -17,7 +17,9 @@ use fa_model::{
     SupersessionKind, SymbolTable, account_vid, dimension_vid, entity_value_vid, legal_entity_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
-use fa_reference::{Account, Cell, Int, Intent, Leg, Limit, Oracle, Resolve, Settle, Verdict};
+use fa_reference::{
+    Account, Cell, DraftVerdict, Int, Intent, Leg, Limit, Oracle, Resolve, Settle, Verdict,
+};
 use fa_registers::{
     EntityCellKey, RegisterEquals, TrialBalance, balance_as_of, check_register_equals,
     explain_balance, fold_period, fold_period_by_entity, open_items, period_activity,
@@ -8803,6 +8805,332 @@ fn batches_are_atomic_and_agree_with_the_independent_oracle_across_seeds() {
         assert!(
             in_batch_applications >= 2,
             "seed {seed}: in-batch applications"
+        );
+        assert_eq!(oracle.journal_len(), refs.len());
+        for code in &periods {
+            let kernel_fold = fold_period(&k.db, &k.book, code).unwrap();
+            let model_fold = oracle.fold(code);
+            assert_eq!(
+                kernel_fold.cells.len(),
+                model_fold.len(),
+                "{code}: cell count"
+            );
+            for cell in &kernel_fold.cells {
+                let account_code = ACCOUNTS
+                    .iter()
+                    .map(|(c, ..)| *c)
+                    .find(|c| account_vid(k.book.book_id, c) == cell.key.account)
+                    .expect("known account");
+                let m = model_fold
+                    .get(&(account_code.to_string(), cell.key.unit_id))
+                    .expect("oracle cell");
+                assert_eq!(
+                    m.debits.to_i128(),
+                    Some(cell.debits),
+                    "{code}/{account_code}"
+                );
+                assert_eq!(
+                    m.credits.to_i128(),
+                    Some(cell.credits),
+                    "{code}/{account_code}"
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Drafts (plan §15.2, bead fa-s7x)
+// ---------------------------------------------------------------------------
+
+const APPROVER: VId = VId(70);
+const CLERK: VId = VId(71);
+
+fn draft_request(k: &Kernel, capability: Capability) -> DraftRequest {
+    DraftRequest {
+        capability,
+        effective_date: transition_day(),
+        description: fresh_seal(&k.book.seal_key, "draft record"),
+    }
+}
+
+fn kernel_open_draft(k: &mut Kernel, name: &str) -> Result<DraftRecorded, Refusal> {
+    let req = draft_request(k, Capability::embedded(PRINCIPAL, &["post"]).unwrap());
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { open_draft(db, &ctx, book, name, req).await })
+        .expect("draft kernel")
+}
+
+fn kernel_plan_draft(
+    k: &mut Kernel,
+    name: &str,
+    intent: &Intent,
+    usd: UnitId,
+    refs: &[EntryRef],
+) -> Result<DraftPlanned, Refusal> {
+    let post = kernel_request(k, intent, usd, refs);
+    let typed = PostIntent::new(post.proposal, post.approvals).expect("typed intent");
+    let req = draft_request(k, post.capability);
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { plan_into_draft(db, &ctx, book, name, typed, req).await })
+        .expect("draft kernel")
+}
+
+fn kernel_promote_draft(
+    k: &mut Kernel,
+    name: &str,
+    capability: Capability,
+) -> Result<DraftPromoted, Refusal> {
+    let req = draft_request(k, capability);
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { promote_draft(db, &ctx, book, name, req).await })
+        .expect("draft kernel")
+}
+
+fn kernel_discard_draft(
+    k: &mut Kernel,
+    name: &str,
+    capability: Capability,
+) -> Result<DraftRecorded, Refusal> {
+    let req = draft_request(k, capability);
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { discard_draft(db, &ctx, book, name, req).await })
+        .expect("draft kernel")
+}
+
+/// fa-s7x: drafts against the independent oracle's literal draft model
+/// (an owned intent log; a plan is a rehearsal on a thrown-away copy; a
+/// promotion is the oracle's own batch law, behind its approver and
+/// segregation rules) over seeded histories. Planted: an unbalanced
+/// intent, another intent under a planned key, an unknown draft, a promoter
+/// without approve, the owner promoting, April closing between planning and
+/// promotion, planning into a promoted or discarded draft; and identical
+/// re-plans, re-promotions and re-discards. Every verdict agrees, every
+/// refusal writes nothing, and every period fold agrees at the end.
+#[test]
+fn drafts_agree_with_the_independent_oracle_across_seeds() {
+    for seed in [5_u64, 0x00d0_cafe, 0x7f4a_7c15] {
+        let (mut k, mut oracle, periods) = setup();
+        open_period(&mut k, &mut oracle, "FY2026-P03", 0);
+        open_period(&mut k, &mut oracle, "FY2026-P04", 1);
+        let usd = k.book.units.lookup("USD").unwrap();
+        let dates = [
+            DateDay::parse("2026-03-10").unwrap(),
+            DateDay::parse("2026-04-20").unwrap(),
+        ];
+        let mut rng = Rng(seed);
+        let mut refs: Vec<EntryRef> = Vec::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut april_closed = false;
+        let (mut promoted, mut refused, mut retried) = (0, 0, 0);
+        let approver = || Capability::embedded(APPROVER, &["approve", "post"]).unwrap();
+        for step in 0..60_u64 {
+            let head = k.db.frontier().unwrap();
+            let action = rng.below(10);
+            let label = format!("seed {seed} step {step} action {action}");
+            // Whether the oracle's verdict is a new record (one commit).
+            let mut commits = false;
+            match action {
+                // Open a new draft (sometimes the identical retry).
+                0 | 1 => {
+                    let name = if !names.is_empty() && rng.chance(20) {
+                        names[rng.below(names.len() as u64) as usize].clone()
+                    } else {
+                        let n = format!("d{seed}-{step}");
+                        names.push(n.clone());
+                        n
+                    };
+                    let expected = oracle.open_draft(&name, "p7");
+                    let actual = kernel_open_draft(&mut k, &name);
+                    match (&expected, &actual) {
+                        (DraftVerdict::Recorded, Ok(r)) => {
+                            assert!(!r.already_recorded, "{label}");
+                            commits = true;
+                        }
+                        (DraftVerdict::AlreadyRecorded, Ok(r)) => {
+                            assert!(r.already_recorded, "{label}");
+                            retried += 1;
+                        }
+                        _ => panic!("{label}: oracle {expected:?}, kernel {actual:?}"),
+                    }
+                }
+                // Plan an intent (planted: unbalanced, a reused key, unknown).
+                2..=5 => {
+                    let name = if names.is_empty() || rng.chance(5) {
+                        format!("nope-{step}")
+                    } else {
+                        names[rng.below(names.len() as u64) as usize].clone()
+                    };
+                    let amount = 1 + rng.below(40_000) as i128;
+                    let date = dates[rng.below(2) as usize];
+                    let mut intent = maintenance_intent(
+                        "Original",
+                        date,
+                        amount,
+                        &format!("plan-{seed}-{step}"),
+                    );
+                    match rng.below(8) {
+                        0 => intent.legs[1].mantissa += 1,
+                        1 => {
+                            if let Some(planned) =
+                                oracle.draft(&name).and_then(|d| d.intents.first()).cloned()
+                            {
+                                // The identical intent, or another under its key.
+                                intent = planned;
+                                if rng.chance(50) {
+                                    intent.legs[0].mantissa += 1;
+                                    intent.legs[1].mantissa += 1;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    let expected = oracle.plan_into_draft(&name, "p7", &intent);
+                    let actual = kernel_plan_draft(&mut k, &name, &intent, usd, &refs);
+                    match (&expected, &actual) {
+                        (DraftVerdict::Recorded, Ok(p)) => {
+                            assert!(!p.recorded.already_recorded && p.plan.is_some(), "{label}");
+                            commits = true;
+                        }
+                        (DraftVerdict::AlreadyRecorded, Ok(p)) => {
+                            assert!(p.recorded.already_recorded && p.plan.is_none(), "{label}");
+                            retried += 1;
+                        }
+                        (DraftVerdict::Refused { code, .. }, Err(r)) => {
+                            assert_eq!(r.code, *code, "{label}: {r}");
+                            refused += 1;
+                        }
+                        _ => panic!("{label}: oracle {expected:?}, kernel {actual:?}"),
+                    }
+                }
+                // Promote (planted: a clerk without approve, the owner).
+                6 | 7 => {
+                    let Some(name) = (!names.is_empty())
+                        .then(|| names[rng.below(names.len() as u64) as usize].clone())
+                    else {
+                        continue;
+                    };
+                    let (who, ops, cap) = match rng.below(6) {
+                        0 => (
+                            "clerk",
+                            vec!["post"],
+                            Capability::embedded(CLERK, &["post"]).unwrap(),
+                        ),
+                        1 => (
+                            "p7",
+                            vec!["approve", "post"],
+                            Capability::embedded(PRINCIPAL, &["approve", "post"]).unwrap(),
+                        ),
+                        _ => ("approver", vec!["approve", "post"], approver()),
+                    };
+                    let expected = oracle.promote_draft(&name, who, &ops);
+                    let actual = kernel_promote_draft(&mut k, &name, cap);
+                    match (&expected, &actual) {
+                        (DraftVerdict::Promoted { indices, already }, Ok(p)) => {
+                            assert_eq!(p.already_recorded, *already, "{label}");
+                            if *already {
+                                assert_eq!(
+                                    p.entries,
+                                    indices.iter().map(|i| refs[*i]).collect::<Vec<_>>(),
+                                    "{label}"
+                                );
+                                retried += 1;
+                            } else {
+                                assert_eq!(indices.len(), p.entries.len(), "{label}");
+                                assert_eq!(indices[0], refs.len(), "{label}");
+                                assert_eq!(p.recorded_at.0, head.0 + 1, "{label}: one commit");
+                                refs.extend(p.entries.iter().copied());
+                                promoted += 1;
+                                commits = true;
+                            }
+                        }
+                        (DraftVerdict::Refused { member, code }, Err(r)) => {
+                            assert_eq!(r.code, *code, "{label}: {r}");
+                            if let Some(i) = member {
+                                assert!(
+                                    r.message.starts_with(&format!("batch member {i}")),
+                                    "{label}: {r}"
+                                );
+                            }
+                            refused += 1;
+                        }
+                        _ => panic!("{label}: oracle {expected:?}, kernel {actual:?}"),
+                    }
+                }
+                // Discard (the owner, or an approver; sometimes a retry).
+                8 => {
+                    let Some(name) = (!names.is_empty())
+                        .then(|| names[rng.below(names.len() as u64) as usize].clone())
+                    else {
+                        continue;
+                    };
+                    let (who, ops, cap) = if rng.chance(50) {
+                        (
+                            "p7",
+                            vec!["post"],
+                            Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+                        )
+                    } else {
+                        ("approver", vec!["approve", "post"], approver())
+                    };
+                    let expected = oracle.discard_draft(&name, who, &ops);
+                    let actual = kernel_discard_draft(&mut k, &name, cap);
+                    match (&expected, &actual) {
+                        (DraftVerdict::Recorded, Ok(r)) => {
+                            assert!(!r.already_recorded, "{label}");
+                            commits = true;
+                        }
+                        (DraftVerdict::AlreadyRecorded, Ok(r)) => {
+                            assert!(r.already_recorded, "{label}");
+                            retried += 1;
+                        }
+                        (DraftVerdict::Refused { code, .. }, Err(r)) => {
+                            assert_eq!(r.code, *code, "{label}: {r}");
+                            refused += 1;
+                        }
+                        _ => panic!("{label}: oracle {expected:?}, kernel {actual:?}"),
+                    }
+                }
+                // Trunk moves under the drafts: April closes, once.
+                _ => {
+                    if april_closed || step < 20 {
+                        continue;
+                    }
+                    for t in [PeriodTransition::SoftClose, PeriodTransition::Close] {
+                        let kt = kernel_transition(&mut k, "FY2026-P04", t, 100 + step)
+                            .expect("April moves");
+                        assert_eq!(
+                            Ok((kt.from, kt.to)),
+                            oracle.transition("FY2026-P04", t),
+                            "{label}"
+                        );
+                    }
+                    april_closed = true;
+                    continue;
+                }
+            }
+            assert_eq!(
+                k.db.frontier().unwrap().0 - head.0,
+                u64::from(commits),
+                "{label}: a new record is one commit; a refusal or retry writes nothing"
+            );
+        }
+        eprintln!("seed {seed}: drafts promoted {promoted} refused {refused} retried {retried}");
+        assert!(
+            promoted >= 2 && refused >= 4 && retried >= 1,
+            "seed {seed}: promoted {promoted} refused {refused} retried {retried}"
         );
         assert_eq!(oracle.journal_len(), refs.len());
         for code in &periods {

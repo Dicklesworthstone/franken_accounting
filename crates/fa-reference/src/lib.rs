@@ -534,12 +534,53 @@ pub mod code {
     pub const TIE_OUT_MISMATCH: &str = "FA-REF-131";
     pub const MIGRATION_OUTSIDE_RUN: &str = "FA-REF-132";
     pub const TICK_UNCORROBORATED: &str = "FA-REF-144";
+    pub const DRAFT_UNKNOWN: &str = "FA-REF-157";
+    pub const DRAFT_NOT_OPEN: &str = "FA-REF-158";
+    pub const PLAN_INVALIDATED: &str = "FA-REF-034";
 }
 
 /// Independent copy of `registries/limits.toml` `max_tick_utc_ns` (`i64::MAX`).
 pub const MAX_TICK_UTC_NS: u64 = 9_223_372_036_854_775_807;
 /// Independent copy of `registries/limits.toml` `max_clock_skew_ns` (`366` days).
 pub const MAX_CLOCK_SKEW_NS: u64 = 31_622_400_000_000_000;
+
+/// A draft's state (plan §15.2, fa-s7x).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftState {
+    Open,
+    Promoted,
+    Discarded,
+}
+
+/// A draft as the oracle keeps it: its owner, its planned intents in order,
+/// its state, and the journal indices its promotion posted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Draft {
+    pub owner: String,
+    pub intents: Vec<Intent>,
+    pub state: DraftState,
+    pub promoted: Vec<usize>,
+    /// The principals whose Discard is recorded (a retry by one is its
+    /// recorded outcome).
+    pub discarded_by: Vec<String>,
+}
+
+/// The outcome of a draft act (plan §15.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DraftVerdict {
+    /// A new record was journaled.
+    Recorded,
+    /// The identical record was already journaled; nothing was written.
+    AlreadyRecorded,
+    /// The draft's intents posted as one batch at these journal indices
+    /// (`already` for the recorded promotion's retry).
+    Promoted { indices: Vec<usize>, already: bool },
+    /// Nothing was recorded. `member` names a promotion member that refused.
+    Refused {
+        member: Option<usize>,
+        code: &'static str,
+    },
+}
 
 /// The outcome of an atomic batch (plan §5.8).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -905,6 +946,8 @@ pub struct Oracle {
     /// Batch key -> (the recorded request, its members' journal indices)
     /// (plan §5.9 IntentOutcome).
     batches: BTreeMap<Vec<u8>, (Vec<Intent>, Vec<usize>)>,
+    /// Drafts by name (plan §15.2, fa-s7x).
+    drafts: BTreeMap<String, Draft>,
     /// Tokens of revoked capabilities.
     revoked: BTreeSet<u64>,
     /// The security policy epoch: the number of activations so far.
@@ -963,6 +1006,7 @@ impl Oracle {
             classes,
             sod,
             batches: BTreeMap::new(),
+            drafts: BTreeMap::new(),
             revoked: BTreeSet::new(),
             epoch: 0,
             minting_scheduled: false,
@@ -1503,6 +1547,144 @@ impl Oracle {
             .insert(key.to_vec(), (members.to_vec(), indices.clone()));
         *self = trial;
         BatchVerdict::Posted { indices }
+    }
+
+    /// The draft `name`, if opened.
+    #[must_use]
+    pub fn draft(&self, name: &str) -> Option<&Draft> {
+        self.drafts.get(name)
+    }
+
+    /// Open the draft `name` for `owner` (plan §15.2). One draft per name:
+    /// the owner's identical retry is its record; anyone else's is a
+    /// conflict.
+    pub fn open_draft(&mut self, name: &str, owner: &str) -> DraftVerdict {
+        match self.drafts.get(name) {
+            Some(d) if d.owner == owner => DraftVerdict::AlreadyRecorded,
+            Some(_) => DraftVerdict::Refused {
+                member: None,
+                code: code::IDEMPOTENCY_CONFLICT,
+            },
+            None => {
+                self.drafts.insert(
+                    name.to_string(),
+                    Draft {
+                        owner: owner.to_string(),
+                        intents: Vec::new(),
+                        state: DraftState::Open,
+                        promoted: Vec::new(),
+                        discarded_by: Vec::new(),
+                    },
+                );
+                DraftVerdict::Recorded
+            }
+        }
+    }
+
+    /// Plan `intent` into the open draft `name` as `planner`: only its owner
+    /// plans; one intent per key (the identical one is its record); and the
+    /// intent must post on a copy of this book as it stands, which is then
+    /// thrown away (the rehearsal writes nothing).
+    pub fn plan_into_draft(&mut self, name: &str, planner: &str, intent: &Intent) -> DraftVerdict {
+        let refused = |code| DraftVerdict::Refused { member: None, code };
+        let Some(d) = self.drafts.get(name) else {
+            return refused(code::DRAFT_UNKNOWN);
+        };
+        if d.state != DraftState::Open {
+            return refused(code::DRAFT_NOT_OPEN);
+        }
+        if d.owner != planner {
+            return refused(code::CAPABILITY);
+        }
+        if let Some(planned) = d.intents.iter().find(|i| i.key == intent.key) {
+            return if planned == intent {
+                DraftVerdict::AlreadyRecorded
+            } else {
+                refused(code::IDEMPOTENCY_CONFLICT)
+            };
+        }
+        let mut rehearsal = self.clone();
+        match rehearsal.post(intent) {
+            Verdict::Posted { .. } => {}
+            Verdict::Recorded { .. } => return refused(code::PLAN_INVALIDATED),
+            Verdict::Refused { code } => return refused(code),
+        }
+        if let Some(d) = self.drafts.get_mut(name) {
+            d.intents.push(intent.clone());
+        }
+        DraftVerdict::Recorded
+    }
+
+    /// Promote the draft `name` as `promoter` holding `ops`: the promoter
+    /// holds `approve` and is not the owner; the planned intents post as one
+    /// batch (this oracle's own batch law) against the book as it stands
+    /// now; a promoted draft's retry is its recorded promotion.
+    pub fn promote_draft(&mut self, name: &str, promoter: &str, ops: &[&str]) -> DraftVerdict {
+        let refused = |code| DraftVerdict::Refused { member: None, code };
+        if !ops.contains(&"approve") {
+            return refused(code::CAPABILITY);
+        }
+        let Some(d) = self.drafts.get(name).cloned() else {
+            return refused(code::DRAFT_UNKNOWN);
+        };
+        if d.owner == promoter {
+            return refused(code::SOD);
+        }
+        match d.state {
+            DraftState::Promoted => {
+                return DraftVerdict::Promoted {
+                    indices: d.promoted,
+                    already: true,
+                };
+            }
+            DraftState::Discarded => return refused(code::DRAFT_NOT_OPEN),
+            DraftState::Open => {}
+        }
+        if d.intents.is_empty() {
+            return refused(code::STRUCTURE);
+        }
+        let key = [b"fa:draft-promotion:".as_slice(), name.as_bytes()].concat();
+        match self.post_batch(&key, &d.intents) {
+            BatchVerdict::Posted { indices } => {
+                if let Some(d) = self.drafts.get_mut(name) {
+                    d.state = DraftState::Promoted;
+                    d.promoted = indices.clone();
+                }
+                DraftVerdict::Promoted {
+                    indices,
+                    already: false,
+                }
+            }
+            BatchVerdict::Recorded { .. } => refused(code::IDEMPOTENCY_CONFLICT),
+            BatchVerdict::Refused { member, code } => DraftVerdict::Refused { member, code },
+        }
+    }
+
+    /// Discard the draft `name` as `actor` holding `ops` (`post`, the
+    /// `draft-discard` row's op): its owner, or a principal also holding
+    /// `approve`; nothing is deleted.
+    pub fn discard_draft(&mut self, name: &str, actor: &str, ops: &[&str]) -> DraftVerdict {
+        let refused = |code| DraftVerdict::Refused { member: None, code };
+        if !ops.contains(&"post") {
+            return refused(code::CAPABILITY);
+        }
+        let Some(d) = self.drafts.get(name) else {
+            return refused(code::DRAFT_UNKNOWN);
+        };
+        if d.owner != actor && !ops.contains(&"approve") {
+            return refused(code::CAPABILITY);
+        }
+        if d.discarded_by.iter().any(|a| a == actor) {
+            return DraftVerdict::AlreadyRecorded;
+        }
+        if d.state != DraftState::Open {
+            return refused(code::DRAFT_NOT_OPEN);
+        }
+        if let Some(d) = self.drafts.get_mut(name) {
+            d.state = DraftState::Discarded;
+            d.discarded_by.push(actor.to_string());
+        }
+        DraftVerdict::Recorded
     }
 
     /// Post a caller's intent and envelope claims through the same model law.
