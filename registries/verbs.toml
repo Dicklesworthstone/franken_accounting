@@ -95,7 +95,7 @@ flags = ["--date", "--key", "--template", "--opened", "--closed", "--on"]
 switches = []
 events = ["chart_installed", "accounts", "chart_templates", "account_lifecycle"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign; \"unit\": \"base\" is the book's base unit)", "chart list", "chart templates   (us-gaap-smb, ifrs-sme, us-bank-call-report: starting points, not GAAP, IFRS or regulatory advice)", "chart open <account.json|-> --opened YYYY-MM-DD [--closed YYYY-MM-DD] [--key K]   (one account object in the chart format, e.g. {\"code\":\"6100\",\"name\":\"Office supplies\",\"type\":\"Expense\",\"unit\":\"USD\"}; it accepts legs dated in [opened, closed))", "chart close <code> --on YYYY-MM-DD [--key K]   (nothing posts to the account on or after that day; its history stays)", "chart promote <code> --on YYYY-MM-DD [--key K]   (the leaf becomes a summary account from that day; new legs go to its children)", "open, close and promote are journaled SchemaChange controls under schema_change authority; no date defaults to today. The default key is account-open:<code>, or account-<action>:<code>:<day>, so an exact retry returns the recorded control."]
+usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign; \"unit\": \"base\" is the book's base unit)", "chart list", "chart templates   (us-gaap-smb, ifrs-sme, us-bank-call-report: starting points, not GAAP, IFRS or regulatory advice)", "chart open <account.json|-> --opened YYYY-MM-DD [--closed YYYY-MM-DD] [--key K]   (one account object in the chart format, e.g. {\"code\":\"6100\",\"name\":\"Office supplies\",\"type\":\"Expense\",\"unit\":\"USD\"}; it accepts legs dated in [opened, closed))", "chart close <code> --on YYYY-MM-DD [--key K]   (the account must have a zero balance in every unit; nothing posts to it on or after that day, and its history stays)", "chart promote <code> --on YYYY-MM-DD [--key K]   (the leaf becomes a summary account from that day; new legs go to its children)", "open, close and promote are journaled SchemaChange controls under schema_change authority; no date defaults to today. The default key is account-open:<code>, or account-<action>:<code>:<day>, so an exact retry returns the recorded control."]
 example = "fa chart import chart.json --book ./books/myco --json"
 
 [[verb]]
@@ -2277,7 +2277,7 @@ positionals = ["code"]
 flags = ["--on", "--key"]
 required = ["code", "--on"]
 dont = ["Don't close an account to hide its history: closing only stops new legs on or after the day; every committed entry stays.", "Don't promote a leaf that still needs direct postings: from the day on, only its children accept legs."]
-mistakes = ["Omitting on: no date defaults to today.", "Closing with a day that precedes legs already posted to it."]
+mistakes = ["Omitting on: no date defaults to today.", "Closing an account that still carries a balance: reverse or reclassify its entries first.", "Closing with a day that precedes legs already posted to it."]
 
 # ---- fa.post ----------------------------------------------------------------
 
@@ -2461,7 +2461,7 @@ cluster = "fa.io"
 name = "export"
 verb = "export"
 subcommands = ["ads", "saft", "csv-gl", "beancount", "hledger"]
-selector = "format"
+selector = "kind"
 positionals = []
 flags = ["--period", "--as-of", "--as-known-at"]
 switches = []

@@ -732,7 +732,7 @@ mod tests {
             .to_string();
         assert!(err.contains("FA-REF-999"), "{err}");
 
-        let missing_bead = SCOREBOARD.replace("bead = \"fa-8q2\"", "");
+        let missing_bead = SCOREBOARD.replace("bead = \"fa-i7e\"", "");
         let err = Scoreboard::parse(&missing_bead, &exits, &refusals)
             .expect_err("absent step without bead must fail")
             .to_string();

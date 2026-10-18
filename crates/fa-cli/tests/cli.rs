@@ -2271,9 +2271,9 @@ fn reverse_with_a_replacement_posts_one_atomic_correction() -> std::io::Result<(
 
 /// Plan §4.3, §5.6: an account's life cycle after the chart is installed,
 /// each step one journaled SchemaChange. `open` admits legs from its first
-/// day, `close` refuses legs on or after its day while the history stays,
-/// and `promote` turns a leaf into a summary account. An exact retry records
-/// nothing new, and no date defaults to today.
+/// day. `close` needs a zero balance, then refuses legs on or after its day
+/// while the history stays. `promote` turns a leaf into a summary account.
+/// An exact retry records nothing new, and no date defaults to today.
 #[test]
 fn chart_open_close_and_promote_are_journaled_lifecycle_controls() -> std::io::Result<()> {
     let dir = tmp("chart-lifecycle")?;
@@ -2342,20 +2342,27 @@ fn chart_open_close_and_promote_are_journaled_lifecycle_controls() -> std::io::R
     assert!(listed.contains("\"6100\""), "{listed}");
     let (code, out) = post("office-1", "2026-03-05", "6100");
     assert_eq!(code, 0, "{out}");
+    let office_1 = field(&out, "vid").unwrap().to_string();
 
-    // Closing stops new legs on or after the day; earlier days still post.
+    // An account closes only at a zero balance in every unit (plan §5.6):
+    // refused while office-1 stands, admitted once it is reversed. Closing
+    // then refuses legs on or after the day.
+    let close = ["chart", "close", "6100", "--on", "2026-03-20", "--json"];
+    let (code, out, _) = fa(Some(&book), &close);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("zero balance"), "{out}");
     let (code, out, _) = fa(
         Some(&book),
-        &["chart", "close", "6100", "--on", "2026-03-20", "--json"],
+        &["reverse", &office_1, "--reason", "Duplicate", "--json"],
     );
+    assert_eq!(code, 0, "{out}");
+    let (code, out, _) = fa(Some(&book), &close);
     assert_eq!(code, 0, "{out}");
     assert_eq!(field(&out, "action"), Some("close"));
     let (code, out) = post("office-late", "2026-03-25", "6100");
     assert_eq!(code, 3, "{out}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-002"), "{out}");
     assert!(out.contains("outside its effective interval"), "{out}");
-    let (code, out) = post("office-2", "2026-03-19", "6100");
-    assert_eq!(code, 0, "{out}");
     let (code, out, _) = fa(
         Some(&book),
         &["chart", "close", "9999", "--on", "2026-03-20", "--json"],

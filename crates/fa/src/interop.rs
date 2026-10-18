@@ -7,7 +7,11 @@
 //! entry visible at the known-at prefix (a migration chunk only once its run
 //! is final) whose effective date is on or before `effective_through`, that
 //! has legs and is not a pending hold. Refolding the exported legs therefore
-//! gives the stock trial balance at the same coordinate. Protected text
+//! gives the stock trial balance at the same coordinate, and that tie-out
+//! travels with the export: one balance assertion per account and unit as
+//! of `effective_through`. Every format carries assertions; without them an
+//! ADS package's derived trial balance would read back as assertions the
+//! journal never had. Protected text
 //! (descriptions, leg memos, migration source ids) is opened with the book's
 //! key. A field that key does not open (erased, or sealed under a subject's
 //! own key) exports empty, never as a placeholder.
@@ -15,10 +19,10 @@
 use std::collections::BTreeMap;
 
 use asupersync::fs::Vfs;
-use fa_formats::{FormatAccount, FormatEntry, FormatJournal, FormatLeg};
+use fa_formats::{FormatAccount, FormatAssertion, FormatEntry, FormatJournal, FormatLeg};
 use fa_journal::KernelError;
 use fa_model::{AccountType, EntryClass, EntryOrigin, limits};
-use fa_money::Side;
+use fa_money::{Amount, Side};
 use fa_time::DateDay;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
@@ -120,6 +124,40 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     legs,
                 });
             }
+            // The trial balance the exported legs fold to, per account and
+            // unit, in exact checked arithmetic.
+            let mut folded: BTreeMap<(String, String), (i128, fa_money::UnitId, u8)> =
+                BTreeMap::new();
+            for leg in entries.iter().flat_map(|e| &e.legs) {
+                let cell = folded
+                    .entry((leg.account_code.clone(), leg.unit_code.clone()))
+                    .or_insert((0, leg.amount.unit, leg.unit_scale));
+                let moved = match leg.side {
+                    Side::Debit => cell.0.checked_add(leg.amount.mantissa),
+                    Side::Credit => cell.0.checked_sub(leg.amount.mantissa),
+                };
+                cell.0 = moved.ok_or_else(|| {
+                    KernelError::Corrupt("an exported balance exceeds the exact fold range".into())
+                })?;
+            }
+            let mut assertions = Vec::with_capacity(folded.len());
+            for ((account_code, unit_code), (balance, unit, unit_scale)) in folded {
+                let magnitude = balance.checked_abs().ok_or_else(|| {
+                    KernelError::Corrupt("an exported balance exceeds the exact fold range".into())
+                })?;
+                assertions.push(FormatAssertion {
+                    account_code,
+                    as_of: effective_through,
+                    side: if balance < 0 {
+                        Side::Credit
+                    } else {
+                        Side::Debit
+                    },
+                    amount: Amount::new(unit, magnitude),
+                    unit_code,
+                    unit_scale,
+                });
+            }
             FormatJournal::new(
                 &spec.name,
                 &base.code,
@@ -128,7 +166,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 seq.0,
                 accounts,
                 entries,
-                Vec::new(),
+                assertions,
             )
             .map_err(|e| KernelError::Corrupt(format!("interop journal: {e}")).into())
         })
