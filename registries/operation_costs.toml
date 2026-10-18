@@ -440,6 +440,8 @@ vertices_written = 0
 transactions = 0
 complexity_witness = "1 snapshot frontier read + O(legs) deterministic scan under stripped Cx (0 writes)"
 
+# ---- Registered Native Operation Extensions -------------------------------
+
 [[operation_class]]
 id = "bank_statement_import"
 name = "Bank statement import with source-linked line documents"

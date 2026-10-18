@@ -590,7 +590,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         oid: Oid,
     ) -> Outcome<Document> {
+        const FULL_SOURCE_AUTHORITY: &str = "matching must replay the complete original BankStatement; a redacted view cannot supply those bytes. Use an authorized capability allowing full source disclosure. On the embedded-owner CLI, pass --grant privileged explicitly; launch-bound MCP templates cannot add or hold that operation";
         Ok(match self.read_document_for(cx, capability, &oid).await? {
+            Err(mut refusal) if refusal.code == code::REDACTED_VIEW_ABSENT => {
+                refusal.fix = FULL_SOURCE_AUTHORITY.into();
+                Err(refusal)
+            }
             Err(refusal) => Err(refusal),
             Ok(DocumentRead::Full(document)) => Ok(document),
             Ok(DocumentRead::Redacted(_)) => Err(Refusal::new(
@@ -598,7 +603,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 exit::SAFETY,
                 "the bank import's retained evidence is redacted under this capability",
                 "plan §9.5–§9.6 (matching requires the exact statement and parsed closure)",
-                "use an authorized capability that can read the complete bank statement",
+                FULL_SOURCE_AUTHORITY,
             )),
         })
     }

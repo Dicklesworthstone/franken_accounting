@@ -109,6 +109,7 @@ struct Fixture {
     root: PathBuf,
     book: PathBuf,
     evidence: String,
+    before_first_post: u64,
 }
 
 impl Fixture {
@@ -136,10 +137,13 @@ impl Fixture {
             ],
         );
         let evidence = text(data(&document), "oid").to_string();
+        let before_first_post =
+            u64::try_from(number(document.get("coordinate").unwrap(), "known_at")).unwrap();
         let fixture = Self {
             root,
             book,
             evidence,
+            before_first_post,
         };
         fixture.post("saturday", "2026-01-10", "100.00 USD");
         fixture
@@ -227,8 +231,20 @@ fn recorded_run_discovery_pages_a_fixed_inventory_across_processes_and_new_publi
         args.extend_from_slice(extra);
         ok(&f.book, &args)
     };
-    let empty_run = record(&["--effective-through", "2026-01-09"]);
-    let populated = record(&[]);
+    // Weekend v1 scans live postings at known-at. Effective-through fixes
+    // historical folds such as aging; it does not filter this JET population.
+    let before_first_post = f.before_first_post.to_string();
+    let empty_run = record(&[
+        "--known-at",
+        &before_first_post,
+        "--effective-through",
+        "2026-01-09",
+    ]);
+    assert_eq!(
+        number(data(&empty_run), "source_known_at"),
+        i128::from(f.before_first_post),
+    );
+    let populated = record(&["--effective-through", "2026-01-09"]);
     f.post("second-saturday", "2026-01-17", "25.00 USD");
     let third = record(&[]);
     let records = [empty_run, populated, third];
@@ -863,17 +879,22 @@ fn replay_refuses_rehashed_false_text_and_exports_never_overwrite_files() {
 #[test]
 fn empty_certified_runs_are_recorded_and_replayed_as_complete_empty_results() {
     let f = Fixture::new();
+    let before_first_post = f.before_first_post.to_string();
     let recorded = ok(
         &f.book,
         &[
             "finding",
             "record",
             "jet.weekend",
-            "--effective-through",
-            "2026-01-09",
+            "--known-at",
+            &before_first_post,
         ],
     );
     let certificate = text(data(&recorded), "certificate");
+    assert_eq!(
+        number(data(&recorded), "source_known_at"),
+        i128::from(f.before_first_post),
+    );
     assert_eq!(number(data(&recorded), "finding_count"), 0);
     assert!(
         data(&recorded)

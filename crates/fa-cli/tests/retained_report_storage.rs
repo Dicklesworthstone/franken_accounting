@@ -30,6 +30,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_additional_cash_accounts(0)
+    }
+
+    fn with_additional_cash_accounts(additional_accounts: u16) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let parent = loop {
             let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -62,7 +66,7 @@ impl Fixture {
         )
         .unwrap();
         keys.save(&dir.join("book.keys")).unwrap();
-        let accounts: Vec<_> = [
+        let mut accounts: Vec<_> = [
             ("1000", AccountType::ASSET, 0),
             ("4000", AccountType::REVENUE, 1),
         ]
@@ -78,6 +82,19 @@ impl Fixture {
             limit: None,
         })
         .collect();
+        accounts.extend((0..additional_accounts).map(|index| {
+            let code = (2000 + u32::from(index)).to_string();
+            AccountSpec {
+                name: format!("Operating cash account {code}"),
+                code,
+                account_type: AccountType::ASSET.0,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: UnitPolicy::AnyCurrency,
+                parent_code: None,
+                limit: None,
+            }
+        }));
         book.install_chart(&accounts, PRINCIPAL, day(), b"chart")
             .unwrap()
             .unwrap();
@@ -340,13 +357,18 @@ fn large_cli_reports_replay_from_digest_and_file_after_reopen_and_backdated_post
 
 #[test]
 fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report() {
-    let f = Fixture::new();
+    // A summary collapses the 64 postings into two balance rows. Retaining
+    // the real membership of 130 chart roots makes its output large enough
+    // to exercise fragments, including zero-activity leaves without padding.
+    // Other fixtures retain the compact two-account chart for inline coverage.
+    const ADDITIONAL_ACCOUNTS: u16 = 128;
+    let f = Fixture::with_additional_cash_accounts(ADDITIONAL_ACCOUNTS);
     let at = f.source_head.0.to_string();
     let cases = [
         (
             "summary",
             "summary_trial_balance",
-            vec!["tb", "--period", PERIOD, "--summary", "--root", "1000"],
+            vec!["tb", "--period", PERIOD, "--summary"],
         ),
         (
             "roll-forward",
@@ -383,6 +405,14 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
         let before = f.head();
         let plain = f.ok(&args);
         assert_eq!(f.head(), before, "{family}: ordinary report is read-only");
+        if family == "summary" {
+            let summary = data(&plain, event_name);
+            assert_eq!(
+                summary.get("groups").and_then(Json::as_arr).unwrap().len(),
+                usize::from(ADDITIONAL_ACCOUNTS) + 2,
+            );
+            assert_eq!(summary.get("complete"), Some(&Json::Bool(true)));
+        }
         let file = f.dir.join(format!("{family}.cert"));
         let mut certify_args = args.clone();
         certify_args.extend(["--certificate-out", file.to_str().unwrap()]);

@@ -783,6 +783,32 @@ impl ClaimsLintConfig {
 // operation_costs.toml (Appendix G, beads fa-tu58, fa-i5s)
 // ---------------------------------------------------------------------------
 
+// The 19 Appendix G classes plus the registered native bank-import extension.
+// Require their identities, not merely a row count: an unrelated class cannot
+// replace an existing operation's cost contract.
+const REQUIRED_OPERATION_CLASS_IDS: [&str; 20] = [
+    "balance_read_at_watermark",
+    "certified_report",
+    "single_entry_post",
+    "portable_single_entry_plan_and_commit",
+    "batch_post",
+    "admitted_durable_refusal",
+    "release_only_resolution",
+    "effect_manifest_closure",
+    "draft_promotion",
+    "period_transition",
+    "close_run_execute",
+    "restatement_case_post",
+    "register_maintenance_flush",
+    "accumulator_checkpoint",
+    "expiry_sweep_tick",
+    "bundle_production",
+    "external_profile_read",
+    "ceiling_bearing_post",
+    "bulk_migration",
+    "bank_statement_import",
+];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HotObjectExceptionRow {
     pub name: String,
@@ -954,14 +980,18 @@ impl OperationCosts {
                 notes: req_str(R, t, "notes")?.to_string(),
             });
         }
-        if classes.len() != 19 {
-            return Err(invalid(
-                R,
-                format!(
-                    "expected 19 Appendix G [[operation_class]] rows, found {}",
-                    classes.len()
-                ),
-            ));
+        for required in REQUIRED_OPERATION_CLASS_IDS {
+            if !class_ids.contains(required) {
+                return Err(invalid(
+                    R,
+                    format!("missing required operation_class `{required}`"),
+                ));
+            }
+        }
+        for id in &class_ids {
+            if !REQUIRED_OPERATION_CLASS_IDS.contains(&id.as_str()) {
+                return Err(invalid(R, format!("unregistered operation_class `{id}`")));
+            }
         }
 
         let required_kernel_ops = [
@@ -2679,7 +2709,7 @@ mod tests {
 
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         assert_eq!(op_costs.hot_object_exceptions.len(), 2);
-        assert_eq!(op_costs.classes.len(), 19);
+        assert_eq!(op_costs.classes.len(), 20);
         assert_eq!(op_costs.kernel_op_witnesses.len(), 9);
 
         let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
@@ -2711,6 +2741,64 @@ mod tests {
 
         let formats = Formats::embedded().expect("formats.toml");
         assert_eq!(formats.rows.len(), 19);
+    }
+
+    #[test]
+    fn operation_cost_classes_require_exact_registered_identities() {
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        let bank = op_costs
+            .class("bank_statement_import")
+            .expect("bank import has its own cost contract");
+        assert_eq!(bank.today_transactions, 1);
+        assert_eq!(bank.barrier_count, 2);
+        assert_eq!(bank.today_barrier_count, 2);
+        assert_eq!(
+            bank.substrate_transactions,
+            "1 for a new statement; 0 for an exact retry"
+        );
+        assert!(bank.hot_object_exceptions.is_empty());
+
+        // Preserve row count and all class references while substituting each
+        // identity. A count-only guard would accept every one of these edits.
+        for required in REQUIRED_OPERATION_CLASS_IDS {
+            let substituted = OPERATION_COSTS_TOML
+                .replace(&format!("\"{required}\""), "\"unregistered_operation\"");
+            let err = OperationCosts::parse(&substituted)
+                .expect_err("another class cannot replace a required operation");
+            assert!(
+                err.to_string()
+                    .contains(&format!("missing required operation_class `{required}`")),
+                "{err}"
+            );
+        }
+
+        let bank_row = OPERATION_COSTS_TOML
+            .split("\n\n")
+            .find(|row| row.starts_with("[[operation_class]]\nid = \"bank_statement_import\"\n"))
+            .expect("bank import registry row");
+        let missing = OPERATION_COSTS_TOML.replacen(bank_row, "", 1);
+        let err = OperationCosts::parse(&missing)
+            .expect_err("the original 19 classes no longer cover every native operation");
+        assert!(
+            err.to_string()
+                .contains("missing required operation_class `bank_statement_import`"),
+            "{err}"
+        );
+
+        let extra_row = bank_row
+            .replace("\"bank_statement_import\"", "\"unregistered_operation\"")
+            .replace(
+                "Bank statement import with source-linked line documents",
+                "Unregistered bank import",
+            );
+        let extra = format!("{OPERATION_COSTS_TOML}\n\n{extra_row}");
+        let err = OperationCosts::parse(&extra)
+            .expect_err("an extra class needs an explicit native cost contract");
+        assert!(
+            err.to_string()
+                .contains("unregistered operation_class `unregistered_operation`"),
+            "{err}"
+        );
     }
 
     #[test]

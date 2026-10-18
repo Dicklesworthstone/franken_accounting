@@ -35,6 +35,8 @@ on:
       - 'crates/fa-cli/tests/retained_report_storage.rs'
       - 'crates/fa-mcp/src/registry.rs'
       - 'crates/fa-mcp/src/server.rs'
+      - 'crates/fa-registry/src/g0.rs'
+      - 'registries/operation_costs.toml'
       - 'registries/verbs.toml'
       - 'registries/robot_schema/1.jsonl'
       - 'crates/fa-journal/src/post.rs'
@@ -171,6 +173,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registry --lib operation_cost --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --lib --test parity --test deny_rows --no-fail-fast --jobs 2
       - name: Regress existing native certificate replay through the CLI
         if: ${{ !cancelled() }}

@@ -223,6 +223,9 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
     const ZERO_DIGEST: &str = "0000000000000000000000000000000000000000000000000000000000000000";
     let dir = fixture();
     let book_dir = dir.join("held-book");
+    // File containment is admitted before the book. An existing in-root
+    // malformed artifact lets these cases reach the current native read check.
+    std::fs::write(dir.join("supplied.cert"), b"not a certificate").unwrap();
     let day = DateDay::parse("2026-03-15").unwrap();
     let units = UnitRegistry::embedded().unwrap();
     let mut book = Book::create_memory(
@@ -306,7 +309,7 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
             "--summary",
             "--as-of",
             "2026-03-31",
-            "--known-at",
+            "--as-known-at",
             INSTANT,
             "--certify",
             "--json",
@@ -318,6 +321,7 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
     assert_eq!(
         coordinate.get("known_at"),
         Some(&Json::Int(i128::from(lower.recorded_at.0))),
+        "{allowed:?}",
     );
     let time = coordinate.get("time_evidence").unwrap();
     for (name, tick) in [("lower", &lower), ("upper", &upper)] {
@@ -327,6 +331,26 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         );
     }
     assert_eq!(book.head().unwrap(), before);
+
+    // With live authority the same contained file reaches certificate
+    // decoding; after revocation its malformed contents must remain unread.
+    for argv in [
+        vec!["replay", "supplied.cert", "--json"],
+        vec!["certificate", "status", "supplied.cert", "--json"],
+    ] {
+        let (exit, allowed) = held(&mut book, &argv);
+        assert_eq!(exit, 8, "argv={argv:?}\n{allowed:?}");
+        let allowed = event(&authority, &allowed);
+        assert_ne!(allowed.get("book"), Some(&Json::Null));
+        assert_eq!(
+            allowed
+                .get("data")
+                .and_then(|data| data.get("refusal_id"))
+                .and_then(Json::as_str),
+            Some("FA-REF-150"),
+        );
+        assert_eq!(book.head().unwrap(), before);
+    }
 
     book.revoke_capability(
         issuer,
@@ -346,8 +370,13 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         vec!["--certificate-out", "unwritten.cert"],
     ] {
         for selector in [
-            vec!["--as-of", "2026-03-31", "--known-at", INSTANT],
-            vec!["--as-of", "2026-03-31", "--known-at", historical.as_str()],
+            vec!["--as-of", "2026-03-31", "--as-known-at", INSTANT],
+            vec![
+                "--as-of",
+                "2026-03-31",
+                "--as-known-at",
+                historical.as_str(),
+            ],
             vec!["--fiscal-year", "2099"],
             vec!["--period", "NEVER_REPORTED", "--as-originally-reported"],
         ] {
@@ -357,7 +386,7 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
             commands.push(command);
         }
         for sub in ["detail", "roll-forward", "aging"] {
-            let mut command = vec!["gl", sub, "--account", "1000", "--known-at", INSTANT];
+            let mut command = vec!["gl", sub, "--account", "1000", "--as-known-at", INSTANT];
             if sub == "aging" {
                 command.extend(["--as-of", "2026-03-31"]);
             } else {
@@ -391,10 +420,10 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         vec!["finding", "replay", "-"],
         vec!["replay", "-"],
         vec!["replay", ZERO_DIGEST],
-        vec!["replay", "missing.cert", "--output", "unwritten.cert"],
+        vec!["replay", "supplied.cert", "--output", "unwritten.cert"],
         vec!["certificate", "status", "-"],
         vec!["certificate", "status", ZERO_DIGEST],
-        vec!["certificate", "status", "missing.cert"],
+        vec!["certificate", "status", "supplied.cert"],
     ]);
     for mut argv in commands {
         argv.push("--json");

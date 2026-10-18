@@ -17,7 +17,7 @@ use crate::cli::{Ctx, Fail, hex, known_at_flag, untrusted_text_json, usage};
 use crate::json::{Json, obj, s};
 
 const IMPORT_EXAMPLE: &str = "fa bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code> --json";
-const MATCH_EXAMPLE: &str = "fa bank match --import <manifest_oid> [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>] --json";
+const MATCH_EXAMPLE: &str = "fa bank match --import <manifest_oid> --grant privileged [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>] --json (embedded-owner CLI with explicit full-source authority)";
 
 pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let sub = args.positional.get(1).map(String::as_str);
@@ -167,7 +167,7 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("receipt_hash", s(hex(&recorded.receipt.receipt.receipt_hash))),
         ("recorded_at", Json::Int(i128::from(recorded.receipt.receipt.recorded_at.0))),
         ("already_recorded", Json::Bool(recorded.receipt.already_recorded)),
-    ], &format!("{} bank statement #{} for {account_code}: {} lines; manifest {oid}; inspect exact proposals with fa bank match --import {oid}",
+    ], &format!("{} bank statement #{} for {account_code}: {} lines; manifest {oid}; an authorized operator can inspect exact proposals with fa bank match --import {oid} --grant privileged",
         if recorded.receipt.already_recorded { "already recorded" } else { "imported" },
         manifest.sequence_number, manifest.line_oids.len()));
     Ok(())

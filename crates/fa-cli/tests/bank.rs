@@ -64,6 +64,20 @@ fn ok(book: &Path, args: &[&str]) -> Json {
     output
 }
 
+// Replaying the original governed BankStatement is an explicit owner choice;
+// the ordinary reader and every launch-bound template retain their ceilings.
+fn run_privileged(book: &Path, args: &[&str]) -> (i32, Json) {
+    let mut granted = args.to_vec();
+    granted.extend(["--grant", "privileged"]);
+    run(book, &granted)
+}
+
+fn ok_privileged(book: &Path, args: &[&str]) -> Json {
+    let (status, output) = run_privileged(book, args);
+    assert_eq!(status, 0, "{args:?}: {}", output.render());
+    output
+}
+
 fn head(book: &Path) -> i128 {
     let output = ok(book, &["book", "info"]);
     integer(output.get("coordinate").unwrap(), "known_at")
@@ -182,7 +196,7 @@ fn import_is_atomic_keeps_source_and_line_closure_and_is_content_idempotent() {
         before + 1,
         "source, lines and manifest are one commit"
     );
-    let source = ok(
+    let source = ok_privileged(
         &f.book,
         &["document", "read", text(result, "statement_oid")],
     );
@@ -255,7 +269,7 @@ fn exact_matches_reopen_with_bound_account_and_parser_and_never_confirm_or_post_
     let imported = f.import("match.csv", "csv", &statement_csv("95.00"));
     let manifest = text(data(&imported), "manifest_oid");
     let before = head(&f.book);
-    let (status, unavailable) = run(
+    let (status, unavailable) = run_privileged(
         &f.book,
         &[
             "bank",
@@ -269,7 +283,7 @@ fn exact_matches_reopen_with_bound_account_and_parser_and_never_confirm_or_post_
     assert_eq!(status, 2, "{}", unavailable.render());
     assert_eq!(text(data(&unavailable), "refusal_id"), "FA-REF-103");
     assert_eq!(head(&f.book), before);
-    let matched = ok(&f.book, &["bank", "match", "--import", manifest]);
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
     let result = data(&matched);
     assert_eq!(text(&matched, "event"), "bank_matches_proposed");
     assert_eq!(result.get("confirmed"), Some(&Json::Bool(false)));
@@ -299,13 +313,13 @@ fn exact_matches_reopen_with_bound_account_and_parser_and_never_confirm_or_post_
         assert!(!text(row, "decision_card").is_empty());
     }
     assert_eq!(head(&f.book), before);
-    let replay = ok(&f.book, &["bank", "match", "--import", manifest]);
+    let replay = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
     assert_eq!(
         matched, replay,
         "same retained inputs and prefix yield identical proposals"
     );
     f.post("late-booking", "2026-03-07", "credit", "5.00", "FEE-1");
-    let original = ok(
+    let original = ok_privileged(
         &f.book,
         &[
             "bank",
@@ -321,7 +335,7 @@ fn exact_matches_reopen_with_bound_account_and_parser_and_never_confirm_or_post_
         integer(original.get("coordinate").unwrap(), "known_at"),
         before
     );
-    let current = ok(&f.book, &["bank", "match", "--import", manifest]);
+    let current = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
     assert_eq!(integer(data(&current), "proposed_count"), 3);
     assert_eq!(integer(data(&current), "unmatched_count"), 0);
 }
@@ -385,7 +399,7 @@ fn missing_authority_and_agent_import_refuse_before_reading_missing_input() {
         let args = [
             "bank",
             "import",
-            "never-created.csv",
+            "-",
             "--bank-format",
             "csv",
             "--account",
@@ -405,9 +419,92 @@ fn missing_authority_and_agent_import_refuse_before_reading_missing_input() {
         assert_eq!(code, 7, "{captured:?}");
         let output = json::parse(captured.stdout.lines().last().unwrap()).unwrap();
         assert_eq!(text(data(&output), "refusal_id"), expected);
-        assert!(!captured.stdout.contains("No such file"));
+        assert!(!captured.stdout.contains("no input reached the daemon"));
         assert_eq!(head(&f.book), before);
     }
+}
+
+#[test]
+fn governed_sources_need_explicit_privilege_and_redacted_views_never_enable_matching() {
+    let f = Fixture::new();
+    let raw = statement_csv("95.00");
+    let imported = f.import("governed.csv", "csv", &raw);
+    let source = text(data(&imported), "statement_oid");
+    let manifest = text(data(&imported), "manifest_oid");
+    let before = head(&f.book);
+    for args in [
+        vec!["document", "read", source],
+        vec!["bank", "match", "--import", manifest],
+    ] {
+        let (status, refused) = run(&f.book, &args);
+        assert_eq!(status, 3, "{}", refused.render());
+        assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-142");
+        assert!(!refused.render().contains("BANK-123"));
+        assert!(!refused.render().contains("SALE-1"));
+        if args[0] == "bank" {
+            assert!(text(data(&refused), "fix").contains("--grant privileged"));
+        }
+        assert_eq!(head(&f.book), before);
+    }
+
+    ok(&f.book, &["document", "redact", source]);
+    let after_view = head(&f.book);
+    let redacted = ok(&f.book, &["document", "read", source]);
+    assert_eq!(text(data(&redacted), "view"), "redacted");
+    assert_eq!(data(&redacted).get("bytes_hex"), Some(&Json::Null));
+    assert_eq!(data(&redacted).get("text"), Some(&Json::Null));
+    let (status, refused) = run(&f.book, &["bank", "match", "--import", manifest]);
+    assert_eq!(status, 7, "{}", refused.render());
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+    assert!(text(data(&refused), "fix").contains("--grant privileged"));
+
+    for profile in [LaunchProfile::Agent, LaunchProfile::Preparer] {
+        assert!(
+            LaunchAuthority::new(
+                f.book.clone(),
+                None,
+                "bank-template",
+                profile,
+                &["read", "reconcile", "privileged"],
+            )
+            .is_err(),
+            "matching must not broaden a launch template's privilege ceiling"
+        );
+        let authority = LaunchAuthority::new(
+            f.book.clone(),
+            None,
+            "bank-template",
+            profile,
+            &["read", "reconcile"],
+        )
+        .unwrap();
+        let args = ["bank", "match", "--import", manifest, "--json"].map(str::to_string);
+        let (status, captured) = fa_with_authority(
+            &args,
+            Files {
+                cwd: Some(f.dir.clone()),
+                stdin: Stdin::Missing,
+            },
+            &authority,
+            true,
+        );
+        assert_eq!(status, 7, "{captured:?}");
+        let refused = json::parse(captured.stdout.lines().last().unwrap()).unwrap();
+        assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+        assert!(!captured.stdout.contains("SALE-1"));
+        assert_eq!(head(&f.book), after_view);
+    }
+
+    let full = ok_privileged(&f.book, &["document", "read", source]);
+    assert_eq!(text(data(&full), "view"), "full");
+    assert_eq!(
+        text(data(&full).get("text").unwrap(), "untrusted_content"),
+        raw
+    );
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_eq!(integer(data(&matched), "line_count"), 3);
+    assert_eq!(data(&matched).get("confirmed"), Some(&Json::Bool(false)));
+    assert_eq!(head(&f.book), after_view);
 }
 
 #[test]
@@ -422,7 +519,7 @@ fn one_entry_with_multiple_cash_legs_preserves_each_selected_ordinal() {
         "{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,100.00,2026-03-05,2026-03-05,CRDT,40.00,Customer,B\n1,BANK-123,USD,2026-03-31,0.00,100.00,2026-03-05,2026-03-05,CRDT,60.00,Customer,A\n"
     );
     let imported = f.import("split.csv", "csv", &raw);
-    let matched = ok(
+    let matched = ok_privileged(
         &f.book,
         &[
             "bank",
@@ -475,7 +572,7 @@ fn real_camt_date_choices_and_currency_attributes_import_and_match() {
         let imported = f.import(&format!("{format}.xml"), format, raw);
         assert_eq!(text(data(&imported), "bank_format"), format);
         let after_import = head(&f.book);
-        let matched = ok(
+        let matched = ok_privileged(
             &f.book,
             &[
                 "bank",
@@ -512,7 +609,7 @@ fn real_camt_date_choices_and_currency_attributes_import_and_match() {
     );
     let imported = f.import("empty-camt053.xml", "camt053", &empty);
     let after_import = head(&f.book);
-    let matched = ok(
+    let matched = ok_privileged(
         &f.book,
         &[
             "bank",
@@ -561,7 +658,7 @@ fn an_ambiguous_candidate_set_cannot_emit_an_undecodable_decision_card() {
     );
     let imported = f.import("ambiguous.csv", "csv", &raw);
     let before = head(&f.book);
-    let (code, output) = run(
+    let (code, output) = run_privileged(
         &f.book,
         &[
             "bank",
@@ -584,7 +681,7 @@ fn missing_bank_descriptions_remain_valid_robot_data_and_present_text_cites_its_
     );
     let imported = f.import("no-descriptions.csv", "csv", &raw);
     let before = head(&f.book);
-    let matched = ok(
+    let matched = ok_privileged(
         &f.book,
         &[
             "bank",
@@ -599,7 +696,7 @@ fn missing_bank_descriptions_remain_valid_robot_data_and_present_text_cites_its_
     assert_eq!(head(&f.book), before);
 
     let imported = f.import("described.csv", "csv", &statement_csv("95.00"));
-    let matched = ok(
+    let matched = ok_privileged(
         &f.book,
         &[
             "bank",
@@ -624,10 +721,22 @@ fn bank_ties_are_explicit_and_reference_selection_can_resolve_them() {
     let f = Fixture::new();
     f.post("same-one", "2026-03-05", "debit", "100.00", "ONE");
     f.post("same-two", "2026-03-05", "debit", "100.00", "TWO");
-    let raw = format!("{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,100.00,2026-03-05,2026-03-05,CRDT,100.00,,\n");
+    let raw = format!(
+        "{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,100.00,2026-03-05,2026-03-05,CRDT,100.00,,\n"
+    );
     let imported = f.import("tie.csv", "csv", &raw);
     let before = head(&f.book);
-    let matched = ok(&f.book, &["bank", "match", "--import", text(data(&imported), "manifest_oid"), "--date-window", "0"]);
+    let matched = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            text(data(&imported), "manifest_oid"),
+            "--date-window",
+            "0",
+        ],
+    );
     let report = data(&matched);
     assert_eq!(integer(report, "ambiguous_count"), 1);
     assert_eq!(integer(report, "proposed_count"), 1);
@@ -638,11 +747,25 @@ fn bank_ties_are_explicit_and_reference_selection_can_resolve_them() {
     assert_eq!(row.get("competing_bank_lines"), Some(&Json::Bool(false)));
     assert_eq!(row.get("counterparty"), Some(&Json::Null));
     assert_eq!(row.get("reference"), Some(&Json::Null));
-    assert_eq!(head(&f.book), before, "diagnostics and proposals do not write");
+    assert_eq!(
+        head(&f.book),
+        before,
+        "diagnostics and proposals do not write"
+    );
 
     let selective = raw.replace("100.00,,\n", "100.00,,one\n");
     let imported = f.import("specific-reference.csv", "csv", &selective);
-    let matched = ok(&f.book, &["bank", "match", "--import", text(data(&imported), "manifest_oid"), "--date-window", "0"]);
+    let matched = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            text(data(&imported), "manifest_oid"),
+            "--date-window",
+            "0",
+        ],
+    );
     let row = &rows(data(&matched), "proposals")[0];
     assert_eq!(integer(data(&matched), "ambiguous_count"), 0);
     assert_eq!(integer(row, "eligible_candidate_count"), 1);
@@ -653,10 +776,22 @@ fn bank_ties_are_explicit_and_reference_selection_can_resolve_them() {
 fn a_consumed_cash_leg_does_not_hide_competition_between_statement_lines() {
     let f = Fixture::new();
     f.post("one-cash-leg", "2026-03-05", "debit", "100.00", "ONE");
-    let raw = format!("{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,200.00,2026-03-05,2026-03-05,CRDT,100.00,,\n1,BANK-123,USD,2026-03-31,0.00,200.00,2026-03-05,2026-03-05,CRDT,100.00,,\n");
+    let raw = format!(
+        "{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,200.00,2026-03-05,2026-03-05,CRDT,100.00,,\n1,BANK-123,USD,2026-03-31,0.00,200.00,2026-03-05,2026-03-05,CRDT,100.00,,\n"
+    );
     let imported = f.import("competing-lines.csv", "csv", &raw);
     let before = head(&f.book);
-    let matched = ok(&f.book, &["bank", "match", "--import", text(data(&imported), "manifest_oid"), "--date-window", "0"]);
+    let matched = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            text(data(&imported), "manifest_oid"),
+            "--date-window",
+            "0",
+        ],
+    );
     let report = data(&matched);
     assert_eq!(integer(report, "ambiguous_count"), 2);
     assert_eq!(integer(report, "proposed_count"), 1);
@@ -684,7 +819,7 @@ fn quoted_csv_descriptions_survive_retention_reopen_and_exact_matching() {
     let manifest = text(data(&imported), "manifest_oid");
     assert_eq!(integer(data(&imported), "line_count"), 1);
     let after_import = head(&f.book);
-    let source = ok(
+    let source = ok_privileged(
         &f.book,
         &["document", "read", text(data(&imported), "statement_oid")],
     );
@@ -692,7 +827,7 @@ fn quoted_csv_descriptions_survive_retention_reopen_and_exact_matching() {
         text(data(&source).get("text").unwrap(), "untrusted_content"),
         raw,
     );
-    let matched = ok(
+    let matched = ok_privileged(
         &f.book,
         &["bank", "match", "--import", manifest, "--date-window", "0"],
     );
@@ -714,6 +849,9 @@ fn quoted_csv_descriptions_survive_retention_reopen_and_exact_matching() {
     assert_eq!(head(&f.book), after_import);
     let repeated = f.import("quoted-fields-again.csv", "csv", &raw);
     assert_eq!(text(data(&repeated), "manifest_oid"), manifest);
-    assert_eq!(data(&repeated).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(
+        data(&repeated).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
     assert_eq!(head(&f.book), after_import);
 }
