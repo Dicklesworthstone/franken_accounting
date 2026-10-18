@@ -34,8 +34,8 @@
 use fa_intents::{PostBatch, PostIntent, PostPlan};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable,
-    Id128, Reader, TypedRef, Writer, domain_digest, draft_vid, entry_mirrors, entry_vid,
+    ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128,
+    Reader, TypedRef, Writer, domain_digest, draft_vid, entry_mirrors, entry_vid,
 };
 use fa_policy::{Capability, Denial, Intent, Op};
 use fa_time::DateDay;
