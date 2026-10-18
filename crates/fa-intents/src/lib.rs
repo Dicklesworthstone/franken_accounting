@@ -398,6 +398,146 @@ impl PostPlan {
     }
 }
 
+const BATCH_MAGIC: &[u8; 9] = b"FA-BATCH\0";
+
+/// Hard decode bound for a whole batch transcript. Each member keeps its
+/// own registered Entry bound; this caps what one request can allocate.
+pub const MAX_BATCH_BYTES: usize = 4 * MAX_ENTRY_BYTES;
+
+/// An ordered list of PostEntry intents committed atomically in one
+/// substrate transaction (plan §5.8): all or none, in order, each member
+/// seeing every earlier member's staged effects. A member names an earlier
+/// member by its identity-derived entry vid (an invoice and its application
+/// in one batch). A forward or absent name finds no entry and is refused by
+/// the kernel like any other missing target. The batch's own key derives
+/// its IntentOutcome identity under the members' common principal
+/// (plan §5.9): an identical retry returns the recorded outcome. Retry
+/// identity is the key and the members' identities, never these bytes:
+/// re-sealing a member's erasable fields draws fresh salts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostBatch {
+    idempotency_key: Vec<u8>,
+    members: Vec<PostIntent>,
+}
+
+impl PostBatch {
+    /// Check the batch's own shape: a bounded key, 1..=`max_batch_entries`
+    /// members on one book, branch and principal, and distinct member keys
+    /// (two members with one key would derive one entry identity).
+    pub fn new(idempotency_key: Vec<u8>, members: Vec<PostIntent>) -> Result<Self, IntentError> {
+        if idempotency_key.is_empty()
+            || idempotency_key.len() > fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES
+        {
+            return Err(IntentError::Invalid(
+                "a batch key is 1..=max_idempotency_key_bytes bytes",
+            ));
+        }
+        let Some(first) = members.first() else {
+            return Err(IntentError::Invalid("a batch has at least one member"));
+        };
+        if members.len() > fa_model::limits::MAX_BATCH_ENTRIES {
+            return Err(IntentError::Invalid(
+                "a batch has at most max_batch_entries members",
+            ));
+        }
+        let head = first.proposal();
+        let mut keys = std::collections::BTreeSet::new();
+        for member in &members {
+            let p = member.proposal();
+            if p.book_id != head.book_id || p.branch_id != head.branch_id {
+                return Err(IntentError::Invalid(
+                    "every batch member targets the same book and branch",
+                ));
+            }
+            if p.principal_ref != head.principal_ref {
+                return Err(IntentError::Invalid(
+                    "every batch member names the same principal",
+                ));
+            }
+            if !keys.insert(p.idempotency_key.as_slice()) {
+                return Err(IntentError::Invalid(
+                    "two batch members share one idempotency key",
+                ));
+            }
+        }
+        let batch = Self {
+            idempotency_key,
+            members,
+        };
+        batch.canonical_bytes()?;
+        Ok(batch)
+    }
+
+    #[must_use]
+    pub fn idempotency_key(&self) -> &[u8] {
+        &self.idempotency_key
+    }
+
+    #[must_use]
+    pub fn members(&self) -> &[PostIntent] {
+        &self.members
+    }
+
+    /// The members' common principal.
+    #[must_use]
+    pub fn principal(&self) -> VId {
+        self.members[0].proposal().principal_ref
+    }
+
+    /// The members' common book.
+    #[must_use]
+    pub fn book_id(&self) -> Id128 {
+        self.members[0].proposal().book_id
+    }
+
+    /// The members' common branch.
+    #[must_use]
+    pub fn branch_id(&self) -> Id128 {
+        self.members[0].proposal().branch_id
+    }
+
+    /// The batch key, then each member's canonical intent bytes in order.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, IntentError> {
+        let mut w = Writer::new();
+        w.fixed(BATCH_MAGIC)
+            .u16(SCHEMA_MAJOR)
+            .u16(SCHEMA_MINOR)
+            .bytes(&self.idempotency_key);
+        let members = self
+            .members
+            .iter()
+            .map(PostIntent::canonical_bytes)
+            .collect::<Result<Vec<_>, _>>()?;
+        w.list(&members, |w, m| {
+            w.bytes(m);
+        });
+        let bytes = w.finish()?;
+        bounded(&bytes, MAX_BATCH_BYTES)?;
+        Ok(bytes)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, IntentError> {
+        bounded(bytes, MAX_BATCH_BYTES)?;
+        let mut r = Reader::new(bytes);
+        if r.fixed::<9>("batch.magic")? != *BATCH_MAGIC {
+            return Err(IntentError::Invalid("wrong batch magic"));
+        }
+        version(&mut r)?;
+        let key = r
+            .bytes(fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES, "batch.key")?
+            .to_vec();
+        let members = r.list(fa_model::limits::MAX_BATCH_ENTRIES, "batch.members", |r| {
+            Ok(r.bytes(MAX_INTENT_BYTES, "batch.member")?.to_vec())
+        })?;
+        r.finish()?;
+        let members = members
+            .iter()
+            .map(|m| PostIntent::decode(m))
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(key, members)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

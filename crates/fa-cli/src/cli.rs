@@ -4378,6 +4378,138 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
     post_document(ctx, args, forced, doc)
 }
 
+/// A batch member's failure names its member; nothing in the batch is posted.
+fn batch_member_fail(index: usize, fail: Fail) -> Fail {
+    match fail {
+        Fail::Usage(e) => usage(format!("batch member {index}: {}", e.message), e.fix),
+        Fail::Refusal(r) => Fail::Refusal(Refusal {
+            message: format!("batch member {index}: {}", r.message),
+            ..r
+        }),
+        other => other,
+    }
+}
+
+/// `fa post --intent` with a PostBatch intent (plan §5.8, Appendix B):
+/// `{"idempotency_key": K, "intents": [<entry intent>, ...]}` commits every
+/// member atomically and in order, each member seeing the earlier members'
+/// effects (an invoice and its application in one batch: the application
+/// names the invoice's identity-derived vid). The batch key is the identity
+/// of its IntentOutcome, so an identical retry returns the recorded outcome.
+fn post_batch_document(ctx: &mut Ctx<'_>, args: &Args, doc: &Json) -> Result<(), Fail> {
+    const FIX: &str = "a batch intent is {\"idempotency_key\": \"...\", \"intents\": [<entry intent>, ...]}; fa robot-docs examples shows an entry intent";
+    for flag in [
+        "--plan-out",
+        "--balancing",
+        "--timeout-ns",
+        "--reverse-on",
+        "--evidence",
+    ] {
+        if !args.flag_all(flag).is_empty() {
+            return Err(usage(
+                format!("a batch intent takes no {flag}; nothing was posted"),
+                "put timeout_ns, reverse_on and evidence in each member intent",
+            ));
+        }
+    }
+    if args.switch("--dry-run") {
+        return Err(usage(
+            "batch plans are not available yet; nothing was posted",
+            "rehearse each member with fa post --intent <member.json> --dry-run, then post the batch",
+        ));
+    }
+    let Json::Obj(fields) = doc else {
+        return Err(usage("a batch intent must be an object", FIX));
+    };
+    if let Some((field, _)) = fields
+        .iter()
+        .find(|(field, _)| !matches!(field.as_str(), "idempotency_key" | "intents"))
+    {
+        return Err(usage(format!("batch intent: unknown field `{field}`"), FIX));
+    }
+    let Some(Json::Str(key)) = doc.get("idempotency_key") else {
+        return Err(usage("a batch intent needs a string idempotency_key", FIX));
+    };
+    let Some(Json::Arr(members)) = doc.get("intents") else {
+        return Err(usage(
+            "batch intent: intents must be an array of entry intents",
+            FIX,
+        ));
+    };
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["post"])?;
+    let out = &ctx.out;
+    let mut book = ctx.books.open(args)?;
+    let mut intents = Vec::with_capacity(members.len());
+    let mut classes = Vec::with_capacity(members.len());
+    for (i, member) in members.iter().enumerate() {
+        let built = build_post_request(out, &mut book, args, None, member, who, capability.clone())
+            .map_err(|f| batch_member_fail(i, f))?;
+        classes.push(built.class_name);
+        let intent = PostIntent::new(built.request.proposal, built.request.approvals)
+            .map_err(|e| usage(format!("batch member {i}: {e}"), "check the member intent"))?;
+        intents.push(intent);
+    }
+    let batch = fa::PostBatch::new(key.as_bytes().to_vec(), intents)
+        .map_err(|e| usage(format!("batch intent: {e}; nothing was posted"), FIX))?;
+    let posted = book.post_batch(batch, &capability)??;
+    out.at_book(&book)?;
+    let members_json: Vec<Json> = posted
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            obj(vec![
+                ("index", Json::Int(i as i128)),
+                ("vid", s(format!("{:032x}", e.vid.0))),
+                ("entry_digest", s(hex(&e.entry_digest))),
+                (
+                    "class",
+                    classes.get(i).map_or(Json::Null, |c| s(c.as_str())),
+                ),
+                (
+                    "period",
+                    posted.periods.get(i).map_or(Json::Null, |p| s(p.as_str())),
+                ),
+            ])
+        })
+        .collect();
+    let human = if posted.already_recorded {
+        format!(
+            "Batch `{key}` is already recorded as outcome {:032x} at sequence {}: {} entries; nothing new was written.",
+            posted.outcome.0,
+            posted.recorded_at.0,
+            posted.entries.len()
+        )
+    } else {
+        format!(
+            "Posted batch `{key}` atomically at sequence {}: {} entries, outcome {:032x}.\n{}",
+            posted.recorded_at.0,
+            posted.entries.len(),
+            posted.outcome.0,
+            posted
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(i, e)| format!("  {i}: {:032x}", e.vid.0))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    out.event(
+        "batch_posted",
+        vec![
+            ("outcome", s(format!("{:032x}", posted.outcome.0))),
+            ("idempotency_key", s(key.as_str())),
+            ("recorded_at", Json::Int(i128::from(posted.recorded_at.0))),
+            ("already_recorded", Json::Bool(posted.already_recorded)),
+            ("members", Json::Arr(members_json)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
 fn check_post_planning_options(args: &Args) -> Result<(), Fail> {
     if args.flag_all("--plan-out").len() > 1 {
         return Err(usage(
@@ -4925,6 +5057,9 @@ fn post_document(
     forced: Option<EntryClass>,
     doc: Json,
 ) -> Result<(), Fail> {
+    if forced.is_none() && doc.get("intents").is_some() {
+        return post_batch_document(ctx, args, &doc);
+    }
     check_post_planning_options(args)?;
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["post"])?;

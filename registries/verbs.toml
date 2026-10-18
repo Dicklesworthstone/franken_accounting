@@ -141,9 +141,9 @@ writes = true
 subcommands = []
 flags = ["--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on"]
 switches = ["--dry-run"]
-events = ["posted", "recorded", "plan"]
+events = ["posted", "recorded", "plan", "batch_posted"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--event <code|vid>] [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target."]
+usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--event <code|vid>] [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target.", "A PostBatch intent {\"idempotency_key\": K, \"intents\": [<entry intent>, ...]} commits every member atomically, in order, in one transaction: all or none, each member seeing the earlier members' effects (an application may settle an invoice earlier in the same batch by its derived vid). Members are Original, Adjusting, Reversal, Pending or Resolution entries of one principal with distinct keys. The batch key names its IntentOutcome: an identical retry returns the recorded outcome; the same key with different members is refused (exit 6). Batch plans, --plan-out and per-batch flags are not available; a member refusal names its index and nothing is posted."]
 example = "fa post --intent entry.json --book ./books/myco --json"
 
 [[verb]]
@@ -857,6 +857,12 @@ doc = "A typed reversal committed, negating the target's posted legs exactly and
 fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string", "target:hex", "reason_code:int", "reason:string"]
 
 [[event]]
+name = "batch_posted"
+book = true
+doc = "A PostBatch committed every member in one transaction (plan §5.8), or, with already_recorded, an identical retry found the recorded IntentOutcome and wrote nothing. members lists the entries in member order; period is null on a recorded outcome."
+fields = ["outcome:hex", "idempotency_key:string", "recorded_at:seq", "already_recorded:bool", "members:[batch_member]"]
+
+[[event]]
 name = "recorded"
 book = true
 doc = "The same idempotency key was already recorded with the same content; nothing new was written. For a balancing post the identity is the request (key, requested amount, leg): `requested`/`moved` are the recorded ones, whatever availability is now; null otherwise."
@@ -1403,6 +1409,11 @@ fields = ["code:string", "name:string", "type:string", "leaf:bool", "unit:string
 name = "period"
 doc = "One period with its current state."
 fields = ["code:string", "state:string", "kind:string", "start:date", "end:date", "fiscal_year:int"]
+
+[[shape]]
+name = "batch_member"
+doc = "One entry of a committed PostBatch, in member order."
+fields = ["index:int", "vid:hex", "entry_digest:hex", "class:string?", "period:string?"]
 
 [[shape]]
 name = "tb_row"

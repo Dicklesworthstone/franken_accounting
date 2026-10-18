@@ -8565,3 +8565,274 @@ fn settlement_requires_matching_legal_entity_dimension() {
         oracle_entity_fold(&oracle, &march)
     );
 }
+
+/// The kernel's verdict on an atomic batch of oracle intents (fa-nl7).
+/// `refs` maps oracle journal indices to kernel entries, and already holds
+/// the predicted refs of earlier members a member may settle.
+fn kernel_batch(
+    k: &mut Kernel,
+    key: &str,
+    members: &[Intent],
+    usd: UnitId,
+    refs: &[EntryRef],
+) -> Result<BatchPosted, Refusal> {
+    let intents = members
+        .iter()
+        .map(|m| {
+            let req = kernel_request(k, m, usd, refs);
+            PostIntent::new(req.proposal, req.approvals).expect("typed intent")
+        })
+        .collect();
+    let batch = PostBatch::new(key.as_bytes().to_vec(), intents).expect("batch shape");
+    let capability = kernel_request(k, &members[0], usd, refs).capability;
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { post_batch(db, &ctx, book, capability, batch).await })
+        .expect("batch kernel")
+}
+
+/// The ref the kernel derives for an intent before it commits: the key's
+/// identity and the sealed digest.
+fn predicted_ref(k: &Kernel, intent: &Intent, usd: UnitId, refs: &[EntryRef]) -> EntryRef {
+    let req = kernel_request(k, intent, usd, refs);
+    let sealed = req.proposal.clone().seal(Vec::new(), None).expect("seal");
+    EntryRef {
+        vid: fa_model::entry_vid(k.book.book_id, &PRINCIPAL.0.to_le_bytes(), &intent.key),
+        entry_digest: sealed.entry_digest,
+    }
+}
+
+/// fa-nl7: atomic batches against the independent oracle's literal batch
+/// model (clone the oracle, post every member, keep the clone only when all
+/// post) over seeded histories. Planted: an unbalanced member, a member
+/// whose key an earlier batch recorded, a forward settlement, a changed
+/// retry under a recorded key; and lawful in-batch applications (a receipt
+/// settling an invoice earlier in its own batch) and identical retries.
+/// Every verdict agrees, a refused batch writes nothing, and every register
+/// cell of every period agrees at the end.
+#[test]
+fn batches_are_atomic_and_agree_with_the_independent_oracle_across_seeds() {
+    for seed in [3_u64, 0x51ed_270b, 0x9e37_79b9] {
+        let (mut k, mut oracle, periods) = setup();
+        open_period(&mut k, &mut oracle, "FY2026-P03", 0);
+        open_period(&mut k, &mut oracle, "FY2026-P04", 1);
+        let usd = k.book.units.lookup("USD").unwrap();
+        let dates = [
+            DateDay::parse("2026-03-10").unwrap(),
+            DateDay::parse("2026-04-20").unwrap(),
+        ];
+        let leg = |side, account: &str, mantissa| Leg {
+            side,
+            account: account.into(),
+            unit: usd.0,
+            entity: None,
+            mantissa,
+        };
+        let mut rng = Rng(seed);
+        let mut refs: Vec<EntryRef> = Vec::new();
+        let mut recorded: Vec<(String, Vec<Intent>)> = Vec::new();
+        let mut used_keys: Vec<Vec<u8>> = Vec::new();
+        let (mut committed, mut refused, mut retried, mut in_batch_applications) = (0, 0, 0, 0);
+        for b in 0..24 {
+            let key = format!("batch-{seed}-{b}");
+            let n = 1 + rng.below(3) as usize;
+            let mut members: Vec<Intent> = Vec::new();
+            for m in 0..n {
+                let amount = 1 + rng.below(50_000) as i128;
+                let date = dates[rng.below(2) as usize];
+                let member_key = format!("{key}-m{m}").into_bytes();
+                let mut intent = maintenance_intent("Original", date, amount, "");
+                intent.key = member_key;
+                // An invoice, sometimes followed by its own application.
+                if rng.chance(40) {
+                    intent.legs = vec![
+                        leg(fa_reference::Side::Debit, "1200", amount),
+                        leg(fa_reference::Side::Credit, "4000", amount),
+                    ];
+                }
+                members.push(intent);
+            }
+            // An in-batch application: the last member pays an earlier
+            // invoice member, within its amount.
+            if let Some(pos) = members
+                .iter()
+                .position(|i| i.legs[0].account == "1200")
+                .filter(|_| rng.chance(70))
+            {
+                let invoice_amount = members[pos].legs[0].mantissa;
+                let paid = 1 + rng.below(invoice_amount as u64) as i128;
+                let mut receipt = maintenance_intent("Original", dates[1], paid, "");
+                receipt.key = format!("{key}-rcpt").into_bytes();
+                receipt.legs = vec![
+                    leg(fa_reference::Side::Debit, "1000", paid),
+                    leg(fa_reference::Side::Credit, "1200", paid),
+                ];
+                receipt.settles = vec![Settle {
+                    leg: 1,
+                    target: refs.len() + pos,
+                    ordinal: 0,
+                    mantissa: paid,
+                }];
+                members.push(receipt);
+            }
+            // Plants.
+            match rng.below(10) {
+                0 => {
+                    let last = members.len() - 1;
+                    members[last].legs[1].mantissa += 1;
+                }
+                1 if !used_keys.is_empty() => {
+                    members[0].key = used_keys[rng.below(used_keys.len() as u64) as usize].clone();
+                }
+                2 => {
+                    // A forward settlement: the first member pays a member
+                    // that comes later in the batch.
+                    let mut later = maintenance_intent("Original", dates[0], 900, "");
+                    later.key = format!("{key}-later").into_bytes();
+                    later.legs = vec![
+                        leg(fa_reference::Side::Debit, "1200", 900),
+                        leg(fa_reference::Side::Credit, "4000", 900),
+                    ];
+                    let mut early = maintenance_intent("Original", dates[0], 100, "");
+                    early.key = format!("{key}-early").into_bytes();
+                    early.legs = vec![
+                        leg(fa_reference::Side::Debit, "1000", 100),
+                        leg(fa_reference::Side::Credit, "1200", 100),
+                    ];
+                    early.settles = vec![Settle {
+                        leg: 1,
+                        target: refs.len() + 1,
+                        ordinal: 0,
+                        mantissa: 100,
+                    }];
+                    members = vec![early, later];
+                }
+                _ => {}
+            }
+            // Predicted refs for in-batch targets, in member order.
+            let mut extended = refs.clone();
+            for intent in &members {
+                if intent.settles.iter().all(|s| s.target < extended.len()) {
+                    let predicted = predicted_ref(&k, intent, usd, &extended);
+                    extended.push(predicted);
+                } else {
+                    // A forward target: give the kernel a placeholder ref
+                    // that names no entry, as an unstaged member would.
+                    extended.push(EntryRef {
+                        vid: VId(u128::from(rng.next())),
+                        entry_digest: [0; 32],
+                    });
+                }
+            }
+            let head = k.db.frontier().unwrap();
+            let expected = oracle.post_batch(key.as_bytes(), &members);
+            let actual = kernel_batch(&mut k, &key, &members, usd, &extended);
+            match (&expected, actual) {
+                (fa_reference::BatchVerdict::Posted { indices }, Ok(posted)) => {
+                    assert!(!posted.already_recorded, "seed {seed} batch {b}");
+                    assert_eq!(indices.len(), posted.entries.len(), "seed {seed} batch {b}");
+                    assert_eq!(indices[0], refs.len(), "seed {seed} batch {b}");
+                    assert_eq!(posted.recorded_at.0, head.0 + 1, "one commit");
+                    in_batch_applications +=
+                        members.iter().filter(|m| !m.settles.is_empty()).count();
+                    refs.extend(posted.entries.iter().copied());
+                    used_keys.extend(members.iter().map(|m| m.key.clone()));
+                    recorded.push((key.clone(), members.clone()));
+                    committed += 1;
+                }
+                (fa_reference::BatchVerdict::Refused { member, code }, Err(r)) => {
+                    assert_eq!(r.code, *code, "seed {seed} batch {b}: {r}");
+                    if let Some(i) = member {
+                        assert!(
+                            r.message.starts_with(&format!("batch member {i}")),
+                            "seed {seed} batch {b}: {r}"
+                        );
+                    }
+                    assert_eq!(
+                        k.db.frontier().unwrap(),
+                        head,
+                        "a refused batch wrote nothing"
+                    );
+                    refused += 1;
+                }
+                (expected, actual) => {
+                    panic!("seed {seed} batch {b}: oracle {expected:?}, kernel {actual:?}")
+                }
+            }
+            // Retries of a recorded batch: identical (the outcome) or changed
+            // (a conflict).
+            if !recorded.is_empty() && rng.chance(30) {
+                let (rkey, rmembers) = recorded[rng.below(recorded.len() as u64) as usize].clone();
+                let head = k.db.frontier().unwrap();
+                let ov = oracle.post_batch(rkey.as_bytes(), &rmembers);
+                let kv =
+                    kernel_batch(&mut k, &rkey, &rmembers, usd, &refs).expect("identical retry");
+                let fa_reference::BatchVerdict::Recorded { indices } = ov else {
+                    panic!("seed {seed}: oracle retry {ov:?}");
+                };
+                assert!(kv.already_recorded);
+                assert_eq!(
+                    kv.entries,
+                    indices.iter().map(|i| refs[*i]).collect::<Vec<_>>()
+                );
+                let changed = vec![rmembers[0].clone()];
+                if changed != rmembers {
+                    let ov = oracle.post_batch(rkey.as_bytes(), &changed);
+                    let r = kernel_batch(&mut k, &rkey, &changed, usd, &refs).unwrap_err();
+                    assert_eq!(
+                        ov,
+                        fa_reference::BatchVerdict::Refused {
+                            member: None,
+                            code: r.code
+                        }
+                    );
+                }
+                assert_eq!(k.db.frontier().unwrap(), head, "retries write nothing");
+                retried += 1;
+            }
+        }
+        eprintln!(
+            "seed {seed}: committed {committed} refused {refused} retried {retried} in-batch applications {in_batch_applications}"
+        );
+        assert!(
+            committed >= 8 && refused >= 2 && retried >= 2,
+            "seed {seed}"
+        );
+        assert!(
+            in_batch_applications >= 2,
+            "seed {seed}: in-batch applications"
+        );
+        assert_eq!(oracle.journal_len(), refs.len());
+        for code in &periods {
+            let kernel_fold = fold_period(&k.db, &k.book, code).unwrap();
+            let model_fold = oracle.fold(code);
+            assert_eq!(
+                kernel_fold.cells.len(),
+                model_fold.len(),
+                "{code}: cell count"
+            );
+            for cell in &kernel_fold.cells {
+                let account_code = ACCOUNTS
+                    .iter()
+                    .map(|(c, ..)| *c)
+                    .find(|c| account_vid(k.book.book_id, c) == cell.key.account)
+                    .expect("known account");
+                let m = model_fold
+                    .get(&(account_code.to_string(), cell.key.unit_id))
+                    .expect("oracle cell");
+                assert_eq!(
+                    m.debits.to_i128(),
+                    Some(cell.debits),
+                    "{code}/{account_code}"
+                );
+                assert_eq!(
+                    m.credits.to_i128(),
+                    Some(cell.credits),
+                    "{code}/{account_code}"
+                );
+            }
+        }
+    }
+}

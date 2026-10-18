@@ -8070,3 +8070,229 @@ fn posting_outside_account_effective_interval_or_invalid_close_and_promote_is_re
     assert_eq!((r_close.code, r_close.exit), ("FA-REF-002", exit::REFUSAL));
     assert!(r_close.message.contains("non-zero posted balance"));
 }
+
+// ---------------------------------------------------------------------------
+// PostBatch (plan §5.8–5.9, bead fa-nl7)
+// ---------------------------------------------------------------------------
+
+impl Harness {
+    fn batch(&self, key: &[u8], members: Vec<EntryPayload>) -> fa_intents::PostBatch {
+        let intents = members
+            .into_iter()
+            .map(|p| fa_intents::PostIntent::new(p, Vec::new()).expect("typed intent"))
+            .collect();
+        fa_intents::PostBatch::new(key.to_vec(), intents).expect("a well-formed batch")
+    }
+
+    fn post_batch(
+        &mut self,
+        batch: fa_intents::PostBatch,
+    ) -> Result<fa_journal::BatchPosted, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        let capability = Capability::embedded(batch.principal(), &["post"]).unwrap();
+        self.runtime
+            .block_on(
+                async move { fa_journal::post_batch(db, &ctx, book, capability, batch).await },
+            )
+            .expect("batch kernel")
+    }
+
+    /// The reference a batch member's settlement names for an earlier
+    /// member: its identity-derived vid and its sealed digest.
+    fn member_ref(&self, proposal: &EntryPayload) -> EntryRef {
+        let sealed = proposal.clone().seal(Vec::new(), None).expect("seal");
+        EntryRef {
+            vid: entry_vid(
+                self.book.book_id,
+                &proposal.principal_ref.0.to_le_bytes(),
+                &proposal.idempotency_key,
+            ),
+            entry_digest: sealed.entry_digest,
+        }
+    }
+}
+
+/// fa-nl7: an invoice and the receipt that settles it commit in one batch,
+/// in one commit; the receipt sees the invoice's staged open item. The
+/// IntentOutcome records both, in order, and the open amount is folded.
+#[test]
+fn a_batch_commits_an_invoice_and_its_application_atomically_in_one_commit() {
+    let mut h = harness();
+    let usd = h.usd;
+    let invoice = h.invoice(50_000, b"batch-inv");
+    let inv_ref = h.member_ref(&invoice);
+    let receipt = h.receipt(20_000, vec![settle(inv_ref, 0, usd, 20_000)], b"batch-rcpt");
+    let basis = h.db.frontier().unwrap();
+    let batch = h.batch(b"batch-1", vec![invoice, receipt]);
+    let posted = h.post_batch(batch).expect("the batch commits");
+    eprintln!(
+        "batch: outcome {:032x} at {} entries {:?}",
+        posted.outcome.0,
+        posted.recorded_at.0,
+        posted.entries.iter().map(|e| e.vid.0).collect::<Vec<_>>()
+    );
+    assert!(!posted.already_recorded);
+    assert_eq!(
+        posted.recorded_at.0,
+        basis.0 + 1,
+        "one commit for the batch"
+    );
+    assert_eq!(posted.entries.len(), 2);
+    assert_eq!(posted.entries[0], inv_ref);
+    assert_eq!(posted.periods, vec![h.march.clone(), h.march.clone()]);
+    for e in &posted.entries {
+        let (_, seq) = read_entry(&h.db, e.vid).unwrap().expect("member recorded");
+        assert_eq!(seq, posted.recorded_at);
+    }
+    assert_eq!(
+        h.applied_to(inv_ref.vid, 0),
+        20_000,
+        "the application folded"
+    );
+    let (body, seq) = fa_journal::read_outcome(&h.db, posted.outcome)
+        .unwrap()
+        .expect("the IntentOutcome is recorded");
+    assert_eq!(seq, posted.recorded_at);
+    let vids: Vec<VId> = posted.entries.iter().map(|e| e.vid).collect();
+    assert_eq!(body.request_digest, request_digest(b"batch-1", &vids));
+    assert_eq!(body.entries, posted.entries);
+}
+
+/// fa-nl7: a member refusal refuses the whole batch and names the member;
+/// nothing of any member is recorded, and the same key is still free.
+#[test]
+fn a_refused_member_refuses_the_whole_batch_and_records_nothing() {
+    let mut h = harness();
+    let good = h.proposal(h.rent_legs(1_000), b"batch-good", EntryClass::ORIGINAL);
+    let good_vid = h.member_ref(&good).vid;
+    let unbalanced = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, h.rent, Amount::new(h.usd, 100)),
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 99)),
+        ],
+        b"batch-bad",
+        EntryClass::ORIGINAL,
+    );
+    let basis = h.db.frontier().unwrap();
+    let before = h.db.vertices().unwrap();
+    let batch = h.batch(b"batch-2", vec![good.clone(), unbalanced]);
+    let outcome = fa_journal::outcome_vid(&h.book, &batch);
+    let r = h.post_batch(batch).unwrap_err();
+    eprintln!("batch: refused -> {} {}", r.code, r.message);
+    assert!(r.message.starts_with("batch member 1: "), "{}", r.message);
+    assert_eq!(h.db.frontier().unwrap(), basis, "nothing was recorded");
+    assert_eq!(h.db.vertices().unwrap(), before);
+    assert!(h.db.vertex(good_vid).unwrap().is_none());
+    assert!(h.db.vertex(outcome).unwrap().is_none());
+    // A forward reference is a missing target: the second member settles the
+    // third, which has not been staged yet.
+    let usd = h.usd;
+    let later = h.invoice(500, b"batch-later");
+    let later_ref = h.member_ref(&later);
+    let early = h.receipt(100, vec![settle(later_ref, 0, usd, 100)], b"batch-early");
+    let r = h
+        .post_batch(h.batch(b"batch-3", vec![good, early, later]))
+        .unwrap_err();
+    eprintln!("batch: forward reference -> {} {}", r.code, r.message);
+    assert!(r.message.starts_with("batch member 1: "), "{}", r.message);
+    assert_eq!(h.db.frontier().unwrap(), basis);
+}
+
+/// fa-nl7 (FA-INV-09): an identical batch retry returns the recorded
+/// outcome and writes nothing; the same key with different members or a
+/// different order is an idempotency conflict; a member already posted
+/// outside any batch refuses the batch.
+#[test]
+fn an_identical_batch_retry_is_the_recorded_outcome_and_a_changed_one_conflicts() {
+    let mut h = harness();
+    let a = h.proposal(h.rent_legs(1_000), b"retry-a", EntryClass::ORIGINAL);
+    let b = h.proposal(h.rent_legs(2_000), b"retry-b", EntryClass::ORIGINAL);
+    let first = h
+        .post_batch(h.batch(b"batch-retry", vec![a.clone(), b.clone()]))
+        .expect("the batch commits");
+    let head = h.db.frontier().unwrap();
+    let again = h
+        .post_batch(h.batch(b"batch-retry", vec![a.clone(), b.clone()]))
+        .expect("an identical retry is the recorded outcome");
+    assert!(again.already_recorded);
+    assert_eq!(again.outcome, first.outcome);
+    assert_eq!(again.entries, first.entries);
+    assert_eq!(again.recorded_at, first.recorded_at);
+    assert_eq!(h.db.frontier().unwrap(), head, "nothing new was written");
+    // A retry from another process re-seals each description with fresh
+    // salts: the same request, so the same recorded outcome.
+    let reseal = |p: &EntryPayload| {
+        let mut p = p.clone();
+        p.description = Erasable::seal(
+            &"March rent".to_string(),
+            None,
+            &h.book.seal_key,
+            [9; 32],
+            [8; 24],
+        );
+        p
+    };
+    let resealed = h
+        .post_batch(h.batch(b"batch-retry", vec![reseal(&a), reseal(&b)]))
+        .expect("a resealed identical retry is the recorded outcome");
+    assert!(resealed.already_recorded);
+    assert_eq!(resealed.entries, first.entries);
+    assert_eq!(h.db.frontier().unwrap(), head, "nothing new was written");
+
+    let r = h
+        .post_batch(h.batch(b"batch-retry", vec![b.clone(), a.clone()]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-032", exit::CONFLICT), "{r}");
+    let c = h.proposal(h.rent_legs(3_000), b"retry-c", EntryClass::ORIGINAL);
+    let r = h
+        .post_batch(h.batch(b"batch-retry", vec![c.clone()]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-032", exit::CONFLICT), "{r}");
+    assert!(r.message.contains("batch key reused"), "{}", r.message);
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    // A member posted on its own first: the batch is refused, nothing new.
+    let solo = h
+        .post(h.request(c.clone(), &["post"]))
+        .expect("posted alone");
+    let r = h.post_batch(h.batch(b"batch-other", vec![c])).unwrap_err();
+    assert_eq!(r.exit, exit::CONFLICT, "{r}");
+    assert!(
+        r.message
+            .contains(&format!("{:032x}", solo.entry_ref().vid.0)),
+        "{}",
+        r.message
+    );
+}
+
+/// fa-nl7: the batch's own shape is checked before the kernel runs.
+#[test]
+fn a_batch_needs_members_of_one_principal_with_distinct_keys() {
+    let h = harness();
+    let a = h.proposal(h.rent_legs(1_000), b"shape-a", EntryClass::ORIGINAL);
+    let intent = |p: EntryPayload| fa_intents::PostIntent::new(p, Vec::new()).unwrap();
+    assert!(fa_intents::PostBatch::new(b"k".to_vec(), Vec::new()).is_err());
+    assert!(fa_intents::PostBatch::new(Vec::new(), vec![intent(a.clone())]).is_err());
+    assert!(
+        fa_intents::PostBatch::new(b"k".to_vec(), vec![intent(a.clone()), intent(a.clone())])
+            .is_err(),
+        "two members with one key"
+    );
+    let mut other = h.proposal(h.rent_legs(1_000), b"shape-b", EntryClass::ORIGINAL);
+    other.principal_ref = VId(31);
+    assert!(
+        fa_intents::PostBatch::new(b"k".to_vec(), vec![intent(a.clone()), intent(other)]).is_err(),
+        "two principals"
+    );
+    let batch = fa_intents::PostBatch::new(b"k".to_vec(), vec![intent(a)]).unwrap();
+    let bytes = batch.canonical_bytes().unwrap();
+    assert_eq!(fa_intents::PostBatch::decode(&bytes).unwrap(), batch);
+    for end in [0, 8, bytes.len() - 1] {
+        assert!(
+            fa_intents::PostBatch::decode(&bytes[..end]).is_err(),
+            "prefix {end}"
+        );
+    }
+}

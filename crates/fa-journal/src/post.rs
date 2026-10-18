@@ -285,6 +285,24 @@ impl PreparedPost {
         self.txn.abort();
     }
 
+    /// Hand a batch member's staged transaction to the next member (plan
+    /// §5.8), keeping what the batch commit reports for this member.
+    pub(crate) fn into_member(self) -> Result<(WriteTxn, BatchMember), KernelError> {
+        if self.planning || self.paired_reversal.is_some() {
+            self.txn.abort();
+            return Err(KernelError::Corrupt(
+                "a dry-run preparation or a replacement pair never joins a batch".into(),
+            ));
+        }
+        Ok((
+            self.txn,
+            BatchMember {
+                entry_ref: self.entry_ref,
+                period: self.period,
+            },
+        ))
+    }
+
     /// Publish once through the ordinary substrate validator. Expiry is
     /// judged again at the current frontier, without refreshing any of the
     /// preparation's revocation, policy, period, or accounting witnesses.
@@ -366,6 +384,13 @@ impl PreparedPost {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+/// What a committed batch reports for one member (plan §5.8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchMember {
+    pub entry_ref: EntryRef,
+    pub period: String,
 }
 
 /// How an entry's identity was derived (plan §4.9, §5.4): from the
@@ -579,7 +604,7 @@ fn footprint_refusal<V: asupersync::fs::Vfs + Clone>(
             let row = txn.vertex(db, current)?.ok_or_else(|| {
                 KernelError::Corrupt("an admitted reversal target vanished".into())
             })?;
-            let (entry, _) = checked_entry(db, &row)?;
+            let (entry, _) = checked_entry_staged(txn, db, &row)?;
             let predecessors = entry.proposal.supersession.iter().map(|s| s.target.vid);
             let applied = entry
                 .proposal
@@ -728,7 +753,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None, false)
+    prepare_post_in(db, ctx, book, req, None, false, None)
 }
 
 /// [`prepare_post`] for a dry run (plan §15.3): the same pipeline and
@@ -741,7 +766,22 @@ pub(crate) fn prepare_plan<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None, true)
+    prepare_post_in(db, ctx, book, req, None, true, None)
+}
+
+/// [`prepare_post`] for one member of an atomic batch (plan §5.8): the same
+/// pipeline, staged into the batch's transaction when one is `carried`, so
+/// the member reads every earlier member's staged effects as witnesses of
+/// the one commit. Any refusal or recorded outcome abandons the carried
+/// transaction, so nothing of the batch is staged.
+pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: PostRequest,
+    carried: Option<WriteTxn>,
+) -> Outcome<PostPreparation> {
+    prepare_post_in(db, ctx, book, req, None, false, carried)
 }
 
 /// Prepare the actual class over an optional already-staged reversal.
@@ -755,6 +795,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     req: PostRequest,
     replacement_basis: Option<ReplacementBasis>,
     planning: bool,
+    carried: Option<WriteTxn>,
 ) -> Outcome<PostPreparation> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let proposal = &req.proposal;
@@ -1272,8 +1313,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
 
     // From here every read is a witness of this transaction.
     let txn_cx = ctx.txn();
-    let (mut txn, paired_reversal) = match replacement_basis {
-        Some(ReplacementBasis::Staged(prepared)) => {
+    let (mut txn, paired_reversal) = match (replacement_basis, carried) {
+        // A replacement pair is its own two-member transaction; a batch
+        // never carries one (Replacement is not a batchable class).
+        (Some(ReplacementBasis::Staged(_)), Some(_)) => {
+            return Err(KernelError::Corrupt(
+                "a staged replacement pair never joins a batch transaction".into(),
+            ));
+        }
+        (Some(ReplacementBasis::Staged(prepared)), None) => {
             let PreparedPost {
                 txn,
                 request,
@@ -1290,7 +1338,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 }),
             )
         }
-        Some(ReplacementBasis::Recorded { .. }) | None => (db.begin(&txn_cx)?, None),
+        (_, Some(txn)) => (txn, None),
+        (Some(ReplacementBasis::Recorded { .. }) | None, None) => (db.begin(&txn_cx)?, None),
     };
     // The capability is not revoked (plan §14.2): the first read, so a
     // revoked token learns nothing about the book, not even a recorded outcome.
@@ -1367,11 +1416,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(identity_conflict(identity, evid)));
     }
     if let Some(row) = txn.vertex(db, evid)? {
+        let checked = checked_entry_staged(&txn, db, &row);
         txn.abort();
+        let (recorded, _) = checked?;
         if is_replacement && pair_recorded_at != Some(row.created_at) {
             return Ok(Err(identity_conflict(identity, evid)));
         }
-        let (recorded, _) = checked_entry(db, &row)?;
         if is_replacement
             && (recorded.approvals != req.approvals
                 || recorded.plan_certificate != req.plan_certificate)
@@ -2143,7 +2193,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     "cite the entry vid from `fa open-items`",
                 )));
             }
-            let (target, _) = checked_entry(db, &row)?;
+            let (target, _) = checked_entry_staged(&txn, db, &row)?;
             if target.entry_digest != s.target.entry_digest {
                 txn.abort();
                 return Ok(Err(Refusal::new(
@@ -2347,7 +2397,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 "cite the entry's vid from the posted event or `fa entry show`",
             )));
         }
-        let (original, _) = checked_entry(db, &row)?;
+        let (original, _) = checked_entry_staged(&txn, db, &row)?;
         if original.entry_digest != target.entry_digest {
             txn.abort();
             return Ok(Err(Refusal::new(
@@ -2522,7 +2572,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 let Some(grand) = txn.vertex(db, next_vid)? else {
                     break;
                 };
-                let (grand, _) = checked_entry(db, &grand)?;
+                let (grand, _) = checked_entry_staged(&txn, db, &grand)?;
                 if grand.proposal.legs.iter().any(|l| !l.settles.is_empty()) {
                     txn.abort();
                     return Ok(Err(not_implemented(
@@ -2545,7 +2595,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     let row = txn.vertex(db, s.target.vid)?.ok_or_else(|| {
                         KernelError::Corrupt("an applied-to entry is missing".into())
                     })?;
-                    checked_entry(db, &row)?;
+                    checked_entry_staged(&txn, db, &row)?;
                 }
                 let target_leg_vid = leg_vid(s.target.vid, s.ordinal);
                 if let MapEntry::Vacant(slot) = applied_delta.entry(target_leg_vid) {
@@ -2587,7 +2637,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 "cite the hold's vid from the posted event or `fa entry show`",
             )));
         }
-        let (pending_entry, _) = checked_entry(db, &row)?;
+        let (pending_entry, _) = checked_entry_staged(&txn, db, &row)?;
         if pending_entry.entry_digest != target.entry_digest {
             txn.abort();
             return Ok(Err(Refusal::new(
@@ -3094,6 +3144,29 @@ fn checked_entry<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     row: &VertexRow,
 ) -> Result<(Entry, CommitSeq), KernelError> {
+    checked_entry_with(row, |vid| Ok(db.vertex(vid)?))
+}
+
+/// [`checked_entry`] for a row a posting transaction read. A leg mirror is
+/// read from the committed basis exactly as before; only a leg absent there
+/// (an entry an earlier member of the same batch staged, plan §5.8) is read
+/// from the transaction's staged effects. A committed entry's legs never
+/// add a witness, so a single post records exactly the witnesses it did.
+fn checked_entry_staged<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    row: &VertexRow,
+) -> Result<(Entry, CommitSeq), KernelError> {
+    checked_entry_with(row, |vid| match db.vertex(vid)? {
+        Some(leg) => Ok(Some(leg)),
+        None => Ok(txn.vertex(db, vid)?),
+    })
+}
+
+fn checked_entry_with(
+    row: &VertexRow,
+    mut leg_row: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
+) -> Result<(Entry, CommitSeq), KernelError> {
     let (entry, recorded_at) = entry_of(row)?;
     let drift = |what: String| {
         KernelError::Corrupt(format!(
@@ -3109,7 +3182,7 @@ fn checked_entry<V: asupersync::fs::Vfs + Clone>(
     for k in 0..=legs.len() {
         let ordinal =
             u16::try_from(k).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
-        let leg_row = db.vertex(leg_vid(row.vid, ordinal))?;
+        let leg_row = leg_row(leg_vid(row.vid, ordinal))?;
         let mirrored = leg_row
             .as_ref()
             .and_then(|r| prop(r, property::ACCOUNT_REF));
@@ -3276,7 +3349,7 @@ fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
         Ok(PostPreparation::Ready(prepared)) => (None, ReplacementBasis::Staged(prepared)),
     };
     Ok(
-        prepare_post_in(db, ctx, book, replacement_req, Some(basis), false)?
+        prepare_post_in(db, ctx, book, replacement_req, Some(basis), false, None)?
             .map(|prepared| (prior, prepared)),
     )
 }

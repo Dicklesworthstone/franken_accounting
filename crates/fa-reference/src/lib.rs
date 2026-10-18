@@ -539,6 +539,21 @@ pub const MAX_TICK_UTC_NS: u64 = 9_223_372_036_854_775_807;
 /// Independent copy of `registries/limits.toml` `max_clock_skew_ns` (`366` days).
 pub const MAX_CLOCK_SKEW_NS: u64 = 31_622_400_000_000_000;
 
+/// The outcome of an atomic batch (plan §5.8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BatchVerdict {
+    /// Every member posted, in order: their journal indices.
+    Posted { indices: Vec<usize> },
+    /// An identical retry: the recorded members' journal indices.
+    Recorded { indices: Vec<usize> },
+    /// Nothing was recorded. `member` names the member that refused, or is
+    /// `None` when the batch key itself conflicts.
+    Refused {
+        member: Option<usize>,
+        code: &'static str,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// A new entry, with its index in the oracle's journal.
@@ -831,6 +846,7 @@ pub struct Recorded {
     pub epoch: u64,
 }
 
+#[derive(Clone)]
 pub struct Oracle {
     calendar: FiscalCalendar,
     accounts: BTreeMap<String, Account>,
@@ -884,6 +900,9 @@ pub struct Oracle {
     migration_keys: BTreeMap<(usize, Vec<u8>), (usize, Content)>,
     classes: EntryClasses,
     sod: SodPolicy,
+    /// Batch key -> (the recorded request, its members' journal indices)
+    /// (plan §5.9 IntentOutcome).
+    batches: BTreeMap<Vec<u8>, (Vec<Intent>, Vec<usize>)>,
     /// Tokens of revoked capabilities.
     revoked: BTreeSet<u64>,
     /// The security policy epoch: the number of activations so far.
@@ -941,6 +960,7 @@ impl Oracle {
             migration_keys: BTreeMap::new(),
             classes,
             sod,
+            batches: BTreeMap::new(),
             revoked: BTreeSet::new(),
             epoch: 0,
             minting_scheduled: false,
@@ -1436,6 +1456,51 @@ impl Oracle {
 
     pub fn post(&mut self, intent: &Intent) -> Verdict {
         self.post_with_claims(intent, &PostClaims::default())
+    }
+
+    /// An atomic batch (plan §5.8), modelled literally: every member posts
+    /// against the oracle as the earlier members leave it, and a refusal
+    /// anywhere leaves the oracle exactly as it was. The batch key names its
+    /// outcome (plan §5.9): an identical retry returns the recorded indices,
+    /// any other request under the key is an idempotency conflict, and a
+    /// member whose identity is already recorded refuses the batch.
+    pub fn post_batch(&mut self, key: &[u8], members: &[Intent]) -> BatchVerdict {
+        if let Some((request, indices)) = self.batches.get(key) {
+            return if request.as_slice() == members {
+                BatchVerdict::Recorded {
+                    indices: indices.clone(),
+                }
+            } else {
+                BatchVerdict::Refused {
+                    member: None,
+                    code: code::IDEMPOTENCY_CONFLICT,
+                }
+            };
+        }
+        let mut trial = self.clone();
+        let mut indices = Vec::with_capacity(members.len());
+        for (i, intent) in members.iter().enumerate() {
+            match trial.post(intent) {
+                Verdict::Posted { index, .. } => indices.push(index),
+                Verdict::Recorded { .. } => {
+                    return BatchVerdict::Refused {
+                        member: Some(i),
+                        code: code::IDEMPOTENCY_CONFLICT,
+                    };
+                }
+                Verdict::Refused { code } => {
+                    return BatchVerdict::Refused {
+                        member: Some(i),
+                        code,
+                    };
+                }
+            }
+        }
+        trial
+            .batches
+            .insert(key.to_vec(), (members.to_vec(), indices.clone()));
+        *self = trial;
+        BatchVerdict::Posted { indices }
     }
 
     /// Post a caller's intent and envelope claims through the same model law.

@@ -650,6 +650,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )
     }
 
+    /// Commit an atomic batch (plan §5.8) under the caller's capability:
+    /// every member through the posting pipeline in one transaction, with
+    /// the batch's IntentOutcome; an identical retry returns that outcome.
+    pub async fn post_batch(
+        &mut self,
+        cx: &PurposeContexts,
+        batch: fa_intents::PostBatch,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::BatchPosted> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(
+            fa_journal::post_batch(&mut self.db, cx, &self.context, capability.clone(), batch)
+                .await?,
+        )
+    }
+
     pub async fn post_balancing(
         &mut self,
         cx: &PurposeContexts,

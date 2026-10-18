@@ -138,6 +138,11 @@ name = "TransparencyCheckpoint"
 id = 41
 name = "RegisterState"
 
+# fa-nl7: the key-derived IntentOutcome of an atomic PostBatch (plan §5.9).
+[[label]]
+id = 42
+name = "IntentOutcome"
+
 # ---- property keys --------------------------------------------------------
 [[property]]
 id = 1
@@ -445,3 +450,8 @@ name = "CHECKPOINTS"
 [[relation]]
 id = 36
 name = "IN_MIGRATION_RUN"
+
+# fa-nl7: an Entry committed by a PostBatch -> the batch's IntentOutcome.
+[[relation]]
+id = 37
+name = "IN_BATCH"

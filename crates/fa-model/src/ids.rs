@@ -162,6 +162,19 @@ pub fn entry_vid(book: Id128, principal_scope: &[u8], idempotency_key: &[u8]) ->
     )
 }
 
+/// `vid(IntentOutcome) = H("fa:vid:intent-outcome:v1" ‖ book ‖
+/// principal_scope ‖ key)` (plan §5.9): one outcome per batch key under a
+/// principal, so an identical retry finds it with one point read. The
+/// domain differs from `entry_vid`'s, so a batch key never collides with
+/// a member entry's key.
+#[must_use]
+pub fn intent_outcome_vid(book: Id128, principal_scope: &[u8], idempotency_key: &[u8]) -> VId {
+    derive_vid(
+        b"fa:vid:intent-outcome:v1",
+        &[&book.0, principal_scope, idempotency_key],
+    )
+}
+
 /// `vid(MigrationRun) = H("fa:vid:migration-run:v1" ‖ book_id ‖ run_key)`
 /// (plan §8.6): one run per key, so a retry is a new run under a new key.
 #[must_use]

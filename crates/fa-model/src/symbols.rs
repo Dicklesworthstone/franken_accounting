@@ -67,6 +67,7 @@ symbols!(
         (LEGAL_HOLD_CELL, "LegalHoldCell", 39),
         (TRANSPARENCY_CHECKPOINT, "TransparencyCheckpoint", 40),
         (REGISTER_STATE, "RegisterState", 41),
+        (INTENT_OUTCOME, "IntentOutcome", 42),
     ]
 );
 
@@ -176,6 +177,7 @@ symbols!(
         (HOLDS, "HOLDS", 34),
         (CHECKPOINTS, "CHECKPOINTS", 35),
         (IN_MIGRATION_RUN, "IN_MIGRATION_RUN", 36),
+        (IN_BATCH, "IN_BATCH", 37),
     ]
 );
 

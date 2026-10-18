@@ -109,7 +109,9 @@ pub use certificate::{
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
 pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
-pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};
+pub use fa_intents::{
+    IntentError, MAX_BATCH_BYTES, MAX_PLAN_BYTES, PlanCertificate, PostBatch, PostIntent, PostPlan,
+};
 pub use fa_journal::{
     AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, DocumentEvidenceSummary,
     EventRow, EvidenceExplanation, ExternalIdRow, InstantSelection, InstrumentRow, LegalEntityRow,

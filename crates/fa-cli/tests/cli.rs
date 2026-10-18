@@ -224,6 +224,96 @@ fn an_identical_period_transition_retry_is_the_recorded_outcome() -> std::io::Re
     Ok(())
 }
 
+/// fa-nl7: `fa post --intent` with a PostBatch intent commits every member
+/// in one commit; an identical retry is the recorded outcome; the same key
+/// with other members is a conflict (exit 6); a refused member names its
+/// index and nothing of the batch is posted.
+#[test]
+fn a_batch_intent_posts_atomically_and_its_retry_is_the_recorded_outcome() -> std::io::Result<()> {
+    let dir = tmp("batch-intent")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Batch Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+    let member = |key: &str, amount: &str| {
+        format!(
+            r#"{{"effective_date":"2026-03-15","idempotency_key":"{key}","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6000","amount":"{amount} USD"}},{{"side":"credit","account":"1000","amount":"{amount} USD"}}]}}"#
+        )
+    };
+    let batch = |key: &str, members: &[String]| {
+        format!(
+            r#"{{"idempotency_key":"{key}","intents":[{}]}}"#,
+            members.join(",")
+        )
+    };
+    let path = write(
+        &dir,
+        "batch.json",
+        &batch("b1", &[member("m1", "10.00"), member("m2", "20.00")]),
+    );
+    let posted = ok(&["post", "--intent", &path, "--json"]);
+    eprintln!("batch intent: {posted}");
+    assert_eq!(field(&posted, "event"), Some("batch_posted"), "{posted}");
+    let data = doc(&posted);
+    assert_eq!(
+        data.get("already_recorded"),
+        Some(&Json::Bool(false)),
+        "{posted}"
+    );
+    assert_eq!(arr(&data, "members").len(), 2, "{posted}");
+    let recorded_at = int(&data, "recorded_at");
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(tb.contains("30.00 USD"), "both members folded: {tb}");
+
+    let again = ok(&["post", "--intent", &path, "--json"]);
+    let data = doc(&again);
+    assert_eq!(
+        data.get("already_recorded"),
+        Some(&Json::Bool(true)),
+        "{again}"
+    );
+    assert_eq!(int(&data, "recorded_at"), recorded_at, "{again}");
+
+    let changed = write(&dir, "changed.json", &batch("b1", &[member("m3", "5.00")]));
+    let (code, out, _) = fa(Some(&book), &["post", "--intent", &changed, "--json"]);
+    assert_eq!(code, 6, "same key, other members: {out}");
+    assert!(out.contains("\"refusal_id\":\"FA-REF-032\""), "{out}");
+
+    let refused = write(
+        &dir,
+        "refused.json",
+        &batch(
+            "b2",
+            &[
+                member("m4", "1.00"),
+                member("m5", "1.00").replace("6000", "9999"),
+            ],
+        ),
+    );
+    let (code, out, _) = fa(Some(&book), &["post", "--intent", &refused, "--json"]);
+    eprintln!("batch intent refused: {code} {out}");
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("batch member 1"), "{out}");
+    let tb_after = ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(
+        !tb_after.contains("31.00 USD"),
+        "member 0 was not posted: {tb_after}"
+    );
+    Ok(())
+}
+
 /// fa-ih4: posting ahead of the book's fiscal years is a safety refusal
 /// (FA-REF-021, exit 7) naming the command that creates the year, never a
 /// "corrupt row" foundation failure; following the fix admits the post.
@@ -4026,6 +4116,15 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["post", "--intent", &bad, "--evidence", &ev]).0,
         3
     );
+    // A PostBatch intent (fa-nl7) emits `batch_posted`.
+    let batch = write(
+        &dir,
+        "batch.json",
+        &format!(
+            r#"{{"idempotency_key":"batch","intents":[{{"effective_date":"2026-03-15","idempotency_key":"batch-rent","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6000","amount":"1.00 USD"}},{{"side":"credit","account":"1000","amount":"1.00 USD"}}]}}]}}"#
+        ),
+    );
+    assert_eq!(run(true, &["post", "--intent", &batch]).0, 0);
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(run(true, &["procedure", "list"]).0, 0);

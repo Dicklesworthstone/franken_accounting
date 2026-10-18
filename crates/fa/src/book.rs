@@ -1001,6 +1001,22 @@ impl Book {
         )))
     }
 
+    /// Commit an atomic batch of entries (plan §5.8): all or none, in order,
+    /// each member seeing the earlier members' effects, with the batch's
+    /// key-derived IntentOutcome. An identical retry returns the recorded
+    /// outcome without writing; the same key with different members is an
+    /// idempotency conflict.
+    pub fn post_batch(
+        &mut self,
+        batch: fa_intents::PostBatch,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::BatchPosted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.post_batch(
+            &purposes, batch, capability,
+        )))
+    }
+
     /// Post with a balancing leg (plan §5.5): leg `leg` moves at most what its
     /// account's limit admits, decided inside the posting transaction; the
     /// request is the entry's identity (`fa post --balancing`).

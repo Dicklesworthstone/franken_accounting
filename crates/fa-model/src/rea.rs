@@ -828,7 +828,8 @@ impl EventSpec {
             return Err(r.invalid("event.code"));
         }
         let kind_tag = r.u8("event.kind")?;
-        let kind = EventKind::from_tag(kind_tag).ok_or_else(|| r.bad_tag("event.kind", kind_tag))?;
+        let kind =
+            EventKind::from_tag(kind_tag).ok_or_else(|| r.bad_tag("event.kind", kind_tag))?;
         let occurred_on = DateDay(r.i32("event.occurred_on")?);
         let description = Erasable::decode(&mut r, MAX_DESCRIPTION_BYTES)?;
         let participants = r.list(MAX_EVENT_PARTICIPANTS, "event.participants", |r| {
