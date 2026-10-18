@@ -1222,21 +1222,22 @@ pub fn remeasure_temporal(
         }
 
         // Validate basis admissibility against account_type per ASC 830-10-45-17 / IAS 21.23.
-        let basis_ok = match (line.account_type, line.basis) {
+        let basis_ok = matches!(
+            (line.account_type, line.basis),
             (
                 AccountType::ASSET | AccountType::LIABILITY,
                 RemeasurementBasis::MonetaryClosing
-                | RemeasurementBasis::NonMonetaryHistorical { .. },
-            ) => true,
-            (AccountType::EQUITY, RemeasurementBasis::NonMonetaryHistorical { .. }) => true,
-            (AccountType::REVENUE, RemeasurementBasis::FlowAverage) => true,
-            (
-                AccountType::EXPENSE,
-                RemeasurementBasis::FlowAverage
-                | RemeasurementBasis::HistoricalCostAllocation { .. },
-            ) => true,
-            _ => false,
-        };
+                    | RemeasurementBasis::NonMonetaryHistorical { .. },
+            ) | (
+                AccountType::EQUITY,
+                RemeasurementBasis::NonMonetaryHistorical { .. }
+            ) | (AccountType::REVENUE, RemeasurementBasis::FlowAverage)
+                | (
+                    AccountType::EXPENSE,
+                    RemeasurementBasis::FlowAverage
+                        | RemeasurementBasis::HistoricalCostAllocation { .. },
+                )
+        );
         if !basis_ok {
             return Err(fx_refusal(format!(
                 "line {idx} account_type {:?} is not admissible with temporal remeasurement basis {:?}",
@@ -1491,6 +1492,7 @@ pub fn verify_remeasurement_certificate(
 /// that posts `delta_remeasurement_gain_credit` between `remeasurement_adjustment_account` (balance sheet)
 /// and `remeasurement_gain_loss_account` (P&L), citing the period's `closing_rate_doc`, `average_rate_doc`,
 /// and `historical_rate_docs`.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_remeasurement_entry(
     mut template: EntryPayload,
     run: &RemeasurementRunResult,

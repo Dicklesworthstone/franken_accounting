@@ -334,7 +334,7 @@ pub fn fold_lots_from_open_items(
             )));
         }
         let entry_digest = entry_digests.get(&entry_vid).copied().unwrap_or([0u8; 32]);
-        for (qty_leg, cost_leg) in qty_legs.into_iter().zip(cost_legs.into_iter()) {
+        for (qty_leg, cost_leg) in qty_legs.into_iter().zip(cost_legs) {
             if qty_leg.side != cost_leg.side {
                 return Err(RegisterError::InvalidSelection(format!(
                     "entry {:032x} quantity leg {} ({:?}) and cost leg {} ({:?}) have opposite sides",

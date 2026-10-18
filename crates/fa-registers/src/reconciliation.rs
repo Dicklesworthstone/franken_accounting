@@ -1315,7 +1315,7 @@ mod tests {
         };
         let matches = match_bank_lines(
             &[b1.clone(), fee_line.clone()],
-            &[e1.clone()],
+            std::slice::from_ref(&e1),
             &config,
             VId(7),
         )
