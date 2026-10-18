@@ -672,3 +672,48 @@ fn a_consumed_cash_leg_does_not_hide_competition_between_statement_lines() {
     }
     assert_eq!(head(&f.book), before);
 }
+
+#[test]
+fn quoted_csv_descriptions_survive_retention_reopen_and_exact_matching() {
+    let f = Fixture::new();
+    f.post("quoted-reference", "2026-03-05", "debit", "1.00", "SALE,1");
+    let raw = format!(
+        "{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,1.00,2026-03-05,2026-03-05,CRDT,1.00,\"Acme,\n\"\"Ltd\"\"\",\"SALE,1\"\n"
+    );
+    let imported = f.import("quoted-fields.csv", "csv", &raw);
+    let manifest = text(data(&imported), "manifest_oid");
+    assert_eq!(integer(data(&imported), "line_count"), 1);
+    let after_import = head(&f.book);
+    let source = ok(
+        &f.book,
+        &["document", "read", text(data(&imported), "statement_oid")],
+    );
+    assert_eq!(
+        text(data(&source).get("text").unwrap(), "untrusted_content"),
+        raw,
+    );
+    let matched = ok(
+        &f.book,
+        &["bank", "match", "--import", manifest, "--date-window", "0"],
+    );
+    assert_eq!(integer(data(&matched), "proposed_count"), 1);
+    assert_eq!(integer(data(&matched), "ambiguous_count"), 0);
+    assert_eq!(text(data(&matched), "closing_difference"), "0.00 USD");
+    let row = &rows(data(&matched), "proposals")[0];
+    assert_eq!(
+        text(row.get("counterparty").unwrap(), "untrusted_content"),
+        "Acme,\n\"Ltd\"",
+    );
+    assert_eq!(
+        text(row.get("reference").unwrap(), "untrusted_content"),
+        "SALE,1",
+    );
+    let source = format!("D:{}", text(row, "line_document_oid"));
+    assert_eq!(text(row.get("counterparty").unwrap(), "source"), source);
+    assert_eq!(text(row.get("reference").unwrap(), "source"), source);
+    assert_eq!(head(&f.book), after_import);
+    let repeated = f.import("quoted-fields-again.csv", "csv", &raw);
+    assert_eq!(text(data(&repeated), "manifest_oid"), manifest);
+    assert_eq!(data(&repeated).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(head(&f.book), after_import);
+}

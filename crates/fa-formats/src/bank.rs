@@ -1008,19 +1008,35 @@ pub fn parse_camt052(xml: &str, units: &UnitCatalog) -> Result<BankStatementExtr
 
 /// Parse a CSV bank statement into a [`BankStatementExtract`] (plan §9.5, §15.9; bead `fa-2ek`).
 ///
+/// Exactly twelve columns, with one consistent statement identity and closing date.
+/// Quoted commas, doubled quotes and embedded newlines are supported.
 /// Expected header:
 /// `sequence_number,instrument_id,currency,statement_date,opening_balance,closing_balance,booking_date,value_date,side,amount,counterparty,reference`
 pub fn parse_bank_csv(csv: &str, units: &UnitCatalog) -> Result<BankStatementExtract, FormatError> {
     const FMT: &str = "bank_csv_v1";
-    let mut non_empty = csv.lines().map(str::trim).filter(|l| !l.is_empty());
+    let records = bank_csv_records(csv)?;
+    let mut non_empty = records.into_iter();
     let Some(header) = non_empty.next() else {
         return Err(FormatError::Parse {
             format: FMT,
             detail: "empty CSV bank statement".to_owned(),
         });
     };
-    let cols: Vec<&str> = header.split(',').map(str::trim).collect();
-    if cols.len() < 12 || cols[0] != "sequence_number" {
+    const HEADER: [&str; 12] = [
+        "sequence_number",
+        "instrument_id",
+        "currency",
+        "statement_date",
+        "opening_balance",
+        "closing_balance",
+        "booking_date",
+        "value_date",
+        "side",
+        "amount",
+        "counterparty",
+        "reference",
+    ];
+    if header.iter().map(|field| field.trim()).ne(HEADER) {
         return Err(FormatError::Parse {
             format: FMT,
             detail: format!("unexpected bank CSV header {header:?}"),
@@ -1035,12 +1051,12 @@ pub fn parse_bank_csv(csv: &str, units: &UnitCatalog) -> Result<BankStatementExt
     let mut closing_balance: Option<i128> = None;
     let mut lines = Vec::new();
 
-    for (idx, line) in non_empty.enumerate() {
-        let fields: Vec<&str> = line.split(',').map(str::trim).collect();
-        if fields.len() < 12 {
+    for (idx, record) in non_empty.enumerate() {
+        let fields: Vec<&str> = record.iter().map(|field| field.trim()).collect();
+        if fields.len() != 12 {
             return Err(FormatError::Parse {
                 format: FMT,
-                detail: format!("bank CSV row {} has fewer than 12 columns", idx + 1),
+                detail: format!("bank CSV row {} must have exactly 12 columns", idx + 1),
             });
         }
         let row_seq: u64 = fields[0].parse().map_err(|_| FormatError::Parse {
@@ -1048,6 +1064,12 @@ pub fn parse_bank_csv(csv: &str, units: &UnitCatalog) -> Result<BankStatementExt
             detail: format!("invalid sequence_number {:?}", fields[0]),
         })?;
         let row_inst = fields[1];
+        if row_inst.is_empty() {
+            return Err(FormatError::Parse {
+                format: FMT,
+                detail: "bank CSV instrument_id must not be empty".to_owned(),
+            });
+        }
         let row_ccy = fields[2];
         let (unit_id, unit_scale) =
             units
@@ -1070,6 +1092,7 @@ pub fn parse_bank_csv(csv: &str, units: &UnitCatalog) -> Result<BankStatementExt
         } else if row_seq != seq
             || row_inst != instrument_id
             || row_ccy != currency
+            || row_stmt_date != statement_date
             || Some(row_open) != opening_balance
             || Some(row_close) != closing_balance
         {
@@ -1140,6 +1163,78 @@ pub fn parse_bank_csv(csv: &str, units: &UnitCatalog) -> Result<BankStatementExt
     };
     extract.verify_internal_balance()?;
     Ok(extract)
+}
+
+/// Read the declared bank CSV layout without splitting a quoted counterparty,
+/// reference, or embedded newline into a different column or transaction.
+/// Malformed quotes and extra columns are refused rather than losing input.
+fn bank_csv_records(csv: &str) -> Result<Vec<Vec<String>>, FormatError> {
+    const FMT: &str = "bank_csv_v1";
+    let invalid = |detail: &str| FormatError::Parse {
+        format: FMT,
+        detail: detail.to_owned(),
+    };
+    let mut records = Vec::new();
+    let mut record = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut closed_quote = false;
+    let mut chars = csv
+        .strip_prefix('\u{feff}')
+        .unwrap_or(csv)
+        .chars()
+        .peekable();
+    while let Some(ch) = chars.next() {
+        if quoted {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    quoted = false;
+                    closed_quote = true;
+                }
+            } else {
+                field.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            '"' if field.is_empty() && !closed_quote => quoted = true,
+            ',' => {
+                record.push(core::mem::take(&mut field));
+                if record.len() >= 12 {
+                    return Err(invalid("bank CSV record has more than 12 columns"));
+                }
+                closed_quote = false;
+            }
+            '\r' | '\n' => {
+                if ch == '\r' && chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                if !record.is_empty() || !field.trim().is_empty() || closed_quote {
+                    record.push(core::mem::take(&mut field));
+                    records.push(core::mem::take(&mut record));
+                } else {
+                    field.clear();
+                }
+                closed_quote = false;
+            }
+            '"' => return Err(invalid("unexpected quote in an unquoted bank CSV field")),
+            _ if closed_quote => {
+                return Err(invalid("unexpected text after a quoted bank CSV field"));
+            }
+            _ => field.push(ch),
+        }
+    }
+    if quoted {
+        return Err(invalid("unterminated quoted bank CSV field"));
+    }
+    if !record.is_empty() || !field.trim().is_empty() || closed_quote {
+        record.push(field);
+        records.push(record);
+    }
+    Ok(records)
 }
 
 /// Parse a SWIFT `MT940` statement (`:25:`, `:28C:`, `:60F:`, `:61:`, `:86:`, `:62F:`)
@@ -1696,6 +1791,54 @@ mod tests {
             parse_ofx_qbo(ofx, &units).unwrap()
         );
         assert!(parse_ofx_qbo(&ofx.replace("Customer", "Customer &unknown;"), &units).is_err());
+    }
+
+    const CSV_HEADER: &str = "sequence_number,instrument_id,currency,statement_date,opening_balance,closing_balance,booking_date,value_date,side,amount,counterparty,reference";
+
+    fn csv_statement() -> String {
+        format!(
+            "{CSV_HEADER}\n1,ACCT-001,USD,2026-01-31,0.00,1.00,2026-01-10,2026-01-10,CRDT,1.00,Customer,INV-100\n"
+        )
+    }
+
+    #[test]
+    fn bank_csv_preserves_quoted_fields_and_refuses_ambiguous_layouts() {
+        let units = UnitCatalog::embedded().unwrap();
+        let csv = format!(
+            "\u{feff}{CSV_HEADER}\r\n1,ACCT-001,USD,2026-01-31,0.00,1.00,2026-01-10,2026-01-10,CRDT,1.00,\"Acme, \"\"Ltd\"\"\",\"invoice\n100\"\r\n"
+        );
+        let statement = parse_bank_csv(&csv, &units).unwrap();
+        assert_eq!(statement.lines.len(), 1);
+        assert_eq!(statement.lines[0].amount.mantissa, 100);
+        assert_eq!(statement.lines[0].counterparty, "Acme, \"Ltd\"");
+        assert_eq!(statement.lines[0].reference, "invoice\n100");
+        for bad in [
+            csv_statement().replace("side,amount", "amount,side"),
+            csv_statement().replace("currency,statement_date", "currency,currency"),
+            csv_statement().replacen("reference", "reference,ignored", 1),
+            csv_statement().replace("Customer,INV-100", "Customer"),
+            csv_statement().replace("Customer,INV-100", "Customer,INV-100,"),
+            csv_statement().replace("Customer,INV-100", "Customer,INV-100,ignored"),
+            csv_statement().replace("Customer,INV-100", "\"Customer,INV-100"),
+            csv_statement().replace("Customer,INV-100", "\"Customer\"lost,INV-100"),
+            csv_statement().replace("Customer,INV-100", "Cus\"tomer,INV-100"),
+            csv_statement().replace("CRDT,1.00", "CRDT,1e0"),
+            csv_statement().replace("ACCT-001", ""),
+        ] {
+            assert!(parse_bank_csv(&bad, &units).is_err(), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn bank_csv_requires_one_consistent_statement_date() {
+        let units = UnitCatalog::embedded().unwrap();
+        let csv = format!(
+            "{CSV_HEADER}\n1,ACCT-001,USD,2026-01-31,0.00,2.00,2026-01-10,2026-01-10,CRDT,1.00,A,1\n1,ACCT-001,USD,2026-02-28,0.00,2.00,2026-01-10,2026-01-10,CRDT,1.00,B,2\n"
+        );
+        assert!(matches!(
+            parse_bank_csv(&csv, &units),
+            Err(FormatError::Parse { detail, .. }) if detail.contains("header")
+        ));
     }
 
     #[test]
