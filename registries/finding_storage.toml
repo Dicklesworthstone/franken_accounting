@@ -109,3 +109,20 @@ required_ops = ["read"]
 expectation_source = "independently_retained_recipient_request"
 # replay_finding_review_workpaper is local as-supplied replay only.
 # replay_finding_review_workpaper_for additionally binds this external request.
+
+# Explicit selections from one verified run use the same immutable v1 decision
+# records as review_finding. No new batch object or saved group identity exists.
+[review_batch]
+max_decisions = 64
+max_note_bytes = 131072
+max_lineage_and_evidence_edges = 1152
+required_ops = ["read", "approve"]
+required_profile = "Human"
+selection = "distinct_explicit_occurrences_in_one_recorded_run"
+publication = "all_new_at_one_native_sequence_or_all_exact_retries_at_one_original_sequence"
+result_order = "certified_occurrence_order"
+# Each predecessor, reason, note and evidence set remains explicit. A request
+# outside the named run, invalid evidence, self-review, stale predecessor or
+# mixed existing/new set refuses the entire operation before publication. Exact
+# same-publication subsets are valid retries, not claims about original command
+# membership. No observation, journal posting or original workpaper is changed.

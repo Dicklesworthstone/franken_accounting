@@ -1,5 +1,7 @@
 use super::*;
 
+mod batch;
+
 #[test]
 fn a_complete_run_includes_open_reviewed_and_dismissed_occurrences_in_source_order() {
     let mut f = Fixture::new(161);

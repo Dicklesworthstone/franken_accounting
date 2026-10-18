@@ -562,148 +562,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(h) => h,
             Err(r) => return Ok(Err(r)),
         };
-        if history.finding.producer == principal {
-            return Ok(Err(fa_journal::policy::refusal(
-                &fa_policy::Denial::SelfApproval {
-                    rule: "finding_reviewer excludes the procedure certificate producer".into(),
-                    approver: principal,
-                },
-            )));
-        }
-        let ordinal = match request.expected_previous {
-            None => 0,
-            Some(previous) => match history
-                .reviews
-                .iter()
-                .position(|review| review.review_vid == previous)
-            {
-                Some(index) => index + 1,
-                None => return Ok(Err(conflict())),
-            },
-        };
-        let body = Body {
-            book: self.context().book_id,
-            certificate: history.finding.certificate_digest,
-            ordinal: ordinal as u32,
-            principal,
-            capability: capability
-                .commitment()
-                .map_err(|e| BookError::Kernel(KernelError::Corrupt(e.to_string())))?,
-            request: request.clone(),
-        };
-        let bytes = match body.encode() {
-            Ok(bytes) => bytes,
+        let prepared = match run::prepare(self.context().book_id, principal, capability, &history, request) {
+            Ok(prepared) => prepared,
             Err(r) => return Ok(Err(r)),
         };
-        if let Some(recorded) = history.reviews.get(ordinal) {
-            if *recorded != body.result(recorded.recorded_at) {
-                return Ok(Err(conflict()));
-            }
-            // Recheck current authority even for a no-op historical retry.
-            if let Err(r) = authorize_reviewer(self, cx, principal, capability)? {
-                return Ok(Err(r));
-            }
-            return Ok(Ok(recorded.clone()));
-        }
-        if request.expected_previous != history.latest_review() {
-            return Ok(Err(conflict()));
-        }
-        let dismissed = matches!(history.status(), FindingReviewStatus::Dismissed { .. });
-        if request.action == FindingReviewAction::Reopen && !dismissed
-            || request.action == FindingReviewAction::Acknowledge && dismissed
-        {
-            return Ok(Err(refused(
-                "only a dismissal can be reopened; acknowledging a dismissed finding requires explicit reopening first",
-            )));
-        }
-        let head = history.checked_through;
-        if let Err(r) = self.query(cx, |db, book| {
-            check_evidence(db, book, &request.evidence, head, head)
-        })? {
-            return Ok(Err(r));
-        }
-        let mut txn = self.db.begin(&cx.txn()).map_err(KernelError::from)?;
-        if txn.basis() != head {
-            txn.abort();
-            return Ok(Err(conflict()));
-        }
-        if let Err(d) = fa_policy::current(capability, txn.basis()) {
-            txn.abort();
-            return Ok(Err(fa_journal::policy::refusal(&d)));
-        }
-        if let Err(r) =
-            fa_journal::policy::capability_witness(&txn, &self.db, self.context(), capability)?
-        {
-            txn.abort();
-            return Ok(Err(r));
-        }
-        fa_journal::policy::epoch_witness(&txn, &self.db)?;
-        let id = body.id();
-        if txn
-            .vertex(&self.db, id)
-            .map_err(KernelError::from)?
-            .is_some()
-        {
-            txn.abort();
-            return Ok(Err(conflict()));
-        }
-        let mut props = vec![
-            (
-                property::FA_PAYLOAD,
-                scalar_bytes("review payload", bytes.clone())?,
-            ),
-            (
-                property::FA_DIGEST,
-                scalar_bytes("review digest", decision_digest(&bytes).to_vec())?,
-            ),
-            (
-                property::BOOK_ID,
-                scalar_bytes("review book", self.context().book_id.0.to_vec())?,
-            ),
-        ];
-        props.sort_by_key(|(key, _)| key.0);
-        let mut resolved = WriteBatch::new(relation::RESOLVES);
-        resolved.create_vertex(id, vec![label::FINDING], props);
-        let mut supersedes = WriteBatch::new(relation::SUPERSEDES);
-        let mut citations = WriteBatch::new(relation::CITES);
-        for (kind, target) in links(&body) {
-            let rel = match kind {
-                ReviewLink::Finding => relation::RESOLVES,
-                ReviewLink::Previous => relation::SUPERSEDES,
-                ReviewLink::Evidence => relation::CITES,
-            };
-            if txn
-                .vertex(&self.db, target)
-                .map_err(KernelError::from)?
-                .is_none()
-            {
-                txn.abort();
-                return Ok(Err(invalid("review target is no longer retained")));
-            }
-            let batch = if rel == relation::RESOLVES {
-                &mut resolved
-            } else if rel == relation::SUPERSEDES {
-                &mut supersedes
-            } else {
-                &mut citations
-            };
-            batch.add_edge(edge_id(rel, id, target), id, target, vec![]);
-        }
-        let mut batches = vec![resolved];
-        if request.expected_previous.is_some() {
-            batches.push(supersedes);
-        }
-        if !request.evidence.is_empty() {
-            batches.push(citations);
-        }
-        if let Err(e) = txn.write_ordered(&mut self.db, batches) {
-            txn.abort();
-            return refused_write(e);
-        }
-        cx.commit().checkpoint().map_err(BookError::Context)?;
-        match txn.commit(&mut self.db, &cx.commit()).await {
-            Ok(at) => Ok(Ok(body.result(at))),
-            Err(e) => refused_write(e),
+        match run::publish(self, cx, principal, capability, history.checked_through, vec![prepared]).await? {
+            Ok(mut decisions) => match decisions.pop() {
+                Some(decision) => Ok(Ok(decision)),
+                None => Ok(Err(invalid("single review publication returned no decision"))),
+            },
+            Err(r) => Ok(Err(r)),
         }
     }
 }

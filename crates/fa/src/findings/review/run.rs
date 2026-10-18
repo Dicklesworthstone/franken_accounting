@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 
 use super::*;
 
+mod batch;
+pub(super) use batch::{prepare, publish};
+
 pub const MAX_RUN_REVIEW_DECISIONS: usize = 8192;
 pub const MAX_RUN_REVIEW_NOTE_BYTES: usize = 8 * 1024 * 1024;
 
