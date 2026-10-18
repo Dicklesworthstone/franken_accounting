@@ -78,3 +78,24 @@ required_ops = ["read"]
 scope = "one_complete_recorded_procedure_run"
 # Bounds count every selected finding's decisions through the current frontier,
 # before historical filtering. Exhaustion refuses the entire result.
+
+# A new review revision wraps the COMPLETE original v1 workpaper, unmodified,
+# with separate complete review JSONL and escaped Markdown appendices.
+[review_workpaper]
+format = "fa:finding-review-workpaper:v1"
+digest_domain = "fa:finding-review-workpaper-digest:v1"
+max_bytes = 67108864
+numbering = "original_workpaper_id_plus_explicit_review_cutoff"
+export_ops = ["read", "produce"]
+replay_ops = ["read"]
+proof_class = "retained_history_replay"
+# Length-prefixed format/id, LE u64 review cutoff, length-prefixed original
+# canonical workpaper/JSONL/Markdown, then domain-separated 32-byte body digest.
+# Revision id = <original_workpaper_id>-R-<review_cutoff>. Source computation
+# and review cutoff are distinct coordinates. No new native publication occurs.
+# The advancing checked_through frontier is a replay receipt, never part of the
+# fixed package. Subsequent decisions leave a fixed-cutoff package unchanged;
+# subsequent damage still refuses replay. Public-hash repair supplies no proof.
+# Review appendices alone omit original observations: ship the complete package.
+# Retained Document references are not document-blob bytes. Human reasons and
+# capability bindings are not signatures, accusations or economic-truth claims.

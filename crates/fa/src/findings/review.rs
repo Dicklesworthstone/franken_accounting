@@ -17,6 +17,8 @@ use fa_policy::Profile;
 
 mod run;
 pub use run::{FindingRunReviewHistory, MAX_RUN_REVIEW_DECISIONS, MAX_RUN_REVIEW_NOTE_BYTES};
+pub mod workpaper;
+pub use workpaper::{FindingReviewWorkpaper, FINDING_REVIEW_WORKPAPER_FORMAT, MAX_FINDING_REVIEW_WORKPAPER_BYTES};
 
 pub const FINDING_REVIEW_FORMAT: &[u8] = b"fa:finding-review:v1";
 pub const MAX_FINDING_REVIEWS: usize = 256;
