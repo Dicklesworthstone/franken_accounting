@@ -354,7 +354,11 @@ fn through_daemon(
         Ok(token) => token,
         Err(e) => return cli::foundation_error(argv, format!("capability token: {e}"), capture),
     };
-    let request = match routing::request_as(parsed, dir, files, &reg.daemon, token) {
+    let routed = match token {
+        None => routing::request(parsed, dir, files, &reg.daemon),
+        token @ Some(_) => routing::request_as(parsed, dir, files, &reg.daemon, token),
+    };
+    let request = match routed {
         Ok(request) => request,
         Err(routing::Error::Usage(message)) => {
             return cli::usage_error(
