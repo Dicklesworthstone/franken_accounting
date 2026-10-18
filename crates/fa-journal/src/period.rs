@@ -1132,6 +1132,56 @@ pub fn period_transitions<V: asupersync::fs::Vfs + Clone>(
     Ok(out)
 }
 
+/// The `AS ORIGINALLY REPORTED` coordinate of one period (plan §7.4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginallyReported {
+    pub period: String,
+    /// The known-at sequence every read `AS ORIGINALLY REPORTED` pins.
+    pub known_at: CommitSeq,
+    /// The control entry that fixed it: today always the first Lock.
+    pub basis: PeriodTransitionRecord,
+}
+
+/// Where `AS ORIGINALLY REPORTED` pins a period's reads (plan §7.4): the
+/// first `StatementIssuance` of the period and, absent any issuance, its
+/// first `Lock` transition, never its first `Close`, because `Closed`
+/// admits audit adjustments by design. No `StatementIssuance` is journaled
+/// yet (IssueStatements is not an intent), so the first Lock decides; a
+/// period never locked was never reported, which is a refusal, not HEAD.
+pub fn originally_reported<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+) -> Outcome<OriginallyReported> {
+    if db
+        .vertex(period_vid(&book.calendar.id, period_code))?
+        .is_none()
+    {
+        return Ok(Err(unknown_period(book, period_code)));
+    }
+    let first_lock = period_transitions(db, book, period_code)?
+        .into_iter()
+        .find(|t| t.to == PeriodState::Locked);
+    Ok(match first_lock {
+        Some(lock) => Ok(OriginallyReported {
+            period: period_code.to_string(),
+            known_at: lock.recorded_at,
+            basis: lock,
+        }),
+        None => Err(Refusal::new(
+            code::NOT_ORIGINALLY_REPORTED,
+            exit::REFUSAL,
+            format!(
+                "period `{period_code}` has no Lock transition and no statement issuance, so nothing was originally reported (an opening period born Locked has neither)"
+            ),
+            "plan §7.4 (AS ORIGINALLY REPORTED pins the first StatementIssuance, else the first Lock; never the first Close)",
+            format!(
+                "read the period as currently stated (omit --as-originally-reported), or lock it once it is final: fa period lock {period_code}"
+            ),
+        )),
+    })
+}
+
 /// One fiscal period's refolded state vs its stored `Period.state` mirror (`fa verify periods`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeriodCheck {

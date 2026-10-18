@@ -1587,6 +1587,15 @@ impl Book {
         with_store!(&self.store, core => core.period_transitions(&self.purposes(), period_code))
     }
 
+    /// Where `AS ORIGINALLY REPORTED` pins `period_code`'s reads (plan §7.4):
+    /// its first Lock transition (no StatementIssuance is journaled yet).
+    pub fn originally_reported(
+        &self,
+        period_code: &str,
+    ) -> Outcome<fa_journal::OriginallyReported> {
+        with_store!(&self.store, core => core.originally_reported(&self.purposes(), period_code))
+    }
+
     /// Timed holds reached by the latest committed tick and still pending.
     pub fn due_holds(&self) -> Result<Vec<fa_journal::DueHold>, BookError> {
         with_store!(&self.store, core => core.due_holds(&self.purposes()))

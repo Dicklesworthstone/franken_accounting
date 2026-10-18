@@ -2269,6 +2269,157 @@ fn reverse_with_a_replacement_posts_one_atomic_correction() -> std::io::Result<(
     Ok(())
 }
 
+/// Plan §7.4 `AS ORIGINALLY REPORTED`: a period's reads pin to its first
+/// Lock (no StatementIssuance is journaled yet), never its first Close and
+/// never HEAD. A period with no Lock refuses (FA-REF-161) rather than
+/// silently answering as currently stated.
+#[test]
+fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::Result<()> {
+    let dir = tmp("originally-reported")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Report Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    let march = "FY2026-P03";
+    assert_eq!(fa(Some(&book), &["period", "open", march]).0, 0);
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P04"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    let intent = write(
+        &dir,
+        "entry.json",
+        r#"{"effective_date":"2026-03-15","description":"rent","idempotency_key":"rent-1","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &intent, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let originally = [
+        "tb",
+        "--period",
+        march,
+        "--as-originally-reported",
+        "--json",
+    ];
+
+    // Usage errors: the switch fixes known-at itself and reads one period.
+    for args in [
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-originally-reported",
+            "--as-known-at",
+            "HEAD",
+            "--json",
+        ],
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--period",
+            "FY2026-P04",
+            "--as-originally-reported",
+            "--json",
+        ],
+    ] {
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
+    }
+    // Open, then Closed: nothing was reported yet; never HEAD, never a Close.
+    let (code, out, _) = fa(Some(&book), &originally);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-161"), "{out}");
+    assert!(out.contains("fa period lock FY2026-P03"), "{out}");
+    let (code, out, _) = fa(Some(&book), &["period", "close", march, "--yes", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let closed_at = field(&out, "recorded_at").unwrap().to_string();
+    let (code, out, _) = fa(Some(&book), &originally);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-161"), "{out}");
+
+    // Lock under a second principal's approval.
+    let plan = dir.join("lock.plan").display().to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &["period", "lock", march, "--plan-out", &plan, "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let digest = field(&out, "proposal_digest").unwrap().to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "approve",
+            "--proposal",
+            &digest,
+            "--as",
+            "controller",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let approval = field(&out, "approval_vid").unwrap().to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "lock",
+            march,
+            "--plan",
+            &plan,
+            "--approval",
+            &approval,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let locked_at = field(&out, "recorded_at").unwrap().to_string();
+    assert_ne!(locked_at, closed_at);
+
+    // Later activity elsewhere moves HEAD, not the reported coordinate.
+    let april = write(
+        &dir,
+        "april.json",
+        r#"{"effective_date":"2026-04-15","description":"rent","idempotency_key":"rent-4","legs":[{"side":"debit","account":"6000","amount":"7.00 USD"},{"side":"credit","account":"1000","amount":"7.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &april, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let reported = report(&book, &originally);
+    assert_eq!(field(&reported, "known_at"), Some(locked_at.as_str()));
+    let current = report(&book, &["tb", "--period", march, "--json"]);
+    assert_ne!(field(&current, "known_at"), Some(locked_at.as_str()));
+    // The same period read explicitly at the lock is the same report.
+    assert_eq!(
+        report(
+            &book,
+            &[
+                "tb",
+                "--period",
+                march,
+                "--as-known-at",
+                &locked_at,
+                "--json"
+            ]
+        ),
+        reported
+    );
+    Ok(())
+}
+
 #[test]
 fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::io::Result<()> {
     let dir = tmp("reversal")?;

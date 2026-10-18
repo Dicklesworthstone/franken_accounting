@@ -404,6 +404,49 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
         r#"{"effective_date":"2026-01-15","idempotency_key":"closed-p01-1","legs":[{"side":"debit","account":"1200","amount":"50.00 USD"},{"side":"credit","account":"4000","amount":"50.00 USD"}]}"#,
     );
 
+    // A reported period (plan §7.4, WF-RQ-07): FY2025-P12 is posted, closed
+    // and locked under a second principal's approval, so it has an
+    // originally reported coordinate. FY2026-P03 stays open for the steps
+    // that still post into it.
+    let december = write_file(
+        dir,
+        "december.json",
+        r#"{"effective_date":"2025-12-15","idempotency_key":"dec-1","legs":[{"side":"debit","account":"1200","amount":"300.00 USD"},{"side":"credit","account":"4000","amount":"300.00 USD"}]}"#,
+    );
+    run_ok(&["post", "--intent", &december, "--evidence", &doc_oid]);
+    run_ok(&[
+        "period",
+        "close",
+        "FY2025-P12",
+        "--as",
+        "controller",
+        "--yes",
+    ]);
+    let lock_plan = dir.join("lock-p12.plan").display().to_string();
+    let planned = run_ok(&["period", "lock", "FY2025-P12", "--plan-out", &lock_plan]);
+    let lock_digest = planned
+        .get("data")
+        .and_then(|d| d.get("proposal_digest"))
+        .and_then(Json::as_str)
+        .expect("lock proposal digest")
+        .to_string();
+    let approved = run_ok(&["approve", "--proposal", &lock_digest, "--as", "controller"]);
+    let approval = approved
+        .get("data")
+        .and_then(|d| d.get("approval_vid"))
+        .and_then(Json::as_str)
+        .expect("approval vid")
+        .to_string();
+    run_ok(&[
+        "period",
+        "lock",
+        "FY2025-P12",
+        "--plan",
+        &lock_plan,
+        "--approval",
+        &approval,
+    ]);
+
     let cert_file = dir.join("march.cert").display().to_string();
     run_ok(&[
         "tb",

@@ -1535,6 +1535,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Where `AS ORIGINALLY REPORTED` pins `period_code`'s reads (plan §7.4).
+    pub fn originally_reported(
+        &self,
+        cx: &PurposeContexts,
+        period_code: &str,
+    ) -> Outcome<fa_journal::OriginallyReported> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::originally_reported(db, book, period_code)?)
+        })
+    }
+
     pub fn accounts(&self, cx: &PurposeContexts) -> Result<Vec<AccountRow>, BookError> {
         self.query(cx, |db, _| Ok(fa_journal::genesis::list_accounts(db)?))
     }

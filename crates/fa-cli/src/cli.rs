@@ -8051,7 +8051,16 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa tb --period <code> --summary --root <code> --json",
         ));
     }
-    let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+    let originally = args.switch("--as-originally-reported");
+    if originally
+        && (!args.flag_all("--as-known-at").is_empty() || !args.flag_all("--known-at").is_empty())
+    {
+        return Err(usage(
+            "--as-originally-reported fixes the known-at coordinate itself; it cannot be combined with --as-known-at",
+            "fa tb --period FY2026-P03 --as-originally-reported",
+        ));
+    }
+    let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
     let selection = if let Some(date) = args.flag("--as-of") {
         if args.flag("--period").is_some()
             || args.flag("--fiscal-year").is_some()
@@ -8077,6 +8086,24 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             TrialBalanceSelection::Periods(periods)
         }
     };
+    // Plan §7.4: the period as it was first reported, pinned to its first
+    // StatementIssuance or else its first Lock (never HEAD, never a Close).
+    if originally {
+        let period = match &selection {
+            TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods)
+                if periods.len() == 1 =>
+            {
+                periods[0].clone()
+            }
+            _ => {
+                return Err(usage(
+                    "--as-originally-reported reads one period as it was first reported; select exactly one --period",
+                    "fa tb --period FY2026-P03 --as-originally-reported",
+                ));
+            }
+        };
+        known_at = Some(book.originally_reported(&period)??.known_at);
+    }
     if let Some(capability) = summary_cap {
         if args.switch("--certify") || args.flag("--certificate-out").is_some() {
             return Err(usage(

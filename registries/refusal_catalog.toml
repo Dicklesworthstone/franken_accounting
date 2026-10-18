@@ -372,6 +372,17 @@ exit = "refusal"
 cite = "plan §8.2, FA-INV-08.replacement-paired (a Replacement is paired with its reversal in one batch)"
 fix = "post the correction as one pair: fa reverse <target vid> --reason <name> --replace-with <corrected entry intent> (library: post_replacement_pair)"
 
+# AS ORIGINALLY REPORTED (plan §7.4) pins a period's first StatementIssuance,
+# else its first Lock, never its first Close; with neither, nothing was
+# reported, and HEAD is never substituted (scoreboard row WF-RQ-07).
+[[refusal]]
+code = "FA-REF-161"
+name = "NOT_ORIGINALLY_REPORTED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §7.4 (AS ORIGINALLY REPORTED pins the first StatementIssuance, else the first Lock; never the first Close)"
+fix = "read the period as currently stated (omit --as-originally-reported), or lock it once it is final: fa period lock {period}"
+
 [[refusal]]
 code = "FA-REF-052"
 name = "ALREADY_REVERSED"

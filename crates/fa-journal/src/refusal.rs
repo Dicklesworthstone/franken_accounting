@@ -117,6 +117,8 @@ pub mod code {
     pub const REVERSAL_SHAPE: &str = "FA-REF-051";
     /// A Replacement was posted alone; it commits only with its paired Reversal.
     pub const REPLACEMENT_UNPAIRED: &str = "FA-REF-160";
+    /// `AS ORIGINALLY REPORTED` of a period with no Lock and no issuance.
+    pub const NOT_ORIGINALLY_REPORTED: &str = "FA-REF-161";
     /// The target is already reversed by another entry.
     pub const ALREADY_REVERSED: &str = "FA-REF-052";
     /// A reversal cannot precede its target in the fiscal calendar's order.

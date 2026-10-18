@@ -134,11 +134,10 @@ workflow = "readme-quick"
 ordinal = 7
 vision_row = "VC-07"
 description = "Trial balance as originally reported (`fa tb --as-originally-reported`)"
-argv = ["tb", "--period", "FY2026-P03", "--as-originally-reported", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-5bm"
+argv = ["tb", "--period", "FY2025-P12", "--as-originally-reported", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "trial_balance"
 
 [[workflow_step]]
 id = "WF-RQ-08"
@@ -564,11 +563,10 @@ id = "G2-02"
 gate = "G2"
 criterion = "Selector `AS ORIGINALLY REPORTED` on CLI trial balance (`fa tb --as-originally-reported`)"
 probe_kind = "cli"
-argv = ["tb", "--period", "FY2026-P03", "--as-originally-reported", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-5bm"
+argv = ["tb", "--period", "FY2025-P12", "--as-originally-reported", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "trial_balance"
 
 [[gate_criterion]]
 id = "G3-01"
