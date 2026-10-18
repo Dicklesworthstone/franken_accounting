@@ -75,6 +75,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("period", period_cmd),
     ("approve", approve_cmd),
     ("capability", capability_cmd),
+    ("draft", draft_cmd),
     ("post", post_cmd),
     ("commit", commit_cmd),
     ("reverse", reverse_cmd),
@@ -1638,6 +1639,9 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         ("migrate", Some("show")) => &[Op::Read],
         ("migrate", Some("open" | "stage" | "finalize" | "abandon")) => &[Op::Post, Op::Migrate],
         ("capability", Some("revoke")) => &[Op::IssueCapability],
+        ("draft", Some("new" | "plan" | "discard")) => &[Op::Post],
+        ("draft", Some("list" | "show")) => &[Op::Read],
+        ("draft", Some("promote")) => &[Op::Approve],
         _ => return None,
     };
     Some(ops)
@@ -1696,8 +1700,10 @@ pub fn bound_command_admissible(
     // dry run and its plan binds the Agent's capability, so no one can commit
     // it. Allocation and settlement plans keep their own planners and
     // remain refused.
-    let agent_rehearsal =
-        matches!(verb, "post" | "reverse" | "reserve" | "resolve") && args.switch("--dry-run");
+    // It may also plan the post into its draft (plan §15.2): a draft record
+    // is not a trunk entry, and only a Human holding `approve` promotes it.
+    let agent_rehearsal = matches!(verb, "post" | "reverse" | "reserve" | "resolve")
+        && (args.switch("--dry-run") || args.flag("--draft").is_some());
     if authority.profile() == crate::authority::LaunchProfile::Agent
         && is_monetary_trunk_post
         && !agent_rehearsal
@@ -4311,6 +4317,361 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// The undated control records' recorded date: `--date`, else the book's
+/// opening date (as `fa capability` uses).
+fn control_date(args: &Args, book: &Book) -> Result<DateDay, Fail> {
+    let default_date = book
+        .spec()?
+        .opening_date
+        .or_else(|| book.periods().ok()?.first().map(|p| p.start))
+        .unwrap_or(DateDay(0));
+    date_flag(args, default_date)
+}
+
+fn draft_name<'a>(args: &'a Args, sub: &str) -> Result<&'a str, Fail> {
+    match args.positional.get(2) {
+        Some(name) if args.positional.len() == 3 => Ok(name.as_str()),
+        _ => Err(usage(
+            format!("draft {sub} takes exactly one draft name"),
+            format!("fa draft {sub} <name>"),
+        )),
+    }
+}
+
+/// One draft as robot data (plan §15.2, bead fa-s7x).
+fn draft_json(view: &fa_journal::DraftView) -> Json {
+    let closed = view.closed.as_ref();
+    obj(vec![
+        ("draft", s(format!("{:032x}", view.vid.0))),
+        ("name", s(&view.body.name)),
+        ("owner", s(format!("{:032x}", view.body.owner.0))),
+        ("state", s(view.state.name())),
+        ("opened_at", Json::Int(i128::from(view.opened_at.0))),
+        ("intents", Json::Int(view.intents.len() as i128)),
+        (
+            "closed_at",
+            closed.map_or(Json::Null, |c| Json::Int(i128::from(c.recorded_at.0))),
+        ),
+        (
+            "closed_by",
+            closed.map_or(Json::Null, |c| s(format!("{:032x}", c.by.0))),
+        ),
+        (
+            "outcome",
+            closed
+                .and_then(|c| c.promoted.as_ref())
+                .map_or(Json::Null, |(outcome, _)| s(format!("{:032x}", outcome.0))),
+        ),
+    ])
+}
+
+/// One planned intent as robot data: the entry its promotion will create.
+fn draft_intent_json(book: &Book, planned: &fa_journal::PlannedIntent) -> Json {
+    let p = planned.intent.proposal();
+    let entry = fa_model::entry_vid(
+        book.context().book_id,
+        &p.principal_ref.0.to_le_bytes(),
+        &p.idempotency_key,
+    );
+    obj(vec![
+        ("record", s(format!("{:032x}", planned.record.0))),
+        ("recorded_at", Json::Int(i128::from(planned.recorded_at.0))),
+        ("entry", s(format!("{:032x}", entry.0))),
+        ("class", s(p.class.name().unwrap_or("?"))),
+        ("effective_date", s(p.effective_date.render())),
+        ("idempotency_key", s(hex(&p.idempotency_key))),
+        ("legs", Json::Int(p.legs.len() as i128)),
+        ("principal", s(format!("{:032x}", p.principal_ref.0))),
+    ])
+}
+
+/// `fa draft new|plan|list|show|promote|discard` (plan §15.2, bead fa-s7x):
+/// an intent log that reaches trunk only when a principal holding `approve`
+/// who is not its owner promotes it, replaying every intent in one batch.
+fn draft_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let sub = args.positional.get(1).map(String::as_str);
+    match sub {
+        Some("new") => {
+            let name = draft_name(args, "new")?.to_string();
+            let capability = ctx.capability(args, &["post"])?;
+            let mut book = ctx.books.open(args)?;
+            let date = control_date(args, &book)?;
+            let default_desc = format!("draft {name}");
+            let description = args.flag("--description").unwrap_or(&default_desc);
+            let opened = book.open_draft(capability, &name, date, description)??;
+            ctx.out.at_book(&book)?;
+            ctx.out.event(
+                "draft_opened",
+                draft_record_fields(&name, &opened),
+                &format!(
+                    "draft {name} {} at {}",
+                    if opened.already_recorded {
+                        "was already open"
+                    } else {
+                        "opened"
+                    },
+                    opened.recorded_at.0
+                ),
+            );
+            Ok(())
+        }
+        Some("plan") => {
+            let name = draft_name(args, "plan")?.to_string();
+            let path = args.require("--intent", "entry.json (or - for stdin)")?;
+            let text = ctx.files.read_text(path)?;
+            let doc = parse_json(path, &text)?;
+            plan_document_into_draft(ctx, args, &name, None, &doc)
+        }
+        Some("list") => {
+            let book = ctx.books.open(args)?;
+            let drafts = book.drafts()?;
+            ctx.out.at_book(&book)?;
+            let human = if drafts.is_empty() {
+                "no drafts in this book".to_string()
+            } else {
+                drafts
+                    .iter()
+                    .map(|d| {
+                        format!(
+                            "{} {} {} intent(s), owner {:032x}",
+                            d.body.name,
+                            d.state.name(),
+                            d.intents.len(),
+                            d.body.owner.0
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            ctx.out.event(
+                "drafts",
+                vec![("drafts", Json::Arr(drafts.iter().map(draft_json).collect()))],
+                &human,
+            );
+            Ok(())
+        }
+        Some("show") => {
+            let name = draft_name(args, "show")?.to_string();
+            let book = ctx.books.open(args)?;
+            let Some(view) = book.draft(&name)? else {
+                return Err(draft_unknown(&name));
+            };
+            ctx.out.at_book(&book)?;
+            let intents: Vec<Json> = view
+                .intents
+                .iter()
+                .map(|i| draft_intent_json(&book, i))
+                .collect();
+            let entries = view
+                .closed
+                .as_ref()
+                .and_then(|c| c.promoted.as_ref())
+                .map_or(Json::Null, |(_, entries)| {
+                    Json::Arr(
+                        entries
+                            .iter()
+                            .map(|e| s(format!("{:032x}", e.vid.0)))
+                            .collect(),
+                    )
+                });
+            ctx.out.event(
+                "draft_detail",
+                vec![
+                    ("draft", draft_json(&view)),
+                    ("intents", Json::Arr(intents)),
+                    ("promoted_entries", entries),
+                ],
+                &format!(
+                    "draft {name}: {}, {} planned intent(s)",
+                    view.state.name(),
+                    view.intents.len()
+                ),
+            );
+            Ok(())
+        }
+        Some("promote") => {
+            let name = draft_name(args, "promote")?.to_string();
+            let capability = ctx.capability(args, &["approve"])?;
+            let mut book = ctx.books.open(args)?;
+            let date = control_date(args, &book)?;
+            let default_desc = format!("promote draft {name}");
+            let description = args.flag("--description").unwrap_or(&default_desc);
+            let promoted = book.promote_draft(capability, &name, date, description)??;
+            ctx.out.at_book(&book)?;
+            ctx.out.event(
+                "draft_promoted",
+                vec![
+                    ("draft", s(format!("{:032x}", promoted.draft.0))),
+                    ("name", s(&name)),
+                    (
+                        "control_entry",
+                        s(format!("{:032x}", promoted.control_entry.0)),
+                    ),
+                    ("outcome", s(format!("{:032x}", promoted.outcome.0))),
+                    (
+                        "entries",
+                        Json::Arr(
+                            promoted
+                                .entries
+                                .iter()
+                                .map(|e| s(format!("{:032x}", e.vid.0)))
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "periods",
+                        Json::Arr(promoted.periods.iter().map(s).collect()),
+                    ),
+                    ("recorded_at", Json::Int(i128::from(promoted.recorded_at.0))),
+                    ("already_recorded", Json::Bool(promoted.already_recorded)),
+                ],
+                &format!(
+                    "draft {name} promoted: {} entr{} at {}{}",
+                    promoted.entries.len(),
+                    if promoted.entries.len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    },
+                    promoted.recorded_at.0,
+                    if promoted.already_recorded {
+                        " (already recorded)"
+                    } else {
+                        ""
+                    }
+                ),
+            );
+            Ok(())
+        }
+        Some("discard") => {
+            let name = draft_name(args, "discard")?.to_string();
+            let capability = ctx.capability(args, &["post"])?;
+            let mut book = ctx.books.open(args)?;
+            let date = control_date(args, &book)?;
+            let default_desc = format!("discard draft {name}");
+            let description = args
+                .flag("--reason")
+                .or_else(|| args.flag("--description"))
+                .unwrap_or(&default_desc);
+            let discarded = book.discard_draft(capability, &name, date, description)??;
+            ctx.out.at_book(&book)?;
+            ctx.out.event(
+                "draft_discarded",
+                draft_record_fields(&name, &discarded),
+                &format!("draft {name} discarded at {}", discarded.recorded_at.0),
+            );
+            Ok(())
+        }
+        other => Err(unhandled("draft", other)),
+    }
+}
+
+fn draft_record_fields(
+    name: &str,
+    recorded: &fa_journal::DraftRecorded,
+) -> Vec<(&'static str, Json)> {
+    vec![
+        ("draft", s(format!("{:032x}", recorded.draft.0))),
+        ("name", s(name)),
+        (
+            "control_entry",
+            s(format!("{:032x}", recorded.control_entry.0)),
+        ),
+        ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
+        ("already_recorded", Json::Bool(recorded.already_recorded)),
+    ]
+}
+
+fn draft_unknown(name: &str) -> Fail {
+    Refusal::new(
+        fa_journal::refusal::code::DRAFT_UNKNOWN,
+        exit::REFUSAL,
+        format!("this book has no draft named `{name}`"),
+        "plan §15.2 (drafts; bead fa-s7x)",
+        "list the book's drafts with `fa draft list --json`, or open one with `fa draft new <name>`",
+    )
+    .into()
+}
+
+/// `fa post|reverse|reserve|resolve --draft <name>` and `fa draft plan`
+/// (plan §15.2 `plan_in_draft`): build the intent exactly as the command
+/// would post it, rehearse it under every posting law, and journal it into
+/// the draft. Nothing reaches trunk until the draft is promoted.
+fn plan_document_into_draft(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    name: &str,
+    forced: Option<EntryClass>,
+    doc: &Json,
+) -> Result<(), Fail> {
+    if args.switch("--dry-run") || args.flag("--plan-out").is_some() {
+        return Err(usage(
+            "--draft journals a rehearsed intent into the draft; it is not a dry run",
+            "drop --dry-run/--plan-out to plan into the draft, or drop --draft to rehearse only",
+        ));
+    }
+    if args.flag("--balancing").is_some() {
+        return Err(usage(
+            "a draft does not yet plan saturating --balancing requests",
+            "plan an intent with explicit amounts",
+        ));
+    }
+    if doc.get("intents").is_some() {
+        return Err(usage(
+            "a batch document cannot be planned into a draft; the draft is its own batch",
+            "plan each intent into the draft; its promotion posts them as one batch",
+        ));
+    }
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["post"])?;
+    let out = &ctx.out;
+    let mut book = ctx.books.open(args)?;
+    let BuiltPost { request: req, .. } =
+        build_post_request(out, &mut book, args, forced, doc, who, capability)?;
+    let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
+        usage(
+            format!("cannot plan this entry: {e}"),
+            "check the entry intent",
+        )
+    })?;
+    let p = intent.proposal();
+    let entry = fa_model::entry_vid(
+        book.context().book_id,
+        &p.principal_ref.0.to_le_bytes(),
+        &p.idempotency_key,
+    );
+    let planned = book.plan_into_draft(req.capability, name, intent)??;
+    out.at_book(&book)?;
+    let (plan_digest, proposal_digest) = match &planned.plan {
+        Some(plan) => (
+            s(hex(&plan.digest().map_err(|e| {
+                Fail::Internal(format!("encode the draft plan: {e}"))
+            })?)),
+            s(hex(&plan.certificate().proposal_digest)),
+        ),
+        None => (Json::Null, Json::Null),
+    };
+    let recorded = &planned.recorded;
+    let mut fields = draft_record_fields(name, recorded);
+    fields.push(("entry", s(format!("{:032x}", entry.0))));
+    fields.push(("plan_digest", plan_digest));
+    fields.push(("proposal_digest", proposal_digest));
+    out.event(
+        "draft_planned",
+        fields,
+        &format!(
+            "planned into draft {name} (entry {:032x} on promotion){}",
+            entry.0,
+            if recorded.already_recorded {
+                "; already planned"
+            } else {
+                ""
+            }
+        ),
+    );
+    Ok(())
+}
+
 /// A 64-hex digest from a flag.
 fn parse_digest(text: &str, what: &str) -> Result<[u8; 32], Fail> {
     let bad = || {
@@ -5290,6 +5651,10 @@ fn post_document(
     forced: Option<EntryClass>,
     doc: Json,
 ) -> Result<(), Fail> {
+    if let Some(name) = args.flag("--draft") {
+        let name = name.to_string();
+        return plan_document_into_draft(ctx, args, &name, forced, &doc);
+    }
     if forced.is_none() && doc.get("intents").is_some() {
         return post_batch_document(ctx, args, &doc);
     }

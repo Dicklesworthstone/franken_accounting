@@ -342,7 +342,7 @@ impl LaunchAuthority {
             (
                 "posture",
                 s(if self.issued.is_some() {
-                    "mcp-issued-token"
+                    "issued-token"
                 } else {
                     "mcp-launch-config"
                 }),
@@ -655,7 +655,7 @@ mod tests {
         let envelope = bound.envelope_json();
         assert_eq!(
             envelope.get("posture").and_then(Json::as_str),
-            Some("mcp-issued-token")
+            Some("issued-token")
         );
         assert_eq!(
             envelope.get("profile").and_then(Json::as_str),

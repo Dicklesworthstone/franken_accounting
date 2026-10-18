@@ -471,11 +471,11 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     let mut mcp = Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
     mcp.discover();
 
-    // tools/list: exactly the registry's wire names, each with an object schema.
+    // tools/list: exactly the registry's default-surface wire names (plan
+    // §15.4: on-demand clusters need `--cluster`), each with an object schema.
     let registry = fa_mcp::registry::McpRegistry::embedded().expect("[mcp]");
     let expected: std::collections::BTreeSet<String> = registry
-        .tools
-        .iter()
+        .exposed(&[])
         .map(fa_mcp::registry::ToolSpec::wire_name)
         .chain(
             fa_mcp::registry::MACROS
@@ -1898,7 +1898,7 @@ fn a_panicking_server_reports_fa_ref_153_on_stderr_with_exit_5() {
 
 /// fa-v62: an operator issues a holder-bound Agent token with the CLI and
 /// launches fa-mcp with it. The session's authority is the token's (posture
-/// mcp-issued-token, its principal, its journaled ops); a rehearsal runs
+/// issued-token, its principal, its journaled ops); a rehearsal runs
 /// under it. A tampered token file is refused at launch, before serving.
 /// Once the operator revokes the grant, the kernel refuses the same
 /// rehearsal (FA-REF-023): the session cannot outlive its grant.
@@ -1998,7 +1998,7 @@ fn an_issued_token_binds_the_session_and_its_revocation_is_enforced() {
         ],
     });
     let authority = json!({
-        "posture": "mcp-issued-token", "principal": "agent-7", "profile": "agent",
+        "posture": "issued-token", "principal": "agent-7", "profile": "agent",
         "ops": ["read", "post", "verify"],
     });
     let mut mcp = Mcp::start_with(&book, &["--token", &t]);
@@ -2034,5 +2034,113 @@ fn an_issued_token_binds_the_session_and_its_revocation_is_enforced() {
     assert!(error, "a revoked grant reaches nothing: {text}");
     let refused = structured_error(&text);
     assert_eq!(refused["refusal_id"], "FA-REF-023", "{refused}");
+    assert_eq!(mcp.finish(), 0);
+}
+
+/// fa-s7x: the default Agent session works on a draft. It opens one and
+/// plans a post into it (rehearsed under every posting law, journaled, not
+/// on trunk); it cannot promote it over MCP. A Human controller promotes it
+/// on the host, and the Agent's planned entry is then on trunk with the
+/// Agent as its principal.
+#[test]
+fn an_agent_plans_into_a_draft_and_a_host_controller_promotes_it() {
+    let dir = tmp("agent-draft");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book", "create", "--book", &b, "--name", "Draft Co", "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    )
+    .unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        &chart.display().to_string(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let intent = json!({
+        "class": "Original", "effective_date": "2026-03-15",
+        "description": "Agent draft rent", "idempotency_key": "agent-draft-rent",
+        "legs": [
+            {"side": "debit", "account": "6000", "amount": "42.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "42.00 USD"},
+        ],
+    });
+    // fa.draft is an on-demand cluster (plan §15.4).
+    let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.draft"]);
+    mcp.discover();
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_draft_manage",
+        json!({"action": "new", "name": "agent-close"}),
+    );
+    assert!(!error, "the Agent opens its draft: {text}");
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": intent, "evidence": [oid], "draft": "agent-close"}),
+    );
+    assert!(!error, "the Agent plans into its draft: {text}");
+    let planned: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    let entry = planned["entry"]
+        .as_str()
+        .expect("the entry promotion creates")
+        .to_string();
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_draft_manage",
+        json!({"action": "show", "name": "agent-close"}),
+    );
+    assert!(!error, "{text}");
+    assert!(text.contains(&entry), "{text}");
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_draft_manage",
+        json!({"action": "promote", "name": "agent-close"}),
+    );
+    assert!(error, "promotion is host-only: {text}");
+    let (code, shown) = cli(&["entry", "show", &entry, "--book", &b, "--json"]);
+    assert_eq!(code, 0, "{shown}");
+    assert!(
+        shown.contains("\"found\":false"),
+        "a planned intent is not on trunk: {shown}"
+    );
+
+    let promoted = cli_data(&[
+        "draft",
+        "promote",
+        "agent-close",
+        "--as",
+        "controller",
+        "--yes",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    log(format!("promoted: {promoted}"));
+    assert!(promoted.contains(&entry), "{promoted}");
+    let (error, text, _) = call_tool(&mut mcp, "fa_read_show_entry", json!({"vid": entry}));
+    assert!(!error, "{text}");
+    assert!(
+        text.contains("\"found\":true"),
+        "the promoted entry is on trunk: {text}"
+    );
     assert_eq!(mcp.finish(), 0);
 }

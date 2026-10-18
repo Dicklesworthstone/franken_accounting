@@ -673,11 +673,26 @@ fn not_implemented(class_name: &str) -> Refusal {
 /// compound operation calls this for both capabilities before preparing
 /// either member; preparation repeats it and retains the current-policy
 /// witnesses in the transaction that will publish the effects.
+/// How the posting pipeline admits a request (plan §14.2, §15.2, §15.3).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Admission {
+    /// Publish under the request's own capability ([`fa_policy::admit_base`]).
+    Commit,
+    /// A dry run ([`fa_policy::admit_base_for_plan`]): never published.
+    Plan,
+    /// One planned intent of a draft's promotion (plan §15.2): it publishes
+    /// under its planner's own capability, every check of which still runs,
+    /// while its trunk authority is the promoter's, whom [`crate::draft`]
+    /// admitted and witnesses in this transaction. Only that module can
+    /// make the token.
+    Promote(crate::draft::Promoting),
+}
+
 fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     req: &PostRequest,
-    planning: bool,
+    admission: Admission,
 ) -> Outcome<Option<fa_policy::AccountScope>> {
     let proposal = &req.proposal;
     let explicit: Vec<(fa_money::UnitId, i128)> = proposal
@@ -686,11 +701,11 @@ fn authorize_request<V: asupersync::fs::Vfs + Clone>(
         .map(|leg| (leg.amount.unit, leg.amount.mantissa))
         .collect();
     // A dry run writes nothing, so an Agent may rehearse a trunk post
-    // (plan §15.3); every other admission check still runs.
-    let admit_base = if planning {
-        fa_policy::admit_base_for_plan
-    } else {
-        fa_policy::admit_base
+    // (plan §15.3); a promoted intent reaches trunk on its Human promoter's
+    // authority (§15.2). Every other admission check still runs.
+    let admit_base = match admission {
+        Admission::Commit => fa_policy::admit_base,
+        Admission::Plan | Admission::Promote(_) => fa_policy::admit_base_for_plan,
     };
     if let Err(denial) = admit_base(
         &req.capability,
@@ -753,7 +768,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None, false, None)
+    prepare_post_in(db, ctx, book, req, None, Admission::Commit, None)
 }
 
 /// [`prepare_post`] for a dry run (plan §15.3): the same pipeline and
@@ -766,7 +781,7 @@ pub(crate) fn prepare_plan<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None, true, None)
+    prepare_post_in(db, ctx, book, req, None, Admission::Plan, None)
 }
 
 /// [`prepare_post`] for one member of an atomic batch (plan §5.8): the same
@@ -779,9 +794,10 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     req: PostRequest,
+    admission: Admission,
     carried: Option<WriteTxn>,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None, false, carried)
+    prepare_post_in(db, ctx, book, req, None, admission, carried)
 }
 
 /// Prepare the actual class over an optional already-staged reversal.
@@ -794,9 +810,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
     replacement_basis: Option<ReplacementBasis>,
-    planning: bool,
+    admission: Admission,
     carried: Option<WriteTxn>,
 ) -> Outcome<PostPreparation> {
+    let planning = matches!(admission, Admission::Plan);
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let proposal = &req.proposal;
     let pair_proposal = replacement_basis
@@ -884,7 +901,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     //      token expired or revoked now learns nothing, not even which
     //      accounts its caveat covers. Nothing commits between here and the
     //      transaction, which witnesses the revocation again for FCW.
-    let scope = match authorize_request(db, book, &req, planning)? {
+    let scope = match authorize_request(db, book, &req, admission)? {
         Ok(scope) => scope,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -3315,7 +3332,7 @@ fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
                 "fix the named field and resubmit",
             )));
         }
-        if let Err(refusal) = authorize_request(db, book, request, false)? {
+        if let Err(refusal) = authorize_request(db, book, request, Admission::Commit)? {
             return Ok(Err(refusal));
         }
     }
@@ -3348,10 +3365,16 @@ fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
         }
         Ok(PostPreparation::Ready(prepared)) => (None, ReplacementBasis::Staged(prepared)),
     };
-    Ok(
-        prepare_post_in(db, ctx, book, replacement_req, Some(basis), false, None)?
-            .map(|prepared| (prior, prepared)),
-    )
+    Ok(prepare_post_in(
+        db,
+        ctx,
+        book,
+        replacement_req,
+        Some(basis),
+        Admission::Commit,
+        None,
+    )?
+    .map(|prepared| (prior, prepared)))
 }
 
 /// Explain the complete `SUPERSEDES` lineage component containing `vid` and its

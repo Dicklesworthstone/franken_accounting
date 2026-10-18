@@ -94,6 +94,8 @@ pub struct ServerConfig {
     /// A holder's issued token (`--token`, bead fa-v62): it fixes the
     /// principal, profile and operations instead of a launch template.
     pub token: Option<fa_cli::authority::CapabilityToken>,
+    /// On-demand clusters this session also exposes (`--cluster`, plan §15.4).
+    pub clusters: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -106,6 +108,7 @@ impl Default for ServerConfig {
             profile: LaunchProfile::Agent,
             grants: Vec::new(),
             token: None,
+            clusters: Vec::new(),
         }
     }
 }
@@ -156,6 +159,8 @@ pub struct Adapter {
     pub mcp: McpRegistry,
     pub reg: &'static Registry,
     pub authority: LaunchAuthority,
+    /// The on-demand clusters this session exposes beyond the default ones.
+    pub clusters: Vec<String>,
     memory: Mutex<Memory>,
 }
 
@@ -189,10 +194,25 @@ impl Adapter {
             .map_err(|e| ServerError::Foundation(format!("the embedded verb registry: {e}")))?;
         let mcp =
             McpRegistry::parse(crate::registry::SOURCE, reg).map_err(ServerError::Foundation)?;
+        for name in &config.clusters {
+            if !mcp.cluster(name).is_some_and(|c| c.on_demand) {
+                let on_demand: Vec<&str> = mcp
+                    .clusters
+                    .iter()
+                    .filter(|c| c.on_demand)
+                    .map(|c| c.name.as_str())
+                    .collect();
+                return Err(ServerError::Launch(format!(
+                    "--cluster {name} is not an on-demand cluster; the on-demand clusters are {}",
+                    on_demand.join(", ")
+                )));
+            }
+        }
         Ok(Self {
             mcp,
             reg,
             authority,
+            clusters: config.clusters,
             memory: Mutex::new(Memory::default()),
         })
     }
@@ -1336,7 +1356,8 @@ pub fn build_server(config: ServerConfig) -> Result<Server, ServerError> {
         .middleware(ToolArgumentErrors {
             adapter: Arc::clone(&adapter),
         });
-    for spec in adapter.mcp.tools.clone() {
+    let exposed: Vec<ToolSpec> = adapter.mcp.exposed(&adapter.clusters).cloned().collect();
+    for spec in exposed {
         builder = builder.tool(VerbTool::new(Arc::clone(&adapter), spec));
     }
     for spec in MACROS {
@@ -1860,6 +1881,7 @@ mod tests {
             profile: LaunchProfile::Agent,
             grants: Vec::new(),
             token: None,
+            clusters: Vec::new(),
         })
         .expect("adapter");
 
@@ -1981,6 +2003,7 @@ mod tests {
             profile: LaunchProfile::Agent,
             grants: Vec::new(),
             token: None,
+            clusters: Vec::new(),
         })
         .expect("adapter with --files");
 

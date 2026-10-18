@@ -990,6 +990,75 @@ impl Book {
         with_store!(&self.store, core => core.issued_capability(&self.purposes(), commitment))
     }
 
+    /// Open the draft `name` owned by the capability's holder (plan §15.2,
+    /// fa-s7x). An Agent works on its draft; trunk changes only when a
+    /// Human holding `approve` promotes it.
+    pub fn open_draft(
+        &mut self,
+        capability: fa_journal::Capability,
+        name: &str,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::DraftRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.open_draft(
+            &purposes, capability, name, effective_date, description,
+        )))
+    }
+
+    /// Rehearse `intent` through the posting pipeline and journal it into
+    /// the open draft `name`; a refused intent never enters the draft.
+    pub fn plan_into_draft(
+        &mut self,
+        capability: fa_journal::Capability,
+        name: &str,
+        intent: fa_journal::PostIntent,
+    ) -> Outcome<fa_journal::DraftPlanned> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_into_draft(
+            &purposes, capability, name, intent,
+        )))
+    }
+
+    /// Promote the draft `name`: its intents post to trunk as one batch,
+    /// each admitted again under current policy.
+    pub fn promote_draft(
+        &mut self,
+        capability: fa_journal::Capability,
+        name: &str,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::DraftPromoted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.promote_draft(
+            &purposes, capability, name, effective_date, description,
+        )))
+    }
+
+    /// Discard the open draft `name`; nothing is deleted.
+    pub fn discard_draft(
+        &mut self,
+        capability: fa_journal::Capability,
+        name: &str,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::DraftRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.discard_draft(
+            &purposes, capability, name, effective_date, description,
+        )))
+    }
+
+    /// The draft `name` as its records state it.
+    pub fn draft(&self, name: &str) -> Result<Option<fa_journal::DraftView>, BookError> {
+        with_store!(&self.store, core => core.draft(&self.purposes(), name))
+    }
+
+    /// Every draft of the book.
+    pub fn drafts(&self) -> Result<Vec<fa_journal::DraftView>, BookError> {
+        with_store!(&self.store, core => core.drafts(&self.purposes()))
+    }
+
     /// Post one entry under the accounting laws (plan §5).
     pub fn post(&mut self, req: PostRequest) -> Outcome<Posted> {
         let purposes = self.purposes();

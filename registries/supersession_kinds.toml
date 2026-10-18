@@ -218,3 +218,9 @@ class = "HoldControl"
 reversible = "no"
 why = "HoldControl records are legal-hold lifecycle events with no legs"
 corrective_route = "release the legal hold with `fa hold release`"
+
+[[target_class]]
+class = "DraftControl"
+reversible = "no"
+why = "DraftControl records are a draft's intent log with no legs"
+corrective_route = "discard the draft with `fa draft discard`, or reverse a promoted entry individually"

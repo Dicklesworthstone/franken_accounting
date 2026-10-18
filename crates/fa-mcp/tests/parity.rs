@@ -130,7 +130,14 @@ fn no_cluster_has_more_than_seven_tools_and_the_limit_is_seven() {
             c.name
         );
     }
-    let total: usize = counts.values().sum();
+    // Plan §15.4: at most 40 tools are exposed by default; an on-demand
+    // cluster (`fa-mcp --cluster <name>`) is outside the default surface.
+    let total: usize = counts
+        .iter()
+        .filter(|(c, _)| mcp.cluster(c).is_some_and(|c| !c.on_demand))
+        .map(|(_, n)| *n)
+        .sum();
+    assert_eq!(total, mcp.exposed(&[]).count());
     assert!(
         total <= 40,
         "plan §15.4: at most 40 tools by default, got {total}"

@@ -81,6 +81,10 @@ pub mod code {
     /// A holder-bound capability has no journaled issuance in this book
     /// (plan §14.2, bead fa-v62).
     pub const CAPABILITY_NOT_ISSUED: &str = "FA-REF-156";
+    /// The book has no draft by that name (plan §15.2, bead fa-s7x).
+    pub const DRAFT_UNKNOWN: &str = "FA-REF-157";
+    /// The draft is promoted or discarded: it takes no further records.
+    pub const DRAFT_NOT_OPEN: &str = "FA-REF-158";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

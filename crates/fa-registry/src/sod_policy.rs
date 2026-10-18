@@ -41,6 +41,8 @@ const SCHEDULE_TRANSITIONS: &[&str] = &["Cancel"];
 const IMPORT_TRANSITIONS: &[&str] = &["Import"];
 /// A legal hold's placement and release (plan §8.5).
 const HOLD_TRANSITIONS: &[&str] = &["Place", "Release"];
+/// A DraftSet's lifecycle (plan §15.2; fa-s7x).
+const DRAFT_TRANSITIONS: &[&str] = &["Open", "Plan", "Promote", "Discard"];
 const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "PolicyControl",
     "TimeControl",
@@ -49,6 +51,7 @@ const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "MigrationControl",
     "ImportControl",
     "HoldControl",
+    "DraftControl",
 ];
 /// A MigrationRun's lifecycle (plan §8.6).
 const MIGRATION_TRANSITIONS: &[&str] = &["Open", "Finalize", "Abandon"];
@@ -309,6 +312,7 @@ impl SodPolicy {
                         "MigrationControl" => MIGRATION_TRANSITIONS,
                         "ImportControl" => IMPORT_TRANSITIONS,
                         "HoldControl" => HOLD_TRANSITIONS,
+                        "DraftControl" => DRAFT_TRANSITIONS,
                         other => {
                             return Err(invalid(
                                 R,

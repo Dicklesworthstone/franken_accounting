@@ -23,6 +23,7 @@ pub mod batch;
 pub mod blob;
 pub mod chart;
 pub mod custody;
+pub mod draft;
 pub mod entity;
 pub mod entry_history;
 pub mod evidence;
@@ -59,6 +60,11 @@ pub use chart::{
     promote_to_summary,
 };
 pub use custody::{CustodyBody, CustodyEvent, CustodyMoved, custody_chain, transfer_custody};
+pub use draft::{
+    DraftBody, DraftClosure, DraftPlanned, DraftPromoted, DraftRecorded, DraftRequest, DraftState,
+    DraftView, PlannedIntent, discard_draft, list_drafts, open_draft, plan_into_draft,
+    promote_draft, read_draft,
+};
 pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{
     Document, DocumentAdded, DocumentEvidenceSummary, DocumentRecord, EvidenceExplanation,

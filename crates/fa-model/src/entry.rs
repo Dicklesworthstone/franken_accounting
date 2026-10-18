@@ -81,6 +81,15 @@ pub const EVENT_REF_EXTENSION: u16 = 6;
 /// so the kernel derives an issued token's caveats from the journal, never
 /// from the presenter.
 pub const CAPABILITY_BODY_EXTENSION: u16 = 7;
+/// Extension tag 8, `fa:draft-body:v1` (plan §15.2, Appendix A `DraftSet`,
+/// bead fa-s7x): a draft's immutable body on its `DraftControl` Open
+/// record — `u16 version ‖ book_id[16] ‖ str name ‖ u128 owner_principal`.
+pub const DRAFT_BODY_EXTENSION: u16 = 8;
+/// Extension tag 9, `fa:draft-intent:v1` (bead fa-s7x): one planned intent
+/// on a draft's `DraftControl` Plan record — `u16 version ‖ bytes
+/// post_intent ‖ bytes capability`: the intent's canonical bytes and the
+/// planner's capability, which its promotion replays.
+pub const DRAFT_INTENT_EXTENSION: u16 = 9;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -91,6 +100,8 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     LEGAL_HOLD_SCOPE_EXTENSION,
     EVENT_REF_EXTENSION,
     CAPABILITY_BODY_EXTENSION,
+    DRAFT_BODY_EXTENSION,
+    DRAFT_INTENT_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -130,6 +141,9 @@ impl EntryClass {
     pub const IMPORT_CONTROL: Self = Self(23);
     /// A legal hold or its release (plan §8.5): book-scoped, undated.
     pub const HOLD_CONTROL: Self = Self(24);
+    /// A `DraftSet`'s lifecycle (plan §15.2): Open, Plan, Promote, Discard.
+    /// Book-scoped, undated; nothing in a draft is a trunk entry.
+    pub const DRAFT_CONTROL: Self = Self(25);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -157,6 +171,7 @@ impl EntryClass {
         (22, "MigrationControl", true),
         (23, "ImportControl", true),
         (24, "HoldControl", true),
+        (25, "DraftControl", true),
     ];
 
     #[must_use]
@@ -226,6 +241,7 @@ impl ControlKind {
     pub const CAPABILITY_REVOCATION: Self = Self(8);
     pub const MIGRATION_RUN: Self = Self(9);
     pub const CAPABILITY_ISSUANCE: Self = Self(10);
+    pub const DRAFT_TRANSITION: Self = Self(11);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -266,6 +282,11 @@ impl ControlKind {
             Self::CAPABILITY_ISSUANCE,
             "capability_issuance",
             EntryClass::POLICY_CONTROL,
+        ),
+        (
+            Self::DRAFT_TRANSITION,
+            "draft_transition",
+            EntryClass::DRAFT_CONTROL,
         ),
     ];
 

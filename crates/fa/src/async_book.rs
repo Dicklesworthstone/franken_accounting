@@ -659,6 +659,91 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    fn draft_request(
+        &self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Result<fa_journal::DraftRequest, BookError> {
+        Ok(fa_journal::DraftRequest {
+            capability,
+            effective_date,
+            description: self.seal_text(cx, description)?,
+        })
+    }
+
+    /// Open the draft `name` owned by the capability's holder (plan §15.2,
+    /// fa-s7x): an intent log that touches trunk only when promoted.
+    pub async fn open_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        name: &str,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::DraftRecorded> {
+        let req = self.draft_request(cx, capability, effective_date, description)?;
+        Ok(fa_journal::open_draft(&mut self.db, cx, &self.context, name, req).await?)
+    }
+
+    /// Rehearse `intent` and journal it into the open draft `name`.
+    pub async fn plan_into_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        name: &str,
+        intent: fa_journal::PostIntent,
+    ) -> Outcome<fa_journal::DraftPlanned> {
+        let date = intent.proposal().effective_date;
+        let description = format!("plan into draft {name}");
+        let req = self.draft_request(cx, capability, date, &description)?;
+        Ok(fa_journal::plan_into_draft(&mut self.db, cx, &self.context, name, intent, req).await?)
+    }
+
+    /// Replay the draft's intents to trunk in one batch under a promoter
+    /// holding `approve` who is not its owner.
+    pub async fn promote_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        name: &str,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::DraftPromoted> {
+        let req = self.draft_request(cx, capability, effective_date, description)?;
+        Ok(fa_journal::promote_draft(&mut self.db, cx, &self.context, name, req).await?)
+    }
+
+    /// Close the open draft `name` without promoting it.
+    pub async fn discard_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        name: &str,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::DraftRecorded> {
+        let req = self.draft_request(cx, capability, effective_date, description)?;
+        Ok(fa_journal::discard_draft(&mut self.db, cx, &self.context, name, req).await?)
+    }
+
+    /// The draft `name` as its records state it.
+    pub fn draft(
+        &self,
+        cx: &PurposeContexts,
+        name: &str,
+    ) -> Result<Option<fa_journal::DraftView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_draft(db, context, name)?)
+        })
+    }
+
+    /// Every draft of the book.
+    pub fn drafts(&self, cx: &PurposeContexts) -> Result<Vec<fa_journal::DraftView>, BookError> {
+        self.query(cx, |db, context| Ok(fa_journal::list_drafts(db, context)?))
+    }
+
     pub async fn post(&mut self, cx: &PurposeContexts, req: PostRequest) -> Outcome<Posted> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         Ok(fa_journal::post(&mut self.db, cx, &self.context, req).await?)

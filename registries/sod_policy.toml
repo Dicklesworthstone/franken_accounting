@@ -446,3 +446,57 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 1
 exclusions = ["preparer", "duplicate"]
 cite = "plan §8.5 (a hold's release is journaled and authorized); §14.6"
+
+# ---- Drafts (book-scoped; fa-s7x) --------------------------------------------
+# An Agent works on a draft (plan §14.4, §15.2): opening one, planning intents
+# into it and discarding it write no trunk entry, so `post` suffices. Promotion
+# replays the draft's intents to trunk in one batch: its preparer holds
+# `approve`, which no Agent- or System-profile capability can hold, and is never
+# the draft's owner (the promoter is the Human approver of agent-prepared work).
+[[rule]]
+name = "draft-open"
+class = "DraftControl"
+transition = "Open"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §15.2 (a draft is an intent log); §14.4 (an Agent works on its draft)"
+
+[[rule]]
+name = "draft-plan"
+class = "DraftControl"
+transition = "Plan"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §15.2 (each planned intent is validated against the snapshot at planning time)"
+
+[[rule]]
+name = "draft-discard"
+class = "DraftControl"
+transition = "Discard"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §15.2 (DiscardDraft)"
+
+[[rule]]
+name = "draft-promote"
+class = "DraftControl"
+transition = "Promote"
+preparer_op = "approve"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §15.2 (promotion replays the intents in one batch with full revalidation); §14.4 (agent work reaches trunk only through a Human's promotion)"

@@ -344,7 +344,7 @@ impl Denial {
                 "obtain `{op}` from the book's steward (embedded posture: --grant {op})"
             ),
             Self::AgentOnTrunk => {
-                "drafts are not yet available (fa-s7x): rehearse the intent with --dry-run (an Agent's plan commits for no one), then ask a Human principal to post it, or post it under a Human-profile capability".into()
+                "plan the intent into a draft (fa draft new <name>, then the same command with --draft <name>) for a Human principal holding approve to promote with fa draft promote <name>; or rehearse it with --dry-run (an Agent's plan commits for no one)".into()
             }
             Self::Expired { .. } => {
                 "obtain a fresh capability; an expired token is never extended".into()

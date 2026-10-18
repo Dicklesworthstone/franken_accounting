@@ -320,3 +320,11 @@ class = "HoldControl"
 requirement = "control_record"
 min_documents = 0
 kinds = "any"
+
+# A draft's records are its intent log (fa-s7x); each planned intent carries its
+# own evidence, which its promotion re-checks against the class minimum.
+[[minimum]]
+class = "DraftControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"

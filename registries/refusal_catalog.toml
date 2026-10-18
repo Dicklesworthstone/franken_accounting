@@ -129,7 +129,7 @@ name = "AGENT_TRUNK"
 owners = ["fa-policy"]
 exit = "safety"
 cite = "plan §14.4 Agent profile (branch-confined); drafts and promotion: fa-s7x"
-fix = "rehearse the intent with --dry-run (an Agent's plan commits for no one), then ask a Human principal to post it, or post it under a Human-profile capability"
+fix = "plan the intent into a draft (fa draft new <name>, then the same command with --draft <name>) for a Human principal holding approve to promote with fa draft promote <name>; or rehearse it with --dry-run (an Agent's plan commits for no one)"
 
 [[refusal]]
 code = "FA-REF-014"
@@ -318,6 +318,22 @@ owners = ["fa-journal"]
 exit = "safety"
 cite = "plan §14.2 (issuance is a journaled control entry; bead fa-v62)"
 fix = "present a capability issued in this book (fa capability list --json), or ask a principal holding issue_capability to run fa capability issue"
+
+[[refusal]]
+code = "FA-REF-157"
+name = "DRAFT_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §15.2 (drafts; bead fa-s7x)"
+fix = "list the book's drafts with fa draft list --json, or open one with fa draft new <name>"
+
+[[refusal]]
+code = "FA-REF-158"
+name = "DRAFT_NOT_OPEN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §15.2 (a promoted or discarded draft is closed; its history is immutable)"
+fix = "open a new draft with fa draft new <name> and plan the intents into it"
 
 [[refusal]]
 code = "FA-REF-050"

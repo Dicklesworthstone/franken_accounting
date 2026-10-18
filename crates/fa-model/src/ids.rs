@@ -182,6 +182,13 @@ pub fn migration_run_vid(book: Id128, run_key: &str) -> VId {
     derive_vid(b"fa:vid:migration-run:v1", &[&book.0, run_key.as_bytes()])
 }
 
+/// `vid(DraftSet) = H("fa:vid:draft:v1" ‖ book ‖ name)` (plan §15.2,
+/// bead fa-s7x): one draft per name in a book.
+#[must_use]
+pub fn draft_vid(book: Id128, name: &str) -> VId {
+    derive_vid(b"fa:vid:draft:v1", &[&book.0, name.as_bytes()])
+}
+
 /// `vid(Entry) = H("fa:vid:migration-entry:v1" ‖ book_id ‖ run ‖
 /// idempotency_key)` for a `Migration` entry (plan §8.6): the run is part of
 /// the identity, so a retry run reuses the abandoned run's keys.

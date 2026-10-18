@@ -4125,6 +4125,47 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         ),
     );
     assert_eq!(run(true, &["post", "--intent", &batch]).0, 0);
+    // Drafts (fa-s7x): open, plan by --draft and by `draft plan`, inspect,
+    // promote as another principal holding approve, and discard another.
+    let draft_intent = |key: &str| {
+        format!(
+            r#"{{"effective_date":"2026-03-15","idempotency_key":"{key}","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6000","amount":"2.00 USD"}},{{"side":"credit","account":"1000","amount":"2.00 USD"}}]}}"#
+        )
+    };
+    let d1 = write(&dir, "draft1.json", &draft_intent("draft-rent-1"));
+    let d2 = write(&dir, "draft2.json", &draft_intent("draft-rent-2"));
+    assert_eq!(run(true, &["draft", "new", "close-03"]).0, 0);
+    assert_eq!(
+        run(true, &["post", "--intent", &d1, "--draft", "close-03"]).0,
+        0
+    );
+    assert_eq!(
+        run(true, &["draft", "plan", "close-03", "--intent", &d2]).0,
+        0
+    );
+    assert_eq!(run(true, &["draft", "list"]).0, 0);
+    assert_eq!(run(true, &["draft", "show", "close-03"]).0, 0);
+    let (code, out) = run(
+        true,
+        &[
+            "draft",
+            "promote",
+            "close-03",
+            "--as",
+            "controller",
+            "--yes",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(run(true, &["draft", "new", "scratch"]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &["draft", "discard", "scratch", "--reason", "superseded"]
+        )
+        .0,
+        0
+    );
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(run(true, &["procedure", "list"]).0, 0);
@@ -10355,5 +10396,102 @@ fn book_create_entity_functional_unit_guard_e2e() -> std::io::Result<()> {
     let entities = arr(&info, "entities");
     assert_eq!(entities.len(), 2, "{info_out}");
 
+    Ok(())
+}
+
+/// fa-s7x: a draft's intents reach trunk only through another principal's
+/// promotion. Planning journals the rehearsed intent and posts nothing; the
+/// owner cannot promote it (FA-REF-008) and an unconfirmed promotion is
+/// refused (FA-REF-007); a controller's confirmed promotion posts the exact
+/// planned entry, its retry is the recorded promotion, and the promoted
+/// draft takes no further intents (FA-REF-158).
+#[test]
+fn a_draft_reaches_trunk_only_through_another_principals_promotion() -> std::io::Result<()> {
+    let dir = tmp("draft-flow")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(book.as_path()), &argv);
+        eprintln!("$ fa {} -> {code}\n{out}{err}", argv.join(" "));
+        (code, out, err)
+    };
+    assert_eq!(run(&["book", "create", "--name", "Draft Co"]).0, 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let source = write(&dir, "invoice.txt", "INVOICE 1 (draft flow)");
+    let (code, out, _) = run(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let ev = field(&out, "oid").unwrap_or_default().to_string();
+    let intent = |key: &str| {
+        format!(
+            r#"{{"effective_date":"2026-03-15","idempotency_key":"{key}","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6000","amount":"25.00 USD"}},{{"side":"credit","account":"1000","amount":"25.00 USD"}}]}}"#
+        )
+    };
+    let rent = write(&dir, "rent.json", &intent("draft-flow-rent"));
+    let (code, out, _) = run(&["draft", "new", "march", "--as", "preparer"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("draft_opened"));
+    let (code, out, _) = run(&[
+        "post", "--intent", &rent, "--draft", "march", "--as", "preparer",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("draft_planned"));
+    let entry = field(&out, "entry").unwrap_or_default().to_string();
+    assert_eq!(entry.len(), 32, "{out}");
+    let (code, out, _) = run(&["entry", "show", &entry]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        field(&out, "found"),
+        Some("false"),
+        "a planned intent is not a trunk entry: {out}"
+    );
+
+    let (code, out, _) = run(&["draft", "promote", "march", "--as", "preparer", "--yes"]);
+    assert_eq!(code, 7, "{out}");
+    assert!(
+        out.contains("FA-REF-008"),
+        "the owner never promotes: {out}"
+    );
+    let (code, out, _) = run(&["draft", "promote", "march", "--as", "controller"]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-007"), "promotion is confirmed: {out}");
+    let (code, out, _) = run(&["draft", "promote", "march", "--as", "controller", "--yes"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("draft_promoted"));
+    assert!(
+        out.contains(&entry),
+        "the planned entry is the promoted one: {out}"
+    );
+    assert_eq!(field(&out, "already_recorded"), Some("false"));
+    let (code, out, _) = run(&["entry", "show", &entry]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "found"), Some("true"), "promoted: {out}");
+    let (code, out, _) = run(&["draft", "promote", "march", "--as", "controller", "--yes"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("true"));
+    let late = write(&dir, "late.json", &intent("draft-flow-late"));
+    let (code, out, _) = run(&[
+        "post", "--intent", &late, "--draft", "march", "--as", "preparer",
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-158"), "{out}");
+    let (code, out, _) = run(&["draft", "show", "march"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"state\":\"promoted\""), "{out}");
     Ok(())
 }

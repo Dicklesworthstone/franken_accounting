@@ -28,7 +28,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::genesis::BookContext;
 use crate::policy;
-use crate::post::{BatchMember, PostPreparation, PostRequest, prepare_member};
+use crate::post::{Admission, BatchMember, PostPreparation, PostRequest, prepare_member};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::edge_id;
 
@@ -196,8 +196,9 @@ fn judge_retry<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
-    capability: &Capability,
+    capabilities: &[Capability],
     batch: &PostBatch,
+    admission: Admission,
     outcome: VId,
 ) -> Outcome<BatchPosted> {
     let Some((body, recorded_at)) = read_outcome(db, outcome)? else {
@@ -206,8 +207,15 @@ fn judge_retry<V: Vfs + Clone>(
         ));
     };
     let mut entries = Vec::with_capacity(batch.members().len());
-    for (i, intent) in batch.members().iter().enumerate() {
-        match prepare_member(db, ctx, book, member_request(intent, capability), None)? {
+    for (i, (intent, capability)) in batch.members().iter().zip(capabilities).enumerate() {
+        match prepare_member(
+            db,
+            ctx,
+            book,
+            member_request(intent, capability),
+            admission,
+            None,
+        )? {
             Err(refusal) => return Ok(Err(member_refusal(i, refusal))),
             Ok(PostPreparation::AlreadyRecorded(posted)) => entries.push(posted.entry_ref()),
             Ok(PostPreparation::Ready(prepared)) => {
@@ -255,7 +263,58 @@ pub async fn post_batch<V: Vfs + Clone>(
     capability: Capability,
     batch: PostBatch,
 ) -> Outcome<BatchPosted> {
+    let capabilities = vec![capability; batch.members().len()];
+    let staged = match stage_batch(db, ctx, book, &capabilities, &batch, Admission::Commit)? {
+        Err(refusal) => return Ok(Err(refusal)),
+        Ok(BatchStage::Recorded(posted)) => return Ok(Ok(posted)),
+        Ok(BatchStage::Staged(staged)) => staged,
+    };
+    commit_batch(
+        db,
+        ctx,
+        book,
+        &capabilities,
+        &batch,
+        Admission::Commit,
+        staged,
+    )
+    .await
+}
+
+/// A batch staged in one open transaction: its members and its
+/// IntentOutcome, not yet published. A draft's promotion stages its own
+/// record into the same transaction before committing it.
+pub(crate) struct StagedBatch {
+    pub(crate) txn: WriteTxn,
+    pub(crate) outcome: VId,
+    pub(crate) entries: Vec<EntryRef>,
+    pub(crate) periods: Vec<String>,
+}
+
+pub(crate) enum BatchStage {
+    Staged(StagedBatch),
+    /// The identical batch's recorded outcome (FA-INV-09): nothing staged.
+    Recorded(BatchPosted),
+}
+
+/// Stage `batch` (plan §5.8): every member through the posting pipeline in
+/// one carried transaction, member `i` under `capabilities[i]` and
+/// `admission`, then the batch's IntentOutcome with an `IN_BATCH` edge from
+/// each member. Any refusal stages nothing.
+pub(crate) fn stage_batch<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capabilities: &[Capability],
+    batch: &PostBatch,
+    admission: Admission,
+) -> Outcome<BatchStage> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+    if capabilities.len() != batch.members().len() {
+        return Err(KernelError::Corrupt(
+            "a batch is staged with one capability per member".into(),
+        ));
+    }
     if let Some((i, member)) = batch
         .members()
         .iter()
@@ -273,12 +332,12 @@ pub async fn post_batch<V: Vfs + Clone>(
             "post the allocation or migration chunk through its own verb, and batch only Original, Adjusting, Reversal, Pending and Resolution entries",
         )));
     }
-    let ovid = outcome_vid(book, &batch);
+    let ovid = outcome_vid(book, batch);
     let mut txn: Option<WriteTxn> = None;
     let mut members: Vec<BatchMember> = Vec::with_capacity(batch.members().len());
-    for (i, intent) in batch.members().iter().enumerate() {
-        let request = member_request(intent, &capability);
-        let prepared = match prepare_member(db, ctx, book, request, txn.take())? {
+    for (i, (intent, capability)) in batch.members().iter().zip(capabilities).enumerate() {
+        let request = member_request(intent, capability);
+        let prepared = match prepare_member(db, ctx, book, request, admission, txn.take())? {
             Err(refusal) => return Ok(Err(member_refusal(i, refusal))),
             // The member's identity is taken. Admission already ran for it,
             // so the outcome may be observed: with a recorded outcome this is
@@ -287,7 +346,10 @@ pub async fn post_batch<V: Vfs + Clone>(
             Ok(PostPreparation::AlreadyRecorded(posted)) => {
                 if db.vertex(ovid)?.is_some() {
                     return if i == 0 {
-                        judge_retry(db, ctx, book, &capability, &batch, ovid)
+                        Ok(
+                            judge_retry(db, ctx, book, capabilities, batch, admission, ovid)?
+                                .map(BatchStage::Recorded),
+                        )
                     } else {
                         Ok(Err(outcome_conflict(ovid)))
                     };
@@ -342,18 +404,45 @@ pub async fn post_batch<V: Vfs + Clone>(
         stage.add_edge(edge_id(relation::IN_BATCH, evid, ovid), evid, ovid, vec![]);
     }
     txn.write_ordered(db, vec![stage])?;
+    Ok(Ok(BatchStage::Staged(StagedBatch {
+        txn,
+        outcome: ovid,
+        entries: body.entries,
+        periods: members.into_iter().map(|m| m.period).collect(),
+    })))
+}
 
+/// Publish a staged batch once. Every member's capability is judged current
+/// again at the frontier (expiry); a lost race on a member identity is
+/// judged against the recorded outcome under the same admission.
+pub(crate) async fn commit_batch<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capabilities: &[Capability],
+    batch: &PostBatch,
+    admission: Admission,
+    staged: StagedBatch,
+) -> Outcome<BatchPosted> {
+    let StagedBatch {
+        txn,
+        outcome: ovid,
+        entries,
+        periods,
+    } = staged;
     let commit = ctx.commit();
     commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
-    if let Err(d) = fa_policy::current(&capability, db.frontier()?) {
-        txn.abort();
-        return Ok(Err(policy::refusal(&d)));
+    for capability in capabilities {
+        if let Err(d) = fa_policy::current(capability, db.frontier()?) {
+            txn.abort();
+            return Ok(Err(policy::refusal(&d)));
+        }
     }
     match txn.commit(db, &commit).await {
         Ok(seq) => Ok(Ok(BatchPosted {
             outcome: ovid,
-            entries: body.entries,
-            periods: members.into_iter().map(|m| m.period).collect(),
+            entries,
+            periods,
             recorded_at: seq,
             already_recorded: false,
         })),
@@ -371,7 +460,7 @@ pub async fn post_batch<V: Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(ovid)? {
-            Some(_) => judge_retry(db, ctx, book, &capability, &batch, ovid),
+            Some(_) => judge_retry(db, ctx, book, capabilities, batch, admission, ovid),
             None => Ok(Err(Refusal::new(
                 code::IDEMPOTENCY_CONFLICT,
                 exit::CONFLICT,

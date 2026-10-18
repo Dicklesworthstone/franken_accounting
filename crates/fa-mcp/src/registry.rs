@@ -248,6 +248,10 @@ impl MacroSpec {
 pub struct Cluster {
     pub name: String,
     pub doc: String,
+    /// Discoverable on demand (plan §15.4): the cluster's tools are
+    /// registered only when the operator launches with `--cluster <name>`,
+    /// so the default surface stays within its tool budget.
+    pub on_demand: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -412,9 +416,16 @@ impl McpRegistry {
             .map(Vec::as_slice)
             .unwrap_or_default()
         {
+            let on_demand = match t.get("on_demand") {
+                None => false,
+                Some(v) => v
+                    .as_bool()
+                    .ok_or("verbs.toml [mcp]: cluster: `on_demand` must be a boolean")?,
+            };
             clusters.push(Cluster {
                 name: get_str(t, "name", "cluster")?.to_string(),
                 doc: get_str(t, "doc", "cluster")?.to_string(),
+                on_demand,
             });
         }
         let mut excluded = Vec::new();
@@ -788,6 +799,15 @@ impl McpRegistry {
         self.tools.iter().filter(move |t| t.cluster == cluster)
     }
 
+    /// The tools a session exposes (plan §15.4): every default cluster's,
+    /// and each on-demand cluster's that `enabled` names.
+    pub fn exposed<'a>(&'a self, enabled: &'a [String]) -> impl Iterator<Item = &'a ToolSpec> + 'a {
+        self.tools.iter().filter(move |t| {
+            self.cluster(&t.cluster)
+                .is_some_and(|c| !c.on_demand || enabled.contains(&c.name))
+        })
+    }
+
     #[must_use]
     pub fn tool_by_wire(&self, wire: &str) -> Option<&ToolSpec> {
         self.tools.iter().find(|t| t.wire_name() == wire)
@@ -834,9 +854,14 @@ impl McpRegistry {
         {
             return None;
         }
-        if ["--plan-out", "--certificate-out", "--review-out", "--output"]
-            .iter()
-            .any(|flag| parsed.flag(flag).is_some())
+        if [
+            "--plan-out",
+            "--certificate-out",
+            "--review-out",
+            "--output",
+        ]
+        .iter()
+        .any(|flag| parsed.flag(flag).is_some())
         {
             return None;
         }
@@ -981,12 +1006,20 @@ impl McpRegistry {
     #[must_use]
     pub fn instructions(&self) -> String {
         let mut text = String::from(
-            "FrankenAccounting over MCP: each call runs the accounting dispatcher under one trusted launch-bound principal, profile, capability and book. Start with `fa_orient_capabilities`. Tool arguments cannot contain as, grant, yes, keys, book, principal, profile or via; even null or false is refused as forbidden_argument. Input content travels inline: file, intent_file, plan_file, plan_out, review_out and certificate_out are refused as forbidden_path before dispatch unless the operator launched the server with an explicit --files <dir> containment root (fa-yha). Use dry_run: true on a period transition to receive its sealed proposal bytes without writing a file or changing the book. The Agent default reads but cannot publish accounting entries to trunk (FA-REF-013); it may rehearse a post, reverse, reserve or resolve with dry_run: true, and that plan commits for no one. An operator may explicitly launch the bounded Preparer profile. Dangerous commits remain unavailable through MCP until a separate confirmation exchange exists; planning does not authorize a commit. This is launch-time trust, not authenticated capability issuance. A book held by fad is refused until its transport can preserve this authority. Rules: amounts are strings with their unit (\"1500.00 USD\"), never JSON numbers; effective dates are civil YYYY-MM-DD; historical report instant selectors remain available; recorded time is assigned by the journal; corrections are new entries — nothing is edited in place; never invent balancing legs, re-date entries to dodge period law, approve your own proposal, or cite a placeholder. A tool's first content block is the robot envelope's data; the second adds book, coordinate, certificate, warnings, next_actions and authority. Resources retain their data first and return launch authority in a second JSON block. Tool errors carry {type, message, recoverable, fix_hint, suggested_tool_calls, exit, refusal_id, cite, detail, authority}. A different identity or stronger authority requires an operator to launch a separate appropriately bound session.\n\nClusters:\n",
+            "FrankenAccounting over MCP: each call runs the accounting dispatcher under one trusted launch-bound principal, profile, capability and book. Start with `fa_orient_capabilities`. Tool arguments cannot contain as, grant, yes, keys, book, principal, profile or via; even null or false is refused as forbidden_argument. Input content travels inline: file, intent_file, plan_file, plan_out, review_out and certificate_out are refused as forbidden_path before dispatch unless the operator launched the server with an explicit --files <dir> containment root (fa-yha). Use dry_run: true on a period transition to receive its sealed proposal bytes without writing a file or changing the book. The Agent default reads but cannot publish accounting entries to trunk (FA-REF-013); it may rehearse a post, reverse, reserve or resolve with dry_run: true, and that plan commits for no one; or it may plan the same call into its own draft with draft: \"<name>\" (open one with fa_draft_manage, action new), which reaches trunk only when a Human approver promotes the draft on the host. An operator may explicitly launch the bounded Preparer profile. Dangerous commits remain unavailable through MCP until a separate confirmation exchange exists; planning does not authorize a commit. This is launch-time trust unless the operator launched the session with --token, an issued capability the kernel admits only against its journaled issuance. A book held by fad is refused until its transport can preserve this authority. Rules: amounts are strings with their unit (\"1500.00 USD\"), never JSON numbers; effective dates are civil YYYY-MM-DD; historical report instant selectors remain available; recorded time is assigned by the journal; corrections are new entries — nothing is edited in place; never invent balancing legs, re-date entries to dodge period law, approve your own proposal, or cite a placeholder. A tool's first content block is the robot envelope's data; the second adds book, coordinate, certificate, warnings, next_actions and authority. Resources retain their data first and return launch authority in a second JSON block. Tool errors carry {type, message, recoverable, fix_hint, suggested_tool_calls, exit, refusal_id, cite, detail, authority}. A different identity or stronger authority requires an operator to launch a separate appropriately bound session.\n\nClusters:\n",
         );
         for c in &self.clusters {
             let names: Vec<String> = self.tools_of(&c.name).map(ToolSpec::wire_name).collect();
+            let on_demand = if c.on_demand {
+                format!(
+                    " (on demand: the operator launches fa-mcp with --cluster {})",
+                    c.name
+                )
+            } else {
+                String::new()
+            };
             text.push_str(&format!(
-                "- {} — {} Tools: {}\n",
+                "- {}{on_demand} — {} Tools: {}\n",
                 c.name,
                 c.doc,
                 names.join(", ")
@@ -1055,7 +1088,13 @@ impl ToolSpec {
     pub fn is_host_path_property(&self, property: &str) -> bool {
         matches!(
             property,
-            "file" | "intent_file" | "plan_file" | "plan_out" | "review_out" | "certificate_out" | "output"
+            "file"
+                | "intent_file"
+                | "plan_file"
+                | "plan_out"
+                | "review_out"
+                | "certificate_out"
+                | "output"
         ) || self
             .stdin
             .as_ref()
@@ -1333,13 +1372,19 @@ impl ToolSpec {
                                         .collect::<Vec<_>>()
                                         .join(", ")
                                 };
+                                // ... or plan it into its draft (plan §15.2).
                                 admitted.push(format!(
-                                    "{} with dry_run=true (ops: {req}; live commit refused: {reason})",
+                                    "{} with dry_run=true{} (ops: {req}; live commit refused: {reason})",
                                     sub.unwrap_or(if transition {
                                         "transition"
                                     } else {
                                         self.verb.as_str()
-                                    })
+                                    }),
+                                    if transition {
+                                        ""
+                                    } else {
+                                        " or draft=<name> (a Human approver promotes the draft)"
+                                    }
                                 ));
                                 continue;
                             }
