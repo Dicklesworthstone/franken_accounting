@@ -389,6 +389,12 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         vec!["finding", "runs", "--cursor", "invalid"],
         vec!["finding", "export", "--certificate", ZERO_DIGEST],
         vec!["finding", "replay", "-"],
+        vec!["replay", "-"],
+        vec!["replay", ZERO_DIGEST],
+        vec!["replay", "missing.cert", "--output", "unwritten.cert"],
+        vec!["certificate", "status", "-"],
+        vec!["certificate", "status", ZERO_DIGEST],
+        vec!["certificate", "status", "missing.cert"],
     ]);
     for mut argv in commands {
         argv.push("--json");

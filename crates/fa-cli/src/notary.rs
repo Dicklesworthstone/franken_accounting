@@ -353,13 +353,15 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let principal = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
-    let book = ctx.books.open(args)?;
     // Saved provenance grants no current authority. Admission precedes
-    // fetching retained bytes or reading/decoding a caller-supplied file.
-    fa_policy::admit_read(&capability, principal, book.context().book_id)
-        .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
-        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-    book.read_scope(principal, &capability)??;
+    // stamping book metadata, fetching retained bytes or reading a file.
+    let book = ctx.books.open_admitted(args, |book| {
+        fa_policy::admit_read(&capability, principal, book.context().book_id)
+            .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        book.read_scope(principal, &capability)??;
+        Ok(())
+    })?;
     let bytes = read_certificate_bytes(
         &book,
         &ctx.files,
@@ -522,11 +524,13 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     }
     let principal = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
-    let book = ctx.books.open(args)?;
-    fa_policy::admit_read(&capability, principal, book.context().book_id)
-        .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
-        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-    book.read_scope(principal, &capability)??;
+    let book = ctx.books.open_admitted(args, |book| {
+        fa_policy::admit_read(&capability, principal, book.context().book_id)
+            .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        book.read_scope(principal, &capability)??;
+        Ok(())
+    })?;
     let bytes = read_certificate_bytes(
         &book,
         &ctx.files,
