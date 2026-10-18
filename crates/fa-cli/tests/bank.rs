@@ -618,3 +618,57 @@ fn missing_bank_descriptions_remain_valid_robot_data_and_present_text_cites_its_
         }
     }
 }
+
+#[test]
+fn bank_ties_are_explicit_and_reference_selection_can_resolve_them() {
+    let f = Fixture::new();
+    f.post("same-one", "2026-03-05", "debit", "100.00", "ONE");
+    f.post("same-two", "2026-03-05", "debit", "100.00", "TWO");
+    let raw = format!("{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,100.00,2026-03-05,2026-03-05,CRDT,100.00,,\n");
+    let imported = f.import("tie.csv", "csv", &raw);
+    let before = head(&f.book);
+    let matched = ok(&f.book, &["bank", "match", "--import", text(data(&imported), "manifest_oid"), "--date-window", "0"]);
+    let report = data(&matched);
+    assert_eq!(integer(report, "ambiguous_count"), 1);
+    assert_eq!(integer(report, "proposed_count"), 1);
+    assert_eq!(report.get("confirmed"), Some(&Json::Bool(false)));
+    let row = &rows(report, "proposals")[0];
+    assert_eq!(integer(row, "eligible_candidate_count"), 2);
+    assert_eq!(row.get("ambiguous"), Some(&Json::Bool(true)));
+    assert_eq!(row.get("competing_bank_lines"), Some(&Json::Bool(false)));
+    assert_eq!(row.get("counterparty"), Some(&Json::Null));
+    assert_eq!(row.get("reference"), Some(&Json::Null));
+    assert_eq!(head(&f.book), before, "diagnostics and proposals do not write");
+
+    let selective = raw.replace("100.00,,\n", "100.00,,one\n");
+    let imported = f.import("specific-reference.csv", "csv", &selective);
+    let matched = ok(&f.book, &["bank", "match", "--import", text(data(&imported), "manifest_oid"), "--date-window", "0"]);
+    let row = &rows(data(&matched), "proposals")[0];
+    assert_eq!(integer(data(&matched), "ambiguous_count"), 0);
+    assert_eq!(integer(row, "eligible_candidate_count"), 1);
+    assert_eq!(row.get("ambiguous"), Some(&Json::Bool(false)));
+}
+
+#[test]
+fn a_consumed_cash_leg_does_not_hide_competition_between_statement_lines() {
+    let f = Fixture::new();
+    f.post("one-cash-leg", "2026-03-05", "debit", "100.00", "ONE");
+    let raw = format!("{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,200.00,2026-03-05,2026-03-05,CRDT,100.00,,\n1,BANK-123,USD,2026-03-31,0.00,200.00,2026-03-05,2026-03-05,CRDT,100.00,,\n");
+    let imported = f.import("competing-lines.csv", "csv", &raw);
+    let before = head(&f.book);
+    let matched = ok(&f.book, &["bank", "match", "--import", text(data(&imported), "manifest_oid"), "--date-window", "0"]);
+    let report = data(&matched);
+    assert_eq!(integer(report, "ambiguous_count"), 2);
+    assert_eq!(integer(report, "proposed_count"), 1);
+    assert_eq!(integer(report, "unmatched_count"), 1);
+    assert_eq!(text(report, "closing_difference"), "100.00 USD");
+    let proposals = rows(report, "proposals");
+    assert_eq!(text(&proposals[0], "status"), "proposed");
+    assert_eq!(text(&proposals[1], "status"), "unmatched");
+    for row in proposals {
+        assert_eq!(integer(row, "eligible_candidate_count"), 1);
+        assert_eq!(row.get("ambiguous"), Some(&Json::Bool(true)));
+        assert_eq!(row.get("competing_bank_lines"), Some(&Json::Bool(true)));
+    }
+    assert_eq!(head(&f.book), before);
+}

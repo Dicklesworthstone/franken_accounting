@@ -10,6 +10,7 @@ use fa::bank::{BankFormat, BankImportRequest, BankMatchRequest};
 use fa_model::{Oid, account_vid};
 use fa_money::{Amount, Side};
 use fa_policy::Op;
+use fa_registers::reconciliation::pinned_bank_candidate;
 
 use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, known_at_flag, untrusted_text_json, usage};
@@ -203,6 +204,30 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             date_window_days,
         },
     )??;
+    // Compute ambiguity before greedy consumption, so a losing statement
+    // line still exposes its competition for an otherwise eligible cash leg.
+    let mut eligible_counts = vec![0_usize; report.lines.len()];
+    let mut competing = vec![false; report.lines.len()];
+    let window = i32::try_from(report.date_window_days)
+        .map_err(|_| Fail::Internal("admitted bank date window exceeds i32".into()))?;
+    for candidate in &report.candidates {
+        let mut first_line = None;
+        for (index, line) in report.lines.iter().enumerate() {
+            if pinned_bank_candidate(line, &candidate.candidate, window)
+                .map_err(|error| Fail::Internal(format!("bank candidate law: {error}")))?
+            {
+                eligible_counts[index] += 1;
+                if let Some(first) = first_line {
+                    competing[first] = true;
+                    competing[index] = true;
+                } else {
+                    first_line = Some(index);
+                }
+            }
+        }
+    }
+    let ambiguous_count = eligible_counts.iter().zip(&competing)
+        .filter(|(count, contested)| **count > 1 || **contested).count();
     let mut consumed = BTreeSet::new();
     let mut rows = Vec::with_capacity(report.lines.len());
     for (index, (line, proposal)) in report.lines.iter().zip(&report.proposals).enumerate() {
@@ -220,6 +245,9 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .map_err(|e| Fail::Internal(format!("bank decision card: {e}")))?;
         rows.push(obj(vec![
             ("line_ordinal", Json::Int(i128::from(line.line_ordinal))),
+            ("eligible_candidate_count", Json::Int(eligible_counts[index] as i128)),
+            ("competing_bank_lines", Json::Bool(competing[index])),
+            ("ambiguous", Json::Bool(eligible_counts[index] > 1 || competing[index])),
             (
                 "line_document_oid",
                 s(hex(&report.manifest.line_oids[index].0)),
@@ -398,6 +426,7 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("confirmed", Json::Bool(false)),
         ("line_count", Json::Int(report.lines.len() as i128)),
         ("proposed_count", Json::Int(matched as i128)),
+        ("ambiguous_count", Json::Int(ambiguous_count as i128)),
         (
             "unmatched_count",
             Json::Int((report.lines.len() - matched) as i128),
@@ -442,7 +471,7 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         _ => "none (the statement contains no bank lines)".into(),
     };
     ctx.out.event("bank_matches_proposed", fields, &format!(
-        "bank statement for {} at {}: {matched} exact proposals, {} unmatched bank lines, {} unmatched book candidates; candidate search: {candidate_window}; outstanding inventory completeness is unestablished; proposals are unconfirmed",
+        "bank statement for {} at {}: {matched} exact proposals, {ambiguous_count} ambiguous bank lines requiring review, {} unmatched bank lines, {} unmatched book candidates; candidate search: {candidate_window}; outstanding inventory completeness is unestablished; proposals are unconfirmed",
         report.account_code, report.known_at.0, report.lines.len() - matched,
         report.candidates.len() - matched,
     ));
