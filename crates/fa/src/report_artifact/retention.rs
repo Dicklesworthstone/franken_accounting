@@ -68,12 +68,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(refusal) = authorize(self, cx, principal, capability)? {
             return Ok(Err(refusal));
         }
-        if let Err(denial) = fa_policy::require(capability, Op::Produce, "retaining a report artifact") {
+        if let Err(denial) =
+            fa_policy::require(capability, Op::Produce, "retaining a report artifact")
+        {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         let verified_at = self.head(cx)?;
         if let Err(refusal) = self.replay_report_artifact_for(
-            cx, principal, capability, bytes, expected_digest, expected,
+            cx,
+            principal,
+            capability,
+            bytes,
+            expected_digest,
+            expected,
         )? {
             return Ok(Err(refusal));
         }
@@ -84,10 +91,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(refusal) = authorize(self, cx, principal, capability)? {
             return Ok(Err(refusal));
         }
-        let validated = ValidatedArtifact { artifact, verified_at };
+        let validated = ValidatedArtifact {
+            artifact,
+            verified_at,
+        };
         let context = self.context().clone();
         crate::certificate_store::retain_validated(
-            &mut self.db, cx, &context, &self.blobs, &validated,
+            &mut self.db,
+            cx,
+            &context,
+            &self.blobs,
+            &validated,
         )
         .await
     }
@@ -109,7 +123,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let query = cx.query();
         let result = query
             .with_restriction_async(crate::certificate_store::read_artifact(
-                &self.db, &query, self.context(), &self.blobs, digest,
+                &self.db,
+                &query,
+                self.context(),
+                &self.blobs,
+                digest,
             ))
             .await?;
         if let Err(refusal) = authorize(self, cx, principal, capability)? {
@@ -128,7 +146,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         digest: &[u8; 32],
         expected: ReportArtifactExpectation<'_>,
     ) -> Outcome<ReplayedReportArtifact> {
-        let artifact = match self.read_report_artifact(cx, principal, capability, digest).await? {
+        let artifact = match self
+            .read_report_artifact(cx, principal, capability, digest)
+            .await?
+        {
             Ok(artifact) => artifact,
             Err(refusal) => return Ok(Err(refusal)),
         };

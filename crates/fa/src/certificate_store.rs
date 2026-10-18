@@ -32,8 +32,8 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 
 use crate::certificate::{MAX_CERTIFICATE_BYTES, ReportCertificate};
-use crate::{BookError, Outcome, ReportArtifact, ReportArtifactFamily};
 use crate::report_artifact::ValidatedArtifact;
+use crate::{BookError, Outcome, ReportArtifact, ReportArtifactFamily};
 
 mod chunks;
 
@@ -424,7 +424,9 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
     certificate: &ReportCertificate,
 ) -> Outcome<RetainedCertificate> {
     if certificate.output.len() > MAX_CERTIFICATE_BYTES {
-        return Ok(Err(invalid("report certificate exceeds the 64 MiB format limit")));
+        return Ok(Err(invalid(
+            "report certificate exceeds the 64 MiB format limit",
+        )));
     }
     let artifact = match ReportArtifact::try_from(certificate) {
         Ok(artifact) => artifact,
@@ -477,16 +479,7 @@ async fn retain_inner<V: Vfs + Clone, W: Vfs + Clone>(
         )));
     }
     if let Some(row) = txn.vertex(db, vid).map_err(KernelError::from)? {
-        let stored = unchanged_row(
-            db,
-            &query_cx,
-            book,
-            blobs,
-            digest,
-            &row,
-            txn.basis(),
-        )
-        .await;
+        let stored = unchanged_row(db, &query_cx, book, blobs, digest, &row, txn.basis()).await;
         txn.abort();
         let stored = match stored? {
             Ok(stored) => stored,
@@ -511,10 +504,15 @@ async fn retain_inner<V: Vfs + Clone, W: Vfs + Clone>(
     if validated.is_none() {
         if certificate.family() != ReportArtifactFamily::Native {
             txn.abort();
-            return Ok(Err(invalid("non-native retention requires a full family replay")));
+            return Ok(Err(invalid(
+                "non-native retention requires a full family replay",
+            )));
         }
         if let Err(refusal) = crate::certificate::replay_report(
-            db, &query_cx, book, certificate.source_certificate(),
+            db,
+            &query_cx,
+            book,
+            certificate.source_certificate(),
         )? {
             txn.abort();
             return Ok(Err(refusal));

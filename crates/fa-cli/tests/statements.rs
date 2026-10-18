@@ -347,7 +347,6 @@ fn statement_selectors_are_explicit_and_output_files_are_never_replaced() {
     );
 }
 
-
 #[test]
 fn certified_comparisons_and_traces_retain_the_complete_family_across_processes() {
     let fixture = Fixture::new();
@@ -558,12 +557,8 @@ fn comparison_scope_and_certification_authority_are_never_silently_ignored() {
         "--json",
     ]
     .map(String::from);
-    let (exit, captured) = fa_cli::entry::fa_with_authority(
-        &args,
-        fa_cli::cli::Files::default(),
-        &authority,
-        true,
-    );
+    let (exit, captured) =
+        fa_cli::entry::fa_with_authority(&args, fa_cli::cli::Files::default(), &authority, true);
     assert_eq!(exit, 7, "{}{}", captured.stdout, captured.stderr);
     let events: Vec<_> = captured
         .stdout
@@ -575,17 +570,12 @@ fn comparison_scope_and_certification_authority_are_never_silently_ignored() {
     assert!(captured.stdout.contains("produce"));
 }
 
-
 #[test]
 fn generic_aging_artifacts_replay_by_digest_and_export_through_the_held_dispatcher() {
     let fixture = Fixture::new();
     let keys = fa::BookKeys::load(&fixture.book.join("book.keys")).unwrap();
-    let mut book = fa::Book::open_dir(
-        &fixture.book,
-        keys.clone(),
-        fa::Entropy::deterministic(117),
-    )
-    .unwrap();
+    let mut book =
+        fa::Book::open_dir(&fixture.book, keys.clone(), fa::Entropy::deterministic(117)).unwrap();
     let principal = fa_model::principal_vid("aging-producer");
     let capability = fa::Capability::embedded(principal, &["read", "produce"]).unwrap();
     let certified = book
@@ -610,7 +600,11 @@ fn generic_aging_artifacts_replay_by_digest_and_export_through_the_held_dispatch
     assert_eq!(&retained.digest, artifact.digest());
     let handle = format!(
         "C:{}",
-        artifact.digest().iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        artifact
+            .digest()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
     );
     drop(book);
     let output = fixture.dir.join("aging.report");
@@ -627,12 +621,8 @@ fn generic_aging_artifacts_replay_by_digest_and_export_through_the_held_dispatch
     assert_eq!(events.len(), 1);
     assert_eq!(text(&events[0], "event"), "error");
 
-    let mut book = fa::Book::open_dir(
-        &fixture.book,
-        keys,
-        fa::Entropy::deterministic(118),
-    )
-    .unwrap();
+    let mut book =
+        fa::Book::open_dir(&fixture.book, keys, fa::Entropy::deterministic(118)).unwrap();
     let original_head = book.head().unwrap();
     let args = ["replay".to_string(), handle.clone(), "--json".into()];
     let (exit, captured) = fa_cli::cli::run_for_daemon(
@@ -646,9 +636,15 @@ fn generic_aging_artifacts_replay_by_digest_and_export_through_the_held_dispatch
     );
     assert_eq!(exit, 0, "{}{}", captured.stdout, captured.stderr);
     let event = json::parse(captured.stdout.trim()).unwrap();
-    fa_cli::verbs::registry().unwrap().check_line(captured.stdout.trim()).unwrap();
+    fa_cli::verbs::registry()
+        .unwrap()
+        .check_line(captured.stdout.trim())
+        .unwrap();
     assert_eq!(text(data(&event), "family"), "effective-date-aging");
-    assert_eq!(data(&event).get("output_digest"), data(&replay[0]).get("output_digest"));
+    assert_eq!(
+        data(&event).get("output_digest"),
+        data(&replay[0]).get("output_digest")
+    );
     assert_eq!(book.head().unwrap(), original_head);
 
     // The new output flag follows the same daemon file-containment admission

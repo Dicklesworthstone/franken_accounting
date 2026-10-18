@@ -296,44 +296,111 @@ fn retained_cash_artifacts_still_require_independent_classifications_on_every_re
         let cx = h.cx();
         let bytes = artifact.canonical_bytes().unwrap();
         let before = h.head();
-        assert!(h.runtime.block_on(h.book.retain_report_artifact(
-            &cx, PRINCIPAL, &cap(&["read", "produce"]), &bytes, Some(artifact.digest()),
-        )).unwrap().is_err());
+        assert!(
+            h.runtime
+                .block_on(h.book.retain_report_artifact(
+                    &cx,
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
+                    &bytes,
+                    Some(artifact.digest()),
+                ))
+                .unwrap()
+                .is_err()
+        );
         assert_eq!(h.head(), before);
         let mut wrong = fixture.expected.clone();
         wrong.cash_definition.assignments[0].activity = CashFlowActivity::Investing;
         let wrong = if artifact.family() == ReportArtifactFamily::CashFlow {
-            ReportArtifactExpectation::CashFlow { request: &wrong.cash, definition: &wrong.cash_definition }
+            ReportArtifactExpectation::CashFlow {
+                request: &wrong.cash,
+                definition: &wrong.cash_definition,
+            }
         } else {
             ReportArtifactExpectation::IndirectCashFlow(&wrong)
         };
-        assert!(h.runtime.block_on(h.book.retain_report_artifact_for(
-            &cx, PRINCIPAL, &cap(&["read", "produce"]), &bytes, Some(artifact.digest()), wrong,
-        )).unwrap().is_err());
+        assert!(
+            h.runtime
+                .block_on(h.book.retain_report_artifact_for(
+                    &cx,
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
+                    &bytes,
+                    Some(artifact.digest()),
+                    wrong,
+                ))
+                .unwrap()
+                .is_err()
+        );
         assert_eq!(h.head(), before);
-        let receipt = h.runtime.block_on(h.book.retain_report_artifact_for(
-            &cx, PRINCIPAL, &cap(&["read", "produce"]), &bytes, Some(artifact.digest()), fixture.expectation(artifact.family()),
-        )).unwrap().unwrap();
+        let receipt = h
+            .runtime
+            .block_on(h.book.retain_report_artifact_for(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                &bytes,
+                Some(artifact.digest()),
+                fixture.expectation(artifact.family()),
+            ))
+            .unwrap()
+            .unwrap();
         assert_eq!(receipt.recorded_at.0, before.0 + 1);
-        assert_eq!(h.runtime.block_on(h.book.read_report_artifact(
-            &cx, PRINCIPAL, &cap(&["read"]), artifact.digest(),
-        )).unwrap().unwrap(), *artifact);
-        assert!(h.runtime.block_on(h.book.replay_retained_report_artifact(
-            &cx, PRINCIPAL, &cap(&["read"]), artifact.digest(), ReportArtifactExpectation::AsSupplied,
-        )).unwrap().is_err());
-        let replay = h.runtime.block_on(h.book.replay_retained_report_artifact(
-            &cx, PRINCIPAL, &cap(&["read"]), artifact.digest(), fixture.expectation(artifact.family()),
-        )).unwrap().unwrap();
+        assert_eq!(
+            h.runtime
+                .block_on(h.book.read_report_artifact(
+                    &cx,
+                    PRINCIPAL,
+                    &cap(&["read"]),
+                    artifact.digest(),
+                ))
+                .unwrap()
+                .unwrap(),
+            *artifact
+        );
+        assert!(
+            h.runtime
+                .block_on(h.book.replay_retained_report_artifact(
+                    &cx,
+                    PRINCIPAL,
+                    &cap(&["read"]),
+                    artifact.digest(),
+                    ReportArtifactExpectation::AsSupplied,
+                ))
+                .unwrap()
+                .is_err()
+        );
+        let replay = h
+            .runtime
+            .block_on(h.book.replay_retained_report_artifact(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read"]),
+                artifact.digest(),
+                fixture.expectation(artifact.family()),
+            ))
+            .unwrap()
+            .unwrap();
         assert_eq!(replay.known_at, original);
         assert_eq!(replay.output, artifact.output());
         assert_eq!(h.head(), receipt.recorded_at);
-        assert_eq!(h.runtime.block_on(h.book.retain_report_artifact_for(
-            &cx, PRINCIPAL, &cap(&["read", "produce"]), &bytes, Some(artifact.digest()), fixture.expectation(artifact.family()),
-        )).unwrap().unwrap(), receipt);
+        assert_eq!(
+            h.runtime
+                .block_on(h.book.retain_report_artifact_for(
+                    &cx,
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
+                    &bytes,
+                    Some(artifact.digest()),
+                    fixture.expectation(artifact.family()),
+                ))
+                .unwrap()
+                .unwrap(),
+            receipt
+        );
         assert_eq!(h.head(), receipt.recorded_at);
     }
 }
-
 
 #[test]
 fn policy_and_split_cash_artifacts_retain_full_definitions_and_replay_original_history() {
@@ -361,68 +428,160 @@ fn policy_and_split_cash_artifacts_retain_full_definitions_and_replay_original_h
             leg_index: assignment.leg_index,
             reason: "Declared allocation of this receipt".into(),
             portions: vec![
-                CashFlowPortion { activity: CashFlowActivity::Operating, amount: 40 },
-                CashFlowPortion { activity: CashFlowActivity::Financing, amount: 60 },
+                CashFlowPortion {
+                    activity: CashFlowActivity::Operating,
+                    amount: 40,
+                },
+                CashFlowPortion {
+                    activity: CashFlowActivity::Financing,
+                    amount: 60,
+                },
             ],
         }],
     };
     let cx = h.cx();
     let authority = cap(&["read", "produce"]);
-    let policy_report = h.book.certify_cash_flow_with_policy(
-        &cx, PRINCIPAL, &authority, request, &policy,
-    ).unwrap().unwrap();
-    let split_report = h.book.certify_split_cash_flow(
-        &cx, PRINCIPAL, &authority, request, &split,
-    ).unwrap().unwrap();
+    let policy_report = h
+        .book
+        .certify_cash_flow_with_policy(&cx, PRINCIPAL, &authority, request, &policy)
+        .unwrap()
+        .unwrap();
+    let split_report = h
+        .book
+        .certify_split_cash_flow(&cx, PRINCIPAL, &authority, request, &split)
+        .unwrap()
+        .unwrap();
     let policy_artifact = ReportArtifact::try_from(policy_report.certificate()).unwrap();
     let split_artifact = ReportArtifact::try_from(split_report.certificate()).unwrap();
-    assert_eq!(policy_artifact.family(), ReportArtifactFamily::PolicyCashFlow);
+    assert_eq!(
+        policy_artifact.family(),
+        ReportArtifactFamily::PolicyCashFlow
+    );
     assert_eq!(split_artifact.family(), ReportArtifactFamily::SplitCashFlow);
-    assert_eq!(policy_artifact.output(), policy_report.report().canonical_bytes().unwrap());
-    assert_ne!(policy_artifact.output(), policy_report.certificate().source_certificate().output(),
-        "policy and derivation decisions are part of the complete report output");
+    assert_eq!(
+        policy_artifact.output(),
+        policy_report.report().canonical_bytes().unwrap()
+    );
+    assert_ne!(
+        policy_artifact.output(),
+        policy_report.certificate().source_certificate().output(),
+        "policy and derivation decisions are part of the complete report output"
+    );
     for (artifact, expected) in [
-        (&policy_artifact, ReportArtifactExpectation::PolicyCashFlow { request, policy: &policy }),
-        (&split_artifact, ReportArtifactExpectation::SplitCashFlow { request, definition: &split }),
+        (
+            &policy_artifact,
+            ReportArtifactExpectation::PolicyCashFlow {
+                request,
+                policy: &policy,
+            },
+        ),
+        (
+            &split_artifact,
+            ReportArtifactExpectation::SplitCashFlow {
+                request,
+                definition: &split,
+            },
+        ),
     ] {
         let bytes = artifact.canonical_bytes().unwrap();
         assert_eq!(&ReportArtifact::decode(&bytes).unwrap(), artifact);
         let head = h.head();
-        assert!(h.runtime.block_on(h.book.retain_report_artifact(
-            &cx, PRINCIPAL, &authority, &bytes, Some(artifact.digest()),
-        )).unwrap().is_err(), "a digest never waives independent financial definitions");
+        assert!(
+            h.runtime
+                .block_on(h.book.retain_report_artifact(
+                    &cx,
+                    PRINCIPAL,
+                    &authority,
+                    &bytes,
+                    Some(artifact.digest()),
+                ))
+                .unwrap()
+                .is_err(),
+            "a digest never waives independent financial definitions"
+        );
         assert_eq!(h.head(), head);
-        h.runtime.block_on(h.book.retain_report_artifact_for(
-            &cx, PRINCIPAL, &authority, &bytes, Some(artifact.digest()), expected,
-        )).unwrap().unwrap();
+        h.runtime
+            .block_on(h.book.retain_report_artifact_for(
+                &cx,
+                PRINCIPAL,
+                &authority,
+                &bytes,
+                Some(artifact.digest()),
+                expected,
+            ))
+            .unwrap()
+            .unwrap();
     }
     h.post(b"later classified cash", 19);
     let head = h.head();
     for (artifact, expected) in [
-        (&policy_artifact, ReportArtifactExpectation::PolicyCashFlow { request, policy: &policy }),
-        (&split_artifact, ReportArtifactExpectation::SplitCashFlow { request, definition: &split }),
+        (
+            &policy_artifact,
+            ReportArtifactExpectation::PolicyCashFlow {
+                request,
+                policy: &policy,
+            },
+        ),
+        (
+            &split_artifact,
+            ReportArtifactExpectation::SplitCashFlow {
+                request,
+                definition: &split,
+            },
+        ),
     ] {
-        let replay = h.runtime.block_on(h.book.replay_retained_report_artifact(
-            &cx, PRINCIPAL, &cap(&["read"]), artifact.digest(), expected,
-        )).unwrap().unwrap();
+        let replay = h
+            .runtime
+            .block_on(h.book.replay_retained_report_artifact(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read"]),
+                artifact.digest(),
+                expected,
+            ))
+            .unwrap()
+            .unwrap();
         assert_eq!(replay.output, artifact.output());
         assert_eq!(Some(replay.known_at), request.known_at);
         assert_eq!(h.head(), head);
     }
     let mut wrong_policy = policy.clone();
     wrong_policy.account_rules[0].activity = CashFlowActivity::Operating;
-    assert!(h.book.replay_report_artifact_for(
-        &cx, PRINCIPAL, &cap(&["read"]), &policy_artifact.canonical_bytes().unwrap(),
-        Some(policy_artifact.digest()),
-        ReportArtifactExpectation::PolicyCashFlow { request, policy: &wrong_policy },
-    ).unwrap().is_err());
+    assert!(
+        h.book
+            .replay_report_artifact_for(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read"]),
+                &policy_artifact.canonical_bytes().unwrap(),
+                Some(policy_artifact.digest()),
+                ReportArtifactExpectation::PolicyCashFlow {
+                    request,
+                    policy: &wrong_policy
+                },
+            )
+            .unwrap()
+            .is_err()
+    );
     let mut wrong_split = split.clone();
     wrong_split.splits[0].portions[0].amount = 60;
     wrong_split.splits[0].portions[1].amount = 40;
-    assert!(h.book.replay_report_artifact_for(
-        &cx, PRINCIPAL, &cap(&["read"]), &split_artifact.canonical_bytes().unwrap(),
-        Some(split_artifact.digest()),
-        ReportArtifactExpectation::SplitCashFlow { request, definition: &wrong_split },
-    ).unwrap().is_err(), "equal total cash does not authenticate a different partition");
+    assert!(
+        h.book
+            .replay_report_artifact_for(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read"]),
+                &split_artifact.canonical_bytes().unwrap(),
+                Some(split_artifact.digest()),
+                ReportArtifactExpectation::SplitCashFlow {
+                    request,
+                    definition: &wrong_split
+                },
+            )
+            .unwrap()
+            .is_err(),
+        "equal total cash does not authenticate a different partition"
+    );
     assert_eq!(h.head(), head);
 }

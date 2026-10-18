@@ -368,12 +368,8 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         &capability,
     )?;
     let artifact = ReportArtifact::decode(&bytes)?;
-    let replayed = book.replay_report_artifact(
-        principal,
-        &capability,
-        &bytes,
-        Some(artifact.digest()),
-    )??;
+    let replayed =
+        book.replay_report_artifact(principal, &capability, &bytes, Some(artifact.digest()))??;
     // Resolve typed reports before an output file or success event is emitted.
     // A generic receipt always identifies the original family's exact bytes.
     let native = if artifact.family() == ReportArtifactFamily::Native {
@@ -394,7 +390,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         None
     };
     let procedure = if artifact.family() == ReportArtifactFamily::Procedure {
-        Some(fa::procedure_certificate::ProcedureCertificate::decode(&bytes)?)
+        Some(fa::procedure_certificate::ProcedureCertificate::decode(
+            &bytes,
+        )?)
     } else {
         None
     };

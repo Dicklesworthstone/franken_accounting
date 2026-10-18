@@ -456,10 +456,7 @@ mod tests {
     #[test]
     fn consumed_and_unconsumed_apis_match_actual_workspace_call_sites() {
         let ledger = Ledger::embedded().unwrap();
-        assert_eq!(
-            ledger.row("R-PRISM").unwrap().fa_status,
-            FaStatus::Live
-        );
+        assert_eq!(ledger.row("R-PRISM").unwrap().fa_status, FaStatus::Live);
         assert_eq!(ledger.row("R-SUB").unwrap().fa_status, FaStatus::Unconsumed);
         assert_eq!(ledger.row("R-SRV").unwrap().fa_status, FaStatus::Unconsumed);
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

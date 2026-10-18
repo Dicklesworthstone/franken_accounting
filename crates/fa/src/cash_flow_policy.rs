@@ -99,7 +99,11 @@ impl PolicyCashFlow {
     /// Exact cash output, canonical policy and derivation transcript. These
     /// bytes are a report, not a source-completeness proof or policy approval.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
-        canonical_report_bytes(&self.policy, &self.report.canonical_bytes()?, &self.decisions)
+        canonical_report_bytes(
+            &self.policy,
+            &self.report.canonical_bytes()?,
+            &self.decisions,
+        )
     }
 }
 

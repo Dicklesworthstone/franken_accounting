@@ -20,15 +20,15 @@ use fa_policy::Capability;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
+use crate::aging::portfolio::{AgingPortfolioCertificate, AgingPortfolioRequest};
+use crate::cash_flow_policy::{CashFlowPolicy, CashFlowPolicyCertificate};
+use crate::cash_flow_split::{CashFlowSplitCertificate, CashFlowSplitDefinition};
 use crate::{
     AgingCertificate, AgingReconciliationCertificate, AgingReconciliationRequest, AsyncBook,
     BookError, CashFlowCertificate, CashFlowDefinition, IndirectCashFlowCertificate,
     IndirectCashFlowRequest, Outcome, ReportCertificate, RollForwardCertificate,
     RollForwardRequest, StatementDiffCertificate, StatementTraceCertificate, SummaryCertificate,
 };
-use crate::aging::portfolio::{AgingPortfolioCertificate, AgingPortfolioRequest};
-use crate::cash_flow_policy::{CashFlowPolicy, CashFlowPolicyCertificate};
-use crate::cash_flow_split::{CashFlowSplitCertificate, CashFlowSplitDefinition};
 
 /// Total encoded input bound, including the complete nested native closure.
 pub const MAX_REPORT_ARTIFACT_BYTES: usize = crate::certificate::MAX_CERTIFICATE_BYTES;
@@ -171,7 +171,9 @@ impl ReportArtifact {
         let inner = if format == crate::procedure_certificate::PROCEDURE_CERTIFICATE_FORMAT
             || format == crate::procedure_certificate::EXTENDED_PROCEDURE_CERTIFICATE_FORMAT
         {
-            Artifact::Procedure(Box::new(crate::procedure_certificate::ProcedureCertificate::decode(bytes)?))
+            Artifact::Procedure(Box::new(
+                crate::procedure_certificate::ProcedureCertificate::decode(bytes)?,
+            ))
         } else if format == crate::summary_certificate::CERTIFICATE_FORMAT {
             Artifact::Summary(Box::new(SummaryCertificate::decode(bytes)?))
         } else if format == crate::AGING_CERTIFICATE_FORMAT {
@@ -195,7 +197,10 @@ impl ReportArtifact {
         } else if format == crate::cash_flow_policy::CASH_FLOW_POLICY_CERTIFICATE_FORMAT {
             let certificate = CashFlowPolicyCertificate::decode(bytes)?;
             let output = certificate.output()?;
-            Artifact::PolicyCashFlow(Box::new(PolicyArtifact { certificate, output }))
+            Artifact::PolicyCashFlow(Box::new(PolicyArtifact {
+                certificate,
+                output,
+            }))
         } else {
             return Err(invalid("unsupported report artifact family or version"));
         };
@@ -245,7 +250,8 @@ impl ReportArtifact {
             Artifact::StatementTrace(c) => &c.sources()[c.sources().len() - 1],
             Artifact::AgingPortfolio(c) => c.control_source(),
             Artifact::SplitCashFlow(c) => c.source_certificate().source_certificate(),
-            Artifact::PolicyCashFlow(c) => c.certificate
+            Artifact::PolicyCashFlow(c) => c
+                .certificate
                 .source_certificate()
                 .source_certificate()
                 .source_certificate(),
@@ -438,7 +444,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let replayed = match (&artifact.inner, expected) {
             (Artifact::Procedure(c), ReportArtifactExpectation::AsSupplied) => self
-                .replay_procedure(cx, principal, capability, c)?.map(|_| ()),
+                .replay_procedure(cx, principal, capability, c)?
+                .map(|_| ()),
             (Artifact::Native(c), ReportArtifactExpectation::AsSupplied) => {
                 self.replay_report(cx, c)?.map(|_| ())
             }
@@ -478,12 +485,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             ) => self
                 .replay_effective_date_aging_reconciliation(cx, principal, capability, c, request)?
                 .map(|_| ()),
-            (Artifact::AgingPortfolio(c), ReportArtifactExpectation::AgingPortfolio(request)) => self
-                .replay_aging_portfolio(cx, principal, capability, c, request)?
-                .map(|_| ()),
+            (Artifact::AgingPortfolio(c), ReportArtifactExpectation::AgingPortfolio(request)) => {
+                self.replay_aging_portfolio(cx, principal, capability, c, request)?
+                    .map(|_| ())
+            }
             (
                 Artifact::SplitCashFlow(c),
-                ReportArtifactExpectation::SplitCashFlow { request, definition },
+                ReportArtifactExpectation::SplitCashFlow {
+                    request,
+                    definition,
+                },
             ) => self
                 .replay_split_cash_flow(cx, principal, capability, c, request, definition)?
                 .map(|_| ()),
@@ -491,7 +502,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Artifact::PolicyCashFlow(c),
                 ReportArtifactExpectation::PolicyCashFlow { request, policy },
             ) => self
-                .replay_cash_flow_with_policy(cx, principal, capability, &c.certificate, request, policy)?
+                .replay_cash_flow_with_policy(
+                    cx,
+                    principal,
+                    capability,
+                    &c.certificate,
+                    request,
+                    policy,
+                )?
                 .map(|_| ()),
             _ => {
                 return Ok(Err(invalid(

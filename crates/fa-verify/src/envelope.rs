@@ -575,7 +575,9 @@ fn register_cell_digest(
     };
     let a_len = 16u32.to_le_bytes();
     let u_len = 4u32.to_le_bytes();
-    let p_len = u32::try_from(period.len()).unwrap_or(u32::MAX).to_le_bytes();
+    let p_len = u32::try_from(period.len())
+        .unwrap_or(u32::MAX)
+        .to_le_bytes();
     let e_len = u32::try_from(entity_bytes.len())
         .unwrap_or(u32::MAX)
         .to_le_bytes();

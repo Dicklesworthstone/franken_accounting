@@ -11,11 +11,11 @@
 //! Ordered, repeated citations (including tracing paths) remain in the original
 //! certificate; graph CITES edges are the distinct-target membership projection.
 
-pub mod review;
 pub mod lookup;
+pub mod review;
 pub use lookup::RecordedFinding;
 pub mod workpaper;
-pub use workpaper::{FindingWorkpaper, FINDING_WORKPAPER_FORMAT, MAX_FINDING_WORKPAPER_BYTES};
+pub use workpaper::{FINDING_WORKPAPER_FORMAT, FindingWorkpaper, MAX_FINDING_WORKPAPER_BYTES};
 
 use std::collections::BTreeSet;
 
@@ -54,7 +54,9 @@ pub struct RecordedFindings {
 
 pub(crate) fn invalid(message: impl Into<String>) -> Refusal {
     Refusal::new(
-        crate::certificate::code::CERTIFICATE_INVALID, exit::VERIFICATION, message,
+        crate::certificate::code::CERTIFICATE_INVALID,
+        exit::VERIFICATION,
+        message,
         "plan §11.8; FA-INV-02/10/11 (immutable finding publication and native replay)",
         "retain and replay the original complete procedure certificate with current whole-book authority; preserve damaged records instead of repairing them",
     )
@@ -76,18 +78,30 @@ pub fn finding_run_vid(book: Id128, certificate: &[u8; 32]) -> VId {
 /// Stable zero-based occurrence identity in the certificate's ordered findings.
 #[must_use]
 pub fn finding_vid(book: Id128, certificate: &[u8; 32], ordinal: u32) -> VId {
-    vid(b"fa:vid:finding:v1", book, certificate, &ordinal.to_le_bytes())
+    vid(
+        b"fa:vid:finding:v1",
+        book,
+        certificate,
+        &ordinal.to_le_bytes(),
+    )
 }
 
 pub(crate) fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
-    book: &AsyncBook<V, B>, cx: &PurposeContexts, principal: VId,
-    capability: &Capability, produce: bool,
+    book: &AsyncBook<V, B>,
+    cx: &PurposeContexts,
+    principal: VId,
+    capability: &Capability,
+    produce: bool,
 ) -> Outcome<()> {
     if let Err(denial) = fa_policy::admit_read(capability, principal, book.context().book_id)
         .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
-        .and_then(|()| if produce {
-            fa_policy::require(capability, Op::Produce, "publishing or exporting findings")
-        } else { Ok(()) })
+        .and_then(|()| {
+            if produce {
+                fa_policy::require(capability, Op::Produce, "publishing or exporting findings")
+            } else {
+                Ok(())
+            }
+        })
     {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
     }
@@ -96,7 +110,9 @@ pub(crate) fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
         if let Err(denial) = fa_policy::current(capability, head) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
-        Ok(fa_journal::policy::capability_admitted(db, context, capability)?)
+        Ok(fa_journal::policy::capability_admitted(
+            db, context, capability,
+        )?)
     })
 }
 
@@ -121,7 +137,9 @@ struct Prepared {
 }
 
 fn encoded(writer: Writer) -> Result<Vec<u8>, Refusal> {
-    writer.finish().map_err(|e| invalid(format!("finding record encoding: {e}")))
+    writer
+        .finish()
+        .map_err(|e| invalid(format!("finding record encoding: {e}")))
 }
 
 fn target(cite: &Cite, book: &BookContext) -> VId {
@@ -137,48 +155,87 @@ impl Prepared {
     fn new(certificate: ProcedureCertificate, book: &BookContext) -> Result<Self, Refusal> {
         let report = certificate.report();
         if report.findings.len() > MAX_RECORDED_FINDINGS {
-            return Err(invalid("the complete run exceeds MAX_RECORDED_FINDINGS; no partial publication"));
+            return Err(invalid(
+                "the complete run exceeds MAX_RECORDED_FINDINGS; no partial publication",
+            ));
         }
-        let citations = report.findings.iter().try_fold(0usize, |n, f| n.checked_add(f.cites.len()));
+        let citations = report
+            .findings
+            .iter()
+            .try_fold(0usize, |n, f| n.checked_add(f.cites.len()));
         if citations.is_none_or(|n| n > MAX_RECORDED_CITATIONS) {
-            return Err(invalid("the complete run exceeds MAX_RECORDED_CITATIONS; no partial publication"));
+            return Err(invalid(
+                "the complete run exceeds MAX_RECORDED_CITATIONS; no partial publication",
+            ));
         }
         let digest = certificate.digest();
         let run = finding_run_vid(book.book_id, digest);
         let cvid = crate::certificate_store::certificate_vid(book.book_id, digest);
         let mut w = Writer::new();
-        w.fixed(FINDING_RUN_FORMAT).fixed(&book.book_id.0).fixed(digest)
-            .u32(report.findings.len() as u32).fixed(&report.findings_digest);
+        w.fixed(FINDING_RUN_FORMAT)
+            .fixed(&book.book_id.0)
+            .fixed(digest)
+            .u32(report.findings.len() as u32)
+            .fixed(&report.findings_digest);
         let payload = encoded(w)?;
         let mut records = vec![Record {
-            vid: run, digest: domain_digest(b"fa:finding-record-digest:v1", &[&payload]), payload,
+            vid: run,
+            digest: domain_digest(b"fa:finding-record-digest:v1", &[&payload]),
+            payload,
         }];
-        let mut links = BTreeSet::from([Link { cite: false, from: run, to: cvid }]);
+        let mut links = BTreeSet::from([Link {
+            cite: false,
+            from: run,
+            to: cvid,
+        }]);
         let mut identities = BTreeSet::from([run, cvid]);
         for (ordinal, finding) in report.findings.iter().enumerate() {
             let fvid = finding_vid(book.book_id, digest, ordinal as u32);
-            if !identities.insert(fvid) { return Err(invalid("finding identity collision")); }
-            let bytes = finding.canonical_bytes().map_err(|e| invalid(format!("finding: {e}")))?;
+            if !identities.insert(fvid) {
+                return Err(invalid("finding identity collision"));
+            }
+            let bytes = finding
+                .canonical_bytes()
+                .map_err(|e| invalid(format!("finding: {e}")))?;
             let value_digest = domain_digest(b"fa:finding-value:v1", &[&bytes]);
             let mut w = Writer::new();
-            w.fixed(FINDING_RECORD_FORMAT).fixed(&book.book_id.0).fixed(digest)
-                .u32(ordinal as u32).fixed(&value_digest);
+            w.fixed(FINDING_RECORD_FORMAT)
+                .fixed(&book.book_id.0)
+                .fixed(digest)
+                .u32(ordinal as u32)
+                .fixed(&value_digest);
             let payload = encoded(w)?;
             records.push(Record {
-                vid: fvid, digest: domain_digest(b"fa:finding-record-digest:v1", &[&payload]), payload,
+                vid: fvid,
+                digest: domain_digest(b"fa:finding-record-digest:v1", &[&payload]),
+                payload,
             });
-            links.insert(Link { cite: false, from: fvid, to: run });
+            links.insert(Link {
+                cite: false,
+                from: fvid,
+                to: run,
+            });
             for cite in &finding.cites {
-                links.insert(Link { cite: true, from: fvid, to: target(cite, book) });
+                links.insert(Link {
+                    cite: true,
+                    from: fvid,
+                    to: target(cite, book),
+                });
             }
         }
-        Ok(Self { records, links, certificate_vid: cvid, certificate })
+        Ok(Self {
+            records,
+            links,
+            certificate_vid: cvid,
+            certificate,
+        })
     }
 
     fn result(&self, recorded_at: CommitSeq) -> RecordedFindings {
         RecordedFindings {
             run_vid: self.records[0].vid,
-            certificate_digest: *self.certificate.digest(), recorded_at,
+            certificate_digest: *self.certificate.digest(),
+            recorded_at,
             producer: self.certificate.producer(),
             finding_ids: self.records[1..].iter().map(|r| r.vid).collect(),
             report: self.certificate.report().clone(),
@@ -188,51 +245,91 @@ impl Prepared {
     /// Compare against the certified output, not just against untrusted mirrors.
     /// A version's predecessor distinguishes first birth from byte restoration.
     fn verify<V: Vfs + Clone>(
-        &self, db: &Database<V>, cx: &PurposeContexts, book: &BookContext, at: CommitSeq,
+        &self,
+        db: &Database<V>,
+        cx: &PurposeContexts,
+        book: &BookContext,
+        at: CommitSeq,
     ) -> Outcome<RecordedFindings> {
-        let Some(root) = db.vertex_at(self.records[0].vid, at).map_err(KernelError::from)? else {
-            return Ok(Err(invalid("finding run is not recorded or has been retired")));
+        let Some(root) = db
+            .vertex_at(self.records[0].vid, at)
+            .map_err(KernelError::from)?
+        else {
+            return Ok(Err(invalid(
+                "finding run is not recorded or has been retired",
+            )));
         };
         let birth = root.created_at;
         let Some(before) = birth.0.checked_sub(1).map(CommitSeq) else {
             return Ok(Err(invalid("finding run has no original birth")));
         };
-        let Some(source) = db.vertex_at(self.certificate_vid, before).map_err(KernelError::from)? else {
-            return Ok(Err(invalid("the full certificate must be retained before its findings")));
+        let Some(source) = db
+            .vertex_at(self.certificate_vid, before)
+            .map_err(KernelError::from)?
+        else {
+            return Ok(Err(invalid(
+                "the full certificate must be retained before its findings",
+            )));
         };
         if !source.labels.contains(&label::CERTIFICATE) || birth <= self.certificate.known_at() {
-            return Ok(Err(invalid("finding publication precedes its certified source")));
+            return Ok(Err(invalid(
+                "finding publication precedes its certified source",
+            )));
         }
         for record in &self.records {
             cx.query().checkpoint().map_err(BookError::Context)?;
             let Some(row) = db.vertex_at(record.vid, at).map_err(KernelError::from)? else {
-                return Ok(Err(invalid("incomplete finding run: a finding is missing or retired")));
+                return Ok(Err(invalid(
+                    "incomplete finding run: a finding is missing or retired",
+                )));
             };
-            if row.created_at != birth || row.retired_at.is_some()
-                || row.labels.as_slice() != [label::FINDING] || row.props.len() != 3
+            if row.created_at != birth
+                || row.retired_at.is_some()
+                || row.labels.as_slice() != [label::FINDING]
+                || row.props.len() != 3
                 || !matches!(prop(&row, property::BOOK_ID), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == book.book_id.0)
                 || !matches!(prop(&row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == record.digest)
                 || !matches!(prop(&row, property::FA_PAYLOAD), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == record.payload)
-                || db.vertex_at(record.vid, before).map_err(KernelError::from)?.is_some()
-                || db.vertex_at(record.vid, birth).map_err(KernelError::from)?.as_ref() != Some(&row)
+                || db
+                    .vertex_at(record.vid, before)
+                    .map_err(KernelError::from)?
+                    .is_some()
+                || db
+                    .vertex_at(record.vid, birth)
+                    .map_err(KernelError::from)?
+                    .as_ref()
+                    != Some(&row)
             {
-                return Ok(Err(invalid("finding record was rewritten, rebound, or separately published")));
+                return Ok(Err(invalid(
+                    "finding record was rewritten, rebound, or separately published",
+                )));
             }
         }
         for link in &self.links {
             cx.query().checkpoint().map_err(BookError::Context)?;
-            let rel = if link.cite { relation::CITES } else { relation::DERIVED_FROM };
+            let rel = if link.cite {
+                relation::CITES
+            } else {
+                relation::DERIVED_FROM
+            };
             let id = edge_id(rel, link.from, link.to);
             let Some(edge) = db.edge_at(id, at).map_err(KernelError::from)? else {
-                return Ok(Err(invalid("a required finding citation or lineage edge is missing")));
+                return Ok(Err(invalid(
+                    "a required finding citation or lineage edge is missing",
+                )));
             };
-            if edge.entry.src != link.from || edge.entry.dst != link.to
-                || edge.entry.relation != rel || edge.entry.created_at != birth
-                || edge.entry.retired_at.is_some() || !edge.props.is_empty()
+            if edge.entry.src != link.from
+                || edge.entry.dst != link.to
+                || edge.entry.relation != rel
+                || edge.entry.created_at != birth
+                || edge.entry.retired_at.is_some()
+                || !edge.props.is_empty()
                 || db.edge_at(id, before).map_err(KernelError::from)?.is_some()
                 || db.edge_at(id, birth).map_err(KernelError::from)?.as_ref() != Some(&edge)
             {
-                return Ok(Err(invalid("finding citation was rewritten, rebound, or separately published")));
+                return Ok(Err(invalid(
+                    "finding citation was rewritten, rebound, or separately published",
+                )));
             }
         }
         Ok(Ok(self.result(birth)))
@@ -241,30 +338,59 @@ impl Prepared {
 
 fn refused_write<T>(error: WriteTxnError) -> Outcome<T> {
     match error {
-        WriteTxnError::Write(WriteError::AlreadyLive { .. } | WriteError::IdentitySpent { .. }) =>
-            Ok(Err(invalid("a finding or citation identity is already used; no overwrite or repair"))),
-        WriteTxnError::Write(WriteError::FirstCommitterWins { detail, .. }) =>
-            Ok(Err(Refusal::new(fa_journal::refusal::code::CONFLICT, exit::CONFLICT,
-                format!("finding publication witness changed: {detail}"), "FG-LAW-FCW-01",
-                "retry the complete run with its same retained certificate"))),
+        WriteTxnError::Write(WriteError::AlreadyLive { .. } | WriteError::IdentitySpent { .. }) => {
+            Ok(Err(invalid(
+                "a finding or citation identity is already used; no overwrite or repair",
+            )))
+        }
+        WriteTxnError::Write(WriteError::FirstCommitterWins { detail, .. }) => {
+            Ok(Err(Refusal::new(
+                fa_journal::refusal::code::CONFLICT,
+                exit::CONFLICT,
+                format!("finding publication witness changed: {detail}"),
+                "FG-LAW-FCW-01",
+                "retry the complete run with its same retained certificate",
+            )))
+        }
         other => Err(KernelError::from(other).into()),
     }
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     async fn prepared_findings(
-        &self, cx: &PurposeContexts, principal: VId, capability: &Capability, digest: &[u8; 32],
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        digest: &[u8; 32],
     ) -> Outcome<Prepared> {
-        let artifact = match self.read_report_artifact(cx, principal, capability, digest).await? {
-            Ok(a) => a, Err(r) => return Ok(Err(r)),
+        let artifact = match self
+            .read_report_artifact(cx, principal, capability, digest)
+            .await?
+        {
+            Ok(a) => a,
+            Err(r) => return Ok(Err(r)),
         };
         if artifact.family() != ReportArtifactFamily::Procedure {
-            return Ok(Err(invalid("findings require a complete retained procedure certificate")));
+            return Ok(Err(invalid(
+                "findings require a complete retained procedure certificate",
+            )));
         }
-        let bytes = match artifact.canonical_bytes() { Ok(b) => b, Err(r) => return Ok(Err(r)) };
-        let certificate = match ProcedureCertificate::decode(&bytes) { Ok(c) => c, Err(r) => return Ok(Err(r)) };
-        let prepared = match Prepared::new(certificate, self.context()) { Ok(p) => p, Err(r) => return Ok(Err(r)) };
-        if let Err(r) = self.replay_procedure(cx, principal, capability, &prepared.certificate)? { return Ok(Err(r)); }
+        let bytes = match artifact.canonical_bytes() {
+            Ok(b) => b,
+            Err(r) => return Ok(Err(r)),
+        };
+        let certificate = match ProcedureCertificate::decode(&bytes) {
+            Ok(c) => c,
+            Err(r) => return Ok(Err(r)),
+        };
+        let prepared = match Prepared::new(certificate, self.context()) {
+            Ok(p) => p,
+            Err(r) => return Ok(Err(r)),
+        };
+        if let Err(r) = self.replay_procedure(cx, principal, capability, &prepared.certificate)? {
+            return Ok(Err(r));
+        }
         let report = prepared.certificate.report();
         let valid = self.query(cx, |db, book| {
             for finding in &report.findings {
@@ -277,7 +403,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
             Ok(Ok(()))
         })?;
-        if let Err(r) = valid { return Ok(Err(r)); }
+        if let Err(r) = valid {
+            return Ok(Err(r));
+        }
         Ok(Ok(prepared))
     }
 
@@ -285,28 +413,50 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// must first be retained through retain_report_artifact. This operation does
     /// not post an accounting Entry, mutate the certificate, or mark anything reviewed.
     pub async fn record_findings(
-        &mut self, cx: &PurposeContexts, principal: VId, capability: &Capability,
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
         certificate_digest: &[u8; 32],
     ) -> Outcome<RecordedFindings> {
-        if let Err(r) = authorize(self, cx, principal, capability, true)? { return Ok(Err(r)); }
+        if let Err(r) = authorize(self, cx, principal, capability, true)? {
+            return Ok(Err(r));
+        }
         let at = self.head(cx)?;
-        let prepared = match self.prepared_findings(cx, principal, capability, certificate_digest).await? {
-            Ok(p) => p, Err(r) => return Ok(Err(r)),
+        let prepared = match self
+            .prepared_findings(cx, principal, capability, certificate_digest)
+            .await?
+        {
+            Ok(p) => p,
+            Err(r) => return Ok(Err(r)),
         };
         let mut txn = self.db.begin(&cx.txn()).map_err(KernelError::from)?;
         if txn.basis() != at {
             txn.abort();
-            return Ok(Err(Refusal::new(fa_journal::refusal::code::CONFLICT, exit::CONFLICT,
-                "book changed after finding replay", "FA-INV-10/11", "retry the same complete run")));
+            return Ok(Err(Refusal::new(
+                fa_journal::refusal::code::CONFLICT,
+                exit::CONFLICT,
+                "book changed after finding replay",
+                "FA-INV-10/11",
+                "retry the same complete run",
+            )));
         }
         if let Err(d) = fa_policy::current(capability, txn.basis()) {
-            txn.abort(); return Ok(Err(fa_journal::policy::refusal(&d)));
+            txn.abort();
+            return Ok(Err(fa_journal::policy::refusal(&d)));
         }
-        if let Err(r) = fa_journal::policy::capability_witness(&txn, &self.db, self.context(), capability)? {
-            txn.abort(); return Ok(Err(r));
+        if let Err(r) =
+            fa_journal::policy::capability_witness(&txn, &self.db, self.context(), capability)?
+        {
+            txn.abort();
+            return Ok(Err(r));
         }
         fa_journal::policy::epoch_witness(&txn, &self.db)?;
-        if txn.vertex(&self.db, prepared.records[0].vid).map_err(KernelError::from)?.is_some() {
+        if txn
+            .vertex(&self.db, prepared.records[0].vid)
+            .map_err(KernelError::from)?
+            .is_some()
+        {
             txn.abort();
             return self.query(cx, |db, book| prepared.verify(db, cx, book, at));
         }
@@ -314,13 +464,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let mut citations = WriteBatch::new(relation::CITES);
         for record in &prepared.records {
             cx.query().checkpoint().map_err(BookError::Context)?;
-            if txn.vertex(&self.db, record.vid).map_err(KernelError::from)?.is_some() {
-                txn.abort(); return Ok(Err(invalid("orphan finding record; refusing partial-run repair")));
+            if txn
+                .vertex(&self.db, record.vid)
+                .map_err(KernelError::from)?
+                .is_some()
+            {
+                txn.abort();
+                return Ok(Err(invalid(
+                    "orphan finding record; refusing partial-run repair",
+                )));
             }
             let mut props = vec![
-                (property::FA_PAYLOAD, scalar_bytes("finding payload", record.payload.clone())?),
-                (property::FA_DIGEST, scalar_bytes("finding digest", record.digest.to_vec())?),
-                (property::BOOK_ID, scalar_bytes("finding book", self.context().book_id.0.to_vec())?),
+                (
+                    property::FA_PAYLOAD,
+                    scalar_bytes("finding payload", record.payload.clone())?,
+                ),
+                (
+                    property::FA_DIGEST,
+                    scalar_bytes("finding digest", record.digest.to_vec())?,
+                ),
+                (
+                    property::BOOK_ID,
+                    scalar_bytes("finding book", self.context().book_id.0.to_vec())?,
+                ),
             ];
             props.sort_by_key(|(key, _)| key.0);
             derived.create_vertex(record.vid, vec![label::FINDING], props);
@@ -328,12 +494,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         for link in &prepared.links {
             cx.query().checkpoint().map_err(BookError::Context)?;
             if (link.cite || link.to == prepared.certificate_vid)
-                && txn.vertex(&self.db, link.to).map_err(KernelError::from)?.is_none()
+                && txn
+                    .vertex(&self.db, link.to)
+                    .map_err(KernelError::from)?
+                    .is_none()
             {
-                txn.abort(); return Ok(Err(invalid("finding citation target is no longer live")));
+                txn.abort();
+                return Ok(Err(invalid("finding citation target is no longer live")));
             }
-            let (rel, batch) = if link.cite { (relation::CITES, &mut citations) }
-                else { (relation::DERIVED_FROM, &mut derived) };
+            let (rel, batch) = if link.cite {
+                (relation::CITES, &mut citations)
+            } else {
+                (relation::DERIVED_FROM, &mut derived)
+            };
             batch.add_edge(edge_id(rel, link.from, link.to), link.from, link.to, vec![]);
         }
         // CITES depends on the vertices created by DERIVED_FROM's batch.
@@ -350,7 +523,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         cx.commit().checkpoint().map_err(BookError::Context)?;
         match txn.commit(&mut self.db, &cx.commit()).await {
-            Ok(seq) => Ok(Ok(prepared.result(seq))), Err(e) => refused_write(e),
+            Ok(seq) => Ok(Ok(prepared.result(seq))),
+            Err(e) => refused_write(e),
         }
     }
 
@@ -358,17 +532,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Verifies original record births and every required graph edge, then returns
     /// the exact certificate-replayed observations; never a mutable graph cache.
     pub async fn read_findings(
-        &self, cx: &PurposeContexts, principal: VId, capability: &Capability,
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
         certificate_digest: &[u8; 32],
     ) -> Outcome<RecordedFindings> {
-        if let Err(r) = authorize(self, cx, principal, capability, false)? { return Ok(Err(r)); }
-        let prepared = match self.prepared_findings(cx, principal, capability, certificate_digest).await? {
-            Ok(p) => p, Err(r) => return Ok(Err(r)),
+        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+            return Ok(Err(r));
+        }
+        let prepared = match self
+            .prepared_findings(cx, principal, capability, certificate_digest)
+            .await?
+        {
+            Ok(p) => p,
+            Err(r) => return Ok(Err(r)),
         };
         let result = self.query(cx, |db, book| {
             prepared.verify(db, cx, book, db.frontier().map_err(KernelError::from)?)
         })?;
-        if let Err(r) = authorize(self, cx, principal, capability, false)? { return Ok(Err(r)); }
+        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+            return Ok(Err(r));
+        }
         Ok(result)
     }
 }
