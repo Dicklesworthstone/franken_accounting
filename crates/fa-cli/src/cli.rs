@@ -96,6 +96,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("procedure", procedure_cmd),
     ("checkpoint", notary::checkpoint_cmd),
     ("proof", crate::proof::proof_cmd),
+    ("export", crate::export::export_cmd),
     ("bundle", crate::proof::bundle_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
@@ -1643,7 +1644,7 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
             }
         }
         ("checkpoint", _) => &[Op::Witness],
-        ("proof" | "bundle", _) => &[Op::Read, Op::Produce],
+        ("proof" | "bundle" | "export", _) => &[Op::Read, Op::Produce],
         ("document", Some("add")) if args.flag("--grade").is_none() => &[Op::Post],
         ("document", Some("read")) => &[Op::Read],
         ("document", Some("redact")) => &[Op::Privileged],
@@ -7926,7 +7927,7 @@ fn time_selection_json(time: &fa::InstantSelection) -> Json {
 
 /// Parse and resolve a known-at selector. An instant records its evidence
 /// beside the resolved sequence; missing evidence is never a HEAD fallback.
-fn known_at_flag(
+pub(crate) fn known_at_flag(
     args: &Args,
     book: &Book,
     out: &Out,

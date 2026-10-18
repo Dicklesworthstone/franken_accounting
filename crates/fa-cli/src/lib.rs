@@ -20,6 +20,7 @@ pub mod cli;
 pub mod client;
 mod document;
 pub mod entry;
+mod export;
 mod intake;
 mod intake_provenance;
 pub mod json;

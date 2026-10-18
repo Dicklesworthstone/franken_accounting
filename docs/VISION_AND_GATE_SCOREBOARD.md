@@ -4,13 +4,13 @@
 
 ## 1. Vision Workflow Summary (README Quick Example + Plan §15.6)
 
-- **Total workflow steps:** 30 (`works`: **23** [76%], `refused`: **0**, `absent`: **7**)
+- **Total workflow steps:** 30 (`works`: **24** [80%], `refused`: **0**, `absent`: **6**)
 
 | Workflow | Plan Ref | Reader | Works | Refused | Absent | Total | Delivery % |
 |---|---|---|---:|---:|---:|---:|---:|
 | `readme-quick` (README Quick Example) | README.md §Quick example | Agent / Operator | 10 | 0 | 2 | 12 | 83% |
 | `agent-closes-month` (The agent closes a month) | §15.6.1 | AI Agent + Controller | 3 | 0 | 1 | 4 | 75% |
-| `cpa-audits-fy2025` (The CPA audits FY2025) | §15.6.2 | External CPA / Auditor | 3 | 0 | 1 | 4 | 75% |
+| `cpa-audits-fy2025` (The CPA audits FY2025) | §15.6.2 | External CPA / Auditor | 4 | 0 | 0 | 4 | 100% |
 | `fdic-examiner-positions` (The FDIC examiner needs close-of-business positions) | §15.6.3 | FDIC Examiner / Receiver | 2 | 0 | 1 | 3 | 66% |
 | `trustee-receiver-takeover` (The trustee or receiver takes over) | §15.6.4 | Bankruptcy Trustee / Receiver | 1 | 0 | 1 | 2 | 50% |
 | `litigation-consultant-damages` (The litigation consultant computes but-for damages) | §15.6.5 | Litigation Consultant / Expert Witness | 1 | 0 | 1 | 2 | 50% |
@@ -21,31 +21,31 @@
 | Step | Vision Row | Workflow | Status | Exit | Event / Refusal | Bead | Description |
 |---|---|---|---|---:|---|---|---|
 | `WF-RQ-01` | `VC-01` | `readme-quick` | `works` | `0` | `book_triage` | `—` | Triage the book in robot mode (`fa triage --json`) |
-| `WF-RQ-02` | `VC-02` | `readme-quick` | `absent` | `2` | `error` | `fa-8q2` | Dry-run a typed Canon invoice intent (`fa invoice ... --dry-run`) |
+| `WF-RQ-02` | `VC-02` | `readme-quick` | `absent` | `2` | `error` | `fa-i7e` | Dry-run a typed Canon invoice intent (`fa invoice ... --dry-run`) |
 | `WF-RQ-03` | `VC-03` | `readme-quick` | `works` | `0` | `plan` | `—` | Dry-run a balanced posting proposal and seal its plan (`fa post --dry-run --plan-out`) |
 | `WF-RQ-04` | `VC-04` | `readme-quick` | `works` | `0` | `plan_committed` | `—` | Commit the sealed posting plan (`fa commit --plan`) |
 | `WF-RQ-05` | `VC-05` | `readme-quick` | `works` | `0` | `balance_explained` | `—` | Explain a leaf account balance with fold proof (`fa explain balance`) |
 | `WF-RQ-06` | `VC-06` | `readme-quick` | `works` | `0` | `trial_balance` | `—` | Trial balance at a historical known-at sequence (`fa tb --period --as-known-at`) |
 | `WF-RQ-07` | `VC-07` | `readme-quick` | `works` | `0` | `trial_balance` | `—` | Trial balance as originally reported (`fa tb --as-originally-reported`) |
 | `WF-RQ-08` | `VC-08` | `readme-quick` | `works` | `0` | `reversed` | `—` | Reverse a committed entry with SupersessionKind::Reverses lineage (`fa reverse`) |
-| `WF-RQ-09` | `VC-09` | `readme-quick` | `absent` | `2` | `error` | `fa-5bm` | Open a restatement case from the CLI (`fa case open`) |
+| `WF-RQ-09` | `VC-09` | `readme-quick` | `absent` | `2` | `error` | `fa-75j4` | Open a restatement case from the CLI (`fa case open`) |
 | `WF-RQ-10` | `VC-10` | `readme-quick` | `works` | `0` | `procedure_run` | `—` | Run Lantern journal-entry test (`fa procedure run jet.round_amounts`) |
 | `WF-RQ-11` | `VC-11` | `readme-quick` | `works` | `0` | `procedure_run` | `—` | Run LIBR fund tracing (`fa procedure run trace.libr`) |
 | `WF-RQ-12` | `VC-12` | `readme-quick` | `works` | `0` | `bundle_produced` | `—` | Produce a signed offline evidence bundle (`fa bundle produce`) |
 | `WF-ACM-01` | `VC-13` | `agent-closes-month` | `works` | `0` | `next_step` | `—` | Inspect book triage and next recommended step (`fa next --json`) |
 | `WF-ACM-02` | `VC-14` | `agent-closes-month` | `works` | `0` | `draft_opened` | `—` | Create a close draft branch (`fa draft new close-03`) |
-| `WF-ACM-03` | `VC-15` | `agent-closes-month` | `absent` | `2` | `error` | `fa-9x4` | Import and match a CAMT.053 bank statement (`fa bank import`) |
+| `WF-ACM-03` | `VC-15` | `agent-closes-month` | `absent` | `2` | `error` | `fa-zbne` | Import and match a CAMT.053 bank statement (`fa bank import`) |
 | `WF-ACM-04` | `VC-16` | `agent-closes-month` | `works` | `0` | `period_transitioned` | `—` | Soft-close an open period (`fa period soft-close FY2026-P04`) |
-| `WF-CPA-01` | `VC-17` | `cpa-audits-fy2025` | `absent` | `2` | `error` | `fa-4p7` | Export AICPA Audit Data Standard GL package (`fa export ads`) |
+| `WF-CPA-01` | `VC-17` | `cpa-audits-fy2025` | `works` | `0` | `journal_exported` | `—` | Export AICPA Audit Data Standard GL package (`fa export ads`) |
 | `WF-CPA-02` | `VC-18` | `cpa-audits-fy2025` | `works` | `0` | `procedure_run` | `—` | Run Benford first-digit procedure (`fa procedure run benford.first_digit`) |
 | `WF-CPA-03` | `VC-19` | `cpa-audits-fy2025` | `works` | `0` | `evidence_explained` | `—` | Walk full provenance closure of an entry (`fa explain evidence`) |
 | `WF-CPA-04` | `VC-20` | `cpa-audits-fy2025` | `works` | `0` | `proof_exported` | `—` | Export signed transparency checkpoint (`fa proof signed-checkpoint`) |
 | `WF-FDIC-01` | `VC-21` | `fdic-examiner-positions` | `works` | `0` | `trial_balance` | `—` | Trial balance as of an effective date and known-at sequence (`fa tb --as-of --as-known-at`) |
 | `WF-FDIC-02` | `VC-22` | `fdic-examiner-positions` | `works` | `0` | `trial_balance` | `—` | Replay a certified trial balance byte-for-byte (`fa replay`) |
-| `WF-FDIC-03` | `VC-23` | `fdic-examiner-positions` | `absent` | `2` | `error` | `fa-4p7` | Export FDIC Part 370 deposit insurance determination files (`fa export part370`) |
+| `WF-FDIC-03` | `VC-23` | `fdic-examiner-positions` | `absent` | `2` | `error` | `fa-pbm` | Export FDIC Part 370 deposit insurance determination files (`fa export part370`) |
 | `WF-TRT-01` | `VC-24` | `trustee-receiver-takeover` | `works` | `0` | `legal_hold_placed` | `—` | Place a legal hold on a document (`fa document hold place`) |
-| `WF-TRT-02` | `VC-25` | `trustee-receiver-takeover` | `absent` | `2` | `error` | `fa-3gf` | Fork a receivership branch (`fa book fork receivership`) |
-| `WF-LCD-01` | `VC-26` | `litigation-consultant-damages` | `absent` | `2` | `error` | `fa-3gf` | Fork a counterfactual scenario branch (`fa scenario fork`) |
+| `WF-TRT-02` | `VC-25` | `trustee-receiver-takeover` | `absent` | `2` | `error` | `fa-k07b` | Fork a receivership branch (`fa book fork receivership`) |
+| `WF-LCD-01` | `VC-26` | `litigation-consultant-damages` | `absent` | `2` | `error` | `fa-k07b` | Fork a counterfactual scenario branch (`fa scenario fork`) |
 | `WF-LCD-02` | `VC-27` | `litigation-consultant-damages` | `works` | `0` | `statement` | `—` | Certified income statement for a period (`fa statement income-statement --certify`) |
 | `WF-ITF-01` | `VC-28` | `investigator-traces-funds` | `works` | `0` | `procedure_run` | `—` | Run structuring detection procedure (`fa procedure run graph.structuring`) |
 | `WF-ITF-02` | `VC-29` | `investigator-traces-funds` | `works` | `0` | `procedure_run` | `—` | Run FIFO fund tracing (`fa procedure run trace.fifo`) |

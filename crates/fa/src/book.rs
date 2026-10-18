@@ -1587,6 +1587,16 @@ impl Book {
         with_store!(&self.store, core => core.period_transitions(&self.purposes(), period_code))
     }
 
+    /// The committed journal at `(known_at, effective_through)` in the
+    /// interop shape every `fa-formats` exporter reads (plan §8.6, §15.9).
+    pub fn format_journal(
+        &self,
+        effective_through: fa_time::DateDay,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_formats::FormatJournal, BookError> {
+        with_store!(&self.store, core => core.format_journal(&self.purposes(), effective_through, known_at))
+    }
+
     /// Where `AS ORIGINALLY REPORTED` pins `period_code`'s reads (plan §7.4):
     /// its first Lock transition (no StatementIssuance is journaled yet).
     pub fn originally_reported(

@@ -67,6 +67,7 @@ pub mod findings;
 pub mod general_ledger;
 pub mod indirect_cash_flow;
 pub mod intake;
+pub mod interop;
 pub mod procedure_certificate;
 pub mod projections;
 pub mod proof;

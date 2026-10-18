@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 fa-docket = { path = "../fa-docket", version = "=0.0.1" }
 fa-escrow = { path = "../fa-escrow", version = "=0.0.1" }
+fa-formats = { path = "../fa-formats", version = "=0.0.1" }
 fa-intents = { path = "../fa-intents", version = "=0.0.1" }
 fa-journal = { path = "../fa-journal", version = "=0.0.1" }
 fa-lantern = { path = "../fa-lantern", version = "=0.0.1" }

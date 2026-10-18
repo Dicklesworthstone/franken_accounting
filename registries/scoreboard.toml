@@ -82,7 +82,7 @@ argv = ["invoice", "--party", "ACME-CUST-17", "--date", "2026-03-14", "--book", 
 expected = "absent"
 expected_exit = 2
 expected_event = "error"
-bead = "fa-8q2"
+bead = "fa-i7e"
 
 [[workflow_step]]
 id = "WF-RQ-03"
@@ -160,7 +160,7 @@ argv = ["case", "open", "--kind", "Restatement", "--periods", "FY2025-P12", "--b
 expected = "absent"
 expected_exit = 2
 expected_event = "error"
-bead = "fa-5bm"
+bead = "fa-75j4"
 
 [[workflow_step]]
 id = "WF-RQ-10"
@@ -229,7 +229,7 @@ argv = ["bank", "import", "stmt.camt053.xml", "--book", "{book}", "--json"]
 expected = "absent"
 expected_exit = 2
 expected_event = "error"
-bead = "fa-9x4"
+bead = "fa-zbne"
 
 [[workflow_step]]
 id = "WF-ACM-04"
@@ -251,10 +251,9 @@ ordinal = 1
 vision_row = "VC-17"
 description = "Export AICPA Audit Data Standard GL package (`fa export ads`)"
 argv = ["export", "ads", "--period", "FY2025-P12", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-4p7"
+expected = "works"
+expected_exit = 0
+expected_event = "journal_exported"
 
 [[workflow_step]]
 id = "WF-CPA-02"
@@ -323,7 +322,7 @@ argv = ["export", "part370", "--as-of", "2026-03-31", "--book", "{book}", "--jso
 expected = "absent"
 expected_exit = 2
 expected_event = "error"
-bead = "fa-4p7"
+bead = "fa-pbm"
 
 # ---- Workflow 5: trustee-receiver-takeover (§15.6.4) ------------------------
 
@@ -348,7 +347,7 @@ argv = ["book", "fork", "receivership", "--book", "{book}", "--json"]
 expected = "absent"
 expected_exit = 2
 expected_event = "error"
-bead = "fa-3gf"
+bead = "fa-k07b"
 
 # ---- Workflow 6: litigation-consultant-damages (§15.6.5) --------------------
 
@@ -362,7 +361,7 @@ argv = ["scenario", "fork", "but-for-breach", "--from", "2026-03-01", "--book", 
 expected = "absent"
 expected_exit = 2
 expected_event = "error"
-bead = "fa-3gf"
+bead = "fa-k07b"
 
 [[workflow_step]]
 id = "WF-LCD-02"

@@ -2269,6 +2269,237 @@ fn reverse_with_a_replacement_posts_one_atomic_correction() -> std::io::Result<(
     Ok(())
 }
 
+/// fa-formats on the product surface (plan §8.6, §15.9): `fa export` writes
+/// the trial balance's selection in every interop format. Each export
+/// re-imports through fa-formats' own reader (to the same content digest
+/// where formats.toml promises identity), its legs refold to `fa tb`, a
+/// pending hold is not posted activity, and an --out path is never reused.
+#[test]
+fn export_writes_the_trial_balance_selection_in_every_interop_format() -> std::io::Result<()> {
+    let dir = tmp("export")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Export Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    for (key, date, amount) in [
+        ("rent-1", "2026-03-15", "10.00"),
+        ("rent-2", "2026-03-20", "2.50"),
+    ] {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","description":"rent {key}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"{amount} USD"}},{{"side":"credit","account":"1000","amount":"{amount} USD"}}]}}"#
+            ),
+        );
+        let (code, out, _) = fa(
+            Some(&book),
+            &["post", "--intent", &intent, "--evidence", &ev, "--json"],
+        );
+        assert_eq!(code, 0, "{out}");
+    }
+    let hold = write(
+        &dir,
+        "hold.json",
+        r#"{"effective_date":"2026-03-10","description":"PO hold","idempotency_key":"hold-1","legs":[{"side":"debit","account":"6000","amount":"80.00 USD"},{"side":"credit","account":"1000","amount":"80.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["reserve", "--intent", &hold, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+
+    // One selection, every format: the inline content re-imports through
+    // fa-formats' own reader to the export's content digest.
+    let units = fa_formats::UnitCatalog::embedded().expect("embedded units");
+    let mut digests = BTreeSet::new();
+    for format in ["ads", "saft", "csv-gl", "beancount", "hledger"] {
+        let (code, out, err) = fa(
+            Some(&book),
+            &["export", format, "--period", "FY2026-P03", "--json"],
+        );
+        assert_eq!(code, 0, "{format}: {out}\n{err}");
+        let exported = doc(&out);
+        assert_eq!(text(&exported, "event"), "journal_exported", "{out}");
+        let data = exported.get("data").unwrap_or(&exported);
+        assert_eq!(text(data, "format"), format);
+        assert_eq!(text(data, "effective_through"), "2026-03-31");
+        assert_eq!(
+            int(data, "entries"),
+            Some(2),
+            "the hold is not posted: {out}"
+        );
+        assert_eq!(int(data, "accounts"), Some(2));
+        let content_digest = text(data, "content_digest").to_string();
+        digests.insert(content_digest.clone());
+        let files = arr(data, "files");
+        let content = |name: &str| -> String {
+            files
+                .iter()
+                .find(|f| text(f, "name") == name)
+                .map(|f| text(f, "content").to_string())
+                .unwrap_or_else(|| panic!("{format}: no file {name} in {out}"))
+        };
+        let reimported = match format {
+            "ads" => {
+                assert_eq!(files.len(), 4, "{out}");
+                fa_formats::ads::read_ads_package(
+                    &fa_formats::ads::AdsPackage {
+                        chart_of_accounts: content("Chart_of_Accounts.txt"),
+                        gl_detail: content("GL_Detail.txt"),
+                        trial_balance: content("Trial_Balance.txt"),
+                        certificate_toml: content("ADS_Coordinate_Certificate.toml"),
+                    },
+                    &units,
+                )
+            }
+            "saft" => fa_formats::saft::read_saft_xml(&content("SAF-T.xml"), &units),
+            "csv-gl" => fa_formats::csv_gl::read_csv_gl(&content("gl.csv"), &units),
+            "beancount" => {
+                fa_formats::beancount::read_beancount(&content("journal.beancount"), &units)
+            }
+            _ => fa_formats::beancount::read_hledger(&content("journal.hledger"), &units),
+        }
+        .unwrap_or_else(|e| panic!("{format} re-import: {e}"));
+        // registries/formats.toml promises export→import identity for the
+        // audit standards and the CSV extract; Beancount and hledger are
+        // balance-differential formats, checked by the refold below.
+        if matches!(format, "ads" | "saft" | "csv-gl") {
+            assert_eq!(
+                hex_of(&reimported.coordinate.content_digest),
+                content_digest,
+                "{format}: export→import identity"
+            );
+        }
+        // The exported legs refold to the trial balance: 12.50 of rent
+        // paid, and nothing of the 80.00 hold.
+        let mut debits = 0i128;
+        let mut credits = 0i128;
+        for entry in &reimported.entries {
+            for leg in &entry.legs {
+                match (leg.account_code.as_str(), leg.side) {
+                    ("6000", fa_money::Side::Debit) => debits += leg.amount.mantissa,
+                    ("1000", fa_money::Side::Credit) => credits += leg.amount.mantissa,
+                    other => panic!("{format}: unexpected leg {other:?}"),
+                }
+            }
+        }
+        assert_eq!((debits, credits), (1250, 1250), "{format}");
+    }
+    assert_eq!(digests.len(), 1, "every format exports one selection");
+    let tb = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    let rent = tb
+        .split('{')
+        .find(|row| field(row, "code") == Some("6000"))
+        .expect("rent row");
+    assert_eq!(field(rent, "debits"), Some("12.50 USD"), "{tb}");
+
+    // --out writes new files (a new directory for ads) and never reuses a path.
+    let package = dir.join("ads-out").display().to_string();
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "export",
+            "ads",
+            "--as-of",
+            "2026-03-31",
+            "--out",
+            &package,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    for name in [
+        "Chart_of_Accounts.txt",
+        "GL_Detail.txt",
+        "Trial_Balance.txt",
+        "ADS_Coordinate_Certificate.toml",
+    ] {
+        assert!(dir.join("ads-out").join(name).is_file(), "{name}");
+    }
+    assert!(
+        !out.contains("GL_Account_Number|"),
+        "content stays on disk: {out}"
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "export",
+            "ads",
+            "--as-of",
+            "2026-03-31",
+            "--out",
+            &package,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    let csv = dir.join("gl.csv").display().to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "export",
+            "csv-gl",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            &csv,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "export",
+            "csv-gl",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            &csv,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+
+    // Usage: one format, and exactly one of --period / --as-of.
+    for args in [
+        vec!["export", "pdf", "--period", "FY2026-P03", "--json"],
+        vec!["export", "ads", "--json"],
+        vec![
+            "export",
+            "ads",
+            "--period",
+            "FY2026-P03",
+            "--as-of",
+            "2026-03-31",
+            "--json",
+        ],
+        vec!["export", "ads", "--period", "FY2099-P01", "--json"],
+    ] {
+        let (code, out, _) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "{args:?}: {out}");
+    }
+    Ok(())
+}
+
+fn hex_of(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Plan §7.4 `AS ORIGINALLY REPORTED`: a period's reads pin to its first
 /// Lock (no StatementIssuance is journaled yet), never its first Close and
 /// never HEAD. A period with no Lock refuses (FA-REF-161) rather than

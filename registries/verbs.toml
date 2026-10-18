@@ -399,6 +399,18 @@ usage = ["bundle produce [--state <64-hex-oid|latest>] [--out <new.fab> --receip
 example = "fa bundle produce --account 1000 --from 2026-03-01 --to 2026-03-31 --balance 1000:USD:2026-03-31 --out cash.fab --receipt-out cash.receipt --book ./books/myco --json"
 
 [[verb]]
+name = "export"
+summary = "Export the committed journal at one coordinate in an interop format (plan §8.6, §15.9): the AICPA ADS GL package, OECD SAF-T, a CSV GL extract, Beancount or hledger, each with its export coordinate certificate."
+writes = false
+subcommands = ["ads", "saft", "csv-gl", "beancount", "hledger"]
+flags = ["--period", "--as-of", "--as-known-at", "--out", "--grant"]
+switches = []
+events = ["journal_exported"]
+exits = [0, 2, 3, 4, 5, 7]
+usage = ["export ads|saft|csv-gl|beancount|hledger (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>]", "The export selects what the trial balance folds: every entry visible at the known-at prefix whose effective date is on or before --as-of (or the period's last day), with legs and not a pending hold. Refolding the exported legs gives the stock trial balance at that coordinate. Every format writes the same selection.", "ads writes four tables (Chart_of_Accounts, GL_Detail, Trial_Balance, ADS_Coordinate_Certificate.toml); its --out names a new directory. The other formats write one file. Without --out the content is returned inline; an export too large for the inline transport is refused, never truncated.", "Descriptions, leg memos and migration source ids are opened with the book's key; an erased field exports empty. Requires read and produce: an export discloses the journal."]
+example = "fa export ads --period FY2026-P03 --out ./ads-2026-03 --book ./books/myco --json"
+
+[[verb]]
 name = "verify"
 summary = "Verify derived state against the journal: leg projections, refolded registers, open-item applied mirrors, limited accounts' availability cells, scheduled reversals, period state mirrors, or accumulator states (exit 8 on drift)."
 writes = false
@@ -1049,6 +1061,12 @@ doc = "An AccumulatorState over every entry in the named book/branch prefix thro
 fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "checkpoint_oid:hex", "public_key:hex", "scope:string"]
 
 [[event]]
+name = "journal_exported"
+book = true
+doc = "The committed journal at (known_at, effective_through) written in format by fa-formats with its export coordinate certificate (content_digest over the canonical journal, certificate_digest over the coordinate). files lists each output file with its byte length and digest; content carries it inline when no --out was given."
+fields = ["format:string", "effective_through:date", "known_at:seq", "entries:int", "accounts:int", "content_digest:hex", "certificate_digest:hex", "out:string?", "files:[export_file]"]
+
+[[event]]
 name = "proof_exported"
 book = true
 doc = "A raw portable proof from an existing recomputed checkpoint, the exact 80-byte checkpoint statement itself (kind checkpoint), or the state's TransparencyCheckpoint signed by the book's key (kind signed-checkpoint; signatures ed25519, trust checkpoint_public_key). checkpoint_bytes and next_checkpoint_bytes are hex statements; the latter is a consistency claim, not a trust anchor. checkpoint_public_key is the book's Ed25519 checkpoint key, the --key fa-verify judges a signed checkpoint with. bytes is full proof hex for inline output, otherwise null with a new binary file. No book write occurs. A raw statement needs external trust (signatures unsigned, trust external_checkpoint_required); scope and claim name the exact inclusion, prefix-completeness or balance predicate."
@@ -1489,6 +1507,11 @@ doc = "One period with its current state."
 fields = ["code:string", "state:string", "kind:string", "start:date", "end:date", "fiscal_year:int"]
 
 [[shape]]
+name = "export_file"
+doc = "One output file of an export: its name in the package, its length, its digest (fa:export-file:v1), and its content when returned inline."
+fields = ["name:string", "bytes:int", "digest:hex", "content:string?"]
+
+[[shape]]
 name = "batch_member"
 doc = "One entry of a committed PostBatch, in member order."
 fields = ["index:int", "vid:hex", "entry_digest:hex", "class:string?", "period:string?"]
@@ -1916,6 +1939,10 @@ name = "fa.evidence"
 doc = "Evidence: record a source document, content-addressed, so an entry can cite it."
 
 [[mcp.cluster]]
+name = "fa.io"
+on_demand = true
+doc = "Interop exports (plan §8.6, §15.9): the committed journal at one coordinate as the AICPA ADS GL package, OECD SAF-T, a CSV GL extract, Beancount or hledger, returned inline with its export coordinate certificate."
+[[mcp.cluster]]
 name = "fa.proof"
 doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements), checked independently without book keys."
 
@@ -2275,6 +2302,19 @@ switches = ["--with-record"]
 required = []
 dont = ["The launch capability must include read and produce. Per-call grants, book selection and output paths are forbidden. Proofs and checkpoint bytes are returned as complete hex.", "Judge proofs against the signed checkpoint (kind signed-checkpoint) with fa-verify --key <checkpoint_public_key>, or establish trust in the raw checkpoint independently and pass --unsigned-checkpoint; the proof never authenticates its own anchor. Complete-prefix and balance formats disclose every journal envelope and require whole-book read authority.", "A balance proof checks posted debits and credits for one account/unit from inception through an optional inclusive as_of date. It is not a financial-statement, FX, signatures or document-receipt proof."]
 mistakes = ["Using entry or with_record outside inclusion; omitting entry for inclusion.", "Omitting next_state for consistency or account and unit for balance.", "Passing out to write a host file: MCP has inline output only.", "Using a state oid from another book, or expecting export to create a new checkpoint."]
+
+[[mcp.tool]]
+cluster = "fa.io"
+name = "export"
+verb = "export"
+subcommands = ["ads", "saft", "csv-gl", "beancount", "hledger"]
+selector = "format"
+positionals = []
+flags = ["--period", "--as-of", "--as-known-at"]
+switches = []
+required = []
+dont = ["The launch capability must include read and produce. Output paths are forbidden: every file of the export is returned inline; narrow it with as_of or period when it exceeds the frame.", "Don't treat an export as a different selection than the trial balance: it folds to the stock trial balance at the same coordinate."]
+mistakes = ["Supplying both period and as_of, or neither: an export has one effective-through date.", "Expecting pending holds in the GL detail: they are not posted activity."]
 
 [[mcp.tool]]
 cluster = "fa.proof"
