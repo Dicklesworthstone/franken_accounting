@@ -22,6 +22,7 @@ pub mod client;
 mod document;
 pub mod entry;
 mod export;
+mod finding;
 mod intake;
 mod intake_provenance;
 pub mod json;

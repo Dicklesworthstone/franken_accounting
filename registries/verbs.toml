@@ -423,6 +423,18 @@ usage = ["instrument add <instrument.json|->   ({\"code\": \"BA-1\", \"name\": \
 example = "fa instrument add operating.json --book ./books/myco --json"
 
 [[verb]]
+name = "finding"
+summary = "Record a certified forensic run, inspect its immutable findings, append independent human reviews, and export or replay numbered workpapers."
+writes = true
+subcommands = ["record", "list", "show", "review", "export", "replay"]
+flags = ["--certificate", "--param", "--account", "--source", "--effective-through", "--known-at", "--as-known-at", "--action", "--note", "--dismissal-reason", "--previous", "--evidence", "--export-format", "--out"]
+switches = ["--include-reviews"]
+events = ["findings_recorded", "finding_list", "finding_shown", "finding_reviewed", "finding_exported", "finding_replayed"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["finding record <procedure-id> [--param <name=integer>]... [--account <code>] [--source E:<vid>] [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD]", "finding record --certificate C:<digest>   (the exact idempotent retry; a new run at HEAD may select a later source prefix)", "finding list --certificate C:<digest> [--known-at HEAD|<seq>]   (every finding in this certified run, not a global inventory)", "finding show F:<vid> [--known-at HEAD|<seq>]", "finding review F:<vid> --action acknowledge|dismiss|reopen --note <text> [--previous R:<latest-review>] [--dismissal-reason explained|duplicate|data-quality|outside-scope|other] [--evidence D:<oid>]...", "finding export --certificate C:<digest> [--export-format md|jsonl|canonical] [--include-reviews [--known-at HEAD|<seq>]] [--out <new-file>]", "finding replay <canonical-workpaper|-> [--certificate C:<expected-digest> --known-at <exact-seq>]", "Recording and exporting require read and produce; listing, showing and replaying require read. Review requires a Human with read and approve who is independent of the run producer. Dismissal also requires a registered reason and retained evidence. Supply the current --previous after the first decision; stale decisions refuse instead of overwriting history.", "The original numbered workpaper remains unchanged when later reviews are appended. --include-reviews adds a separate review appendix with its own fixed cutoff. Canonical exports replay against retained native evidence; Markdown and JSONL are presentations. Recipient-bound replay requires both the independently expected certificate and exact review cutoff; replay without them states its as-supplied historical scope. Complete responses refuse if they exceed transport limits, never truncate."]
+example = "fa finding record jet.round_amounts --book ./books/myco --json"
+
+[[verb]]
 name = "bank"
 summary = "Retain a bank statement with its parser, cash-account binding and source documents, then propose exact journal-leg matches at a pinned known-at prefix."
 writes = true
@@ -758,6 +770,42 @@ name = "document"
 book = true
 doc = "A document the book holds. `oid` locates it; `doc_commit` = BLAKE3(\"fa:doc:v1\" ‖ kind ‖ length ‖ 4 KiB-chunk Merkle root) is its public commitment; `evidence` is the citation for an intent's `evidence` list (or pass --evidence <oid>). On a repeat intake `already_recorded` is true and kind/grade are the book's. `self_sourced` (AgentUpload) will need a reviewer's attestation before promotion; not yet enforced."
 fields = ["oid:hex", "doc_commit:hex", "kind:string", "grade:string", "self_sourced:bool", "size:int", "recorded_at:seq", "already_recorded:bool", "evidence:evidence_ref"]
+
+[[event]]
+name = "findings_recorded"
+book = true
+doc = "The complete immutable finding set from one retained procedure certificate, atomically published with stable run and finding identities. retry_command names the exact idempotent certificate retry; repeating a fresh HEAD run may select a different source prefix."
+fields = ["certificate:hex", "run_vid:hex", "recorded_at:seq", "producer:hex", "procedure:string", "version:int", "source_known_at:seq", "effective_through:date?", "claim:string", "finding_count:int", "findings_digest:hex", "finding_ids:[hex]", "already_recorded:bool", "retry_command:string"]
+
+[[event]]
+name = "finding_list"
+book = true
+doc = "Every recorded observation in the explicitly selected certified run, with its independently verified review history through known_at. checked_through records the current native frontier used to verify the complete chain; source_known_at remains the original observation coordinate. scope is certified-run, never a global inventory."
+fields = ["certificate:hex", "run_vid:hex", "procedure:string", "version:int", "claim:string", "known_at:seq", "checked_through:seq", "source_known_at:seq", "scope:string", "finding_count:int", "findings:[recorded_finding]"]
+
+[[event]]
+name = "finding_shown"
+book = true
+doc = "One immutable finding and its complete selected human decision history, after verifying the original source run and the current native chain."
+fields = ["certificate:hex", "known_at:seq", "checked_through:seq", "row:recorded_finding"]
+
+[[event]]
+name = "finding_reviewed"
+book = true
+doc = "An append-only independent Human acknowledgment, evidence-backed dismissal, or reopening. The original finding is unchanged. An exact retry returns the existing review; a stale predecessor refuses."
+fields = ["review:finding_review", "already_recorded:bool"]
+
+[[event]]
+name = "finding_exported"
+book = true
+doc = "A deterministic numbered original workpaper, optionally accompanied by a separate fixed-cutoff review appendix. content is the complete Markdown/JSONL presentation; bytes_hex is the complete canonical replay package. With out, the new file contains all bytes and both inline content fields are null. Later review decisions never rewrite the original workpaper."
+fields = ["certificate:hex", "workpaper:string", "workpaper_digest:hex", "recorded_at:seq", "source_known_at:seq", "review_known_at:seq?", "format:string", "includes_reviews:bool", "bytes:int", "content_digest:hex", "content:string?", "bytes_hex:hex?", "out:string?"]
+
+[[event]]
+name = "finding_replayed"
+book = true
+doc = "A complete canonical workpaper replayed against retained native observations and, when present, the selected review history. scope is recipient-bound only when an independently supplied certificate and exact review cutoff were verified; otherwise it is as-supplied. A valid public checksum alone cannot establish an observation or decision."
+fields = ["certificate:hex", "workpaper:string", "workpaper_digest:hex", "recorded_at:seq", "source_known_at:seq", "review_known_at:seq?", "includes_reviews:bool", "finding_count:int", "checked_through:seq", "scope:string"]
 
 [[event]]
 name = "bank_imported"
@@ -1794,6 +1842,16 @@ doc = "One fiscal period's stored state mirror compared with its refolded state 
 fields = ["code:string", "fiscal_year:int", "ordinal:int", "kind:string", "born_state:string", "stored_state:string?", "refolded_state:string", "transitions:int", "green:bool"]
 
 [[shape]]
+name = "recorded_finding"
+doc = "One immutable certified observation with its stable native identity, original coordinate and producer, plus its verified human review history at the requested cutoff. The nested finding never changes when its review status changes."
+fields = ["finding_vid:hex", "run_vid:hex", "certificate:hex", "ordinal:int", "recorded_at:seq", "producer:hex", "source_known_at:seq", "effective_through:date?", "status:string", "latest_review:hex?", "finding:finding", "reviews:[finding_review]"]
+
+[[shape]]
+name = "finding_review"
+doc = "One append-only Human decision bound to its finding, explicit predecessor, current capability and retained evidence. reason is present only for dismissal; note is the reviewer's explanation."
+fields = ["finding_vid:hex", "review_vid:hex", "ordinal:int", "recorded_at:seq", "principal:hex", "capability_commitment:hex", "action:string", "reason:string?", "previous:hex?", "note:string", "evidence:[hex]"]
+
+[[shape]]
 name = "bank_entry_ref"
 doc = "A selected native journal entry bound by both its vertex identity and canonical entry digest. A bank match additionally names its exact cash-leg ordinal."
 fields = ["vid:hex", "entry_digest:hex"]
@@ -2046,6 +2104,11 @@ doc = "Interop exports (plan §8.6, §15.9): the committed journal at one coordi
 [[mcp.cluster]]
 name = "fa.proof"
 doc = "General-ledger views at one coordinate (detail, roll-forward, aging, cash flow, lots) that reconcile to the journal fold."
+[[mcp.cluster]]
+name = "fa.findings"
+on_demand = true
+doc = "Retained certified forensic findings, independent append-only human decisions, and deterministic numbered workpapers. Reads select an explicit certified run; replay can bind an independently requested source and review cutoff."
+
 [[mcp.cluster]]
 name = "fa.bank"
 on_demand = true
@@ -2425,6 +2488,81 @@ dont = ["Don't apply more than an open item's remaining open balance: use `fa_re
 mistakes = ["Targeting a leg on the same side as the payment leg instead of the opposite side.", "Omitting `on_account_account` when the payment exceeds the matched open items."]
 
 # ---- fa.read ----------------------------------------------------------------
+
+[[mcp.tool]]
+cluster = "fa.findings"
+name = "record"
+verb = "finding"
+subcommands = ["record"]
+positionals = ["procedure?"]
+flags = ["--certificate", "--param", "--account", "--source", "--effective-through", "--known-at", "--as-known-at"]
+switches = []
+required = []
+dont = ["The launch capability must hold read and produce. Select either one procedure or a retained certificate; a certificate already fixes every input and source coordinate.", "Use the returned certificate for an exact retry. A fresh procedure run at HEAD may include later publications and is not the same source run."]
+mistakes = ["Passing both procedure and certificate, or changing parameters while retrying a certificate.", "Supplying floating-point parameters: param contains exact name=integer strings, one value per name."]
+
+[[mcp.tool]]
+cluster = "fa.findings"
+name = "list"
+verb = "finding"
+subcommands = ["list"]
+positionals = []
+flags = ["--certificate", "--known-at", "--as-known-at"]
+switches = []
+required = ["--certificate"]
+dont = ["This lists every finding in one explicitly selected certified run; it is not a global findings inventory. The launch capability must hold read.", "Keep the original source_known_at distinct from the requested review known_at and current checked_through frontier."]
+mistakes = ["Omitting the certificate, or treating a fresh unrecorded resource preview as retained findings.", "Passing a wall-clock instant as known_at: finding review cutoffs require HEAD or a native commit sequence."]
+
+[[mcp.tool]]
+cluster = "fa.findings"
+name = "show"
+verb = "finding"
+subcommands = ["show"]
+positionals = ["finding"]
+flags = ["--known-at", "--as-known-at"]
+switches = []
+required = ["finding"]
+dont = ["The launch capability must hold read. The immutable observation and the selected review history are verified against retained native sources."]
+mistakes = ["Passing a review identity instead of the F:<vid> finding identity."]
+
+[[mcp.tool]]
+cluster = "fa.findings"
+name = "review"
+verb = "finding"
+subcommands = ["review"]
+positionals = ["finding"]
+flags = ["--action", "--note", "--dismissal-reason", "--previous", "--evidence"]
+switches = []
+required = ["finding", "--action", "--note"]
+dont = ["A Human reviewer must hold read and approve and be independent of the run producer; per-call identity and grants cannot change launch authority. The native review law rejects Agent reviews.", "Append a decision with action acknowledge, dismiss or reopen. Dismiss needs dismissal_reason and retained evidence. Supply the latest review as previous after the first decision; never overwrite or silently retry a stale predecessor."]
+mistakes = ["Self-reviewing the producing principal's finding, or using an Agent/Preparer launch capability without approve.", "Providing a dismissal reason without dismiss, omitting dismissal evidence, or reusing a predecessor after another review was published."]
+
+[[mcp.tool]]
+cluster = "fa.findings"
+name = "export"
+verb = "finding"
+subcommands = ["export"]
+positionals = []
+flags = ["--certificate", "--export-format", "--known-at", "--as-known-at"]
+switches = ["--include-reviews"]
+required = ["--certificate"]
+dont = ["The launch capability must hold read and produce. Output is returned completely inline; MCP accepts no host output path.", "Original observation workpapers stay immutable. include_reviews adds a separate appendix at known_at; use export_format canonical for a replayable package and md or jsonl for a presentation."]
+mistakes = ["Using format instead of export_format, or expecting Markdown/JSONL alone to replay.", "Passing known_at without include_reviews: the original workpaper already fixes its source coordinate."]
+
+[[mcp.tool]]
+cluster = "fa.findings"
+name = "replay"
+verb = "finding"
+subcommands = ["replay"]
+positionals = ["file?"]
+flags = ["--certificate", "--known-at", "--as-known-at"]
+switches = []
+stdin_property = "workpaper"
+stdin_kind = "string"
+stdin_via = "file"
+required = ["file"]
+dont = ["Supply the complete canonical bytes_hex from export as workpaper; host paths and presentation-only Markdown/JSONL are not replay inputs. The launch capability must hold read.", "For recipient-bound verification supply the independently expected certificate and exact review known_at together. Without those expectations the result explicitly covers only the supplied historical package."]
+mistakes = ["Passing HEAD as an independently expected review cutoff, or supplying only one expectation.", "Treating a repaired public checksum as proof of edited findings or human decisions; native replay verifies the complete retained source and decision closure."]
 
 [[mcp.tool]]
 cluster = "fa.bank"

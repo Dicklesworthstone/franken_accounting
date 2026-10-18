@@ -95,6 +95,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("gl", gl_cmd),
     ("explain", explain_cmd),
     ("procedure", procedure_cmd),
+    ("finding", crate::finding::finding_cmd),
     ("checkpoint", notary::checkpoint_cmd),
     ("proof", crate::proof::proof_cmd),
     ("bundle", crate::proof::bundle_cmd),
@@ -1653,6 +1654,9 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         ("proof" | "bundle" | "export", _) => &[Op::Read, Op::Produce],
         ("bank", Some("import")) => &[Op::Read, Op::Post, Op::Reconcile],
         ("bank", Some("match")) => &[Op::Read, Op::Reconcile],
+        ("finding", Some("record" | "export")) => &[Op::Read, Op::Produce],
+        ("finding", Some("list" | "show" | "replay")) => &[Op::Read],
+        ("finding", Some("review")) => &[Op::Read, Op::Approve],
         ("document", Some("add")) if args.flag("--grade").is_none() => &[Op::Post],
         ("document", Some("read")) => &[Op::Read],
         ("document", Some("redact")) => &[Op::Privileged],
@@ -1894,6 +1898,7 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
         ("chart" | "bank", Some("import")) | ("document", Some("add")) => args.positional.get(2),
         ("replay", _) => args.positional.get(1),
         ("certificate", Some("status")) => args.positional.get(2),
+        ("finding", Some("replay")) => args.positional.get(2),
         _ => None,
     };
     if let Some(input) = input {
@@ -2028,6 +2033,7 @@ fn admit_daemon_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fai
         ("chart" | "bank", Some("import")) | ("document", Some("add")) => args.positional.get(2),
         ("replay", _) => args.positional.get(1),
         ("certificate", Some("status")) => args.positional.get(2),
+        ("finding", Some("replay")) => args.positional.get(2),
         _ => None,
     };
     if let Some(input) = input {
@@ -13162,7 +13168,7 @@ fn cite_json(c: &fa_lantern::Cite) -> Json {
     obj(fields)
 }
 
-fn finding_json(f: &fa_lantern::Finding) -> Json {
+pub(crate) fn finding_json(f: &fa_lantern::Finding) -> Json {
     obj(vec![
         ("severity", s(f.severity.name())),
         (

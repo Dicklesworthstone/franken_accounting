@@ -76,7 +76,7 @@ pub const RESOURCES: &[(&str, &str)] = &[
     ),
     (
         "resource://fa/findings/{book}",
-        "the launch-bound book's registered forensic procedures and findings (`fa procedure list` and `fa procedure run`); `{book}` as above",
+        "the launch-bound book's forensic procedures and a fresh, unrecorded jet.round_amounts preview; retained findings and review history are selected by certificate with fa_findings_list in on-demand fa.findings (not a global inventory); `{book}` as above",
     ),
     (
         "resource://fa/cases/{book}",
@@ -3014,6 +3014,100 @@ mod tests {
             Some(vec!["read", "reconcile"]),
         );
         assert!(invocation.stdin.is_none());
+    }
+
+    #[test]
+    fn findings_route_review_actions_and_complete_inline_workpapers_with_bound_ops() {
+        let (mcp, reg) = embedded();
+        let cases: &[(&str, JsonValue, &[&str])] = &[
+            (
+                "fa_findings_record",
+                json!({"certificate": "ab".repeat(32)}),
+                &["read", "produce"],
+            ),
+            (
+                "fa_findings_list",
+                json!({"certificate": "ab".repeat(32), "known_at": "17"}),
+                &["read"],
+            ),
+            (
+                "fa_findings_show",
+                json!({"finding": format!("F:{}", "ab".repeat(16))}),
+                &["read"],
+            ),
+            (
+                "fa_findings_review",
+                json!({"finding": format!("F:{}", "ab".repeat(16)), "action": "acknowledge", "note": "--as=another-reviewer"}),
+                &["read", "approve"],
+            ),
+            (
+                "fa_findings_export",
+                json!({"certificate": "ab".repeat(32), "export_format": "canonical", "include_reviews": true, "known_at": "17"}),
+                &["read", "produce"],
+            ),
+            (
+                "fa_findings_replay",
+                json!({"workpaper": "aabb", "certificate": "ab".repeat(32), "known_at": "17"}),
+                &["read"],
+            ),
+        ];
+        for (wire, arguments, required) in cases {
+            let tool = mcp.tool_by_wire(wire).expect("finding tool");
+            let schema = tool.input_schema(&mcp, reg);
+            for path in ["file", "out", "output"] {
+                assert!(schema["properties"].get(path).is_none(), "{wire}: {path}");
+            }
+            let invocation = tool
+                .invocation(&mcp, reg, arguments)
+                .expect("finding invocation");
+            let parsed = args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+                .expect("registered finding command");
+            assert_eq!(parsed.positional[0], "finding");
+            assert_eq!(
+                fa_cli::cli::bound_command_ops("finding", &parsed)
+                    .expect("admitted command")
+                    .iter()
+                    .map(|op| op.name())
+                    .collect::<Vec<_>>(),
+                *required,
+                "{wire}",
+            );
+            assert!(parsed.flag("--as").is_none());
+            if *wire == "fa_findings_review" {
+                assert_eq!(parsed.positional[1], "review");
+                assert_eq!(parsed.flag("--action"), Some("acknowledge"));
+                assert_eq!(parsed.flag("--note"), Some("--as=another-reviewer"));
+            }
+            if *wire == "fa_findings_replay" {
+                assert_eq!(parsed.positional[2], "-");
+                assert_eq!(invocation.stdin, Some(b"aabb".to_vec()));
+            } else {
+                assert!(invocation.stdin.is_none());
+            }
+            for (key, value) in [
+                ("out", json!("/host/findings")),
+                ("grant", json!(["approve"])),
+            ] {
+                let mut invalid = arguments.clone();
+                invalid[key] = value;
+                assert!(
+                    tool.invocation(&mcp, reg, &invalid).is_err(),
+                    "{wire}: {key}"
+                );
+            }
+        }
+        let list = mcp.tool_by_wire("fa_findings_list").unwrap();
+        assert_eq!(
+            list.input_schema(&mcp, reg)["required"],
+            json!(["certificate"])
+        );
+        assert!(list.invocation(&mcp, reg, &json!({})).is_err());
+        let replay = mcp.tool_by_wire("fa_findings_replay").unwrap();
+        assert!(
+            replay
+                .invocation(&mcp, reg, &json!({"file": "/host/workpaper"}))
+                .is_err()
+        );
     }
 
     #[test]

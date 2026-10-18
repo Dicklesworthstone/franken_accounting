@@ -825,6 +825,28 @@ impl Adapter {
                     "book": to_wire(&book),
                     "procedures": to_wire(&procedures),
                     "findings": to_wire(&findings),
+                    "scope": "fresh-unrecorded-preview",
+                    "preview": {
+                        "procedure": "jet.round_amounts",
+                        "recorded": false,
+                        "includes_reviews": false,
+                    },
+                    "retained_findings": {
+                        "scope": "certified-run",
+                        "global_inventory": false,
+                        "certificate_required": true,
+                        "cluster": "fa.findings",
+                        "launch_option": "--cluster fa.findings",
+                        "list_tool": "fa_findings_list",
+                        "record_tool": "fa_findings_record",
+                        "certificate_argument": "certificate",
+                        "certificate_source": "data.certificate returned by fa_findings_record",
+                        "required_operations": {
+                            "list": ["read"],
+                            "record": ["read", "produce"],
+                        },
+                        "note": "Select one complete retained run by its certificate. The optional known_at argument selects human review history; it does not change the original certified observation. Reading this resource runs a fresh preview and does not publish findings or review decisions.",
+                    },
                 });
                 Ok((json_mime, v.to_string()))
             }
@@ -1516,6 +1538,90 @@ mod tests {
             assert_eq!(error.kind, "forbidden_argument");
             assert_eq!(error.authority, Some(adapter.authority_json()));
         }
+    }
+
+    #[test]
+    fn finding_resource_labels_its_fresh_preview_and_discovers_retained_run_listing() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let directory = loop {
+            let path = std::env::temp_dir().join(format!(
+                "fa-mcp-finding-resource-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => break path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("{}: {error}", path.display()),
+            }
+        };
+        let book = directory.join("book");
+        let run_cli = |argv: &[&str]| -> JsonValue {
+            let mut full: Vec<String> = argv.iter().map(|s| (*s).into()).collect();
+            full.extend([
+                "--book".into(),
+                book.display().to_string(),
+                "--json".into(),
+                "--via".into(),
+                "direct".into(),
+            ]);
+            let (exit, captured) =
+                fa_cli::entry::fa_with(&full, fa_cli::cli::Files::default(), true);
+            assert_eq!(exit, 0, "{argv:?}: {}", captured.stdout);
+            let line = fa_cli::json::parse(captured.stdout.trim_end()).expect("robot line");
+            to_wire(&line)
+        };
+        run_cli(&["book", "create", "--name", "Finding resource discovery"]);
+        let before = run_cli(&["book", "info"]);
+        let before_at = before["coordinate"]["known_at"]
+            .as_u64()
+            .expect("resolved book frontier");
+        let adapter = Adapter::new(ServerConfig {
+            book: Some(book.clone()),
+            grants: vec!["read".into()],
+            ..ServerConfig::default()
+        })
+        .expect("read-only adapter");
+        let (mime, text) = adapter
+            .read_resource(
+                "resource://fa/findings/{book}",
+                &HashMap::from([("book".into(), "default".into())]),
+            )
+            .expect("fresh preview requires no publication authority");
+        assert_eq!(mime, "application/json");
+        let response = to_wire(&fa_cli::json::parse(&text).expect("resource JSON"));
+        // Preserve the original resource's three fields for existing clients.
+        assert!(response["book"].is_object());
+        assert!(response["procedures"]["procedures"].is_array());
+        assert_eq!(response["findings"]["evidence"], "FA-EVID-L01");
+        assert_eq!(response["findings"]["claim"], "statistical");
+        assert_eq!(response["scope"], "fresh-unrecorded-preview");
+        assert_eq!(response["preview"]["recorded"], false);
+        assert_eq!(response["preview"]["includes_reviews"], false);
+        let retained = &response["retained_findings"];
+        assert_eq!(retained["scope"], "certified-run");
+        assert_eq!(retained["global_inventory"], false);
+        assert_eq!(retained["certificate_required"], true);
+        assert_eq!(retained["cluster"], "fa.findings");
+        assert_eq!(retained["launch_option"], "--cluster fa.findings");
+        let list = adapter
+            .mcp
+            .tool_by_wire(retained["list_tool"].as_str().expect("list tool"))
+            .expect("resource discovers a registered tool");
+        let schema = list.input_schema(&adapter.mcp, adapter.reg);
+        assert!(
+            schema["required"]
+                .as_array()
+                .expect("list selectors")
+                .contains(&json!("certificate")),
+            "retained listing must select one complete certified run: {schema}",
+        );
+        let after = run_cli(&["book", "info"]);
+        assert_eq!(
+            Some(before_at),
+            after["coordinate"]["known_at"].as_u64(),
+            "reading a fresh preview must not publish a retained finding run",
+        );
     }
 
     #[test]
