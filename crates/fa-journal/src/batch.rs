@@ -425,7 +425,7 @@ pub(crate) async fn commit_batch<V: Vfs + Clone>(
     staged: StagedBatch,
 ) -> Outcome<BatchPosted> {
     let StagedBatch {
-        txn,
+        mut txn,
         outcome: ovid,
         entries,
         periods,

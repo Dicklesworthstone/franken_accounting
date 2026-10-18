@@ -557,7 +557,7 @@ async fn finish<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
-    txn: WriteTxn,
+    mut txn: WriteTxn,
     proposal: &EntryPayload,
     draft: VId,
     control_entry: VId,
