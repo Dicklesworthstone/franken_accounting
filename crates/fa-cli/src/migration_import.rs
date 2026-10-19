@@ -8,6 +8,9 @@
 //! the run, and an explicit abandon leaves its staged history invisible.
 //! PeriodBalances names its opening source entries explicitly; every other
 //! source entry keeps its effective date in a declared Historical period.
+//! The package has the admitted Human operator's upload custody, not a
+//! Generated-grade receipt. Its source bindings and transformations must replay
+//! before inspection or staging; its custody receipt does not prove them.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -1009,10 +1012,11 @@ fn package_tags() -> Result<(u8, u8), Fail> {
         .kind_by_name("Workpaper")
         .ok_or_else(|| Fail::Internal("Workpaper kind is not registered".into()))?
         .tag;
-    let grade = policy
-        .grade_by_name("Generated")
-        .ok_or_else(|| Fail::Internal("Generated provenance is not registered".into()))?
-        .tag;
+    // Preparation is restricted to a Human capability. The native upload
+    // derives this grade again and records that holder's custody; parsing the
+    // source does not establish the generation receipt required by Generated.
+    let grade =
+        fa_journal::upload::upload_grade(&policy, Profile::Human).map_err(BookError::Kernel)?;
     Ok((kind, grade))
 }
 
@@ -1180,7 +1184,7 @@ fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Load
         || !matches!(document.mime.as_str(), PACKAGE_MIME | PERIOD_BALANCES_MIME)
     {
         return Err(invalid(
-            "selected Document is not an original generated legacy import Workpaper",
+            "selected Document is not a legacy import Workpaper retained by a Human upload",
         ));
     }
     let package = Package::decode(&document.bytes)?;
@@ -1196,7 +1200,7 @@ fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Load
         .any(|proposal| proposal.principal_ref != document.retrieved_by)
     {
         return Err(invalid(
-            "proposal preparer differs from the original package producer",
+            "proposal preparer differs from the original package uploader",
         ));
     }
     // Authorize the original source before opening the sealed mapping. A
@@ -1477,11 +1481,20 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         if let Some(path) = args.flag("--plan-out") {
             write_post_plan(&ctx.files, path, &loaded.document.bytes)?;
         }
-        // Generated provenance is assigned only by this parser after the
-        // complete closure was checked, never accepted from an upload intent.
-        // Recheck current authority immediately before the trusted publication.
+        // The package retains the admitted operator's custody, not a verified
+        // generation claim. The native upload derives grade and uploader from
+        // the capability and retains its current-authority witnesses through
+        // publication. Source replay and independent approvals remain separate.
         admit_book(&book, &cap, true)?;
-        let added = book.add_document(&loaded.document)??;
+        let added = book.upload_document(
+            &cap,
+            fa_journal::UploadRequest {
+                kind: loaded.document.kind,
+                mime: loaded.document.mime,
+                bytes: loaded.document.bytes,
+                asserted_grade: Some(loaded.document.grade),
+            },
+        )??;
         output.push(("recorded_at", Json::Int(i128::from(added.recorded_at.0))));
         output.push(("already_recorded", Json::Bool(added.already_recorded)));
         if let Some(path) = args.flag("--plan-out") {

@@ -685,23 +685,45 @@ fn bound_handlers_refuse_file_paths_before_observing_the_book() {
         vec!["certificate", "status", path, "--json"],
         vec!["tb", "--certificate-out", path, "--json"],
     ] {
-        let (exit, out) = run(&authority, &argv);
-        assert_eq!(exit, 2, "argv={argv:?}\n{out:?}");
-        let event = event(&authority, &out);
-        assert_eq!(event.get("book"), Some(&Json::Null));
-        assert!(
-            event
-                .get("data")
-                .and_then(|data| data.get("message"))
-                .and_then(Json::as_str)
-                .unwrap()
-                .contains("filesystem")
-        );
-        assert_eq!(
-            std::fs::read_to_string(&target).unwrap(),
-            "preserve this host file"
-        );
-        assert!(!authority.book().exists());
+        for leased in [false, true] {
+            let books = if leased {
+                Books::LeasedOnOpen {
+                    lease: registry().unwrap().daemon.lease.clone(),
+                    note: "forbidden path must not acquire a lease".to_string(),
+                    held: None,
+                }
+            } else {
+                Books::Dir
+            };
+            let args: Vec<String> = argv.iter().map(|value| (*value).to_string()).collect();
+            let (exit, out) = run_with_authority(
+                &args,
+                books,
+                Files {
+                    cwd: None,
+                    stdin: Stdin::Missing,
+                },
+                &authority,
+                true,
+            );
+            assert_eq!(exit, 2, "leased={leased}, argv={argv:?}\n{out:?}");
+            let event = event(&authority, &out);
+            assert_eq!(event.get("book"), Some(&Json::Null));
+            assert_eq!(event.get("coordinate"), Some(&Json::Null));
+            assert!(
+                event
+                    .get("data")
+                    .and_then(|data| data.get("message"))
+                    .and_then(Json::as_str)
+                    .unwrap()
+                    .contains("filesystem")
+            );
+            assert_eq!(
+                std::fs::read_to_string(&target).unwrap(),
+                "preserve this host file"
+            );
+            assert!(!authority.book().exists());
+        }
     }
 }
 

@@ -1204,6 +1204,60 @@ fn invalid_source_mapping_and_trial_balance_never_publish_a_partial_package() {
 }
 
 #[test]
+fn package_intake_records_human_custody_without_claiming_generated_provenance() {
+    let fixture = Fixture::quickbooks();
+    let prepared = fixture.prepare();
+    let package = parse_oid(text(data(&prepared), "package_oid"));
+    let principal = fa_model::principal_vid("operator");
+    let reader = Capability::embedded(VId(503), &["read"]).unwrap();
+    let mut book = fixture.open();
+    let DocumentRead::Full(document) = book.read_document_for(&reader, &package).unwrap().unwrap()
+    else {
+        panic!("retained package must be readable under current authority");
+    };
+    let policy = fa_registry::evidence_policy::EvidencePolicy::embedded().unwrap();
+    assert_eq!(
+        document.grade,
+        policy.grade_by_name("HumanUpload").unwrap().tag
+    );
+    assert!(!policy.grade_by_name("Generated").unwrap().intake);
+    assert_eq!(document.retrieved_by, principal);
+    let custody = book.custody_chain(&package).unwrap();
+    assert_eq!(custody.len(), 1);
+    assert_eq!(
+        custody[0].0.body,
+        fa_journal::CustodyBody::Receipt {
+            source: fa_model::IntakeSource::Upload { principal },
+            received_by: principal,
+            digest_at_receipt: document.doc_commit(),
+            run_ref: None,
+        }
+    );
+    assert_eq!(
+        i128::from(custody[0].1.0),
+        integer(data(&prepared), "recorded_at")
+    );
+    drop(book);
+
+    let before = head(&fixture.book);
+    let repeated = fixture.prepare();
+    assert_eq!(
+        data(&repeated).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    for field in ["package_oid", "package_commit", "chunks", "recorded_at"] {
+        assert_eq!(data(&repeated).get(field), data(&prepared).get(field));
+    }
+    assert_eq!(head(&fixture.book), before);
+    let mut book = fixture.open();
+    assert_eq!(
+        book.read_document_for(&reader, &package).unwrap().unwrap(),
+        DocumentRead::Full(document)
+    );
+    assert_eq!(book.custody_chain(&package).unwrap(), custody);
+}
+
+#[test]
 fn locked_opening_period_and_nonoverwriting_output_are_explicit_preparation_boundaries() {
     let future_period = Fixture::new("quickbooks-csv", QB, "USD", "Spreadsheet", "2026-01-01");
     let intent = future_period.file("import.json", &future_period.intent().render());

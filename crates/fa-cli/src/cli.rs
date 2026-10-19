@@ -890,14 +890,19 @@ impl BookSource<'_> {
         Ok(book)
     }
 
-    /// Admit a bound token before resolving or reading command input paths.
-    /// This opens only the trusted launch book and emits no book coordinate;
-    /// the handler still admits its concrete operation and scope afterward.
+    /// Admit a bound token before resolving or reading permitted input paths.
+    /// A daemon's existing handle is checked without resolving a book path;
+    /// a cold open uses only the trusted launch book and emits no coordinate.
+    /// The handler still admits its concrete operation and scope afterward.
     fn admit_current_before_input(
         &mut self,
         args: &Args,
         capability: &Capability,
     ) -> Result<(), Fail> {
+        if let Books::Held { book, .. } = &self.books {
+            book.admit_current(capability)??;
+            return Ok(());
+        }
         let book = self.books.open(args, self.cwd.as_deref())?;
         book.admit_current(capability)??;
         Ok(())
@@ -1683,6 +1688,11 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
     admit_bound_command(ctx, verb, args)?;
     if !host_path_arguments(&verb.name, args).is_empty()
         && let Some(authority) = &ctx.authority
+        // Without a files root, the next check rejects the request from its
+        // arguments alone. Opening a cold book solely for that refusal would
+        // observe keys or take a lease for a path that can never be admitted.
+        // An already-held book still checks revocation before this refusal.
+        && (authority.files().is_some() || ctx.books.is_held())
     {
         ctx.books
             .admit_current_before_input(args, authority.capability())?;
