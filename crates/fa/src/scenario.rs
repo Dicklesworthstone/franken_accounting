@@ -10,10 +10,11 @@
 //! compares trunk as known at the fork sequence with the materialization
 //! over the same periods, per (account, unit).
 //!
-//! No-claim boundary: a diff binds the scenario body, its intent records, the
-//! fork sequence and the replay's `SeqMap` digest, but it is not yet a
-//! retained, replayable `DiffCertificate` (`fa replay`), and a read of the
-//! materialization (`--branch scenario:<name>`) is not certified.
+//! A diff binds the scenario body, its intent records, the fork sequence and
+//! the replay's `SeqMap` digest; [`ScenarioDiffCertificate`] makes it a
+//! retained, replayable certificate (`fa scenario diff --certify`, `fa
+//! replay`). No-claim boundary: a read of the materialization (`--branch
+//! scenario:<name>`) is not certified.
 
 use std::collections::BTreeMap;
 
@@ -25,6 +26,13 @@ use fa_time::DateDay;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{Book, BookError, BookKeys, Entropy, Outcome};
+
+mod certificate;
+
+pub use certificate::{
+    CERTIFICATE_FORMAT as SCENARIO_DIFF_CERTIFICATE_FORMAT, CertifiedScenarioDiff,
+    OUTPUT_FORMAT as SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioDiffCertificate,
+};
 
 const INTENTS_DOMAIN: &[u8] = b"fa:scenario-intents:v1";
 
@@ -137,18 +145,22 @@ impl Book {
         let Some(view) = self.scenario(name)? else {
             return Ok(Err(unknown(name)));
         };
-        self.materialize(view)
+        let through = view.intents.len();
+        self.materialize(view, through)
     }
 
-    fn materialize(&mut self, view: ScenarioView) -> Outcome<ScenarioBook> {
+    /// The scratch replay at the fork plus the scenario's first `through`
+    /// intents, in planning order (all of them except when a certificate
+    /// replays the prefix it covered).
+    fn materialize(&mut self, view: ScenarioView, through: usize) -> Outcome<ScenarioBook> {
         let keys = BookKeys::generate(&Entropy::production())?;
         let (mut book, map) =
             match self.replay_into_scratch(Some(view.body.fork_at), keys, Entropy::production())? {
                 Ok(replayed) => replayed,
                 Err(refusal) => return Ok(Err(refusal)),
             };
-        let mut entries = Vec::with_capacity(view.intents.len());
-        for (i, planned) in view.intents.iter().enumerate() {
+        let mut entries = Vec::with_capacity(through);
+        for (i, planned) in view.intents.iter().take(through).enumerate() {
             match book.post(scratch_request(planned.intent.clone())?)? {
                 Ok(posted) => entries.push(posted.entry_ref().vid),
                 Err(refusal) => {
@@ -206,7 +218,8 @@ impl Book {
         }
         let ordinal = view.intents.len() + 1;
         let fork_at = view.body.fork_at;
-        let mut scenario = match self.materialize(view)? {
+        let through = view.intents.len();
+        let mut scenario = match self.materialize(view, through)? {
             Ok(scenario) => scenario,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -242,7 +255,24 @@ impl Book {
         } else {
             self.trial_balance_at(periods, Some(fork_at))?
         };
-        let scenario = match self.materialize(view)? {
+        let through = view.intents.len();
+        self.diff_view(view, through, &trunk, periods, activity)
+    }
+
+    /// The diff of `view`'s materialization through its first `through`
+    /// intents against `trunk` (trunk as known at the fork, over the same
+    /// periods): what [`Book::scenario_diff`] reports and a certificate
+    /// replays.
+    fn diff_view(
+        &mut self,
+        view: ScenarioView,
+        through: usize,
+        trunk: &TrialBalance,
+        periods: &[String],
+        activity: bool,
+    ) -> Outcome<ScenarioDiff> {
+        let fork_at = view.body.fork_at;
+        let scenario = match self.materialize(view, through)? {
             Ok(scenario) => scenario,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -251,11 +281,12 @@ impl Book {
         } else {
             scenario.book.trial_balance_at(periods, None)?
         };
-        let rows = diff_rows(&trunk, &other)?;
+        let rows = diff_rows(trunk, &other)?;
         let view = &scenario.view;
         let records: Vec<[u8; 16]> = view
             .intents
             .iter()
+            .take(through)
             .map(|planned| planned.record.0.to_le_bytes())
             .collect();
         let parts: Vec<&[u8]> = records.iter().map(<[u8; 16]>::as_slice).collect();
@@ -264,7 +295,7 @@ impl Book {
             scenario: view.vid,
             body_digest: view.body.digest()?,
             intents_digest: domain_digest(INTENTS_DOMAIN, &parts),
-            intents: view.intents.len(),
+            intents: through,
             fork_at,
             from: view.body.from,
             assumptions: view.assumptions.clone(),

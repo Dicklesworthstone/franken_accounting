@@ -106,6 +106,47 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Retain a scenario diff that the sync facade has just replayed in full
+    /// ([`crate::Book::retain_scenario_diff`]): its replay re-materializes the
+    /// scenario, which the async replay above cannot do. Authority is
+    /// checked again here, and `verified_at` must still be the head (the
+    /// store refuses the retention otherwise), so no later write can ride on
+    /// an older replay.
+    pub(crate) async fn retain_replayed_scenario_diff(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &crate::ScenarioDiffCertificate,
+        verified_at: CommitSeq,
+    ) -> Outcome<RetainedCertificate> {
+        if let Err(refusal) = authorize(self, cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        if let Err(denial) =
+            fa_policy::require(capability, Op::Produce, "retaining a report artifact")
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let artifact = match ReportArtifact::try_from(certificate) {
+            Ok(artifact) => artifact,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let validated = ValidatedArtifact {
+            artifact,
+            verified_at,
+        };
+        let context = self.context().clone();
+        crate::certificate_store::retain_validated(
+            &mut self.db,
+            cx,
+            &context,
+            &self.blobs,
+            &validated,
+        )
+        .await
+    }
+
     /// Retrieve the original immutable artifact, including non-native families.
     /// The full public digest is mandatory; a nested source is never substituted.
     /// Current whole-book read authority is checked before fetching any bytes and

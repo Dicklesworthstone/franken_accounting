@@ -521,7 +521,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let capability = ctx.capability(args, &["read"])?;
     // Saved provenance grants no current authority. Admission precedes
     // stamping book metadata, fetching retained bytes or reading a file.
-    let book = ctx.books.open_admitted(args, |book| {
+    let mut book = ctx.books.open_admitted(args, |book| {
         fa_policy::admit_read(&capability, principal, book.context().book_id)
             .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
@@ -552,6 +552,30 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(certificate_invalid(
             "--view detail requires a roll-forward source certificate",
         ));
+    }
+    if artifact.family() == ReportArtifactFamily::ScenarioDiff {
+        // Its replay re-materializes the scenario with exactly the intents it
+        // covered (Book::replay_scenario_diff); no recipient expectation
+        // applies to it.
+        if args.flag("--expect").is_some() {
+            return Err(usage(
+                "--expect names a cash-flow or reconciliation request; a scenario diff replays as supplied",
+                "fa replay C:<oid> --json",
+            ));
+        }
+        let certificate = fa::ScenarioDiffCertificate::decode(&bytes)?;
+        let diff = book.replay_scenario_diff(principal, &capability, &certificate)??;
+        if let Some(path) = args.flag("--output") {
+            crate::cli::write_new_output_file(
+                &ctx.files,
+                path,
+                certificate.output(),
+                "replayed report",
+                "--output",
+            )?;
+        }
+        let digest = hex(artifact.digest());
+        return crate::scenario::render_scenario_diff(&ctx.out, &book, &diff, Some(&digest));
     }
     let replayed = book.replay_report_artifact_for(
         principal,

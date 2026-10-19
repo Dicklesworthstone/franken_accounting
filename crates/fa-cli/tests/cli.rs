@@ -12454,6 +12454,43 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
     assert_eq!(retried.get("already_recorded"), Some(&Json::Bool(true)));
     assert_eq!(retried.get("rehearsed"), Some(&Json::Bool(false)));
     assert_eq!(text(&retried, "entry"), text(&ran, "entry"));
+    // Certified while the scenario holds one intent: the diff names its
+    // certificate in the envelope, report_certificate follows, and the trunk
+    // side is a native certificate at the fork.
+    let (code, out, err) = run(&[
+        "scenario",
+        "diff",
+        "but-for",
+        "--period",
+        "FY2026-P03",
+        "--certify",
+    ]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "{out}");
+    assert_eq!(field(lines[0], "event"), Some("scenario_diff"));
+    assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+    let certified = doc(lines[0]);
+    let certificate = doc(lines[1]);
+    let oid = text(&certificate, "oid").to_string();
+    assert_eq!(oid.len(), 64, "{out}");
+    assert_eq!(field(lines[0], "certificate"), Some(oid.as_str()));
+    assert_eq!(text(&certificate, "output_format"), "fa:scenario-diff:v1");
+    assert_eq!(
+        int(&certificate, "known_at"),
+        fork_at,
+        "trunk certified at the fork"
+    );
+    assert_eq!(int(&certified, "intents"), Some(1));
+    let one_intent: Vec<(&str, &str)> = arr(&certified, "rows")
+        .iter()
+        .map(|r| (text(r, "code"), text(r, "delta")))
+        .collect();
+    assert_eq!(
+        one_intent,
+        [("1000", "500.00 USD"), ("4000", "-500.00 USD")]
+    );
+    let certificate_hex = text(&certificate, "bytes").to_string();
     // Every posting verb reaches a scenario the same way: --scenario.
     let cost = intent(
         "cost.json",
@@ -12512,6 +12549,42 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
     let (code, repeat, _) = run(&["scenario", "diff", "but-for", "--period", "FY2026-P03"]);
     assert_eq!(code, 0, "{repeat}");
     assert_eq!(doc(&repeat), diff, "a diff is deterministic");
+    // The certificate still replays the one intent it covered: the scenario
+    // re-materializes with exactly that prefix, though it now holds two and
+    // trunk has moved on. Certifying again covers both: another certificate.
+    let (code, out, err) = run(&["replay", &format!("C:{oid}")]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("scenario_diff"), "{out}");
+    assert_eq!(field(&out, "certificate"), Some(oid.as_str()));
+    assert_eq!(
+        doc(&out),
+        certified,
+        "the replay reproduces the certified diff"
+    );
+    let (code, out, err) = run(&[
+        "scenario",
+        "diff",
+        "but-for",
+        "--period",
+        "FY2026-P03",
+        "--certify",
+    ]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let both = doc(out.lines().next().unwrap_or_default());
+    assert_eq!(int(&both, "intents"), Some(2));
+    assert_eq!(arr(&both, "rows"), arr(&diff, "rows"));
+    assert_ne!(text(&doc(&out), "oid"), oid, "a different intent prefix");
+    // A certificate whose output was altered never replays (exit 8).
+    let mut bytes: Vec<u8> = (0..certificate_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(certificate_hex.get(i..i + 2).unwrap_or("00"), 16).unwrap_or(0))
+        .collect();
+    let inside_output = bytes.len() - 40;
+    bytes[inside_output] ^= 1;
+    let tampered = dir.join("tampered-scenario-diff.cert");
+    std::fs::write(&tampered, &bytes)?;
+    let (code, out, _) = run(&["replay", &tampered.display().to_string()]);
+    assert_eq!(code, 8, "{out}");
 
     // Reads select the scenario with --branch: the same command, on its
     // replay, with the branch in the envelope's coordinate.
@@ -12708,6 +12781,12 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
     let (code, out, _) = run(&["scenario", "diff", "but-for", "--period", "FY2026-P03"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(arr(&doc(&out), "rows"), arr(&diff, "rows"));
+    let (code, out, _) = run(&["replay", &format!("C:{oid}")]);
+    assert_eq!(
+        code, 0,
+        "a discarded scenario's certificate still replays: {out}"
+    );
+    assert_eq!(doc(&out), certified);
     Ok(())
 }
 

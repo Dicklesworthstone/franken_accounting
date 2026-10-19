@@ -2061,6 +2061,20 @@ impl Book {
         )))
     }
 
+    /// Keep a scenario diff [`Book::retain_scenario_diff`] has just replayed.
+    pub(crate) fn retain_replayed_scenario_diff(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::ScenarioDiffCertificate,
+        verified_at: CommitSeq,
+    ) -> Outcome<crate::RetainedCertificate> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_replayed_scenario_diff(
+            &purposes, principal, capability, certificate, verified_at
+        )))
+    }
+
     /// Resolve a retained artifact and replay the full original computation
     /// without changing its historical coordinate or accepting saved authority.
     pub fn replay_retained_report_artifact(

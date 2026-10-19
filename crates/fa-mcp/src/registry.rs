@@ -2433,6 +2433,11 @@ mod tests {
                 json!({"name": "trace", "definition": "income-statement", "for": "P", "before": "5", "after": "9", "certify": true}),
                 "statement",
             ),
+            (
+                "fa_scenario_diff",
+                json!({"name": "but-for", "period": "P", "certify": true}),
+                "scenario",
+            ),
         ] {
             let tool = mcp.tool_by_wire(wire).expect("certifiable report");
             let schema = tool.input_schema(&mcp, reg);

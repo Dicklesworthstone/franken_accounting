@@ -49,6 +49,10 @@ pub enum ReportArtifactFamily {
     AgingPortfolio,
     SplitCashFlow,
     PolicyCashFlow,
+    /// A scenario diff (fa-k07b). Its replay re-materializes the scenario,
+    /// which only the sync facade can do: [`crate::Book::replay_scenario_diff`]
+    /// and [`crate::Book::retain_scenario_diff`].
+    ScenarioDiff,
 }
 
 impl ReportArtifactFamily {
@@ -68,6 +72,7 @@ impl ReportArtifactFamily {
             Self::AgingPortfolio => "aging-portfolio",
             Self::SplitCashFlow => "split-cash-flow",
             Self::PolicyCashFlow => "policy-cash-flow",
+            Self::ScenarioDiff => "scenario-diff",
         }
     }
 }
@@ -113,6 +118,7 @@ enum Artifact {
     AgingPortfolio(Box<AgingPortfolioCertificate>),
     SplitCashFlow(Box<CashFlowSplitCertificate>),
     PolicyCashFlow(Box<PolicyArtifact>),
+    ScenarioDiff(Box<crate::ScenarioDiffCertificate>),
 }
 
 // Policy certificates retain their exact financial source and derivation inputs.
@@ -194,6 +200,8 @@ impl ReportArtifact {
             Artifact::AgingPortfolio(Box::new(AgingPortfolioCertificate::decode(bytes)?))
         } else if format == crate::cash_flow_split::CASH_FLOW_SPLIT_CERTIFICATE_FORMAT.as_bytes() {
             Artifact::SplitCashFlow(Box::new(CashFlowSplitCertificate::decode(bytes)?))
+        } else if format == crate::SCENARIO_DIFF_CERTIFICATE_FORMAT {
+            Artifact::ScenarioDiff(Box::new(crate::ScenarioDiffCertificate::decode(bytes)?))
         } else if format == crate::cash_flow_policy::CASH_FLOW_POLICY_CERTIFICATE_FORMAT {
             let certificate = CashFlowPolicyCertificate::decode(bytes)?;
             let output = certificate.output()?;
@@ -223,6 +231,7 @@ impl ReportArtifact {
             Artifact::AgingPortfolio(_) => ReportArtifactFamily::AgingPortfolio,
             Artifact::SplitCashFlow(_) => ReportArtifactFamily::SplitCashFlow,
             Artifact::PolicyCashFlow(_) => ReportArtifactFamily::PolicyCashFlow,
+            Artifact::ScenarioDiff(_) => ReportArtifactFamily::ScenarioDiff,
         }
     }
 
@@ -255,6 +264,8 @@ impl ReportArtifact {
                 .source_certificate()
                 .source_certificate()
                 .source_certificate(),
+            // The trunk side; the scenario side has no native certificate.
+            Artifact::ScenarioDiff(c) => c.trunk(),
         }
     }
 
@@ -284,6 +295,7 @@ impl ReportArtifact {
             Artifact::AgingPortfolio(c) => c.digest(),
             Artifact::SplitCashFlow(c) => c.digest(),
             Artifact::PolicyCashFlow(c) => c.certificate.digest(),
+            Artifact::ScenarioDiff(c) => c.digest(),
         }
     }
 
@@ -304,6 +316,7 @@ impl ReportArtifact {
             Artifact::AgingPortfolio(c) => c.output(),
             Artifact::SplitCashFlow(c) => c.output(),
             Artifact::PolicyCashFlow(c) => &c.output,
+            Artifact::ScenarioDiff(c) => c.output(),
         }
     }
 
@@ -332,6 +345,7 @@ impl ReportArtifact {
             Artifact::AgingPortfolio(c) => c.canonical_bytes(),
             Artifact::SplitCashFlow(c) => c.canonical_bytes(),
             Artifact::PolicyCashFlow(c) => c.certificate.canonical_bytes(),
+            Artifact::ScenarioDiff(c) => c.canonical_bytes(),
         }
     }
 }
@@ -363,6 +377,7 @@ from_certificate!(
     AgingPortfolioCertificate,
     CashFlowSplitCertificate,
     CashFlowPolicyCertificate,
+    crate::ScenarioDiffCertificate,
 );
 
 fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
@@ -511,6 +526,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     policy,
                 )?
                 .map(|_| ()),
+            (Artifact::ScenarioDiff(_), _) => {
+                return Ok(Err(Refusal::new(
+                    crate::certificate::code::CERTIFICATE_INVALID,
+                    exit::VERIFICATION,
+                    "a scenario diff certificate is replayed by re-materializing its scenario, which this replay cannot do",
+                    "plan §15.2 (a scenario diff replays from its trunk certificate and its pinned intents)",
+                    "replay it with fa replay (Book::replay_scenario_diff) and retain it with fa scenario diff --certify (Book::retain_scenario_diff)",
+                )));
+            }
             _ => {
                 return Ok(Err(invalid(
                     "report artifact requires matching independently supplied replay expectations",

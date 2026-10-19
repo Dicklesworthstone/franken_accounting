@@ -276,12 +276,67 @@ fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let activity = args.switch("--activity");
     let who = ctx.principal(args);
-    let cap = ctx.capability(args, &["read"])?;
+    // Certifying publishes a retained certificate: read and produce.
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let ops: &[&str] = if certify {
+        &["read", "produce"]
+    } else {
+        &["read"]
+    };
+    let cap = ctx.capability(args, ops)?;
     let mut book = ctx
         .books
         .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
-    let diff = book.scenario_diff(&name, &periods, activity)??;
+    if !certify {
+        let diff = book.scenario_diff(&name, &periods, activity)??;
+        ctx.out.at_book(&book)?;
+        return render_scenario_diff(&ctx.out, &book, &diff, None);
+    }
+    if let Some(path) = args.flag("--certificate-out")
+        && (path.is_empty() || path == "-")
+    {
+        return Err(usage(
+            "--certificate-out names a new file; - is not an output file",
+            "use --certify to receive the complete certificate as hex on stdout",
+        ));
+    }
+    let certified = book.certify_scenario_diff(who, &cap, &name, &periods, activity)??;
+    let retained = book.retain_scenario_diff(who, &cap, &certified.certificate)??;
+    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+    let bytes = artifact.canonical_bytes()?;
+    if let Some(path) = args.flag("--certificate-out") {
+        crate::cli::write_new_output_file(
+            &ctx.files,
+            path,
+            &bytes,
+            "certificate",
+            "--certificate-out",
+        )?;
+    }
     ctx.out.at_book(&book)?;
+    let digest = hex(artifact.digest());
+    render_scenario_diff(&ctx.out, &book, &certified.report, Some(&digest))?;
+    crate::notary::emit_report_artifact(
+        &ctx.out,
+        args,
+        &artifact,
+        fa::SCENARIO_DIFF_OUTPUT_FORMAT,
+        &bytes,
+        &retained,
+    );
+    Ok(())
+}
+
+/// The `scenario_diff` event: from `fa scenario diff`, and from `fa replay`
+/// of its certificate (`certificate` names it in the envelope).
+pub(crate) fn render_scenario_diff(
+    out: &crate::cli::Out,
+    book: &fa::Book,
+    diff: &fa::ScenarioDiff,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    let name = &diff.name;
+    let activity = diff.activity;
     let units = &book.context().units;
     let money =
         |unit: u32, mantissa: i128| render_amount(Amount::new(UnitId(unit), mantissa), units);
@@ -339,7 +394,7 @@ fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("pending_delta", s(pending_delta)),
         ]));
     }
-    ctx.out.event(
+    out.event_with_certificate(
         "scenario_diff",
         vec![
             ("scenario", vid_hex(diff.scenario)),
@@ -363,6 +418,7 @@ fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("rows", Json::Arr(rows)),
         ],
         &human.join("\n"),
+        certificate,
     );
     Ok(())
 }

@@ -1706,6 +1706,12 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
     if verb == "gl" && (args.switch("--certify") || args.flag("--certificate-out").is_some()) {
         return Some(&[Op::Read, Op::Produce]);
     }
+    if verb == "scenario"
+        && sub == Some("diff")
+        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
+    {
+        return Some(&[Op::Read, Op::Produce]);
+    }
     if verb == "tb"
         && args.switch("--summary")
         && (args.switch("--certify") || args.flag("--certificate-out").is_some())

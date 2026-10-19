@@ -188,7 +188,10 @@ pub use roll_forward::{
     CertifiedRollForward, MAX_ROLL_FORWARD_CERTIFICATE_BYTES, MAX_ROLL_FORWARD_WORKPAPER_BYTES,
     ROLL_FORWARD_CERTIFICATE_FORMAT, RollForward, RollForwardCertificate, RollForwardRequest,
 };
-pub use scenario::{ScenarioBook, ScenarioDiff, ScenarioDiffRow, ScenarioRun};
+pub use scenario::{
+    CertifiedScenarioDiff, SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT,
+    ScenarioBook, ScenarioDiff, ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
+};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,

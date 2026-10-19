@@ -398,12 +398,11 @@ id = "WF-LCD-05"
 workflow = "litigation-consultant-damages"
 ordinal = 5
 vision_row = "VC-30"
-description = "Retain the diff as a replayable certificate (`fa scenario diff --certify`; a DiffCertificate is not built yet)"
+description = "Retain the diff as a replayable certificate (`fa scenario diff --certify`; `fa replay` re-materializes exactly the intents it covered)"
 argv = ["scenario", "diff", "but-for-breach", "--period", "FY2026-P03", "--certify", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-k07b"
+expected = "works"
+expected_exit = 0
+expected_event = "scenario_diff"
 
 # ---- Workflow 7: investigator-traces-funds (§15.6.6) ------------------------
 
