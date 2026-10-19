@@ -10,8 +10,8 @@
 use std::collections::BTreeMap;
 
 use fa_model::{
-    ExternalId, InstrumentKind, InstrumentSpec, OwnershipPct, PartyKind, PartySpec,
-    RelationshipKind, RelationshipSpec, account_vid,
+    ExternalId, ExternalIdBinding, InstrumentKind, InstrumentSpec, LegalEntityFullSpec,
+    OwnershipPct, PartyKind, PartySpec, RelationshipKind, RelationshipSpec, account_vid,
 };
 use fa_time::DateDay;
 use fgdb_types::VId;
@@ -20,17 +20,30 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, Out, date_flag, parse_json, untrusted_text_json, usage};
 use crate::json::{Json, obj, s};
 
-const PARTY_EXAMPLE: &str = "fa party add <party.json|-> | fa party relate <from> <to> --kind owns|controls|related --basis <code> --valid-from YYYY-MM-DD [--valid-to YYYY-MM-DD] [--pct <num>/<den>] | fa party list";
+const PARTY_EXAMPLE: &str = "fa party add <party.json|-> | fa party relate <from> <to> --kind owns|controls|related --basis <code> --valid-from YYYY-MM-DD [--valid-to YYYY-MM-DD] [--pct <num>/<den>] | fa party bind <code> --external-id <system>:<id> | fa party list";
 const INSTRUMENT_EXAMPLE: &str = "fa instrument add <instrument.json|-> | fa instrument list";
+const ENTITY_EXAMPLE: &str = "fa entity add <entity.json|-> | fa entity list";
 
 pub(crate) fn party_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
         Some("add") => party_add(ctx, args),
         Some("relate") => party_relate(ctx, args),
+        Some("bind") => party_bind(ctx, args),
         Some("list") => party_list(ctx, args),
         _ => Err(usage(
-            "party has the subcommands add, relate and list",
+            "party has the subcommands add, relate, bind and list",
             PARTY_EXAMPLE,
+        )),
+    }
+}
+
+pub(crate) fn entity_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(1).map(String::as_str) {
+        Some("add") => entity_add(ctx, args),
+        Some("list") => entity_list(ctx, args),
+        _ => Err(usage(
+            "entity has the subcommands add and list",
+            ENTITY_EXAMPLE,
         )),
     }
 }
@@ -44,6 +57,13 @@ pub(crate) fn instrument_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
             INSTRUMENT_EXAMPLE,
         )),
     }
+}
+
+/// Admit the whole-book read against current native authority before the
+/// book's identity, frontier or contents reach any output (plan §1 rule 8).
+pub(crate) fn admit_read(book: &fa::Book, who: VId, cap: &fa::Capability) -> Result<(), Fail> {
+    let _ = book.read_scope(who, cap)??;
+    Ok(())
 }
 
 /// The one JSON object an `add` reads, with its fields checked against
@@ -520,7 +540,11 @@ fn party_list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa party list --json",
         ));
     }
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| admit_read(book, who, &cap))?;
     let rea = book.rea_snapshot(None)?;
     let key = &book.context().seal_key;
     let mut parties: Vec<_> = rea.parties.values().collect();
@@ -569,7 +593,11 @@ fn instrument_list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa instrument list --json",
         ));
     }
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| admit_read(book, who, &cap))?;
     let rea = book.rea_snapshot(None)?;
     let units = &book.context().units;
     let mut instruments: Vec<_> = rea.instruments.values().collect();
@@ -606,4 +634,210 @@ fn instrument_list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         &human.join("\n"),
     );
     Ok(())
+}
+
+/// An optional `YYYY-MM-DD` field of an add's JSON object.
+fn optional_date(doc: &Json, field: &str, example: &str) -> Result<Option<DateDay>, Fail> {
+    match doc.get(field) {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::Str(text)) => DateDay::parse(text)
+            .map(Some)
+            .map_err(|e| usage(format!("`{field}`: {e}"), example)),
+        Some(_) => Err(usage(format!("`{field}` must be YYYY-MM-DD"), example)),
+    }
+}
+
+/// A legal entity (plan §4.1, §4.5): a reporting entity with its
+/// jurisdiction, functional unit and life span. A code the book declared at
+/// genesis (`fa book create --entity`) is lifted to this full specification
+/// under its declared name; any other code is a new legal entity.
+fn entity_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str = "{\"code\": \"ACME-DE\", \"name\": \"Acme GmbH\", \"jurisdiction\": \"DE\", \"functional_unit\": \"EUR\", \"formed\": \"2019-04-01\", \"external_ids\": [{\"system\": \"lei\", \"id\": \"5299001ABCDEF\"}]}";
+    let doc = read_object(
+        ctx,
+        args,
+        &[
+            "code",
+            "name",
+            "jurisdiction",
+            "functional_unit",
+            "formed",
+            "dissolved",
+            "external_ids",
+        ],
+        FIX,
+    )?;
+    let code = required(&doc, "code", FIX)?.to_string();
+    let name = required(&doc, "name", FIX)?.to_string();
+    let jurisdiction = required(&doc, "jurisdiction", FIX)?.to_string();
+    let unit_code = required(&doc, "functional_unit", FIX)?;
+    let formed = optional_date(&doc, "formed", FIX)?;
+    let dissolved = optional_date(&doc, "dissolved", FIX)?;
+    let ids = requested_ids(&doc)?;
+    let key = args
+        .flag("--key")
+        .map_or_else(|| format!("entity:{code}"), str::to_string);
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["schema_change"])?;
+    let mut book = ctx.books.open(args)?;
+    let functional_unit = book.context().units.lookup(unit_code).ok_or_else(|| {
+        usage(
+            format!("unknown unit `{unit_code}`"),
+            "functional_unit: a registered unit code such as USD",
+        )
+    })?;
+    if let Some(existing) = book
+        .rea_snapshot(None)?
+        .legal_entities
+        .into_values()
+        .find(|e| e.code == code)
+    {
+        let equal = existing.name == name
+            && existing.jurisdiction == jurisdiction
+            && existing.functional_unit == functional_unit
+            && existing.formed == formed
+            && existing.dissolved == dissolved
+            && opened_ids(&existing.external_ids, &book.context().seal_key).as_ref() == Some(&ids);
+        if let Some(recorded) = recorded_retry(&book, who, &key, existing.vid, equal)? {
+            return emit_recorded(&ctx.out, &book, "legal_entity", &code, &recorded);
+        }
+    }
+    let spec = LegalEntityFullSpec {
+        code: code.clone(),
+        name,
+        jurisdiction,
+        functional_unit,
+        formed,
+        dissolved,
+        external_ids: sealed_ids(&book, &ids)?,
+    };
+    let date = date_flag(args, DateDay(0))?;
+    let recorded = book.create_legal_entity(&spec, who, date, key.as_bytes(), &capability)??;
+    emit_recorded(&ctx.out, &book, "legal_entity", &code, &recorded)
+}
+
+fn entity_list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "entity list takes no argument",
+            "fa entity list --json",
+        ));
+    }
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| admit_read(book, who, &cap))?;
+    let rea = book.rea_snapshot(None)?;
+    let units = &book.context().units;
+    let mut entities: Vec<_> = rea.legal_entities.values().collect();
+    entities.sort_by(|a, b| a.code.cmp(&b.code));
+    let rows: Vec<Json> = entities
+        .iter()
+        .map(|e| {
+            obj(vec![
+                ("code", s(&e.code)),
+                ("name", s(&e.name)),
+                ("jurisdiction", s(&e.jurisdiction)),
+                (
+                    "functional_unit",
+                    units
+                        .get(e.functional_unit)
+                        .map_or(Json::Null, |u| s(u.code.as_str())),
+                ),
+                ("formed", e.formed.map_or(Json::Null, |d| s(d.to_string()))),
+                (
+                    "dissolved",
+                    e.dissolved.map_or(Json::Null, |d| s(d.to_string())),
+                ),
+                ("external_ids", Json::Int(e.external_ids.len() as i128)),
+                ("vid", s(format!("{:032x}", e.vid.0))),
+                ("created_at", Json::Int(i128::from(e.created_at.0))),
+            ])
+        })
+        .collect();
+    let human: Vec<String> = entities
+        .iter()
+        .map(|e| format!("{:<16} {:<8} {}", e.code, e.jurisdiction, e.name))
+        .collect();
+    ctx.out.at_book(&book)?;
+    ctx.out.event(
+        "legal_entities",
+        vec![
+            ("known_at", Json::Int(i128::from(rea.known_at.0))),
+            ("entities", Json::Arr(rows)),
+        ],
+        &human.join("\n"),
+    );
+    Ok(())
+}
+
+/// Bind an external system's identifier to a party, legal entity or
+/// instrument (plan §4.5): the id another system knows it by, sealed with
+/// the book's key. One (system, id) names one vertex; the default key names
+/// the target and system, never the sealed id.
+fn party_bind(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str =
+        "fa party bind <party|entity|instrument code> --external-id <system>:<id> [--key K]";
+    let [_, _, target] = args.positional.as_slice() else {
+        return Err(usage("party bind needs one target code", FIX));
+    };
+    let raw = match args.flag_all("--external-id").as_slice() {
+        [one] => *one,
+        _ => return Err(usage("party bind takes exactly one --external-id", FIX)),
+    };
+    let (system, id) = raw
+        .split_once(':')
+        .filter(|(system, id)| !system.is_empty() && !id.is_empty())
+        .ok_or_else(|| usage(format!("--external-id `{raw}` is not <system>:<id>"), FIX))?;
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["schema_change"])?;
+    let mut book = ctx.books.open(args)?;
+    let rea = book.rea_snapshot(None)?;
+    let found = rea
+        .parties
+        .values()
+        .find(|p| p.code == *target)
+        .map(|p| (p.vid, p.external_ids.clone()))
+        .or_else(|| {
+            rea.legal_entities
+                .values()
+                .find(|e| e.code == *target)
+                .map(|e| (e.vid, e.external_ids.clone()))
+        })
+        .or_else(|| {
+            rea.instruments
+                .values()
+                .find(|i| i.code == *target)
+                .map(|i| (i.vid, i.external_ids.clone()))
+        });
+    let Some((target_vid, existing)) = found else {
+        return Err(usage(
+            format!("no party, legal entity or instrument `{target}` in this book"),
+            "fa party list, fa entity list or fa instrument list names them",
+        ));
+    };
+    let key = args
+        .flag("--key")
+        .map_or_else(|| format!("bind:{target}:{system}"), str::to_string);
+    let wanted = (system.to_string(), id.to_string());
+    // Bound at creation, or by an earlier bind.
+    let held = opened_ids(&existing, &book.context().seal_key)
+        .is_some_and(|ids| ids.contains(&wanted))
+        || rea.external_ids.values().any(|row| {
+            row.target_vid == target_vid && row.external_id.system == system && row.plain_id == id
+        });
+    if let Some(recorded) = recorded_retry(&book, who, &key, target_vid, held)? {
+        return emit_recorded(&ctx.out, &book, "external_id", target, &recorded);
+    }
+    let binding = ExternalIdBinding {
+        target_vid,
+        external_id: ExternalId {
+            system: system.to_string(),
+            id: book.seal_text(id)?,
+        },
+    };
+    let date = date_flag(args, DateDay(0))?;
+    let recorded = book.bind_external_id(&binding, who, date, key.as_bytes(), &capability)??;
+    emit_recorded(&ctx.out, &book, "external_id", target, &recorded)
 }

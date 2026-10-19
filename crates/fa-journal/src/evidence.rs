@@ -496,6 +496,49 @@ pub(crate) fn verify_row(
     Ok(doc)
 }
 
+/// A held document's public metadata (plan §9.6: kind, size and commitment
+/// stay visible to any reader; the bytes never travel here).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentSummary {
+    pub oid: Oid,
+    pub kind: u8,
+    pub mime: String,
+    pub grade: u8,
+    pub size: u64,
+    pub doc_commit: [u8; 32],
+    pub recorded_at: CommitSeq,
+}
+
+/// Every document the book holds at `seq`, in `(recorded_at, oid)` order,
+/// as public metadata. Each row verifies against itself first; a row that
+/// does not is drift, never skipped.
+pub fn list_documents<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    seq: CommitSeq,
+) -> Result<Vec<DocumentSummary>, KernelError> {
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let mut out = Vec::new();
+    for row in db.vertices_at(seq)? {
+        if !row.labels.contains(&label::DOCUMENT) {
+            continue;
+        }
+        let doc = verify_row(&row, &policy).map_err(|why| {
+            KernelError::Corrupt(format!("document vertex {:032x}: {why}", row.vid.0))
+        })?;
+        out.push(DocumentSummary {
+            oid: doc.oid(),
+            kind: doc.kind,
+            mime: doc.mime,
+            grade: doc.grade,
+            size: doc.size,
+            doc_commit: doc.doc_commit,
+            recorded_at: row.created_at,
+        });
+    }
+    out.sort_by_key(|d| (d.recorded_at, d.oid));
+    Ok(out)
+}
+
 /// The refusal for a Document whose stored row does not verify (exit 8).
 pub(crate) fn drift(oid: &Oid, why: &str) -> Refusal {
     Refusal::new(

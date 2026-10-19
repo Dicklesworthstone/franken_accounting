@@ -601,14 +601,15 @@ fa chart import --template us-gaap-smb --book acme.fabook
 # Bare `fa` is triage, never a TUI. Agents start here (available today).
 fa triage --book acme.fabook --json
 
-# Target (fa-we7): domain intent verb `fa invoice` with implied Agent `--dry-run` (today: `fa post --intent <file> --dry-run --plan-out <plan>` + `fa commit --plan <plan>`).
-fa invoice --party ACME-CUST-17 --date 2026-03-14 \
+# A typed invoice, rehearsed: the plan shows the legs its lines derive (available today, as are `fa bill` and `--draft`; the caller names the accounts: no Canon rule or tax yet, fa-i7e / fa-c34).
+fa invoice --party ACME-CUST-17 --number 10442 --date 2026-03-14 --receivable 1200 --revenue 4000 \
    --line 'qty=10 unit_price="125.00 USD" item=SKU-9 product=Widgets' \
-   --evidence inv-10442.pdf --dry-run --json
-#  → plan: legs (1200-AR 1,250.00 D / 4000-Revenue 1,250.00 C / 2300-SalesTaxPayable …), period 2026-03 Open → Admit,
-#     SoD ok, register deltas, evidence heads, certificate c:…
-# Target (fa-we7):
-fa invoice --confirm-plan c:… --json            # commits; returns EntryRef { vid, entry_digest } + marker
+   --evidence <document-oid> --dry-run --plan-out inv-10442.plan --book acme.fabook --json
+#  → plan: legs (1200-AR 1,250.00 D for ACME-CUST-17 / 4000-Revenue 1,250.00 C), period FY2026-P03 Open → Admit,
+#     evidence heads, certificate digest
+fa commit --plan inv-10442.plan --book acme.fabook --json   # commits the reviewed plan; returns the entry vid
+# The customer pays: the receipt applies itself to the invoice's open item; its number becomes the cash leg's memo, which fa bank match compares with the statement line's reference (available today; also fa payment).
+fa receipt --party ACME-CUST-17 --number WIRE-IN-1 --date 2026-03-20 --cash 1010 --receivable 1200 --amount "1250.00 USD" --applies <invoice-vid> --book acme.fabook --json
 
 # Why is this balance what it is? The register, its fold proof, and every contributing entry with evidence (available today with `--period`).
 fa explain balance 1200 --period FY2026-P03 --as-known-at '2026-04-02T00:00:00Z' --book acme.fabook --json
@@ -644,13 +645,22 @@ fa procedure run graph.related_party_exposure --param entity=ACME --json
 fa bundle produce --account 1000 --from 2025-01-01 --to 2025-12-31 --inline-documents --out fy2025-cash.fab --receipt-out fy2025-cash.receipt --book acme.fabook --json
 fa-verify bundle fy2025-cash.fab --key <checkpoint_public_key> --receipt fy2025-cash.receipt --json
 
+# A certified GL detail for the file; `fa replay C:<oid>` reproduces it after later postings (available today; also roll-forward and aging).
+fa gl detail --account 1000 --from 2025-01-01 --to 2025-12-31 --certify --book acme.fabook --json
+
 # The auditor's extract: the AICPA ADS GL package (also saft, csv-gl, beancount, hledger), what the trial balance folds, with its export coordinate certificate (available today).
 fa export ads --period FY2025-P12 --out ads-fy2025-12 --book acme.fabook --json
+
+# Reconcile the bank: retain the statement (camt.053/052, BAI2, OFX, MT940, CSV) for its cash account, then propose matches against cash-leg memos; matching replays the complete statement, so the owner opts in with --grant privileged; proposals stay unconfirmed (available today; confirmation is target fa-zbne).
+fa bank import stmt-2026-03.camt053.xml --bank-format camt053 --account 1010 --book acme.fabook --json
+fa bank match --import <manifest_oid> --grant privileged --book acme.fabook --json
 
 # Who and what the events name: parties, a relationship, an instrument mirrored by a GL leaf, and a new account (available today).
 fa party add vendor.json --book acme.fabook --json
 fa party relate O-1 ACME --kind owns --basis equity_voting --valid-from 2025-01-01 --pct 51/100 --book acme.fabook --json
 fa instrument add operating-account.json --book acme.fabook --json
+fa entity add acme-de.json --book acme.fabook --json
+fa party bind V-17 --external-id qbo:55 --book acme.fabook --json
 fa chart open office-supplies.json --opened 2026-03-01 --book acme.fabook --json
 ```
 

@@ -816,6 +816,52 @@ impl Book {
         )))
     }
 
+    /// Journal and materialize a `LegalEntity` vertex (plan §4.1, §4.5).
+    pub fn create_legal_entity(
+        &mut self,
+        spec: &fa_model::LegalEntityFullSpec,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_legal_entity(
+            &purposes, spec, principal, effective_date, idempotency_key, capability,
+        )))
+    }
+
+    /// Journal an `ExternalId` bound to an existing party, legal entity or
+    /// instrument (plan §4.5).
+    pub fn bind_external_id(
+        &mut self,
+        binding: &fa_model::ExternalIdBinding,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.bind_external_id(
+            &purposes, binding, principal, effective_date, idempotency_key, capability,
+        )))
+    }
+
+    /// Journal a party's replacement identifier set (plan §4.5).
+    pub fn update_party_identifiers(
+        &mut self,
+        update: &fa_model::PartyIdentifierUpdate,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.update_party_identifiers(
+            &purposes, update, principal, effective_date, idempotency_key, capability,
+        )))
+    }
+
     /// Journal a valid-time relationship edge between two parties or legal
     /// entities (plan §4.5).
     pub fn record_relationship(
@@ -1489,6 +1535,15 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.read_document_for(
             &purposes, capability, oid,
         )))
+    }
+
+    /// Every document the book holds at `known_at`, as public metadata
+    /// (plan §9.6); never the bytes.
+    pub fn documents(
+        &self,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Vec<fa_journal::evidence::DocumentSummary>, BookError> {
+        with_store!(&self.store, core => core.documents(&self.purposes(), known_at))
     }
 
     /// The legal holds active on `subject`, ascending.

@@ -135,9 +135,88 @@ pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("hold") => hold_doc(ctx, args),
         Some("attest") => attest_doc(ctx, args),
         Some("import") => import_doc(ctx, args),
+        Some("list") => list_docs(ctx, args),
         None => Err(usage("`fa document` needs a subcommand", ADD_EXAMPLE)),
         other => Err(unhandled("document", other)),
     }
+}
+
+/// `fa document list [--kind <Kind>] [--as-known-at]`: the documents the
+/// book holds, as public metadata (plan §9.6: kind, media type, grade, size
+/// and commitment stay visible; the bytes need `fa document read`).
+fn list_docs(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "document list takes no argument",
+            "fa document list [--kind BankStatement] --json",
+        ));
+    }
+    let policy = policy()?;
+    let kind = match args.flag("--kind") {
+        Some(name) => Some(
+            policy
+                .kind_by_name(name)
+                .ok_or_else(|| {
+                    let names: Vec<&str> = policy.kinds.iter().map(|k| k.name.as_str()).collect();
+                    named("document kind", name, &names)
+                })?
+                .tag,
+        ),
+        None => None,
+    };
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+    let (known_at, _) = crate::cli::known_at_flag(args, &book, &ctx.out)?;
+    let documents: Vec<_> = book
+        .documents(known_at)?
+        .into_iter()
+        .filter(|d| kind.is_none_or(|k| d.kind == k))
+        .collect();
+    let rows: Vec<Json> = documents
+        .iter()
+        .map(|d| {
+            obj(vec![
+                ("oid", s(hex(&d.oid.0))),
+                (
+                    "kind",
+                    s(policy
+                        .kind_by_tag(d.kind)
+                        .map_or_else(|| d.kind.to_string(), |k| k.name.clone())),
+                ),
+                ("mime", s(&d.mime)),
+                (
+                    "grade",
+                    s(policy
+                        .grade_by_tag(d.grade)
+                        .map_or_else(|| d.grade.to_string(), |g| g.name.clone())),
+                ),
+                ("size", Json::Int(i128::from(d.size))),
+                ("doc_commit", s(hex(&d.doc_commit))),
+                ("recorded_at", Json::Int(i128::from(d.recorded_at.0))),
+            ])
+        })
+        .collect();
+    let human: Vec<String> = documents
+        .iter()
+        .map(|d| format!("{} {:>8} bytes  {}", hex(&d.oid.0), d.size, d.mime))
+        .collect();
+    ctx.out.at_book(&book)?;
+    if let Some(seq) = known_at {
+        ctx.out.known_at(seq);
+    }
+    ctx.out.event(
+        "documents",
+        vec![
+            ("kind", args.flag("--kind").map_or(Json::Null, s)),
+            ("count", Json::Int(rows.len() as i128)),
+            ("documents", Json::Arr(rows)),
+        ],
+        &human.join("\n"),
+    );
+    Ok(())
 }
 
 fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

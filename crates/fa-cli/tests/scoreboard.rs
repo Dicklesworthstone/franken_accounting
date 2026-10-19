@@ -351,6 +351,14 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
         .expect("doc oid")
         .to_string();
 
+    // The customer the README's invoice names (WF-RQ-02).
+    let customer = write_file(
+        dir,
+        "customer.json",
+        r#"{"code":"ACME-CUST-17","kind":"Customer","name":"Acme Customer 17"}"#,
+    );
+    run_ok(&["party", "add", &customer]);
+
     let sale_1 = write_file(
         dir,
         "sale1.json",
@@ -447,6 +455,24 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
         &approval,
     ]);
 
+    // The agent's March bank statement for the operating account (WF-ACM-03).
+    let stmt_file = write_file(
+        dir,
+        "stmt.camt053.xml",
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">
+  <BkToCstmrStmt><Stmt><Id>March</Id><ElctrncSeqNb>3</ElctrncSeqNb>
+    <Acct><Id><IBAN>GB29NWBK60161331926819</IBAN></Id><Ccy>USD</Ccy></Acct>
+    <Bal><Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp><Amt Ccy="USD">0.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-03-01</Dt></Dt></Bal>
+    <Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="USD">1250.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-03-31</Dt></Dt></Bal>
+    <Ntry><Amt Ccy="USD">1250.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Sts><Cd>BOOK</Cd></Sts>
+      <BookgDt><Dt>2026-03-20</Dt></BookgDt><ValDt><Dt>2026-03-20</Dt></ValDt><AcctSvcrRef>INV-10442</AcctSvcrRef>
+    </Ntry>
+  </Stmt></BkToCstmrStmt>
+</Document>
+"#,
+    );
+
     let cert_file = dir.join("march.cert").display().to_string();
     run_ok(&[
         "tb",
@@ -471,6 +497,7 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
     vars.insert("{sale_intent_2}".into(), sale_2);
     vars.insert("{plan_file_2}".into(), plan_file_2);
     vars.insert("{cert_file}".into(), cert_file);
+    vars.insert("{stmt_file}".into(), stmt_file);
     vars.insert("{unbalanced_intent}".into(), unbalanced_intent);
     vars.insert("{closed_period_intent}".into(), closed_period_intent);
     vars

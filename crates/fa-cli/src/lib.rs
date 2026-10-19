@@ -33,5 +33,6 @@ mod proof;
 mod rea;
 mod templates;
 mod triage;
+mod typed;
 pub mod verbs;
 pub mod wire;

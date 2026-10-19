@@ -392,15 +392,15 @@ fn the_registry_check_names_an_invented_verb_subcommand_or_flag() {
     // half below `## TL;DR` are not.
     let reg = registry().expect("verbs.toml");
     let planted = "Intro\n\n```bash\n# fa comment --ignored\n\
-        fa tb --period FY2026-P03 --json\nfa invoice --party ACME\n\
+        fa tb --period FY2026-P03 --json\nfa conjure --party ACME\n\
         fa verify nonsense --json\nfa tb --period FY2026-P03 \\\n  --no-such-flag --json\n```\n\n\
-        ```rust\nfa not shell\n```\n\n## TL;DR\n\n```bash\nfa invoice --target-state\n```\n";
+        ```rust\nfa not shell\n```\n\n## TL;DR\n\n```bash\nfa conjure --target-state\n```\n";
     let lines = present_tense_lines(planted);
     assert_eq!(
         lines,
         [
             "fa tb --period FY2026-P03 --json",
-            "fa invoice --party ACME",
+            "fa conjure --party ACME",
             "fa verify nonsense --json",
             "fa tb --period FY2026-P03 --no-such-flag --json",
         ]
@@ -410,7 +410,7 @@ fn the_registry_check_names_an_invented_verb_subcommand_or_flag() {
     for (verdict, names) in
         verdicts[1..]
             .iter()
-            .zip(["`invoice`", "subcommands", "`--no-such-flag`"])
+            .zip(["`conjure`", "subcommands", "`--no-such-flag`"])
     {
         assert!(
             verdict.as_deref().is_some_and(|v| v.contains(names)),

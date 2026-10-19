@@ -155,8 +155,60 @@ flags = ["--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "batch_posted", "draft_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--event <code|vid>] [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target.", "A PostBatch intent {\"idempotency_key\": K, \"intents\": [<entry intent>, ...]} commits every member atomically, in order, in one transaction: all or none, each member seeing the earlier members' effects (an application may settle an invoice earlier in the same batch by its derived vid). Members are Original, Adjusting, Reversal, Pending or Resolution entries of one principal with distinct keys. The batch key names its IntentOutcome: an identical retry returns the recorded outcome; the same key with different members is refused (exit 6). Batch plans, --plan-out and per-batch flags are not available; a member refusal names its index and nothing is posted.", "post --intent <file.json|-> --draft <name>   (plan §15.2: rehearses the intent under every posting law and journals it into the open draft; nothing reaches trunk until a principal holding approve who is not the draft's owner runs fa draft promote <name>)"]
+usage = ["A leg may name its legal entity (\"entity\": code; in a multi-entity book every leg names one) and its counterparty (\"party\": code from fa party list); the kernel refuses an undeclared entity or an unknown party.", "post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--event <code|vid>] [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target.", "A PostBatch intent {\"idempotency_key\": K, \"intents\": [<entry intent>, ...]} commits every member atomically, in order, in one transaction: all or none, each member seeing the earlier members' effects (an application may settle an invoice earlier in the same batch by its derived vid). Members are Original, Adjusting, Reversal, Pending or Resolution entries of one principal with distinct keys. The batch key names its IntentOutcome: an identical retry returns the recorded outcome; the same key with different members is refused (exit 6). Batch plans, --plan-out and per-batch flags are not available; a member refusal names its index and nothing is posted.", "post --intent <file.json|-> --draft <name>   (plan §15.2: rehearses the intent under every posting law and journals it into the open draft; nothing reaches trunk until a principal holding approve who is not the draft's owner runs fa draft promote <name>)"]
 example = "fa post --intent entry.json --book ./books/myco --json"
+
+[[verb]]
+name = "invoice"
+summary = "Post a customer invoice (plan §15.3, Appendix B): typed sugar over fa post that builds the Original entry from its lines, debiting the receivable for the party and crediting each line's revenue account. No posting rule or tax is inferred."
+writes = true
+subcommands = []
+flags = ["--party", "--number", "--date", "--receivable", "--revenue", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan", "draft_planned"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["invoice --party <code> --number <invoice number> --date YYYY-MM-DD --receivable <code> [--revenue <code>] --line 'qty=10 unit_price=\"125.00 USD\" item=SKU-9 product=Widgets' [--line ...] [--evidence <oid>]... [--entity <code>] [--dry-run [--plan-out <new-file>] | --draft <name>]", "A line is qty with unit_price (multiplied exactly in the price's decimal places) or amount, with an optional account (default --revenue) and item, product or description words for its memo. Lines share one unit. The receivable leg names the party; the key is invoice:<number> unless --key is given, so a retry returns the recorded entry. There is no implicit tax: a line with tax is refused until the tax law exists (fa-c34). --dry-run, --plan-out and --draft behave as for fa post."]
+example = "fa invoice --party ACME-CUST-17 --number 10442 --date 2026-03-14 --receivable 1200 --revenue 4000 --line 'qty=10 unit_price=\"125.00 USD\" item=SKU-9' --evidence <oid> --dry-run --book ./books/myco --json"
+
+
+[[verb]]
+name = "bill"
+summary = "Post a vendor bill (plan §15.3, Appendix B): typed sugar over fa post that builds the Original entry from its lines, crediting the payable for the party and debiting each line's expense account. No posting rule or tax is inferred."
+writes = true
+subcommands = []
+flags = ["--party", "--number", "--date", "--payable", "--expense", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan", "draft_planned"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["bill --party <code> --number <bill number> --date YYYY-MM-DD --payable <code> [--expense <code>] --line 'amount=\"300.00 USD\" account=6000 item=hosting' [--line ...] [--evidence <oid>]... [--entity <code>] [--dry-run [--plan-out <new-file>] | --draft <name>]", "Lines as for fa invoice; the payable leg names the party; the key is bill:<number> unless --key is given. No implicit tax."]
+example = "fa bill --party V-17 --number B-77 --date 2026-03-20 --payable 2000 --expense 6000 --line 'amount=\"300.00 USD\" item=hosting' --evidence <oid> --book ./books/myco --json"
+
+
+[[verb]]
+name = "receipt"
+summary = "Post a customer receipt (plan §15.3, Appendix B): cash debited, the receivable credited for the party, the credit applied to the open invoices --applies names. Typed sugar over fa post."
+writes = true
+subcommands = []
+flags = ["--party", "--number", "--date", "--cash", "--receivable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan", "draft_planned"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["receipt --party <code> --number <reference> --date YYYY-MM-DD --cash <code> --receivable <code> --amount \"1290.00 USD\" [--applies <invoice vid>[:<leg>][=<amount>]]... [--evidence <oid>]... [--entity <code>] [--dry-run [--plan-out <new-file>] | --draft <name>]", "--applies names an open item (an invoice's receivable leg is leg 0); with one --applies the whole amount applies, with several each names its amount; the kernel refuses more than is open (FA-REF-072). Without --applies the receipt is on account. The key is receipt:<number> unless --key is given; fa bank match reads <number> as the bank reference."]
+example = "fa receipt --party ACME-CUST-17 --number WIRE-IN-1 --date 2026-03-20 --cash 1000 --receivable 1200 --amount \"1250.00 USD\" --applies <invoice vid> --evidence <oid> --book ./books/myco --json"
+
+
+[[verb]]
+name = "payment"
+summary = "Post a vendor payment (plan §15.3, Appendix B): the payable debited for the party, cash credited, the debit applied to the open bills --applies names. Typed sugar over fa post."
+writes = true
+subcommands = []
+flags = ["--party", "--number", "--date", "--cash", "--payable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan", "draft_planned"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["payment --party <code> --number <reference> --date YYYY-MM-DD --cash <code> --payable <code> --amount \"300.00 USD\" [--applies <bill vid>[:<leg>][=<amount>]]... [--evidence <oid>]... [--entity <code>] [--dry-run [--plan-out <new-file>] | --draft <name>]", "As fa receipt, mirrored: a bill's payable leg is leg 0; the key is payment:<number> unless --key is given."]
+example = "fa payment --party V-17 --number ACH-OUT-1 --date 2026-03-25 --cash 1000 --payable 2000 --amount \"300.00 USD\" --applies <bill vid> --evidence <oid> --book ./books/myco --json"
+
 
 [[verb]]
 name = "commit"
@@ -232,14 +284,14 @@ example = "fa settle --intent settle.json --book ./books/myco --json"
 
 [[verb]]
 name = "document"
-summary = "Record a source document, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, or record legal holds and attestations."
+summary = "Record a source document, list the documents the book holds, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, or record legal holds and attestations."
 writes = true
-subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "import"]
+subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "import", "list"]
 flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant"]
 switches = ["--dry-run"]
-events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "attestation_recorded", "import_recorded", "import_receipt"]
+events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "attestation_recorded", "import_recorded", "import_receipt", "documents"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> --subject <vid|oid>... [--effective YYYY-MM-DD] [--description <text>] [--key K]", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]..."]
+usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> --subject <vid|oid>... [--effective YYYY-MM-DD] [--description <text>] [--key K]", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)"]
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
 
 [[verb]]
@@ -400,14 +452,14 @@ example = "fa bundle produce --account 1000 --from 2026-03-01 --to 2026-03-31 --
 
 [[verb]]
 name = "party"
-summary = "REA parties (plan §4.1, §4.5): record a party (customer, vendor, employee, bank, related entity, beneficial owner, regulator, counterparty), relate two parties by a registered basis over a valid-time interval, or list them."
+summary = "REA parties (plan §4.1, §4.5): record a party (customer, vendor, employee, bank, related entity, beneficial owner, regulator, counterparty), relate two parties by a registered basis over a valid-time interval, bind another system's identifier to a party, legal entity or instrument, or list them."
 writes = true
-subcommands = ["add", "relate", "list"]
-flags = ["--key", "--date", "--kind", "--basis", "--valid-from", "--valid-to", "--pct"]
+subcommands = ["add", "relate", "bind", "list"]
+flags = ["--key", "--date", "--kind", "--basis", "--valid-from", "--valid-to", "--pct", "--external-id"]
 switches = []
 events = ["rea_recorded", "parties"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["party add <party.json|->   ({\"code\": \"V-17\", \"kind\": \"Vendor\", \"name\": \"Acme Supplies\", \"identifiers\": {\"ein\": \"12-3456789\"}, \"external_ids\": [{\"system\": \"qbo\", \"id\": \"55\"}]}; name, identifiers and external ids are sealed with the book's key)", "party relate <from> <to> --kind owns|controls|related --basis <code> --valid-from YYYY-MM-DD [--valid-to YYYY-MM-DD] [--pct <num>/<den>]   (an OWNS, CONTROLS or RELATED_TO edge under a basis in relationship_bases.toml; owns needs an exact --pct; from and to are party or legal-entity codes or vids)", "party list", "add and relate are journaled SchemaChange controls under schema_change authority. The default key is party:<code>, or relationship:<from>:<to>:<kind>:<basis>:<valid-from>, so an exact retry returns the recorded control. Parties are what fa event record --participant and the related-party procedures name."]
+usage = ["party bind <code> --external-id <system>:<id> [--key K]   (binds another system's identifier to a party, legal entity or instrument; the id is sealed with the book's key; one (system, id) names one vertex; the default key is bind:<code>:<system>)", "party add <party.json|->   ({\"code\": \"V-17\", \"kind\": \"Vendor\", \"name\": \"Acme Supplies\", \"identifiers\": {\"ein\": \"12-3456789\"}, \"external_ids\": [{\"system\": \"qbo\", \"id\": \"55\"}]}; name, identifiers and external ids are sealed with the book's key)", "party relate <from> <to> --kind owns|controls|related --basis <code> --valid-from YYYY-MM-DD [--valid-to YYYY-MM-DD] [--pct <num>/<den>]   (an OWNS, CONTROLS or RELATED_TO edge under a basis in relationship_bases.toml; owns needs an exact --pct; from and to are party or legal-entity codes or vids)", "party list", "add and relate are journaled SchemaChange controls under schema_change authority. The default key is party:<code>, or relationship:<from>:<to>:<kind>:<basis>:<valid-from>, so an exact retry returns the recorded control. Parties are what fa event record --participant and the related-party procedures name."]
 example = "fa party add vendor.json --book ./books/myco --json"
 
 [[verb]]
@@ -421,6 +473,19 @@ events = ["rea_recorded", "instruments"]
 exits = [0, 2, 3, 4, 5, 6, 7]
 usage = ["instrument add <instrument.json|->   ({\"code\": \"BA-1\", \"name\": \"Operating account\", \"kind\": \"BankAccount\", \"unit\": \"USD\", \"held_at\": \"BANK-1\", \"mirrors\": \"1000\"}; held_at is a party code, mirrors a GL leaf account code)", "instrument list", "add is a journaled SchemaChange control under schema_change authority; the default key is instrument:<code>. Instruments are what fa event record --resource <label>:<amount>:<instrument> names."]
 example = "fa instrument add operating.json --book ./books/myco --json"
+
+
+[[verb]]
+name = "entity"
+summary = "REA legal entities (plan §4.1, §4.5): record a reporting entity with its jurisdiction, functional unit and life span (lifting a code declared at book creation to its full specification), or list them."
+writes = true
+subcommands = ["add", "list"]
+flags = ["--key", "--date"]
+switches = []
+events = ["rea_recorded", "legal_entities"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["entity add <entity.json|->   ({\"code\": \"ACME-DE\", \"name\": \"Acme GmbH\", \"jurisdiction\": \"DE\", \"functional_unit\": \"EUR\", \"formed\": \"2019-04-01\", \"dissolved\": null, \"external_ids\": [{\"system\": \"lei\", \"id\": \"5299001ABCDEF\"}]}; a code declared with fa book create --entity keeps its declared name)", "entity list", "add is a journaled SchemaChange control under schema_change authority; the default key is entity:<code>. Parties and legal entities are what fa party relate names."]
+example = "fa entity add acme-de.json --book ./books/myco --json"
 
 [[verb]]
 name = "finding"
@@ -450,12 +515,12 @@ example = "fa bank import statement.xml --bank-format camt053 --account 1000 --b
 name = "export"
 summary = "Export the committed journal at one coordinate in an interop format (plan §8.6, §15.9): the AICPA ADS GL package, OECD SAF-T, a CSV GL extract, Beancount or hledger, each with its export coordinate certificate."
 writes = false
-subcommands = ["ads", "saft", "csv-gl", "beancount", "hledger"]
+subcommands = ["ads", "saft", "csv-gl", "beancount", "hledger", "ndjson"]
 flags = ["--period", "--as-of", "--as-known-at", "--out", "--grant"]
 switches = []
 events = ["journal_exported"]
 exits = [0, 2, 3, 4, 5, 7]
-usage = ["export ads|saft|csv-gl|beancount|hledger (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>]", "The export selects what the trial balance folds: every entry visible at the known-at prefix whose effective date is on or before --as-of (or the period's last day), with legs and not a pending hold. Refolding the exported legs gives the stock trial balance at that coordinate. Every format writes the same selection.", "ads writes four tables (Chart_of_Accounts, GL_Detail, Trial_Balance, ADS_Coordinate_Certificate.toml); its --out names a new directory. The other formats write one file. Without --out the content is returned inline; an export too large for the inline transport is refused, never truncated.", "Descriptions, leg memos and migration source ids are opened with the book's key; an erased field exports empty. Requires read and produce: an export discloses the journal."]
+usage = ["export ads|saft|csv-gl|beancount|hledger|ndjson (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>]", "The export selects what the trial balance folds: every entry visible at the known-at prefix whose effective date is on or before --as-of (or the period's last day), with legs and not a pending hold. Refolding the exported legs gives the stock trial balance at that coordinate. Every format writes the same selection. ndjson is the streaming GL detail: a gl_stream_header coordinate row, one gl_detail_row per leg, and a gl_stream_footer with the row count and refold digest.", "ads writes four tables (Chart_of_Accounts, GL_Detail, Trial_Balance, ADS_Coordinate_Certificate.toml); its --out names a new directory. The other formats write one file. Without --out the content is returned inline; an export too large for the inline transport is refused, never truncated.", "Descriptions, leg memos and migration source ids are opened with the book's key; an erased field exports empty. Requires read and produce: an export discloses the journal."]
 example = "fa export ads --period FY2026-P03 --out ./ads-2026-03 --book ./books/myco --json"
 
 [[verb]]
@@ -1165,8 +1230,15 @@ fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:s
 [[event]]
 name = "rea_recorded"
 book = true
-doc = "One REA control journaled (plan §4.1, §4.5): object is party, instrument or relationship; target is the recorded vertex (or edge) id; already_recorded is true when an exact retry found the recorded control and wrote nothing."
+doc = "One REA control journaled (plan §4.1, §4.5): object is party, instrument, relationship, legal_entity or external_id (for an external id, code names the target it is bound to); target is the recorded vertex (or edge) id; already_recorded is true when an exact retry found the recorded control and wrote nothing."
 fields = ["object:string", "code:string", "target:hex", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "legal_entities"
+book = true
+doc = "The book's legal entities at known_at, in code order: each with its jurisdiction, functional unit, life span and the number of external ids it was created with."
+fields = ["known_at:seq", "entities:[legal_entity_summary]"]
+
 
 [[event]]
 name = "parties"
@@ -1323,6 +1395,13 @@ name = "lineage_explained"
 book = true
 doc = "The complete `SUPERSEDES` lineage component containing `query_entry` (`fa explain lineage <entry-vid>`): topological steps with their registered `netting_law` (`supersession_kinds.toml`, plan §8.1), root entry, reversal/replacement status, and the net economic effect per `(account, unit)`."
 fields = ["query_entry:hex", "root_entry:hex", "known_at:seq", "fully_reversed:bool", "replaced_by:hex?", "steps:[lineage_step]", "net_effect:[lineage_net_cell]"]
+
+[[event]]
+name = "documents"
+book = true
+doc = "The documents the book holds at known_at, in recorded order, as public metadata (plan §9.6): kind, media type, provenance grade, size and commitment; never their bytes (fa document read gates those). kind echoes --kind when one was given."
+fields = ["kind:string?", "count:int", "documents:[document_summary]"]
+
 
 [[event]]
 name = "document_read"
@@ -1633,9 +1712,21 @@ doc = "One period with its current state."
 fields = ["code:string", "state:string", "kind:string", "start:date", "end:date", "fiscal_year:int"]
 
 [[shape]]
+name = "document_summary"
+doc = "One held document's public metadata: its oid, registered kind, media type, provenance grade, byte size, commitment and recorded sequence."
+fields = ["oid:hex", "kind:string", "mime:string", "grade:string", "size:int", "doc_commit:hex", "recorded_at:seq"]
+
+
+[[shape]]
 name = "party_summary"
 doc = "One party: its code, kind, vertex id, opened name (untrusted text, null when erased) and recorded sequence."
 fields = ["code:string", "kind:string", "vid:hex", "name:untrusted_text?", "created_at:seq"]
+
+[[shape]]
+name = "legal_entity_summary"
+doc = "One legal entity: its code, name, jurisdiction, functional unit, formed and dissolved dates, the count of external ids it was created with, its vertex id and recorded sequence."
+fields = ["code:string", "name:string", "jurisdiction:string", "functional_unit:string?", "formed:date?", "dissolved:date?", "external_ids:int", "vid:hex", "created_at:seq"]
+
 
 [[shape]]
 name = "instrument_summary"
@@ -2111,7 +2202,11 @@ doc = "REA parties and instruments (plan §4.1, §4.5): record them, relate part
 [[mcp.cluster]]
 name = "fa.io"
 on_demand = true
-doc = "Interop exports (plan §8.6, §15.9): the committed journal at one coordinate as the AICPA ADS GL package, OECD SAF-T, a CSV GL extract, Beancount or hledger, returned inline with its export coordinate certificate."
+doc = "Interop exports (plan §8.6, §15.9): the committed journal at one coordinate as the AICPA ADS GL package, OECD SAF-T, a CSV GL extract, Beancount, hledger or an NDJSON GL stream, returned inline with its export coordinate certificate."
+[[mcp.cluster]]
+name = "fa.billing"
+on_demand = true
+doc = "Customer invoices, vendor bills, receipts and payments (plan §15.3, Appendix B): typed sugar over fa.post's entry intent. The caller names every account; no posting rule or tax is inferred; dry_run returns the plan."
 [[mcp.cluster]]
 name = "fa.proof"
 doc = "General-ledger views at one coordinate (detail, roll-forward, aging, cash flow, lots) that reconcile to the journal fold."
@@ -2689,10 +2784,90 @@ dont = ["Don't infer balances from this list: an instrument's balance is its mir
 mistakes = ["Expecting held_at and mirrors as codes: they are vertex ids."]
 
 [[mcp.tool]]
+cluster = "fa.billing"
+name = "invoice"
+verb = "invoice"
+subcommands = []
+positionals = []
+flags = ["--party", "--number", "--date", "--receivable", "--revenue", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--draft"]
+switches = ["--dry-run"]
+required = ["--party", "--date", "--receivable", "--line"]
+dont = ["Don't add a tax line here: there is no tax law yet; post tax explicitly with fa_post_post.", "Don't invent an invoice number: use the document's own number (or a key), so a retry returns the recorded entry."]
+mistakes = ["A JSON number or float in a line's unit_price or amount: write \"125.00 USD\".", "Omitting revenue when a line names no account.", "Naming the customer by name instead of its party code."]
+
+
+[[mcp.tool]]
+cluster = "fa.billing"
+name = "bill"
+verb = "bill"
+subcommands = []
+positionals = []
+flags = ["--party", "--number", "--date", "--payable", "--expense", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--draft"]
+switches = ["--dry-run"]
+required = ["--party", "--date", "--payable", "--line"]
+dont = ["Don't add a tax line here: there is no tax law yet.", "Don't post a bill without its evidence: cite the vendor's document."]
+mistakes = ["Omitting expense when a line names no account.", "Naming the vendor by name instead of its party code."]
+
+
+[[mcp.tool]]
+cluster = "fa.billing"
+name = "receipt"
+verb = "receipt"
+subcommands = []
+positionals = []
+flags = ["--party", "--number", "--date", "--cash", "--receivable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--draft"]
+switches = ["--dry-run"]
+required = ["--party", "--date", "--cash", "--receivable", "--amount"]
+dont = ["Don't apply more than an invoice's open amount: list open items first (fa_read_open_items).", "Don't invent a reference: use the bank's (or the remittance's) own, so the receipt matches its bank line."]
+mistakes = ["Applying to the invoice's revenue leg instead of its receivable leg (leg 0).", "A JSON number in amount: write \"1250.00 USD\"."]
+
+
+[[mcp.tool]]
+cluster = "fa.billing"
+name = "payment"
+verb = "payment"
+subcommands = []
+positionals = []
+flags = ["--party", "--number", "--date", "--cash", "--payable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--draft"]
+switches = ["--dry-run"]
+required = ["--party", "--date", "--cash", "--payable", "--amount"]
+dont = ["Don't apply more than a bill's open amount: list open items first."]
+mistakes = ["Applying to the bill's expense leg instead of its payable leg (leg 0)."]
+
+
+[[mcp.tool]]
+cluster = "fa.rea"
+name = "entity"
+verb = "entity"
+subcommands = ["add", "list"]
+selector = "action"
+positionals = ["file?"]
+flags = ["--key"]
+stdin_property = "entity"
+stdin_kind = "object"
+stdin_via = "file"
+required = []
+dont = ["Don't rename a legal entity declared at book creation: lifting it keeps its declared name.", "Don't state a dissolution on or before formation: dissolved is strictly after formed."]
+mistakes = ["Passing a host path as file: supply the entity object inline as entity.", "Using a jurisdiction name instead of a code such as US-DE or GB."]
+
+
+[[mcp.tool]]
+cluster = "fa.rea"
+name = "bind_external_id"
+verb = "party"
+subcommands = ["bind"]
+positionals = ["target"]
+flags = ["--external-id", "--key"]
+required = ["target", "--external-id"]
+dont = ["Don't bind one system's id to two vertices: one (system, id) names one party, legal entity or instrument.", "Don't put the id in a key or description: it is sealed with the book's key here."]
+mistakes = ["Passing the external id without its system prefix: it is <system>:<id>, such as qbo:55.", "Naming the target by name instead of its code."]
+
+
+[[mcp.tool]]
 cluster = "fa.io"
 name = "export"
 verb = "export"
-subcommands = ["ads", "saft", "csv-gl", "beancount", "hledger"]
+subcommands = ["ads", "saft", "csv-gl", "beancount", "hledger", "ndjson"]
 selector = "kind"
 positionals = []
 flags = ["--period", "--as-of", "--as-known-at"]
@@ -2881,10 +3056,10 @@ mistakes = ["Passing a host path as `file`: supply the document inline as `text`
 cluster = "fa.evidence"
 name = "steward"
 verb = "document"
-subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest", "import"]
+subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest", "import", "list"]
 selector = "action"
 positionals = ["target?", "arg?"]
-flags = ["--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--run"]
+flags = ["--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--run", "--kind"]
 switches = ["--dry-run"]
 stdin_property = "plan"
 stdin_kind = "string"

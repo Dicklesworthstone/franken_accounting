@@ -399,6 +399,90 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Journal and materialize a `LegalEntity` vertex (plan §4.1, §4.5):
+    /// a reporting entity with its jurisdiction and functional unit.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_legal_entity(
+        &mut self,
+        cx: &PurposeContexts,
+        spec: &fa_model::LegalEntityFullSpec,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let description = self.seal_text(cx, &format!("create legal entity `{}`", spec.code))?;
+        Ok(fa_journal::create_legal_entity(
+            &mut self.db,
+            cx,
+            &self.context,
+            spec,
+            principal,
+            effective_date,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
+    /// Journal an `ExternalId` bound to an existing party, legal entity or
+    /// instrument (plan §4.5): the identity another system knows it by.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn bind_external_id(
+        &mut self,
+        cx: &PurposeContexts,
+        binding: &fa_model::ExternalIdBinding,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let description = self.seal_text(
+            cx,
+            &format!("bind {} external id", binding.external_id.system),
+        )?;
+        Ok(fa_journal::bind_external_id(
+            &mut self.db,
+            cx,
+            &self.context,
+            binding,
+            principal,
+            effective_date,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
+    /// Journal a party's replacement identifier set (plan §4.5); the
+    /// identifiers are sealed with the book's key.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_party_identifiers(
+        &mut self,
+        cx: &PurposeContexts,
+        update: &fa_model::PartyIdentifierUpdate,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let description = self.seal_text(cx, "update party identifiers")?;
+        Ok(fa_journal::update_party_identifiers(
+            &mut self.db,
+            cx,
+            &self.context,
+            update,
+            principal,
+            effective_date,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
     /// Journal a valid-time relationship edge (`OWNS`, `CONTROLS` or
     /// `RELATED_TO`) between two parties or legal entities under a basis
     /// registered in `relationship_bases.toml` (plan §4.5).
@@ -1373,6 +1457,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// ```compile_fail,E0599
     /// let _ = fa::AsyncBook::<fgdb::MemVfs>::document_record;
     /// ```
+    /// Every document the book holds at `known_at`, as public metadata
+    /// (plan §9.6: kind, media type, grade, size and commitment); never the
+    /// bytes, which only a gated read returns.
+    pub fn documents(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Vec<fa_journal::evidence::DocumentSummary>, BookError> {
+        self.query(cx, |db, _| {
+            let seq = fa_registers::resolve_known_at(db, known_at)?;
+            Ok(fa_journal::evidence::list_documents(db, seq)?)
+        })
+    }
+
     pub fn document_commitment(
         &mut self,
         cx: &PurposeContexts,

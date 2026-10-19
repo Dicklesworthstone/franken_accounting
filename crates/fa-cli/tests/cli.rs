@@ -2512,6 +2512,31 @@ fn export_writes_the_trial_balance_selection_in_every_interop_format() -> std::i
         }
         assert_eq!((debits, credits), (1250, 1250), "{format}");
     }
+    // The NDJSON GL stream has no reader: its own verifier checks the
+    // header, one row per exported leg, and the footer's count; a
+    // truncated stream (no footer) is refused.
+    let (code, out, err) = fa(
+        Some(&book),
+        &["export", "ndjson", "--period", "FY2026-P03", "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let exported = doc(&out);
+    digests.insert(text(&exported, "content_digest").to_string());
+    let stream = arr(&exported, "files")
+        .iter()
+        .find(|f| text(f, "name") == "gl.ndjson")
+        .map(|f| text(f, "content").to_string())
+        .unwrap_or_else(|| panic!("no gl.ndjson in {out}"));
+    assert_eq!(
+        fa_formats::csv_gl::verify_ndjson_gl_stream(&stream).ok(),
+        Some(4)
+    );
+    let truncated: String = stream
+        .lines()
+        .filter(|l| !l.contains("gl_stream_footer"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert!(fa_formats::csv_gl::verify_ndjson_gl_stream(&truncated).is_err());
     assert_eq!(digests.len(), 1, "every format exports one selection");
     let tb = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
     let rent = tb
@@ -4830,6 +4855,59 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(run(true, &["procedure", "list"]).0, 0);
     assert_eq!(run(true, &["procedure", "run", "jet.round_amounts"]).0, 0);
+    // Recorded findings: the Sunday rent is a jet.weekend observation; a
+    // second principal reviews it; the canonical workpaper replays.
+    let (code, out) = run(true, &["finding", "record", "jet.weekend"]);
+    assert_eq!(code, 0, "{out}");
+    let recorded = doc(&out);
+    let certificate = text(&recorded, "certificate").to_string();
+    let selected = format!(
+        "F:{}",
+        arr(&recorded, "finding_ids")
+            .first()
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+    );
+    assert_eq!(run(true, &["finding", "runs"]).0, 0);
+    assert_eq!(
+        run(true, &["finding", "list", "--certificate", &certificate]).0,
+        0
+    );
+    assert_eq!(run(true, &["finding", "show", &selected]).0, 0);
+    let (code, out) = run(
+        true,
+        &[
+            "finding",
+            "review",
+            &selected,
+            "--action",
+            "acknowledge",
+            "--note",
+            "Weekend rent confirmed with the landlord",
+            "--as",
+            "reviewer",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let workpaper = dir.join("findings.fawp").display().to_string();
+    assert_eq!(
+        run(
+            true,
+            &[
+                "finding",
+                "export",
+                "--certificate",
+                &certificate,
+                "--export-format",
+                "canonical",
+                "--out",
+                &workpaper,
+            ],
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["finding", "replay", &workpaper]).0, 0);
     assert_eq!(run(true, &["entry", "show", &vid]).0, 0);
     assert_eq!(run(true, &["entry", "show", "00"]).0, 0);
     assert_eq!(
@@ -4972,6 +5050,46 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["instrument", "add", &account]).0, 0);
     assert_eq!(run(true, &["instrument", "list"]).0, 0);
+    // Legal entities (legal_entities), the document inventory (documents),
+    // and a bank statement imported and matched (bank_imported,
+    // bank_matches_proposed).
+    assert_eq!(run(true, &["entity", "list"]).0, 0);
+    assert_eq!(run(true, &["document", "list"]).0, 0);
+    let statement = write(
+        &dir,
+        "events-statement.csv",
+        "sequence_number,instrument_id,currency,statement_date,opening_balance,closing_balance,booking_date,value_date,side,amount,counterparty,reference\n\
+1,BANK-1,USD,2026-03-31,0.00,10.00,2026-03-05,2026-03-05,CRDT,10.00,Payer,R-1\n",
+    );
+    let (code, out) = run(
+        true,
+        &[
+            "bank",
+            "import",
+            &statement,
+            "--bank-format",
+            "csv",
+            "--account",
+            "1000",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let manifest = field(&out, "manifest_oid").unwrap_or_default().to_string();
+    assert_eq!(
+        run(
+            true,
+            &[
+                "bank",
+                "match",
+                "--import",
+                &manifest,
+                "--grant",
+                "privileged"
+            ]
+        )
+        .0,
+        0
+    );
     let certificate = dir.join("events.cert").display().to_string();
     assert_eq!(
         run(
@@ -11112,6 +11230,648 @@ fn parties_instruments_and_relationships_are_recorded_from_the_cli() -> std::io:
     ]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(field(&out, "event"), Some("event_recorded"), "{out}");
+    Ok(())
+}
+
+/// Plan §4.1, §4.5: a legal entity declared at book creation is lifted to
+/// its full specification (jurisdiction, functional unit, life span) and new
+/// ones are recorded; another system's identifier binds to exactly one
+/// party, legal entity or instrument. Each is a journaled control; an exact
+/// retry records nothing new.
+#[test]
+fn legal_entities_and_external_id_bindings_are_recorded_from_the_cli() -> std::io::Result<()> {
+    let dir = tmp("entity")?;
+    let book = dir.join("book");
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "book",
+            "create",
+            "--name",
+            "Group Co",
+            "--entity",
+            "ACME:Acme Holdings",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let run = |args: &[&str]| {
+        let mut full: Vec<&str> = args.to_vec();
+        full.push("--json");
+        fa(Some(&book), &full)
+    };
+    let lifted = write(
+        &dir,
+        "acme.json",
+        r#"{"code":"ACME","name":"Acme Holdings","jurisdiction":"US-DE","functional_unit":"USD","formed":"2015-06-01"}"#,
+    );
+    let (code, out, err) = run(&["entity", "add", &lifted]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("rea_recorded"), "{out}");
+    assert_eq!(field(&out, "object"), Some("legal_entity"));
+    assert_eq!(field(&out, "already_recorded"), Some("false"));
+    let acme = field(&out, "target").unwrap_or_default().to_string();
+    let (code, again, _) = run(&["entity", "add", &lifted]);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(field(&again, "already_recorded"), Some("true"), "{again}");
+    assert_eq!(field(&again, "target"), Some(acme.as_str()));
+
+    // Planted negatives: a genesis entity keeps its declared name, and a
+    // dissolution is strictly after formation.
+    let renamed = write(
+        &dir,
+        "renamed.json",
+        r#"{"code":"ACME","name":"Acme Renamed","jurisdiction":"US-DE","functional_unit":"USD"}"#,
+    );
+    let (code, out, _) = run(&["entity", "add", &renamed, "--key", "entity:ACME:2"]);
+    assert_eq!(code, 2, "{out}");
+    let backwards = write(
+        &dir,
+        "backwards.json",
+        r#"{"code":"ACME-DE","name":"Acme GmbH","jurisdiction":"DE","functional_unit":"EUR","formed":"2019-04-01","dissolved":"2018-01-01"}"#,
+    );
+    let (code, out, _) = run(&["entity", "add", &backwards]);
+    assert_eq!(code, 2, "{out}");
+    // One functional currency per book (plan §0.4): a EUR subsidiary is
+    // its own book, consolidated.
+    let euro = write(
+        &dir,
+        "euro.json",
+        r#"{"code":"ACME-DE","name":"Acme GmbH","jurisdiction":"DE","functional_unit":"EUR","formed":"2019-04-01"}"#,
+    );
+    let (code, out, _) = run(&["entity", "add", &euro]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-003"), "{out}");
+    let gmbh = write(
+        &dir,
+        "gmbh.json",
+        r#"{"code":"ACME-DE","name":"Acme GmbH","jurisdiction":"DE","functional_unit":"USD","formed":"2019-04-01"}"#,
+    );
+    let (code, out, err) = run(&["entity", "add", &gmbh]);
+    assert_eq!(code, 0, "{out}\n{err}");
+
+    let (code, out, _) = run(&["entity", "list"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("legal_entities"));
+    let listed = doc(&out);
+    let entities = arr(&listed, "entities");
+    assert_eq!(entities.len(), 2, "{out}");
+    assert_eq!(text(&entities[0], "code"), "ACME");
+    assert_eq!(text(&entities[0], "jurisdiction"), "US-DE");
+    assert_eq!(text(&entities[0], "formed"), "2015-06-01");
+    assert_eq!(text(&entities[1], "code"), "ACME-DE");
+    assert_eq!(text(&entities[1], "jurisdiction"), "DE");
+    assert_eq!(text(&entities[1], "functional_unit"), "USD");
+
+    // The holding owns the subsidiary: legal entities are relationship ends.
+    let (code, out, err) = run(&[
+        "party",
+        "relate",
+        "ACME",
+        "ACME-DE",
+        "--kind",
+        "owns",
+        "--basis",
+        "equity_voting",
+        "--valid-from",
+        "2019-04-01",
+        "--pct",
+        "100/100",
+    ]);
+    assert_eq!(code, 0, "{out}\n{err}");
+
+    // A vendor's QuickBooks id binds once; the same id cannot name another vertex.
+    let vendor = write(
+        &dir,
+        "vendor.json",
+        r#"{"code":"V-17","kind":"Vendor","name":"Acme Supplies"}"#,
+    );
+    assert_eq!(run(&["party", "add", &vendor]).0, 0);
+    let (code, out, err) = run(&["party", "bind", "V-17", "--external-id", "qbo:55"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "object"), Some("external_id"));
+    assert_eq!(field(&out, "code"), Some("V-17"));
+    assert!(
+        !out.contains("qbo:55"),
+        "the id is sealed, never echoed: {out}"
+    );
+    let (code, again, _) = run(&["party", "bind", "V-17", "--external-id", "qbo:55"]);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(field(&again, "already_recorded"), Some("true"), "{again}");
+    let (code, out, _) = run(&["party", "bind", "ACME-DE", "--external-id", "qbo:55"]);
+    assert_eq!(code, 6, "one (system, id) names one vertex: {out}");
+    let (code, out, _) = run(&["party", "bind", "V-17", "--external-id", "qbo"]);
+    assert_eq!(code, 2, "{out}");
+    let (code, out, _) = run(&["party", "bind", "NOBODY", "--external-id", "qbo:56"]);
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
+/// Plan §15.3, Appendix B (bead fa-i7e, scoreboard WF-RQ-02): `fa invoice`
+/// and `fa bill` build the Original entry from their lines (quantity times
+/// unit price, exactly) and post it through `fa post`'s path: a dry run
+/// returns the plan and writes nothing, the post lands, a retry is the
+/// recorded entry, and the control leg names the party. Nothing is
+/// inferred: no tax, no default account, no float.
+#[test]
+fn invoice_and_bill_post_typed_documents_through_the_post_path() -> std::io::Result<()> {
+    let dir = tmp("typed")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Typed Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Hosting","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    // The evidence is listed as metadata (kind, grade, size), never bytes.
+    let (code, out, _) = fa(
+        Some(&book),
+        &["document", "list", "--kind", "Invoice", "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let listed = doc(&out);
+    assert_eq!(int(&listed, "count"), Some(1), "{out}");
+    let held = &arr(&listed, "documents")[0];
+    assert_eq!(text(held, "oid"), ev);
+    assert_eq!(text(held, "grade"), "HumanUpload");
+    assert!(
+        !out.contains("cli fixture source document"),
+        "metadata only: {out}"
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["document", "list", "--kind", "Bill", "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(int(&doc(&out), "count"), Some(0), "{out}");
+    let (code, out, _) = fa(
+        Some(&book),
+        &["document", "list", "--kind", "Nope", "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    for (code, kind) in [("C-17", "Customer"), ("V-17", "Vendor")] {
+        let party = write(
+            &dir,
+            &format!("{code}.json"),
+            &format!(r#"{{"code":"{code}","kind":"{kind}","name":"{code} Ltd"}}"#),
+        );
+        assert_eq!(fa(Some(&book), &["party", "add", &party, "--json"]).0, 0);
+    }
+    let invoice = |party: &str, extra: &[&str]| {
+        let mut args = vec![
+            "invoice",
+            "--party",
+            party,
+            "--number",
+            "10442",
+            "--date",
+            "2026-03-14",
+            "--receivable",
+            "1200",
+            "--revenue",
+            "4000",
+            "--line",
+            r#"qty=10 unit_price="125.00 USD" item=SKU-9 product=Widgets"#,
+            "--line",
+            r#"amount="40.00 USD" description=Delivery"#,
+            "--evidence",
+            ev.as_str(),
+        ];
+        args.extend_from_slice(extra);
+        args.push("--json");
+        fa(Some(&book), &args)
+    };
+    let tb = || report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    let before = tb();
+
+    // The dry run is the plan: legs derived from the lines, nothing written.
+    let (code, out, err) = invoice("C-17", &["--dry-run"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("plan"), "{out}");
+    let planned = doc(&out);
+    let legs: Vec<(String, String, String)> = arr(&planned, "legs")
+        .iter()
+        .map(|l| {
+            (
+                text(l, "account").to_string(),
+                text(l, "side").to_string(),
+                text(l, "amount").to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        legs,
+        vec![
+            ("1200".into(), "debit".into(), "1290.00 USD".into()),
+            ("4000".into(), "credit".into(), "1250.00 USD".into()),
+            ("4000".into(), "credit".into(), "40.00 USD".into()),
+        ],
+        "{out}"
+    );
+    assert_eq!(tb(), before, "a dry run writes nothing");
+
+    let (code, out, err) = invoice("C-17", &[]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("posted"), "{out}");
+    let vid = field(&out, "vid").unwrap_or_default().to_string();
+    let (code, again, _) = invoice("C-17", &[]);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(field(&again, "event"), Some("recorded"), "{again}");
+    let after = tb();
+    let row = |code: &str| {
+        after
+            .split('{')
+            .find(|row| field(row, "code") == Some(code))
+            .map(str::to_string)
+            .unwrap_or_default()
+    };
+    assert_eq!(field(&row("1200"), "net"), Some("1290.00 USD"), "{after}");
+    assert_eq!(field(&row("4000"), "net"), Some("-1290.00 USD"), "{after}");
+    let (code, shown, _) = fa(Some(&book), &["entry", "show", &vid, "--json"]);
+    assert_eq!(code, 0, "{shown}");
+    assert!(shown.contains("Invoice 10442, C-17"), "{shown}");
+
+    // The control leg names the party, so an unknown party is refused by
+    // the kernel before anything is written.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "invoice",
+            "--party",
+            "NOBODY",
+            "--number",
+            "1",
+            "--date",
+            "2026-03-14",
+            "--receivable",
+            "1200",
+            "--revenue",
+            "4000",
+            "--line",
+            r#"amount="1.00 USD""#,
+            "--evidence",
+            ev.as_str(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "bill",
+            "--party",
+            "V-17",
+            "--number",
+            "B-77",
+            "--date",
+            "2026-03-20",
+            "--payable",
+            "2000",
+            "--line",
+            r#"amount="300.00 USD" account=6000 item=hosting"#,
+            "--evidence",
+            ev.as_str(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("posted"), "{out}");
+    let after = tb();
+    let net = |code: &str| {
+        after
+            .split('{')
+            .find(|row| field(row, "code") == Some(code))
+            .and_then(|row| field(row, "net").map(str::to_string))
+    };
+    assert_eq!(net("6000").as_deref(), Some("300.00 USD"), "{after}");
+    assert_eq!(net("2000").as_deref(), Some("-300.00 USD"), "{after}");
+
+    // Planted negatives: nothing is inferred and nothing is written.
+    let before = tb();
+    for (line, extra, why) in [
+        (
+            r#"amount="1.00 USD" tax=VAT20"#,
+            vec![],
+            "tax needs a tax law",
+        ),
+        (r#"qty=2 unit_price="1.5e2 USD""#, vec![], "a float price"),
+        (
+            r#"qty=1.5 unit_price="2.00 USD""#,
+            vec![],
+            "a fractional quantity",
+        ),
+        (
+            r#"amount="1.00 EUR""#,
+            vec!["--line", r#"amount="1.00 USD""#],
+            "two units",
+        ),
+        (
+            r#"amount="1.00 USD" colour=red"#,
+            vec![],
+            "an unknown field",
+        ),
+    ] {
+        let mut args = vec![
+            "invoice",
+            "--party",
+            "C-17",
+            "--number",
+            "neg",
+            "--date",
+            "2026-03-14",
+            "--receivable",
+            "1200",
+            "--revenue",
+            "4000",
+            "--line",
+            line,
+        ];
+        args.extend(extra);
+        args.extend(["--evidence", ev.as_str(), "--json"]);
+        let (code, out, _) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "{why}: {out}");
+    }
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "invoice",
+            "--party",
+            "C-17",
+            "--date",
+            "2026-03-14",
+            "--receivable",
+            "1200",
+            "--revenue",
+            "4000",
+            "--line",
+            r#"amount="1.00 USD""#,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "no number and no key: {out}");
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "bill",
+            "--party",
+            "V-17",
+            "--number",
+            "B-78",
+            "--date",
+            "2026-03-20",
+            "--payable",
+            "2000",
+            "--line",
+            r#"amount="1.00 USD""#,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "a line with no account and no --expense: {out}");
+    assert_eq!(tb(), before, "refused documents write nothing");
+    Ok(())
+}
+
+/// Plan §15.3, §12.5 (beads fa-i7e, fa-zbne): `fa receipt` and `fa payment`
+/// settle an invoice and a bill against cash, each control leg applying
+/// itself to the open item it names, and the bank statement that shows
+/// both movements reconciles with exact matches on their references.
+#[test]
+fn receipt_and_payment_settle_open_items_and_match_the_bank() -> std::io::Result<()> {
+    let dir = tmp("settle")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Settle Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Hosting","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    for (code, kind) in [("C-17", "Customer"), ("V-17", "Vendor")] {
+        let party = write(
+            &dir,
+            &format!("{code}.json"),
+            &format!(r#"{{"code":"{code}","kind":"{kind}","name":"{code} Ltd"}}"#),
+        );
+        assert_eq!(fa(Some(&book), &["party", "add", &party, "--json"]).0, 0);
+    }
+    let run = |args: &[&str]| {
+        let mut full = args.to_vec();
+        full.extend(["--evidence", ev.as_str(), "--json"]);
+        let (code, out, err) = fa(Some(&book), &full);
+        (code, out, err)
+    };
+    let (code, out, err) = run(&[
+        "invoice",
+        "--party",
+        "C-17",
+        "--number",
+        "10442",
+        "--date",
+        "2026-03-04",
+        "--receivable",
+        "1200",
+        "--revenue",
+        "4000",
+        "--line",
+        r#"amount="1250.00 USD""#,
+    ]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let invoice = field(&out, "vid").unwrap_or_default().to_string();
+    let (code, out, err) = run(&[
+        "bill",
+        "--party",
+        "V-17",
+        "--number",
+        "B-77",
+        "--date",
+        "2026-03-06",
+        "--payable",
+        "2000",
+        "--expense",
+        "6000",
+        "--line",
+        r#"amount="300.00 USD""#,
+    ]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let bill = field(&out, "vid").unwrap_or_default().to_string();
+
+    let (code, out, err) = run(&[
+        "receipt",
+        "--party",
+        "C-17",
+        "--number",
+        "WIRE-IN-1",
+        "--date",
+        "2026-03-05",
+        "--cash",
+        "1000",
+        "--receivable",
+        "1200",
+        "--amount",
+        "1250.00 USD",
+        "--applies",
+        &invoice,
+    ]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("posted"), "{out}");
+    let receipt = field(&out, "vid").unwrap_or_default().to_string();
+    let (code, out, err) = run(&[
+        "payment",
+        "--party",
+        "V-17",
+        "--number",
+        "ACH-OUT-1",
+        "--date",
+        "2026-03-10",
+        "--cash",
+        "1000",
+        "--payable",
+        "2000",
+        "--amount",
+        "300.00 USD",
+        "--applies",
+        &format!("{bill}:0=300.00 USD"),
+    ]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let payment = field(&out, "vid").unwrap_or_default().to_string();
+
+    // Both open items are settled.
+    for (account, entry) in [("1200", &invoice), ("2000", &bill)] {
+        let (code, out, _) = fa(Some(&book), &["open-items", "--account", account, "--json"]);
+        assert_eq!(code, 0, "{out}");
+        let items = doc(&out);
+        let item = arr(&items, "items")
+            .iter()
+            .find(|i| text(i, "entry") == entry.as_str())
+            .cloned()
+            .unwrap_or(Json::Null);
+        assert_eq!(text(&item, "open"), "0.00 USD", "{account}: {out}");
+    }
+
+    // Planted negatives: more than is open, and an unknown reference form.
+    let (code, out, _) = run(&[
+        "receipt",
+        "--party",
+        "C-17",
+        "--number",
+        "EXTRA-1",
+        "--date",
+        "2026-03-12",
+        "--cash",
+        "1000",
+        "--receivable",
+        "1200",
+        "--amount",
+        "10.00 USD",
+        "--applies",
+        &invoice,
+    ]);
+    assert_eq!(code, 3, "nothing is open on the invoice: {out}");
+    let (code, out, _) = run(&[
+        "receipt",
+        "--party",
+        "C-17",
+        "--number",
+        "EXTRA-2",
+        "--date",
+        "2026-03-12",
+        "--cash",
+        "1000",
+        "--receivable",
+        "1200",
+        "--amount",
+        "10.00 USD",
+        "--applies",
+        &format!("{invoice}:x"),
+    ]);
+    assert_eq!(code, 2, "{out}");
+    let (code, out, _) = run(&[
+        "payment",
+        "--party",
+        "V-17",
+        "--number",
+        "EXTRA-3",
+        "--date",
+        "2026-03-12",
+        "--cash",
+        "1000",
+        "--payable",
+        "2000",
+        "--amount",
+        "10.0e1 USD",
+    ]);
+    assert_eq!(code, 2, "a float amount: {out}");
+
+    // The bank shows both movements under their references. The receipt's
+    // and the payment's numbers are their cash legs' memos, so fa bank
+    // match proposes each line against exactly its entry.
+    let stmt = write(
+        &dir,
+        "march-statement.csv",
+        "sequence_number,instrument_id,currency,statement_date,opening_balance,closing_balance,booking_date,value_date,side,amount,counterparty,reference\n\
+1,OPER,USD,2026-03-31,0.00,950.00,2026-03-06,2026-03-06,CRDT,1250.00,C-17 Ltd,WIRE-IN-1\n\
+1,OPER,USD,2026-03-31,0.00,950.00,2026-03-11,2026-03-11,DBIT,300.00,V-17 Ltd,ACH-OUT-1\n",
+    );
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "bank",
+            "import",
+            &stmt,
+            "--bank-format",
+            "csv",
+            "--account",
+            "1000",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let manifest = text(&doc(&out), "manifest_oid").to_string();
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "bank",
+            "match",
+            "--import",
+            &manifest,
+            "--grant",
+            "privileged",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let matched = doc(&out);
+    assert_eq!(int(&matched, "proposed_count"), Some(2), "{out}");
+    assert_eq!(int(&matched, "ambiguous_count"), Some(0), "{out}");
+    assert_eq!(int(&matched, "unmatched_count"), Some(0), "{out}");
+    let mut proposed: Vec<String> = arr(&matched, "proposals")
+        .iter()
+        .filter_map(|p| p.get("entry_ref").map(|r| text(r, "vid").to_string()))
+        .collect();
+    proposed.sort();
+    let mut expected = vec![receipt, payment];
+    expected.sort();
+    assert_eq!(proposed, expected, "{out}");
     Ok(())
 }
 

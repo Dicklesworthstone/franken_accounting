@@ -77,6 +77,10 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("capability", capability_cmd),
     ("draft", draft_cmd),
     ("post", post_cmd),
+    ("invoice", crate::typed::invoice_cmd),
+    ("bill", crate::typed::bill_cmd),
+    ("receipt", crate::typed::receipt_cmd),
+    ("payment", crate::typed::payment_cmd),
     ("commit", commit_cmd),
     ("reverse", reverse_cmd),
     ("reserve", reserve_cmd),
@@ -99,6 +103,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("bundle", crate::proof::bundle_cmd),
     ("party", crate::rea::party_cmd),
     ("instrument", crate::rea::instrument_cmd),
+    ("entity", crate::rea::entity_cmd),
     ("finding", crate::finding::finding_cmd),
     ("bank", crate::bank::bank_cmd),
     ("export", crate::export::export_cmd),
@@ -1654,7 +1659,11 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
             _,
         ) => &[Op::Read],
         ("verify" | "registers", _) => &[Op::Read, Op::Verify],
-        ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
+        (
+            "post" | "commit" | "reverse" | "reserve" | "resolve" | "invoice" | "bill" | "receipt"
+            | "payment",
+            _,
+        ) => &[Op::Post],
         ("allocate" | "settle", _) => {
             if sub == Some("approve") || args.switch("--approve") {
                 &[Op::Read, Op::Approve]
@@ -1677,7 +1686,7 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         ("finding", Some("runs" | "list" | "show" | "replay")) => &[Op::Read],
         ("finding", Some("review")) => &[Op::Read, Op::Approve],
         ("document", Some("add")) if args.flag("--grade").is_none() => &[Op::Post],
-        ("document", Some("read")) => &[Op::Read],
+        ("document", Some("read" | "list")) => &[Op::Read],
         ("document", Some("redact")) => &[Op::Privileged],
         ("document", Some("disclose")) => &[Op::Read, Op::Produce],
         ("document", Some("custody")) => {
@@ -1720,9 +1729,9 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         ("draft", Some("list" | "show")) => &[Op::Read],
         ("draft", Some("promote")) => &[Op::Approve],
         ("chart", Some("open" | "close" | "promote"))
-        | ("party", Some("add" | "relate"))
-        | ("instrument", Some("add")) => &[Op::SchemaChange],
-        ("party" | "instrument", Some("list")) => &[Op::Read],
+        | ("party", Some("add" | "relate" | "bind"))
+        | ("instrument" | "entity", Some("add")) => &[Op::SchemaChange],
+        ("party" | "instrument" | "entity", Some("list")) => &[Op::Read],
         _ => return None,
     };
     Some(ops)
@@ -2763,8 +2772,9 @@ const GUIDE: &str = "fa robot-docs guide\n\
 15. An Agent (or anyone) works on a draft (plan §15.2): `fa draft new <name>`, then the same post, reverse, reserve or resolve command with --draft <name> (or `fa draft plan <name> --intent <file|->`). Each intent is rehearsed under every posting law and journaled into the draft; nothing reaches trunk. `fa draft show <name> --json` lists the planned intents and the entries a promotion will create. A principal holding approve who is not the draft's owner runs `fa draft promote <name> --yes`: every intent is admitted again against current trunk (period law, ceilings, revocation, evidence) and all post in one batch, or none do; the planner stays each entry's principal. `fa draft discard <name>` closes a draft without posting. Over MCP the fa.draft cluster is on demand (`fa-mcp --cluster fa.draft`); promotion is host-only.\n\
 16. Correct an entry in one step: `fa reverse <vid> --reason WrongAmount --replace-with corrected.json --json` posts the exact reversal and the corrected entry together, both or neither, citing the target under one reason (event corrected). corrected.json is an ordinary entry intent (legs, optional effective_date and description); its date and period default to the target's.\n\
 17. Export for an auditor or another ledger: `fa export ads|saft|csv-gl|beancount|hledger --period FY2026-P03 [--out <new path>] --json` writes what the trial balance folds (pending holds excluded) with its export coordinate certificate; ads writes four tables into a new directory. It needs read and produce. Over MCP the fa.io cluster is on demand.\n\
-18. Maintain the chart and the REA graph: `fa chart open <account.json> --opened <day>`, `fa chart close <code> --on <day>`, `fa chart promote <code> --on <day>`; `fa party add <party.json>`, `fa party relate <from> <to> --kind owns --basis equity_voting --valid-from <day> --pct 51/100`, `fa instrument add <instrument.json>`. Each is a journaled schema change (schema_change authority) and no date defaults to today. Events then name parties with --participant and instruments with --resource <label>:<amount>:<instrument>.\n\
-19. Read a period as it was first reported: `fa tb --period FY2026-P03 --as-originally-reported --json` pins known-at to the period's first Lock (never its first Close, never HEAD); a period never locked is refused with FA-REF-161.\n";
+18. Maintain the chart and the REA graph: `fa chart open <account.json> --opened <day>`, `fa chart close <code> --on <day>`, `fa chart promote <code> --on <day>`; `fa party add <party.json>`, `fa party relate <from> <to> --kind owns --basis equity_voting --valid-from <day> --pct 51/100`, `fa instrument add <instrument.json>`, `fa entity add <entity.json>` (a legal entity's jurisdiction, functional unit and life span; a code declared at book creation is lifted), `fa party bind <code> --external-id qbo:55`. Each is a journaled schema change (schema_change authority) and no date defaults to today. Events then name parties with --participant and instruments with --resource <label>:<amount>:<instrument>.\n\
+19. Read a period as it was first reported: `fa tb --period FY2026-P03 --as-originally-reported --json` pins known-at to the period's first Lock (never its first Close, never HEAD); a period never locked is refused with FA-REF-161.\n\
+20. Typed documents: `fa invoice --party C-17 --number 10442 --date 2026-03-14 --receivable 1200 --revenue 4000 --line 'qty=10 unit_price=\"125.00 USD\" item=SKU-9' --evidence <oid> --dry-run --json` (and `fa bill ... --payable 2000 --expense 6000`) builds the entry from its lines and posts through fa post's path (--dry-run, --plan-out, --draft); `fa receipt --party C-17 --number WIRE-IN-1 --cash 1000 --receivable 1200 --amount \"1290.00 USD\" --applies <invoice vid>` (and `fa payment`) settles it, its number becoming the cash leg's memo that fa bank match compares with a statement line's reference. You name every account; there is no tax or posting rule yet. An intent leg may name `entity` and `party` codes; in a multi-entity book every leg names its entity. `fa document list [--kind BankStatement]` lists held documents as metadata.\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\
 \n\
@@ -5081,6 +5091,31 @@ fn parse_legs(
         let mut leg = LegPayload::simple(side, account_vid(ctx.book_id, account), amount);
         leg.memo = memo;
         leg.settles = parse_settles(l, &what, ctx, book)?;
+        // A leg names its legal entity (required in a multi-entity book)
+        // and its counterparty by code; the kernel checks both exist
+        // (plan §4.1, §4.5). Dimension ids ascend: entity 1, party 12.
+        let code_field = |field: &str| -> Result<Option<&str>, Fail> {
+            match l.get(field) {
+                None | Some(Json::Null) => Ok(None),
+                Some(Json::Str(code)) if !code.is_empty() => Ok(Some(code.as_str())),
+                Some(_) => Err(usage(
+                    format!("{what}: {field} must be a non-empty code"),
+                    "legs: [{\"side\": \"debit\", \"account\": \"1200\", \"amount\": \"10.00 USD\", \"entity\": \"ACME\", \"party\": \"C-17\"}]",
+                )),
+            }
+        };
+        if let Some(code) = code_field("entity")? {
+            leg.dimension_set.push((
+                fa_model::LEGAL_ENTITY_DIMENSION,
+                fa_model::entity_value_vid(ctx.book_id, code),
+            ));
+        }
+        if let Some(code) = code_field("party")? {
+            leg.dimension_set.push((
+                fa_model::PARTY_DIMENSION,
+                fa_model::party_value_vid(ctx.book_id, code),
+            ));
+        }
         legs.push((leg, ordinal));
     }
     Ok(legs)
@@ -6037,7 +6072,7 @@ fn build_post_request(
     })
 }
 
-fn post_document(
+pub(crate) fn post_document(
     ctx: &mut Ctx<'_>,
     args: &Args,
     forced: Option<EntryClass>,

@@ -77,12 +77,11 @@ id = "WF-RQ-02"
 workflow = "readme-quick"
 ordinal = 2
 vision_row = "VC-02"
-description = "Dry-run a typed Canon invoice intent (`fa invoice ... --dry-run`)"
-argv = ["invoice", "--party", "ACME-CUST-17", "--date", "2026-03-14", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-i7e"
+description = "Dry-run a typed invoice intent (`fa invoice ... --dry-run`; explicit accounts, no Canon rule or tax yet)"
+argv = ["invoice", "--party", "ACME-CUST-17", "--number", "10443", "--date", "2026-03-14", "--receivable", "1200", "--revenue", "4000", "--line", "qty=10 unit_price=\"125.00 USD\" item=SKU-9 product=Widgets", "--evidence", "{doc_oid}", "--dry-run", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "plan"
 
 [[workflow_step]]
 id = "WF-RQ-03"
@@ -225,11 +224,10 @@ workflow = "agent-closes-month"
 ordinal = 3
 vision_row = "VC-15"
 description = "Import and match a CAMT.053 bank statement (`fa bank import`)"
-argv = ["bank", "import", "stmt.camt053.xml", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-zbne"
+argv = ["bank", "import", "{stmt_file}", "--bank-format", "camt053", "--account", "1010", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "bank_imported"
 
 [[workflow_step]]
 id = "WF-ACM-04"
