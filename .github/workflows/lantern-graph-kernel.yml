@@ -40,6 +40,7 @@ on:
       - 'crates/fa/src/report_artifact/**'
       - 'crates/fa/src/certificate_store.rs'
       - 'crates/fa/src/certificate_store/**'
+      - 'crates/fa/tests/cross_target_determinism.rs'
       - 'crates/fa-cli/src/notary.rs'
       - 'crates/fa-cli/src/notary/**'
       - 'crates/fa-cli/tests/procedure_replay.rs'
@@ -184,6 +185,12 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib certificate_store --jobs 2
+      - name: Verify canonical report and evidence bundle digests after registry changes
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test cross_target_determinism --jobs 2 -- --nocapture
       - name: Regress exact FX arithmetic and journal posting semantics
         if: ${{ !cancelled() }}
         shell: bash
@@ -274,6 +281,12 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test cli certified_ --jobs 2
+      - name: Exercise every declared event through the real CLI
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test cli every_declared_event_is_emitted_by_the_binary --jobs 2 -- --exact --nocapture
       - name: Lint selected facade and CLI crates independently of dependency warnings
         if: ${{ !cancelled() }}
         shell: bash

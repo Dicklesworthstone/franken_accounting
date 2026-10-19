@@ -4987,6 +4987,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["verify", "replay"]).0, 0);
     assert_eq!(run(true, &["verify", "projections"]).0, 0);
     assert_eq!(run(true, &["verify", "availability"]).0, 0);
+    let (code, out) = run(true, &["verify", "usage"]);
+    assert_eq!(code, 0, "{out}");
+    let usage = doc(&out);
+    assert_eq!(int(&usage, "charges_checked"), Some(0));
+    assert_eq!(int(&usage, "cells_checked"), Some(0));
+    assert!(arr(&usage, "drift").is_empty());
     assert_eq!(run(true, &["verify", "schedules"]).0, 0);
     // FY2026 exists and FY2026-P03 was opened by a journaled transition.
     assert_eq!(run(true, &["verify", "periods"]).0, 0);
@@ -5104,11 +5110,17 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["instrument", "add", &account]).0, 0);
     assert_eq!(run(true, &["instrument", "list"]).0, 0);
-    // Legal entities (legal_entities), the document inventory (documents),
-    // and a bank statement imported and matched (bank_imported,
-    // bank_matches_proposed).
+    // A retained statement is matched to an actual cash leg. The exact
+    // emitted command is independently confirmed and inventoried afterward.
     assert_eq!(run(true, &["entity", "list"]).0, 0);
     assert_eq!(run(true, &["document", "list"]).0, 0);
+    let bank_cash = write(
+        &dir,
+        "events-bank-cash.json",
+        r#"{"effective_date":"2026-03-05","idempotency_key":"events-bank-cash","legs":[{"side":"debit","account":"1000","amount":"10.00 USD","memo":"R-1"},{"side":"credit","account":"6000","amount":"10.00 USD"}]}"#,
+    );
+    let (code, out) = run(true, &["post", "--intent", &bank_cash, "--evidence", &ev]);
+    assert_eq!(code, 0, "{out}");
     let statement = write(
         &dir,
         "events-statement.csv",
@@ -5129,20 +5141,61 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(code, 0, "{out}");
     let manifest = field(&out, "manifest_oid").unwrap_or_default().to_string();
+    let (code, out) = run(
+        true,
+        &[
+            "bank",
+            "match",
+            "--import",
+            &manifest,
+            "--grant",
+            "privileged",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let bank_matches = doc(&out);
+    let [bank_proposal] = arr(&bank_matches, "proposals") else {
+        panic!("one retained bank line: {out}");
+    };
+    assert_eq!(int(bank_proposal, "eligible_candidate_count"), Some(1));
+    assert_eq!(bank_proposal.get("ambiguous"), Some(&Json::Bool(false)));
+    let mut confirmation_args: Vec<_> = text(bank_proposal, "confirmation_command")
+        .strip_prefix("fa ")
+        .expect("the actual proposal supplies its confirmation command")
+        .split_ascii_whitespace()
+        .filter(|argument| *argument != "--json")
+        .collect();
+    confirmation_args.extend(["--as", "event-bank-reviewer"]);
+    let (code, out) = run(true, &confirmation_args);
+    assert_eq!(code, 0, "{out}");
+    let confirmed = doc(&out);
+    assert_eq!(confirmed.get("entry_ref"), bank_proposal.get("entry_ref"));
     assert_eq!(
-        run(
-            true,
-            &[
-                "bank",
-                "match",
-                "--import",
-                &manifest,
-                "--grant",
-                "privileged"
-            ]
-        )
-        .0,
-        0
+        text(&confirmed, "proposal_digest"),
+        text(bank_proposal, "proposal_digest")
+    );
+    assert_eq!(
+        text(&confirmed, "confirmed_by"),
+        format!("{:032x}", fa_model::principal_vid("event-bank-reviewer").0)
+    );
+    let (code, out) = run(
+        true,
+        &[
+            "bank",
+            "status",
+            "--import",
+            &manifest,
+            "--grant",
+            "privileged",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let confirmation_status = doc(&out);
+    assert_eq!(int(&confirmation_status, "confirmed_lines"), Some(1));
+    assert_eq!(int(&confirmation_status, "remaining_lines"), Some(0));
+    assert_eq!(
+        confirmation_status.get("reconciled_through"),
+        Some(&Json::Null)
     );
     let certificate = dir.join("events.cert").display().to_string();
     assert_eq!(
@@ -5749,6 +5802,154 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "--yes",
     ]);
     assert_eq!(field(&zero, "event"), Some("closing_noop"), "{zero}");
+
+    // A mid-year book supplies a native locked Opening period. A distinct
+    // retained source and trial balance produce one sealed migration chunk,
+    // which two independent reviewers approve before staging.
+    let book4 = dir.join("legacy-events-book");
+    let mut run4 = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(book4.as_path()), &argv);
+        assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        out
+    };
+    run4(&[
+        "book",
+        "create",
+        "--name",
+        "Legacy source event coverage",
+        "--opening-date",
+        "2026-07-01",
+    ]);
+    let legacy_chart = write(
+        &dir,
+        "legacy-events-chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Opening equity","type":"Equity","unit":"USD"}]}"#,
+    );
+    run4(&["chart", "import", &legacy_chart]);
+    run4(&["period", "create", "--fiscal-year", "2026"]);
+    let legacy_source = write(
+        &dir,
+        "legacy-events-source.csv",
+        "Transaction ID,Date,Account,Debit,Credit,Currency,Memo/Description,Created At,Created By\n\
+robot-opening,2025-12-20,Legacy Cash,125.50,,USD,Cash source,2025-12-20T12:30:00Z,legacy-author\n\
+robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:30:00Z,legacy-author\n",
+    );
+    let source_added = run4(&[
+        "document",
+        "add",
+        &legacy_source,
+        "--kind",
+        "Spreadsheet",
+        "--mime",
+        "text/csv",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let legacy_source_oid = text(&doc(&source_added), "oid").to_string();
+    let legacy_tb = write(
+        &dir,
+        "legacy-events-tb.csv",
+        "account,unit,debit,credit\n1000,USD,125.50,\n3000,USD,,125.50\n",
+    );
+    let tb_added = run4(&[
+        "document",
+        "add",
+        &legacy_tb,
+        "--kind",
+        "Spreadsheet",
+        "--mime",
+        "text/csv",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let legacy_tb_oid = text(&doc(&tb_added), "oid").to_string();
+    assert_ne!(legacy_source_oid, legacy_tb_oid);
+    let legacy_run_intent = write(
+        &dir,
+        "legacy-events-run.json",
+        &format!(
+            r#"{{"run_key":"legacy-events","source_system":"quickbooks-csv","mode":"OpeningOnly","trial_balance":"{legacy_tb_oid}","opening_date":"2026-01-01","lines":[{{"account":"1000","unit":"USD","debit":"125.50"}},{{"account":"3000","unit":"USD","credit":"125.50"}}]}}"#
+        ),
+    );
+    let opened = run4(&["migrate", "open", "--intent", &legacy_run_intent]);
+    let legacy_run = text(&doc(&opened), "run_vid").to_string();
+    let legacy_import_intent = write(
+        &dir,
+        "legacy-events-import.json",
+        &format!(
+            r#"{{"run":"MR:{legacy_run}","source":"D:{legacy_source_oid}","format":"quickbooks-csv","account_map":{{"Legacy Cash":"1000","Legacy Equity":"3000"}}}}"#
+        ),
+    );
+    let prepared = doc(&run4(&[
+        "migrate",
+        "import",
+        "--action",
+        "prepare",
+        "--intent",
+        &legacy_import_intent,
+    ]));
+    assert_eq!(int(&prepared, "row_count"), Some(2));
+    assert_eq!(int(&prepared, "chunk_count"), Some(1));
+    assert_eq!(int(&prepared, "recorded_count"), Some(0));
+    let package = text(&prepared, "package_oid").to_string();
+    let [chunk] = arr(&prepared, "chunks") else {
+        panic!("one complete source journal entry: {}", prepared.render());
+    };
+    let chunk_digest = text(chunk, "proposal_digest").to_string();
+    let shown = doc(&run4(&[
+        "migrate",
+        "import",
+        "--action",
+        "show",
+        "--package",
+        &package,
+    ]));
+    assert_eq!(text(&shown, "package_oid"), package);
+    assert_eq!(shown.get("chunks"), prepared.get("chunks"));
+    let first_approval = doc(&run4(&[
+        "approve",
+        "--proposal",
+        &chunk_digest,
+        "--as",
+        "legacy-event-reviewer-one",
+    ]));
+    let second_approval = doc(&run4(&[
+        "approve",
+        "--proposal",
+        &chunk_digest,
+        "--as",
+        "legacy-event-reviewer-two",
+    ]));
+    let first_approval = text(&first_approval, "approval_vid");
+    let second_approval = text(&second_approval, "approval_vid");
+    assert_ne!(first_approval, second_approval);
+    let staged = doc(&run4(&[
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        &package,
+        "--chunk",
+        "0",
+        "--approval",
+        first_approval,
+        "--approval",
+        second_approval,
+    ]));
+    assert_eq!(text(&staged, "proposal_digest"), chunk_digest);
+    assert_eq!(int(&staged, "recorded_count"), Some(1));
+    assert_eq!(int(&staged, "chunk_count"), Some(1));
+    assert_eq!(staged.get("already_recorded"), Some(&Json::Bool(false)));
+    assert_eq!(staged.get("ready_to_finalize"), Some(&Json::Bool(true)));
+    let opening_tb = doc(&run4(&["tb", "--period", "FY2026-OPEN"]));
+    assert!(
+        arr(&opening_tb, "rows").is_empty(),
+        "staging remains invisible until native finalization"
+    );
 
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
