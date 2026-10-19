@@ -417,6 +417,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let manifest_oid = manifest_document.oid();
         derivations.push(manifest_document.clone());
         documents.push(manifest_document);
+        let previous_receipt = match self.bank_import_receipt(cx, &manifest, manifest_oid)? {
+            Ok(receipt) => receipt,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        // An unlinked import recorded before this statement gained predecessor
+        // linkage stays an exact repeat: it returns its original receipt. Only
+        // a new unlinked manifest meets the recorded link below.
+        let linked_receipt_recorded = match previous_receipt {
+            Some(receipt) if manifest.predecessor.is_none() => {
+                return Ok(Ok(BankImportRecorded {
+                    manifest_oid,
+                    manifest: manifest.clone(),
+                    receipt: ImportRecorded {
+                        receipt,
+                        recorded: Vec::new(),
+                        already_held: manifest.closure(manifest_oid),
+                        already_recorded: true,
+                    },
+                    verified_predecessors: 0,
+                }));
+            }
+            other => other.is_some(),
+        };
         let existing_link = match self.query(cx, |db, book| {
             Ok(fa_journal::import::read_bank_statement_link(
                 db,
@@ -461,27 +484,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 verified_predecessors: predecessors.len(),
             }));
         }
-        let previous_receipt = match self.bank_import_receipt(cx, &manifest, manifest_oid)? {
-            Ok(receipt) => receipt,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        if let Some(receipt) = previous_receipt {
-            if manifest.predecessor.is_some() {
-                return Ok(Err(closure_drift(
-                    "a linked manifest was imported without its atomic native predecessor record",
-                )));
-            }
-            return Ok(Ok(BankImportRecorded {
-                manifest_oid,
-                manifest: manifest.clone(),
-                receipt: ImportRecorded {
-                    receipt,
-                    recorded: Vec::new(),
-                    already_held: manifest.closure(manifest_oid),
-                    already_recorded: true,
-                },
-                verified_predecessors: 0,
-            }));
+        if linked_receipt_recorded {
+            return Ok(Err(closure_drift(
+                "a linked manifest was imported without its atomic native predecessor record",
+            )));
         }
         let key = fa_journal::evidence::hex(&manifest_oid.0);
         let import_request = fa_journal::ImportRequest {
@@ -643,8 +649,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         let policy = EvidencePolicy::embedded()?;
         if document.kind != policy_kind(&policy, "Workpaper")? || document.mime != MANIFEST_MIME {
-            return Ok(Err(intake_error(
-                "--import must name the manifest_oid returned by fa bank import",
+            return Ok(Err(Refusal::new(
+                code::DOCUMENT_INTAKE,
+                exit::USAGE,
+                "the oid names a document that is not a bank import manifest",
+                "plan §9.5 (a bank import is identified by the manifest_oid its import returned)",
+                "pass the manifest_oid that `fa bank import` printed: --import for `fa bank match`, --previous-import for `fa bank import`",
             )));
         }
         let manifest = match BankImportManifest::decode(&document.bytes) {
