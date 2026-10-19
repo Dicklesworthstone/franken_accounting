@@ -477,6 +477,19 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
             retained_at,
             "{family}: exact retry reuses its retention"
         );
+        // A summary has its own relevance law (the report reproduces at
+        // HEAD) and a roll-forward its selected-schedule law; effective-date
+        // aging still refuses selector status.
+        let (exit, status) = f.run(&["certificate", "status", &locator]);
+        if family == "effective-date-aging" {
+            assert_eq!(exit, 8, "{family}: {status:?}");
+        } else {
+            assert_eq!(exit, 0, "{family}: {status:?}");
+            let status = data(&status, "certificate_status");
+            assert_eq!(text(status, "status"), "Current", "{family}");
+            assert_eq!(status.get("later_entries"), Some(&Json::Arr(Vec::new())));
+        }
+        assert_eq!(f.head(), retained_at, "{family}: status is a read");
         originals.push((event_name, events, bytes, locator, file));
     }
     let mut book = f.open();
@@ -484,6 +497,25 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
     let later = book.head().unwrap();
     drop(book);
     for (event_name, original, bytes, locator, file) in originals {
+        if event_name == "summary_trial_balance" {
+            let status = f.ok(&["certificate", "status", &locator]);
+            let status = data(&status, "certificate_status");
+            assert_eq!(text(status, "status"), "Changed", "64 later postings");
+            assert_eq!(
+                status.get("checked_at"),
+                Some(&Json::Int(i128::from(later.0)))
+            );
+            assert_eq!(status.get("later_entries"), Some(&Json::Arr(Vec::new())));
+            let (exit, refused) = f.run(&["certificate", "status", &locator, "--expect", "{}"]);
+            assert_eq!(
+                exit, 2,
+                "a summary status takes no expectation: {refused:?}"
+            );
+            assert!(
+                text(data(&refused, "error"), "message").contains("summary status compares"),
+                "{refused:?}"
+            );
+        }
         let artifact = fa::ReportArtifact::decode(&bytes).unwrap();
         for input in [locator.as_str(), file.to_str().unwrap()] {
             let replayed = f.ok(&["replay", input]);

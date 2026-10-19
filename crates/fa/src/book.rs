@@ -2694,6 +2694,18 @@ impl Book {
         ))
     }
 
+    /// Replay a summary certificate, then compare its selector at HEAD.
+    pub fn summary_certificate_status(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::SummaryCertificate,
+    ) -> Outcome<crate::SummaryCertificateStatus> {
+        with_store!(&self.store, core => core.summary_certificate_status(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
     /// Read the same stock/activity statement at two fixed recorded frontiers.
     pub fn statement_diff(
         &self,
