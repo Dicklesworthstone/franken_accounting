@@ -1,12 +1,15 @@
-//! Bank statement intake and exact, unconfirmed match proposals.
+//! Bank statement intake, exact proposals and immutable confirmations.
 //!
 //! The shared facade owns the retained parser/account binding and checks the
 //! complete evidence closure on every match. This surface supplies no grades,
-//! inferred exchange rates, confirmation side effects, or balancing entries.
+//! inferred exchange rates or balancing entries. Confirmation is explicit.
 
 use std::collections::BTreeSet;
 
-use fa::bank::{BankFormat, BankImportManifest, BankImportRequest, BankMatchRequest};
+use fa::bank::{
+    BankConfirmationRequest, BankFormat, BankImportManifest, BankImportRequest, BankMatchRecorded,
+    BankMatchRequest, BankStatusRequest,
+};
 use fa_model::{Oid, account_vid};
 use fa_money::{Amount, Side};
 use fa_policy::Op;
@@ -18,12 +21,23 @@ use crate::json::{Json, obj, s};
 
 const IMPORT_EXAMPLE: &str = "fa bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code> [--previous-import <manifest_oid> --grant privileged] --json";
 const MATCH_EXAMPLE: &str = "fa bank match --import <manifest_oid> --grant privileged [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>] --json (embedded-owner CLI with explicit full-source authority)";
+const CONFIRM_EXAMPLE: &str = "fa bank confirm --import <manifest_oid> --line-ordinal <ordinal> --proposal-digest <hex64> --source-known-at <seq> --proposer <hex32> --date-window <days> --grant privileged --json (use the exact confirmation_command printed by bank match)";
+const STATUS_EXAMPLE: &str = "fa bank status --import <manifest_oid> --grant privileged [--as-known-at HEAD|<seq>|<RFC3339>] --json";
 
 pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let sub = args.positional.get(1).map(String::as_str);
     let allowed: &[&str] = match sub {
         Some("import") => &["--bank-format", "--account", "--previous-import"],
         Some("match") => &["--import", "--date-window", "--as-known-at"],
+        Some("confirm") => &[
+            "--import",
+            "--line-ordinal",
+            "--proposal-digest",
+            "--source-known-at",
+            "--date-window",
+            "--proposer",
+        ],
+        Some("status") => &["--import", "--as-known-at"],
         _ => &[],
     };
     for flag in [
@@ -33,34 +47,41 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--import",
         "--date-window",
         "--as-known-at",
+        "--line-ordinal",
+        "--proposal-digest",
+        "--source-known-at",
+        "--proposer",
     ] {
         if args.flag(flag).is_some() && !allowed.contains(&flag) {
             return Err(usage(
                 format!("{flag} does not apply to bank {}", sub.unwrap_or("")),
-                "bank import binds the parser and cash account; bank match requires only that import's manifest and optional date/known-at selectors",
+                "bank import binds the parser and cash account; match and status select the retained manifest; confirm selects one exact replayed proposal",
             ));
         }
         one_flag(
             args,
             flag,
-            if sub == Some("match") {
-                MATCH_EXAMPLE
-            } else {
-                IMPORT_EXAMPLE
+            match sub {
+                Some("match") => MATCH_EXAMPLE,
+                Some("confirm") => CONFIRM_EXAMPLE,
+                Some("status") => STATUS_EXAMPLE,
+                _ => IMPORT_EXAMPLE,
             },
         )?;
     }
     if args.switch("--dry-run") {
         return Err(usage(
-            "bank import does not support --dry-run; bank match is already an unconfirmed read",
-            "review the statement before importing it; bank match --import <manifest_oid> creates no match confirmation or monetary entry",
+            "bank does not support --dry-run; match and status already read without publishing",
+            "review bank match before explicitly confirming its exact selected proposal",
         ));
     }
     match args.positional.get(1).map(String::as_str) {
         Some("import") => import(ctx, args),
         Some("match") => match_statement(ctx, args),
+        Some("confirm") => confirm_statement(ctx, args),
+        Some("status") => confirmation_status(ctx, args),
         _ => Err(usage(
-            "bank has the subcommands import and match",
+            "bank has the subcommands import, match, confirm and status",
             IMPORT_EXAMPLE,
         )),
     }
@@ -283,6 +304,22 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .decision_card
             .canonical_bytes()
             .map_err(|e| Fail::Internal(format!("bank decision card: {e}")))?;
+        let proposal_digest = hex(&proposal.oid().map_err(|e| Fail::Internal(e.to_string()))?.0);
+        let proposer = format!("{:032x}", proposal.principal.0);
+        let confirmation_command = if selected.is_some()
+            && eligible_counts[index] == 1
+            && !competing[index]
+        {
+            s(format!(
+                "fa bank confirm --import {} --line-ordinal {} --proposal-digest {proposal_digest} --source-known-at {} --date-window {} --proposer {proposer} --grant privileged --json",
+                hex(&report.manifest_oid.0),
+                line.line_ordinal,
+                report.known_at.0,
+                report.date_window_days,
+            ))
+        } else {
+            Json::Null
+        };
         rows.push(obj(vec![
             ("line_ordinal", Json::Int(i128::from(line.line_ordinal))),
             (
@@ -376,13 +413,9 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .digest()
                     .map_err(|e| Fail::Internal(e.to_string()))?)),
             ),
-            (
-                "proposal_digest",
-                s(hex(&proposal
-                    .oid()
-                    .map_err(|e| Fail::Internal(e.to_string()))?
-                    .0)),
-            ),
+            ("proposal_digest", s(proposal_digest)),
+            ("proposer", s(proposer)),
+            ("confirmation_command", confirmation_command),
         ]));
     }
     let mut outstanding = Vec::new();
@@ -533,6 +566,208 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "bank statement for {} at {}: {matched} exact proposals, {ambiguous_count} ambiguous bank lines requiring review, {} unmatched bank lines, {} unmatched book candidates; candidate search: {candidate_window}; outstanding inventory completeness is unestablished; proposals are unconfirmed",
         report.account_code, report.known_at.0, report.lines.len() - matched,
         report.candidates.len() - matched,
+    ));
+    Ok(())
+}
+
+fn confirmation_fields(recorded: &BankMatchRecorded) -> Vec<(&'static str, Json)> {
+    let confirmation = &recorded.confirmation;
+    vec![
+        ("match_vid", s(format!("{:032x}", recorded.match_vid.0))),
+        ("match_digest", s(hex(&recorded.match_digest))),
+        ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
+        ("manifest_oid", s(hex(&confirmation.manifest_oid.0))),
+        ("statement_oid", s(hex(&confirmation.statement_oid.0))),
+        (
+            "line_ordinal",
+            Json::Int(i128::from(confirmation.line_ordinal)),
+        ),
+        (
+            "line_document_oid",
+            s(hex(&confirmation.line_document_oid.0)),
+        ),
+        ("bank_line_oid", s(hex(&confirmation.bank_line_oid.0))),
+        ("account_ref", s(format!("{:032x}", confirmation.account.0))),
+        (
+            "entry_ref",
+            obj(vec![
+                ("vid", s(format!("{:032x}", confirmation.entry_ref.vid.0))),
+                ("entry_digest", s(hex(&confirmation.entry_ref.entry_digest))),
+            ]),
+        ),
+        (
+            "leg_ordinal",
+            Json::Int(i128::from(confirmation.leg_ordinal)),
+        ),
+        ("proposer", s(format!("{:032x}", confirmation.proposer.0))),
+        (
+            "confirmed_by",
+            s(format!("{:032x}", confirmation.confirmed_by.0)),
+        ),
+        (
+            "confirming_profile",
+            s(confirmation.confirming_profile.name()),
+        ),
+        (
+            "capability_commitment",
+            s(hex(&confirmation.capability_commitment)),
+        ),
+        (
+            "source_known_at",
+            Json::Int(i128::from(confirmation.source_known_at.0)),
+        ),
+        (
+            "date_window",
+            Json::Int(i128::from(confirmation.date_window_days)),
+        ),
+        ("proposal_digest", s(hex(&confirmation.proposal_digest))),
+        ("method", s("pinned_exact_one_to_one")),
+    ]
+}
+
+fn confirm_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "bank confirm takes its exact selection through flags",
+            CONFIRM_EXAMPLE,
+        ));
+    }
+    let manifest_oid = Oid(crate::document::hex32(
+        required(args, "--import", CONFIRM_EXAMPLE)?,
+        "--import",
+    )?);
+    let proposal_digest = crate::document::hex32(
+        required(args, "--proposal-digest", CONFIRM_EXAMPLE)?,
+        "--proposal-digest",
+    )?;
+    let line_ordinal = required(args, "--line-ordinal", CONFIRM_EXAMPLE)?
+        .parse::<u32>()
+        .map_err(|_| {
+            usage(
+                "--line-ordinal must be the proposal's unsigned line ordinal",
+                CONFIRM_EXAMPLE,
+            )
+        })?;
+    let source_known_at = required(args, "--source-known-at", CONFIRM_EXAMPLE)?
+        .parse::<u64>()
+        .map(fgdb_types::CommitSeq)
+        .map_err(|_| usage("--source-known-at must be the proposal's numeric sequence, never HEAD or an instant", CONFIRM_EXAMPLE))?;
+    let date_window_days = one_flag(args, "--date-window", CONFIRM_EXAMPLE)?
+        .map_or(Ok(3_u32), |value| value.parse::<u32>())
+        .map_err(|_| {
+            usage(
+                "--date-window must be the proposal's nonnegative integer day window",
+                CONFIRM_EXAMPLE,
+            )
+        })?;
+    let proposer_text = required(args, "--proposer", CONFIRM_EXAMPLE)?;
+    if proposer_text.len() != 32 || !proposer_text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(usage(
+            "--proposer must be the exact 32-hex principal in the proposal",
+            CONFIRM_EXAMPLE,
+        ));
+    }
+    let proposer = crate::cli::parse_vid(proposer_text, "--proposer")?;
+    let capability = ctx.capability(args, &["read", "reconcile"])?;
+    admit(&capability, false)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(capability.holder(), &capability)??;
+        Ok(())
+    })?;
+    let recorded = book.confirm_bank_statement_match(
+        &capability,
+        BankConfirmationRequest {
+            manifest_oid,
+            line_ordinal,
+            proposal_digest,
+            source_known_at,
+            date_window_days,
+            proposer,
+        },
+    )??;
+    let mut fields = confirmation_fields(&recorded);
+    fields.push(("already_recorded", Json::Bool(recorded.already_recorded)));
+    ctx.out.at_book(&book)?;
+    ctx.out.event("bank_match_confirmed", fields, &format!(
+        "{} bank line {} as match {:032x}; cash entry {:032x} leg {}, confirmed by {:032x} at {}; monetary entries are unchanged",
+        if recorded.already_recorded { "already confirmed" } else { "confirmed" },
+        recorded.confirmation.line_ordinal, recorded.match_vid.0,
+        recorded.confirmation.entry_ref.vid.0, recorded.confirmation.leg_ordinal,
+        recorded.confirmation.confirmed_by.0, recorded.recorded_at.0,
+    ));
+    Ok(())
+}
+
+fn confirmation_status(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "bank status selects one retained manifest through --import",
+            STATUS_EXAMPLE,
+        ));
+    }
+    let manifest_oid = Oid(crate::document::hex32(
+        required(args, "--import", STATUS_EXAMPLE)?,
+        "--import",
+    )?);
+    let capability = ctx.capability(args, &["read", "reconcile"])?;
+    admit(&capability, false)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(capability.holder(), &capability)??;
+        Ok(())
+    })?;
+    let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
+    let status = book.bank_confirmation_status(
+        &capability,
+        BankStatusRequest {
+            manifest_oid,
+            known_at,
+        },
+    )??;
+    let line_count = status.manifest.line_oids.len();
+    let confirmed = status.confirmations.len();
+    let fields = vec![
+        ("manifest_oid", s(hex(&status.manifest_oid.0))),
+        ("statement_oid", s(hex(&status.manifest.statement_oid.0))),
+        (
+            "account_ref",
+            s(format!("{:032x}", status.manifest.account.0)),
+        ),
+        ("known_at", Json::Int(i128::from(status.known_at.0))),
+        ("line_count", Json::Int(line_count as i128)),
+        ("confirmed_lines", Json::Int(confirmed as i128)),
+        (
+            "remaining_lines",
+            Json::Int((line_count - confirmed) as i128),
+        ),
+        ("scope", s("recorded_confirmations")),
+        ("reconciled_through", Json::Null),
+        (
+            "confirmations",
+            Json::Arr(
+                status
+                    .confirmations
+                    .iter()
+                    .map(|recorded| obj(confirmation_fields(recorded)))
+                    .collect(),
+            ),
+        ),
+    ];
+    let max_inline = crate::verbs::registry()
+        .map_err(|error| Fail::Internal(error.into()))?
+        .daemon
+        .max_frame_bytes
+        .saturating_sub(128 * 1024);
+    if obj(fields.clone()).render().len() > max_inline {
+        return Err(usage(
+            "the complete recorded confirmation inventory exceeds the inline transport bound; no lines were omitted",
+            "select a smaller retained statement",
+        ));
+    }
+    ctx.out.at_book(&book)?;
+    ctx.out.known_at(status.known_at);
+    ctx.out.event("bank_confirmation_status", fields, &format!(
+        "{confirmed} of {line_count} bank lines have recorded confirmations at {}; {} remain; a closing-balance attestation and reconciliation lock are not established by these facts",
+        status.known_at.0, line_count - confirmed,
     ));
     Ok(())
 }

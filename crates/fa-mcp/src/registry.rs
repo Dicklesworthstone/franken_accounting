@@ -3073,6 +3073,85 @@ mod tests {
     }
 
     #[test]
+    fn bank_confirmation_tools_preserve_selection_and_launch_authority() {
+        let (mcp, reg) = embedded();
+        let confirm = mcp.tool_by_wire("fa_bank_confirm").expect("bank confirm");
+        let schema = confirm.input_schema(&mcp, reg);
+        assert_eq!(
+            schema["properties"]["source_known_at"]["type"],
+            json!(["string", "integer"])
+        );
+        let selection = json!({
+            "import": "ab".repeat(32), "line_ordinal": 2,
+            "proposal_digest": "cd".repeat(32), "source_known_at": 17,
+            "date_window": 3, "proposer": "ef".repeat(16),
+        });
+        let invocation = confirm
+            .invocation(&mcp, reg, &selection)
+            .expect("exact selection");
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.positional, vec!["bank", "confirm"]);
+        assert_eq!(parsed.flag("--line-ordinal"), Some("2"));
+        assert_eq!(parsed.flag("--source-known-at"), Some("17"));
+        assert_eq!(parsed.flag("--proposer"), Some("ef".repeat(16).as_str()));
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("bank", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read", "reconcile"])
+        );
+        assert!(invocation.stdin.is_none());
+        for authority in ["grant", "as", "principal", "profile", "token", "book"] {
+            let mut altered = selection.clone();
+            altered[authority] = json!("caller-controlled");
+            assert!(
+                confirm.invocation(&mcp, reg, &altered).is_err(),
+                "{authority}"
+            );
+        }
+        let mut incomplete = selection.clone();
+        incomplete
+            .as_object_mut()
+            .unwrap()
+            .remove("proposal_digest");
+        assert!(confirm.invocation(&mcp, reg, &incomplete).is_err());
+        let mut input_path = selection;
+        input_path["file"] = json!("/etc/passwd");
+        assert!(confirm.invocation(&mcp, reg, &input_path).is_err());
+
+        let status = mcp.tool_by_wire("fa_bank_status").expect("bank status");
+        let invocation = status
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "import": "ab".repeat(32), "as_known_at": "17",
+                }),
+            )
+            .unwrap();
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.positional, vec!["bank", "status"]);
+        assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("bank", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read", "reconcile"])
+        );
+        assert!(
+            status
+                .invocation(
+                    &mcp,
+                    reg,
+                    &json!({
+                        "import": "ab".repeat(32), "grant": ["privileged"],
+                    })
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
     fn findings_route_review_actions_and_complete_inline_workpapers_with_bound_ops() {
         let (mcp, reg) = embedded();
         let cases: &[(&str, JsonValue, &[&str])] = &[

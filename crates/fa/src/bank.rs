@@ -4,8 +4,9 @@
 //! canonical BankLine documents, and a versioned manifest binding the parser
 //! and the selected cash account. Matching reopens that retained closure and
 //! verifies it against a fresh parse before reading the immutable journal.
-//! Every result is a proposal under Teller's pinned deterministic fallback.
-//! No match confirmation, reconciliation soft lock, or monetary entry is made.
+//! Teller's pinned deterministic fallback produces reproducible proposals.
+//! Exact confirmations retain the original source and actual cash-leg identity
+//! under current authority. They do not post money or establish a period lock.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,6 +32,10 @@ use crate::{AsyncBook, BookError, IntakeAction, Outcome};
 use fa_journal::import::BankImportWitness;
 use fa_journal::import::bank::{BANK_LINE_MIME as LINE_MIME, BANK_MANIFEST_MIME as MANIFEST_MIME};
 pub use fa_journal::import::{BankFormat, BankImportManifest, BankImportPredecessor};
+
+mod confirmation;
+pub use confirmation::{BankConfirmationRequest, BankConfirmationStatus, BankStatusRequest};
+pub use fa_journal::bank::{BankMatchConfirmation, BankMatchRecorded};
 
 const PARSER_REVISION: u16 = 1;
 
@@ -807,6 +812,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: BankMatchRequest,
     ) -> Outcome<BankMatchReport> {
+        self.match_bank_statement_for(cx, capability, request, capability.holder())
+            .await
+    }
+
+    /// Replaying a proposal preserves its selected principal while admission
+    /// and every source read remain bound to the current caller.
+    async fn match_bank_statement_for(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        request: BankMatchRequest,
+        proposer: VId,
+    ) -> Outcome<BankMatchReport> {
         if let Err(refusal) = self.authorize_bank(cx, capability)? {
             return Ok(Err(refusal));
         }
@@ -915,7 +933,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             pinned_fallback_only: true,
             advisory_learned_scores_bps: BTreeMap::new(),
         };
-        let proposals = match_bank_lines(&lines, &native, &config, capability.holder())
+        let proposals = match_bank_lines(&lines, &native, &config, proposer)
             .map_err(|e| corrupt(e.to_string()))?;
         let bank_by_id = lines
             .iter()

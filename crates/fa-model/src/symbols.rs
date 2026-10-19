@@ -72,6 +72,8 @@ symbols!(
         (BANK_STATEMENT_LINK, "BankStatementLink", 44),
         (USAGE_CELL, "UsageCell", 45),
         (USAGE_DEBIT, "UsageDebit", 46),
+        (BANK_MATCH, "BankMatch", 47),
+        (BANK_MATCHED_LEG, "BankMatchedLeg", 48),
     ]
 );
 

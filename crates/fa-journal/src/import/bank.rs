@@ -696,7 +696,7 @@ impl BankImportWitness {
         }
     }
 
-    pub(super) fn retain<V: Vfs + Clone>(
+    pub(crate) fn retain<V: Vfs + Clone>(
         &self,
         txn: &WriteTxn,
         db: &Database<V>,

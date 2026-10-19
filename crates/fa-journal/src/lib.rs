@@ -19,6 +19,7 @@
 
 pub mod allocation;
 pub mod attestation;
+pub mod bank;
 pub mod batch;
 pub mod blob;
 pub mod chart;

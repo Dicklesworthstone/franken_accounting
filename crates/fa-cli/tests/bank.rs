@@ -181,6 +181,385 @@ fn statement_csv(closing: &str) -> String {
     )
 }
 
+fn confirmation_args(matched: &Json, index: usize, confirmer: &str) -> Vec<String> {
+    let report = data(matched);
+    let proposal = &rows(report, "proposals")[index];
+    let mut args = vec![
+        "bank".into(),
+        "confirm".into(),
+        "--import".into(),
+        text(report, "manifest_oid").into(),
+        "--line-ordinal".into(),
+        integer(proposal, "line_ordinal").to_string(),
+        "--proposal-digest".into(),
+        text(proposal, "proposal_digest").into(),
+        "--source-known-at".into(),
+        integer(report, "known_at").to_string(),
+        "--proposer".into(),
+        text(proposal, "proposer").into(),
+        "--as".into(),
+        confirmer.into(),
+    ];
+    // Omit the default deliberately: a three-day proposal must be usable with
+    // the CLI default, while a narrower selection carries its original window.
+    let window = integer(report, "date_window");
+    if window != 3 {
+        args.extend(["--date-window".into(), window.to_string()]);
+    }
+    args
+}
+
+fn confirm_selection(book: &Path, args: &[String]) -> Json {
+    ok_privileged(book, &args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+#[test]
+fn exact_confirmations_reopen_and_retry_without_changing_cash_or_reconciliation_state() {
+    let f = Fixture::new();
+    f.post("confirmed-sale", "2026-03-05", "debit", "150.00", "SALE-1");
+    f.post("confirmed-bill", "2026-03-06", "credit", "50.00", "BILL-1");
+    let imported = f.import("confirmation.csv", "csv", &statement_csv("95.00"));
+    let manifest = text(data(&imported), "manifest_oid");
+    let before_tb = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    let matched = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            manifest,
+            "--as",
+            "bank-preparer",
+        ],
+    );
+    let proposals = rows(data(&matched), "proposals");
+    let proposer = format!("{:032x}", fa_model::principal_vid("bank-preparer").0);
+    for proposal in &proposals[..2] {
+        assert_eq!(text(proposal, "proposer"), proposer);
+        let command = text(proposal, "confirmation_command");
+        assert!(command.contains("bank confirm"));
+        assert!(command.contains(text(proposal, "proposal_digest")));
+        assert!(command.contains(&proposer));
+    }
+    assert_eq!(proposals[2].get("confirmation_command"), Some(&Json::Null));
+    let source_known_at = integer(data(&matched), "known_at");
+    let before = head(&f.book);
+    let args = confirmation_args(&matched, 0, "bank-reviewer");
+    let confirmed = confirm_selection(&f.book, &args);
+    assert_eq!(text(&confirmed, "event"), "bank_match_confirmed");
+    let receipt = data(&confirmed);
+    assert_eq!(receipt.get("already_recorded"), Some(&Json::Bool(false)));
+    assert_eq!(integer(receipt, "recorded_at"), before + 1);
+    assert_eq!(head(&f.book), before + 1);
+    assert_eq!(text(receipt, "manifest_oid"), manifest);
+    assert_eq!(
+        integer(receipt, "line_ordinal"),
+        integer(&proposals[0], "line_ordinal")
+    );
+    assert_eq!(
+        text(receipt, "bank_line_oid"),
+        text(&proposals[0], "bank_line_id")
+    );
+    assert_eq!(
+        text(receipt, "line_document_oid"),
+        text(&proposals[0], "line_document_oid")
+    );
+    assert_eq!(receipt.get("entry_ref"), proposals[0].get("entry_ref"));
+    assert_eq!(receipt.get("leg_ordinal"), proposals[0].get("leg_ordinal"));
+    assert_eq!(integer(receipt, "source_known_at"), source_known_at);
+    assert_eq!(
+        text(receipt, "proposal_digest"),
+        text(&proposals[0], "proposal_digest")
+    );
+    assert_eq!(text(receipt, "proposer"), proposer);
+    assert_eq!(
+        text(receipt, "confirmed_by"),
+        format!("{:032x}", fa_model::principal_vid("bank-reviewer").0)
+    );
+    assert_eq!(text(receipt, "match_vid").len(), 32);
+    assert_eq!(text(receipt, "match_digest").len(), 64);
+    assert_eq!(
+        text(confirmed.get("authority").unwrap(), "principal"),
+        "bank-reviewer"
+    );
+
+    // Every helper starts a fresh process. A different authorized caller must
+    // recover the original decision and attribution after reopening the book.
+    let after = head(&f.book);
+    let retry = confirm_selection(
+        &f.book,
+        &confirmation_args(&matched, 0, "bank-retry-operator"),
+    );
+    assert_eq!(
+        data(&retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    for key in [
+        "match_vid",
+        "match_digest",
+        "recorded_at",
+        "manifest_oid",
+        "line_ordinal",
+        "line_document_oid",
+        "bank_line_oid",
+        "entry_ref",
+        "leg_ordinal",
+        "proposer",
+        "confirmed_by",
+        "source_known_at",
+        "proposal_digest",
+    ] {
+        assert_eq!(data(&retry).get(key), receipt.get(key), "retained {key}");
+    }
+    assert_eq!(
+        text(retry.get("authority").unwrap(), "principal"),
+        "bank-retry-operator"
+    );
+    assert_eq!(head(&f.book), after);
+
+    let status = ok_privileged(&f.book, &["bank", "status", "--import", manifest]);
+    assert_eq!(text(&status, "event"), "bank_confirmation_status");
+    let inventory = data(&status);
+    assert_eq!(text(inventory, "scope"), "recorded_confirmations");
+    assert_eq!(integer(inventory, "line_count"), 3);
+    assert_eq!(integer(inventory, "confirmed_lines"), 1);
+    assert_eq!(integer(inventory, "remaining_lines"), 2);
+    assert_eq!(inventory.get("reconciled_through"), Some(&Json::Null));
+    let saved = rows(inventory, "confirmations");
+    assert_eq!(saved.len(), 1);
+    for key in [
+        "match_vid",
+        "match_digest",
+        "recorded_at",
+        "confirmed_by",
+        "entry_ref",
+        "leg_ordinal",
+    ] {
+        assert_eq!(saved[0].get(key), receipt.get(key), "inventory {key}");
+    }
+    let historical = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "status",
+            "--import",
+            manifest,
+            "--as-known-at",
+            &source_known_at.to_string(),
+        ],
+    );
+    assert_eq!(integer(data(&historical), "known_at"), source_known_at);
+    assert_eq!(
+        integer(historical.get("coordinate").unwrap(), "known_at"),
+        source_known_at
+    );
+    assert_eq!(integer(data(&historical), "confirmed_lines"), 0);
+    assert_eq!(integer(data(&historical), "remaining_lines"), 3);
+    assert!(rows(data(&historical), "confirmations").is_empty());
+    assert_eq!(head(&f.book), after);
+
+    // The original report also authorizes its distinct outflow selection. Its
+    // unmatched bank fee remains a missing posting, never an automatic entry.
+    let bill = confirm_selection(&f.book, &confirmation_args(&matched, 1, "bank-reviewer"));
+    assert_eq!(data(&bill).get("entry_ref"), proposals[1].get("entry_ref"));
+    let status = ok_privileged(&f.book, &["bank", "status", "--import", manifest]);
+    assert_eq!(integer(data(&status), "confirmed_lines"), 2);
+    assert_eq!(integer(data(&status), "remaining_lines"), 1);
+    assert_eq!(data(&status).get("reconciled_through"), Some(&Json::Null));
+    let after_tb = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    for key in ["rows", "unit_totals", "pending_unit_totals", "balanced"] {
+        assert_eq!(
+            data(&after_tb).get(key),
+            data(&before_tb).get(key),
+            "unchanged {key}"
+        );
+    }
+}
+
+#[test]
+fn confirmation_identity_preserves_two_cash_leg_ordinals_in_one_entry() {
+    let f = Fixture::new();
+    let intent = f.file(
+        "two-confirmable-legs.json",
+        r#"{"effective_date":"2026-03-05","idempotency_key":"two-confirmable-legs","legs":[{"side":"debit","account":"1000","amount":"60.00 USD","memo":"A"},{"side":"debit","account":"1000","amount":"40.00 USD","memo":"B"},{"side":"credit","account":"4000","amount":"100.00 USD"}]}"#,
+    );
+    ok(
+        &f.book,
+        &["post", "--intent", &intent, "--evidence", &f.evidence],
+    );
+    let raw = format!(
+        "{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,100.00,2026-03-05,2026-03-05,CRDT,40.00,Customer,B\n1,BANK-123,USD,2026-03-31,0.00,100.00,2026-03-05,2026-03-05,CRDT,60.00,Customer,A\n"
+    );
+    let imported = f.import("two-confirmable-legs.csv", "csv", &raw);
+    let manifest = text(data(&imported), "manifest_oid");
+    let before_tb = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    let matched = ok_privileged(
+        &f.book,
+        &["bank", "match", "--import", manifest, "--date-window", "0"],
+    );
+    let proposals = rows(data(&matched), "proposals");
+    assert_eq!(proposals[0].get("entry_ref"), proposals[1].get("entry_ref"));
+    assert_eq!(integer(&proposals[0], "leg_ordinal"), 1);
+    assert_eq!(integer(&proposals[1], "leg_ordinal"), 0);
+    let first = confirm_selection(&f.book, &confirmation_args(&matched, 0, "bank-reviewer"));
+    let second = confirm_selection(&f.book, &confirmation_args(&matched, 1, "bank-reviewer"));
+    assert_eq!(
+        data(&first).get("entry_ref"),
+        data(&second).get("entry_ref")
+    );
+    assert_eq!(integer(data(&first), "leg_ordinal"), 1);
+    assert_eq!(integer(data(&second), "leg_ordinal"), 0);
+    assert_ne!(
+        text(data(&first), "match_vid"),
+        text(data(&second), "match_vid")
+    );
+    assert_ne!(
+        text(data(&first), "match_digest"),
+        text(data(&second), "match_digest")
+    );
+    let status = ok_privileged(&f.book, &["bank", "status", "--import", manifest]);
+    assert_eq!(integer(data(&status), "confirmed_lines"), 2);
+    assert_eq!(integer(data(&status), "remaining_lines"), 0);
+    assert_eq!(data(&status).get("reconciled_through"), Some(&Json::Null));
+    let mut ordinals: Vec<_> = rows(data(&status), "confirmations")
+        .iter()
+        .map(|row| integer(row, "leg_ordinal"))
+        .collect();
+    ordinals.sort_unstable();
+    assert_eq!(ordinals, [0, 1]);
+    let after_tb = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    assert_eq!(data(&after_tb).get("rows"), data(&before_tb).get("rows"));
+}
+
+#[test]
+fn different_statements_cannot_confirm_the_same_cash_leg_twice() {
+    let f = Fixture::new();
+    f.post("single-claimed-leg", "2026-03-05", "debit", "100.00", "ONE");
+    let raw = format!(
+        "{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,100.00,2026-03-05,2026-03-05,CRDT,100.00,Customer,ONE\n"
+    );
+    let first = f.import("first-claim.csv", "csv", &raw);
+    let second = f.import(
+        "second-claim.csv",
+        "csv",
+        &raw.replace("\n1,BANK-123", "\n2,BANK-123"),
+    );
+    let first_manifest = text(data(&first), "manifest_oid");
+    let second_manifest = text(data(&second), "manifest_oid");
+    assert_ne!(first_manifest, second_manifest);
+    let first_match = ok_privileged(&f.book, &["bank", "match", "--import", first_manifest]);
+    let second_match = ok_privileged(&f.book, &["bank", "match", "--import", second_manifest]);
+    let first_proposal = &rows(data(&first_match), "proposals")[0];
+    let second_proposal = &rows(data(&second_match), "proposals")[0];
+    assert_eq!(
+        first_proposal.get("entry_ref"),
+        second_proposal.get("entry_ref")
+    );
+    assert_eq!(
+        first_proposal.get("leg_ordinal"),
+        second_proposal.get("leg_ordinal")
+    );
+    assert_eq!(integer(first_proposal, "eligible_candidate_count"), 1);
+    assert_eq!(integer(second_proposal, "eligible_candidate_count"), 1);
+    let recorded = confirm_selection(
+        &f.book,
+        &confirmation_args(&first_match, 0, "first-reviewer"),
+    );
+    let before = head(&f.book);
+    let conflicting = confirmation_args(&second_match, 0, "second-reviewer");
+    let (status, refusal) = run_privileged(
+        &f.book,
+        &conflicting.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(status, 6, "{}", refusal.render());
+    assert_eq!(
+        text(data(&refusal), "refusal_id"),
+        fa_journal::refusal::code::IDEMPOTENCY_CONFLICT
+    );
+    assert_eq!(head(&f.book), before);
+    let first_status = ok_privileged(&f.book, &["bank", "status", "--import", first_manifest]);
+    assert_eq!(integer(data(&first_status), "confirmed_lines"), 1);
+    assert_eq!(
+        rows(data(&first_status), "confirmations")[0].get("match_digest"),
+        data(&recorded).get("match_digest")
+    );
+    let second_status = ok_privileged(&f.book, &["bank", "status", "--import", second_manifest]);
+    assert_eq!(integer(data(&second_status), "confirmed_lines"), 0);
+    assert_eq!(integer(data(&second_status), "remaining_lines"), 1);
+    assert!(rows(data(&second_status), "confirmations").is_empty());
+    assert_eq!(head(&f.book), before);
+}
+
+#[test]
+fn confirmation_refuses_unprivileged_forged_and_historically_unavailable_selections() {
+    let f = Fixture::new();
+    let raw = format!(
+        "{CSV_HEADER}1,BANK-123,USD,2026-03-31,0.00,25.00,2026-03-05,2026-03-05,CRDT,25.00,Customer,PAY-25\n"
+    );
+    let imported = f.import("selection-boundary.csv", "csv", &raw);
+    let imported_at = head(&f.book);
+    f.post("later-known-cash", "2026-03-04", "debit", "25.00", "PAY-25");
+    let manifest = text(data(&imported), "manifest_oid");
+    let matched = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            manifest,
+            "--as",
+            "bank-preparer",
+        ],
+    );
+    assert_eq!(integer(data(&matched), "proposed_count"), 1);
+    let args = confirmation_args(&matched, 0, "bank-reviewer");
+    let before = head(&f.book);
+    let (status, refusal) = run(
+        &f.book,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(status, 3, "{}", refusal.render());
+    assert_eq!(text(data(&refusal), "refusal_id"), "FA-REF-142");
+    assert!(!refusal.render().contains("PAY-25"));
+    assert_eq!(head(&f.book), before);
+
+    let digest = text(&rows(data(&matched), "proposals")[0], "proposal_digest");
+    let forged_digest = format!(
+        "{}{}",
+        if digest.starts_with('0') { '1' } else { '0' },
+        &digest[1..]
+    );
+    for (flag, value) in [
+        ("--proposal-digest", forged_digest),
+        ("--source-known-at", imported_at.to_string()),
+        ("--date-window", "0".into()),
+    ] {
+        let mut forged = args.clone();
+        if let Some(position) = forged.iter().position(|arg| arg == flag) {
+            forged[position + 1] = value;
+        } else {
+            forged.extend([flag.into(), value]);
+        }
+        let (status, refusal) = run_privileged(
+            &f.book,
+            &forged.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(status, 3, "{flag}: {}", refusal.render());
+        assert_eq!(text(data(&refusal), "refusal_id"), "FA-REF-168", "{flag}");
+        assert_eq!(
+            head(&f.book),
+            before,
+            "{flag} must claim neither line nor leg"
+        );
+    }
+    let recorded = confirm_selection(&f.book, &args);
+    assert_eq!(
+        data(&recorded).get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+    assert_eq!(integer(data(&recorded), "recorded_at"), before + 1);
+}
+
 #[test]
 fn import_is_atomic_keeps_source_and_line_closure_and_is_content_idempotent() {
     let f = Fixture::new();
@@ -744,10 +1123,18 @@ fn bank_ties_are_explicit_and_reference_selection_can_resolve_them() {
     assert_eq!(row.get("competing_bank_lines"), Some(&Json::Bool(false)));
     assert_eq!(row.get("counterparty"), Some(&Json::Null));
     assert_eq!(row.get("reference"), Some(&Json::Null));
+    assert_eq!(row.get("confirmation_command"), Some(&Json::Null));
+    let selection = confirmation_args(&matched, 0, "tie-reviewer");
+    let (status, refused) = run_privileged(
+        &f.book,
+        &selection.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(status, 3, "{}", refused.render());
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-168");
     assert_eq!(
         head(&f.book),
         before,
-        "diagnostics and proposals do not write"
+        "diagnostics and an ambiguous confirmation do not write"
     );
 
     let selective = raw.replace("100.00,,\n", "100.00,,one\n");
@@ -767,6 +1154,7 @@ fn bank_ties_are_explicit_and_reference_selection_can_resolve_them() {
     assert_eq!(integer(data(&matched), "ambiguous_count"), 0);
     assert_eq!(integer(row, "eligible_candidate_count"), 1);
     assert_eq!(row.get("ambiguous"), Some(&Json::Bool(false)));
+    assert!(text(row, "confirmation_command").contains("bank confirm"));
 }
 
 #[test]
@@ -801,7 +1189,15 @@ fn a_consumed_cash_leg_does_not_hide_competition_between_statement_lines() {
         assert_eq!(integer(row, "eligible_candidate_count"), 1);
         assert_eq!(row.get("ambiguous"), Some(&Json::Bool(true)));
         assert_eq!(row.get("competing_bank_lines"), Some(&Json::Bool(true)));
+        assert_eq!(row.get("confirmation_command"), Some(&Json::Null));
     }
+    let selection = confirmation_args(&matched, 0, "competition-reviewer");
+    let (status, refused) = run_privileged(
+        &f.book,
+        &selection.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(status, 3, "{}", refused.render());
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-168");
     assert_eq!(head(&f.book), before);
 }
 

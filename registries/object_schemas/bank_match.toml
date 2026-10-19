@@ -1,0 +1,30 @@
+# Native exact bank confirmations and exclusive cash-leg claims (fa-zbne).
+schema_version = 1
+name = "BankMatchConfirmation"
+owner = "fa-journal::bank"
+major = 1
+minor = 0
+externally_verifiable = false
+
+format = "FA-BANK-MATCH"
+digest_domain = "fa:bank-match-confirmation:v1"
+line_identity = "book_id + original statement Document OID + one-based source line ordinal"
+leg_identity = "book_id + original cash Entry VID + actual leg ordinal; Entry digest is not an identity input"
+method = "pinned-exact-one-to-one"
+source_fields = ["manifest_oid:bytes32", "manifest_commit:bytes32", "statement_oid:bytes32", "statement_commit:bytes32", "import_run:u128", "import_receipt_hash:bytes32", "import_recorded_at:u64", "account:u128", "line_document_oid:bytes32", "bank_line_oid:bytes32", "line_ordinal:u32", "entry_ref:EntryRef", "leg_ordinal:u16"]
+decision_fields = ["source_known_at:u64", "date_window_days:u32", "candidate_ordinal:u64", "proposer:u128", "proposal_digest:bytes32", "decision_card:DecisionCard"]
+confirmation_fields = ["confirmed_by:u128", "confirming_profile:Human", "capability_commitment:bytes32", "security_policy_epoch:u64"]
+
+[[decision]]
+field = "BankMatch"
+appendix_a = "BankLine MATCHES and attributed reconciliation decisions; plan §5.7 / §9.5"
+code_type = "fa-journal::bank::BankMatchConfirmation; label BankMatch=47"
+rationale = "A compact immutable native object binds one exact retained line to one actual cash leg. Current Human Read, Reconcile and Privileged authority is witnessed at publication. The original complete manifest and receipt, all canonical lines, predecessor closure and historical cash candidates are verified; no caller-supplied card can invent uniqueness or a different candidate ordinal. Full source bytes and private memos are not copied into the object. Original manifest bytes may be supplied for external-storage readback only when they reproduce its retained OID and commitment. This is native-book verification; no portable outsider confirmation proof is claimed."
+tracking_bead = "fa-zbne"
+
+[[decision]]
+field = "BankMatchedLeg"
+appendix_a = "One-to-one bank reconciliation claims; plan §5.7 / FA-INV-04"
+code_type = "fa-journal::bank::bank_matched_leg_vid; label BankMatchedLeg=48"
+rationale = "The unique cash-leg claim and source-line confirmation publish together with MATCHES, CITES and IN_BOOK edges. Native creation records bind both immutable payloads and strong edges to the original transaction; changing, relabelling or deleting them cannot reset a spent source or leg. Exact retries preserve the original confirming principal and publication sequence. A later reversal does not erase the historical confirmation. This bounded increment supports neither supersession nor a reconciled-through lock, which require separate native lineage and balance-assertion laws."
+tracking_bead = "fa-zbne"

@@ -458,6 +458,21 @@ complexity_witness = "O(input bytes + lines) parse, canonical projection and bou
 notes = "No monetary entries or match decisions. Re-reading reparses retained source and verifies complete projected bytes. Source custody uses the actual intake profile; derived evidence is conservatively self-sourced. DERIVED_FROM adds no publication or shared mutable object. The two-line all-fresh inline fixture writes 9 vertices and 13 edges in one publication; exact retries write nothing. External blobs are durable before graph publication; the two-barrier floor describes the inline fixture. Existing derived documents retain their original lineage. Explicit predecessor links also stage one immutable BankStatementLink keyed by book/account/current statement OID with exactly four DERIVED_FROM edges to the current/prior ImportRuns and current/prior manifest Documents in the same publication. The two-line all-fresh linked fixture writes 10 vertices and 17 edges in one publication; unlinked remains 9 vertices and 13 edges. Its absent/equal point witness prevents conflicting linked imports without a shared mutable hot object. Linked retries return the original receipt. Continuity replay costs O(total retained source bytes + lines + predecessor links), bounded by 4096 links; the 16 MiB input bound applies to each source. Every predecessor receipt and source document remains witnessed from validation through publication."
 
 [[operation_class]]
+id = "bank_match_confirmation"
+name = "Immutable exact bank-line to cash-leg confirmation"
+substrate_class = "Current admission, native source verification and one witnessed confirmation transaction"
+substrate_transactions = "1 for a new exact confirmation; 0 for an identical retry or historical read"
+today_posture = "One immutable source-line confirmation and one unique actual cash-leg claim publish atomically; no monetary Entry or reconciliation register is written"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "2 immutable vertices (BankMatch and BankMatchedLeg), 1 MATCHES edge, 6 CITES edges and 2 IN_BOOK edges; source documents, cash Entry and cash Leg remain unchanged"
+hot_object_exceptions = []
+external_authorities = "none; retained governed evidence is reauthorized locally under current Human Read, Reconcile and Privileged authority"
+complexity_witness = "Fresh confirmation verifies retained native Entry history through the selected source prefix, reconstructs O(cash legs + statement lines) exact bidirectional eligibility, and retains point witnesses for current authority, source closure, actual Entry/Leg, migration visibility, reversal absence and exclusive line/leg identities. Facade source replay additionally costs O(retained source bytes + predecessor bytes + lines), with at most 1022 lines per statement and 4096 predecessor links. Readback checks native creation records for the confirmation, claim and strong edges, plus the retained source receipt and exact cash entry."
+notes = "No shared mutable hot object. Same-transaction first-committer-wins claims prevent line/leg double use; spent native identities cannot be reset by deletion or relabelling. Exact retries and status publish nothing. Cold history hydration and original-source blob reads are read costs, not extra publications. Native creation-history validation is a complete-prefix cost, not a constant-time claim. Compact confirmation payloads reference the original manifest; external manifest bytes are supplied and checked against their retained commitment before receipt replay. Counted witness: fa-journal/tests/bank_matches.rs."
+
+[[operation_class]]
 id = "closing_routes_record"
 name = "Journaled nominal-to-equity closing routes"
 substrate_class = "One witnessed SchemaChange control transaction"

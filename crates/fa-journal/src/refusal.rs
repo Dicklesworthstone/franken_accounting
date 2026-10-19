@@ -165,6 +165,10 @@ pub mod code {
     pub const DOCUMENT_INTAKE: &str = "FA-REF-083";
     /// An explicit bank `--previous-import` fails §9.5 continuity, or its retained chain cannot be completely checked.
     pub const BANK_CONTINUITY: &str = "FA-REF-165";
+    /// A bank confirmation does not select an admissible exact source line and cash leg, or either is already occupied.
+    pub const BANK_MATCH: &str = "FA-REF-168";
+    /// A retained bank confirmation, native birth or line/leg provenance closure was changed or is missing.
+    pub const BANK_MATCH_DRIFT: &str = "FA-REF-169";
     /// The declared provenance grade is one only a verified receipt chain may confer.
     pub const GRADE_UNVERIFIED: &str = "FA-REF-084";
     /// A stored Document's mirrors disagree with its payload, or its payload does not verify.

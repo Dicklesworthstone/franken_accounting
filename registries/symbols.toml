@@ -164,6 +164,15 @@ name = "UsageCell"
 id = 46
 name = "UsageDebit"
 
+# fa-zbne: immutable bank-line confirmation and its unique cash-leg claim.
+[[label]]
+id = 47
+name = "BankMatch"
+
+[[label]]
+id = 48
+name = "BankMatchedLeg"
+
 # ---- property keys --------------------------------------------------------
 [[property]]
 id = 1

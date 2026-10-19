@@ -971,6 +971,23 @@ exit = "verification"
 cite = "plan §14.2 / FA-INV-04 / FA-INV-10.ceiling (usage cells refold from immutable same-publication admission receipts)"
 fix = "preserve the original native history and verify_usage through Book or AsyncBook; do not reset a usage cell or mint a replacement quota to bypass the discrepancy"
 
+# ---- Immutable bank confirmations (fa-zbne, 168–169) ------------------------
+[[refusal]]
+code = "FA-REF-168"
+name = "BANK_MATCH"
+owners = ["fa-journal", "fa"]
+exit = "refusal"
+cite = "plan §5.7 / §9.5 (one exact retained bank line and immutable cash leg per confirmation)"
+fix = "replay bank match under current full-source authority and confirm its exact unambiguous selection; occupied lines and cash legs cannot be reused or implicitly replaced"
+
+[[refusal]]
+code = "FA-REF-169"
+name = "BANK_MATCH_DRIFT"
+owners = ["fa-journal"]
+exit = "verification"
+cite = "FA-INV-02 / FA-INV-04 / plan §5.7 (confirmation payload, source bindings and native creation records agree)"
+fix = "preserve the store and investigate the original confirmation, source ImportRun and documents, Entry and occupied-leg claim; do not reset or reuse a damaged identity"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-145"

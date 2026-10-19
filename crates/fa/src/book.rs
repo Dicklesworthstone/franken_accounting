@@ -1501,6 +1501,32 @@ impl Book {
         )))
     }
 
+    /// Confirm one exact retained bank-line proposal. Its immutable receipt
+    /// binds the actual cash-leg ordinal and the current confirming principal.
+    pub fn confirm_bank_statement_match(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankConfirmationRequest,
+    ) -> Outcome<crate::bank::BankMatchRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.confirm_bank_statement_match(
+            &purposes, capability, request,
+        )))
+    }
+
+    /// The immutable confirmation inventory for one retained bank statement
+    /// at a selected journal prefix, under current source-read authority.
+    pub fn bank_confirmation_status(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankStatusRequest,
+    ) -> Outcome<crate::bank::BankConfirmationStatus> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.bank_confirmation_status(
+            &purposes, capability, request,
+        )))
+    }
+
     /// The receipt of the import run whose control entry is `run`.
     pub fn read_run(&self, run: VId) -> Result<Option<fa_journal::RunReceipt>, BookError> {
         with_store!(&self.store, core => core.read_run(&self.purposes(), run))
