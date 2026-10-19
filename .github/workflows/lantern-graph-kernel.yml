@@ -11,6 +11,9 @@ on:
       - 'crates/fa/src/lib.rs'
       - 'crates/fa/src/book.rs'
       - 'crates/fa/src/bank.rs'
+      - 'crates/fa/src/bank/**'
+      - 'crates/fa-journal/src/import.rs'
+      - 'crates/fa-journal/src/import/**'
       - 'crates/fa-cli/src/bank.rs'
       - 'crates/fa-cli/src/finding.rs'
       - 'crates/fa-cli/src/lib.rs'
@@ -178,6 +181,7 @@ jobs:
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-formats --lib bank --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --lib reconciliation --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib bank --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib import --jobs 2
       - name: Test network engine, real journal and complete Lantern corpus
         if: ${{ !cancelled() }}
         shell: bash

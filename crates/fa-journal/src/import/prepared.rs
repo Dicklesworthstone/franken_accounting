@@ -3,6 +3,8 @@
 //! The transaction retains its original capability, policy and identity
 //! witnesses across external I/O and any caller-controlled preparation delay.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, relation};
 use fa_model::{ControlPayload, Entry, entry_mirrors, entry_vid};
@@ -103,6 +105,106 @@ impl PreparedImport {
         Ok(Ok(()))
     }
 
+    /// Project content-bound source lists into this import's transaction.
+    /// Every child and parent must belong to its receipted document set.
+    /// Existing children are checked, never amended. Changing the source list
+    /// changes the document identity; callers cannot add unrelated graph edges.
+    pub fn with_document_derivations<V: Vfs + Clone>(
+        mut self: Box<Self>,
+        db: &mut Database<V>,
+        cx: &PurposeContexts,
+        documents: &[crate::Document],
+    ) -> Outcome<Box<Self>> {
+        let invalid = super::derived::invalid;
+        cx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+        let all: BTreeSet<_> = self
+            .recorded
+            .iter()
+            .chain(&self.already_held)
+            .copied()
+            .collect();
+        let fresh: BTreeSet<_> = self.recorded.iter().copied().collect();
+        let policy = EvidencePolicy::embedded()?;
+        let mut graph = BTreeMap::new();
+        for document in documents {
+            let child = document.oid();
+            if document.book_id != self.book.book_id || !all.contains(&child) {
+                self.txn.abort();
+                return Ok(Err(invalid(
+                    "derived child is not a document in this import",
+                )));
+            }
+            let parents = match super::derived::sources_with_policy(document, &policy) {
+                Ok(decoded) => decoded,
+                Err(refusal) => {
+                    self.txn.abort();
+                    return Ok(Err(refusal));
+                }
+            };
+            if parents
+                .iter()
+                .any(|parent| *parent == child || !all.contains(parent))
+            {
+                self.txn.abort();
+                return Ok(Err(invalid(
+                    "a derivation source is self-referential or outside this import",
+                )));
+            }
+            if graph.insert(child, parents).is_some() {
+                self.txn.abort();
+                return Ok(Err(invalid(
+                    "each derived child must be staged exactly once",
+                )));
+            }
+        }
+        if !derivation_acyclic(&graph) {
+            self.txn.abort();
+            return Ok(Err(invalid("derived-document sources form a cycle")));
+        }
+        let held_edges = if graph.keys().any(|child| !fresh.contains(child)) {
+            db.edges_at(self.txn.basis())?
+        } else {
+            Vec::new()
+        };
+        let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+        for (child, parents) in graph {
+            let source = document_vid(&child);
+            if !fresh.contains(&child) {
+                let expected: BTreeSet<_> = parents.iter().map(document_vid).collect();
+                let actual: BTreeSet<_> = held_edges
+                    .iter()
+                    .filter(|edge| {
+                        edge.entry.src == source && edge.entry.relation == relation::DERIVED_FROM
+                    })
+                    .map(|edge| edge.entry.dst)
+                    .collect();
+                if actual != expected {
+                    self.txn.abort();
+                    return Ok(Err(invalid(
+                        "an already-held derived document has different or missing source edges; existing lineage cannot be amended",
+                    )));
+                }
+                continue;
+            }
+            for parent in parents {
+                let target = document_vid(&parent);
+                batch.add_edge(
+                    edge_id(relation::DERIVED_FROM, source, target),
+                    source,
+                    target,
+                    vec![],
+                );
+            }
+        }
+        if !batch.is_empty()
+            && let Err(error) = self.txn.write(db, batch)
+        {
+            self.txn.abort();
+            return Err(error.into());
+        }
+        Ok(Ok(self))
+    }
+
     /// Recheck expiry and commit the original witnessed transaction. Never
     /// refresh its policy/revocation witnesses after external bytes are written.
     pub async fn commit<V: Vfs + Clone>(
@@ -157,6 +259,52 @@ impl PreparedImport {
             },
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+fn derivation_acyclic(graph: &BTreeMap<fa_model::Oid, Vec<fa_model::Oid>>) -> bool {
+    // Iterative topological elimination avoids recursion on caller input.
+    let mut pending: BTreeSet<_> = graph.keys().copied().collect();
+    while !pending.is_empty() {
+        let ready: Vec<_> = pending
+            .iter()
+            .filter(|child| {
+                graph
+                    .get(*child)
+                    .is_some_and(|parents| parents.iter().all(|p| !pending.contains(p)))
+            })
+            .copied()
+            .collect();
+        if ready.is_empty() {
+            return false;
+        }
+        for child in ready {
+            pending.remove(&child);
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod derivation_tests {
+    use super::*;
+    use fa_model::Oid;
+
+    #[test]
+    fn derivation_dag_refuses_cycles_including_indirect_cycles() {
+        let a = Oid([1; 32]);
+        let b = Oid([2; 32]);
+        let c = Oid([3; 32]);
+        assert!(derivation_acyclic(&BTreeMap::from([
+            (a, vec![b]),
+            (b, vec![c])
+        ])));
+        assert!(!derivation_acyclic(&BTreeMap::from([(a, vec![a])])));
+        assert!(!derivation_acyclic(&BTreeMap::from([
+            (a, vec![b]),
+            (b, vec![c]),
+            (c, vec![a])
+        ])));
     }
 }
 

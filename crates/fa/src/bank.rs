@@ -476,6 +476,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             closing_balance: extract.closing_balance,
             line_oids,
         };
+        let mut derivations = documents.clone();
         documents.push(source);
         let manifest_document = Document {
             book_id: manifest.book_id,
@@ -488,6 +489,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 .map_err(|e| corrupt(e.to_string()))?,
         };
         let manifest_oid = manifest_document.oid();
+        derivations.push(manifest_document.clone());
         documents.push(manifest_document);
         let previous_receipt = match self.bank_import_receipt(cx, &manifest, manifest_oid)? {
             Ok(receipt) => receipt,
@@ -537,6 +539,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     prepared.abort();
                     return Ok(Err(refusal));
                 }
+                let prepared = match prepared.with_document_derivations(
+                    &mut self.db,
+                    cx,
+                    &derivations,
+                )? {
+                    Ok(prepared) => prepared,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
                 match prepared.commit(&mut self.db, cx).await? {
                     Ok(receipt) => receipt,
                     Err(refusal) => return Ok(Err(refusal)),
@@ -898,3 +908,6 @@ mod tests {
         assert_ne!(changed.canonical_bytes().unwrap(), bytes);
     }
 }
+
+#[cfg(test)]
+mod provenance_tests;

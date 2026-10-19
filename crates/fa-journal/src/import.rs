@@ -44,8 +44,10 @@ use crate::policy::refusal;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::prop;
 
+mod derived;
 mod external;
 mod prepared;
+pub use derived::{decode_derivation, document_sources, encode_derivation};
 pub use external::{import_run_in_store, prepare_import_in_store};
 pub use prepared::{ImportPreparation, PreparedImport, prepare_import};
 
