@@ -21,6 +21,10 @@ pub(super) enum Expected {
     Reconciliation(AgingReconciliationRequest),
     Portfolio(AgingPortfolioRequest),
     PolicyCashFlow(RollForwardRequest, CashFlowPolicy),
+    /// Optional for effective-date aging: replay then checks the recipient's
+    /// own question (Book::replay_effective_date_aging_for), and the aging
+    /// workpaper needs it.
+    Aging(fa::AgingRequest),
 }
 
 impl Expected {
@@ -39,6 +43,9 @@ impl Expected {
             Self::PolicyCashFlow(request, policy) => {
                 fa::ReportArtifactExpectation::PolicyCashFlow { request, policy }
             }
+            // The generic verifier replays aging as supplied; replay_cmd then
+            // binds the recipient's request with replay_effective_date_aging_for.
+            Self::Aging(_) => fa::ReportArtifactExpectation::AsSupplied,
         }
     }
 }
@@ -285,6 +292,21 @@ pub(super) fn parse(args: &Args, book: &Book) -> Result<Expected, Fail> {
                 buckets: aging_buckets(&doc)?,
             }))
         }
+        "aging" => {
+            exact_fields(&doc, &["kind", "account", "through", "known_at", "buckets"])?;
+            // An omitted account is the whole-book aging the producer chose by
+            // omitting --account; it is never filled in from the certificate.
+            let selected = match doc.get("account") {
+                None => None,
+                Some(_) => Some(account(string(&doc, "account")?, book)?),
+            };
+            Ok(Expected::Aging(fa::AgingRequest {
+                account: selected,
+                effective_through: day(&doc, "through")?,
+                known_at: Some(fixed_prefix(&doc)?),
+                buckets: aging_buckets(&doc)?,
+            }))
+        }
         "aging-portfolio" => {
             let selected = match string(&doc, "scope")? {
                 "all-posting" => false,
@@ -504,6 +526,17 @@ pub(crate) fn reconciliation_expectation_json(request: &AgingReconciliationReque
         ("known_at", known_at_json(request.known_at)),
         ("buckets", buckets_json(&request.buckets)),
     ])
+}
+
+pub(crate) fn aging_expectation_json(request: &fa::AgingRequest) -> Json {
+    let mut fields = vec![("kind", s("aging"))];
+    if let Some(account) = request.account {
+        fields.push(("account", s(format!("{:032x}", account.0))));
+    }
+    fields.push(("through", s(request.effective_through.render())));
+    fields.push(("known_at", known_at_json(request.known_at)));
+    fields.push(("buckets", buckets_json(&request.buckets)));
+    obj(fields)
 }
 
 pub(crate) fn portfolio_expectation_json(request: &AgingPortfolioRequest) -> Json {
