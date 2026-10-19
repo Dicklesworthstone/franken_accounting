@@ -1,7 +1,7 @@
 //! The typed capability (plan §14.2, §14.4, Appendix A `Capability`).
 //!
 //! A capability is a conjunction of caveats held by one principal: the ops
-//! it may exercise, per-unit amount ceilings, a declared expiry, the
+//! it may exercise, per-unit amount and daily-total ceilings, a declared expiry, the
 //! profile template it was issued under, and the scope caveats (`books`,
 //! `accounts`, `periods`, `effective ≤ date`, `known_at ≤ seq`, `branch`)
 //! that [`crate::admit::reach`] judges. It is a value with canonical bytes
@@ -15,6 +15,12 @@
 //! book head it observed just before opening the posting transaction on
 //! the single-writer handle. Wall-clock expiry arrives with TimeEvidence;
 //! this crate never reads a clock.
+//!
+//! **Daily ceilings share one issuance root.** `daily_total ≤ A` bounds
+//! gross debit mantissas per unit over a book calendar day. The kernel
+//! derives that day from retained time evidence and charges the root's
+//! journal-backed usage in the posting transaction. This value carries the
+//! limits and the immutable inherited root, never a caller-reported balance.
 //!
 //! **Trust boundary.** This crate decides whether a capability authorizes
 //! an act; it does not decide whether the caller holds the capability. In
@@ -63,6 +69,13 @@ pub const CAVEAT_BRANCH: u8 = 7;
 /// is an *issued* token: the kernel admits it only with its journaled
 /// issuance, and its holder proves possession of the secret.
 pub const CAVEAT_POSSESSION: u8 = 8;
+/// `daily_total ≤ A` per unit: non-empty `list(u32 unit, i128 max)`,
+/// ascending by unit, with positive mantissas (plan §14.2).
+pub const CAVEAT_DAILY_TOTALS: u8 = 9;
+/// The inherited daily quota root: the canonical commitment of the root
+/// issuance, `[u8; 32]`. Absent on a root issuance, whose own commitment
+/// identifies its quota; present on descendants and validated by the kernel.
+pub const CAVEAT_DAILY_ROOT: u8 = 10;
 /// Domain of [`possession_digest`].
 pub const POSSESSION_DOMAIN: &[u8] = b"fa:capability-possession:v1";
 
@@ -85,6 +98,8 @@ pub const MAX_CAVEATS: usize = 16;
 pub const MAX_CAVEAT_BYTES: usize = 8 * 1024;
 /// Ceilings per capability, bounded so a decoder never allocates on a claim.
 pub const MAX_CEILINGS: usize = 256;
+/// Units a daily-total caveat may bound, checked before decoder allocation.
+pub const MAX_DAILY_TOTALS: usize = 256;
 
 /// The base profile templates (plan §14.4). Preparer/Approver/Controller and
 /// the external profiles are op sets over `Human`; `Agent` and `System` carry
@@ -181,6 +196,14 @@ pub enum CapabilityError {
         max_mantissa: i128,
     },
     TooManyCeilings,
+    /// A daily-total ceiling must be a positive mantissa.
+    BadDailyTotal {
+        unit: UnitId,
+        max_mantissa: i128,
+    },
+    TooManyDailyTotals,
+    /// A daily root requires daily totals and cannot be moved to a second root.
+    BadDailyRoot,
     /// A books caveat names no book, or more than [`MAX_BOOKS`].
     BadBooks,
     /// A redaction caveat names an unregistered contract id, or would move a
@@ -228,6 +251,18 @@ impl fmt::Display for CapabilityError {
                 unit.0
             ),
             Self::TooManyCeilings => write!(f, "more than {MAX_CEILINGS} ceilings"),
+            Self::BadDailyTotal { unit, max_mantissa } => write!(
+                f,
+                "daily-total ceiling {max_mantissa} for unit {} is not a positive mantissa",
+                unit.0
+            ),
+            Self::TooManyDailyTotals => {
+                write!(f, "more than {MAX_DAILY_TOTALS} daily-total ceilings")
+            }
+            Self::BadDailyRoot => write!(
+                f,
+                "a daily quota root requires daily-total ceilings and cannot be changed once inherited"
+            ),
             Self::BadBooks => write!(f, "a books caveat names 1..={MAX_BOOKS} books"),
             Self::BadRedaction { contract } => write!(
                 f,
@@ -300,6 +335,13 @@ pub struct Capability {
     branch: Option<Id128>,
     /// `possession = H(secret)`: the token is issued and holder-bound.
     possession: Option<[u8; 32]>,
+    /// Gross debit mantissas per book calendar day, per unit, shared across
+    /// a root issuance and all its descendants. A non-empty map permits
+    /// only the units it bounds, as enforced by the posting kernel.
+    daily_totals: BTreeMap<UnitId, i128>,
+    /// The inherited root issuance's commitment. `None` with daily totals
+    /// means this capability is a root; the kernel validates that issuance.
+    daily_root: Option<[u8; 32]>,
 }
 
 impl Capability {
@@ -329,6 +371,8 @@ impl Capability {
             known_at: None,
             branch: None,
             possession: None,
+            daily_totals: BTreeMap::new(),
+            daily_root: None,
         })
     }
 
@@ -363,6 +407,38 @@ impl Capability {
         if self.ceilings.len() > MAX_CEILINGS {
             return Err(CapabilityError::TooManyCeilings);
         }
+        Ok(self)
+    }
+
+    /// Add a unit's daily-total ceiling, or tighten its existing bound.
+    /// Like [`Self::with_ceiling`], this constructs a proposed grant; the
+    /// kernel checks that issuance never adds units outside an issuer's
+    /// bounded set, drops its limits, or resets its inherited quota root.
+    pub fn with_daily_total(
+        mut self,
+        unit: UnitId,
+        max_mantissa: i128,
+    ) -> Result<Self, CapabilityError> {
+        if max_mantissa <= 0 {
+            return Err(CapabilityError::BadDailyTotal { unit, max_mantissa });
+        }
+        let slot = self.daily_totals.entry(unit).or_insert(max_mantissa);
+        *slot = (*slot).min(max_mantissa);
+        if self.daily_totals.len() > MAX_DAILY_TOTALS {
+            return Err(CapabilityError::TooManyDailyTotals);
+        }
+        Ok(self)
+    }
+
+    /// Bind daily totals to an inherited root, preserving it on every
+    /// later narrowing. A root cannot stand alone or be replaced. The
+    /// kernel verifies that this commitment is the issuer's actual quota
+    /// root; naming a commitment here does not prove that lineage.
+    pub fn with_daily_root(mut self, root: [u8; 32]) -> Result<Self, CapabilityError> {
+        if self.daily_totals.is_empty() || self.daily_root.is_some_and(|held| held != root) {
+            return Err(CapabilityError::BadDailyRoot);
+        }
+        self.daily_root = Some(root);
         Ok(self)
     }
 
@@ -583,6 +659,18 @@ impl Capability {
     }
 
     #[must_use]
+    pub fn daily_totals(&self) -> &BTreeMap<UnitId, i128> {
+        &self.daily_totals
+    }
+
+    /// The inherited root, or `None` for an independently issued root or
+    /// a capability without daily-total limits.
+    #[must_use]
+    pub fn daily_root(&self) -> Option<[u8; 32]> {
+        self.daily_root
+    }
+
+    #[must_use]
     pub fn expires_at(&self) -> Option<CommitSeq> {
         self.expires_at
     }
@@ -599,7 +687,9 @@ impl Capability {
     /// `list(id128 book, ascending)`; `redaction` (2) `u16 contract`;
     /// `accounts` (3) and `periods` (4) `list(str code, ascending)`;
     /// `effective` (5) `i32 day`; `known_at` (6) `u64 seq`; `branch` (7)
-    /// `id128 branch`.
+    /// `id128 branch`; `possession` (8) `[u8; 32]`; `daily_totals` (9)
+    /// `list(u32 unit, i128 max, ascending by unit)`; `daily_root` (10)
+    /// `[u8; 32]`, only with non-empty `daily_totals`.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, CapabilityError> {
         let ops: Vec<u8> = self.ops.iter().map(|op| op.tag()).collect();
         let ceilings: Vec<(UnitId, i128)> = self.ceilings.iter().map(|(u, m)| (*u, *m)).collect();
@@ -686,6 +776,21 @@ impl Capability {
         if let Some(digest) = self.possession {
             out.push((CAVEAT_POSSESSION, digest.to_vec()));
         }
+        if !self.daily_totals.is_empty() {
+            let totals: Vec<(UnitId, i128)> =
+                self.daily_totals.iter().map(|(u, m)| (*u, *m)).collect();
+            let mut payload = Writer::with_capacity(4 + totals.len() * 20);
+            payload.list(&totals, |w, (u, m)| {
+                w.u32(u.0).i128(*m);
+            });
+            out.push((
+                CAVEAT_DAILY_TOTALS,
+                payload.finish().map_err(CapabilityError::Encode)?,
+            ));
+        }
+        if let Some(root) = self.daily_root {
+            out.push((CAVEAT_DAILY_ROOT, root.to_vec()));
+        }
         Ok(out)
     }
 
@@ -753,6 +858,8 @@ impl Capability {
         let mut known_at = None;
         let mut branch = None;
         let mut possession = None;
+        let mut daily_totals = Vec::new();
+        let mut daily_root = None;
         if version == CAPABILITY_VERSION_CAVEATS {
             let caveats = r
                 .list(MAX_CAVEATS, "capability.caveats", |r| {
@@ -830,6 +937,17 @@ impl Capability {
                         p.finish().map_err(CapabilityError::Decode)?;
                         possession = Some(digest);
                     }
+                    CAVEAT_DAILY_TOTALS => {
+                        daily_totals = decode_daily_totals(payload)?;
+                    }
+                    CAVEAT_DAILY_ROOT => {
+                        let mut p = Reader::new(payload);
+                        let root = p
+                            .fixed("capability.daily_root")
+                            .map_err(CapabilityError::Decode)?;
+                        p.finish().map_err(CapabilityError::Decode)?;
+                        daily_root = Some(root);
+                    }
                     tag => return Err(CapabilityError::UnknownCaveat { tag }),
                 }
             }
@@ -866,8 +984,40 @@ impl Capability {
         if let Some(digest) = possession {
             cap = cap.holder_bound(digest);
         }
+        for (unit, max) in daily_totals {
+            cap = cap.with_daily_total(unit, max)?;
+        }
+        if let Some(root) = daily_root {
+            cap = cap.with_daily_root(root)?;
+        }
         Ok(cap)
     }
+}
+
+/// The daily-total payload is non-empty, bounded, strictly ascending by
+/// unit and exact in length. The constructor checks each positive bound.
+fn decode_daily_totals(payload: &[u8]) -> Result<Vec<(UnitId, i128)>, CapabilityError> {
+    let mut r = Reader::new(payload);
+    let totals = r
+        .list(MAX_DAILY_TOTALS, "capability.daily_totals", |r| {
+            Ok((
+                UnitId(r.u32("daily_total.unit")?),
+                r.i128("daily_total.max")?,
+            ))
+        })
+        .map_err(CapabilityError::Decode)?;
+    if totals.is_empty() {
+        return Err(CapabilityError::Decode(
+            r.invalid("capability.daily_totals"),
+        ));
+    }
+    if !totals.windows(2).all(|w| w[0].0 < w[1].0) {
+        return Err(CapabilityError::Decode(
+            r.unsorted("capability.daily_totals"),
+        ));
+    }
+    r.finish().map_err(CapabilityError::Decode)?;
+    Ok(totals)
 }
 
 /// `codes` as a set when it names 1..=`max` codes of 1..=`max_bytes` bytes.
@@ -1266,7 +1416,7 @@ mod tests {
         assert_eq!(Capability::decode(&v2_two).unwrap(), redacted);
         assert_eq!(redacted.redaction(), Some(1));
         assert!(!redacted.is_scoped());
-        // An unknown caveat tag (tag 8) fails closed rather than decoding as
+        // An unknown caveat tag fails closed rather than decoding as
         // less restricted than it was issued.
         let v2_unknown = hex(concat!(
             "0200",                             // version 2
@@ -1282,12 +1432,12 @@ mod tests {
             "14000000",                         //   20 payload bytes:
             "01000000",                         //     one book,
             "02020202020202020202020202020202", //     Id128([2; 16])
-            "09",                               //   tag 9 (unknown; 8 is possession)
+            "ff",                               //   tag 255 (unknown)
             "00000000",                         //   empty payload
         ));
         assert_eq!(
             Capability::decode(&v2_unknown),
-            Err(CapabilityError::UnknownCaveat { tag: 9 })
+            Err(CapabilityError::UnknownCaveat { tag: 255 })
         );
         // Tags are strictly ascending, and a v2 names at least one caveat.
         let mut swapped = v2.clone();
@@ -1410,6 +1560,216 @@ mod tests {
             agent().with_ceiling(UnitId(1), 0),
             Err(CapabilityError::BadCeiling { .. })
         ));
+    }
+
+    /// The new caveats append after possession without changing its tag or
+    /// the base encoding. Daily limits and the shared root each bind the
+    /// commitment, including when they coexist with a holder-bound token.
+    #[test]
+    fn daily_total_and_root_bytes_are_golden_after_possession() {
+        let golden = hex(concat!(
+            "0200",                             // version 2
+            "01000000000000000000000000000000", // holder VId(1)
+            "00",                               // profile Human
+            "01000000",                         // one op:
+            "06",                               //   close
+            "00000000",                         // no per-leg ceilings
+            "00",                               // no expiry
+            "01000000000000000000000000000000", // issuer VId(1)
+            "03000000",                         // three caveats:
+            "08",                               //   possession
+            "20000000",                         //   32 payload bytes:
+            "0404040404040404040404040404040404040404040404040404040404040404",
+            "09",       //   daily totals
+            "2c000000", //   44 payload bytes:
+            "02000000", //     two units,
+            "02000000", //     UnitId(2), max 1000,
+            "e8030000000000000000000000000000",
+            "09000000", //     UnitId(9), max 2000
+            "d0070000000000000000000000000000",
+            "0a",       //   daily root
+            "20000000", //   32 payload bytes:
+            "0303030303030303030303030303030303030303030303030303030303030303",
+        ));
+        let root = Capability::embedded(VId(1), &["close"])
+            .unwrap()
+            .holder_bound([4; 32])
+            .with_daily_total(UnitId(9), 2_000)
+            .unwrap()
+            .with_daily_total(UnitId(2), 1_000)
+            .unwrap();
+        assert_eq!(root.daily_root(), None);
+        let child = root.clone().with_daily_root([3; 32]).unwrap();
+        assert_eq!(child.canonical_bytes().unwrap(), golden);
+        assert_eq!(Capability::decode(&golden).unwrap(), child);
+        assert!(!child.is_scoped(), "daily quotas do not alter read reach");
+        assert_ne!(root.commitment().unwrap(), child.commitment().unwrap());
+        assert_ne!(
+            root.with_daily_root([5; 32]).unwrap().commitment().unwrap(),
+            child.commitment().unwrap()
+        );
+        assert_ne!(
+            child
+                .clone()
+                .with_daily_total(UnitId(2), 999)
+                .unwrap()
+                .commitment()
+                .unwrap(),
+            child.commitment().unwrap()
+        );
+    }
+
+    #[test]
+    fn daily_total_narrowing_preserves_the_root_and_independent_per_leg_limits() {
+        let cap = agent()
+            .with_daily_total(UnitId(0), 400_000)
+            .unwrap()
+            .with_daily_total(UnitId(1), 200_000)
+            .unwrap()
+            .with_daily_root([7; 32])
+            .unwrap();
+        for proposed in [1, 399_999, 400_000, 400_001, i128::MAX] {
+            let narrowed = cap.clone().with_daily_total(UnitId(0), proposed).unwrap();
+            assert_eq!(
+                narrowed.daily_totals().get(&UnitId(0)),
+                Some(&proposed.min(400_000))
+            );
+            assert_eq!(narrowed.daily_totals().get(&UnitId(1)), Some(&200_000));
+            assert_eq!(narrowed.daily_root(), Some([7; 32]));
+            assert_eq!(narrowed.ceilings(), cap.ceilings());
+            assert_eq!(narrowed.clone().with_daily_root([7; 32]).unwrap(), narrowed);
+            assert_eq!(
+                narrowed.with_daily_root([8; 32]),
+                Err(CapabilityError::BadDailyRoot)
+            );
+        }
+        assert_eq!(
+            agent().with_daily_root([7; 32]),
+            Err(CapabilityError::BadDailyRoot),
+            "a root cannot exist without daily limits"
+        );
+        for max_mantissa in [0, -1, i128::MIN] {
+            assert_eq!(
+                cap.clone().with_daily_total(UnitId(0), max_mantissa),
+                Err(CapabilityError::BadDailyTotal {
+                    unit: UnitId(0),
+                    max_mantissa
+                })
+            );
+        }
+        let mut maximum = agent();
+        for unit in 0..u32::try_from(MAX_DAILY_TOTALS).unwrap() {
+            maximum = maximum.with_daily_total(UnitId(unit), i128::MAX).unwrap();
+        }
+        assert_eq!(
+            Capability::decode(&maximum.canonical_bytes().unwrap()).unwrap(),
+            maximum
+        );
+        assert_eq!(
+            maximum.with_daily_total(UnitId(u32::MAX), 1),
+            Err(CapabilityError::TooManyDailyTotals)
+        );
+    }
+
+    #[test]
+    fn daily_total_decoding_refuses_malformed_maps_roots_and_tags() {
+        fn caveated(caveats: &[(u8, Vec<u8>)]) -> Vec<u8> {
+            let mut bytes = Capability::embedded(VId(1), &["post"])
+                .unwrap()
+                .canonical_bytes()
+                .unwrap();
+            bytes[..2].copy_from_slice(&CAPABILITY_VERSION_CAVEATS.to_le_bytes());
+            let mut w = Writer::with_capacity(256);
+            w.list(caveats, |w, (tag, payload)| {
+                w.u8(*tag).bytes(payload);
+            });
+            bytes.extend_from_slice(&w.finish().unwrap());
+            bytes
+        }
+        fn totals(values: &[(u32, i128)]) -> Vec<u8> {
+            let mut w = Writer::with_capacity(64);
+            w.list(values, |w, (unit, max)| {
+                w.u32(*unit).i128(*max);
+            });
+            w.finish().unwrap()
+        }
+        let valid = totals(&[(2, 1_000)]);
+        let mut trailing = valid.clone();
+        trailing.push(0);
+        let oversized = u32::try_from(MAX_DAILY_TOTALS + 1)
+            .unwrap()
+            .to_le_bytes()
+            .to_vec();
+        for payload in [
+            totals(&[]),
+            totals(&[(2, 1_000), (1, 1_000)]),
+            totals(&[(2, 1_000), (2, 900)]),
+            totals(&[(2, 0)]),
+            totals(&[(2, -1)]),
+            oversized,
+            valid[..valid.len() - 1].to_vec(),
+            trailing,
+        ] {
+            assert!(
+                Capability::decode(&caveated(&[(CAVEAT_DAILY_TOTALS, payload)])).is_err(),
+                "a noncanonical daily-total map must not decode"
+            );
+        }
+        assert_eq!(
+            Capability::decode(&caveated(&[(CAVEAT_DAILY_ROOT, vec![7; 32])])),
+            Err(CapabilityError::BadDailyRoot)
+        );
+        for root in [vec![7; 31], vec![7; 33]] {
+            assert!(
+                Capability::decode(&caveated(&[
+                    (CAVEAT_DAILY_TOTALS, valid.clone()),
+                    (CAVEAT_DAILY_ROOT, root),
+                ]))
+                .is_err()
+            );
+        }
+        for caveats in [
+            vec![
+                (CAVEAT_DAILY_TOTALS, valid.clone()),
+                (CAVEAT_DAILY_TOTALS, valid.clone()),
+            ],
+            vec![
+                (CAVEAT_DAILY_ROOT, vec![7; 32]),
+                (CAVEAT_DAILY_TOTALS, valid.clone()),
+            ],
+        ] {
+            assert!(Capability::decode(&caveated(&caveats)).is_err());
+        }
+        assert_eq!(
+            Capability::decode(&caveated(&[(11, Vec::new())])),
+            Err(CapabilityError::UnknownCaveat { tag: 11 })
+        );
+    }
+
+    #[test]
+    fn holder_bound_token_round_trip_preserves_daily_limits_and_shared_root() {
+        let secret = [3; 32];
+        let cap = Capability::new(
+            fa_model::principal_vid("daily-holder"),
+            Profile::Human,
+            &[Op::Read, Op::Post],
+            VId(1),
+        )
+        .unwrap()
+        .holder_bound(possession_digest(&secret))
+        .with_daily_total(UnitId(0), 5_000)
+        .unwrap()
+        .with_daily_root([8; 32])
+        .unwrap();
+        let token = CapabilityToken::new("daily-holder", cap, secret).unwrap();
+        let bytes = token.canonical_bytes().unwrap();
+        assert_eq!(CapabilityToken::decode(&bytes).unwrap(), token);
+        assert_eq!(
+            token.capability().daily_totals().get(&UnitId(0)),
+            Some(&5_000)
+        );
+        assert_eq!(token.capability().daily_root(), Some([8; 32]));
+        assert!(token.capability().proves_possession(&secret));
     }
 
     fn hex(s: &str) -> Vec<u8> {

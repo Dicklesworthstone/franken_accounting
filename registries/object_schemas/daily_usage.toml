@@ -1,0 +1,29 @@
+# Shared daily capability budgets and immutable native admission facts (fa-llx).
+schema_version = 1
+name = "DailyUsage"
+owner = "fa-journal::usage"
+major = 1
+minor = 0
+externally_verifiable = false
+
+key_fields = ["book_id:bytes16", "root_issuance:bytes32", "day:i32", "unit:u32"]
+cell_format = "fa:usage-cell:v1"
+cell_fields = ["format:bytes", "key:UsageKey", "gross_debits:i128", "generation:i64"]
+debit_format = "fa:usage-debit:v1"
+debit_fields = ["format:bytes", "key:UsageKey", "generation:i64", "entry:EntryRef", "capability:bytes32", "tick:EntryRef", "time_zone_policy:u8", "gross_debits:i128", "previous_gross_debits:i128", "total_gross_debits:i128"]
+max_payload_bytes = 512
+capability_caveats = ["9:daily_totals list(unit:u32,positive_max:i128), ascending unique units, 1..256 items", "10:daily_root bytes32, permitted only with daily_totals"]
+
+[[decision]]
+field = "UsageCell"
+appendix_a = "UsageCell and Capability; plan §14.2"
+code_type = "fa-journal::usage::UsageCell; label UsageCell=45"
+rationale = "One rebuildable cell per book, original issuance commitment, declared UTC calendar day and native unit; a generation CAS and immutable UsageDebit publish with the unchanged accounting Entry in the same transaction. Pending and posted positive debit legs consume exact gross usage; no reversal or void refunds it. Absence never resets a spent identity."
+tracking_bead = "fa-llx"
+
+[[decision]]
+field = "UsageDebit"
+appendix_a = "UsageCell and Capability; plan §14.2 / FA-INV-04"
+code_type = "fa-journal::usage::UsageDebit; label UsageDebit=46"
+rationale = "An immutable per-unit admission receipt binds its source EntryRef, presented/root issuance commitments, preceding corroborated TimeEvidence EntryRef, calendar day, exact debit sum, before/after totals and generation. Native creation-history verification detects receipt rewrites, deleted or relabeled objects, broken lineage, false source amounts and projection drift. This is native-book verification; no portable outsider usage-proof format is claimed."
+tracking_bead = "fa-llx"

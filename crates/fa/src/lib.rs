@@ -131,7 +131,7 @@ pub use fa_journal::{
     PeriodTransitionRecord, PeriodVerification, ReaControlRecorded, ReaSnapshot, RelatedPartyHit,
     RelationshipRow, ReviewedSummary, RevocationRequest, Revoked, Run, RunBody, RunChunk,
     RunControlRequest, RunControlled, RunMode, RunState, ScheduleVerification, SupplementSummary,
-    TieOut, TieOutLine, TrialBalanceLine, UploadRequest,
+    TieOut, TieOutLine, TrialBalanceLine, UploadRequest, UsageVerification,
 };
 pub use fa_model::{
     EventKind, EventResource, EventSpec, InstrumentKind, InstrumentSpec, PartyKind, PartySpec,

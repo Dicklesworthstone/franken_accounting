@@ -739,15 +739,26 @@ pub fn capability_witness<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
 ) -> Outcome<()> {
     let commitment = capability.commitment().map_err(capability_error)?;
-    if capability.possession().is_some() {
+    if capability.possession().is_some() || !capability.daily_totals().is_empty() {
         let issued = txn.vertex(db, issuance_vid(book.book_id, &commitment))?;
         if let Err(r) = issued_here(issued.as_ref(), &commitment) {
             return Ok(Err(r));
         }
     }
-    Ok(not_revoked(
-        txn.vertex(db, revocation_vid(book.book_id, &commitment))?,
-    ))
+    if let Err(r) = not_revoked(txn.vertex(db, revocation_vid(book.book_id, &commitment))?) {
+        return Ok(Err(r));
+    }
+    if !capability.daily_totals().is_empty() {
+        let root = capability.daily_root().unwrap_or(commitment);
+        let row = txn.vertex(db, issuance_vid(book.book_id, &root))?;
+        if let Err(r) = daily_root_current(row.as_ref(), book, capability, &root, txn.basis())? {
+            return Ok(Err(r));
+        }
+        if let Err(r) = not_revoked(txn.vertex(db, revocation_vid(book.book_id, &root))?) {
+            return Ok(Err(r));
+        }
+    }
+    Ok(Ok(()))
 }
 
 /// The capability is not revoked at the admission point (the head this
@@ -762,15 +773,61 @@ pub fn capability_admitted<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
 ) -> Outcome<()> {
     let commitment = capability.commitment().map_err(capability_error)?;
-    if capability.possession().is_some() {
+    if capability.possession().is_some() || !capability.daily_totals().is_empty() {
         let issued = db.vertex(issuance_vid(book.book_id, &commitment))?;
         if let Err(r) = issued_here(issued.as_ref(), &commitment) {
             return Ok(Err(r));
         }
     }
-    Ok(not_revoked(
-        db.vertex(revocation_vid(book.book_id, &commitment))?,
-    ))
+    if let Err(r) = not_revoked(db.vertex(revocation_vid(book.book_id, &commitment))?) {
+        return Ok(Err(r));
+    }
+    if !capability.daily_totals().is_empty() {
+        let root = capability.daily_root().unwrap_or(commitment);
+        let row = db.vertex(issuance_vid(book.book_id, &root))?;
+        if let Err(r) = daily_root_current(row.as_ref(), book, capability, &root, db.frontier()?)? {
+            return Ok(Err(r));
+        }
+        if let Err(r) = not_revoked(db.vertex(revocation_vid(book.book_id, &root))?) {
+            return Ok(Err(r));
+        }
+    }
+    Ok(Ok(()))
+}
+
+/// A daily quota cannot acquire authority by naming another root, or keep
+/// operating after that root expires. Revocation is point-witnessed by the
+/// caller as well as the presented issuance's own revocation.
+fn daily_root_current(
+    row: Option<&fgdb::VertexRow>,
+    book: &BookContext,
+    capability: &Capability,
+    root: &[u8; 32],
+    at: CommitSeq,
+) -> Outcome<()> {
+    let Some(row) = row else {
+        return Ok(Err(crate::usage::not_issued(
+            "the daily spending root issuance is missing",
+        )));
+    };
+    let (original, _) = crate::usage::issued_capability(row, book.book_id, root)?;
+    if original.daily_root().is_some()
+        || original.daily_totals().is_empty()
+        || capability.daily_totals().iter().any(|(unit, max)| {
+            original
+                .daily_totals()
+                .get(unit)
+                .is_none_or(|bound| max > bound)
+        })
+    {
+        return Ok(Err(crate::usage::mismatch(
+            "daily spending lineage does not attenuate an original issued quota",
+        )));
+    }
+    if let Err(denial) = fa_policy::current(&original, at) {
+        return Ok(Err(refusal(&denial)));
+    }
+    Ok(Ok(()))
 }
 
 /// A capability that is current at the head: not expired at the admission
@@ -1408,6 +1465,44 @@ fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
         }
         if issued.ceilings().is_empty() {
             return widen("it carries no ceiling where the issuer is bounded".to_string());
+        }
+    }
+    if issuer.daily_totals().is_empty() {
+        if issued.daily_root().is_some() {
+            return widen(
+                "an unbounded issuer cannot attach a grant to someone else's daily spending root"
+                    .to_string(),
+            );
+        }
+    } else {
+        if issued.daily_totals().is_empty() {
+            return widen("it drops the issuer's cumulative daily limit".to_string());
+        }
+        for (unit, max) in issued.daily_totals() {
+            if issuer
+                .daily_totals()
+                .get(unit)
+                .is_none_or(|bound| max > bound)
+            {
+                return widen(format!(
+                    "its daily limit on unit {} exceeds the issuer's bounded units or amount",
+                    unit.0
+                ));
+            }
+        }
+        let root = match issuer.daily_root() {
+            Some(root) => root,
+            None => match issuer.commitment() {
+                Ok(root) => root,
+                Err(_) => {
+                    return widen(
+                        "the issuer's daily spending commitment is not canonical".to_string(),
+                    );
+                }
+            },
+        };
+        if issued.daily_root() != Some(root) {
+            return widen("it drops or changes the shared daily spending root".to_string());
         }
     }
     if let Some(books) = issuer.books() {

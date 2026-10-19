@@ -52,6 +52,7 @@ pub mod scratch;
 pub mod sweep;
 pub mod temporal;
 pub mod upload;
+pub mod usage;
 
 pub use allocation::AllocationPosting;
 pub use attestation::{
@@ -112,7 +113,7 @@ pub use period::{
     verify_periods,
 };
 pub use period_history::{PeriodHistoryVerification, verify_periods_with_history};
-pub use plan::{commit_plan, plan_certificate_vid, plan_post};
+pub use plan::{commit_plan, plan_certificate_vid, plan_post, plan_post_with_history};
 pub use policy::{
     ActivationRequest, ApprovalRequest, Approved, IssuanceRequest, Issued, IssuedCapability,
     PolicyActivated, RevocationRequest, Revoked, activate_policy, activation_proposal,
@@ -153,5 +154,6 @@ pub use temporal::{InstantSelection, resolve_instant_at};
 pub use upload::{
     PreparedUpload, UploadPreparation, UploadRequest, prepare_upload, upload_document,
 };
+pub use usage::{UsageCell, UsageDebit, UsageKey, UsageVerification, verify_usage};
 
 pub use projections::{ProjectionVerification, verify_projections};

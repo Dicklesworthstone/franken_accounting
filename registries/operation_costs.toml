@@ -294,15 +294,15 @@ id = "ceiling_bearing_post"
 name = "Ceiling-bearing post"
 substrate_class = "Autocommit write, fused arm"
 substrate_transactions = "1 (same transaction)"
-today_posture = "One publication combining single-entry posting census and UsageCell generation-checked CAS"
+today_posture = "One publication combining single-entry posting census, generation-checked UsageCell moves and immutable per-unit UsageDebit receipts"
 today_transactions = 1
 barrier_count = 2
 today_barrier_count = 2
-derived_objects = "single-entry census + UsageCell CAS"
+derived_objects = "single-entry census + one UsageCell create/CAS and one UsageDebit with source/issuance/tick links per charged native unit"
 hot_object_exceptions = ["UsageCell"]
 external_authorities = "none"
-complexity_witness = "O(legs) posting + 1 UsageCell read/witness/CAS"
-notes = "the second registered hot-object exception (§14.2)"
+complexity_witness = "O(legs + charged units) warm-cell admission and staged writes; retained creation-history scan for first use of a root/day/unit; checkpoint-opened daily operations may hydrate complete native history before admission preparation"
+notes = "the second registered hot-object exception (§14.2); current root and presented issuance plus committed tick are witnessed in the same transaction; exact retries consume no usage and aborted preparations publish no charges"
 
 [[operation_class]]
 id = "bulk_migration"

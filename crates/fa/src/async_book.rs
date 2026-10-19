@@ -1151,6 +1151,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )?)
     }
 
+    /// Rehearse an intent after loading any retained creation history required
+    /// by its daily quota. Admission precedes history loading; no Entry or
+    /// usage cell is published by planning.
+    pub async fn plan_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        intent: fa_intents::PostIntent,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::PostPlan> {
+        cx.txn().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::plan_post_with_history(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability.clone(),
+            intent,
+        )
+        .await?)
+    }
+
     /// Revalidate and atomically publish a portable plan with its retained
     /// graph certificate. Authority is supplied by this caller, never taken
     /// from the artifact, and all I/O retains the caller's purpose contexts.
@@ -2258,6 +2278,61 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 effective_through,
                 known_at,
             )?)
+        })
+    }
+
+    /// Refold shared daily usage from retained native admission history under
+    /// current whole-book read and verify authority. Historical selection never
+    /// restores a revoked or expired capability.
+    pub async fn verify_usage(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_policy::Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<fa_journal::UsageVerification> {
+        if let Err(denial) =
+            fa_policy::admit_read(capability, capability.holder(), self.context.book_id)
+                .and_then(|()| {
+                    fa_policy::require(capability, fa_policy::Op::Verify, "verifying daily usage")
+                })
+                .and_then(|()| {
+                    fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+                })
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let head = match fa_journal::policy::current_at(&self.db, &self.context, capability)? {
+            Ok(current) => current.at(),
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let basis = known_at.unwrap_or(head);
+        if basis > head {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_journal::refusal::code::STRUCTURE,
+                fa_journal::refusal::exit::USAGE,
+                format!(
+                    "usage verification prefix {} exceeds the current head {}",
+                    basis.0, head.0
+                ),
+                "plan §7.1 / §14.2 (usage is checked at one recorded prefix)",
+                format!("select a recorded sequence at or before {}", head.0),
+            )));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        self.query(cx, |db, book| {
+            if let Err(refusal) =
+                fa_journal::policy::admit_reads(db, book, capability.holder(), capability)?
+            {
+                return Ok(Err(refusal));
+            }
+            Ok(Ok(fa_journal::usage::verify_usage(
+                db,
+                cx,
+                book,
+                Some(basis),
+            )?))
         })
     }
 

@@ -126,6 +126,35 @@ pub fn plan_post<V: Vfs + Clone>(
     }
 }
 
+/// Async planning admission for a checkpoint-opened daily quota. Loading
+/// retained history does not publish anything; it follows current native
+/// authority and scope admission, before the ordinary synchronous pipeline.
+pub async fn plan_post_with_history<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: Capability,
+    intent: PostIntent,
+) -> Outcome<PostPlan> {
+    if !capability.daily_totals().is_empty() {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &request(&intent, capability.clone()),
+            crate::post::Admission::Plan,
+        )? {
+            return Ok(Err(refusal));
+        }
+        ctx.query()
+            .checkpoint()
+            .map_err(WriteTxnError::Interrupted)?;
+        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+            return Ok(Err(refusal));
+        }
+    }
+    plan_post(db, ctx, book, capability, intent)
+}
+
 /// The locator namespace is deliberately separate from report certificates.
 /// The complete certificate digest is checked at every use; a truncated
 /// vertex identity is never accepted as evidence on its own.
@@ -455,6 +484,14 @@ pub async fn commit_plan<V: Vfs + Clone>(
     }
     if let Err(refusal) = policy::capability_admitted(db, book, &capability)? {
         return Ok(Err(refusal));
+    }
+    if !capability.daily_totals().is_empty() {
+        ctx.query()
+            .checkpoint()
+            .map_err(WriteTxnError::Interrupted)?;
+        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+            return Ok(Err(refusal));
+        }
     }
     let certificate = plan.certificate();
     let commitment = capability

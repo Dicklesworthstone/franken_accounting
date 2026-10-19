@@ -155,6 +155,15 @@ name = "Scenario"
 id = 44
 name = "BankStatementLink"
 
+# fa-llx: a shared daily quota projection and its immutable admission receipts.
+[[label]]
+id = 45
+name = "UsageCell"
+
+[[label]]
+id = 46
+name = "UsageDebit"
+
 # ---- property keys --------------------------------------------------------
 [[property]]
 id = 1

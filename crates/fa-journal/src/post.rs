@@ -749,6 +749,17 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<Posted> {
+    if !req.capability.daily_totals().is_empty() {
+        if let Err(refusal) = authorize_request(db, book, &req, Admission::Commit)? {
+            return Ok(Err(refusal));
+        }
+        ctx.query()
+            .checkpoint()
+            .map_err(WriteTxnError::Interrupted)?;
+        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+            return Ok(Err(refusal));
+        }
+    }
     match prepare_post(db, ctx, book, req)? {
         Err(refusal) => Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => Ok(Ok(posted)),
@@ -2908,6 +2919,13 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let entry: Entry = sealed.seal(req.approvals.clone(), req.plan_certificate)?;
+    let usage = match crate::usage::judge(&txn, db, ctx, book, &req.capability, &entry, evid)? {
+        Ok(usage) => usage,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
     let mut in_period = WriteBatch::new(relation::IN_PERIOD);
     has_leg.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
@@ -2916,6 +2934,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     for m in &judged.moves {
         m.before.stage(&m.after, m.cell, &mut has_leg)?;
     }
+    let usage_edges = usage
+        .as_ref()
+        .map(|usage| usage.stage(&mut has_leg))
+        .transpose()?;
     // 8'. Scheduled reversals (plan §7.6): an entry that requests one gets
     //     its schedule in this commit; a manual Reversal of a scheduled
     //     target takes the reversal identity first and journals the
@@ -2950,6 +2972,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     }
     let mut batches = vec![has_leg, in_period];
     batches.extend(leg_edges);
+    if let Some(edges) = usage_edges {
+        batches.extend(edges);
+    }
     if let Some(run_vid) = migration_run {
         let mut in_run = WriteBatch::new(relation::IN_MIGRATION_RUN);
         in_run.add_edge(
@@ -3140,6 +3165,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             effect_hasher.update(&[0]);
         }
     }
+    if let Some(usage) = &usage {
+        usage.bind_effects(&mut effect_hasher)?;
+    }
     let effects_digest = effect_hasher.finalize().0;
 
     Ok(Ok(PostPreparation::Ready(Box::new(PreparedPost {
@@ -3302,6 +3330,21 @@ pub async fn post_replacement_pair<V: asupersync::fs::Vfs + Clone>(
     reversal_req: PostRequest,
     replacement_req: PostRequest,
 ) -> Outcome<(Posted, Posted)> {
+    if !reversal_req.capability.daily_totals().is_empty()
+        || !replacement_req.capability.daily_totals().is_empty()
+    {
+        for request in [&reversal_req, &replacement_req] {
+            if let Err(refusal) = authorize_request(db, book, request, Admission::Commit)? {
+                return Ok(Err(refusal));
+            }
+        }
+        ctx.query()
+            .checkpoint()
+            .map_err(WriteTxnError::Interrupted)?;
+        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+            return Ok(Err(refusal));
+        }
+    }
     let (prior, prepared) =
         match prepare_replacement_pair(db, ctx, book, reversal_req, replacement_req)? {
             Ok(pair) => pair,

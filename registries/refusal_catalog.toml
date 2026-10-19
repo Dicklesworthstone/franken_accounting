@@ -954,6 +954,23 @@ exit = "refusal"
 cite = "plan §5.4, §7.1a, §7.6 (automatic effects take time only from a corroborated committed tick)"
 fix = "journal a newer TimeEvidence tick that its source's monotonic clock corroborates (Book::record_tick or AsyncBook::record_tick with monotonic_ok true, by the caller that holds the clock), then rerun the sweep under it (Book::sweep or AsyncBook::sweep)"
 
+# ---- Shared daily capability spending (fa-llx, 166–167) ----------------------
+[[refusal]]
+code = "FA-REF-166"
+name = "DAILY_CEILING"
+owners = ["fa-journal"]
+exit = "safety"
+cite = "plan §14.2 / FA-INV-10.ceiling (gross debits share one root issuance, book-calendar day and native unit)"
+fix = "reduce the complete entry or wait for a corroborated TimeEvidence tick in the next book-calendar day; splitting calls, retrying or attenuating a capability does not reset shared usage"
+
+[[refusal]]
+code = "FA-REF-167"
+name = "USAGE_MISMATCH"
+owners = ["fa-journal"]
+exit = "verification"
+cite = "plan §14.2 / FA-INV-04 / FA-INV-10.ceiling (usage cells refold from immutable same-publication admission receipts)"
+fix = "preserve the original native history and verify_usage through Book or AsyncBook; do not reset a usage cell or mint a replacement quota to bypass the discrepancy"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-145"

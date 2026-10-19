@@ -50,6 +50,17 @@ on:
       - 'registries/verbs.toml'
       - 'registries/robot_schema/1.jsonl'
       - 'crates/fa-journal/src/post.rs'
+      - 'crates/fa-journal/src/policy.rs'
+      - 'crates/fa-journal/src/batch.rs'
+      - 'crates/fa-journal/src/plan.rs'
+      - 'crates/fa-journal/src/usage.rs'
+      - 'crates/fa-journal/src/usage/**'
+      - 'crates/fa-journal/tests/usage.rs'
+      - 'crates/fa-policy/src/capability.rs'
+      - 'crates/fa-model/src/symbols.rs'
+      - 'registries/symbols.toml'
+      - 'registries/refusal_catalog.toml'
+      - 'registries/object_schemas/daily_usage.toml'
       - 'crates/fa-journal/src/rows.rs'
       - 'crates/fa-journal/src/fx.rs'
       - 'crates/fa-journal/src/rea.rs'
@@ -200,6 +211,13 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-model --lib closing --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib chart::closing --jobs 2
+      - name: Test shared daily quota admission, atomic charging and history verification
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-policy --lib capability --jobs 2 -- --nocapture
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test usage --jobs 2 -- --nocapture
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test closing_history --jobs 2
       - name: Test bank statement parsers, retained intake and exact matching
         if: ${{ !cancelled() }}

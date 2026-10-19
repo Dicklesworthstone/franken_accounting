@@ -70,6 +70,8 @@ symbols!(
         (INTENT_OUTCOME, "IntentOutcome", 42),
         (SCENARIO, "Scenario", 43),
         (BANK_STATEMENT_LINK, "BankStatementLink", 44),
+        (USAGE_CELL, "UsageCell", 45),
+        (USAGE_DEBIT, "UsageDebit", 46),
     ]
 );
 

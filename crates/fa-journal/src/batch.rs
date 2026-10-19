@@ -263,6 +263,24 @@ pub async fn post_batch<V: Vfs + Clone>(
     capability: Capability,
     batch: PostBatch,
 ) -> Outcome<BatchPosted> {
+    if !capability.daily_totals().is_empty() {
+        for (index, intent) in batch.members().iter().enumerate() {
+            if let Err(refusal) = crate::post::authorize_request(
+                db,
+                book,
+                &member_request(intent, &capability),
+                Admission::Commit,
+            )? {
+                return Ok(Err(member_refusal(index, refusal)));
+            }
+        }
+        ctx.query()
+            .checkpoint()
+            .map_err(WriteTxnError::Interrupted)?;
+        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+            return Ok(Err(refusal));
+        }
+    }
     let capabilities = vec![capability; batch.members().len()];
     let staged = match stage_batch(db, ctx, book, &capabilities, &batch, Admission::Commit)? {
         Err(refusal) => return Ok(Err(refusal)),

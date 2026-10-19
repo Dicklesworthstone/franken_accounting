@@ -1241,7 +1241,9 @@ impl Book {
         capability: &fa_journal::Capability,
     ) -> Outcome<fa_intents::PostPlan> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => core.plan(&purposes, intent, capability))
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.plan_with_history(&purposes, intent, capability)
+        ))
     }
 
     /// Commit the exact rehearsed intent under the caller's current authority.
@@ -2647,6 +2649,20 @@ impl Book {
     ) -> Outcome<crate::CertifiedIndirectCashFlow> {
         with_store!(&self.store, core => core.certify_indirect_cash_flow(
             &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Refold daily spending cells and immutable admission receipts from native
+    /// history. Requires current whole-book read and verify authority; drift is
+    /// a finding and never resets the budget.
+    pub fn verify_usage(
+        &mut self,
+        capability: &fa_policy::Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<fa_journal::UsageVerification> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.verify_usage(&purposes, capability, known_at)
         ))
     }
 

@@ -68,6 +68,10 @@ impl fmt::Display for Refusal {
 /// Refusal codes this crate emits. The catalog (`refusal_catalog.toml`) is a
 /// later bead; until it lands these constants are the registry.
 pub mod code {
+    /// A shared daily gross-debit quota would be exceeded.
+    pub const DAILY_CEILING: &str = "FA-REF-166";
+    /// Daily usage cannot be reconciled to its immutable admission history.
+    pub const USAGE_MISMATCH: &str = "FA-REF-167";
     /// Balance law: debits ≠ credits in some unit.
     pub const UNBALANCED: &str = "FA-REF-001";
     /// A leg posts to a summary (non-leaf) account.
