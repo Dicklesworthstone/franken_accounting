@@ -87,6 +87,80 @@ fn refused_before_open(authority: &LaunchAuthority, argv: &[&str], refusal: &str
     );
 }
 
+/// The typed documents post through fa post's own path, so an Agent launch
+/// may rehearse them (--dry-run), plan them into a draft or run them in a
+/// scenario, but never post them to trunk: the MCP surface refuses that
+/// before any argument file or the book is read.
+#[test]
+fn an_agent_launch_rehearses_typed_documents_but_never_posts_them_to_trunk() {
+    let reg = registry().expect("verbs.toml");
+    let agent = authority(LaunchProfile::Agent, &["read", "post"]);
+    let preparer = authority(LaunchProfile::Preparer, &["read", "post"]);
+    let parse = |argv: &[&str]| {
+        let argv: Vec<String> = argv.iter().map(|a| (*a).to_string()).collect();
+        fa_cli::args::parse(&argv, &reg.value_flags(), &reg.switches()).expect("parses")
+    };
+    for verb in ["invoice", "bill", "receipt", "payment"] {
+        let trunk = parse(&[verb, "--party", "C-17", "--number", "1"]);
+        let refused = fa_cli::cli::bound_command_admissible(reg, verb, &trunk, &agent)
+            .expect_err("an Agent never posts a typed document to trunk");
+        assert!(refused.contains("FA-REF-013"), "{verb}: {refused}");
+        assert!(
+            fa_cli::cli::bound_command_admissible(reg, verb, &trunk, &preparer).is_ok(),
+            "{verb}: a Preparer launch posts to trunk"
+        );
+        for planning in [
+            &["--dry-run"][..],
+            &["--draft", "close-03"][..],
+            &["--scenario", "but-for"][..],
+        ] {
+            let mut argv = vec![verb, "--party", "C-17", "--number", "1"];
+            argv.extend_from_slice(planning);
+            assert!(
+                fa_cli::cli::bound_command_admissible(reg, verb, &parse(&argv), &agent).is_ok(),
+                "{verb} {planning:?}: an Agent may rehearse, draft or run in a scenario"
+            );
+        }
+    }
+}
+
+/// A bank-detail change is the business-email-compromise vector (plan
+/// §14.4): no launch-bound session changes a party's identifiers, whatever
+/// it holds, while the other REA changes stay admitted under schema_change.
+#[test]
+fn no_launch_session_changes_a_partys_bank_details() {
+    let holder = authority(LaunchProfile::Preparer, &["read", "schema_change"]);
+    refused_before_open(
+        &holder,
+        &[
+            "party",
+            "identifiers",
+            "V-17",
+            "--identifier",
+            "bank_account=000123",
+            "--key",
+            "chg-1",
+            "--json",
+        ],
+        "FA-REF-011",
+    );
+    let reg = registry().expect("verbs.toml");
+    let parse = |argv: &[&str]| {
+        let argv: Vec<String> = argv.iter().map(|a| (*a).to_string()).collect();
+        fa_cli::args::parse(&argv, &reg.value_flags(), &reg.switches()).expect("parses")
+    };
+    assert!(
+        fa_cli::cli::bound_command_admissible(
+            reg,
+            "party",
+            &parse(&["party", "bind", "V-17", "--external-id", "qbo:55"]),
+            &holder
+        )
+        .is_ok(),
+        "binding another system's id stays a schema_change"
+    );
+}
+
 #[test]
 fn owner_mutations_are_refused_before_input_files_or_book_creation() {
     let authority = authority(LaunchProfile::Preparer, &[]);
@@ -228,6 +302,12 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
     // File containment is admitted before the book. An existing in-root
     // malformed artifact lets these cases reach the current native read check.
     std::fs::write(dir.join("supplied.cert"), b"not a certificate").unwrap();
+    // A well-formed intent, so a scenario run reaches the authority check.
+    std::fs::write(
+        dir.join("scenario-intent.json"),
+        br#"{"effective_date":"2026-03-15","idempotency_key":"what-if","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#,
+    )
+    .unwrap();
     let day = DateDay::parse("2026-03-15").unwrap();
     let units = UnitRegistry::embedded().unwrap();
     let mut book = Book::create_memory(
@@ -433,6 +513,23 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         vec!["finding", "runs", "--cursor", "invalid"],
         vec!["finding", "export", "--certificate", ZERO_DIGEST],
         vec!["finding", "replay", "-"],
+        vec![
+            "scenario",
+            "run",
+            "nope",
+            "--intent",
+            "scenario-intent.json",
+        ],
+        vec![
+            "post",
+            "--intent",
+            "scenario-intent.json",
+            "--scenario",
+            "nope",
+        ],
+        vec!["scenario", "list"],
+        vec!["scenario", "show", "nope"],
+        vec!["scenario", "diff", "nope", "--period", "FY2026-P03"],
         vec!["party", "list"],
         vec!["instrument", "list"],
         vec!["entity", "list"],

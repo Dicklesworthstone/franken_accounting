@@ -511,32 +511,51 @@ pub struct DocumentSummary {
 
 /// Every document the book holds at `seq`, in `(recorded_at, oid)` order,
 /// as public metadata. Each row verifies against itself first; a row that
-/// does not is drift, never skipped.
+/// does not is drift (exit 8, as for `fa document read`), never skipped.
+///
+/// `recorded_at` is the document's intake: the commit of its custody event
+/// 0, the `ImportReceipt` written with it and never changed. The Document
+/// row's own `created_at` starts its current version, which a custody
+/// transfer moves.
 pub fn list_documents<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     seq: CommitSeq,
-) -> Result<Vec<DocumentSummary>, KernelError> {
+) -> Outcome<Vec<DocumentSummary>> {
     let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let mut out = Vec::new();
     for row in db.vertices_at(seq)? {
         if !row.labels.contains(&label::DOCUMENT) {
             continue;
         }
-        let doc = verify_row(&row, &policy).map_err(|why| {
-            KernelError::Corrupt(format!("document vertex {:032x}: {why}", row.vid.0))
-        })?;
+        let doc = match verify_row(&row, &policy) {
+            Ok(doc) => doc,
+            Err(why) => {
+                return Ok(Err(Refusal::new(
+                    code::DOCUMENT_DRIFT,
+                    exit::VERIFICATION,
+                    format!("document vertex {:032x}: {why}", row.vid.0),
+                    "FA-INV-04 (a mirror is never more authoritative than the payload), FA-INV-05 (the closure verifies)",
+                    "preserve the store and report the drift; nothing that cites this document is admitted until it is explained",
+                )));
+            }
+        };
+        let oid = doc.oid();
+        let receipt = crate::custody::custody_vid(doc.book_id, &oid, 0);
+        let Some(intake) = db.vertex_at(receipt, seq)? else {
+            return Ok(Err(drift(&oid, "its custody receipt (event 0) is missing")));
+        };
         out.push(DocumentSummary {
-            oid: doc.oid(),
+            oid,
             kind: doc.kind,
             mime: doc.mime,
             grade: doc.grade,
             size: doc.size,
             doc_commit: doc.doc_commit,
-            recorded_at: row.created_at,
+            recorded_at: intake.created_at,
         });
     }
     out.sort_by_key(|d| (d.recorded_at, d.oid));
-    Ok(out)
+    Ok(Ok(out))
 }
 
 /// The refusal for a Document whose stored row does not verify (exit 8).

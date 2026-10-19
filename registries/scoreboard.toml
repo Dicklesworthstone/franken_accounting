@@ -223,7 +223,7 @@ id = "WF-ACM-03"
 workflow = "agent-closes-month"
 ordinal = 3
 vision_row = "VC-15"
-description = "Import and match a CAMT.053 bank statement (`fa bank import`)"
+description = "Import a CAMT.053 bank statement (`fa bank import`; matching its lines is `fa bank match`)"
 argv = ["bank", "import", "{stmt_file}", "--bank-format", "camt053", "--account", "1010", "--book", "{book}", "--json"]
 expected = "works"
 expected_exit = 0
@@ -371,13 +371,47 @@ expected = "works"
 expected_exit = 0
 expected_event = "statement"
 
+[[workflow_step]]
+id = "WF-LCD-03"
+workflow = "litigation-consultant-damages"
+ordinal = 3
+vision_row = "VC-28"
+description = "Run a counterfactual intent in the scenario (`fa scenario run`; rehearsed on the scenario's replay, never posted to trunk)"
+argv = ["scenario", "run", "but-for-breach", "--intent", "{scenario_intent}", "--evidence", "{doc_oid}", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "scenario_run"
+
+[[workflow_step]]
+id = "WF-LCD-04"
+workflow = "litigation-consultant-damages"
+ordinal = 4
+vision_row = "VC-29"
+description = "Diff the scenario against trunk as known at its fork (`fa scenario diff`: the damages schedule per account and unit)"
+argv = ["scenario", "diff", "but-for-breach", "--period", "FY2026-P03", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "scenario_diff"
+
+[[workflow_step]]
+id = "WF-LCD-05"
+workflow = "litigation-consultant-damages"
+ordinal = 5
+vision_row = "VC-30"
+description = "Retain the diff as a replayable certificate (`fa scenario diff --certify`; a DiffCertificate is not built yet)"
+argv = ["scenario", "diff", "but-for-breach", "--period", "FY2026-P03", "--certify", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-k07b"
+
 # ---- Workflow 7: investigator-traces-funds (§15.6.6) ------------------------
 
 [[workflow_step]]
 id = "WF-ITF-01"
 workflow = "investigator-traces-funds"
 ordinal = 1
-vision_row = "VC-28"
+vision_row = "VC-31"
 description = "Run structuring detection procedure (`fa procedure run graph.structuring`)"
 argv = ["procedure", "run", "graph.structuring", "--book", "{book}", "--json"]
 expected = "works"
@@ -388,7 +422,7 @@ expected_event = "procedure_run"
 id = "WF-ITF-02"
 workflow = "investigator-traces-funds"
 ordinal = 2
-vision_row = "VC-29"
+vision_row = "VC-32"
 description = "Run FIFO fund tracing (`fa procedure run trace.fifo`)"
 argv = ["procedure", "run", "trace.fifo", "--account", "1200", "--source", "{entry_vid}", "--effective-through", "2026-03-31", "--book", "{book}", "--json"]
 expected = "works"
@@ -399,7 +433,7 @@ expected_event = "procedure_run"
 id = "WF-ITF-03"
 workflow = "investigator-traces-funds"
 ordinal = 3
-vision_row = "VC-30"
+vision_row = "VC-33"
 description = "Run related-party exposure graph procedure (`fa procedure run graph.related_party_exposure`)"
 argv = ["procedure", "run", "graph.related_party_exposure", "--book", "{book}", "--json"]
 expected = "works"

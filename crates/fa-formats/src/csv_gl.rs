@@ -326,16 +326,22 @@ pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, Form
 /// Write a streaming NDJSON General Ledger extract (`fa gl detail --stream`,
 /// plan §15.9) with a `gl_stream_header` coordinate row, one `gl_detail_row`
 /// per leg, and a `gl_stream_footer` row carrying the total leg count and
-/// `FA-INV-04` refold digest.
+/// `FA-INV-04` refold digest. The header carries every coordinate field
+/// [`ExportCoordinate::compute`] binds (base unit and scale, content digest),
+/// so a consumer recomputes `certificate_digest` from the stream alone; each
+/// row carries its entry's class, as the CSV extract does.
 pub fn write_ndjson_gl_stream(journal: &FormatJournal) -> Result<String, FormatError> {
     let refold = journal.refold_digest()?;
     let mut out = String::new();
     out.push_str(&format!(
-        "{{\"event\":\"gl_stream_header\",\"book_name\":\"{}\",\"effective_through\":\"{}\",\"known_at_seq\":{},\"entry_count\":{},\"certificate_digest\":\"{}\"}}\n",
+        "{{\"event\":\"gl_stream_header\",\"book_name\":\"{}\",\"base_unit\":\"{}\",\"base_unit_scale\":{},\"effective_through\":\"{}\",\"known_at_seq\":{},\"entry_count\":{},\"content_digest\":\"{}\",\"certificate_digest\":\"{}\"}}\n",
         json_escape(&journal.coordinate.book_name),
+        json_escape(&journal.coordinate.base_unit_code),
+        journal.coordinate.base_unit_scale,
         format_date_iso(journal.coordinate.effective_through),
         journal.coordinate.known_at_seq,
         journal.coordinate.entry_count,
+        hex_encode(&journal.coordinate.content_digest),
         hex_encode(&journal.coordinate.certificate_digest),
     ));
 
@@ -350,12 +356,13 @@ pub fn write_ndjson_gl_stream(journal: &FormatJournal) -> Result<String, FormatE
             };
             let amt = format_exact_decimal(leg.amount.mantissa, leg.unit_scale);
             out.push_str(&format!(
-                "{{\"event\":\"gl_detail_row\",\"ordinal\":{},\"entry_id\":\"{}\",\"line_no\":{},\"effective_date\":\"{}\",\"recorded_seq\":{},\"account_code\":\"{}\",\"side\":\"{}\",\"amount\":\"{}\",\"mantissa\":\"{}\",\"unit\":\"{}\"}}\n",
+                "{{\"event\":\"gl_detail_row\",\"ordinal\":{},\"entry_id\":\"{}\",\"line_no\":{},\"effective_date\":\"{}\",\"recorded_seq\":{},\"entry_class\":{},\"account_code\":\"{}\",\"side\":\"{}\",\"amount\":\"{}\",\"mantissa\":\"{}\",\"unit\":\"{}\"}}\n",
                 row_count,
                 json_escape(&entry.entry_id),
                 idx + 1,
                 eff_date,
                 entry.recorded_seq,
+                entry.class.0,
                 json_escape(&leg.account_code),
                 side,
                 amt,

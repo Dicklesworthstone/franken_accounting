@@ -4,7 +4,7 @@
 
 ## 1. Vision Workflow Summary (README Quick Example + Plan §15.6)
 
-- **Total workflow steps:** 30 (`works`: **27** [90%], `refused`: **0**, `absent`: **3**)
+- **Total workflow steps:** 33 (`works`: **29** [87%], `refused`: **0**, `absent`: **4**)
 
 | Workflow | Plan Ref | Reader | Works | Refused | Absent | Total | Delivery % |
 |---|---|---|---:|---:|---:|---:|---:|
@@ -13,7 +13,7 @@
 | `cpa-audits-fy2025` (The CPA audits FY2025) | §15.6.2 | External CPA / Auditor | 4 | 0 | 0 | 4 | 100% |
 | `fdic-examiner-positions` (The FDIC examiner needs close-of-business positions) | §15.6.3 | FDIC Examiner / Receiver | 2 | 0 | 1 | 3 | 66% |
 | `trustee-receiver-takeover` (The trustee or receiver takes over) | §15.6.4 | Bankruptcy Trustee / Receiver | 1 | 0 | 1 | 2 | 50% |
-| `litigation-consultant-damages` (The litigation consultant computes but-for damages) | §15.6.5 | Litigation Consultant / Expert Witness | 2 | 0 | 0 | 2 | 100% |
+| `litigation-consultant-damages` (The litigation consultant computes but-for damages) | §15.6.5 | Litigation Consultant / Expert Witness | 4 | 0 | 1 | 5 | 80% |
 | `investigator-traces-funds` (The investigator traces funds) | §15.6.6 | Forensic Investigator | 3 | 0 | 0 | 3 | 100% |
 
 ### Workflow Steps Detail
@@ -34,7 +34,7 @@
 | `WF-RQ-12` | `VC-12` | `readme-quick` | `works` | `0` | `bundle_produced` | `—` | Produce a signed offline evidence bundle (`fa bundle produce`) |
 | `WF-ACM-01` | `VC-13` | `agent-closes-month` | `works` | `0` | `next_step` | `—` | Inspect book triage and next recommended step (`fa next --json`) |
 | `WF-ACM-02` | `VC-14` | `agent-closes-month` | `works` | `0` | `draft_opened` | `—` | Create a close draft branch (`fa draft new close-03`) |
-| `WF-ACM-03` | `VC-15` | `agent-closes-month` | `works` | `0` | `bank_imported` | `—` | Import and match a CAMT.053 bank statement (`fa bank import`) |
+| `WF-ACM-03` | `VC-15` | `agent-closes-month` | `works` | `0` | `bank_imported` | `—` | Import a CAMT.053 bank statement (`fa bank import`; matching its lines is `fa bank match`) |
 | `WF-ACM-04` | `VC-16` | `agent-closes-month` | `works` | `0` | `period_transitioned` | `—` | Soft-close an open period (`fa period soft-close FY2026-P04`) |
 | `WF-CPA-01` | `VC-17` | `cpa-audits-fy2025` | `works` | `0` | `journal_exported` | `—` | Export AICPA Audit Data Standard GL package (`fa export ads`) |
 | `WF-CPA-02` | `VC-18` | `cpa-audits-fy2025` | `works` | `0` | `procedure_run` | `—` | Run Benford first-digit procedure (`fa procedure run benford.first_digit`) |
@@ -47,9 +47,12 @@
 | `WF-TRT-02` | `VC-25` | `trustee-receiver-takeover` | `absent` | `2` | `error` | `fa-k07b` | Fork a receivership branch (`fa book fork receivership`) |
 | `WF-LCD-01` | `VC-26` | `litigation-consultant-damages` | `works` | `0` | `scenario_forked` | `—` | Fork a counterfactual scenario (`fa scenario fork`; materialized as a scratch replay until substrate branches ship) |
 | `WF-LCD-02` | `VC-27` | `litigation-consultant-damages` | `works` | `0` | `statement` | `—` | Certified income statement for a period (`fa statement income-statement --certify`) |
-| `WF-ITF-01` | `VC-28` | `investigator-traces-funds` | `works` | `0` | `procedure_run` | `—` | Run structuring detection procedure (`fa procedure run graph.structuring`) |
-| `WF-ITF-02` | `VC-29` | `investigator-traces-funds` | `works` | `0` | `procedure_run` | `—` | Run FIFO fund tracing (`fa procedure run trace.fifo`) |
-| `WF-ITF-03` | `VC-30` | `investigator-traces-funds` | `works` | `0` | `procedure_run` | `—` | Run related-party exposure graph procedure (`fa procedure run graph.related_party_exposure`) |
+| `WF-LCD-03` | `VC-28` | `litigation-consultant-damages` | `works` | `0` | `scenario_run` | `—` | Run a counterfactual intent in the scenario (`fa scenario run`; rehearsed on the scenario's replay, never posted to trunk) |
+| `WF-LCD-04` | `VC-29` | `litigation-consultant-damages` | `works` | `0` | `scenario_diff` | `—` | Diff the scenario against trunk as known at its fork (`fa scenario diff`: the damages schedule per account and unit) |
+| `WF-LCD-05` | `VC-30` | `litigation-consultant-damages` | `absent` | `2` | `error` | `fa-k07b` | Retain the diff as a replayable certificate (`fa scenario diff --certify`; a DiffCertificate is not built yet) |
+| `WF-ITF-01` | `VC-31` | `investigator-traces-funds` | `works` | `0` | `procedure_run` | `—` | Run structuring detection procedure (`fa procedure run graph.structuring`) |
+| `WF-ITF-02` | `VC-32` | `investigator-traces-funds` | `works` | `0` | `procedure_run` | `—` | Run FIFO fund tracing (`fa procedure run trace.fifo`) |
+| `WF-ITF-03` | `VC-33` | `investigator-traces-funds` | `works` | `0` | `procedure_run` | `—` | Run related-party exposure graph procedure (`fa procedure run graph.related_party_exposure`) |
 
 ## 2. Convergence Gate Scoreboard (Plan §19: G0, Genesis, G1–G4)
 

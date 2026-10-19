@@ -61,6 +61,14 @@ pub struct ScenarioDiffRow {
     pub scenario_credits: i128,
     /// `(scenario debits − credits) − (trunk debits − credits)`.
     pub delta: i128,
+    /// Pending (reserved, unposted) amounts, as the trial balance folds
+    /// them apart from posted ones.
+    pub trunk_debits_pending: i128,
+    pub trunk_credits_pending: i128,
+    pub scenario_debits_pending: i128,
+    pub scenario_credits_pending: i128,
+    /// The same signed change over the pending columns.
+    pub pending_delta: i128,
 }
 
 /// The ledger-level difference a scenario makes (plan §15.6.5: the
@@ -95,12 +103,19 @@ fn unknown(name: &str) -> Refusal {
     )
 }
 
-/// The refusal of the intent at `ordinal`, which its scenario names.
-fn in_scenario(name: &str, ordinal: usize, refusal: Refusal) -> Refusal {
+/// The refusal of the intent at `ordinal`, which its scenario names. The
+/// replay is fixed at the fork, so a fix that changes trunk (a document
+/// added, a period reopened, authority issued) reaches only a scenario
+/// forked after that change; the fix says so.
+fn in_scenario(name: &str, fork_at: CommitSeq, ordinal: usize, refusal: Refusal) -> Refusal {
     Refusal {
         message: format!(
             "scenario `{name}` intent #{ordinal} does not post into the scenario's replay: {}",
             refusal.message
+        ),
+        fix: format!(
+            "{} (the scenario replays trunk as known at sequence {}: a trunk change after that reaches only a scenario forked after it)",
+            refusal.fix, fork_at.0
         ),
         ..refusal
     }
@@ -136,7 +151,14 @@ impl Book {
         for (i, planned) in view.intents.iter().enumerate() {
             match book.post(scratch_request(planned.intent.clone())?)? {
                 Ok(posted) => entries.push(posted.entry_ref().vid),
-                Err(refusal) => return Ok(Err(in_scenario(&view.body.name, i + 1, refusal))),
+                Err(refusal) => {
+                    return Ok(Err(in_scenario(
+                        &view.body.name,
+                        view.body.fork_at,
+                        i + 1,
+                        refusal,
+                    )));
+                }
             }
         }
         Ok(Ok(ScenarioBook {
@@ -157,38 +179,46 @@ impl Book {
         name: &str,
         intent: fa_journal::PostIntent,
     ) -> Outcome<ScenarioRun> {
+        // Authority before observation, and every other check before any
+        // replay: the kernel admits the planner's authority over this intent
+        // (as a dry run of it on trunk is admitted), the scenario's owner,
+        // state and start date, or finds the identical retry, whose record is
+        // the outcome. Nothing is replayed or rehearsed for a refused intent.
+        let retry = match self.admit_scenario_intent(name, &intent, &capability)? {
+            Ok(retry) => retry,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let Some(view) = self.scenario(name)? else {
             return Ok(Err(unknown(name)));
         };
+        let position = |record: VId, view: &ScenarioView| {
+            view.intents
+                .iter()
+                .position(|planned| planned.record == record)
+                .map_or(view.intents.len() + 1, |i| i + 1)
+        };
+        if let Some(recorded) = retry {
+            return Ok(Ok(ScenarioRun {
+                ordinal: position(recorded.control_entry, &view),
+                rehearsed: None,
+                recorded,
+            }));
+        }
         let ordinal = view.intents.len() + 1;
-        let open = view.state == fa_journal::ScenarioState::Open;
-        // An identical retry (or a closed scenario) is the kernel's to judge
-        // before any rehearsal: the record is the outcome.
-        let retry = view.intents.iter().position(|planned| {
-            planned.intent.proposal().idempotency_key == intent.proposal().idempotency_key
-                && planned.capability.holder() == capability.holder()
-        });
-        let rehearsed = if open && retry.is_none() {
-            let mut scenario = match self.materialize(view)? {
-                Ok(scenario) => scenario,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
-            match scenario.book.post(scratch_request(intent.clone())?)? {
-                Ok(posted) => Some(posted.entry_ref().vid),
-                Err(refusal) => return Ok(Err(in_scenario(name, ordinal, refusal))),
-            }
-        } else {
-            None
+        let fork_at = view.body.fork_at;
+        let mut scenario = match self.materialize(view)? {
+            Ok(scenario) => scenario,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let rehearsed = match scenario.book.post(scratch_request(intent.clone())?)? {
+            Ok(posted) => posted.entry_ref().vid,
+            Err(refusal) => return Ok(Err(in_scenario(name, fork_at, ordinal, refusal))),
         };
         Ok(self
             .record_scenario_intent(capability, name, intent)?
             .map(|recorded| ScenarioRun {
-                ordinal: retry.map_or(ordinal, |i| i + 1),
-                rehearsed: if recorded.already_recorded {
-                    None
-                } else {
-                    rehearsed
-                },
+                ordinal,
+                rehearsed: (!recorded.already_recorded).then_some(rehearsed),
                 recorded,
             }))
     }
@@ -248,10 +278,14 @@ impl Book {
 }
 
 /// An intent as the scratch book posts it: under an embedded capability of
-/// its planner holding `post`. The planner's own authority was admitted when
-/// the intent was recorded; the scratch book is the scenario's review copy,
-/// where an Agent's trunk-write denial (a rule about the real trunk) does not
-/// apply, while every posting law does.
+/// its planner holding `post`. The planner's own authority (ops, ceilings,
+/// scope caveats, currency and revocation) was admitted on trunk when the
+/// intent was recorded, as a dry run of it is. The scratch book is the
+/// scenario's review copy, where an Agent's trunk-write denial (a rule about
+/// the real trunk) does not apply; every posting law does, and the intent's
+/// own approvals are evaluated there. Not re-applied: profile-dependent
+/// separation of duties (an Agent preparer's extra Human approver on
+/// trunk), since the embedded capability is a Human one.
 fn scratch_request(intent: fa_journal::PostIntent) -> Result<PostRequest, BookError> {
     let principal = intent.proposal().principal_ref;
     let capability = fa_journal::Capability::embedded(principal, &["post"])
@@ -286,33 +320,48 @@ fn diff_rows(
                     scenario_debits: 0,
                     scenario_credits: 0,
                     delta: 0,
+                    trunk_debits_pending: 0,
+                    trunk_credits_pending: 0,
+                    scenario_debits_pending: 0,
+                    scenario_credits_pending: 0,
+                    pending_delta: 0,
                 });
             if side {
                 cell.scenario_debits = row.debits;
                 cell.scenario_credits = row.credits;
+                cell.scenario_debits_pending = row.debits_pending;
+                cell.scenario_credits_pending = row.credits_pending;
             } else {
                 cell.trunk_debits = row.debits;
                 cell.trunk_credits = row.credits;
+                cell.trunk_debits_pending = row.debits_pending;
+                cell.trunk_credits_pending = row.credits_pending;
             }
         }
     }
+    let change = |scenario: (i128, i128), trunk: (i128, i128), what: &str| {
+        let scenario_net = scenario.0.checked_sub(scenario.1);
+        let trunk_net = trunk.0.checked_sub(trunk.1);
+        scenario_net
+            .zip(trunk_net)
+            .and_then(|(s, t)| s.checked_sub(t))
+            .ok_or_else(|| overflow(what))
+    };
     let mut rows = Vec::new();
     for mut cell in cells.into_values() {
-        if (cell.trunk_debits, cell.trunk_credits) == (cell.scenario_debits, cell.scenario_credits)
-        {
+        let posted = (
+            (cell.scenario_debits, cell.scenario_credits),
+            (cell.trunk_debits, cell.trunk_credits),
+        );
+        let pending = (
+            (cell.scenario_debits_pending, cell.scenario_credits_pending),
+            (cell.trunk_debits_pending, cell.trunk_credits_pending),
+        );
+        if posted.0 == posted.1 && pending.0 == pending.1 {
             continue;
         }
-        let scenario_net = cell
-            .scenario_debits
-            .checked_sub(cell.scenario_credits)
-            .ok_or_else(|| overflow("scenario net"))?;
-        let trunk_net = cell
-            .trunk_debits
-            .checked_sub(cell.trunk_credits)
-            .ok_or_else(|| overflow("trunk net"))?;
-        cell.delta = scenario_net
-            .checked_sub(trunk_net)
-            .ok_or_else(|| overflow("delta"))?;
+        cell.delta = change(posted.0, posted.1, "delta")?;
+        cell.pending_delta = change(pending.0, pending.1, "pending delta")?;
         rows.push(cell);
     }
     Ok(rows)
@@ -385,6 +434,22 @@ mod tests {
         let rows = diff_rows(&trunk, &vanished).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].code.as_str(), rows[0].delta), ("6000", -70));
+    }
+
+    #[test]
+    fn a_pending_only_change_is_a_changed_row() {
+        let trunk = tb(vec![row("1000", 1, 500, 100)]);
+        let mut held = row("1000", 1, 500, 100);
+        held.debits_pending = 40;
+        let scenario = tb(vec![held]);
+        let rows = diff_rows(&trunk, &scenario).unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "a reservation the scenario makes is a change"
+        );
+        assert_eq!((rows[0].delta, rows[0].pending_delta), (0, 40));
+        assert_eq!(rows[0].scenario_debits_pending, 40);
     }
 
     #[test]

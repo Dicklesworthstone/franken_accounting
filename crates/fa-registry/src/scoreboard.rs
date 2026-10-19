@@ -6,7 +6,7 @@
 //! - `schema_version` is 1.
 //! - Workflows match [`WORKFLOW_IDS`] in order and each has at least one step
 //!   with dense 1-based ordinals (`1..=k`).
-//! - Workflow steps have unique IDs, dense vision-checklist rows `VC-01`..`VC-30`,
+//! - Workflow steps have unique IDs, dense vision-checklist rows from `VC-01` in order,
 //!   non-empty `description` and `argv`, and a valid expectation:
 //!   - `works`: `expected_exit == 0`, no `refusal_id`, no `bead`;
 //!   - `refused`: `expected_exit != 0` (registered in `exit_codes.toml`),
@@ -713,7 +713,7 @@ mod tests {
         let sb = Scoreboard::embedded().expect("scoreboard.toml is valid");
         assert_eq!(sb.schema_version, 1);
         assert_eq!(sb.workflows.len(), WORKFLOW_IDS.len());
-        assert_eq!(sb.steps.len(), 30);
+        assert_eq!(sb.steps.len(), 33);
         assert_eq!(sb.gate_criteria.len(), 18);
         let md = sb.render_markdown();
         assert!(md.contains("## 1. Vision Workflow Summary"));

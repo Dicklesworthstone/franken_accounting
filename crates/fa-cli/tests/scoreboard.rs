@@ -400,6 +400,13 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
         r#"{"effective_date":"2026-03-16","idempotency_key":"inv-10443","legs":[{"side":"debit","account":"1200","amount":"200.00 USD"},{"side":"credit","account":"4000","amount":"200.00 USD"}]}"#,
     );
     let plan_file_2 = dir.join("sale2.plan").display().to_string();
+    // The litigation consultant's but-for sale (WF-LCD-03): run only in the
+    // scenario, never on trunk.
+    let scenario_intent = write_file(
+        dir,
+        "but_for_sale.json",
+        r#"{"effective_date":"2026-03-18","idempotency_key":"but-for-sale-1","legs":[{"side":"debit","account":"1200","amount":"300.00 USD"},{"side":"credit","account":"4000","amount":"300.00 USD"}]}"#,
+    );
 
     let unbalanced_intent = write_file(
         dir,
@@ -495,6 +502,7 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
     vars.insert("{post_seq}".into(), post_seq);
     vars.insert("{rev_target_vid}".into(), rev_target_vid);
     vars.insert("{sale_intent_2}".into(), sale_2);
+    vars.insert("{scenario_intent}".into(), scenario_intent);
     vars.insert("{plan_file_2}".into(), plan_file_2);
     vars.insert("{cert_file}".into(), cert_file);
     vars.insert("{stmt_file}".into(), stmt_file);

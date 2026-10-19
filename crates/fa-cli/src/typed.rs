@@ -15,9 +15,15 @@
 //! `fa receipt` and `fa payment` settle them: cash against the receivable
 //! (or payable) for the party, the control leg applying itself to the open
 //! items `--applies` names (the kernel bounds each application by what is
-//! open). Their key is receipt:<number> or payment:<number>, and the cash
-//! leg's memo is the number, which `fa bank match` compares with a bank
-//! line's reference.
+//! open). The cash leg's memo is the number, which `fa bank match`
+//! compares with a bank line's reference.
+//!
+//! A document's default key names whoever assigned its number: the book
+//! numbers its invoices and payments, a vendor its bills and a customer its
+//! payment references, so a bill's or receipt's key also names the party
+//! (`bill:[<entity>:]<party>:<number>`), and every key names the legal
+//! entity when one is given. Keys are per principal (the kernel's
+//! idempotency law), so a retry by the same principal is the recorded entry.
 
 use crate::args::Args;
 use crate::cli::{Ctx, Fail, post_document, usage};
@@ -30,6 +36,12 @@ enum Kind {
 }
 
 impl Kind {
+    /// A bill's number is the vendor's, unique only to that vendor; an
+    /// invoice's number is the book's own.
+    const fn party_numbered(self) -> bool {
+        matches!(self, Self::Bill)
+    }
+
     const fn verb(self) -> &'static str {
         match self {
             Self::Invoice => "invoice",
@@ -101,6 +113,13 @@ enum Settle {
 }
 
 impl Settle {
+    /// A receipt's reference is the customer's (its cheque or wire
+    /// reference), unique only to that customer; a payment's is the
+    /// book's own.
+    const fn party_numbered(self) -> bool {
+        matches!(self, Self::Receipt)
+    }
+
     const fn verb(self) -> &'static str {
         match self {
             Self::Receipt => "receipt",
@@ -137,6 +156,22 @@ impl Settle {
             self.control_flag()
         )
     }
+}
+
+/// The party (required) and legal entity (optional) codes, each non-empty.
+fn party_and_entity<'a>(args: &'a Args, example: &str) -> Result<(&'a str, Option<&'a str>), Fail> {
+    let party = args.require("--party", "<party code> (fa party list)")?;
+    if party.is_empty() {
+        return Err(usage("--party needs a party code", example.to_string()));
+    }
+    let entity = args.flag("--entity");
+    if entity.is_some_and(str::is_empty) {
+        return Err(usage(
+            "--entity needs a legal entity code",
+            "fa entity list names them",
+        ));
+    }
+    Ok((party, entity))
 }
 
 /// One leg of a typed document's intent.
@@ -189,8 +224,14 @@ fn applications(args: &Args, total: &str, example: &str) -> Result<Option<Json>,
                 ));
             }
         };
-        sum(std::slice::from_ref(&amount))
+        let amount = sum(std::slice::from_ref(&amount))
             .map_err(|e| usage(format!("--applies {one}: {e}"), example.to_string()))?;
+        if is_zero(&amount) {
+            return Err(usage(
+                format!("--applies {one}: a zero application settles nothing"),
+                example.to_string(),
+            ));
+        }
         let (entry, ordinal) = match target.split_once(':') {
             Some((entry, ordinal)) => (
                 entry,
@@ -238,7 +279,7 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
             ));
         }
     }
-    let party = args.require("--party", "<party code> (fa party list)")?;
+    let (party, entity) = party_and_entity(args, &example)?;
     let date = args.require("--date", "YYYY-MM-DD")?;
     fa_time::DateDay::parse(date)
         .map_err(|e| usage(format!("--date: {e}"), "--date YYYY-MM-DD"))?;
@@ -247,10 +288,21 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
     let amount = args.require("--amount", "\"<amount> <UNIT>\"")?;
     let amount =
         sum(&[amount.to_string()]).map_err(|e| usage(format!("--amount: {e}"), example.clone()))?;
+    if is_zero(&amount) {
+        return Err(usage(
+            "--amount must be positive: a zero receipt or payment moves nothing",
+            example,
+        ));
+    }
     let number = args.flag("--number");
     let key = match (args.flag("--key"), number) {
         (Some(key), _) => key.to_string(),
-        (None, Some(number)) => format!("{}:{number}", kind.verb()),
+        (None, Some(number)) => default_key(
+            kind.verb(),
+            entity,
+            kind.party_numbered().then_some(party),
+            number,
+        ),
         (None, None) => {
             return Err(usage(
                 format!(
@@ -262,7 +314,6 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
         }
     };
     let settles = applications(args, &amount, &example)?;
-    let entity = args.flag("--entity");
     let legs = vec![
         leg_json(
             kind.cash_side(),
@@ -320,6 +371,9 @@ fn line_words(raw: &str) -> Result<Vec<(String, String)>, String> {
             }
             None => after.split_at(after.find(char::is_whitespace).unwrap_or(after.len())),
         };
+        if value.is_empty() {
+            return Err(format!("the value of {key} is empty"));
+        }
         if words.iter().any(|(k, _)| k == key) {
             return Err(format!("{key} is given twice"));
         }
@@ -329,94 +383,117 @@ fn line_words(raw: &str) -> Result<Vec<(String, String)>, String> {
     Ok(words)
 }
 
-/// `quantity × "<decimal> <UNIT>"` exactly, in the price's decimal places.
+/// An exact decimal amount as its text names it, `"<digits>[.<decimals>]
+/// <UNIT>"`: no sign, exponent or float.
+struct Exact<'a> {
+    digits: i128,
+    scale: usize,
+    unit: &'a str,
+}
+
+fn exact<'a>(text: &'a str, what: &str) -> Result<Exact<'a>, String> {
+    let (number, unit) = text
+        .split_once(' ')
+        .filter(|(_, unit)| !unit.is_empty() && !unit.contains(char::is_whitespace))
+        .ok_or_else(|| format!("{what} `{text}` is not \"<amount> <UNIT>\""))?;
+    let (whole, frac) = number.split_once('.').unwrap_or((number, ""));
+    if (whole.is_empty() && frac.is_empty())
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || !frac.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(format!(
+            "{what} `{number}` is not an exact non-negative decimal (no sign, exponent or float)"
+        ));
+    }
+    let digits = format!("{whole}{frac}")
+        .parse::<i128>()
+        .map_err(|_| format!("{what} `{number}` is out of range"))?;
+    Ok(Exact {
+        digits,
+        scale: frac.len(),
+        unit,
+    })
+}
+
+/// `digits` at `scale` decimal places, without trailing fractional zeros:
+/// the kernel pads an amount to its unit's scale and refuses any digit
+/// beyond it, so `8 × "0.125 USD"` is exactly `"1 USD"`, never a refusal.
+fn render(digits: i128, scale: usize, unit: &str) -> String {
+    let text = digits.to_string();
+    if scale == 0 {
+        return format!("{text} {unit}");
+    }
+    let padded = format!("{text:0>width$}", width = scale + 1);
+    let (int, dec) = padded.split_at(padded.len() - scale);
+    match dec.trim_end_matches('0') {
+        "" => format!("{int} {unit}"),
+        dec => format!("{int}.{dec} {unit}"),
+    }
+}
+
+/// `quantity × "<decimal> <UNIT>"` exactly.
 fn extend(qty: &str, price: &str) -> Result<String, String> {
     let qty: i128 = qty
         .parse()
         .ok()
         .filter(|q| *q > 0)
         .ok_or_else(|| format!("qty `{qty}` is not a positive whole number"))?;
-    let (number, unit) = price
-        .split_once(' ')
-        .ok_or_else(|| format!("unit_price `{price}` is not \"<amount> <UNIT>\""))?;
-    let (whole, frac) = number.split_once('.').unwrap_or((number, ""));
-    if whole.is_empty()
-        || !whole.bytes().all(|b| b.is_ascii_digit())
-        || !frac.bytes().all(|b| b.is_ascii_digit())
-    {
-        return Err(format!(
-            "unit_price `{number}` is not an exact non-negative decimal (no sign, exponent or float)"
-        ));
-    }
-    let digits: i128 = format!("{whole}{frac}")
-        .parse()
-        .map_err(|_| format!("unit_price `{number}` is out of range"))?;
-    let total = digits
+    let price = exact(price, "unit_price")?;
+    let total = price
+        .digits
         .checked_mul(qty)
-        .ok_or_else(|| format!("qty {qty} × {number} is out of range"))?
-        .to_string();
-    let scale = frac.len();
-    let rendered = if scale == 0 {
-        total
-    } else {
-        let padded = format!("{total:0>width$}", width = scale + 1);
-        let (int, dec) = padded.split_at(padded.len() - scale);
-        format!("{int}.{dec}")
-    };
-    Ok(format!("{rendered} {unit}"))
+        .ok_or_else(|| format!("qty {qty} × the unit price is out of range"))?;
+    Ok(render(total, price.scale, price.unit))
 }
 
-/// Sum `"<decimal> <UNIT>"` amounts of one unit exactly, as text.
+/// Sum `"<decimal> <UNIT>"` amounts of one unit exactly, as text. Amounts
+/// may name different numbers of decimal places; they are aligned exactly.
 fn sum(amounts: &[String]) -> Result<String, String> {
-    let mut unit: Option<&str> = None;
-    let mut scale: Option<usize> = None;
-    let mut total: i128 = 0;
-    for amount in amounts {
-        let (number, u) = amount
-            .split_once(' ')
-            .ok_or_else(|| format!("`{amount}` is not \"<amount> <UNIT>\""))?;
-        match unit {
-            Some(seen) if seen != u => {
-                return Err(format!(
-                    "lines are in {seen} and {u}: one document is in one unit"
-                ));
-            }
-            _ => unit = Some(u),
-        }
-        let (whole, frac) = number.split_once('.').unwrap_or((number, ""));
-        if !whole.bytes().all(|b| b.is_ascii_digit()) || !frac.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(format!(
-                "amount `{number}` is not an exact non-negative decimal"
-            ));
-        }
-        match scale {
-            Some(seen) if seen != frac.len() => {
-                return Err(format!(
-                    "amount `{number}` has {} decimal places where another line has {seen}",
-                    frac.len()
-                ));
-            }
-            _ => scale = Some(frac.len()),
-        }
-        let digits: i128 = format!("{whole}{frac}")
-            .parse()
-            .map_err(|_| format!("amount `{number}` is out of range"))?;
-        total = total
-            .checked_add(digits)
-            .ok_or_else(|| "the document total is out of range".to_string())?;
-    }
-    let (Some(unit), Some(scale)) = (unit, scale) else {
+    let parsed = amounts
+        .iter()
+        .map(|a| exact(a, "amount"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(first) = parsed.first() else {
         return Err("no lines".into());
     };
-    let total = total.to_string();
-    let rendered = if scale == 0 {
-        total
-    } else {
-        let padded = format!("{total:0>width$}", width = scale + 1);
-        let (int, dec) = padded.split_at(padded.len() - scale);
-        format!("{int}.{dec}")
-    };
-    Ok(format!("{rendered} {unit}"))
+    if let Some(other) = parsed.iter().find(|e| e.unit != first.unit) {
+        return Err(format!(
+            "lines are in {} and {}: one document is in one unit",
+            first.unit, other.unit
+        ));
+    }
+    let scale = parsed.iter().map(|e| e.scale).max().unwrap_or(0);
+    let mut total: i128 = 0;
+    for e in &parsed {
+        let aligned = u32::try_from(scale - e.scale)
+            .ok()
+            .and_then(|places| 10_i128.checked_pow(places))
+            .and_then(|factor| e.digits.checked_mul(factor))
+            .ok_or_else(|| "the document total is out of range".to_string())?;
+        total = total
+            .checked_add(aligned)
+            .ok_or_else(|| "the document total is out of range".to_string())?;
+    }
+    Ok(render(total, scale, first.unit))
+}
+
+/// Whether a normalized amount is zero: a zero leg posts nothing, and the
+/// kernel refuses one (plan §4.4), so it is refused where it was typed.
+fn is_zero(amount: &str) -> bool {
+    exact(amount, "amount").is_ok_and(|e| e.digits == 0)
+}
+
+/// The default idempotency key of a typed document: its kind, the legal
+/// entity when given, the party when the number is the party's own (a
+/// vendor's bill number, a customer's payment reference, unique only to
+/// that party), and the number.
+fn default_key(verb: &str, entity: Option<&str>, party: Option<&str>, number: &str) -> String {
+    let mut key = verb.to_string();
+    for part in [entity, party, Some(number)].into_iter().flatten() {
+        key.push(':');
+        key.push_str(part);
+    }
+    key
 }
 
 fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
@@ -444,7 +521,7 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
             ));
         }
     }
-    let party = args.require("--party", "<party code> (fa party list)")?;
+    let (party, entity) = party_and_entity(args, &example)?;
     let date = args.require("--date", "YYYY-MM-DD")?;
     fa_time::DateDay::parse(date)
         .map_err(|e| usage(format!("--date: {e}"), "--date YYYY-MM-DD"))?;
@@ -453,7 +530,12 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
     let number = args.flag("--number");
     let key = match (args.flag("--key"), number) {
         (Some(key), _) => key.to_string(),
-        (None, Some(number)) => format!("{}:{number}", kind.verb()),
+        (None, Some(number)) => default_key(
+            kind.verb(),
+            entity,
+            kind.party_numbered().then_some(party),
+            number,
+        ),
         (None, None) => {
             return Err(usage(
                 format!(
@@ -471,7 +553,6 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
             example,
         ));
     }
-    let entity = args.flag("--entity");
     let mut line_legs = Vec::with_capacity(raw_lines.len());
     let mut amounts = Vec::with_capacity(raw_lines.len());
     for (i, raw) in raw_lines.iter().enumerate() {
@@ -505,7 +586,8 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
             ));
         }
         let amount = match (field("amount"), field("qty"), field("unit_price")) {
-            (Some(amount), None, None) => amount.to_string(),
+            (Some(amount), None, None) => sum(&[amount.to_string()])
+                .map_err(|e| usage(format!("{what}: {e}"), example.clone()))?,
             (None, Some(qty), Some(price)) => {
                 extend(qty, price).map_err(|e| usage(format!("{what}: {e}"), example.clone()))?
             }
@@ -516,6 +598,12 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
                 ));
             }
         };
+        if is_zero(&amount) {
+            return Err(usage(
+                format!("{what}: a zero line posts nothing (every leg moves a positive amount)"),
+                "drop the line, or describe it in another line's memo (description=...)",
+            ));
+        }
         let account = field("account").or(default_account).ok_or_else(|| {
             usage(
                 format!(
@@ -586,10 +674,18 @@ mod tests {
 
     #[test]
     fn lines_extend_and_sum_exactly_or_refuse() {
-        assert_eq!(extend("10", "125.00 USD").unwrap(), "1250.00 USD");
+        // Exact, with trailing fractional zeros dropped: the kernel pads an
+        // amount to its unit's scale and refuses any digit beyond it.
+        assert_eq!(extend("10", "125.00 USD").unwrap(), "1250 USD");
         assert_eq!(extend("3", "0.05 USD").unwrap(), "0.15 USD");
         assert_eq!(extend("7", "100 JPY").unwrap(), "700 JPY");
-        assert_eq!(extend("2", "0.125 KWD").unwrap(), "0.250 KWD");
+        assert_eq!(extend("2", "0.125 KWD").unwrap(), "0.25 KWD");
+        assert_eq!(
+            extend("8", "0.125 USD").unwrap(),
+            "1 USD",
+            "an exact product within the unit's scale is never refused"
+        );
+        assert_eq!(extend("3", "0.125 USD").unwrap(), "0.375 USD");
         for (qty, price) in [
             ("0", "1.00 USD"),
             ("-1", "1.00 USD"),
@@ -597,6 +693,8 @@ mod tests {
             ("2", "1.5e2 USD"),
             ("2", "-1.00 USD"),
             ("2", "1.00"),
+            ("2", "1.00 "),
+            ("2", ". USD"),
         ] {
             assert!(extend(qty, price).is_err(), "{qty} x {price}");
         }
@@ -604,8 +702,19 @@ mod tests {
             sum(&["1250.00 USD".into(), "0.15 USD".into()]).unwrap(),
             "1250.15 USD"
         );
+        assert_eq!(
+            sum(&["31.5 USD".into(), "2.25 USD".into()]).unwrap(),
+            "33.75 USD",
+            "lines with different decimal places are aligned exactly"
+        );
+        assert_eq!(
+            sum(&["1.00 USD".into(), "1.0 USD".into()]).unwrap(),
+            "2 USD"
+        );
         assert!(sum(&["1.00 USD".into(), "1.00 EUR".into()]).is_err());
-        assert!(sum(&["1.00 USD".into(), "1.0 USD".into()]).is_err());
+        assert!(sum(&[]).is_err());
+        assert!(sum(&[format!("{} USD", i128::MAX), "1 USD".into()]).is_err());
+        assert!(is_zero("0 USD") && is_zero("0.00 USD") && !is_zero("0.01 USD"));
         assert_eq!(
             line_words(r#"qty=10 unit_price="125.00 USD" item=SKU-9 product=Widgets"#).unwrap(),
             vec![
@@ -618,5 +727,36 @@ mod tests {
         assert!(line_words("qty=1 qty=2").is_err());
         assert!(line_words(r#"unit_price="1.00 USD"#).is_err());
         assert!(line_words("lonely").is_err());
+        assert!(line_words("account= amount=1").is_err(), "an empty value");
+        assert!(line_words(r#"item="""#).is_err(), "an empty quoted value");
+    }
+
+    #[test]
+    fn default_keys_scope_a_number_to_whoever_assigned_it() {
+        // The book numbers its invoices and payments; a vendor numbers its
+        // bills and a customer its payment references.
+        assert_eq!(default_key("invoice", None, None, "10442"), "invoice:10442");
+        assert_eq!(
+            default_key("bill", None, Some("V-17"), "B-77"),
+            "bill:V-17:B-77"
+        );
+        assert_ne!(
+            default_key("bill", None, Some("V-17"), "B-77"),
+            default_key("bill", None, Some("V-18"), "B-77"),
+            "two vendors' bill B-77 are two documents"
+        );
+        assert_eq!(
+            default_key("receipt", Some("ACME-DE"), Some("C-17"), "W-1"),
+            "receipt:ACME-DE:C-17:W-1"
+        );
+        assert_ne!(
+            default_key("invoice", Some("ACME-US"), None, "1"),
+            default_key("invoice", Some("ACME-DE"), None, "1"),
+            "each legal entity numbers its own invoices"
+        );
+        assert_ne!(
+            default_key("invoice", None, None, "1"),
+            default_key("payment", None, None, "1")
+        );
     }
 }

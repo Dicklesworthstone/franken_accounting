@@ -1140,9 +1140,39 @@ impl Book {
         )))
     }
 
-    /// Journal `intent` into the open scenario `name` without rehearsing it;
-    /// [`Book::run_in_scenario`] rehearses on the materialization first.
-    pub fn record_scenario_intent(
+    /// Admit `capability` to change the REA schema (party, instrument, legal
+    /// entity, external id, identifiers) before the change reads anything
+    /// (doctrine 8).
+    pub fn admit_rea_change(
+        &self,
+        principal_ref: VId,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<()> {
+        with_store!(&self.store, core => core.admit_rea_change(&self.purposes(), principal_ref, capability))
+    }
+
+    /// Admit `capability` to run an intent in a scenario, before the scenario
+    /// is read or materialized (doctrine 8).
+    pub fn admit_scenario_plan(&self, capability: &fa_journal::Capability) -> Outcome<()> {
+        with_store!(&self.store, core => core.admit_scenario_plan(&self.purposes(), capability))
+    }
+
+    /// Admit `intent` into the scenario `name` before anything is rehearsed
+    /// for it (doctrine 8): every check of the Plan record but the write.
+    /// `Some` is the recorded outcome of an identical retry.
+    pub fn admit_scenario_intent(
+        &self,
+        name: &str,
+        intent: &fa_journal::PostIntent,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Option<fa_journal::ScenarioRecorded>> {
+        with_store!(&self.store, core => core.admit_scenario_intent(&self.purposes(), name, intent, capability))
+    }
+
+    /// Journal `intent` into the open scenario `name` without rehearsing it.
+    /// Crate-private: [`Book::run_in_scenario`] is the public path, which
+    /// rehearses on the materialization first.
+    pub(crate) fn record_scenario_intent(
         &mut self,
         capability: fa_journal::Capability,
         name: &str,
@@ -1599,7 +1629,7 @@ impl Book {
     pub fn documents(
         &self,
         known_at: Option<CommitSeq>,
-    ) -> Result<Vec<fa_journal::evidence::DocumentSummary>, BookError> {
+    ) -> Outcome<Vec<fa_journal::evidence::DocumentSummary>> {
         with_store!(&self.store, core => core.documents(&self.purposes(), known_at))
     }
 

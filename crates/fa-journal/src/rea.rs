@@ -320,6 +320,53 @@ fn corrupt(message: impl Into<String>) -> KernelError {
     KernelError::Corrupt(format!("journaled rea: {}", message.into()))
 }
 
+/// Admit `capability` to change the REA schema (party, instrument, legal
+/// entity, external id, identifiers) before anything is read for the
+/// change (doctrine 8): the SchemaChange op on trunk, current at the head
+/// and not revoked there. Every REA control admits again and witnesses
+/// revocation inside its own transaction.
+pub fn admit_rea_change<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    principal_ref: VId,
+    capability: &Capability,
+) -> Outcome<()> {
+    if let Some(refusal) = admit_schema_change(db, book, principal_ref, capability)? {
+        return Ok(Err(refusal));
+    }
+    crate::policy::capability_admitted(db, book, capability)
+}
+
+/// Whether `proposal` is the operation `stored` recorded under the same
+/// principal and key. Every REA spec seals its names, identifiers and
+/// external ids with fresh entropy, so its bytes never repeat: the specs are
+/// compared by their private plaintext transcripts
+/// ([`ReaControlOp::plain_transcript`]) and the rest of the entry under its
+/// own retry law (`semantic_digest`). The comparison is with what this
+/// control recorded, never with the target's current state, so a retry
+/// cannot test a guess against a value someone else set.
+fn same_rea_control(book: &BookContext, stored: &EntryPayload, proposal: &EntryPayload) -> bool {
+    let plain = |p: &EntryPayload| -> Option<[u8; 32]> {
+        let Some(ControlPayload::SchemaChange {
+            kind,
+            canonical_bytes,
+        }) = &p.control
+        else {
+            return None;
+        };
+        let transcript = ReaControlOp::decode(*kind, canonical_bytes)
+            .ok()?
+            .plain_transcript(&book.seal_key)?;
+        let mut p = p.clone();
+        p.control = Some(ControlPayload::SchemaChange {
+            kind: *kind,
+            canonical_bytes: transcript,
+        });
+        p.semantic_digest(&book.seal_key).ok()
+    };
+    matches!((plain(stored), plain(proposal)), (Some(a), Some(b)) if a == b)
+}
+
 fn check_rea_idempotency(
     book: &BookContext,
     row: &VertexRow,
@@ -335,17 +382,8 @@ fn check_rea_idempotency(
             )));
         }
     };
-    let same = if &stored.proposal_digest == proposal_digest {
-        true
-    } else {
-        match (
-            stored.proposal.semantic_digest(&book.seal_key),
-            proposal.semantic_digest(&book.seal_key),
-        ) {
-            (Ok(a), Ok(b)) => a == b,
-            _ => false,
-        }
-    };
+    let same = &stored.proposal_digest == proposal_digest
+        || same_rea_control(book, &stored.proposal, proposal);
     if same {
         Ok(Ok(ReaControlRecorded {
             recorded_at: row.created_at,
@@ -438,8 +476,9 @@ fn open_external_ids(
             return Ok(Err(Refusal::new(
                 code::IDEMPOTENCY_CONFLICT,
                 exit::CONFLICT,
+                // The id is sealed: a refusal names its system, never its value.
                 format!(
-                    "duplicate external_id (`{}`, `{plain}`) in the same request",
+                    "the same external id in system `{}` is given twice in one request",
                     ext.system
                 ),
                 "plan §4.9, FA-INV-09 (ExternalId uniqueness)",
@@ -456,7 +495,7 @@ fn check_external_id_conflicts<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     resolved: &[(VId, String, ExternalId)],
 ) -> Result<Option<Refusal>, KernelError> {
-    for (ext_vid, plain, ext) in resolved {
+    for (ext_vid, _, ext) in resolved {
         if let Some(existing_row) = txn.vertex(db, *ext_vid)? {
             let owner_vid = match prop(&existing_row, property::TARGET_REF) {
                 Some(CanonicalScalar::Bytes(b)) if b.as_slice().len() == 16 => {
@@ -480,8 +519,9 @@ fn check_external_id_conflicts<V: asupersync::fs::Vfs + Clone>(
             return Ok(Some(Refusal::new(
                 code::IDEMPOTENCY_CONFLICT,
                 exit::CONFLICT,
+                // The id is sealed: a refusal names its system, never its value.
                 format!(
-                    "external id (`{}`, `{plain}`) already exists at {:032x}, bound to {owner_desc}",
+                    "this external id in system `{}` already exists at {:032x}, bound to {owner_desc}",
                     ext.system, ext_vid.0
                 ),
                 "plan §4.5, §4.9 (ExternalId vertex identity is derived from (book, system, id); duplicate is an AlreadyLive conflict; FA-INV-09)",

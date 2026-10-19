@@ -171,7 +171,7 @@ fn list_docs(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
     let (known_at, _) = crate::cli::known_at_flag(args, &book, &ctx.out)?;
     let documents: Vec<_> = book
-        .documents(known_at)?
+        .documents(known_at)??
         .into_iter()
         .filter(|d| kind.is_none_or(|k| d.kind == k))
         .collect();
@@ -203,7 +203,8 @@ fn list_docs(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .iter()
         .map(|d| format!("{} {:>8} bytes  {}", hex(&d.oid.0), d.size, d.mime))
         .collect();
-    ctx.out.at_book(&book)?;
+    // open_admitted stamped the coordinate; stamping again here would drop
+    // the instant resolution an --as-known-at <RFC3339> recorded.
     if let Some(seq) = known_at {
         ctx.out.known_at(seq);
     }

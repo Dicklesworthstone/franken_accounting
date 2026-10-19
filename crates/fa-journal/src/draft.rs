@@ -655,10 +655,14 @@ pub async fn open_draft<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(Refusal::new(
             code::IDEMPOTENCY_CONFLICT,
             exit::CONFLICT,
+            // The row's created_at starts its current version, not the
+            // draft's opening, so only the owner is named here.
             format!(
-                "draft `{name}` already exists (opened at {}{})",
-                existing.created_at.0,
-                owner.map_or_else(String::new, |o| format!(" by principal {:032x}", o.0))
+                "draft `{name}` already exists{}",
+                owner.map_or_else(String::new, |o| format!(
+                    " (opened by principal {:032x})",
+                    o.0
+                ))
             ),
             "plan §15.2 (one draft per name in a book)",
             "choose another name, or inspect it with `fa draft show <name> --json`",
@@ -734,9 +738,6 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
     let Some(view) = read_draft(db, book, name)? else {
         return Ok(Err(unknown(name)));
     };
-    if view.state != DraftState::Open {
-        return Ok(Err(not_open(&view.body, view.state)));
-    }
     if view.body.owner != req.capability.holder() {
         return Ok(Err(Refusal::new(
             code::CAPABILITY,
@@ -769,7 +770,9 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
     let draft = view.vid;
     let evid = record_vid(book, &proposal);
     // A recorded identity is this Plan's retry, or another intent under the
-    // same key: judged before rehearsing, which a retry does not repeat.
+    // same key: judged before rehearsing, which a retry does not repeat, and
+    // before the draft's state, so the retry of a Plan recorded before a
+    // promotion or discard still returns its record (FA-INV-09).
     // The intent is judged by the kernel's retry law (plan §4.9), never by
     // the record's bytes: a resubmitted intent reseals its text with fresh
     // salts.
@@ -798,6 +801,9 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
             },
             plan: None,
         }));
+    }
+    if view.state != DraftState::Open {
+        return Ok(Err(not_open(&view.body, view.state)));
     }
     if db.vertex(evid)?.is_some() {
         return Err(KernelError::Corrupt(format!(
@@ -1106,6 +1112,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         .ok_or_else(|| KernelError::Corrupt(format!("draft {:032x} state mirror", draft.0)))?;
     let seq = db.frontier()?;
     let mut intents = Vec::new();
+    let mut opened_at = None;
     let mut closed = None;
     for edge in db.edges_at(seq)? {
         let e = &edge.entry;
@@ -1144,7 +1151,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         }
         let open = DraftState::Open.tag();
         match (*from, *to) {
-            (0, t) if t == open => {}
+            (0, t) if t == open => opened_at = Some(recorded_at),
             (f, t) if f == open && t == open => {
                 let Some((_, ext)) = entry
                     .proposal
@@ -1202,11 +1209,16 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         }
     }
     intents.sort_by_key(|i| (i.recorded_at, i.record.0));
+    // The row's own created_at starts its current version, which a
+    // promotion or discard moves; the Open record is the draft's birth.
+    let opened_at = opened_at.ok_or_else(|| {
+        KernelError::Corrupt(format!("draft {:032x} has no Open record", draft.0))
+    })?;
     Ok(DraftView {
         vid: draft,
         body,
         state,
-        opened_at: row.created_at,
+        opened_at,
         intents,
         closed,
     })

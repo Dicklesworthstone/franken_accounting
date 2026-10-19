@@ -1005,10 +1005,61 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::open_scenario(&mut self.db, cx, &self.context, name, fork, req).await?)
     }
 
+    /// Admit `capability` to change the REA schema before the change reads
+    /// anything (doctrine 8).
+    pub fn admit_rea_change(
+        &self,
+        cx: &PurposeContexts,
+        principal_ref: VId,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<()> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::rea::admit_rea_change(
+                db,
+                context,
+                principal_ref,
+                capability,
+            )?)
+        })
+    }
+
+    /// Admit `capability` to run an intent in a scenario, before the scenario
+    /// is read or materialized (doctrine 8).
+    pub fn admit_scenario_plan(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<()> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::scenario::admit_scenario_plan(
+                db, context, capability,
+            )?)
+        })
+    }
+
+    /// Admit `intent` into the scenario `name` before anything is rehearsed
+    /// for it: every check of the Plan record but the write. `Some` is the
+    /// recorded outcome of an identical retry.
+    pub fn admit_scenario_intent(
+        &self,
+        cx: &PurposeContexts,
+        name: &str,
+        intent: &fa_journal::PostIntent,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Option<fa_journal::ScenarioRecorded>> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::scenario::admit_scenario_intent(
+                db, context, name, intent, capability,
+            )?)
+        })
+    }
+
     /// Journal `intent` into the open scenario `name`. The kernel checks its
-    /// shape only: rehearse it on the scenario's materialization first
-    /// ([`crate::Book::run_in_scenario`] does both).
-    pub async fn record_scenario_intent(
+    /// authority and shape but cannot rehearse it, so this stays inside the
+    /// crate: an unrehearsed intent the
+    /// replay refuses would break every later materialization of the
+    /// scenario. [`crate::Book::run_in_scenario`] rehearses, then records.
+    pub(crate) async fn record_scenario_intent(
         &mut self,
         cx: &PurposeContexts,
         capability: fa_journal::Capability,
@@ -1648,6 +1699,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .await?)
     }
 
+    /// Every document the book holds at `known_at`, as public metadata
+    /// (plan §9.6: kind, media type, grade, size and commitment); never the
+    /// bytes, which only a gated read returns. A row that does not verify is
+    /// refused as drift.
+    pub fn documents(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<Vec<fa_journal::evidence::DocumentSummary>> {
+        self.query(cx, |db, _| {
+            let seq = fa_registers::resolve_known_at(db, known_at)?;
+            Ok(fa_journal::evidence::list_documents(db, seq)?)
+        })
+    }
+
     /// The public commitment mirror, bound to this book and document oid.
     /// Only public label/identity/digest fields are observed; inline bytes
     /// are neither read nor decoded. This does not verify the byte payload.
@@ -1659,20 +1725,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// ```compile_fail,E0599
     /// let _ = fa::AsyncBook::<fgdb::MemVfs>::document_record;
     /// ```
-    /// Every document the book holds at `known_at`, as public metadata
-    /// (plan §9.6: kind, media type, grade, size and commitment); never the
-    /// bytes, which only a gated read returns.
-    pub fn documents(
-        &self,
-        cx: &PurposeContexts,
-        known_at: Option<CommitSeq>,
-    ) -> Result<Vec<fa_journal::evidence::DocumentSummary>, BookError> {
-        self.query(cx, |db, _| {
-            let seq = fa_registers::resolve_known_at(db, known_at)?;
-            Ok(fa_journal::evidence::list_documents(db, seq)?)
-        })
-    }
-
     pub fn document_commitment(
         &mut self,
         cx: &PurposeContexts,

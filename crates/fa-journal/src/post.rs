@@ -699,7 +699,7 @@ pub(crate) enum Admission {
     Promote(crate::draft::Promoting),
 }
 
-fn authorize_request<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     req: &PostRequest,
@@ -810,6 +810,15 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     carried: Option<WriteTxn>,
 ) -> Outcome<PostPreparation> {
     prepare_post_in(db, ctx, book, req, None, admission, carried)
+}
+
+/// An exact amount as the book renders it ("500.00 USD") for refusal text,
+/// so a fix that names an amount can be pasted back; the raw mantissa only
+/// when the unit is not registered.
+fn shown(book: &BookContext, unit: fa_money::UnitId, mantissa: i128) -> String {
+    fa_money::Amount::new(unit, mantissa)
+        .try_render(&book.units)
+        .unwrap_or_else(|_| mantissa.to_string())
 }
 
 /// Prepare the actual class over an optional already-staged reversal.
@@ -1178,8 +1187,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 code::SETTLE_SHAPE,
                 exit::REFUSAL,
                 format!(
-                    "leg {i} applies {sum} but carries only {}",
-                    leg.amount.mantissa
+                    "leg {i} applies {} but carries only {}",
+                    shown(book, leg.amount.unit, sum),
+                    shown(book, leg.amount.unit, leg.amount.mantissa)
                 ),
                 "plan §5.7 (a leg applies at most itself)",
                 "reduce the settlements to the leg's amount",
@@ -2428,12 +2438,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     code::OVER_APPLICATION,
                     exit::REFUSAL,
                     format!(
-                        "leg {i} applies {} to entry {:032x} leg {}, but only {open} is open",
-                        s.amount.mantissa, s.target.vid.0, s.ordinal
+                        "leg {i} applies {} to entry {:032x} leg {}, but only {} is open",
+                        shown(book, s.amount.unit, s.amount.mantissa),
+                        s.target.vid.0,
+                        s.ordinal,
+                        shown(book, s.amount.unit, open)
                     ),
                     "plan §5.7 (over-application is refused with the open amount)",
                     format!(
-                        "apply at most {open}; the remainder is a new open item or an unapplied receipt"
+                        "apply at most {}; the remainder is a new open item or an unapplied receipt",
+                        shown(book, s.amount.unit, open)
                     ),
                 )));
             }

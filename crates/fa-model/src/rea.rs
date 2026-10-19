@@ -13,7 +13,7 @@ use fgdb_types::VId;
 
 use crate::canon::{DecodeError, EncodeError, Reader, Writer, strictly_ascending};
 use crate::entry::{EvidenceRef, ExternalId};
-use crate::erasable::Erasable;
+use crate::erasable::{Erasable, SealKey};
 use crate::ids::{Oid, domain_digest};
 use crate::limits::{
     MAX_DESCRIPTION_BYTES, MAX_EVIDENCE_PER_ENTRY, MAX_EXTERNAL_ID_BYTES, MAX_EXTERNAL_IDS,
@@ -934,6 +934,116 @@ impl ReaControlOp {
                 Err(r.invalid("rea.schema_change_kind"))
             }
         }
+    }
+
+    /// A private plaintext transcript of the operation, for retry
+    /// equivalence (plan §4.9): every sealed field opened under `key`, and
+    /// external ids ordered by their opened value (their wire order follows
+    /// a salted digest, which two seals of one value do not share). Every
+    /// seal draws fresh entropy, so two requests are the same operation iff
+    /// their transcripts are equal. A transcript is compared in memory and
+    /// never persisted or logged; `None` when a field cannot be opened (an
+    /// erased subject), so equivalence is never claimed for it.
+    #[must_use]
+    pub fn plain_transcript(&self, key: &SealKey) -> Option<Vec<u8>> {
+        fn opened(
+            list: &[(String, Erasable<String>)],
+            key: &SealKey,
+        ) -> Option<Vec<(String, String)>> {
+            list.iter()
+                .map(|(k, v)| Some((k.clone(), v.open(key, MAX_IDENTIFIER_VAL_BYTES).ok()?)))
+                .collect()
+        }
+        fn ids(list: &[ExternalId], key: &SealKey) -> Option<Vec<(String, String)>> {
+            let mut opened = list
+                .iter()
+                .map(|x| {
+                    Some((
+                        x.system.clone(),
+                        x.id.open(key, MAX_EXTERNAL_ID_BYTES).ok()?,
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            opened.sort();
+            Some(opened)
+        }
+        fn pairs(w: &mut Writer, list: &[(String, String)]) {
+            w.list(list, |w, (a, b)| {
+                w.str(a).str(b);
+            });
+        }
+        let mut w = Writer::new();
+        match self {
+            Self::CreateParty(s) => {
+                w.u16(SCHEMA_CHANGE_CREATE_PARTY)
+                    .str(&s.code)
+                    .u8(s.kind.tag())
+                    .str(&s.name.open(key, MAX_REA_NAME_BYTES).ok()?);
+                pairs(&mut w, &opened(&s.identifiers, key)?);
+                pairs(&mut w, &ids(&s.external_ids, key)?);
+            }
+            Self::CreateInstrument(s) => {
+                w.u16(SCHEMA_CHANGE_CREATE_INSTRUMENT)
+                    .str(&s.code)
+                    .str(&s.name)
+                    .u8(s.kind.tag())
+                    .u32(s.unit.0)
+                    .u128(s.held_at_party.0)
+                    .u128(s.mirrors_account.0);
+                pairs(&mut w, &ids(&s.external_ids, key)?);
+            }
+            Self::CreateLegalEntity(s) => {
+                w.u16(SCHEMA_CHANGE_CREATE_LEGAL_ENTITY)
+                    .str(&s.code)
+                    .str(&s.name)
+                    .str(&s.jurisdiction)
+                    .u32(s.functional_unit.0)
+                    .opt(s.formed.as_ref(), |w, d| {
+                        w.i32(d.0);
+                    })
+                    .opt(s.dissolved.as_ref(), |w, d| {
+                        w.i32(d.0);
+                    });
+                pairs(&mut w, &ids(&s.external_ids, key)?);
+            }
+            Self::BindExternalId(b) => {
+                w.u16(SCHEMA_CHANGE_BIND_EXTERNAL_ID).u128(b.target_vid.0);
+                pairs(&mut w, &ids(core::slice::from_ref(&b.external_id), key)?);
+            }
+            // No sealed field: its canonical bytes are its transcript.
+            Self::RecordRelationship(s) => {
+                w.u16(SCHEMA_CHANGE_RECORD_RELATIONSHIP)
+                    .bytes(&s.encode().ok()?);
+            }
+            Self::UpdatePartyIdentifiers(u) => {
+                w.u16(SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS)
+                    .u128(u.party_vid.0);
+                pairs(&mut w, &opened(&u.identifiers, key)?);
+            }
+            Self::RecordEvent(s) => {
+                w.u16(SCHEMA_CHANGE_RECORD_EVENT)
+                    .str(&s.code)
+                    .u8(s.kind.tag())
+                    .i32(s.occurred_on.0)
+                    .str(&s.description.open(key, MAX_DESCRIPTION_BYTES).ok()?)
+                    .list(&s.participants, |w, v| {
+                        w.u128(v.0);
+                    })
+                    .list(&s.resources, |w, r| {
+                        w.str(&r.label)
+                            .u32(r.amount.unit.0)
+                            .i128(r.amount.mantissa)
+                            .opt(r.instrument.as_ref(), |w, inst| {
+                                w.u128(inst.0);
+                            });
+                    })
+                    .list(&s.evidence, |w, e| {
+                        w.fixed(&e.document_oid.0).fixed(&e.doc_commit).u8(e.role);
+                    });
+                pairs(&mut w, &ids(&s.external_ids, key)?);
+            }
+        }
+        w.finish().ok()
     }
 }
 

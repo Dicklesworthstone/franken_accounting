@@ -703,15 +703,18 @@ pub async fn open_scenario<V: asupersync::fs::Vfs + Clone>(
     }
     if let Some(existing) = txn.vertex(db, scenario)? {
         txn.abort();
-        let owner = scenario_row_body(&existing).map(|b| b.owner).ok();
+        let held = scenario_row_body(&existing)
+            .ok()
+            .map_or_else(String::new, |b| {
+                format!(
+                    " (forked at {} by principal {:032x})",
+                    b.fork_at.0, b.owner.0
+                )
+            });
         return Ok(Err(Refusal::new(
             code::IDEMPOTENCY_CONFLICT,
             exit::CONFLICT,
-            format!(
-                "scenario `{name}` already exists (forked at {}{})",
-                existing.created_at.0,
-                owner.map_or_else(String::new, |o| format!(" by principal {:032x}", o.0))
-            ),
+            format!("scenario `{name}` already exists{held}"),
             "plan §15.2 (one scenario per name in a book)",
             "choose another name, or inspect it with `fa scenario show <name> --json`",
         )));
@@ -747,30 +750,57 @@ pub async fn open_scenario<V: asupersync::fs::Vfs + Clone>(
     finish(db, ctx, book, txn, &proposal, scenario, evid).await
 }
 
-/// Journal `intent` into the open scenario `name` as one Plan record. Only
-/// the scenario's owner plans into it; the intent is the owner's, for this
-/// book's trunk, of a batchable class, effective on or after the scenario's
-/// start date, under a key no other intent in the scenario holds. The
-/// caller rehearses it on the scenario's materialization first; the kernel
-/// never posts it.
-pub async fn plan_into_scenario<V: asupersync::fs::Vfs + Clone>(
-    db: &mut Database<V>,
-    ctx: &PurposeContexts,
+/// Admit `capability` to run an intent in a scenario before anything is read
+/// for it (doctrine 8): the ScenarioControl Plan op, current at the head and
+/// not revoked there. The facade runs this before it materializes the
+/// scenario to rehearse the intent; [`plan_into_scenario`] admits again and
+/// witnesses revocation inside its transaction.
+pub fn admit_scenario_plan<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+) -> Outcome<()> {
+    if let Err(r) = admit(db, book, capability, Kind::Plan)? {
+        return Ok(Err(r));
+    }
+    crate::policy::capability_admitted(db, book, capability)
+}
+
+/// What a scenario intent's checks found: the recorded outcome of its
+/// identical retry, or the open scenario it may be planned into.
+enum Checked {
+    Recorded(ScenarioRecorded),
+    Admitted(ScenarioView),
+}
+
+/// Every check a scenario intent meets before anything is read for it,
+/// rehearsed or written (doctrine 8), in one place: the facade runs them
+/// ([`admit_scenario_intent`]) before it materializes the scenario, and
+/// [`plan_into_scenario`] again before it writes. In order: the name; the
+/// ScenarioControl Plan op; the intent's holder and coordinates; the
+/// planner's authority over the intent itself, admitted as a dry run of it
+/// on trunk is (current and not revoked, every leg within its unit's
+/// ceiling, the intent within the token's scope caveats); its class; the
+/// scenario and its owner; an identical retry, whose recorded outcome stands
+/// whatever the scenario's state is now (FA-INV-09); then the scenario's
+/// state, start date and intent cap.
+fn check_plan<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     name: &str,
-    intent: PostIntent,
-    req: ScenarioRequest,
-) -> Outcome<ScenarioRecorded> {
+    intent: &PostIntent,
+    capability: &Capability,
+) -> Outcome<Checked> {
     if let Err(r) = check_name(name) {
         return Ok(Err(r));
     }
-    if let Err(r) = admit(db, book, &req.capability, Kind::Plan)? {
+    if let Err(r) = admit(db, book, capability, Kind::Plan)? {
         return Ok(Err(r));
     }
     let p = intent.proposal();
-    if p.principal_ref != req.capability.holder() {
+    if p.principal_ref != capability.holder() {
         return Ok(Err(denial(&Denial::NotHolder {
-            holder: req.capability.holder(),
+            holder: capability.holder(),
             principal: p.principal_ref,
         })));
     }
@@ -779,6 +809,17 @@ pub async fn plan_into_scenario<V: asupersync::fs::Vfs + Clone>(
             "a scenario plans intents for this book's trunk coordinates",
             "plan the intent with this book's id and the trunk branch",
         )));
+    }
+    let rehearsal = crate::post::PostRequest {
+        proposal: p.clone(),
+        approvals: intent.approvals().to_vec(),
+        capability: capability.clone(),
+        plan_certificate: None,
+    };
+    if let Err(r) =
+        crate::post::authorize_request(db, book, &rehearsal, crate::post::Admission::Plan)?
+    {
+        return Ok(Err(r));
     }
     if !crate::batch::batchable(p.class) {
         return Ok(Err(usage(
@@ -792,10 +833,7 @@ pub async fn plan_into_scenario<V: asupersync::fs::Vfs + Clone>(
     let Some(view) = read_scenario(db, book, name)? else {
         return Ok(Err(unknown(name)));
     };
-    if view.state != ScenarioState::Open {
-        return Ok(Err(not_open(&view.body, view.state)));
-    }
-    if view.body.owner != req.capability.holder() {
+    if view.body.owner != capability.holder() {
         return Ok(Err(Refusal::new(
             code::CAPABILITY,
             exit::SAFETY,
@@ -806,6 +844,40 @@ pub async fn plan_into_scenario<V: asupersync::fs::Vfs + Clone>(
             "plan §15.2 (a scenario is its owner's counterfactual intent log)",
             "fork your own scenario with `fa scenario fork <name>`",
         )));
+    }
+    // A recorded identity is this Plan's retry, or another intent under the
+    // same key, judged by the kernel's retry law (plan §4.9), never by the
+    // record's bytes: a resubmitted intent reseals its text with fresh salts.
+    let evid = entry_vid(
+        book.book_id,
+        &view.body.owner.0.to_le_bytes(),
+        &record_key(Kind::Plan, view.body.vid(), &p.idempotency_key),
+    );
+    if let Some(planned) = view.intents.iter().find(|i| i.record == evid) {
+        let same = planned.capability == *capability
+            && planned.intent.approvals() == intent.approvals()
+            && match (
+                planned.intent.proposal().semantic_digest(&book.seal_key),
+                p.semantic_digest(&book.seal_key),
+            ) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => planned.intent.proposal().proposal_digest()? == p.proposal_digest()?,
+            };
+        if !same {
+            let row = db.vertex(evid)?.ok_or_else(|| {
+                KernelError::Corrupt("a scenario intent's record vanished".into())
+            })?;
+            return Ok(Err(conflict_with(&row)));
+        }
+        return Ok(Ok(Checked::Recorded(ScenarioRecorded {
+            scenario: view.vid,
+            control_entry: evid,
+            recorded_at: planned.recorded_at,
+            already_recorded: true,
+        })));
+    }
+    if view.state != ScenarioState::Open {
+        return Ok(Err(not_open(&view.body, view.state)));
     }
     if let Some(from) = view.body.from
         && p.effective_date < from
@@ -821,6 +893,62 @@ pub async fn plan_into_scenario<V: asupersync::fs::Vfs + Clone>(
             "date the intent on or after the scenario's from date, or fork a scenario with an earlier --from",
         )));
     }
+    if db.vertex(evid)?.is_some() {
+        return Err(KernelError::Corrupt(format!(
+            "scenario `{name}` names no Plan record at {:032x}, which is live",
+            evid.0
+        )));
+    }
+    if view.intents.len() >= fa_model::limits::MAX_BATCH_ENTRIES {
+        return Ok(Err(usage(
+            format!(
+                "scenario `{name}` already holds {} intents, the most one scenario replays",
+                view.intents.len()
+            ),
+            "fork another scenario for the rest of the counterfactual",
+        )));
+    }
+    Ok(Ok(Checked::Admitted(view)))
+}
+
+/// Admit `intent` into the scenario `name` before anything is rehearsed for
+/// it: every check of [`plan_into_scenario`] but the write. `Some` is the
+/// recorded outcome of an identical retry, which needs no rehearsal.
+pub fn admit_scenario_intent<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    name: &str,
+    intent: &PostIntent,
+    capability: &Capability,
+) -> Outcome<Option<ScenarioRecorded>> {
+    Ok(
+        check_plan(db, book, name, intent, capability)?.map(|checked| match checked {
+            Checked::Recorded(recorded) => Some(recorded),
+            Checked::Admitted(_) => None,
+        }),
+    )
+}
+
+/// Journal `intent` into the open scenario `name` as one Plan record. Only
+/// the scenario's owner plans into it; the intent is the owner's, for this
+/// book's trunk, of a batchable class, effective on or after the scenario's
+/// start date, under a key no other intent in the scenario holds. The
+/// caller rehearses it on the scenario's materialization first; the kernel
+/// never posts it.
+pub async fn plan_into_scenario<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    name: &str,
+    intent: PostIntent,
+    req: ScenarioRequest,
+) -> Outcome<ScenarioRecorded> {
+    let view = match check_plan(db, book, name, &intent, &req.capability)? {
+        Err(refusal) => return Ok(Err(refusal)),
+        Ok(Checked::Recorded(recorded)) => return Ok(Ok(recorded)),
+        Ok(Checked::Admitted(view)) => view,
+    };
+    let p = intent.proposal();
     let extension = intent_bytes(&intent, &req.capability)?;
     let proposal = record_proposal(
         book,
@@ -840,47 +968,6 @@ pub async fn plan_into_scenario<V: asupersync::fs::Vfs + Clone>(
     }
     let scenario = view.vid;
     let evid = record_vid(book, &proposal);
-    // A recorded identity is this Plan's retry, or another intent under the
-    // same key, judged by the kernel's retry law (plan §4.9), never by the
-    // record's bytes: a resubmitted intent reseals its text with fresh salts.
-    if let Some(planned) = view.intents.iter().find(|i| i.record == evid) {
-        let same = planned.capability == req.capability
-            && planned.intent.approvals() == intent.approvals()
-            && match (
-                planned.intent.proposal().semantic_digest(&book.seal_key),
-                p.semantic_digest(&book.seal_key),
-            ) {
-                (Ok(a), Ok(b)) => a == b,
-                _ => planned.intent.proposal().proposal_digest()? == p.proposal_digest()?,
-            };
-        if !same {
-            let row = db.vertex(evid)?.ok_or_else(|| {
-                KernelError::Corrupt("a scenario intent's record vanished".into())
-            })?;
-            return Ok(Err(conflict_with(&row)));
-        }
-        return Ok(Ok(ScenarioRecorded {
-            scenario,
-            control_entry: evid,
-            recorded_at: planned.recorded_at,
-            already_recorded: true,
-        }));
-    }
-    if db.vertex(evid)?.is_some() {
-        return Err(KernelError::Corrupt(format!(
-            "scenario `{name}` names no Plan record at {:032x}, which is live",
-            evid.0
-        )));
-    }
-    if view.intents.len() >= fa_model::limits::MAX_BATCH_ENTRIES {
-        return Ok(Err(usage(
-            format!(
-                "scenario `{name}` already holds {} intents, the most one scenario replays",
-                view.intents.len()
-            ),
-            "fork another scenario for the rest of the counterfactual",
-        )));
-    }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
@@ -1000,7 +1087,8 @@ pub fn read_scenario<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
-/// Every scenario of the book, by forking sequence.
+/// Every scenario of the book, in the order they were forked (their Open
+/// records).
 pub fn list_scenarios<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1030,6 +1118,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let seq = db.frontier()?;
     let mut intents = Vec::new();
     let mut assumptions = None;
+    let mut opened_at = None;
     let mut discarded = None;
     for edge in db.edges_at(seq)? {
         let e = &edge.entry;
@@ -1082,6 +1171,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                     oids.push(*oid);
                 }
                 assumptions = Some(oids);
+                opened_at = Some(recorded_at);
             }
             (f, t) if f == open && t == open => {
                 let Some((_, ext)) = entry
@@ -1118,15 +1208,18 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
-    let assumptions = assumptions.ok_or_else(|| {
-        KernelError::Corrupt(format!("scenario {:032x} has no Open record", scenario.0))
-    })?;
+    let (Some(assumptions), Some(opened_at)) = (assumptions, opened_at) else {
+        return Err(KernelError::Corrupt(format!(
+            "scenario {:032x} has no Open record",
+            scenario.0
+        )));
+    };
     intents.sort_by_key(|i| (i.recorded_at, i.record.0));
     Ok(ScenarioView {
         vid: scenario,
         body,
         state,
-        opened_at: row.created_at,
+        opened_at,
         assumptions,
         intents,
         discarded,

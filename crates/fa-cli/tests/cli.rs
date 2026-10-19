@@ -2531,6 +2531,42 @@ fn export_writes_the_trial_balance_selection_in_every_interop_format() -> std::i
         fa_formats::csv_gl::verify_ndjson_gl_stream(&stream).ok(),
         Some(4)
     );
+    // The header carries what the certificate binds, so the certificate
+    // digest is recomputed from the stream alone.
+    let header = json::parse(stream.lines().next().unwrap_or_default()).unwrap_or(Json::Null);
+    let hex32 = |key: &str| -> [u8; 32] {
+        let h = text(&header, key);
+        let mut out = [0u8; 32];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(h.get(2 * i..2 * i + 2).unwrap_or("zz"), 16).unwrap_or(0);
+        }
+        out
+    };
+    let int_of = |key: &str| {
+        int(&header, key)
+            .and_then(|v| u64::try_from(v).ok())
+            .unwrap_or(0)
+    };
+    let recomputed = fa_formats::ExportCoordinate::compute(
+        text(&header, "book_name"),
+        text(&header, "base_unit"),
+        u8::try_from(int_of("base_unit_scale")).unwrap_or(0),
+        fa_time::DateDay::parse(text(&header, "effective_through")).expect("a date"),
+        int_of("known_at_seq"),
+        int_of("entry_count"),
+        hex32("content_digest"),
+    );
+    assert_eq!(
+        recomputed.certificate_digest,
+        hex32("certificate_digest"),
+        "{stream}"
+    );
+    assert_eq!(
+        text(&header, "content_digest"),
+        text(&exported, "content_digest")
+    );
+    let first_row = json::parse(stream.lines().nth(1).unwrap_or_default()).unwrap_or(Json::Null);
+    assert!(int(&first_row, "entry_class").is_some(), "{stream}");
     let truncated: String = stream
         .lines()
         .filter(|l| !l.contains("gl_stream_footer"))
@@ -6448,6 +6484,15 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("period", Some("reopen"), "always"),
     ("post", None, "grant:post_closed"),
     ("reverse", None, "grant:post_closed"),
+    // Every verb that posts to trunk is dangerous under a post_closed grant.
+    ("invoice", None, "grant:post_closed"),
+    ("bill", None, "grant:post_closed"),
+    ("receipt", None, "grant:post_closed"),
+    ("payment", None, "grant:post_closed"),
+    ("reserve", None, "grant:post_closed"),
+    ("resolve", None, "grant:post_closed"),
+    ("allocate", None, "grant:post_closed"),
+    ("settle", None, "grant:post_closed"),
     ("resolve", None, "disposition:voids"),
     ("registers", Some("materialize"), "existing-cells"),
     ("capability", Some("revoke"), "always"),
@@ -11374,6 +11419,19 @@ fn legal_entities_and_external_id_bindings_are_recorded_from_the_cli() -> std::i
         full.push("--json");
         fa(Some(&book), &full)
     };
+    // Planted negative: a genesis entity keeps its declared name. Before the
+    // lift, so the refusal is the name law's, not "already exists".
+    let renamed = write(
+        &dir,
+        "renamed.json",
+        r#"{"code":"ACME","name":"Acme Renamed","jurisdiction":"US-DE","functional_unit":"USD"}"#,
+    );
+    let (code, out, _) = run(&["entity", "add", &renamed, "--key", "entity:ACME:2"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        out.contains("was declared at genesis with name"),
+        "the genesis name law refuses it: {out}"
+    );
     let lifted = write(
         &dir,
         "acme.json",
@@ -11390,15 +11448,7 @@ fn legal_entities_and_external_id_bindings_are_recorded_from_the_cli() -> std::i
     assert_eq!(field(&again, "already_recorded"), Some("true"), "{again}");
     assert_eq!(field(&again, "target"), Some(acme.as_str()));
 
-    // Planted negatives: a genesis entity keeps its declared name, and a
-    // dissolution is strictly after formation.
-    let renamed = write(
-        &dir,
-        "renamed.json",
-        r#"{"code":"ACME","name":"Acme Renamed","jurisdiction":"US-DE","functional_unit":"USD"}"#,
-    );
-    let (code, out, _) = run(&["entity", "add", &renamed, "--key", "entity:ACME:2"]);
-    assert_eq!(code, 2, "{out}");
+    // Planted negative: a dissolution is strictly after formation.
     let backwards = write(
         &dir,
         "backwards.json",
@@ -11478,6 +11528,34 @@ fn legal_entities_and_external_id_bindings_are_recorded_from_the_cli() -> std::i
     assert_eq!(code, 2, "{out}");
     let (code, out, _) = run(&["party", "bind", "NOBODY", "--external-id", "qbo:56"]);
     assert_eq!(code, 2, "{out}");
+    let (code, out, _) = run(&["party", "bind", "V-17", "--external-id", "qbo"]);
+    assert!(
+        code == 2 && !out.contains("`qbo`"),
+        "a malformed id is not echoed: {out}"
+    );
+    // Codes are unique within a kind, not across kinds: a party coded like
+    // the legal entity ACME makes the code ambiguous, and a vertex id names
+    // exactly one target.
+    let intercompany = write(
+        &dir,
+        "acme-party.json",
+        r#"{"code":"ACME","kind":"RelatedEntity","name":"Acme Holdings"}"#,
+    );
+    let (code, out, err) = run(&["party", "add", &intercompany]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let (code, out, _) = run(&[
+        "party",
+        "bind",
+        "ACME",
+        "--external-id",
+        "lei:5299001ABCDEF",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("more than one target"), "{out}");
+    assert!(!out.contains("5299001ABCDEF"), "never echoed: {out}");
+    let (code, out, err) = run(&["party", "bind", &acme, "--external-id", "lei:5299001ABCDEF"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "target"), Some(acme.as_str()), "{out}");
     Ok(())
 }
 
@@ -11546,11 +11624,29 @@ fn party_identifiers_are_replaced_under_a_named_change_and_never_echoed() -> std
     assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(false)));
     let (code, out, _) = run(&clear);
     assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    // A retry is judged against what its own change recorded, never the
+    // party's current set: chg-1 is still its recorded change after the
+    // clear, and chg-2 under chg-1's values is a conflict.
+    let (code, out, _) = run(&change);
+    assert_eq!(code, 0, "{out}");
     assert_eq!(
         doc(&out).get("already_recorded"),
         Some(&Json::Bool(true)),
-        "the cleared set is the party's current set"
+        "an exact retry after a later change is still the recorded change: {out}"
     );
+    let (code, out, _) = run(&[
+        "party",
+        "identifiers",
+        "V-17",
+        "--identifier",
+        "bank_routing=021000021",
+        "--identifier",
+        "bank_account=4417123456",
+        "--key",
+        "chg-2",
+    ]);
+    assert_eq!(code, 6, "chg-2 recorded a clear: {out}");
     for (args, why) in [
         (
             vec![
@@ -11624,7 +11720,7 @@ fn party_identifiers_are_replaced_under_a_named_change_and_never_echoed() -> std
     Ok(())
 }
 
-/// The whole history re-performs into an independent scratch book and
+/// The whole history's recorded rows replay into a fresh scratch book that
 /// agrees with the source commit by commit (`fa verify replay`).
 #[test]
 fn verify_replay_re_performs_the_history_into_an_independent_book() -> std::io::Result<()> {
@@ -11672,7 +11768,7 @@ fn verify_replay_re_performs_the_history_into_an_independent_book() -> std::io::
     assert_eq!(
         run(&["verify", "replay", "--period", "FY2026-P03"]).0,
         2,
-        "replay re-performs the whole history; it takes no period filter"
+        "replay covers the whole history; it takes no period filter"
     );
     Ok(())
 }
@@ -11729,7 +11825,7 @@ fn invoice_and_bill_post_typed_documents_through_the_post_path() -> std::io::Res
         &["document", "list", "--kind", "Nope", "--json"],
     );
     assert_eq!(code, 2, "{out}");
-    for (code, kind) in [("C-17", "Customer"), ("V-17", "Vendor")] {
+    for (code, kind) in [("C-17", "Customer"), ("V-17", "Vendor"), ("V-18", "Vendor")] {
         let party = write(
             &dir,
             &format!("{code}.json"),
@@ -11867,8 +11963,56 @@ fn invoice_and_bill_post_typed_documents_through_the_post_path() -> std::io::Res
     assert_eq!(net("6000").as_deref(), Some("300.00 USD"), "{after}");
     assert_eq!(net("2000").as_deref(), Some("-300.00 USD"), "{after}");
 
-    // Planted negatives: nothing is inferred and nothing is written.
+    // A vendor numbers its own bills: another vendor's B-77 is another
+    // document, never the first one's recorded entry. Lines with different
+    // decimal places sum exactly.
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "bill",
+            "--party",
+            "V-18",
+            "--number",
+            "B-77",
+            "--date",
+            "2026-03-21",
+            "--payable",
+            "2000",
+            "--expense",
+            "6000",
+            "--line",
+            r#"amount="31.5 USD""#,
+            "--line",
+            r#"qty=3 unit_price="0.25 USD""#,
+            "--evidence",
+            ev.as_str(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(
+        field(&out, "event"),
+        Some("posted"),
+        "another vendor's B-77: {out}"
+    );
+    let after = tb();
+    let net = |code: &str| {
+        after
+            .split('{')
+            .find(|row| field(row, "code") == Some(code))
+            .and_then(|row| field(row, "net").map(str::to_string))
+    };
+    assert_eq!(net("6000").as_deref(), Some("332.25 USD"), "{after}");
+
+    // A post_closed grant makes a typed document dangerous, as it makes
+    // fa post: unconfirmed, it is refused before anything is written.
     let before = tb();
+    let (code, out, _) = invoice("C-17", &["--key", "late-1", "--grant", "post_closed"]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-007"), "{out}");
+    assert_eq!(tb(), before, "an unconfirmed dangerous post writes nothing");
+
+    // Planted negatives: nothing is inferred and nothing is written.
     for (line, extra, why) in [
         (
             r#"amount="1.00 USD" tax=VAT20"#,
@@ -11890,6 +12034,13 @@ fn invoice_and_bill_post_typed_documents_through_the_post_path() -> std::io::Res
             r#"amount="1.00 USD" colour=red"#,
             vec![],
             "an unknown field",
+        ),
+        (r#"amount="0.00 USD""#, vec![], "a zero line"),
+        (r#"amount="1.00 USD" item="#, vec![], "an empty value"),
+        (
+            r#"amount="1.00 USD""#,
+            vec!["--entity", ""],
+            "an empty legal entity",
         ),
     ] {
         let mut args = vec![
@@ -12097,6 +12248,23 @@ fn receipt_and_payment_settle_open_items_and_match_the_bank() -> std::io::Result
         &invoice,
     ]);
     assert_eq!(code, 3, "nothing is open on the invoice: {out}");
+    assert!(out.contains("FA-REF-072"), "{out}");
+    let (code, out, _) = run(&[
+        "receipt",
+        "--party",
+        "C-17",
+        "--number",
+        "ZERO-1",
+        "--date",
+        "2026-03-12",
+        "--cash",
+        "1000",
+        "--receivable",
+        "1200",
+        "--amount",
+        "0.00 USD",
+    ]);
+    assert_eq!(code, 2, "a zero receipt moves nothing: {out}");
     let (code, out, _) = run(&[
         "receipt",
         "--party",
@@ -12336,6 +12504,11 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
         "trunk as known at the fork excludes the later bill"
     );
     assert_eq!(text(hosting_row, "scenario_debits"), "420.00 USD");
+    assert_eq!(
+        text(hosting_row, "pending_delta"),
+        "0.00 USD",
+        "pending amounts are diffed apart from posted ones"
+    );
     let (code, repeat, _) = run(&["scenario", "diff", "but-for", "--period", "FY2026-P03"]);
     assert_eq!(code, 0, "{repeat}");
     assert_eq!(doc(&repeat), diff, "a diff is deterministic");
@@ -12482,6 +12655,18 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
         "refused intents never enter the scenario: {out}"
     );
     assert_eq!(text(&intents[0], "entry"), text(&ran, "entry"));
+    // Every check precedes the replay: another principal's intent, which
+    // the replay would refuse for its Future period, is refused for not
+    // owning the scenario, never rehearsed on it.
+    let (code, out, _) = run(&[
+        "scenario", "run", "but-for", "--intent", &april, "--as", "other",
+    ]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (7, Some("FA-REF-011")),
+        "{out}"
+    );
+    assert!(!out.contains("intent #"), "nothing was rehearsed: {out}");
 
     // Discard closes it; its history stays and its diff stays reproducible.
     let (code, out, _) = run(&["scenario", "discard", "but-for", "--reason", "superseded"]);
@@ -12500,6 +12685,14 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
         (3, Some("FA-REF-163")),
         "{out}"
     );
+    // A retry of an intent recorded before the discard still returns its
+    // record (FA-INV-09), never the discarded-state refusal.
+    let (code, out, _) = run(&["scenario", "run", "but-for", "--intent", &sale]);
+    assert_eq!(code, 0, "{out}");
+    let late_retry = doc(&out);
+    assert_eq!(late_retry.get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(int(&late_retry, "ordinal"), Some(1));
+    assert_eq!(text(&late_retry, "entry"), text(&ran, "entry"));
     let (code, out, _) = run(&["scenario", "list"]);
     assert_eq!(code, 0, "{out}");
     let listed = doc(&out);
@@ -12507,6 +12700,11 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
     assert_eq!(all.len(), 1, "{out}");
     assert_eq!(text(&all[0], "state"), "discarded");
     assert_eq!(int(&all[0], "intents"), Some(2));
+    assert_eq!(
+        int(&all[0], "opened_at"),
+        int(&forked, "recorded_at"),
+        "opened_at is the fork's record, never the discard that changed the row: {out}"
+    );
     let (code, out, _) = run(&["scenario", "diff", "but-for", "--period", "FY2026-P03"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(arr(&doc(&out), "rows"), arr(&diff, "rows"));

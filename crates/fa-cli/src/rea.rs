@@ -62,9 +62,13 @@ pub(crate) fn instrument_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
 
 /// Admit the whole-book read against current native authority before the
 /// book's identity, frontier or contents reach any output (plan §1 rule 8).
+/// These listings are not decomposed into branches, known-at, periods,
+/// effective dates or accounts, so a token scoped by any of them reads none
+/// of them (fail closed, as findings do).
 pub(crate) fn admit_read(book: &fa::Book, who: VId, cap: &fa::Capability) -> Result<(), Fail> {
     let _ = book.read_scope(who, cap)??;
-    Ok(())
+    fa_policy::reach(cap, &fa_policy::Reach::whole_book(true), None)
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))
 }
 
 /// The one JSON object an `add` reads, with its fields checked against
@@ -174,49 +178,6 @@ fn sealed_ids(book: &fa::Book, ids: &[(String, String)]) -> Result<Vec<ExternalI
     Ok(sealed)
 }
 
-/// Recorded external ids opened with the book's key, sorted; `None` when one
-/// does not open (erased), so it never equals a request.
-fn opened_ids(ids: &[ExternalId], key: &fa_model::SealKey) -> Option<Vec<(String, String)>> {
-    let mut opened = ids
-        .iter()
-        .map(|e| {
-            Some((
-                e.system.clone(),
-                e.id.open(key, fa_model::limits::MAX_DESCRIPTION_BYTES)
-                    .ok()?,
-            ))
-        })
-        .collect::<Option<Vec<_>>>()?;
-    opened.sort();
-    Some(opened)
-}
-
-/// Codes are identities, and every add seals its text with fresh entropy,
-/// so an exact retry cannot be judged by the kernel's digest. When the code
-/// already exists, its opened fields are compared with the request. If they
-/// are equal and the control entry under this principal and key exists, that
-/// is the recorded outcome. Anything else goes to the kernel, which refuses it.
-fn recorded_retry(
-    book: &fa::Book,
-    who: VId,
-    key: &str,
-    target: VId,
-    equal: bool,
-) -> Result<Option<fa_journal::ReaControlRecorded>, Fail> {
-    if !equal {
-        return Ok(None);
-    }
-    let control = fa_model::entry_vid(book.context().book_id, &who.0.to_le_bytes(), key.as_bytes());
-    Ok(book
-        .read_entry(control)?
-        .map(|(_, recorded_at)| fa_journal::ReaControlRecorded {
-            recorded_at,
-            control_entry: control,
-            target_vid: target,
-            already_recorded: true,
-        }))
-}
-
 /// A party (or legal entity) named by code, or by its 32-hex vertex id.
 fn party_ref(book: &fa::Book, raw: &str) -> Result<VId, Fail> {
     let stripped = raw.strip_prefix("P:").unwrap_or(raw);
@@ -310,28 +271,10 @@ fn party_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .map_or_else(|| format!("party:{code}"), str::to_string);
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["schema_change"])?;
-    let mut book = ctx.books.open(args)?;
-    if let Some(existing) = book
-        .rea_snapshot(None)?
-        .parties
-        .into_values()
-        .find(|p| p.code == code)
-    {
-        let seal = &book.context().seal_key;
-        let max = fa_model::limits::MAX_DESCRIPTION_BYTES;
-        let opened: Option<BTreeMap<String, String>> = existing
-            .identifiers
-            .iter()
-            .map(|(k, v)| Some((k.clone(), v.open(seal, max).ok()?)))
-            .collect();
-        let equal = existing.kind == kind
-            && existing.name.open(seal, max).ok().as_deref() == Some(name.as_str())
-            && opened.as_ref() == Some(&identifiers)
-            && opened_ids(&existing.external_ids, seal).as_ref() == Some(&ids);
-        if let Some(recorded) = recorded_retry(&book, who, &key, existing.vid, equal)? {
-            return emit_recorded(&ctx.out, &book, "party", &code, &recorded);
-        }
-    }
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_rea_change(who, &capability)??;
+        Ok(())
+    })?;
     let mut sealed = Vec::with_capacity(identifiers.len());
     for (field, value) in &identifiers {
         sealed.push((field.clone(), book.seal_text(value)?));
@@ -372,7 +315,10 @@ fn instrument_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mirrors = required(&doc, "mirrors", FIX)?;
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["schema_change"])?;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_rea_change(who, &capability)??;
+        Ok(())
+    })?;
     let book_id = book.context().book_id;
     let unit = book.context().units.lookup(unit_code).ok_or_else(|| {
         usage(
@@ -392,22 +338,6 @@ fn instrument_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .map_or_else(|| format!("instrument:{code}"), str::to_string);
     let held_at_party = party_ref(&book, held_at)?;
     let mirrors_account = account_vid(book_id, mirrors);
-    if let Some(existing) = book
-        .rea_snapshot(None)?
-        .instruments
-        .into_values()
-        .find(|i| i.code == code)
-    {
-        let equal = existing.name == name
-            && existing.kind == kind
-            && existing.unit == unit
-            && existing.held_at_party == held_at_party
-            && existing.mirrors_account == mirrors_account
-            && opened_ids(&existing.external_ids, &book.context().seal_key).as_ref() == Some(&ids);
-        if let Some(recorded) = recorded_retry(&book, who, &key, existing.vid, equal)? {
-            return emit_recorded(&ctx.out, &book, "instrument", &code, &recorded);
-        }
-    }
     let spec = InstrumentSpec {
         code: code.clone(),
         name,
@@ -505,7 +435,10 @@ fn party_relate(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["schema_change"])?;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_rea_change(who, &capability)??;
+        Ok(())
+    })?;
     let spec = RelationshipSpec {
         from: party_ref(&book, from)?,
         to: party_ref(&book, to)?,
@@ -653,7 +586,7 @@ fn optional_date(doc: &Json, field: &str, example: &str) -> Result<Option<DateDa
 /// genesis (`fa book create --entity`) is lifted to this full specification
 /// under its declared name; any other code is a new legal entity.
 fn entity_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const FIX: &str = "{\"code\": \"ACME-DE\", \"name\": \"Acme GmbH\", \"jurisdiction\": \"DE\", \"functional_unit\": \"EUR\", \"formed\": \"2019-04-01\", \"external_ids\": [{\"system\": \"lei\", \"id\": \"5299001ABCDEF\"}]}";
+    const FIX: &str = "{\"code\": \"ACME-DE\", \"name\": \"Acme GmbH\", \"jurisdiction\": \"DE\", \"functional_unit\": \"USD\", \"formed\": \"2019-04-01\", \"external_ids\": [{\"system\": \"lei\", \"id\": \"5299001ABCDEF\"}]}";
     let doc = read_object(
         ctx,
         args,
@@ -680,29 +613,16 @@ fn entity_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .map_or_else(|| format!("entity:{code}"), str::to_string);
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["schema_change"])?;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_rea_change(who, &capability)??;
+        Ok(())
+    })?;
     let functional_unit = book.context().units.lookup(unit_code).ok_or_else(|| {
         usage(
             format!("unknown unit `{unit_code}`"),
             "functional_unit: a registered unit code such as USD",
         )
     })?;
-    if let Some(existing) = book
-        .rea_snapshot(None)?
-        .legal_entities
-        .into_values()
-        .find(|e| e.code == code)
-    {
-        let equal = existing.name == name
-            && existing.jurisdiction == jurisdiction
-            && existing.functional_unit == functional_unit
-            && existing.formed == formed
-            && existing.dissolved == dissolved
-            && opened_ids(&existing.external_ids, &book.context().seal_key).as_ref() == Some(&ids);
-        if let Some(recorded) = recorded_retry(&book, who, &key, existing.vid, equal)? {
-            return emit_recorded(&ctx.out, &book, "legal_entity", &code, &recorded);
-        }
-    }
     let spec = LegalEntityFullSpec {
         code: code.clone(),
         name,
@@ -773,10 +693,6 @@ fn entity_list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-/// Bind an external system's identifier to a party, legal entity or
-/// instrument (plan §4.5): the id another system knows it by, sealed with
-/// the book's key. One (system, id) names one vertex; the default key names
-/// the target and system, never the sealed id.
 /// `fa party identifiers <code> --identifier <name>=<value>... --key <change>`
 /// (plan §4.5, §14.4): replace a party's identifier set (bank routing and
 /// account numbers, tax ids). Changing a vendor's bank details is the
@@ -825,7 +741,10 @@ fn party_identifiers(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["schema_change"])?;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_rea_change(who, &capability)??;
+        Ok(())
+    })?;
     let rea = book.rea_snapshot(None)?;
     let Some(party) = rea.parties.values().find(|p| p.code == *target) else {
         return Err(usage(
@@ -834,24 +753,6 @@ fn party_identifiers(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     };
     let party_vid = party.vid;
-    let seal = &book.context().seal_key;
-    let current: Option<Vec<(String, String)>> = party
-        .identifiers
-        .iter()
-        .map(|(name, value)| {
-            value
-                .open(seal, fa_model::limits::MAX_DESCRIPTION_BYTES)
-                .ok()
-                .map(|v| (name.clone(), v))
-        })
-        .collect();
-    let held = current.is_some_and(|mut current| {
-        current.sort();
-        current == pairs
-    });
-    if let Some(recorded) = recorded_retry(&book, who, key, party_vid, held)? {
-        return emit_recorded(&ctx.out, &book, "party_identifiers", target, &recorded);
-    }
     let mut identifiers = Vec::with_capacity(pairs.len());
     for (name, value) in &pairs {
         identifiers.push((name.clone(), book.seal_text(value)?));
@@ -866,6 +767,11 @@ fn party_identifiers(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     emit_recorded(&ctx.out, &book, "party_identifiers", target, &recorded)
 }
 
+/// Bind an external system's identifier to a party, legal entity or
+/// instrument (plan §4.5): the id another system knows it by, sealed with
+/// the book's key. One (system, id) names one vertex; the default key names
+/// the target and system, never the sealed id. The target is a code, refused
+/// when it names more than one kind, or a 32-hex vertex id.
 fn party_bind(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     const FIX: &str =
         "fa party bind <party|entity|instrument code> --external-id <system>:<id> [--key K]";
@@ -879,47 +785,63 @@ fn party_bind(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let (system, id) = raw
         .split_once(':')
         .filter(|(system, id)| !system.is_empty() && !id.is_empty())
-        .ok_or_else(|| usage(format!("--external-id `{raw}` is not <system>:<id>"), FIX))?;
+        // The id is sealed once recorded; a malformed one is not echoed.
+        .ok_or_else(|| usage("--external-id is not <system>:<id>", FIX))?;
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["schema_change"])?;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_rea_change(who, &capability)??;
+        Ok(())
+    })?;
     let rea = book.rea_snapshot(None)?;
-    let found = rea
+    // Codes are unique within a kind, not across kinds: a code that names
+    // more than one target is refused, and a 32-hex vertex id names one.
+    let wanted = u128::from_str_radix(target, 16)
+        .ok()
+        .filter(|_| target.len() == 32)
+        .map(VId);
+    let named = |code: &str, vid: VId| wanted.map_or(code == *target, |w| w == vid);
+    let found: Vec<(&str, VId)> = rea
         .parties
         .values()
-        .find(|p| p.code == *target)
-        .map(|p| (p.vid, p.external_ids.clone()))
-        .or_else(|| {
+        .filter(|p| named(&p.code, p.vid))
+        .map(|p| ("party", p.vid))
+        .chain(
             rea.legal_entities
                 .values()
-                .find(|e| e.code == *target)
-                .map(|e| (e.vid, e.external_ids.clone()))
-        })
-        .or_else(|| {
+                .filter(|e| named(&e.code, e.vid))
+                .map(|e| ("legal entity", e.vid)),
+        )
+        .chain(
             rea.instruments
                 .values()
-                .find(|i| i.code == *target)
-                .map(|i| (i.vid, i.external_ids.clone()))
-        });
-    let Some((target_vid, existing)) = found else {
-        return Err(usage(
-            format!("no party, legal entity or instrument `{target}` in this book"),
-            "fa party list, fa entity list or fa instrument list names them",
-        ));
+                .filter(|i| named(&i.code, i.vid))
+                .map(|i| ("instrument", i.vid)),
+        )
+        .collect();
+    let target_vid = match found.as_slice() {
+        [] => {
+            return Err(usage(
+                format!("no party, legal entity or instrument `{target}` in this book"),
+                "fa party list, fa entity list or fa instrument list names them",
+            ));
+        }
+        [(_, vid)] => *vid,
+        many => {
+            let kinds = many
+                .iter()
+                .map(|(kind, vid)| format!("{kind} {:032x}", vid.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(usage(
+                format!("`{target}` names more than one target: {kinds}"),
+                format!("fa party bind <vertex id> --external-id {system}:<id>"),
+            ));
+        }
     };
     let key = args
         .flag("--key")
         .map_or_else(|| format!("bind:{target}:{system}"), str::to_string);
-    let wanted = (system.to_string(), id.to_string());
-    // Bound at creation, or by an earlier bind.
-    let held = opened_ids(&existing, &book.context().seal_key)
-        .is_some_and(|ids| ids.contains(&wanted))
-        || rea.external_ids.values().any(|row| {
-            row.target_vid == target_vid && row.external_id.system == system && row.plain_id == id
-        });
-    if let Some(recorded) = recorded_retry(&book, who, &key, target_vid, held)? {
-        return emit_recorded(&ctx.out, &book, "external_id", target, &recorded);
-    }
     let binding = ExternalIdBinding {
         target_vid,
         external_id: ExternalId {

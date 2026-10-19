@@ -295,7 +295,16 @@ fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     )];
     for row in &diff.rows {
         let delta = money(row.unit_id, row.delta)?;
-        human.push(format!("  {:<12} {:>20}  {}", row.code, delta, row.name));
+        let pending_delta = money(row.unit_id, row.pending_delta)?;
+        let pending = if row.pending_delta == 0 {
+            String::new()
+        } else {
+            format!("  (pending {pending_delta})")
+        };
+        human.push(format!(
+            "  {:<12} {:>20}  {}{pending}",
+            row.code, delta, row.name
+        ));
         rows.push(obj(vec![
             ("account", vid_hex(row.account)),
             ("code", s(&row.code)),
@@ -311,6 +320,23 @@ fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 s(money(row.unit_id, row.scenario_credits)?),
             ),
             ("delta", s(delta)),
+            (
+                "trunk_debits_pending",
+                s(money(row.unit_id, row.trunk_debits_pending)?),
+            ),
+            (
+                "trunk_credits_pending",
+                s(money(row.unit_id, row.trunk_credits_pending)?),
+            ),
+            (
+                "scenario_debits_pending",
+                s(money(row.unit_id, row.scenario_debits_pending)?),
+            ),
+            (
+                "scenario_credits_pending",
+                s(money(row.unit_id, row.scenario_credits_pending)?),
+            ),
+            ("pending_delta", s(pending_delta)),
         ]));
     }
     ctx.out.event(

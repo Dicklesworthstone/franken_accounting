@@ -2142,7 +2142,16 @@ fn prepared_receipts_compete_for_the_same_open_amount_in_both_commit_orders() {
             .post(h.request(proposals[loser_index].clone(), &["post"]))
             .expect_err("a fresh 60 receipt exceeds the remaining 40");
         assert_eq!((refused.code, refused.exit), ("FA-REF-072", exit::REFUSAL));
-        assert!(refused.message.contains("only 4000 is open"));
+        assert!(
+            refused.message.contains("only 40.00 USD is open"),
+            "{}",
+            refused.message
+        );
+        assert!(
+            refused.fix.contains("apply at most 40.00 USD"),
+            "the fix names an amount that can be pasted back: {}",
+            refused.fix
+        );
         assert_eq!(h.db.frontier().unwrap(), after_winner);
         assert_eq!(h.applied_to(invoice.vid, 0), 6_000);
 
