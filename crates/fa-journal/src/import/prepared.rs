@@ -124,7 +124,8 @@ impl PreparedImport {
             .copied()
             .collect();
         let fresh: BTreeSet<_> = self.recorded.iter().copied().collect();
-        let policy = EvidencePolicy::embedded()?;
+        let policy = EvidencePolicy::embedded()
+            .map_err(|error| KernelError::Corrupt(error.to_string()))?;
         let mut graph = BTreeMap::new();
         for document in documents {
             let child = document.oid();

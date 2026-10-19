@@ -2603,13 +2603,70 @@ mod tests {
     }
 
     #[test]
+    fn replay_expectations_are_separate_from_certificate_stdin() {
+        let (mcp, reg) = embedded();
+        let tool = mcp.tool_by_wire("fa_read_replay").expect("replay tool");
+        let schema = tool.input_schema(&mcp, reg);
+        assert_eq!(schema["properties"]["expect"]["type"], json!("string"));
+        assert!(schema["properties"].get("expect_file").is_none());
+        assert_eq!(schema["required"], json!(["certificate"]));
+
+        let expectation = r#"{"kind":"aging-reconciliation","account":"1200","through":"2026-03-31","known_at":42,"buckets":[0,30,60,90]}"#;
+        let digest = format!("C:{}", "c".repeat(64));
+        let invocation = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({"certificate": digest, "expect": expectation}),
+            )
+            .expect("independent inline request and certificate");
+        assert_eq!(
+            invocation.argv,
+            vec!["replay", "-", "--expect", expectation, "--json"]
+        );
+        assert_eq!(invocation.stdin, Some(digest.into_bytes()));
+        let parsed = args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+            .expect("registered replay expectation");
+        assert_eq!(parsed.flag("--expect"), Some(expectation));
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("replay", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read"])
+        );
+
+        for arguments in [
+            json!({"certificate": "abcd", "expect": {"known_at": 42}}),
+            json!({"certificate": "abcd", "expect": ["{}"]}),
+            json!({"certificate": "abcd", "expect_file": "/host/request.json"}),
+            json!({"certificate": "abcd", "expect": expectation, "output": "/host/result"}),
+        ] {
+            assert!(
+                tool.invocation(&mcp, reg, &arguments).is_err(),
+                "{arguments:?}"
+            );
+        }
+        let status = mcp
+            .tool_by_wire("fa_read_certificate_status")
+            .expect("certificate status tool");
+        assert!(
+            status
+                .invocation(
+                    &mcp,
+                    reg,
+                    &json!({"certificate": "abcd", "expect": expectation})
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
     fn gl_certification_schema_routes_inline_and_requires_produce() {
         let (mcp, reg) = embedded();
         let tool = mcp.tool_by_wire("fa_proof_gl").expect("GL tool");
         let schema = tool.input_schema(&mcp, reg);
         assert_eq!(schema["properties"]["certify"]["type"], json!("boolean"));
         assert!(schema["properties"].get("certificate_out").is_none());
-        for view in ["detail", "roll-forward", "aging"] {
+        for view in ["detail", "roll-forward", "aging", "cash-flow"] {
             let invocation = tool
                 .invocation(&mcp, reg, &json!({"view": view, "certify": true}))
                 .expect("inline certification");

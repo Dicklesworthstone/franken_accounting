@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fa::{Book, BookKeys, Entropy, ReportCertificate};
 use fa_cli::cli::{self, Books, Files, Stdin};
-use fa_cli::json::{self, Json};
+use fa_cli::json::{self, Json, obj, s};
 use fa_journal::{AccountSpec, BookSpec, Capability, Document, PostRequest, UnitPolicy};
 use fa_model::{
     AccountType, EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid, account_vid,
@@ -643,5 +643,359 @@ fn compact_legacy_trial_balance_certificates_still_round_trip_through_the_cli() 
         data(&replayed, "trial_balance"),
         data(&events, "trial_balance")
     );
+    assert_eq!(f.head(), before);
+}
+
+#[test]
+fn gl_families_certify_retain_and_replay_their_complete_original_artifacts() {
+    let f = Fixture::new();
+    let at = f.source_head.0.to_string();
+    let baseline = f.ok(&[
+        "gl",
+        "detail",
+        "--account",
+        "1000",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--as-known-at",
+        &at,
+    ]);
+    let assignments: Vec<Json> = data(&baseline, "general_ledger")
+        .get("lines")
+        .and_then(Json::as_arr)
+        .unwrap()
+        .iter()
+        .map(|line| {
+            obj(vec![
+                ("entry_digest", line.get("entry_digest").unwrap().clone()),
+                ("leg_index", line.get("leg_index").unwrap().clone()),
+                ("activity", s("operating")),
+            ])
+        })
+        .collect();
+    assert_eq!(assignments.len(), 64);
+    let direct_policy = obj(vec![
+        ("name", s("cash-policy")),
+        ("cash_accounts", Json::Arr(vec![s("1000")])),
+        ("assignments", Json::Arr(assignments.clone())),
+    ]);
+    let indirect_policy = obj(vec![
+        ("name", s("indirect-policy")),
+        ("cash_policy", s("cash-policy")),
+        ("cash_accounts", Json::Arr(vec![s("1000")])),
+        ("assignments", Json::Arr(assignments)),
+        ("adjustments", Json::Arr(Vec::new())),
+    ]);
+    let direct_path = f.dir.join("direct-policy.json");
+    let indirect_path = f.dir.join("indirect-policy.json");
+    std::fs::write(&direct_path, direct_policy.render()).unwrap();
+    std::fs::write(&indirect_path, indirect_policy.render()).unwrap();
+    let cash_expectation = |kind: &str, label: &str, policy: &Json| {
+        let mut fields = vec![
+            ("kind", s(kind)),
+            ("accounts", Json::Arr(vec![s("1000")])),
+            ("units", Json::Arr(vec![s("USD")])),
+            ("from", s("2026-01-01")),
+            ("through", s("2026-01-31")),
+            ("label", s(label)),
+            ("known_at", Json::Int(i128::from(f.source_head.0))),
+            ("policy", policy.clone()),
+        ];
+        if kind == "indirect-cash-flow" {
+            fields.push(("income_periods", Json::Arr(vec![s(PERIOD)])));
+        }
+        obj(fields)
+    };
+    let reconcile_expected = obj(vec![
+        ("kind", s("aging-reconciliation")),
+        ("account", s("1000")),
+        ("through", s("2026-01-31")),
+        ("known_at", Json::Int(i128::from(f.source_head.0))),
+        (
+            "buckets",
+            Json::Arr([0, 30, 60, 90].into_iter().map(Json::Int).collect()),
+        ),
+    ]);
+    let mut retained = Vec::new();
+    for (name, report_event, family, expected) in [
+        ("detail", "general_ledger", "roll-forward", None),
+        ("roll-forward", "roll_forward", "roll-forward", None),
+        ("aging", "aging", "effective-date-aging", None),
+        (
+            "reconcile",
+            "aging_reconciled",
+            "aging-reconciliation",
+            Some(reconcile_expected),
+        ),
+        (
+            "cash",
+            "cash_flow",
+            "cash-flow",
+            Some(cash_expectation("cash-flow", "cash", &direct_policy)),
+        ),
+        (
+            "indirect",
+            "indirect_cash_flow",
+            "indirect-cash-flow",
+            Some(cash_expectation(
+                "indirect-cash-flow",
+                "indirect",
+                &indirect_policy,
+            )),
+        ),
+    ] {
+        let subcommand = match name {
+            "reconcile" => "aging",
+            "cash" | "indirect" => "cash-flow",
+            other => other,
+        };
+        let mut args = vec!["gl", subcommand, "--account", "1000", "--as-known-at", &at];
+        if subcommand == "aging" {
+            args.extend(["--as-of", "2026-01-31", "--bucket", "0,30,60,90"]);
+            if name == "reconcile" {
+                args.push("--reconcile");
+            }
+        } else {
+            args.extend([
+                "--from",
+                "2026-01-01",
+                "--to",
+                "2026-01-31",
+                "--label",
+                name,
+            ]);
+        }
+        if name == "cash" {
+            args.extend(["--policy", direct_path.to_str().unwrap()]);
+        }
+        if name == "indirect" {
+            args.extend([
+                "--policy",
+                indirect_path.to_str().unwrap(),
+                "--indirect",
+                "--income-period",
+                PERIOD,
+            ]);
+        }
+        let cert_path = f.dir.join(format!("{name}.cert"));
+        let mut save_args = args.clone();
+        save_args.extend(["--certificate-out", cert_path.to_str().unwrap()]);
+        let events = f.ok(&save_args);
+        assert_eq!(events.len(), 2, "{name}: {events:?}");
+        let metadata = data(&events, "report_certificate");
+        let bytes = unhex(text(metadata, "bytes"));
+        assert_eq!(std::fs::read(&cert_path).unwrap(), bytes);
+        let artifact = fa::ReportArtifact::decode(&bytes).unwrap();
+        assert_eq!(artifact.family().name(), family);
+        assert_eq!(artifact.known_at(), f.source_head);
+        assert_eq!(
+            text(event(&events, report_event), "certificate"),
+            text(metadata, "oid")
+        );
+        assert_eq!(
+            data(&events, report_event).get("known_at"),
+            Some(&Json::Int(i128::from(f.source_head.0)))
+        );
+        let locator = format!("C:{}", text(metadata, "oid"));
+        let before_retry = f.head();
+        args.push("--certify");
+        let retry = f.ok(&args);
+        assert_eq!(
+            text(data(&retry, "report_certificate"), "oid"),
+            text(metadata, "oid")
+        );
+        assert_eq!(
+            data(&retry, "report_certificate").get("recorded_at"),
+            metadata.get("recorded_at")
+        );
+        assert_eq!(
+            f.head(),
+            before_retry,
+            "exact certification retry must not publish"
+        );
+        let expectation = expected.as_ref().map(Json::render);
+        for (index, input) in [locator.as_str(), cert_path.to_str().unwrap()]
+            .into_iter()
+            .enumerate()
+        {
+            let output = f.dir.join(format!("{name}-{index}.report"));
+            let mut replay_args = vec!["replay", input, "--output", output.to_str().unwrap()];
+            if let Some(expected) = &expectation {
+                replay_args.extend(["--expect", expected]);
+            }
+            let replayed = f.ok(&replay_args);
+            assert_eq!(text(data(&replayed, "report_replayed"), "family"), family);
+            assert_eq!(std::fs::read(output).unwrap(), artifact.output());
+            assert_eq!(f.head(), before_retry);
+        }
+        // The generated command carries a fixed request the producer can
+        // retain separately before delivering a certificate to another party.
+        if expectation.is_some() {
+            let command = text(metadata, "replay_command");
+            let generated = command
+                .split_once(" --expect '")
+                .unwrap()
+                .1
+                .split_once("' --book")
+                .unwrap()
+                .0;
+            let replayed = f.ok(&["replay", &locator, "--expect", generated]);
+            assert_eq!(text(data(&replayed, "report_replayed"), "family"), family);
+            let absent_output = f.dir.join(format!("{name}-refused.report"));
+            let (code, errors) = f.run(&[
+                "replay",
+                &locator,
+                "--output",
+                absent_output.to_str().unwrap(),
+            ]);
+            assert_eq!(
+                code, 8,
+                "recipient-dependent family needs its expected scope: {errors:?}"
+            );
+            assert_eq!(errors.len(), 1);
+            assert!(!absent_output.exists());
+            let mut wrong = expected.clone().unwrap();
+            let Json::Obj(fields) = &mut wrong else {
+                panic!("expected object");
+            };
+            for (field, value) in fields {
+                if field == "through" {
+                    *value = s("2026-01-30");
+                }
+            }
+            let wrong_json = wrong.render();
+            let (code, errors) = f.run(&[
+                "replay",
+                &locator,
+                "--expect",
+                &wrong_json,
+                "--output",
+                absent_output.to_str().unwrap(),
+            ]);
+            assert_eq!(
+                code, 8,
+                "changing the expected cutoff must fail even when balances match: {errors:?}"
+            );
+            assert_eq!(errors.len(), 1);
+            assert!(!absent_output.exists());
+            let mut floating_prefix = expected.clone().unwrap();
+            let Json::Obj(fields) = &mut floating_prefix else {
+                panic!("expected object");
+            };
+            for (field, value) in fields {
+                if field == "known_at" {
+                    *value = s("HEAD");
+                }
+            }
+            let (code, errors) = f.run(&[
+                "replay", &locator, "--expect", &floating_prefix.render(),
+            ]);
+            assert_eq!(code, 2, "HEAD must never replace the fixed expected prefix: {errors:?}");
+            if let Some(policy) = expected.as_ref().and_then(|doc| doc.get("policy")) {
+                let mut unknown_policy = expected.clone().unwrap();
+                let Json::Obj(fields) = &mut unknown_policy else {
+                    panic!("expected object");
+                };
+                let Json::Obj(mut policy_fields) = policy.clone() else {
+                    panic!("expected policy object");
+                };
+                policy_fields.push(("unrecognized_classification".into(), Json::Bool(true)));
+                for (field, value) in fields {
+                    if field == "policy" {
+                        *value = Json::Obj(policy_fields.clone());
+                    }
+                }
+                let (code, errors) = f.run(&[
+                    "replay", &locator, "--expect", &unknown_policy.render(),
+                ]);
+                assert_eq!(code, 2, "unknown policy inputs must not be silently discarded: {errors:?}");
+            }
+        }
+        retained.push((locator, bytes, artifact.output().to_vec(), expectation));
+    }
+    let mut book = f.open();
+    post(&mut book, 64);
+    let later_head = book.head().unwrap();
+    for (locator, bytes, expected_output, expectation) in retained {
+        let output = f.dir.join(format!("held-{}.report", &locator[2..]));
+        let mut args = vec!["replay", "-", "--output", output.to_str().unwrap()];
+        if let Some(expected) = &expectation {
+            args.extend(["--expect", expected]);
+        }
+        let replayed = held(&mut book, &f.dir, &args, Stdin::Forwarded(bytes));
+        assert_eq!(
+            text(event(&replayed, "report_replayed"), "certificate"),
+            &locator[2..]
+        );
+        assert_eq!(std::fs::read(output).unwrap(), expected_output);
+        assert_eq!(book.head().unwrap(), later_head);
+    }
+}
+
+#[test]
+fn gl_certification_refuses_missing_produce_authority_and_unsupported_lot_certification() {
+    let f = Fixture::new();
+    let before = f.head();
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        f.dir.clone(),
+        None,
+        "gl-reader",
+        fa_cli::authority::LaunchProfile::Agent,
+        &["read"],
+    )
+    .unwrap();
+    let args = [
+        "gl",
+        "detail",
+        "--account",
+        "1000",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--certify",
+        "--json",
+    ]
+    .map(String::from);
+    let (code, captured) =
+        fa_cli::entry::fa_with_authority(&args, Files::default(), &authority, true);
+    assert_eq!(code, 7, "{}{}", captured.stdout, captured.stderr);
+    let errors = parse_events(&captured.stdout);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(text(&errors[0], "event"), "error");
+    assert!(captured.stdout.contains("produce"));
+    let (code, errors) = f.run(&["gl", "lots", "--certify"]);
+    assert_eq!(code, 2, "{errors:?}");
+    assert_eq!(errors.len(), 1);
+    // Held dispatch avoids the operating system's argv limit. The transport
+    // bound must fail before reading even a nonexistent certificate file.
+    {
+        let mut book = f.open();
+        let output = f.dir.join("oversized-expectation.report");
+        let argv = vec![
+            "replay".into(),
+            "missing.certificate".into(),
+            "--expect".into(),
+            " ".repeat(1024 * 1024 + 1),
+            "--output".into(),
+            output.to_str().unwrap().into(),
+            "--book".into(),
+            f.dir.to_str().unwrap().into(),
+            "--json".into(),
+        ];
+        let (code, captured) = cli::run(
+            &argv,
+            Books::Held { book: &mut book, dir: f.dir.clone() },
+            Files { cwd: None, stdin: Stdin::Forwarded(Vec::new()) },
+            true,
+        );
+        assert_eq!(code, 2, "{}{}", captured.stdout, captured.stderr);
+        assert!(captured.stdout.contains("1 MiB"), "{}", captured.stdout);
+        assert_eq!(parse_events(&captured.stdout).len(), 1);
+        assert!(!output.exists());
+        assert_eq!(book.head().unwrap(), before);
+    }
     assert_eq!(f.head(), before);
 }

@@ -4,7 +4,12 @@
 //! Report certificates bind native historical reads and exact folds. Neither
 //! surface issues a signed TransparencyCheckpoint or an outsider evidence bundle.
 
+mod expectations;
 mod procedure;
+
+pub(crate) use expectations::{
+    cash_flow_expectation_json, indirect_expectation_json, reconciliation_expectation_json,
+};
 
 use std::io::Read;
 
@@ -201,6 +206,27 @@ pub(crate) fn retain_report_artifact(
     artifact: &ReportArtifact,
     capability: &Capability,
 ) -> Result<(Vec<u8>, RetainedCertificate), Fail> {
+    retain_report_artifact_for(
+        book,
+        files,
+        args,
+        artifact,
+        capability,
+        fa::ReportArtifactExpectation::AsSupplied,
+    )
+}
+
+/// Retain a complete artifact only after replay against the independently
+/// selected request and policy required by its report family.
+pub(crate) fn retain_report_artifact_for(
+    book: &mut Book,
+    files: &Files,
+    args: &Args,
+    artifact: &ReportArtifact,
+    capability: &Capability,
+    expected: fa::ReportArtifactExpectation<'_>,
+) -> Result<(Vec<u8>, RetainedCertificate), Fail> {
+    expectations::validate_generated(expected)?;
     let bytes = artifact.canonical_bytes()?;
     if let Some(path) = args.flag("--certificate-out") {
         if path.is_empty() || path == "-" {
@@ -209,19 +235,21 @@ pub(crate) fn retain_report_artifact(
                 "use --certify to receive the complete certificate as hex on stdout",
             ));
         }
-        book.replay_report_artifact(
+        book.replay_report_artifact_for(
             capability.holder(),
             capability,
             &bytes,
             Some(artifact.digest()),
+            expected,
         )??;
         crate::cli::write_new_output_file(files, path, &bytes, "certificate", "--certificate-out")?;
     }
-    let retained = book.retain_report_artifact(
+    let retained = book.retain_report_artifact_for(
         capability.holder(),
         capability,
         &bytes,
         Some(artifact.digest()),
+        expected,
     )??;
     Ok((bytes, retained))
 }
@@ -245,6 +273,7 @@ pub(crate) fn emit_report_certificate(
             digest: &certificate.digest,
             output_format: certificate.output_format(),
             output_digest: certificate.output_digest,
+            replay_expectation: None,
         },
         bytes,
         retained,
@@ -267,6 +296,32 @@ pub(crate) fn emit_report_artifact(
             digest: artifact.digest(),
             output_format,
             output_digest: artifact.output_digest(),
+            replay_expectation: None,
+        },
+        bytes,
+        retained,
+    );
+}
+
+pub(crate) fn emit_report_artifact_for(
+    out: &Out,
+    args: &Args,
+    artifact: &ReportArtifact,
+    output_format: &str,
+    bytes: &[u8],
+    retained: &RetainedCertificate,
+    expected: &Json,
+) {
+    let expectation = expected.render();
+    emit_certificate(
+        out,
+        args,
+        CertificatePresentation {
+            source: artifact.source_certificate(),
+            digest: artifact.digest(),
+            output_format,
+            output_digest: artifact.output_digest(),
+            replay_expectation: Some(&expectation),
         },
         bytes,
         retained,
@@ -278,6 +333,7 @@ struct CertificatePresentation<'a> {
     digest: &'a [u8; 32],
     output_format: &'a str,
     output_digest: [u8; 32],
+    replay_expectation: Option<&'a str>,
 }
 
 fn emit_certificate(
@@ -298,7 +354,10 @@ fn emit_certificate(
                 .map(|path| format!(" {flag} {}", quoted_word(path)))
         })
         .collect();
-    let command = format!("fa replay C:{digest}{environment} --json");
+    let expectation = presentation.replay_expectation.map_or_else(String::new, |expected| {
+        format!(" --expect {}", quoted_word(expected))
+    });
+    let command = format!("fa replay C:{digest}{expectation}{environment} --json");
     let human = match file {
         Some(path) => format!(
             "Retained report certificate {digest} in the book at sequence {} and in {path}\n{command}",
@@ -362,6 +421,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         book.read_scope(principal, &capability)??;
         Ok(())
     })?;
+    let expected = expectations::parse(args, &book)?;
     let bytes = read_certificate_bytes(
         &book,
         &ctx.files,
@@ -370,8 +430,13 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         &capability,
     )?;
     let artifact = ReportArtifact::decode(&bytes)?;
-    let replayed =
-        book.replay_report_artifact(principal, &capability, &bytes, Some(artifact.digest()))??;
+    let replayed = book.replay_report_artifact_for(
+        principal,
+        &capability,
+        &bytes,
+        Some(artifact.digest()),
+        expected.borrowed(),
+    )??;
     // Resolve typed reports before an output file or success event is emitted.
     // A generic receipt always identifies the original family's exact bytes.
     let native = if artifact.family() == ReportArtifactFamily::Native {

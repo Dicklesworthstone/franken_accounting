@@ -10631,7 +10631,7 @@ fn parse_digest32(text: &str, what: &str) -> Result<[u8; 32], Fail> {
     Ok(out)
 }
 
-fn parse_cash_flow_definition(
+pub(crate) fn parse_cash_flow_definition(
     doc: &Json,
     book_id: Id128,
     default_accounts: &[VId],
@@ -10751,7 +10751,7 @@ fn parse_cash_flow_definition(
     })
 }
 
-fn parse_indirect_cash_flow_definition(
+pub(crate) fn parse_indirect_cash_flow_definition(
     doc: &Json,
     default_name: &str,
 ) -> Result<(String, IndirectCashFlowDefinition), Fail> {
@@ -10926,12 +10926,10 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let sub = args.positional.get(1).map(String::as_str);
-    if certify
-        && (!matches!(sub, Some("detail" | "roll-forward" | "aging")) || args.switch("--reconcile"))
-    {
+    if certify && !matches!(sub, Some("detail" | "roll-forward" | "aging" | "cash-flow")) {
         return Err(usage(
-            "certification is available for gl detail, roll-forward and effective-date aging; cash-flow and aging reconciliation require a separately supplied replay request",
-            "use gl detail|roll-forward|aging --certify without --reconcile, or run the requested report without certification",
+            "certification is available for gl detail, roll-forward, aging, and cash-flow",
+            "use gl detail|roll-forward|aging|cash-flow --certify",
         ));
     }
     let who = ctx.principal(args);
@@ -11272,16 +11270,24 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "fa gl aging --account 1200 --as-of YYYY-MM-DD --reconcile --book <dir>",
                     ));
                 };
-                let rec = book.reconcile_effective_date_aging(
-                    who,
-                    &capability,
-                    &AgingReconciliationRequest {
-                        account: acc_vid,
-                        effective_through: day,
-                        known_at,
-                        buckets,
-                    },
-                )??;
+                let mut request = AgingReconciliationRequest {
+                    account: acc_vid,
+                    effective_through: day,
+                    known_at,
+                    buckets,
+                };
+                let (rec, artifact) = if certify {
+                    let certified = book.certify_effective_date_aging_reconciliation(
+                        who,
+                        &capability,
+                        &request,
+                    )??;
+                    request.known_at = Some(certified.report.known_at());
+                    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+                    (certified.report, Some(artifact))
+                } else {
+                    (book.reconcile_effective_date_aging(who, &capability, &request)??, None)
+                };
                 out.known_at(rec.known_at());
                 let bands: Vec<Json> = rec
                     .aging()
@@ -11329,7 +11335,18 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     rec.effective_through().render(),
                     rec.is_reconciled()
                 );
-                out.event(
+                let retained = artifact.as_ref().map(|artifact| {
+                    notary::retain_report_artifact_for(
+                        &mut book,
+                        &ctx.files,
+                        args,
+                        artifact,
+                        &capability,
+                        fa::ReportArtifactExpectation::AgingReconciliation(&request),
+                    )
+                }).transpose()?;
+                let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+                out.event_with_certificate(
                     "aging_reconciled",
                     vec![
                         ("account", s(&rec.account().code)),
@@ -11343,7 +11360,19 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("item_count", Json::Int(rec.aging().items.len() as i128)),
                     ],
                     &human,
+                    digest.as_deref(),
                 );
+                if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+                    notary::emit_report_artifact_for(
+                        out,
+                        args,
+                        artifact,
+                        "fa:aging-control-reconciliation:v1",
+                        &bytes,
+                        &retained,
+                        &notary::reconciliation_expectation_json(&request),
+                    );
+                }
                 Ok(())
             } else {
                 let (aging, artifact) = if certify {
@@ -11526,6 +11555,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa gl cash-flow --account <code> --from YYYY-MM-DD --to YYYY-MM-DD --policy <file.json|-> --book <dir>",
                 ));
             }
+            let mut book = ctx.books.open_admitted(args, admit_report)?;
             let policy_path = args.require("--policy", "<policy.json|->")?;
             let policy_text = ctx.files.read_text(policy_path)?;
             let policy_doc = crate::json::parse(&policy_text).map_err(|e| {
@@ -11534,8 +11564,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "pass a valid JSON object for --policy",
                 )
             })?;
-            let book = ctx.books.open(args)?;
-            let req = parse_gl_scope(
+            let mut req = parse_gl_scope(
                 args,
                 &book,
                 out,
@@ -11567,16 +11596,20 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &cash_policy_name,
                 )?;
                 cash_def.name = cash_policy_name;
-                let report = book.indirect_cash_flow(
-                    who,
-                    &capability,
-                    &IndirectCashFlowRequest {
-                        cash: req,
-                        cash_definition: cash_def,
-                        income_periods: income_periods.clone(),
-                        definition: indirect_def,
-                    },
-                )??;
+                let mut request = IndirectCashFlowRequest {
+                    cash: req,
+                    cash_definition: cash_def,
+                    income_periods: income_periods.clone(),
+                    definition: indirect_def,
+                };
+                let (report, artifact) = if certify {
+                    let certified = book.certify_indirect_cash_flow(who, &capability, &request)??;
+                    request.cash.known_at = Some(certified.certificate().known_at());
+                    let artifact = fa::ReportArtifact::try_from(certified.certificate())?;
+                    (certified.report().clone(), Some(artifact))
+                } else {
+                    (book.indirect_cash_flow(who, &capability, &request)??, None)
+                };
                 let source = report.cash().source();
                 out.known_at(source.known_at());
                 let cash_accounts: Vec<Json> =
@@ -11649,7 +11682,18 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     report.units().len(),
                     report.contributions().len()
                 );
-                out.event(
+                let retained = artifact.as_ref().map(|artifact| {
+                    notary::retain_report_artifact_for(
+                        &mut book,
+                        &ctx.files,
+                        args,
+                        artifact,
+                        &capability,
+                        fa::ReportArtifactExpectation::IndirectCashFlow(&request),
+                    )
+                }).transpose()?;
+                let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+                out.event_with_certificate(
                     "indirect_cash_flow",
                     vec![
                         ("policy", s(&report.definition().name)),
@@ -11667,7 +11711,19 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("contributions", Json::Arr(contributions)),
                     ],
                     &human,
+                    digest.as_deref(),
                 );
+                if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+                    notary::emit_report_artifact_for(
+                        out,
+                        args,
+                        artifact,
+                        fa::INDIRECT_CASH_FLOW_FORMAT,
+                        &bytes,
+                        &retained,
+                        &notary::indirect_expectation_json(&request),
+                    );
+                }
                 Ok(())
             } else {
                 let cash_def = parse_cash_flow_definition(
@@ -11676,7 +11732,14 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &req.accounts,
                     "cash-flow",
                 )?;
-                let cf = book.cash_flow(who, &capability, &req, &cash_def)??;
+                let (cf, artifact) = if certify {
+                    let certified = book.certify_cash_flow(who, &capability, &req, &cash_def)??;
+                    req.known_at = Some(certified.certificate().known_at());
+                    let artifact = fa::ReportArtifact::try_from(certified.certificate())?;
+                    (certified.report().clone(), Some(artifact))
+                } else {
+                    (book.cash_flow(who, &capability, &req, &cash_def)??, None)
+                };
                 let source = cf.source();
                 out.known_at(source.known_at());
                 let cash_accounts: Vec<Json> =
@@ -11721,7 +11784,18 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     source.effective_through().render(),
                     cf.units().len()
                 );
-                out.event(
+                let retained = artifact.as_ref().map(|artifact| {
+                    notary::retain_report_artifact_for(
+                        &mut book,
+                        &ctx.files,
+                        args,
+                        artifact,
+                        &capability,
+                        fa::ReportArtifactExpectation::CashFlow { request: &req, definition: &cash_def },
+                    )
+                }).transpose()?;
+                let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+                out.event_with_certificate(
                     "cash_flow",
                     vec![
                         ("policy", s(&cf.definition().name)),
@@ -11733,7 +11807,19 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("units", Json::Arr(unit_rows)),
                     ],
                     &human,
+                    digest.as_deref(),
                 );
+                if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+                    notary::emit_report_artifact_for(
+                        out,
+                        args,
+                        artifact,
+                        fa::CASH_FLOW_FORMAT,
+                        &bytes,
+                        &retained,
+                        &notary::cash_flow_expectation_json(&req, &cash_def),
+                    );
+                }
                 Ok(())
             }
         }
