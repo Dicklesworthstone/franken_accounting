@@ -1167,15 +1167,18 @@ pub fn init_dir(
         Scenario::Bank => (US_BANK_CALL_REPORT_TEXT, us_bank_call_report_accounts(usd)),
         _ => (US_GAAP_SMB_TEXT, us_gaap_smb_accounts(usd)),
     };
+    let schema_cap = Capability::embedded(operator, &["schema_change"])
+        .map_err(|e| BookError::KeyFile(e.to_string()))?;
     let installed = book.install_chart(
         &chart_accounts,
         operator,
         opening_date,
         &chart_key(template_text),
+        &schema_cap,
     )??;
 
     // 2. Create FY2026 periods, lock `FY2026-OPEN` for Migration, and open `FY2026-P01`..`FY2026-P12`.
-    let (_, period_defs) = book.create_periods(2026)?;
+    let (_, period_defs) = book.create_periods(2026, operator, &schema_cap)??;
     let close_cap = Capability::embedded(controller, &["close"])
         .map_err(|e| BookError::KeyFile(e.to_string()))?;
     for (idx, transition) in [

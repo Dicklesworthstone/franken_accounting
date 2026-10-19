@@ -30,6 +30,8 @@ pub const EXCLUSIONS: &[&str] = &["preparer", "duplicate", "case_preparer", "ses
 /// one that does not), so the vocabulary is the state machine's.
 const PERIOD_TRANSITIONS: &[&str] = &["Open", "SoftClose", "Close", "Lock", "Reopen"];
 const POLICY_TRANSITIONS: &[&str] = &["Activate"];
+/// Chart and fiscal-calendar declarations are authorized book controls.
+const SCHEMA_TRANSITIONS: &[&str] = &["ChartInstall", "CreatePeriods"];
 /// A TimeEvidence tick (plan §7.1a).
 const TIME_TRANSITIONS: &[&str] = &["Tick"];
 /// One sweep batch and its SweepCursor: the expiry sweep's Expires (§5.4) or
@@ -46,6 +48,7 @@ const DRAFT_TRANSITIONS: &[&str] = &["Open", "Plan", "Promote", "Discard"];
 /// A Scenario's lifecycle (plan §15.2; fa-k07b): never promoted.
 const SCENARIO_TRANSITIONS: &[&str] = &["Open", "Plan", "Discard"];
 const BOOK_SCOPED_CONTROLS: &[&str] = &[
+    "SchemaControl",
     "PolicyControl",
     "TimeControl",
     "SweepControl",
@@ -307,6 +310,7 @@ impl SodPolicy {
                         return Err(invalid(R, format!("{name}: a control has no disposition")));
                     }
                     let allowed: &[&str] = match class.as_str() {
+                        "SchemaControl" => SCHEMA_TRANSITIONS,
                         "PeriodControl" => PERIOD_TRANSITIONS,
                         "PolicyControl" => POLICY_TRANSITIONS,
                         "TimeControl" => TIME_TRANSITIONS,

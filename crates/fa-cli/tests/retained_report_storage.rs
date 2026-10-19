@@ -95,10 +95,22 @@ impl Fixture {
                 limit: None,
             }
         }));
-        book.install_chart(&accounts, PRINCIPAL, day(), b"chart")
-            .unwrap()
-            .unwrap();
-        book.create_periods(2026).unwrap();
+        book.install_chart(
+            &accounts,
+            PRINCIPAL,
+            day(),
+            b"chart",
+            &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        book.create_periods(
+            2026,
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
         book.transition_period(
             PERIOD,
             PeriodTransition::Open,

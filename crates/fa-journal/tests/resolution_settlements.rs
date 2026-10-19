@@ -100,11 +100,21 @@ impl Fixture {
                 day,
                 b"fixture-chart",
                 seal("chart"),
+                &Capability::embedded(ACTOR, &["schema_change"]).unwrap(),
             ))
             .unwrap()
             .unwrap();
         runtime
-            .block_on(create_periods(&mut db, &cx, &book, 2026))
+            .block_on(create_periods(
+                &mut db,
+                &cx,
+                &book,
+                2026,
+                ACTOR,
+                seal("periods"),
+                &Capability::embedded(ACTOR, &["schema_change"]).unwrap(),
+            ))
+            .unwrap()
             .unwrap();
         let closer = Capability::embedded(ACTOR, &["close"]).unwrap();
         for (period, key) in [("FY2026-P03", b"march" as &[u8]), ("FY2026-P04", b"april")] {

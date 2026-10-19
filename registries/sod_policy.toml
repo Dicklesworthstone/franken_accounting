@@ -58,6 +58,33 @@ agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §14.3, Appendix C universal rules"
 
+# ---- Schema declarations (book-scoped; fa-ehd) -----------------------------
+# These retain the existing zero-approver policy, but every declaration now
+# names its preparer's operation and is evaluated under the current epoch.
+[[rule]]
+name = "schema-chart-install"
+class = "SchemaControl"
+transition = "ChartInstall"
+preparer_op = "schema_change"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §4.3, §14.3; fa-ehd"
+
+[[rule]]
+name = "schema-period-create"
+class = "SchemaControl"
+transition = "CreatePeriods"
+preparer_op = "schema_change"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §7.2, §14.3; fa-ehd"
+
 # ---- Corrections into a Closed period --------------------------------------
 [[rule]]
 name = "reversal-closed"

@@ -242,7 +242,10 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         Entropy::deterministic(58),
     )
     .unwrap();
-    book.create_periods(2026).unwrap();
+    let schema = Capability::embedded(principal_vid("report-issuer"), &["schema_change"]).unwrap();
+    book.create_periods(2026, schema.holder(), &schema)
+        .unwrap()
+        .unwrap();
     let issuer = Capability::embedded(
         principal_vid("report-issuer"),
         &["issue_capability", "read", "produce", "post", "reconcile"],

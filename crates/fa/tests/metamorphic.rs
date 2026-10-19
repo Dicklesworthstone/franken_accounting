@@ -186,11 +186,24 @@ fn setup_book(seed: u64, key_seed: u8) -> FixtureBook {
             limit: None,
         },
     ];
-    book.install_chart(&chart, principal, day, b"chart-v1")
-        .expect("install_chart io")
-        .expect("install_chart ok");
+    book.install_chart(
+        &chart,
+        principal,
+        day,
+        b"chart-v1",
+        &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .expect("install_chart io")
+    .expect("install_chart ok");
 
-    let (_, periods) = book.create_periods(2026).expect("create_periods");
+    let (_, periods) = book
+        .create_periods(
+            2026,
+            fgdb_types::VId(1),
+            &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+        )
+        .expect("create_periods")
+        .expect("periods admitted");
     let march = periods
         .iter()
         .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)

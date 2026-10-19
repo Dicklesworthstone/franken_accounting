@@ -4,8 +4,7 @@
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ControlPayload, DecodeError, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,
-    Reader, SealKey, SymbolTable, Writer, account_vid, entry_mirrors, entry_vid, period_vid,
-    unit_vid,
+    Reader, SealKey, SymbolTable, Writer, account_vid, entry_mirrors, entry_vid, unit_vid,
 };
 use fa_money::{UnitId, UnitRegistry};
 use fa_time::{
@@ -18,7 +17,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::limit::{BalanceLimit, LimitCell, LimitScope, limit_cell_vid, period_cell_vid};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{book_root, bytes, edge_id, kind_tag, scalar_bytes, scalar_text};
+use crate::rows::{book_root, bytes, edge_id, scalar_bytes, scalar_text};
 
 /// What the kernel knows about an open book; the facade holds it.
 #[derive(Clone, Debug)]
@@ -199,10 +198,13 @@ fn decode_rule(r: &mut Reader<'_>) -> Result<YearEndRule, DecodeError> {
 }
 
 impl BookSpec {
-    /// The canonical `fa:book:v1` bytes journaled on the root vertex.
+    /// The canonical version-2 book bytes journaled on the root vertex.
+    /// Version 2 keeps the version-1 fields and declares that every fiscal
+    /// year's Period projections require an atomic CreatePeriods control.
+    /// Version-1 books remain decodable with their legacy birth baseline.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
         let mut w = Writer::new();
-        w.u16(1)
+        w.u16(2)
             .fixed(&self.book_id.0)
             .str(&self.name)
             .u32(self.base_unit.0)
@@ -359,7 +361,7 @@ impl BookSpec {
         let mut r = Reader::new(bytes);
         let spec = (|| -> Result<Self, DecodeError> {
             let v = r.u16("book.version")?;
-            if v != 1 {
+            if !matches!(v, 1 | 2) {
                 return Err(r.invalid("book.version"));
             }
             let book_id = Id128(r.fixed("book.id")?);
@@ -809,133 +811,8 @@ pub fn read_units<V: asupersync::fs::Vfs + Clone>(
     Ok(units)
 }
 
-/// Create the `Period` vertices of one fiscal year, each born as the book
-/// declares (`BookSpec::birth`): `Future`, or `Historical` and `Locked`
-/// before the book's opening date (plan §7.2). Opening a `Future` period is
-/// a journaled transition (`period::transition_period`); a `Historical`
-/// period never transitions. The returned definitions carry the born kind.
-pub async fn create_periods<V: asupersync::fs::Vfs + Clone>(
-    db: &mut Database<V>,
-    ctx: &PurposeContexts,
-    book: &BookContext,
-    fiscal_year: i32,
-) -> Result<(CommitSeq, Vec<PeriodDef>), KernelError> {
-    let spec = read_book_spec(db)?
-        .ok_or_else(|| KernelError::Corrupt("periods need a book: no genesis row".into()))?;
-    let classes =
-        fa_registry::EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let matrix = fa_registry::Admissibility::embedded(&classes)
-        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let pre_opening = matrix
-        .pre_opening()
-        .ok_or_else(|| KernelError::Corrupt("admissibility.toml has no pre_opening rule".into()))?;
-    let mut periods = book.calendar.periods_for_year(fiscal_year)?;
-    let mut states = Vec::with_capacity(periods.len());
-    for p in &mut periods {
-        let (kind, state) = spec.birth(p, pre_opening);
-        p.kind = kind;
-        states.push(state);
-    }
-    let accounts = list_accounts(db)?;
-    if let Some(first) = periods.first()
-        && let Some(first_row) = db.vertex(period_vid(&book.calendar.id, &first.code))?
-    {
-        let recorded_at = first_row.created_at;
-        let mut all_match = true;
-        for p in &periods {
-            let pvid = period_vid(&book.calendar.id, &p.code);
-            let Some(row) = db.vertex(pvid)? else {
-                all_match = false;
-                break;
-            };
-            if !row.labels.contains(&label::PERIOD) {
-                all_match = false;
-                break;
-            }
-            let decoded = crate::rows::PeriodRow::decode(&row)?;
-            if decoded.fiscal_year != p.fiscal_year
-                || decoded.ordinal != p.ordinal
-                || decoded.kind != p.kind
-                || decoded.start != p.start
-                || decoded.end != p.end
-            {
-                all_match = false;
-                break;
-            }
-            for account in &accounts {
-                if account.limit.is_some_and(|l| l.scope == LimitScope::Period)
-                    && db
-                        .vertex(period_cell_vid(account.vid, &p.code))?
-                        .is_none_or(|r| !r.labels.contains(&label::LIMIT_CELL))
-                {
-                    all_match = false;
-                    break;
-                }
-            }
-        }
-        if all_match {
-            return Ok((recorded_at, periods));
-        }
-    }
-    let bvid = book_root();
-    let mut batch = WriteBatch::new(relation::IN_BOOK);
-    for (p, state) in periods.iter().zip(&states) {
-        let pvid = period_vid(&book.calendar.id, &p.code);
-        let mut props = vec![
-            (
-                property::BOOK_ID,
-                scalar_bytes("book_id", book.book_id.0.to_vec())?,
-            ),
-            (
-                property::CALENDAR_ID,
-                scalar_text("calendar_id", &book.calendar.id)?,
-            ),
-            (property::CODE, scalar_text("code", &p.code)?),
-            (
-                property::FISCAL_YEAR,
-                CanonicalScalar::Int(i64::from(p.fiscal_year)),
-            ),
-            (
-                property::ORDINAL,
-                CanonicalScalar::Int(i64::from(p.ordinal)),
-            ),
-            (
-                property::PERIOD_KIND,
-                CanonicalScalar::Int(kind_tag(p.kind)),
-            ),
-            (
-                property::PERIOD_START,
-                CanonicalScalar::Int(i64::from(p.start.0)),
-            ),
-            (
-                property::PERIOD_END,
-                CanonicalScalar::Int(i64::from(p.end.0)),
-            ),
-            (
-                property::STATE,
-                CanonicalScalar::Int(i64::from(state.tag())),
-            ),
-        ];
-        props.sort_by_key(|(k, _)| k.0);
-        batch.create_vertex(pvid, vec![label::PERIOD], props);
-        batch.add_edge(edge_id(relation::IN_BOOK, pvid, bvid), pvid, bvid, vec![]);
-    }
-    // A budget-capped (period-scoped) account owns one limit cell per period,
-    // born with the period (plan §5.5), so an absent cell stays corruption.
-    for account in accounts {
-        if account.limit.is_some_and(|l| l.scope == LimitScope::Period) {
-            for p in &periods {
-                batch.create_vertex(
-                    period_cell_vid(account.vid, &p.code),
-                    vec![label::LIMIT_CELL],
-                    LimitCell::default().create_props(account.vid, Some(&p.code))?,
-                );
-            }
-        }
-    }
-    let seq = db.write(&ctx.commit(), batch).await?;
-    Ok((seq, periods))
-}
+/// Period creation is an authorized, journaled schema effect.
+pub use crate::period_creation::create_periods;
 
 /// Every period vertex of the book, in calendar order (fiscal year, ordinal).
 pub fn list_periods<V: asupersync::fs::Vfs + Clone>(
@@ -974,7 +851,31 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
     effective_date: DateDay,
     idempotency_key: &[u8],
     description: Erasable<String>,
+    capability: &crate::Capability,
 ) -> Outcome<ChartInstalled> {
+    let key = fa_policy::sod::control_key("SchemaControl", None, "ChartInstall");
+    let Some(op) = crate::policy::steward()?.preparer_op(&key) else {
+        return Err(KernelError::Corrupt(
+            "sod_policy.toml has no schema-chart-install rule".into(),
+        ));
+    };
+    if let Err(denial) = fa_policy::admit_within(
+        capability,
+        &fa_policy::Intent {
+            principal: principal_ref,
+            trunk: true,
+            op,
+            book: book.book_id,
+            legs: &[],
+        },
+        &fa_policy::Reach::whole_book(true),
+        None,
+    ) {
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
+    if let Err(denial) = fa_policy::current(capability, db.frontier()?) {
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
     // Structural refusals first; nothing is written.
     for a in accounts {
         if a.code.is_empty() || a.code.len() > 64 {
@@ -996,6 +897,29 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
                 ),
                 "registries/account_types.toml",
                 "use a registered account type tag (1 Asset … 7 Statistical)",
+            )));
+        }
+        if a.normal_balance > 1 {
+            return Ok(Err(Refusal::new(
+                code::STRUCTURE,
+                exit::USAGE,
+                format!(
+                    "account `{}` has invalid normal_balance {}",
+                    a.code, a.normal_balance
+                ),
+                "Appendix A Account.normal_balance",
+                "use 0 (Debit) or 1 (Credit)",
+            )));
+        }
+        if let UnitPolicy::Single(unit) = a.unit_policy
+            && book.units.get(unit).is_none()
+        {
+            return Ok(Err(Refusal::new(
+                code::UNIT_UNREGISTERED,
+                exit::REFUSAL,
+                format!("account `{}` names unregistered unit id {}", a.code, unit.0),
+                "plan §4.3, §4.4",
+                "use a unit registered in the book",
             )));
         }
         if let Some(p) = &a.parent_code
@@ -1149,12 +1073,39 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         extensions: Vec::new(),
         tags: Vec::new(),
     };
+    let proposal_digest = proposal.proposal_digest()?;
     let entry: Entry = proposal.seal(Vec::new(), None)?;
     let evid = entry_vid(
         book.book_id,
         &principal_ref.0.to_le_bytes(),
         idempotency_key,
     );
+    // Verify current authority before observing existing periods, and keep
+    // revocation and policy witnesses in the same transaction as the chart.
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(refusal) = crate::policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+    let epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Err(refusal) = crate::policy::authorize_approvals(
+        &txn,
+        db,
+        book,
+        &[],
+        &proposal_digest,
+        epoch,
+        &key,
+        0,
+        fa_policy::sod::Party {
+            principal: principal_ref,
+            profile: capability.profile(),
+        },
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     // A budget-capped account is born with one cell per existing period.
     let existing_periods = if accounts
         .iter()
@@ -1241,8 +1192,6 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         let avid = account_vid(book.book_id, &a.code);
         in_book.add_edge(edge_id(relation::IN_BOOK, avid, root), avid, root, vec![]);
     }
-    let txn_cx = ctx.txn();
-    let mut txn = db.begin(&txn_cx)?;
     // An existing identity is the same lawful refusal whether the substrate
     // reports it while staging (a re-imported chart: its vertices are live)
     // or at commit; it is never a foundation failure.
@@ -1264,6 +1213,10 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
             e => Err(e.into()),
         };
     }
+    if let Err(denial) = fa_policy::current(capability, db.frontier()?) {
+        txn.abort();
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
     match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => Ok(Ok(ChartInstalled {
             recorded_at: seq,
@@ -1273,6 +1226,15 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         Err(fgdb::WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => Ok(Err(existing())),
+        Err(fgdb::WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins {
+            detail, ..
+        })) => Ok(Err(Refusal::new(
+            code::CONFLICT,
+            exit::CONFLICT,
+            format!("chart installation's authority or schema witness changed: {detail}"),
+            "FA-INV-10 / FG-LAW-FCW-01",
+            "retry chart installation against the current policy and book",
+        ))),
         Err(e) => Err(e.into()),
     }
 }

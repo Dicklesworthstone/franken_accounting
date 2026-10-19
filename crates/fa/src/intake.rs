@@ -63,13 +63,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(policy::refusal(&denial)));
         }
         if action == IntakeAction::BankImport {
-            let bank_admission = fa_policy::admit_read(
-                capability,
-                capability.holder(),
-                book.book_id,
-            )
-            .and_then(|()| fa_policy::require(capability, Op::Reconcile, "importing bank statements"))
-            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None));
+            let bank_admission =
+                fa_policy::admit_read(capability, capability.holder(), book.book_id)
+                    .and_then(|()| {
+                        fa_policy::require(capability, Op::Reconcile, "importing bank statements")
+                    })
+                    .and_then(|()| {
+                        fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+                    });
             if let Err(denial) = bank_admission {
                 return Ok(Err(policy::refusal(&denial)));
             }
@@ -268,7 +269,11 @@ mod tests {
                 .unwrap()
                 .unwrap();
             let before = book.head(&cx).unwrap();
-            for action in [IntakeAction::Upload, IntakeAction::ImportRun, IntakeAction::BankImport] {
+            for action in [
+                IntakeAction::Upload,
+                IntakeAction::ImportRun,
+                IntakeAction::BankImport,
+            ] {
                 let refusal = book
                     .preflight_intake(&cx, &cap, action)
                     .unwrap()
@@ -362,12 +367,17 @@ mod tests {
                 cap.holder(),
                 day,
                 b"bank-witness-chart",
+                &fa_journal::Capability::embedded(cap.holder(), &["schema_change"]).unwrap(),
             )
             .await
             .unwrap()
             .unwrap();
-            let account = book.accounts(&cx).unwrap().into_iter()
-                .find(|row| row.code == "1000").unwrap();
+            let account = book
+                .accounts(&cx)
+                .unwrap()
+                .into_iter()
+                .find(|row| row.code == "1000")
+                .unwrap();
             let context = book.context().clone();
             let policy = fa_registry::evidence_policy::EvidencePolicy::embedded().unwrap();
             let document = fa_journal::Document {
@@ -381,7 +391,9 @@ mod tests {
             let oid = document.oid();
             let request = fa_journal::ImportRequest {
                 principal: cap.holder(),
-                source: fa_model::IntakeSource::Upload { principal: cap.holder() },
+                source: fa_model::IntakeSource::Upload {
+                    principal: cap.holder(),
+                },
                 idempotency_key: b"bank-account-witness".to_vec(),
                 effective_date: day,
                 description: book.seal_text(&cx, "bank witness regression").unwrap(),
@@ -389,14 +401,21 @@ mod tests {
             };
             let fa_journal::import::ImportPreparation::Ready(mut prepared) =
                 fa_journal::import::prepare_import(
-                    &mut book.db, &cx, &context, &cap, request.clone(),
+                    &mut book.db,
+                    &cx,
+                    &context,
+                    &cap,
+                    request.clone(),
                 )
                 .unwrap()
                 .unwrap()
             else {
                 panic!("a fresh import must require publication");
             };
-            prepared.witness_account(&book.db, &account).unwrap().unwrap();
+            prepared
+                .witness_account(&book.db, &account)
+                .unwrap()
+                .unwrap();
             let run = prepared.run();
             // A competing native client changes the validated cash leaf AFTER
             // its witness was recorded, but before any import is published.
@@ -408,33 +427,44 @@ mod tests {
             );
             book.db.write(&cx.commit(), change).await.unwrap();
             let after_change = book.head(&cx).unwrap();
-            let refusal = prepared.commit(&mut book.db, &cx).await.unwrap().unwrap_err();
+            let refusal = prepared
+                .commit(&mut book.db, &cx)
+                .await
+                .unwrap()
+                .unwrap_err();
             assert_eq!(refusal.code, fa_journal::refusal::code::CONFLICT);
             assert_eq!(book.head(&cx).unwrap(), after_change);
-            assert!(book.query(&cx, |db, _| {
-                Ok(fa_journal::evidence::document_record(db, &oid)?.is_none()
-                    && fa_journal::import::read_run(db, run)?.is_none())
-            }).unwrap());
+            assert!(
+                book.query(&cx, |db, _| {
+                    Ok(fa_journal::evidence::document_record(db, &oid)?.is_none()
+                        && fa_journal::import::read_run(db, run)?.is_none())
+                })
+                .unwrap()
+            );
 
             // The same stale validation must also refuse when the account
             // changed BEFORE the next import transaction was prepared.
             let fa_journal::import::ImportPreparation::Ready(mut prepared) =
-                fa_journal::import::prepare_import(
-                    &mut book.db, &cx, &context, &cap, request,
-                )
-                .unwrap()
-                .unwrap()
+                fa_journal::import::prepare_import(&mut book.db, &cx, &context, &cap, request)
+                    .unwrap()
+                    .unwrap()
             else {
                 panic!("the refused import cannot have a recorded receipt");
             };
-            let refusal = prepared.witness_account(&book.db, &account).unwrap().unwrap_err();
+            let refusal = prepared
+                .witness_account(&book.db, &account)
+                .unwrap()
+                .unwrap_err();
             assert_eq!(refusal.code, fa_journal::refusal::code::CONFLICT);
             prepared.abort();
             assert_eq!(book.head(&cx).unwrap(), after_change);
-            assert!(book.query(&cx, |db, _| {
-                Ok(fa_journal::evidence::document_record(db, &oid)?.is_none()
-                    && fa_journal::import::read_run(db, run)?.is_none())
-            }).unwrap());
+            assert!(
+                book.query(&cx, |db, _| {
+                    Ok(fa_journal::evidence::document_record(db, &oid)?.is_none()
+                        && fa_journal::import::read_run(db, run)?.is_none())
+                })
+                .unwrap()
+            );
         });
     }
 }

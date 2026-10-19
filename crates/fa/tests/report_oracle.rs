@@ -417,10 +417,22 @@ fn report_families_match_reference_oracle_across_multiseed_campaign_and_kill_pla
             })
             .collect();
 
-        book.install_chart(&chart_specs, PRINCIPAL, p1.start, b"install-chart")
-            .unwrap()
-            .unwrap();
-        book.create_periods(2026).unwrap();
+        book.install_chart(
+            &chart_specs,
+            PRINCIPAL,
+            p1.start,
+            b"install-chart",
+            &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        book.create_periods(
+            2026,
+            fgdb_types::VId(1),
+            &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
 
         let mut oracle = Oracle::new(calendar.clone());
         let entity_code_refs: Vec<&str> = entities.iter().map(|e| e.code.as_str()).collect();

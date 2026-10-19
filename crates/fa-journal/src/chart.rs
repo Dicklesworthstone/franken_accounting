@@ -234,6 +234,25 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
                 "a schema control belongs to another book or branch",
             ));
         }
+        if matches!(
+            entry.proposal.origin,
+            EntryOrigin::Control {
+                control_kind: ControlKind::PERIOD_CREATION,
+                ..
+            }
+        ) {
+            let root = rows
+                .iter()
+                .find(|candidate| candidate.vid == book_root())
+                .ok_or_else(|| corrupt("no book root for period creation"))?;
+            let spec = crate::genesis::BookSpec::decode(&bytes(
+                root,
+                property::FA_PAYLOAD,
+                "book payload",
+            )?)?;
+            crate::period_creation::declared_creation(row, book, &spec)?;
+            continue;
+        }
         if !matches!(
             entry.proposal.origin,
             EntryOrigin::Control {

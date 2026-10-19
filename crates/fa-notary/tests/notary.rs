@@ -258,14 +258,33 @@ fn harness_with(opening_date: Option<DateDay>) -> Harness {
                 day,
                 b"chart",
                 Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
+                &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
             )
             .await
         })
         .expect("kernel")
         .expect("installs");
     let (_, periods) = runtime
-        .block_on(async { create_periods(&mut db, &ctx, &book, 2026).await })
-        .expect("periods");
+        .block_on(async {
+            create_periods(
+                &mut db,
+                &ctx,
+                &book,
+                2026,
+                fgdb_types::VId(1),
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("periods")
+        .expect("admitted");
     let march = periods
         .iter()
         .find(|p| {
@@ -355,16 +374,18 @@ fn every_entry_proves_inclusion_against_a_journaled_state() {
     assert!(stored.recorded_at > stored.state.through_seq);
     assert_eq!(stored.state.prev_state_oid, None);
 
-    // The chart install, the March opening, and the five postings.
+    // The chart install, fiscal-year birth, March opening, and five postings.
     let journal = Journal::read(&h.db, &h.book, Some(stored.state.through_seq))
         .unwrap()
         .unwrap();
-    assert_eq!(journal.len(), 7);
-    assert_eq!(trusted.leaf_count, 7);
+    assert_eq!(journal.len(), 8);
+    assert_eq!(trusted.leaf_count, 8);
     assert_eq!(journal.leaves[0].envelope.class, EntryClass::SCHEMA_CONTROL);
     assert_eq!(journal.leaves[0].envelope.effective_day, None);
-    assert_eq!(journal.leaves[1].envelope.class, EntryClass::PERIOD_CONTROL);
-    assert!(journal.leaves[1].envelope.effective_day.is_some());
+    assert_eq!(journal.leaves[1].envelope.class, EntryClass::SCHEMA_CONTROL);
+    assert_eq!(journal.leaves[1].envelope.effective_day, None);
+    assert_eq!(journal.leaves[2].envelope.class, EntryClass::PERIOD_CONTROL);
+    assert!(journal.leaves[2].envelope.effective_day.is_some());
     assert!(
         journal
             .leaves
@@ -1750,8 +1771,26 @@ fn finalized_full_detail_history_before_the_opening_date_never_counts() {
     let ctx = h.ctx();
     let (db, book) = (&mut h.db, &h.book);
     h.runtime
-        .block_on(async move { create_periods(db, &ctx, book, 2025).await })
-        .expect("FY2025 periods, born Historical");
+        .block_on(async move {
+            create_periods(
+                db,
+                &ctx,
+                book,
+                2025,
+                fgdb_types::VId(1),
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("FY2025 periods, born Historical")
+        .expect("admitted");
     lock_opening(&mut h, opening);
     h.post(h.utilities, 250, b"utilities");
 
@@ -1965,8 +2004,27 @@ fn full_detail_proof_boundary_preserves_inclusion_and_supported_balances() {
             let ctx = h.ctx();
             let (db, book) = (&mut h.db, &h.book);
             h.runtime
-                .block_on(async move { create_periods(db, &ctx, book, 2025).await })
-                .expect("FY2025 periods, born Historical");
+                .block_on(async move {
+                    create_periods(
+                        db,
+                        &ctx,
+                        book,
+                        2025,
+                        fgdb_types::VId(1),
+                        fa_model::Erasable::seal(
+                            &"periods".to_string(),
+                            None,
+                            &book.seal_key,
+                            [1; 32],
+                            [2; 24],
+                        ),
+                        &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"])
+                            .unwrap(),
+                    )
+                    .await
+                })
+                .expect("FY2025 periods, born Historical")
+                .expect("admitted");
         }
         let line = |code: &str, mantissa| TrialBalanceLine {
             account_code: code.into(),

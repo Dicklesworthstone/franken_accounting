@@ -306,11 +306,24 @@ fn build_fixture_book_vectors() -> BookVectorDigests {
             limit: None,
         },
     ];
-    book.install_chart(&chart, principal, day, b"chart-v1")
-        .expect("install_chart io")
-        .expect("install_chart ok");
+    book.install_chart(
+        &chart,
+        principal,
+        day,
+        b"chart-v1",
+        &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .expect("install_chart io")
+    .expect("install_chart ok");
 
-    let (_, periods) = book.create_periods(2026).expect("create_periods");
+    let (_, periods) = book
+        .create_periods(
+            2026,
+            principal,
+            &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+        )
+        .expect("create_periods")
+        .expect("periods admitted");
     let march = periods
         .iter()
         .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)

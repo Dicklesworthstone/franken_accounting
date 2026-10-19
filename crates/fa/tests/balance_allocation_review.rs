@@ -87,10 +87,25 @@ impl Harness {
             })
             .collect::<Vec<_>>();
         runtime
-            .block_on(book.install_chart(&cx, &chart, PRINCIPAL, day("2026-03-01"), b"chart"))
+            .block_on(book.install_chart(
+                &cx,
+                &chart,
+                PRINCIPAL,
+                day("2026-03-01"),
+                b"chart",
+                &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+            ))
             .unwrap()
             .unwrap();
-        runtime.block_on(book.create_periods(&cx, 2026)).unwrap();
+        runtime
+            .block_on(book.create_periods(
+                &cx,
+                2026,
+                fgdb_types::VId(1),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
         for (period, date) in [("FY2026-P03", "2026-03-01"), ("FY2026-P04", "2026-04-01")] {
             runtime
                 .block_on(book.transition_period(

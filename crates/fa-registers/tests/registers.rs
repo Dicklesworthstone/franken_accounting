@@ -356,14 +356,33 @@ fn harness() -> Harness {
                 day,
                 b"chart",
                 Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
+                &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
             )
             .await
         })
         .expect("kernel")
         .expect("installs");
     let (_, periods) = runtime
-        .block_on(async { create_periods(&mut db, &ctx, &book, 2026).await })
-        .expect("periods");
+        .block_on(async {
+            create_periods(
+                &mut db,
+                &ctx,
+                &book,
+                2026,
+                fgdb_types::VId(1),
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("periods")
+        .expect("admitted");
     let march = periods
         .iter()
         .find(|p| {
@@ -1376,7 +1395,18 @@ fn chart_limits_are_structural_and_breaches_name_the_admissible_amount() {
             Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]);
         h.runtime
             .block_on(async move {
-                install_chart(db, &ctx, book, &[spec], PRINCIPAL, day, key, description).await
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &[spec],
+                    PRINCIPAL,
+                    day,
+                    key,
+                    description,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+                )
+                .await
             })
             .expect("kernel")
     };
@@ -1573,6 +1603,7 @@ fn a_limit_cell_rebound_to_another_account_fails_closed_and_verify_names_both() 
                     day,
                     b"two-limited",
                     description,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
@@ -1756,8 +1787,27 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
         let db = &mut h.db;
         let book = &h.book;
         h.runtime
-            .block_on(async move { create_periods(db, &ctx, book, 2025).await })
+            .block_on(async move {
+                create_periods(
+                    db,
+                    &ctx,
+                    book,
+                    2025,
+                    fgdb_types::VId(1),
+                    fa_model::Erasable::seal(
+                        &"periods".to_string(),
+                        None,
+                        &book.seal_key,
+                        [1; 32],
+                        [2; 24],
+                    ),
+                    &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"])
+                        .unwrap(),
+                )
+                .await
+            })
             .expect("fy2025 created")
+            .expect("admitted")
     };
     let p12_2025 = fy2025
         .iter()
@@ -1849,6 +1899,7 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
                     dec_2025,
                     b"install-all-types",
                     desc,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
@@ -2242,6 +2293,7 @@ fn memo_off_balance_and_single_sided_statistical_legs_obey_partition_and_footing
                     mar_2026,
                     b"install-memo-offbal-stat",
                     desc,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
@@ -2542,6 +2594,7 @@ fn lots_fifo_lifo_wac_specific_id_reversal_and_reference_differential() {
                     mar_10,
                     b"install-lot-accounts",
                     desc,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
@@ -3013,6 +3066,7 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
                     mar_05,
                     b"install-fx-chart",
                     desc,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
@@ -3466,6 +3520,7 @@ fn fx_unbalanced_base_amounts_are_refused_without_mutating_book() {
                     mar_05,
                     b"install-fx-neg-base",
                     desc,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
@@ -3603,6 +3658,7 @@ fn fx_wrong_or_excessive_base_residual_is_refused_without_mutating_book() {
                     mar_05,
                     b"install-fx-neg-res",
                     desc,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
@@ -3753,6 +3809,7 @@ fn fx_unpaired_realized_fx_settlement_is_refused_without_mutating_book() {
                     mar_05,
                     b"install-fx-neg-settle",
                     desc,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
@@ -3913,6 +3970,7 @@ fn fx_tampered_functional_fold_is_detected_by_verify_functional_fold() {
                     mar_05,
                     b"install-fx-neg-fold",
                     desc,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })

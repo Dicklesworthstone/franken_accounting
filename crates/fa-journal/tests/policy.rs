@@ -377,14 +377,33 @@ fn harness() -> Harness {
                 DateDay::from_ymd(2026, 1, 1).unwrap(),
                 b"chart-1",
                 Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
+                &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
             )
             .await
         })
         .expect("kernel")
         .expect("chart installs");
     let (_, periods) = runtime
-        .block_on(async { create_periods(&mut db, &ctx, &book, 2026).await })
-        .expect("periods");
+        .block_on(async {
+            create_periods(
+                &mut db,
+                &ctx,
+                &book,
+                2026,
+                PREPARER,
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("periods")
+        .expect("admitted");
     let march = periods
         .iter()
         .find(|p| {
@@ -599,6 +618,7 @@ fn balancing_approvals_bind_resolved_effects_and_preserve_request_identity() {
             DateDay::from_ymd(2026, 3, 1).unwrap(),
             b"limited-chart",
             description,
+            &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
         ))
         .unwrap()
         .unwrap();
@@ -1305,6 +1325,139 @@ fn close_without_close_and_reopen_without_reopen_are_refused_before_any_read() {
 }
 
 #[test]
+fn chart_install_requires_current_whole_book_schema_authority() {
+    let mut h = harness();
+    let schema = human(PREPARER, &["schema_change"]);
+    let head = h.db.frontier().unwrap();
+    let denied = [
+        human(PREPARER, &["post"]),
+        human(ALICE, &["schema_change"]),
+        Capability::new(PREPARER, Profile::Agent, &[Op::Read], AGENT).unwrap(),
+        schema.clone().expiring_at(head),
+        schema.clone().for_books(&[Id128([0xee; 16])]).unwrap(),
+        schema.clone().for_accounts(&["1000"]).unwrap(),
+        schema.clone().for_periods(&["FY2026-P03"]).unwrap(),
+    ];
+    let spec = AccountSpec {
+        code: "schema-authorized".into(),
+        name: "Authorized chart extension".into(),
+        account_type: 5,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: None,
+        limit: None,
+    };
+    let description = h.period_description();
+    let ctx = h.ctx();
+    for capability in &denied {
+        let refusal = h
+            .runtime
+            .block_on(install_chart(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                std::slice::from_ref(&spec),
+                PREPARER,
+                DateDay::from_ymd(2026, 3, 1).unwrap(),
+                b"schema-authorized",
+                description.clone(),
+                capability,
+            ))
+            .expect("typed admission")
+            .unwrap_err();
+        assert_eq!(refusal.exit, exit::SAFETY, "{refusal:?}");
+        assert_eq!(h.db.frontier().unwrap(), head, "denied chart wrote");
+        assert!(
+            h.db.vertex(account_vid(h.book.book_id, &spec.code))
+                .unwrap()
+                .is_none()
+        );
+    }
+    let installed = h
+        .runtime
+        .block_on(install_chart(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            std::slice::from_ref(&spec),
+            PREPARER,
+            DateDay::from_ymd(2026, 3, 1).unwrap(),
+            b"schema-authorized",
+            description,
+            &schema,
+        ))
+        .unwrap()
+        .expect("authorized chart");
+    let (entry, created_at) = read_entry(&h.db, installed.control_entry).unwrap().unwrap();
+    assert_eq!(entry.proposal.principal_ref, PREPARER);
+    assert_eq!(entry.proposal.class, EntryClass::SCHEMA_CONTROL);
+    assert_eq!(created_at, installed.recorded_at);
+    let account =
+        h.db.vertex(account_vid(h.book.book_id, &spec.code))
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        account.created_at, installed.recorded_at,
+        "chart and control publish together"
+    );
+    let chart = fa_journal::chart::read_at(&h.db, &h.book, installed.recorded_at).unwrap();
+    assert!(chart.accounts().contains_key(&account.vid));
+}
+
+#[test]
+fn revoked_chart_authority_is_checked_before_existing_periods_are_observed() {
+    let mut h = harness();
+    let schema = human(PREPARER, &["schema_change"]);
+    h.revoke(
+        &human(ALICE, &["issue_capability"]),
+        &schema,
+        b"revoke-chart",
+    )
+    .unwrap();
+    let ctx = h.ctx();
+    let period = fa_model::period_vid(&h.book.calendar.id, &h.march);
+    let mut corrupt = WriteBatch::new(relation::IN_BOOK);
+    corrupt.set_vertex_property(period, property::PERIOD_START, CanonicalScalar::Bool(true));
+    h.runtime
+        .block_on(h.db.write(&ctx.commit(), corrupt))
+        .unwrap();
+    let before = h.db.frontier().unwrap();
+    let spec = AccountSpec {
+        code: "guarded-period-budget".into(),
+        name: "Period budget".into(),
+        account_type: 5,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: None,
+        limit: Some(fa_journal::BalanceLimit {
+            lower: None,
+            upper: Some(1000),
+            scope: fa_journal::LimitScope::Period,
+        }),
+    };
+    let description = h.period_description();
+    let refusal = h
+        .runtime
+        .block_on(install_chart(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &[spec],
+            PREPARER,
+            DateDay::from_ymd(2026, 3, 1).unwrap(),
+            b"guarded-budget",
+            description,
+            &schema,
+        ))
+        .expect("revocation precedes corrupt period decoding")
+        .unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-023");
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
 fn expired_out_of_scope_and_revoked_capabilities_cannot_transition_post_or_approve() {
     let mut h = harness();
     // Expired at the admission point.
@@ -1749,6 +1902,7 @@ impl Harness {
                     DateDay::from_ymd(2026, 1, 1).unwrap(),
                     b"chart-2",
                     description,
+                    &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
                 )
                 .await
             })
@@ -2762,8 +2916,26 @@ fn identical_period_transition_and_period_create_retries_return_recorded_outcome
     let ctx = h.ctx();
     let (seq_create, periods_again) = h
         .runtime
-        .block_on(async { create_periods(&mut h.db, &ctx, &h.book, 2026).await })
-        .expect("idempotent create_periods");
+        .block_on(async {
+            create_periods(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                2026,
+                PREPARER,
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &h.book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("idempotent create_periods")
+        .expect("admitted");
     assert_eq!(h.db.frontier().unwrap(), head_before_create);
     assert!(!periods_again.is_empty());
     assert!(seq_create <= head_before_create);

@@ -291,3 +291,9 @@ id = 12
 name = "scenario_transition"
 class = "ScenarioControl"
 minted_by = "fa-journal scenario::open_scenario, scenario::plan_into_scenario, scenario::discard_scenario"
+
+[[control_kind]]
+id = 13
+name = "period_creation"
+class = "SchemaControl"
+minted_by = "fa-journal period_creation::create_periods (SchemaChange kind 13; Book scope; schema-period-create SoD rule)"

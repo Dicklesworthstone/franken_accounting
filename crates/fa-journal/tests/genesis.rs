@@ -517,6 +517,7 @@ fn harness_configured(
                 day,
                 b"chart-1",
                 Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
+                &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
             )
             .await
         })
@@ -533,8 +534,26 @@ fn harness_configured(
     );
 
     let (_, periods) = runtime
-        .block_on(async { create_periods(&mut db, &ctx, &book, 2026).await })
-        .expect("periods");
+        .block_on(async {
+            create_periods(
+                &mut db,
+                &ctx,
+                &book,
+                2026,
+                PRINCIPAL,
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("periods")
+        .expect("admitted");
     let march = periods
         .iter()
         .find(|p| {
@@ -978,7 +997,22 @@ fn special_period_classes_and_reversal_order_are_enforced_even_on_shared_dates()
             );
             let ctx = h.ctx();
             h.runtime
-                .block_on(create_periods(&mut h.db, &ctx, &h.book, 2027))
+                .block_on(create_periods(
+                    &mut h.db,
+                    &ctx,
+                    &h.book,
+                    2027,
+                    PRINCIPAL,
+                    fa_model::Erasable::seal(
+                        &"periods".to_string(),
+                        None,
+                        &h.book.seal_key,
+                        [1; 32],
+                        [2; 24],
+                    ),
+                    &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+                ))
+                .unwrap()
                 .unwrap();
             h.transition(
                 "FY2027-P01",
@@ -1240,6 +1274,7 @@ fn uncreated_periods_and_unregistered_units_are_refused_not_corrupt() {
                 [7; 32],
                 [8; 24],
             ),
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
         ))
         .expect("kernel")
         .expect("the clearing accounts install");
@@ -7000,6 +7035,7 @@ fn memo_off_balance_and_statistical_legs_obey_fa_inv_01_memo() {
                     DateDay::from_ymd(2026, 3, 15).unwrap(),
                     b"install-memo-offbal-stat",
                     desc,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })

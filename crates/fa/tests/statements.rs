@@ -87,11 +87,18 @@ impl Fixture {
             PRINCIPAL,
             day(2025, 12, 1),
             b"statement-chart",
+            &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
         )
         .unwrap()
         .unwrap();
-        book.create_periods(2025).unwrap();
-        book.create_periods(2026).unwrap();
+        let schema =
+            fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap();
+        book.create_periods(2025, schema.holder(), &schema)
+            .unwrap()
+            .unwrap();
+        book.create_periods(2026, schema.holder(), &schema)
+            .unwrap()
+            .unwrap();
         let close = Capability::embedded(PRINCIPAL, &["close"]).unwrap();
         for (period, date) in [
             (DECEMBER, day(2025, 12, 1)),
@@ -736,6 +743,7 @@ fn historical_zero_leaf_mappings_survive_a_later_covered_chart_extension() {
             PRINCIPAL,
             day(2026, 1, 20),
             b"uncovered-chart-extension",
+            &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
         )
         .unwrap()
         .unwrap();
@@ -755,6 +763,7 @@ fn historical_zero_leaf_mappings_survive_a_later_covered_chart_extension() {
             PRINCIPAL,
             day(2026, 1, 20),
             b"covered-chart-extension",
+            &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
         )
         .unwrap()
         .unwrap();

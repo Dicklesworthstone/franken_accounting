@@ -93,11 +93,23 @@ impl Harness {
                 PRINCIPAL,
                 day("2025-01-01"),
                 b"chart",
+                &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
             ))
             .unwrap()
             .unwrap();
         for year in [2025, 2026] {
-            runtime.block_on(book.create_periods(&cx, year)).unwrap();
+            runtime
+                .block_on(
+                    book.create_periods(
+                        &cx,
+                        year,
+                        fgdb_types::VId(1),
+                        &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"])
+                            .unwrap(),
+                    ),
+                )
+                .unwrap()
+                .unwrap();
         }
         for (period, date) in [
             ("FY2025-P03", "2025-03-01"),
@@ -325,6 +337,7 @@ fn real_postings_cancel_without_hiding_their_history_and_survive_reopen() {
             PRINCIPAL,
             day("2026-04-20"),
             b"unused-account",
+            &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
         ))
         .unwrap()
         .unwrap();

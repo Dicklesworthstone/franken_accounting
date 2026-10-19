@@ -95,11 +95,23 @@ impl Harness {
                 PRINCIPAL,
                 day("2025-01-01"),
                 b"chart",
+                &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
             ))
             .unwrap()
             .unwrap();
         for year in [2025, 2026] {
-            runtime.block_on(book.create_periods(&cx, year)).unwrap();
+            runtime
+                .block_on(
+                    book.create_periods(
+                        &cx,
+                        year,
+                        fgdb_types::VId(1),
+                        &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"])
+                            .unwrap(),
+                    ),
+                )
+                .unwrap()
+                .unwrap();
         }
         for (period, date) in [
             ("FY2025-P03", "2025-03-01"),
@@ -420,6 +432,7 @@ fn pending_and_later_effective_entries_do_not_change_march_but_chart_membership_
             PRINCIPAL,
             day("2026-04-20"),
             b"new-account",
+            &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
         ))
         .unwrap()
         .unwrap();
@@ -679,6 +692,7 @@ fn replayed_workpapers_keep_exact_rows_and_do_not_drift_after_later_postings() {
             PRINCIPAL,
             day("2026-03-20"),
             b"workpaper-chart",
+            &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
         ))
         .unwrap()
         .unwrap();

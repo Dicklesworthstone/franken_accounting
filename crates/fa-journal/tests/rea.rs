@@ -90,8 +90,23 @@ fn setup_book() -> (
         symbols,
     };
     let (_, periods) = runtime
-        .block_on(create_periods(&mut db, &ctx, &book, 2026))
-        .expect("create_periods");
+        .block_on(create_periods(
+            &mut db,
+            &ctx,
+            &book,
+            2026,
+            fgdb_types::VId(1),
+            fa_model::Erasable::seal(
+                &"periods".to_string(),
+                None,
+                &book.seal_key,
+                [1; 32],
+                [2; 24],
+            ),
+            &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+        ))
+        .expect("create_periods")
+        .expect("admitted");
     let jan_period = periods
         .iter()
         .find(|p| {
@@ -145,6 +160,7 @@ fn setup_book() -> (
             d_jan1,
             b"rea-chart-1",
             seal_str("install chart", &book.seal_key, 1),
+            &Capability::embedded(controller, &["schema_change"]).unwrap(),
         ))
         .expect("install_chart")
         .expect("install_chart ok");

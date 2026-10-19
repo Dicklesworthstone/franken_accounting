@@ -120,13 +120,33 @@ impl Fixture {
                     day(1),
                     b"chart",
                     seal("chart"),
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
             .unwrap()
             .unwrap();
         runtime
-            .block_on(async { create_periods(&mut db, &ctx, &book, 2026).await })
+            .block_on(async {
+                create_periods(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    2026,
+                    fgdb_types::VId(1),
+                    fa_model::Erasable::seal(
+                        &"periods".to_string(),
+                        None,
+                        &book.seal_key,
+                        [1; 32],
+                        [2; 24],
+                    ),
+                    &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"])
+                        .unwrap(),
+                )
+                .await
+            })
+            .unwrap()
             .unwrap();
         runtime
             .block_on(async {

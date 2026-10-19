@@ -259,6 +259,7 @@ impl ControlKind {
     pub const CAPABILITY_ISSUANCE: Self = Self(10);
     pub const DRAFT_TRANSITION: Self = Self(11);
     pub const SCENARIO_TRANSITION: Self = Self(12);
+    pub const PERIOD_CREATION: Self = Self(13);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -309,6 +310,11 @@ impl ControlKind {
             Self::SCENARIO_TRANSITION,
             "scenario_transition",
             EntryClass::SCENARIO_CONTROL,
+        ),
+        (
+            Self::PERIOD_CREATION,
+            "period_creation",
+            EntryClass::SCHEMA_CONTROL,
         ),
     ];
 
@@ -2224,10 +2230,8 @@ mod tests {
                 }
             );
         }
-        // Unregistered ids (10, 11 and 12 are now capability_issuance,
-        // draft_transition and scenario_transition; the probe stays past the
-        // registered range).
-        for id in [0, 13, 14, u16::MAX] {
+        // Keep the negative probes beyond every registered control kind.
+        for id in [0, 14, 15, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"

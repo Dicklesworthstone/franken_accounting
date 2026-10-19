@@ -67,14 +67,18 @@ fn run() -> Result<(), BookError> {
             limit: None,
         },
     ];
-    match book.install_chart(&chart, principal, day, b"chart-v1")? {
+    let schema_cap = Capability::embedded(principal, &["schema_change"])
+        .map_err(|e| BookError::Runtime(e.to_string()))?;
+    match book.install_chart(&chart, principal, day, b"chart-v1", &schema_cap)? {
         Ok(c) => println!(
             "chart installed: {} accounts, control entry {:?}, recorded_at {:?}",
             c.accounts, c.control_entry, c.recorded_at
         ),
         Err(r) => println!("chart refused: {r}"),
     }
-    let (_, periods) = book.create_periods(2026)?;
+    let (_, periods) = book
+        .create_periods(2026, principal, &schema_cap)?
+        .map_err(|r| BookError::Runtime(r.to_string()))?;
     let march = periods
         .iter()
         .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)

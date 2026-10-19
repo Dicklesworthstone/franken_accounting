@@ -18,3 +18,17 @@ appendix_a = "ImportReceipt vertex (Appendix A)"
 code_type = "ControlPayload::ImportRun (tag 13, crates/fa-model/src/entry.rs:890)"
 rationale = "Tag 12 is reserved unused; ImportRun journals book-scoped intake receipts at tag 13 under EntryClass::IMPORT_CONTROL (class 23)."
 tracking_bead = "fa-txf"
+
+[[decision]]
+field = "SchemaChange.kind=13"
+appendix_a = "Period creation is a Book-scoped schema control (plan §7.3)"
+code_type = "fa-journal::period_creation::PeriodCreation; ControlKind::PERIOD_CREATION=13"
+rationale = "Canonical fa:period-creation:v1 bytes encode the calendar id, fiscal year and ordered PeriodDef/born-state list using length-prefixed UTF-8 and fixed little-endian integers. The existing Entry v1 container reserves effective_date=0 as an uninterpreted wire placeholder for this new control; effective_period and its effective-day mirror are absent. Definitions, control and period limit cells publish atomically. Reads reconstruct births from the retained declaration, validate them against the immutable book calendar, and compare projection birth sequences and fields. SchemaChange subkind 13 is additive; existing payload tags and registered subkinds are unchanged."
+tracking_bead = "fa-ehd"
+
+[[decision]]
+field = "Book.version=2"
+appendix_a = "Book genesis and Period birth authority (plan §7.3, FA-INV-02)"
+code_type = "fa-journal::genesis::BookSpec"
+rationale = "New Book payloads use u16 version 2 with the version-1 field layout, requiring a retained CreatePeriods declaration for every Period birth. Version-1 payloads remain decodable. Their periods created before the earliest retained CreatePeriods control use the original calendar-derived baseline, reported as legacy_periods without claiming recorded creator provenance. No old declaration is synthesized and no old payload is rewritten. This baseline cannot discover an entirely absent legacy year or prove a removed sole cutover control; version-2 books have no such fallback."
+tracking_bead = "fa-ehd"

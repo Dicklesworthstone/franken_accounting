@@ -35,6 +35,7 @@ on:
       - 'crates/fa-cli/tests/retained_report_storage.rs'
       - 'crates/fa-mcp/src/registry.rs'
       - 'crates/fa-mcp/src/server.rs'
+      - 'crates/fa-mcp/tests/e2e_stdio.rs'
       - 'crates/fa-registry/src/g0.rs'
       - 'registries/operation_costs.toml'
       - 'registries/verbs.toml'
@@ -43,7 +44,18 @@ on:
       - 'crates/fa-journal/src/rows.rs'
       - 'crates/fa-journal/src/fx.rs'
       - 'crates/fa-journal/src/rea.rs'
+      - 'crates/fa-journal/src/chart.rs'
+      - 'crates/fa-journal/src/genesis.rs'
+      - 'crates/fa-journal/src/period.rs'
+      - 'crates/fa-journal/src/period_creation.rs'
       - 'crates/fa-journal/tests/genesis.rs'
+      - 'crates/fa-journal/tests/policy.rs'
+      - 'crates/fa-model/src/entry.rs'
+      - 'crates/fa-model/src/mirrors.rs'
+      - 'registries/entry_classes.toml'
+      - 'registries/sod_policy.toml'
+      - 'registries/object_schemas/book.toml'
+      - 'registries/object_schemas/control_payload.toml'
       - 'crates/fa-registers/tests/registers.rs'
       - 'registries/procedures.toml'
       - '.github/workflows/lantern-graph-kernel.yml'
@@ -146,6 +158,18 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --test registers --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test genesis --jobs 2
+      - name: Test immutable period births and current schema authority
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib period_creation::tests --jobs 2 -- --nocapture
+      - name: Regress journal capability and schema-change policy
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test policy --jobs 2 -- --nocapture
       - name: Test bank statement parsers, retained intake and exact matching
         if: ${{ !cancelled() }}
         shell: bash
@@ -175,6 +199,12 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registry --lib operation_cost --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --lib --test parity --test deny_rows --no-fail-fast --jobs 2
+      - name: Test financial statements and retained replay over MCP stdio
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --test e2e_stdio financial_statements_and_retained_replay_use_the_same_agent_bound_surface --jobs 2 -- --exact --nocapture
       - name: Regress existing native certificate replay through the CLI
         if: ${{ !cancelled() }}
         shell: bash

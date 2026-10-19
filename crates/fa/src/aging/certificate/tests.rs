@@ -95,10 +95,19 @@ impl Harness {
                 PRINCIPAL,
                 day("2026-01-01"),
                 b"chart",
+                &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
             ))
             .unwrap()
             .unwrap();
-        runtime.block_on(book.create_periods(&cx, 2026)).unwrap();
+        runtime
+            .block_on(book.create_periods(
+                &cx,
+                2026,
+                fgdb_types::VId(1),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
         runtime
             .block_on(book.transition_period(
                 &cx,

@@ -593,11 +593,14 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
             });
         }
     }
-    book.install_chart(&chart, operator, opening, b"bench:chart")
+    let schema_cap = Capability::embedded(operator, &["schema_change"])
+        .map_err(|e| BenchError::Execution(e.to_string()))?;
+    book.install_chart(&chart, operator, opening, b"bench:chart", &schema_cap)
         .map_err(|e| BenchError::Execution(e.to_string()))?
         .map_err(|r| BenchError::Execution(r.message))?;
-    book.create_periods(2026)
-        .map_err(|e| BenchError::Execution(e.to_string()))?;
+    book.create_periods(2026, operator, &schema_cap)
+        .map_err(|e| BenchError::Execution(e.to_string()))?
+        .map_err(|r| BenchError::Execution(r.to_string()))?;
     let close_cap = Capability::embedded(controller, &["close"])
         .map_err(|e| BenchError::Execution(e.to_string()))?;
     let p01_start = DateDay::from_ymd(2026, 1, 1).unwrap();

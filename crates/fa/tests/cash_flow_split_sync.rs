@@ -71,10 +71,22 @@ fn sync_fixture() -> (
             limit: None,
         })
         .collect();
-    book.install_chart(&accounts, PRINCIPAL, day(1), b"sync-chart")
-        .unwrap()
-        .unwrap();
-    book.create_periods(2026).unwrap();
+    book.install_chart(
+        &accounts,
+        PRINCIPAL,
+        day(1),
+        b"sync-chart",
+        &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    book.create_periods(
+        2026,
+        fgdb_types::VId(1),
+        &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
     book.transition_period(
         "FY2026-P01",
         PeriodTransition::Open,

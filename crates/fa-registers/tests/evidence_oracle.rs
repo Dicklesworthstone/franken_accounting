@@ -410,14 +410,33 @@ fn book() -> Book {
                 day,
                 b"chart",
                 Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
+                &Capability::embedded(principal, &["schema_change"]).unwrap(),
             )
             .await
         })
         .expect("kernel")
         .expect("installs");
     let (_, periods) = runtime
-        .block_on(async { create_periods(&mut db, &ctx, &book, 2026).await })
-        .expect("periods");
+        .block_on(async {
+            create_periods(
+                &mut db,
+                &ctx,
+                &book,
+                2026,
+                fgdb_types::VId(1),
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("periods")
+        .expect("admitted");
     let march = periods
         .iter()
         .find(|p| {

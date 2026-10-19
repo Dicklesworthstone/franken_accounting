@@ -183,14 +183,33 @@ fn setup_with(go_live: Option<(DateDay, &str)>) -> (Kernel, Oracle) {
                 opening_date(),
                 b"chart",
                 Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
+                &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
             )
             .await
         })
         .expect("kernel")
         .expect("installs");
     runtime
-        .block_on(async { create_periods(&mut db, &ctx, &book, 2026).await })
-        .expect("periods");
+        .block_on(async {
+            create_periods(
+                &mut db,
+                &ctx,
+                &book,
+                2026,
+                fgdb_types::VId(1),
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("periods")
+        .expect("admitted");
     let tb_doc = Document {
         book_id,
         kind: 18,
@@ -428,8 +447,26 @@ fn create_year(k: &mut Kernel, oracle: &mut Oracle, fy: i32) {
     let ctx = k.ctx();
     let (db, book) = (&mut k.db, &k.book);
     k.runtime
-        .block_on(async move { create_periods(db, &ctx, book, fy).await })
-        .expect("periods");
+        .block_on(async move {
+            create_periods(
+                db,
+                &ctx,
+                book,
+                fy,
+                fgdb_types::VId(1),
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("periods")
+        .expect("admitted");
     oracle.create_periods(fy);
 }
 

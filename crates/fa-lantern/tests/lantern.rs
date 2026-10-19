@@ -402,14 +402,33 @@ fn harness() -> Harness {
                 first,
                 b"chart",
                 Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
+                &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
             )
             .await
         })
         .expect("kernel")
         .expect("installs");
     runtime
-        .block_on(async { create_periods(&mut db, &ctx, &book, 2026).await })
-        .expect("periods");
+        .block_on(async {
+            create_periods(
+                &mut db,
+                &ctx,
+                &book,
+                2026,
+                fgdb_types::VId(1),
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("periods")
+        .expect("admitted");
     let source = Document {
         book_id,
         kind: 1,
@@ -2517,14 +2536,34 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
                     jan1,
                     b"gen-chart",
                     chart_desc,
+                    &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
                 )
                 .await
             })
             .expect("install_chart")
             .expect("chart admitted");
         let (_, periods) = runtime
-            .block_on(async { create_periods(&mut db, &ctx, &book, corpus.fiscal_year).await })
-            .expect("create_periods");
+            .block_on(async {
+                create_periods(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    corpus.fiscal_year,
+                    fgdb_types::VId(1),
+                    fa_model::Erasable::seal(
+                        &"periods".to_string(),
+                        None,
+                        &book.seal_key,
+                        [1; 32],
+                        [2; 24],
+                    ),
+                    &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"])
+                        .unwrap(),
+                )
+                .await
+            })
+            .expect("create_periods")
+            .expect("admitted");
         for (idx, p) in periods
             .iter()
             .filter(|p| p.kind == fa_time::PeriodKind::Normal)

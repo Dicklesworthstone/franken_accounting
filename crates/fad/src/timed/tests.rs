@@ -98,11 +98,26 @@ async fn fixture(root: &Cx, seed: u8) -> Fixture {
         parent_code: None,
         limit: None,
     });
-    book.install_chart(&cx, &chart, principal, day, b"chart")
-        .await
-        .unwrap()
-        .unwrap();
-    book.create_periods(&cx, 2026).await.unwrap();
+    book.install_chart(
+        &cx,
+        &chart,
+        principal,
+        day,
+        b"chart",
+        &Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    book.create_periods(
+        &cx,
+        2026,
+        principal,
+        &Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let controller = Capability::embedded(principal, &["close"]).unwrap();
     for period in ["FY2026-P03", "FY2026-P04"] {
         book.transition_period(

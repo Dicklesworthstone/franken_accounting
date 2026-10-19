@@ -95,10 +95,22 @@ impl Fixture {
                 limit: None,
             })
             .collect();
-        book.install_chart(&accounts, PREPARER, day(), b"chart")
-            .unwrap()
-            .unwrap();
-        book.create_periods(2026).unwrap();
+        book.install_chart(
+            &accounts,
+            PREPARER,
+            day(),
+            b"chart",
+            &fa_journal::Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        book.create_periods(
+            2026,
+            fgdb_types::VId(1),
+            &Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
         for (index, transition) in [
             PeriodTransition::Open,
             PeriodTransition::SoftClose,

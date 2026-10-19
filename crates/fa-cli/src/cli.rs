@@ -3807,6 +3807,7 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("import") => {
             // A chart comes from a file (or `-`), or from an embedded
             // template (plan §4.3, fa-48m): exactly one of the two.
+            let capability = ctx.capability(args, &["schema_change"])?;
             let template = match args.flag("--template") {
                 None => None,
                 Some(name) => Some(templates::find(name).ok_or_else(|| {
@@ -3846,7 +3847,7 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 Some(k) => k.as_bytes().to_vec(),
                 None => templates::chart_key(&text).into_bytes(),
             };
-            let installed = book.install_chart(&accounts, who, date, &key)??;
+            let installed = book.install_chart(&accounts, who, date, &key, &capability)??;
             out.at_book(&book)?;
             out.event(
                 "chart_installed",
@@ -3998,11 +3999,13 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .require("--fiscal-year", "2026")?
                 .parse()
                 .map_err(|_| usage("--fiscal-year must be a year", "--fiscal-year 2026"))?;
+            let principal = ctx.principal(args);
+            let capability = ctx.capability(args, &["schema_change"])?;
             let mut book = ctx.books.open(args)?;
-            let (seq, periods) = book.create_periods(fy)?;
+            let (seq, periods) = book.create_periods(fy, principal, &capability)??;
             out.at_book(&book)?;
             let codes: Vec<Json> = periods.iter().map(|p| s(&p.code)).collect();
-            out.event("periods_created", vec![("fiscal_year", Json::Int(i128::from(fy))), ("periods", Json::Arr(codes)), ("recorded_at", Json::Int(i128::from(seq.0)))], &format!("created {} periods for FY{fy} (all Future; open them with `fa period open <code>`)", periods.len()));
+            out.event("periods_created", vec![("fiscal_year", Json::Int(i128::from(fy))), ("periods", Json::Arr(codes)), ("recorded_at", Json::Int(i128::from(seq.0)))], &format!("recorded {} periods for FY{fy}; inspect birth states with `fa period list` and open current periods with `fa period open <code>`", periods.len()));
             Ok(())
         }
         Some("list") => {
@@ -9969,6 +9972,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let fields = vec![
                 ("known_at", Json::Int(i128::from(v.known_at.0))),
                 ("periods_checked", Json::Int(v.periods_checked as i128)),
+                ("legacy_periods", Json::Int(v.legacy_periods as i128)),
                 (
                     "transitions_checked",
                     Json::Int(v.transitions_checked as i128),
@@ -9981,8 +9985,11 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "periods_verified",
                     fields,
                     &format!(
-                        "periods verified by refold: {} periods, {} transition(s), state mirrors agree at {}",
-                        v.periods_checked, v.transitions_checked, v.known_at.0
+                        "periods verified by refold: {} periods, {} transition(s), state mirrors agree at {}{}",
+                        v.periods_checked, v.transitions_checked, v.known_at.0,
+                        if v.legacy_periods == 0 { String::new() } else {
+                            format!("; {} legacy period(s) use the calendar baseline without journaled creation provenance", v.legacy_periods)
+                        }
                     ),
                 );
                 Ok(())

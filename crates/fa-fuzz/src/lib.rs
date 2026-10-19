@@ -634,10 +634,22 @@ fn build_golden_seeds() -> GoldenSeeds {
             limit: None,
         },
     ];
-    book.install_chart(&chart, who, date, b"golden-chart")
-        .expect("install chart")
-        .expect("chart admitted");
-    book.create_periods(2026).expect("create periods");
+    book.install_chart(
+        &chart,
+        who,
+        date,
+        b"golden-chart",
+        &Capability::embedded(who, &["schema_change"]).expect("schema cap"),
+    )
+    .expect("install chart")
+    .expect("chart admitted");
+    book.create_periods(
+        2026,
+        who,
+        &Capability::embedded(who, &["schema_change"]).expect("schema cap"),
+    )
+    .expect("create periods")
+    .expect("period creation admitted");
     let close_cap = Capability::embedded(who, &["close"]).expect("close cap");
     book.transition_period(
         "FY2026-P03",

@@ -175,11 +175,26 @@ fn uploaded_agent_evidence_cannot_post_until_a_different_human_reviews_it() {
                 limit: None,
             })
             .collect();
-        book.install_chart(&cx, &chart, principal, date, b"chart")
-            .await
-            .unwrap()
-            .unwrap();
-        book.create_periods(&cx, 2026).await.unwrap();
+        book.install_chart(
+            &cx,
+            &chart,
+            principal,
+            date,
+            b"chart",
+            &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        book.create_periods(
+            &cx,
+            2026,
+            principal,
+            &Capability::embedded(principal, &["schema_change"]).unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let controller = Capability::embedded(principal, &["post", "close"]).unwrap();
         book.transition_period(
             &cx,

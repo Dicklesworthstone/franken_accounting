@@ -1,0 +1,14 @@
+# fa-ehd: durable genesis version establishes the period-birth contract.
+schema_version = 1
+name = "Book"
+owner = "fa-journal::genesis::BookSpec"
+major = 2
+minor = 0
+version_encoding = "u16 little endian; supported values 1 and 2"
+fields = ["version:u16", "book_id:bytes16", "name:string", "base_unit:u32", "calendar_id:string", "adjustment_periods:u8", "calendar_kind:union", "time_zone_policy:trailing<u8>", "entities:trailing<list<legal_entity>>", "opening_date:trailing<i32>"]
+version_1_fields = "identical to version 2; existing immutable bytes are never rewritten"
+version_1_births = "legacy calendar-derived baseline, limited to Period rows preceding the earliest retained CreatePeriods control; this does not prove original creation principal or detect a wholly missing old fiscal year"
+version_2_births = "every Period birth requires a retained SchemaControl with ControlKind=13 and SchemaChange.kind=13; the control and its complete Period projections have the same creating CommitSeq"
+new_writes = "version 2"
+unknown_version = "refuse"
+tracking_bead = "fa-ehd"

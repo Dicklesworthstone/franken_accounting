@@ -410,7 +410,8 @@ fn all_five_exports_verify_independently_at_recorded_checkpoints_after_reopen() 
     );
     assert_eq!(text(&old_export, "state_oid"), text(&old_state, "oid"));
     assert_eq!(old.through_seq, integer(&old_state, "through_seq") as u64);
-    assert_eq!(old.leaf_count, 3);
+    // Chart, fiscal-year birth, period opening, and the first posting.
+    assert_eq!(old.leaf_count, 4);
 
     let new_export = exported(&f.book, &["checkpoint"]);
     let new = Checkpoint::decode(&bytes(&new_export)).expect("independent new checkpoint decode");
@@ -418,7 +419,7 @@ fn all_five_exports_verify_independently_at_recorded_checkpoints_after_reopen() 
     assert_eq!(new.through_seq, integer(&new_state, "through_seq") as u64);
     assert_eq!(new.book_id, BOOK_ID.0);
     assert_eq!(new.branch_id, Id128::TRUNK.0);
-    assert_eq!(new.leaf_count, 4);
+    assert_eq!(new.leaf_count, 5);
     assert!(new.through_seq < integer(&later, "recorded_at") as u64);
     assert_eq!(
         bytes(&exported(&f.book, &["checkpoint", "--state", "latest"])),

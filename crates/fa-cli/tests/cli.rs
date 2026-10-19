@@ -10249,7 +10249,14 @@ fn verify_periods_exits_eight_on_planted_period_state_mirror_drift() -> std::io:
     )
     .unwrap();
     keys.save(&book.join("book.keys")).unwrap();
-    handle.create_periods(2026).unwrap();
+    handle
+        .create_periods(
+            2026,
+            fgdb_types::VId(1),
+            &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
     drop(handle);
 
     let (code, out, err) = fa(

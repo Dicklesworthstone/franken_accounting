@@ -420,10 +420,28 @@ mod tests {
             })
             .collect();
             runtime
-                .block_on(book.install_chart(&cx, &accounts, PRINCIPAL, day(1), b"roll-chart"))
+                .block_on(book.install_chart(
+                    &cx,
+                    &accounts,
+                    PRINCIPAL,
+                    day(1),
+                    b"roll-chart",
+                    &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+                ))
                 .unwrap()
                 .unwrap();
-            runtime.block_on(book.create_periods(&cx, 2026)).unwrap();
+            runtime
+                .block_on(
+                    book.create_periods(
+                        &cx,
+                        2026,
+                        fgdb_types::VId(1),
+                        &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"])
+                            .unwrap(),
+                    ),
+                )
+                .unwrap()
+                .unwrap();
             runtime
                 .block_on(book.transition_period(
                     &cx,

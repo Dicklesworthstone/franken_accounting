@@ -78,10 +78,20 @@ impl Harness {
         })
         .collect();
         runtime
-            .block_on(book.install_chart(&cx, &accounts, PRINCIPAL, day(1), b"gl-chart"))
+            .block_on(book.install_chart(
+                &cx,
+                &accounts,
+                PRINCIPAL,
+                day(1),
+                b"gl-chart",
+                &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+            ))
             .unwrap()
             .unwrap();
-        runtime.block_on(book.create_periods(&cx, 2026)).unwrap();
+        runtime
+            .block_on(book.create_periods(&cx, 2026, PRINCIPAL, &cap(&["schema_change"])))
+            .unwrap()
+            .unwrap();
         runtime
             .block_on(book.transition_period(
                 &cx,

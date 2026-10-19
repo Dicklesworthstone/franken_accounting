@@ -78,10 +78,6 @@ pub fn entry_mirrors(entry: &Entry) -> Result<Vec<(PropertyKeyId, CanonicalScala
             property::FA_DIGEST,
             bytes("_fa_digest", entry.entry_digest.to_vec())?,
         ),
-        (
-            property::FA_EFFECTIVE_DAY,
-            CanonicalScalar::Int(i64::from(p.effective_date.0)),
-        ),
         (property::BOOK_ID, bytes("book_id", p.book_id.0.to_vec())?),
         (property::CLASS, CanonicalScalar::Int(i64::from(p.class.0))),
         (
@@ -93,6 +89,20 @@ pub fn entry_mirrors(entry: &Entry) -> Result<Vec<(PropertyKeyId, CanonicalScala
             bytes("proposal_digest", entry.proposal_digest.to_vec())?,
         ),
     ];
+    // PeriodCreation is a new Book-scoped control, with no posting date.
+    // The v1 container's reserved zero scalar is not a temporal mirror.
+    if !matches!(
+        p.origin,
+        EntryOrigin::Control {
+            control_kind: crate::ControlKind::PERIOD_CREATION,
+            ..
+        }
+    ) {
+        props.push((
+            property::FA_EFFECTIVE_DAY,
+            CanonicalScalar::Int(i64::from(p.effective_date.0)),
+        ));
+    }
     props.sort_by_key(|(k, _)| k.0);
     Ok(props)
 }

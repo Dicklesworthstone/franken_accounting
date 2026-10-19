@@ -1437,14 +1437,34 @@ SAP-501,2025-12-28,2025-12-28T20:00:00Z,0000800000,-1900.25,Year-end AR billing,
                     opening_date,
                     b"chart",
                     chart_desc,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
             .expect("chart")
             .expect("admitted");
         runtime
-            .block_on(async { create_periods(&mut db, &ctx, &book, 2026).await })
-            .expect("periods");
+            .block_on(async {
+                create_periods(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    2026,
+                    fgdb_types::VId(1),
+                    fa_model::Erasable::seal(
+                        &"periods".to_string(),
+                        None,
+                        &book.seal_key,
+                        [1; 32],
+                        [2; 24],
+                    ),
+                    &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"])
+                        .unwrap(),
+                )
+                .await
+            })
+            .expect("periods")
+            .expect("admitted");
 
         // Lock FY2026-OPEN so Migration entries are admissible there.
         for (i, t) in [

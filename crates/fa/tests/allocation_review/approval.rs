@@ -410,10 +410,22 @@ fn synchronous_book_completes_the_same_review_approval_and_native_plan_workflow(
             limit: None,
         })
         .collect::<Vec<_>>();
-    book.install_chart(&chart, AUTHOR, day("2026-03-01"), b"chart")
-        .unwrap()
-        .unwrap();
-    book.create_periods(2026).unwrap();
+    book.install_chart(
+        &chart,
+        AUTHOR,
+        day("2026-03-01"),
+        b"chart",
+        &fa_journal::Capability::embedded(AUTHOR, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    book.create_periods(
+        2026,
+        AUTHOR,
+        &Capability::embedded(AUTHOR, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
     book.transition_period(
         "FY2026-P03",
         PeriodTransition::Open,

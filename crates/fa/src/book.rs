@@ -724,10 +724,11 @@ impl Book {
         principal: VId,
         effective_date: DateDay,
         idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
     ) -> Outcome<ChartInstalled> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.install_chart(
-            &purposes, accounts, principal, effective_date, idempotency_key,
+            &purposes, accounts, principal, effective_date, idempotency_key, capability,
         )))
     }
 
@@ -920,13 +921,15 @@ impl Book {
         with_store!(&self.store, core => core.read_event(&self.purposes(), vid, known_at))
     }
 
-    /// Create one fiscal year's periods in state `Future`.
+    /// Journal one fiscal year's period births under schema-change authority.
     pub fn create_periods(
         &mut self,
         fiscal_year: i32,
-    ) -> Result<(CommitSeq, Vec<PeriodDef>), BookError> {
+        principal: VId,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Vec<PeriodDef>)> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => self.runtime.block_on(core.create_periods(&purposes, fiscal_year)))
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_periods(&purposes, fiscal_year, principal, capability)))
     }
 
     /// Move a period along the state machine under `capability` (plan §14:
@@ -2569,9 +2572,11 @@ impl Book {
         with_store!(&self.store, core => core.verify_schedules(&self.purposes()))
     }
 
-    /// Refold every `Period` vertex's state from its birth state and its
-    /// journaled `PeriodControl` transitions and compare it with the stored
-    /// `Period.state` mirror (`fa verify periods`, plan §7.3, FA-INV-02).
+    /// Compare period projections with retained birth declarations and
+    /// transitions (`fa verify periods`, plan §7.3, FA-INV-02).
+    /// Complete journal integrity additionally requires
+    /// [`fa_journal::verify_entry_history`]; this projection check alone cannot
+    /// discover a year whose control and all period vertices were retired.
     pub fn verify_periods(
         &self,
         known_at: Option<CommitSeq>,

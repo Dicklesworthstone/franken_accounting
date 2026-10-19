@@ -119,11 +119,27 @@ fn lab_lifecycle(seed: u64) -> (Fold, [u8; 32], Vec<String>) {
         .expect("create under the caller's lab");
         let principal = VId(1);
         let day = DateDay::from_ymd(2026, 3, 15).unwrap();
-        book.install_chart(&cx, &chart(usd), principal, day, b"chart")
+        book.install_chart(
+            &cx,
+            &chart(usd),
+            principal,
+            day,
+            b"chart",
+            &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let (_, periods) = book
+            .create_periods(
+                &cx,
+                2026,
+                VId(1),
+                &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+            )
             .await
             .unwrap()
             .unwrap();
-        let (_, periods) = book.create_periods(&cx, 2026).await.unwrap();
         let march = periods
             .iter()
             .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
@@ -383,11 +399,27 @@ async fn prepared_fixture(root: &Cx, seed: u64) -> PreparedFixture {
     .unwrap();
     let principal = VId(1);
     let day = DateDay::from_ymd(2026, 3, 15).unwrap();
-    book.install_chart(&cx, &chart(usd), principal, day, b"chart")
+    book.install_chart(
+        &cx,
+        &chart(usd),
+        principal,
+        day,
+        b"chart",
+        &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (_, periods) = book
+        .create_periods(
+            &cx,
+            2026,
+            VId(1),
+            &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+        )
         .await
         .unwrap()
         .unwrap();
-    let (_, periods) = book.create_periods(&cx, 2026).await.unwrap();
     let period = |date| {
         periods
             .iter()
@@ -1577,7 +1609,13 @@ fn async_book_honors_caller_cancellation_before_reads_and_writes() {
         // path correctly refuses the cancelled caller above.
         assert_eq!(book.db.frontier().unwrap(), head);
         assert!(matches!(
-            book.create_periods(&cx, 2026).await,
+            book.create_periods(
+                &cx,
+                2026,
+                VId(1),
+                &Capability::embedded(VId(1), &["schema_change"]).unwrap()
+            )
+            .await,
             Err(BookError::Context(_))
         ));
         assert!(matches!(
@@ -2044,10 +2082,23 @@ fn scoped_reads_refuse_before_construction_and_a_revoked_token_never_reads_histo
     .unwrap();
     let principal = VId(48);
     let day = DateDay::from_ymd(2026, 3, 15).unwrap();
-    book.install_chart(&chart(usd), principal, day, b"chart")
+    book.install_chart(
+        &chart(usd),
+        principal,
+        day,
+        b"chart",
+        &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let (_, periods) = book
+        .create_periods(
+            2026,
+            VId(1),
+            &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+        )
         .unwrap()
         .unwrap();
-    let (_, periods) = book.create_periods(2026).unwrap();
     let march = periods
         .iter()
         .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
@@ -2432,10 +2483,22 @@ fn certified_fixture() -> (Book, fa_money::UnitId, DateDay, VId) {
     .unwrap();
     let principal = VId(1);
     let day = DateDay::from_ymd(2026, 3, 15).unwrap();
-    book.install_chart(&chart(usd), principal, day, b"cert-chart")
-        .unwrap()
-        .unwrap();
-    book.create_periods(2026).unwrap();
+    book.install_chart(
+        &chart(usd),
+        principal,
+        day,
+        b"cert-chart",
+        &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    book.create_periods(
+        2026,
+        VId(1),
+        &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
     for (code, date) in [
         ("FY2026-P03", day),
         ("FY2026-P04", DateDay::from_ymd(2026, 4, 1).unwrap()),
@@ -2918,9 +2981,15 @@ fn report_status_respects_account_filters_and_the_complete_explanation_fold() {
             limit: None,
         },
     ];
-    book.install_chart(&accounts, VId(1), day, b"additional-report-accounts")
-        .unwrap()
-        .unwrap();
+    book.install_chart(
+        &accounts,
+        VId(1),
+        day,
+        b"additional-report-accounts",
+        &fa_journal::Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
     for result in [&explanation, &filtered, &all] {
         assert!(
             matches!(
@@ -3246,7 +3315,13 @@ fn certificate_status_detects_period_catalog_changes_without_a_new_entry() {
     let original_at = certified.certificate.known_at;
     // Period creation is supported and commits metadata without an Entry.
     // An as-of report displays every discovered period through its cutoff.
-    book.create_periods(2025).unwrap();
+    book.create_periods(
+        2025,
+        VId(1),
+        &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
     let after = book.head().unwrap();
     assert!(after > original_at);
     let current = book
@@ -3423,6 +3498,7 @@ fn historical_inline_certificate_retries_do_not_reselect_placement() {
             VId(1),
             day,
             format!("legacy-inline-chart-{n}").as_bytes(),
+            &fa_journal::Capability::embedded(VId(1), &["schema_change"]).unwrap(),
         )
         .unwrap()
         .unwrap();
@@ -3926,11 +4002,29 @@ fn certificate_migration_fixture(
     )
     .unwrap();
     let day = DateDay::from_ymd(2026, 1, 1).unwrap();
-    book.install_chart(&chart(usd), VId(1), day, b"migration-chart")
-        .unwrap()
-        .unwrap();
-    book.create_periods(2025).unwrap();
-    book.create_periods(2026).unwrap();
+    book.install_chart(
+        &chart(usd),
+        VId(1),
+        day,
+        b"migration-chart",
+        &fa_journal::Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    book.create_periods(
+        2025,
+        VId(1),
+        &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    book.create_periods(
+        2026,
+        VId(1),
+        &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
     let document = fa_journal::Document {
         book_id: book.context().book_id,
         kind: 18,
@@ -4389,10 +4483,23 @@ fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
     let genesis = book.head().unwrap();
     let principal = VId(1);
     let day = DateDay::from_ymd(2026, 3, 15).unwrap();
-    book.install_chart(&chart(usd), principal, day, b"chart")
-        .expect("kernel")
-        .expect("installs");
-    let (_, periods) = book.create_periods(2026).expect("periods");
+    book.install_chart(
+        &chart(usd),
+        principal,
+        day,
+        b"chart",
+        &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .expect("kernel")
+    .expect("installs");
+    let (_, periods) = book
+        .create_periods(
+            2026,
+            VId(1),
+            &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+        )
+        .expect("periods")
+        .expect("admitted");
     let march = periods
         .iter()
         .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
@@ -4610,10 +4717,23 @@ fn memory_book_creates_installs_opens_posts_folds_and_refuses() {
     .expect("create");
     let principal = VId(1);
     let day = DateDay::from_ymd(2026, 3, 15).unwrap();
-    book.install_chart(&chart(usd), principal, day, b"chart")
-        .expect("kernel")
-        .expect("installs");
-    let (_, periods) = book.create_periods(2026).expect("periods");
+    book.install_chart(
+        &chart(usd),
+        principal,
+        day,
+        b"chart",
+        &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .expect("kernel")
+    .expect("installs");
+    let (_, periods) = book
+        .create_periods(
+            2026,
+            VId(1),
+            &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+        )
+        .expect("periods")
+        .expect("admitted");
     let march = periods
         .iter()
         .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
@@ -4693,10 +4813,23 @@ fn attestations_through_the_facade_promote_an_upload_and_stand_in_for_a_document
     .expect("create");
     let (preparer, reviewer) = (VId(1), VId(2));
     let day = DateDay::from_ymd(2026, 3, 15).unwrap();
-    book.install_chart(&chart(usd), preparer, day, b"chart")
-        .expect("kernel")
-        .expect("installs");
-    let (_, periods) = book.create_periods(2026).expect("periods");
+    book.install_chart(
+        &chart(usd),
+        preparer,
+        day,
+        b"chart",
+        &fa_journal::Capability::embedded(preparer, &["schema_change"]).unwrap(),
+    )
+    .expect("kernel")
+    .expect("installs");
+    let (_, periods) = book
+        .create_periods(
+            2026,
+            VId(1),
+            &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+        )
+        .expect("periods")
+        .expect("admitted");
     let march = periods
         .iter()
         .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
@@ -4812,7 +4945,14 @@ fn explain_balance_resolves_the_account_at_the_requested_sequence() {
     let principal = VId(1);
     let day = DateDay::from_ymd(2026, 3, 15).unwrap();
     // Periods first: as known at `before_chart` no account exists.
-    let (before_chart, periods) = book.create_periods(2026).expect("periods");
+    let (before_chart, periods) = book
+        .create_periods(
+            2026,
+            VId(1),
+            &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+        )
+        .expect("periods")
+        .expect("admitted");
     let march = periods
         .iter()
         .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
@@ -4820,7 +4960,13 @@ fn explain_balance_resolves_the_account_at_the_requested_sequence() {
         .code
         .clone();
     let installed = book
-        .install_chart(&chart(usd), principal, day, b"chart")
+        .install_chart(
+            &chart(usd),
+            principal,
+            day,
+            b"chart",
+            &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+        )
         .expect("kernel")
         .expect("installs");
     book.transition_period(
@@ -5104,10 +5250,23 @@ fn a_bundle_inlines_a_governed_document_only_for_a_capability_that_reveals_it() 
     .expect("create");
     let (counsel, reader) = (VId(1), VId(2));
     let day = DateDay::from_ymd(2026, 3, 15).unwrap();
-    book.install_chart(&chart(usd), counsel, day, b"chart")
-        .expect("kernel")
-        .expect("installs");
-    let (_, periods) = book.create_periods(2026).expect("periods");
+    book.install_chart(
+        &chart(usd),
+        counsel,
+        day,
+        b"chart",
+        &fa_journal::Capability::embedded(counsel, &["schema_change"]).unwrap(),
+    )
+    .expect("kernel")
+    .expect("installs");
+    let (_, periods) = book
+        .create_periods(
+            2026,
+            VId(1),
+            &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+        )
+        .expect("periods")
+        .expect("admitted");
     let march = periods
         .iter()
         .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
@@ -5287,10 +5446,23 @@ fn directory_book_persists_across_reopen() {
         let mut book =
             Book::create_dir(&dir, keys.clone(), spec.clone(), Entropy::deterministic(7))
                 .expect("create_dir");
-        book.install_chart(&chart(usd), principal, day, b"chart")
-            .expect("kernel")
-            .expect("installs");
-        let (_, periods) = book.create_periods(2026).expect("periods");
+        book.install_chart(
+            &chart(usd),
+            principal,
+            day,
+            b"chart",
+            &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+        )
+        .expect("kernel")
+        .expect("installs");
+        let (_, periods) = book
+            .create_periods(
+                2026,
+                VId(1),
+                &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+            )
+            .expect("periods")
+            .expect("admitted");
         march = periods
             .iter()
             .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
@@ -5644,10 +5816,17 @@ fn a_dotdot_book_spelling_stops_at_the_durable_directory_preflight() {
 
         let principal = VId(1);
         let day = DateDay::from_ymd(2026, 3, 15).unwrap();
-        book.install_chart(&cx, &chart(usd), principal, day, b"chart")
-            .await
-            .unwrap()
-            .unwrap();
+        book.install_chart(
+            &cx,
+            &chart(usd),
+            principal,
+            day,
+            b"chart",
+            &fa_journal::Capability::embedded(principal, &["schema_change"]).unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let inline_bound = fa_registry::evidence_policy::EvidencePolicy::embedded()
             .unwrap()
             .max_document_bytes;

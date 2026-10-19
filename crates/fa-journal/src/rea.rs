@@ -2200,6 +2200,16 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
                 "a schema control belongs to another book or branch",
             ));
         }
+        if matches!(
+            entry.proposal.origin,
+            EntryOrigin::Control {
+                control_kind: ControlKind::PERIOD_CREATION,
+                ..
+            }
+        ) {
+            crate::period_creation::declared_creation(row, book, &book_spec)?;
+            continue;
+        }
         if !matches!(
             entry.proposal.origin,
             EntryOrigin::Control {

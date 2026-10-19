@@ -1259,6 +1259,7 @@ mod tests {
                 (10, "capability_issuance"),
                 (11, "draft_transition"),
                 (12, "scenario_transition"),
+                (13, "period_creation"),
             ]
         );
         assert_eq!(

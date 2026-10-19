@@ -246,6 +246,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         principal: VId,
         effective_date: DateDay,
         idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
     ) -> Outcome<ChartInstalled> {
         let description =
             self.seal_text(cx, &format!("chart install: {} accounts", accounts.len()))?;
@@ -258,6 +259,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             effective_date,
             idempotency_key,
             description,
+            capability,
         )
         .await?)
     }
@@ -586,9 +588,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         &mut self,
         cx: &PurposeContexts,
         fiscal_year: i32,
-    ) -> Result<(CommitSeq, Vec<PeriodDef>), BookError> {
+        principal: VId,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Vec<PeriodDef>)> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        Ok(fa_journal::create_periods(&mut self.db, cx, &self.context, fiscal_year).await?)
+        let description = self.seal_text(cx, &format!("create fiscal year {fiscal_year}"))?;
+        Ok(fa_journal::create_periods(
+            &mut self.db,
+            cx,
+            &self.context,
+            fiscal_year,
+            principal,
+            description,
+            capability,
+        )
+        .await?)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2084,6 +2098,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, book| Ok(fa_journal::verify_schedules(db, book)?))
     }
 
+    /// Compare period projections with retained declarations and transitions.
+    /// This does not load or validate complete native Entry history; use
+    /// [`fa_journal::verify_entry_history`] for that independent integrity check.
     pub fn verify_periods(
         &self,
         cx: &PurposeContexts,

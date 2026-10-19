@@ -86,6 +86,7 @@ impl Harness {
                 DateDay::from_ymd(2026, 3, 1).unwrap(),
                 b"integrity-chart",
                 description,
+                &fa_journal::Capability::embedded(VId(1), &["schema_change"]).unwrap(),
             ))
             .unwrap()
             .unwrap();

@@ -1381,8 +1381,8 @@ fields = ["schedules_checked:int", "executed:int", "cancelled:int", "drift:[stri
 [[event]]
 name = "periods_verified"
 book = true
-doc = "Every Period vertex's state and calendar mirrors agree with the journal fold from birth through its PeriodControl transitions (plan §7.3, FA-INV-02 lifecycle-by-transition): periods_checked counts Period vertices examined; transitions_checked counts PeriodControl entries examined; periods lists each period's refolded vs stored state; drift lists any corrupt or mismatched mirrors."
-fields = ["known_at:seq", "periods_checked:int", "transitions_checked:int", "periods:[period_check]", "drift:[string]"]
+doc = "Every Period vertex's state and calendar mirrors agree with its birth baseline and PeriodControl transitions (plan §7.3, FA-INV-02 lifecycle-by-transition). Version-2 books require independently retained birth declarations, including detection of wholly missing declared years. periods_checked counts Period vertices; optional legacy_periods counts version-1 periods checked against the original calendar-derived baseline without journaled creator provenance or whole-year loss detection; transitions_checked counts PeriodControl entries. periods lists refolded vs stored state; drift lists discrepancies."
+fields = ["known_at:seq", "periods_checked:int", "legacy_periods:int?", "transitions_checked:int", "periods:[period_check]", "drift:[string]"]
 
 [[event]]
 name = "replay_verified"
@@ -3107,7 +3107,7 @@ subcommands = ["create"]
 positionals = []
 flags = ["--fiscal-year"]
 required = ["--fiscal-year"]
-dont = ["Don't post before opening a period: a new fiscal year's periods are all Future."]
+dont = ["Open current periods before posting. Periods before the book's opening date are born Historical or Locked and accept only Migration; inspect their states with period_status."]
 mistakes = ["Passing `fiscal_year` as a period code (`FY2026`); it is the year, 2026."]
 
 [[mcp.tool]]

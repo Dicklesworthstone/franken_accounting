@@ -1196,13 +1196,18 @@ pub struct PeriodCheck {
     pub green: bool,
 }
 
-/// Complete comparison of every `Period` vertex's state and mirrors against its
-/// genesis birth rule and its journaled `PeriodControl` transition stream
-/// (`fa verify periods`, plan §7.3, FA-INV-02 `lifecycle-by-transition`).
+/// Comparison of retained period declarations and transitions with `Period`
+/// states and mirrors (`fa verify periods`, plan §7.3, FA-INV-02
+/// `lifecycle-by-transition`). Complete journal integrity is a separate check
+/// by [`crate::verify_entry_history`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeriodVerification {
     pub known_at: CommitSeq,
     pub periods_checked: usize,
+    /// Version-1 periods checked against the old calendar-derived baseline.
+    /// They have no recorded creation principal or independently enumerable
+    /// birth declarations; a wholly missing legacy year cannot be discovered.
+    pub legacy_periods: usize,
     pub transitions_checked: usize,
     pub periods: Vec<PeriodCheck>,
     pub drift: Vec<String>,
@@ -1232,10 +1237,19 @@ fn is_legal_step(from: PeriodState, to: PeriodState) -> bool {
     .any(|t| transition(from, t) == Ok(to))
 }
 
-/// Refold every `Period` vertex's state from its birth state (`BookSpec::birth`)
-/// and its journaled `PeriodControl` transition stream at `known_at` (or HEAD
+/// Refold every `Period` vertex's state from its retained birth declaration
+/// and its retained `PeriodControl` transition stream at `known_at` (or HEAD
 /// when `None`), comparing it against the stored `Period` mirrors and `IN_BOOK` /
 /// `IN_PERIOD` topology (plan §7.3, FA-INV-02 `lifecycle-by-transition`).
+/// This validates declaration projections. Complete journal integrity also
+/// requires [`crate::verify_entry_history`] at the same prefix: retiring both
+/// a fiscal year's control and all its projections can hide that year from
+/// this visible-row comparison.
+///
+/// Version-1 books retain their original calendar-derived baseline for rows
+/// preceding their earliest retained CreatePeriods control. This legacy
+/// check cannot prove creation provenance or discover a wholly missing old
+/// fiscal year; `legacy_periods` makes that narrower coverage explicit.
 pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1244,7 +1258,11 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
     use std::collections::{BTreeMap, BTreeSet};
 
     let known_at = known_at.unwrap_or(db.frontier()?);
-    let rows = db.vertices_at(known_at)?;
+    let rows: Vec<_> = db
+        .vertices_at(known_at)?
+        .into_iter()
+        .map(|row| row.seen_at(known_at))
+        .collect();
     let edges = db.edges_at(known_at)?;
     let bvid = crate::rows::book_root();
     let root_row = rows
@@ -1258,6 +1276,7 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
         })?;
     let spec_bytes = crate::rows::bytes(root_row, property::FA_PAYLOAD, "book._fa_payload")?;
     let spec = crate::genesis::BookSpec::decode(&spec_bytes)?;
+    let legacy_genesis = spec_bytes.starts_with(&1_u16.to_le_bytes());
     let classes =
         fa_registry::EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix = fa_registry::Admissibility::embedded(&classes)
@@ -1285,6 +1304,21 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
     }
 
     let mut drift: Vec<String> = Vec::new();
+    let births = match crate::period_creation::births_from_rows(&rows, book) {
+        Ok(births) => births,
+        Err(error) => {
+            drift.push(error.to_string());
+            BTreeMap::new()
+        }
+    };
+    for birth in births.values() {
+        if !in_book_periods.contains(&birth.control_entry) {
+            drift.push(format!(
+                "period creation {:032x} is missing its IN_BOOK edge",
+                birth.control_entry.0
+            ));
+        }
+    }
     let mut transitions_checked: usize = 0;
     let mut transitions_by_period: BTreeMap<
         String,
@@ -1399,7 +1433,23 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
     }
 
     let mut period_rows: BTreeMap<String, &fgdb::VertexRow> = BTreeMap::new();
-    let mut fiscal_years: BTreeSet<i32> = BTreeSet::new();
+    let journal_cutover = births.values().map(|birth| birth.recorded_at).min();
+    // A state transition creates a new row version. Membership in the
+    // pre-control snapshot, rather than that version's created_at, decides
+    // whether an old Period belongs to the version-1 baseline.
+    let legacy_members: BTreeSet<_> = if legacy_genesis {
+        let basis =
+            journal_cutover.map_or(known_at, |cutover| CommitSeq(cutover.0.saturating_sub(1)));
+        db.vertices_at(basis)?
+            .into_iter()
+            .filter(|row| row.labels.contains(&label::PERIOD))
+            .map(|row| row.vid)
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    let is_legacy_row = |row: &fgdb::VertexRow| legacy_members.contains(&row.vid);
+    let mut legacy_years: BTreeSet<i32> = BTreeSet::new();
     for row in &rows {
         if !row.labels.contains(&label::PERIOD) {
             continue;
@@ -1414,37 +1464,44 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
         if period_rows.insert(code.clone(), row).is_some() {
             drift.push(format!("period `{code}` has multiple Period vertices"));
         }
-        if let Ok(fy) = crate::rows::int(row, property::FISCAL_YEAR, "period.fiscal_year")
-            && let Ok(fy32) = i32::try_from(fy)
+        if is_legacy_row(row)
+            && !births.contains_key(&code)
+            && let Ok(year) = crate::rows::int(row, property::FISCAL_YEAR, "period.fiscal_year")
+            && let Ok(year) = i32::try_from(year)
         {
-            fiscal_years.insert(fy32);
+            legacy_years.insert(year);
         }
     }
 
-    let mut expected_defs: BTreeMap<String, fa_time::PeriodDef> = BTreeMap::new();
-    for fy in &fiscal_years {
-        match book.calendar.periods_for_year(*fy) {
-            Ok(defs) => {
-                for def in defs {
-                    if !period_rows.contains_key(&def.code) {
+    let mut legacy_definitions = BTreeMap::new();
+    for year in legacy_years {
+        match crate::period_creation::PeriodCreation::from_spec(&spec, year) {
+            Ok(creation) => {
+                for (definition, state) in creation.periods {
+                    if !period_rows.contains_key(&definition.code) {
                         drift.push(format!(
-                            "period `{}` of fiscal year {fy} is missing from stored Period vertices",
-                            def.code
+                            "legacy period `{}` of fiscal year {year} is missing from stored Period vertices",
+                            definition.code
                         ));
                     }
-                    expected_defs.insert(def.code.clone(), def);
+                    legacy_definitions.insert(definition.code.clone(), (definition, state));
                 }
             }
-            Err(e) => {
-                drift.push(format!(
-                    "fiscal year {fy} is invalid for calendar `{}`: {e}",
-                    book.calendar.id
-                ));
-            }
+            Err(error) => drift.push(format!("legacy fiscal year {year}: {error}")),
+        }
+    }
+
+    for (code, birth) in &births {
+        if !period_rows.contains_key(code) {
+            drift.push(format!(
+                "period `{code}` declared at sequence {} is missing from stored Period vertices",
+                birth.recorded_at.0
+            ));
         }
     }
 
     let mut checks: Vec<PeriodCheck> = Vec::with_capacity(period_rows.len());
+    let mut legacy_periods = 0;
     for (code, row) in &period_rows {
         let mut period_green = true;
         let mut note_drift = |msg: String| {
@@ -1456,6 +1513,11 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
             note_drift(format!(
                 "period `{code}` ({:032x}) has unexpected labels",
                 row.vid.0
+            ));
+        }
+        if row.retired_at.is_some() {
+            note_drift(format!(
+                "period `{code}` is retired; period projections are retained"
             ));
         }
         let expected_pvid = period_vid(&book.calendar.id, code);
@@ -1513,12 +1575,54 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
             born_state,
             expected_start,
             expected_end,
-        ) = if let Some(def) = expected_defs.get(code) {
-            let (kind, born) = spec.birth(def, pre_opening);
-            (def.fiscal_year, def.ordinal, kind, born, def.start, def.end)
+        ) = if let Some(birth) = births.get(code) {
+            let def = &birth.definition;
+            let original = db.vertex_at(expected_pvid, birth.recorded_at)?;
+            let existed_before = birth
+                .recorded_at
+                .0
+                .checked_sub(1)
+                .map(|sequence| db.vertex_at(expected_pvid, CommitSeq(sequence)))
+                .transpose()?
+                .flatten()
+                .is_some();
+            if existed_before
+                || original.as_ref().is_none_or(|original| {
+                    original.created_at != birth.recorded_at
+                        || original.birth_ordinal != row.birth_ordinal
+                        || original.labels.as_slice() != [label::PERIOD]
+                        || crate::rows::prop(original, property::STATE)
+                            != Some(&CanonicalScalar::Int(i64::from(birth.born_state.tag())))
+                })
+            {
+                note_drift(format!(
+                    "period `{code}` has no matching native projection birth at declaration sequence {}",
+                    birth.recorded_at.0
+                ));
+            }
+            (
+                def.fiscal_year,
+                def.ordinal,
+                def.kind,
+                birth.born_state,
+                def.start,
+                def.end,
+            )
+        } else if is_legacy_row(row)
+            && let Some((def, state)) = legacy_definitions.get(code)
+        {
+            legacy_periods += 1;
+            (
+                def.fiscal_year,
+                def.ordinal,
+                def.kind,
+                *state,
+                def.start,
+                def.end,
+            )
         } else {
             note_drift(format!(
-                "period `{code}` does not belong to any created fiscal year of calendar `{}`",
+                "period `{code}` has no journaled birth declaration in calendar `{}`",
                 book.calendar.id
             ));
             (
@@ -1572,6 +1676,15 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
 
         let mut refolded_state = born_state;
         for (seq, evid, from_state, to_state) in &transitions {
+            if births
+                .get(code)
+                .is_some_and(|birth| *seq <= birth.recorded_at)
+            {
+                note_drift(format!(
+                    "period `{code}` transition {:032x} does not follow its birth declaration",
+                    evid.0
+                ));
+            }
             if *from_state != refolded_state {
                 note_drift(format!(
                     "period `{code}` transition {:032x} at sequence {} claims from={}, but refolded state was {}",
@@ -1640,6 +1753,7 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
     Ok(PeriodVerification {
         known_at,
         periods_checked: checks.len(),
+        legacy_periods,
         transitions_checked,
         periods: checks,
         drift,

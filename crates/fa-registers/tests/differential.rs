@@ -171,7 +171,22 @@ fn correction_period_order_and_reasons_match_independent_oracle_across_seeds() {
         let ctx = kernel.ctx();
         kernel
             .runtime
-            .block_on(create_periods(&mut kernel.db, &ctx, &kernel.book, 2027))
+            .block_on(create_periods(
+                &mut kernel.db,
+                &ctx,
+                &kernel.book,
+                2027,
+                fgdb_types::VId(1),
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &kernel.book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            ))
+            .unwrap()
             .unwrap();
         oracle.create_periods(2027);
         open_period(&mut kernel, &mut oracle, "FY2027-P01", 8);
@@ -1147,14 +1162,33 @@ fn setup_entities(rows: &[ChartRow], entities: &[&str]) -> (Kernel, Oracle, Vec<
                 day,
                 b"chart",
                 Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
+                &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
             )
             .await
         })
         .expect("kernel")
         .expect("installs");
     let (_, periods) = runtime
-        .block_on(async { create_periods(&mut db, &ctx, &book, 2026).await })
-        .expect("periods");
+        .block_on(async {
+            create_periods(
+                &mut db,
+                &ctx,
+                &book,
+                2026,
+                fgdb_types::VId(1),
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("periods")
+        .expect("admitted");
     let normal: Vec<String> = periods
         .iter()
         .filter(|p| p.kind == PeriodKind::Normal)
@@ -2698,8 +2732,26 @@ fn create_year(k: &mut Kernel, oracle: &mut Oracle, year: i32) -> CommitSeq {
     let ctx = k.ctx();
     let (seq, _) = k
         .runtime
-        .block_on(async { create_periods(&mut k.db, &ctx, &k.book, year).await })
-        .expect("create real period definitions");
+        .block_on(async {
+            create_periods(
+                &mut k.db,
+                &ctx,
+                &k.book,
+                year,
+                fgdb_types::VId(1),
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &k.book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("create real period definitions")
+        .expect("admitted");
     oracle.create_periods(year);
     seq
 }
@@ -3759,6 +3811,7 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
                     day,
                     b"6200",
                     description,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
@@ -5945,6 +5998,7 @@ fn multi_unit_holds_post_partially_per_unit_and_expire_in_every_unit() {
                     day,
                     b"eur",
                     description,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
                 )
                 .await
             })
