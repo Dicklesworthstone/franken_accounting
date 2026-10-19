@@ -717,6 +717,49 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         "freshness refuses recipient currency substitution: {output}"
     );
     assert_eq!(structured_error(&output)["refusal_id"], json!("FA-REF-150"));
+    // The whole-book aging portfolio is reachable over MCP, and it replays
+    // only against the independently retained request its receipt prints.
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_proof_gl",
+        json!({"view": "aging", "all_posting": true, "reconcile": true, "as_of": "2026-03-31", "certify": true}),
+    );
+    assert!(!error, "{output}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(certified.as_array().unwrap().len(), 2, "{output}");
+    assert_eq!(certified[0]["scope"], json!("all-posting"));
+    assert_eq!(certified[0]["complete"], json!(true));
+    let portfolio = format!("C:{}", certified[1]["oid"].as_str().unwrap());
+    let expect = certified[1]["replay_command"]
+        .as_str()
+        .unwrap()
+        .split_once(" --expect '")
+        .unwrap()
+        .1
+        .split_once('\'')
+        .unwrap()
+        .0
+        .to_string();
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_replay",
+        json!({"certificate": portfolio, "expect": expect}),
+    );
+    assert!(!error, "{output}");
+    let replayed: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    let receipt = replayed.as_array().unwrap().last().unwrap();
+    assert_eq!(receipt["family"], json!("aging-portfolio"), "{output}");
+    assert_eq!(receipt["output_digest"], certified[1]["output_digest"]);
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_replay",
+        json!({"certificate": portfolio}),
+    );
+    assert!(
+        error,
+        "a portfolio never replays without its request: {output}"
+    );
+    assert!(output.contains("--expect"), "{output}");
     assert_eq!(producer.finish(), 0);
 }
 
