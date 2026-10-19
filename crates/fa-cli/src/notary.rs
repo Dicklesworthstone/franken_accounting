@@ -8,8 +8,9 @@ mod expectations;
 mod procedure;
 
 pub(crate) use expectations::{
-    cash_flow_expectation_json, indirect_expectation_json, policy_cash_flow_expectation_json,
-    portfolio_expectation_json, reconciliation_expectation_json, split_cash_flow_expectation_json,
+    aging_expectation_json, cash_flow_expectation_json, indirect_expectation_json,
+    policy_cash_flow_expectation_json, portfolio_expectation_json, reconciliation_expectation_json,
+    split_cash_flow_expectation_json,
 };
 
 use std::io::Read;
@@ -492,11 +493,12 @@ fn emit_certificate(
 }
 
 /// Families with a recipient-bound JSONL workpaper export (`--workpaper-out`).
-/// Effective-date aging also has one in the library, but it needs an
-/// independent aging request that replay does not accept yet.
-fn has_workpaper(family: ReportArtifactFamily, detail_view: bool) -> bool {
+/// Ledger detail needs `--view detail`; effective-date aging needs an aging
+/// `--expect`, because its export binds the recipient's own request.
+fn has_workpaper(family: ReportArtifactFamily, detail_view: bool, aging_expected: bool) -> bool {
     match family {
         ReportArtifactFamily::RollForward => detail_view,
+        ReportArtifactFamily::EffectiveDateAging => aging_expected,
         ReportArtifactFamily::CashFlow
         | ReportArtifactFamily::AgingReconciliation
         | ReportArtifactFamily::AgingPortfolio
@@ -511,7 +513,7 @@ fn unsupported_workpaper(family: ReportArtifactFamily) -> Fail {
             "{} certificates have no JSONL workpaper export",
             family.name()
         ),
-        "--workpaper-out exports ledger detail (replay a roll-forward source with --view detail), cash-flow, aging-reconciliation, aging-portfolio and statement-trace certificates",
+        "--workpaper-out exports ledger detail (replay a roll-forward source with --view detail), effective-date aging (with its aging --expect), cash-flow, aging-reconciliation, aging-portfolio and statement-trace certificates",
     )
 }
 
@@ -555,6 +557,13 @@ fn workpaper_jsonl(
                 principal,
                 capability,
                 &fa::aging::portfolio::AgingPortfolioCertificate::decode(bytes)?,
+                request,
+            )??,
+        (ReportArtifactFamily::EffectiveDateAging, Expected::Aging(request), _) => book
+            .effective_date_aging_jsonl(
+                principal,
+                capability,
+                &fa::AgingCertificate::decode(bytes)?,
                 request,
             )??,
         (ReportArtifactFamily::StatementTrace, Expected::AsSupplied, _) => book
@@ -712,7 +721,14 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--view detail requires a roll-forward source certificate",
         ));
     }
-    if workpaper_out.is_some() && !has_workpaper(artifact.family(), detail_view) {
+    let aging_expected = matches!(expected, expectations::Expected::Aging(_));
+    if aging_expected && artifact.family() != ReportArtifactFamily::EffectiveDateAging {
+        return Err(certificate_invalid(format!(
+            "an aging expectation names an effective-date-aging certificate, not {}",
+            artifact.family().name()
+        )));
+    }
+    if workpaper_out.is_some() && !has_workpaper(artifact.family(), detail_view, aging_expected) {
         return Err(unsupported_workpaper(artifact.family()));
     }
     if artifact.family() == ReportArtifactFamily::ScenarioDiff {
@@ -803,7 +819,16 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let aging = if artifact.family() == ReportArtifactFamily::EffectiveDateAging {
         let certificate = fa::AgingCertificate::decode(&bytes)?;
-        Some(book.replay_effective_date_aging(principal, &capability, &certificate)??)
+        Some(match &expected {
+            // A supplied request binds the replay to the recipient's question.
+            expectations::Expected::Aging(request) => book.replay_effective_date_aging_for(
+                principal,
+                &capability,
+                &certificate,
+                request,
+            )??,
+            _ => book.replay_effective_date_aging(principal, &capability, &certificate)??,
+        })
     } else {
         None
     };
@@ -985,6 +1010,16 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         }
         _ => {
             let expected = expectations::parse(args, &book, principal, &capability)?;
+            // The shared verifier replays aging as supplied, so a mismatched
+            // aging question must be refused here rather than ignored.
+            if matches!(expected, expectations::Expected::Aging(_))
+                && artifact.family() != ReportArtifactFamily::EffectiveDateAging
+            {
+                return Err(certificate_invalid(format!(
+                    "an aging expectation names an effective-date-aging certificate, not {}",
+                    artifact.family().name()
+                )));
+            }
             book.report_artifact_status(
                 principal,
                 &capability,

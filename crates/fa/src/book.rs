@@ -2442,6 +2442,33 @@ impl Book {
         ))
     }
 
+    /// Replay an aging certificate only for the recipient's own fixed question:
+    /// account (or the whole book), cutoff, recorded sequence and buckets.
+    pub fn replay_effective_date_aging_for(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::AgingCertificate,
+        expected: &crate::AgingRequest,
+    ) -> Outcome<crate::EffectiveDateAging> {
+        with_store!(&self.store, core => core.replay_effective_date_aging_for(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// The aging workpaper as bounded JSONL, only after the recipient-bound replay.
+    pub fn effective_date_aging_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::AgingCertificate,
+        expected: &crate::AgingRequest,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.effective_date_aging_jsonl(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
     /// A statement trace as bounded JSONL, only after every source and link replays.
     pub fn statement_trace_jsonl(
         &self,

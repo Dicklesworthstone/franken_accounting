@@ -13352,13 +13352,17 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         },
                     )??;
                     let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
-                    (certified.report, Some(artifact))
+                    // The receipt's replay_command carries the request the
+                    // certificate binds, so a recipient can retain it apart.
+                    let request = certified.certificate.request()?;
+                    (certified.report, Some((artifact, request)))
                 } else {
                     (
                         book.effective_date_aging(account, day, known_at, &buckets)?,
                         None,
                     )
                 };
+                let (artifact, aging_request) = artifact.unzip();
                 out.known_at(aging.known_at);
                 let chart = book.accounts()?;
                 let accounts_by_vid: std::collections::BTreeMap<VId, String> = chart
@@ -13503,14 +13507,17 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &human,
                     digest.as_deref(),
                 );
-                if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
-                    notary::emit_report_artifact(
+                if let (Some(artifact), Some((bytes, retained)), Some(request)) =
+                    (artifact.as_ref(), retained, aging_request.as_ref())
+                {
+                    notary::emit_report_artifact_for(
                         out,
                         args,
                         artifact,
                         "fa:effective-date-aging:v1",
                         &bytes,
                         &retained,
+                        &notary::aging_expectation_json(request),
                     );
                 }
                 Ok(())
