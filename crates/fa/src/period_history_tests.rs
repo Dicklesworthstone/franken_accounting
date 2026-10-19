@@ -325,7 +325,7 @@ fn period_history_prefixes_outside_the_book_refuse_without_publication() {
     let head = h.head();
     for prefix in [CommitSeq(0), CommitSeq(head.0 + 1)] {
         let refusal = h.verify(&verifier(), Some(prefix)).unwrap().unwrap_err();
-        assert_eq!(refusal.code, fa_journal::code::STRUCTURE);
+        assert_eq!(refusal.code, fa_journal::refusal::code::STRUCTURE);
         assert_eq!(refusal.exit, fa_journal::exit::USAGE);
         assert_eq!(h.head(), head);
     }
