@@ -1,6 +1,7 @@
 //! Daily spending limits through persisted books and actual CLI token sessions.
-//! Delegation uses the native operator API; MCP/preparer launch ceilings stay
-//! unchanged while the resulting Human children spend through `fa --token`.
+//! Delegation covers the native operator API and the CLI issuer-token route;
+//! MCP/preparer launch ceilings stay unchanged while lower Human descendants
+//! spend through `fa --token`.
 
 #![forbid(unsafe_code)]
 
@@ -386,6 +387,319 @@ fn native_operator_delegation_keeps_cli_children_on_the_same_daily_quota() {
     fixture.post("child-two.token", &remainder);
     fixture.usage("child-one.token", 2, 1);
     fixture.usage("child-two.token", 2, 1);
+}
+
+#[test]
+fn cli_issuer_tokens_preserve_a_shared_budget_across_children_and_grandchildren() {
+    let fixture = Fixture::new(true);
+    let root = fixture.issue_root(true);
+    let root_commitment = root.capability().commitment().unwrap();
+    let root_hex = hex(&root_commitment);
+    let root_unit = *root.capability().daily_totals().keys().next().unwrap();
+
+    // Issuers retain IssueCapability and are used only by the operator route.
+    // The actual spending tokens are lower Human grants within the unchanged
+    // Preparer launch ceiling, including one grandchild of the original root.
+    for (issuer, holder, output, limit, delegates, maximum, expected_issuer) in [
+        (
+            "root.token",
+            "daily-child-issuer",
+            "child-issuer.token",
+            Some("800.00 USD"),
+            true,
+            80_000,
+            "daily-root",
+        ),
+        (
+            "child-issuer.token",
+            "daily-grandchild",
+            "grandchild.token",
+            Some("600.00 USD"),
+            false,
+            60_000,
+            "daily-child-issuer",
+        ),
+        (
+            "root.token",
+            "daily-root-leaf",
+            "root-leaf.token",
+            None,
+            false,
+            100_000,
+            "daily-root",
+        ),
+    ] {
+        let mut args = vec![
+            "capability",
+            "issue",
+            "--issuer-token",
+            issuer,
+            "--holder",
+            holder,
+            "--profile",
+            "human",
+            "--op",
+            "read",
+            "--op",
+            "post",
+            "--op",
+            "verify",
+            "--out",
+            output,
+        ];
+        if let Some(limit) = limit {
+            args.extend(["--daily-total", limit]);
+        }
+        if delegates {
+            args.extend(["--op", "issue_capability"]);
+        }
+        let issuer_token =
+            CapabilityToken::decode(&std::fs::read(fixture.dir.join(issuer)).unwrap()).unwrap();
+        let issued = fixture.ok(&args);
+        assert_eq!(text(&issued, "event"), "capability_issued");
+        let authority = issued.get("authority").unwrap();
+        assert_eq!(text(authority, "posture"), "issued-token");
+        assert_eq!(
+            text(authority, "principal"),
+            expected_issuer,
+            "the envelope must identify the retained token issuer"
+        );
+        assert_eq!(
+            text(authority, "profile"),
+            issuer_token.capability().profile().name()
+        );
+        assert_eq!(
+            authority.get("ops"),
+            Some(&Json::Arr(
+                issuer_token
+                    .capability()
+                    .ops()
+                    .iter()
+                    .map(|op| Json::Str(op.name().to_string()))
+                    .collect()
+            )),
+            "disclosure must name the actual issuer operations without reconstructing a grant"
+        );
+        assert_eq!(text(data(&issued), "token"), output);
+        assert_eq!(
+            data(&issued).get("already_recorded"),
+            Some(&Json::Bool(false))
+        );
+        let token =
+            CapabilityToken::decode(&std::fs::read(fixture.dir.join(output)).unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(fixture.dir.join(output))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600,
+                "the issued holder secret must stay private"
+            );
+        }
+        let cap = token.capability();
+        assert_eq!(cap.profile(), Profile::Human);
+        assert_eq!(cap.ops().contains(&Op::IssueCapability), delegates);
+        assert_eq!(cap.holder(), fa_model::principal_vid(holder));
+        assert_eq!(cap.issuer(), fa_model::principal_vid(expected_issuer));
+        assert_eq!(cap.daily_root(), Some(root_commitment));
+        assert_eq!(cap.daily_totals().len(), 1);
+        assert_eq!(cap.daily_totals().get(&root_unit), Some(&maximum));
+        assert_eq!(
+            text(data(&issued), "commitment"),
+            hex(&cap.commitment().unwrap())
+        );
+        let detail = fixture.ok(&[
+            "capability",
+            "show",
+            "--commitment",
+            text(data(&issued), "commitment"),
+        ]);
+        let retained = data(&detail).get("capability").unwrap();
+        assert_eq!(text(retained, "daily_root"), root_hex);
+        assert_eq!(
+            text(retained, "issuer"),
+            format!("{:032x}", fa_model::principal_vid(expected_issuer).0)
+        );
+        let Some(Json::Arr(totals)) = retained.get("daily_totals") else {
+            panic!("missing inherited daily totals: {detail:?}");
+        };
+        assert_eq!(totals.len(), 1);
+        assert_eq!(number(&totals[0], "unit_id"), i128::from(root_unit.0));
+        assert_eq!(number(&totals[0], "max_mantissa"), maximum);
+    }
+
+    // A valid issuer token cannot be combined with a different principal or
+    // an embedded grant. Neither refusal may journal an issuance or leave a
+    // usable token behind.
+    for (flag, value, output) in [
+        ("--as", "different-issuer", "spoofed-issuer.token"),
+        ("--grant", "privileged", "widened-issuer.token"),
+    ] {
+        let before = fixture.head();
+        let (status, refusal) = fixture.run(&[
+            "capability",
+            "issue",
+            "--issuer-token",
+            "root.token",
+            "--holder",
+            "must-not-be-issued",
+            "--profile",
+            "human",
+            "--op",
+            "read",
+            "--out",
+            output,
+            flag,
+            value,
+        ]);
+        assert_eq!(status, 2, "{flag}: {refusal:?}");
+        assert_eq!(text(&refusal, "event"), "error");
+        assert_eq!(text(data(&refusal), "class"), "usage");
+        assert_eq!(fixture.head(), before);
+        assert!(!fixture.dir.join(output).exists(), "{flag} created a token");
+    }
+
+    let sibling_spend = fixture.intent("cli-root-leaf-first", "400.00");
+    fixture.post("root-leaf.token", &sibling_spend);
+    let grandchild_spend = fixture.intent("cli-grandchild-first", "200.00");
+    fixture.post("grandchild.token", &grandchild_spend);
+    let too_much = fixture.intent("cli-grandchild-over-shared-total", "0.01");
+    fixture.refuse_post("grandchild.token", &too_much, 7, "FA-REF-166");
+    let remaining = fixture.intent("cli-root-leaf-remainder", "400.00");
+    fixture.post("root-leaf.token", &remaining);
+    let exhausted = fixture.intent("cli-original-root-exhausted", "0.01");
+    fixture.refuse_post("root-leaf.token", &exhausted, 7, "FA-REF-166");
+    fixture.usage("root-leaf.token", 3, 1);
+    fixture.usage("grandchild.token", 3, 1);
+
+    let revoked = fixture.ok(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &root_hex,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--yes",
+    ]);
+    assert_eq!(text(&revoked, "event"), "capability_revoked");
+    let before = fixture.head();
+    let (status, refusal) = fixture.run(&[
+        "capability",
+        "issue",
+        "--issuer-token",
+        "child-issuer.token",
+        "--holder",
+        "revoked-root-descendant",
+        "--profile",
+        "human",
+        "--op",
+        "read",
+        "--op",
+        "post",
+        "--out",
+        "revoked-root-descendant.token",
+    ]);
+    assert_eq!(status, 7, "{refusal:?}");
+    assert_eq!(text(data(&refusal), "refusal_id"), "FA-REF-023");
+    assert_eq!(fixture.head(), before);
+    assert!(!fixture.dir.join("revoked-root-descendant.token").exists());
+    fixture.refuse_post(
+        "grandchild.token",
+        "missing-after-root-revocation.json",
+        7,
+        "FA-REF-023",
+    );
+}
+
+#[test]
+fn cli_issuer_credentials_are_bounded_explicit_and_issue_only() {
+    let fixture = Fixture::new(false);
+    fixture.issue_root(true);
+    std::fs::write(
+        fixture.dir.join("malformed-issuer.token"),
+        b"this is not a canonical capability token",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.dir.join("oversized-issuer.token"),
+        vec![0_u8; fa_policy::capability::MAX_TOKEN_BYTES + 1],
+    )
+    .unwrap();
+    let cases: [(&str, &[&str], &str); 5] = [
+        (
+            "malformed",
+            &["--issuer-token", "malformed-issuer.token"],
+            "--issuer-token malformed-issuer.token",
+        ),
+        (
+            "oversized",
+            &["--issuer-token", "oversized-issuer.token"],
+            "64 KiB token limit",
+        ),
+        ("stdin", &["--issuer-token", "-"], "stdin is not accepted"),
+        (
+            "empty",
+            &["--issuer-token", ""],
+            "exactly one nonempty token file",
+        ),
+        (
+            "duplicate",
+            &[
+                "--issuer-token",
+                "root.token",
+                "--issuer-token",
+                "root.token",
+            ],
+            "exactly one nonempty token file",
+        ),
+    ];
+    for (name, flags, expected_message) in cases {
+        let output = format!("rejected-{name}.token");
+        let mut args = vec![
+            "capability",
+            "issue",
+            "--holder",
+            "rejected-credential-child",
+            "--profile",
+            "human",
+            "--op",
+            "read",
+            "--out",
+            &output,
+        ];
+        args.extend_from_slice(flags);
+        let before = fixture.head();
+        let (status, refusal) = fixture.run(&args);
+        assert_eq!(status, 2, "{name}: {refusal:?}");
+        assert_eq!(text(&refusal, "event"), "error");
+        assert_eq!(text(data(&refusal), "class"), "usage");
+        assert_eq!(data(&refusal).get("refusal_id"), Some(&Json::Null));
+        assert!(
+            text(data(&refusal), "message").contains(expected_message),
+            "{name}: {refusal:?}"
+        );
+        assert_eq!(fixture.head(), before, "{name} journaled an issuance");
+        assert!(
+            !fixture.dir.join(&output).exists(),
+            "{name} created a token"
+        );
+    }
+    let before = fixture.head();
+    let (status, refusal) = fixture.run(&["capability", "list", "--issuer-token", "root.token"]);
+    assert_eq!(status, 2, "{refusal:?}");
+    assert_eq!(text(&refusal, "event"), "error");
+    assert_eq!(text(data(&refusal), "class"), "usage");
+    assert!(
+        text(data(&refusal), "message").contains("capability issue"),
+        "{refusal:?}"
+    );
+    assert_eq!(fixture.head(), before);
 }
 
 #[test]

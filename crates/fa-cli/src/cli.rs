@@ -268,6 +268,8 @@ struct Said {
     warnings: Vec<String>,
     time_selection: Option<fa::InstantSelection>,
     authority: Option<Json>,
+    /// Explicit issuer-token disclosure only; never a launch-bound session.
+    issuer_authority: Option<Json>,
     /// The launch template is Agent: trunk plans are rehearsals (FA-REF-013).
     agent: bool,
     owner_principal: Option<String>,
@@ -587,6 +589,7 @@ impl Out {
                     authority: said
                         .authority
                         .clone()
+                        .or_else(|| said.issuer_authority.clone())
                         .unwrap_or_else(|| owner_envelope(said.owner_principal.as_deref())),
                 },
             );
@@ -4571,13 +4574,92 @@ fn issued_json(i: &fa_journal::IssuedCapability) -> Json {
     ])
 }
 
+/// An explicitly selected issuer token supplies exactly its retained
+/// capability. It does not create a launch session or add embedded grants;
+/// native current admission and issuance still judge every caveat.
+fn capability_issuer(ctx: &Ctx<'_>, args: &Args) -> Result<Capability, Fail> {
+    const FIX: &str = "fa capability issue --issuer-token <file> --holder <principal> --op <op>... --out <new-file> (drop --as and --grant; the issuer token supplies authority)";
+    let paths = args.flag_all("--issuer-token");
+    if paths.is_empty() {
+        return ctx.capability(args, &["read"]);
+    }
+    if ctx.authority.is_some() {
+        return Err(usage(
+            "--issuer-token cannot replace a launch-bound capability",
+            "invoke capability issue directly with the issuer token, outside a token-bound session",
+        ));
+    }
+    for flag in ["--as", "--grant"] {
+        if args.flag(flag).is_some() {
+            return Err(usage(
+                format!(
+                    "{flag} cannot be combined with --issuer-token: the token fixes the issuer and its operations"
+                ),
+                FIX,
+            ));
+        }
+    }
+    let path = match paths.as_slice() {
+        [path] if !path.is_empty() && *path != "-" => *path,
+        _ => {
+            return Err(usage(
+                "--issuer-token names exactly one nonempty token file; stdin is not accepted",
+                FIX,
+            ));
+        }
+    };
+    let file = std::fs::File::open(ctx.files.resolve(path)).map_err(|e| {
+        usage(
+            format!("--issuer-token {path}: cannot read the token file: {e}"),
+            FIX,
+        )
+    })?;
+    // Files::read_bytes also accepts stdin and reads without a byte bound.
+    // Credential input must stop at its canonical token limit before decode.
+    let mut bytes = Vec::new();
+    file.take((fa_policy::capability::MAX_TOKEN_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| {
+            usage(
+                format!("--issuer-token {path}: cannot read the token file: {e}"),
+                FIX,
+            )
+        })?;
+    if bytes.len() > fa_policy::capability::MAX_TOKEN_BYTES {
+        return Err(usage("--issuer-token exceeds the 64 KiB token limit", FIX));
+    }
+    // Decode verifies the principal derives this holder, the secret proves
+    // possession, and the complete capability bytes are canonical. Only the
+    // capability leaves this helper; the issuer's secret is never retained.
+    let token = fa_policy::CapabilityToken::decode(&bytes)
+        .map_err(|e| usage(format!("--issuer-token {path}: {e}"), FIX))?;
+    ctx.out.said.borrow_mut().owner_principal = Some(token.principal().to_string());
+    ctx.out.said.borrow_mut().issuer_authority = Some(obj(vec![
+        ("posture", s("issued-token")),
+        ("principal", s(token.principal())),
+        ("profile", s(token.capability().profile().name())),
+        (
+            "ops",
+            Json::Arr(
+                token
+                    .capability()
+                    .ops()
+                    .iter()
+                    .map(|op| s(op.name()))
+                    .collect(),
+            ),
+        ),
+    ]));
+    Ok(token.capability().clone())
+}
+
 /// `fa capability issue` (plan §14.2, bead fa-v62): journal a holder-bound
 /// capability for `--holder` under the caller's capability, then write the
 /// holder's token (principal, capability, secret) to a new 0600 file. The
 /// file is written only after the issuance commits, so a refused issuance
 /// leaves no file; the secret is never journaled or printed.
 fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const FIX: &str = "fa capability issue --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--daily-total \"1000.00 USD\"]... [--expires-at <seq>] --out <new-file> --as <issuer> --grant issue_capability --grant <each issued op>";
+    const FIX: &str = "fa capability issue --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--daily-total \"1000.00 USD\"]... [--expires-at <seq>] --out <new-file> (--issuer-token <file> or --as <issuer> --grant issue_capability --grant <each issued op>)";
     let holder = args.require("--holder", "<principal>")?.to_string();
     if holder.is_empty() || holder.len() > fa_policy::capability::MAX_TOKEN_PRINCIPAL_BYTES {
         return Err(usage("--holder is a 1..=256-byte principal name", FIX));
@@ -4612,7 +4694,7 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             FIX,
         ));
     }
-    let issuer = ctx.capability(args, &["read"])?;
+    let issuer = capability_issuer(ctx, args)?;
     let mut book = ctx.books.open_admitted(args, |book| {
         admit_whole_book_read(
             book,

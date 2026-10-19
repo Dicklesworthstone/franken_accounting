@@ -816,7 +816,7 @@ fn retained_package(
     // Native inventory is ordered by original intake sequence and OID. The
     // first complete package fixes this run's approval material permanently,
     // including when preparation's response was lost before any chunk staged.
-    for summary in book.documents(None)? {
+    for summary in book.documents(None)?? {
         if summary.kind != kind || summary.grade != grade || summary.mime != PACKAGE_MIME {
             continue;
         }
