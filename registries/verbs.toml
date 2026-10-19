@@ -2572,7 +2572,7 @@ stdin_kind = "object"
 stdin_via = "--intent"
 required = []
 dont = ["Don't expect staged migration entries to appear in trial balances or statements before finalize: staged entries stay unpublished until finalize verifies the tie-out against the book's opening_balances and commits with two independent Human approvals.", "Don't pass host filesystem paths in intent_file, plan_file or plan_out: supply a migration intent inline as intent and use dry_run: true to receive canonical migration proposal bytes inline."]
-mistakes = ["Staging into a period that is not Locked or not the book's earliest period (FA-REF-081).", "Finalizing before staged entries tie out to the book's opening_balances (FA-REF-082)."]
+mistakes = ["Staging into a period the run does not cover: only the run's Opening period or a period its body declares (FA-REF-132).", "Finalizing before the staged chunks fold to the run's declared trial balance (FA-REF-131)."]
 
 # ---- fa.draft ---------------------------------------------------------------
 
@@ -3289,8 +3289,8 @@ positionals = ["target?"]
 flags = ["--code", "--kind", "--occurred-on", "--description", "--participant", "--resource", "--evidence", "--external-id", "--effective", "--key", "--as-known-at"]
 switches = []
 required = []
-dont = ["Don't record an REA event without evidence: every Event requires at least one held document citation (`FA-REF-030`).", "Don't cite an AgentUpload document on an Event before a human Reviewer has attested `Reviewed` (`FA-REF-032`)."]
-mistakes = ["Passing an unregistered event kind: use `sale`, `purchase`, `receipt`, `payment`, `shipment`, `return`, `accrual`, or `depreciation`.", "Citing an Event in `fa_post_post` that has not been recorded yet (`FA-REF-030`)."]
+dont = ["Don't record an REA event without evidence: every Event requires at least one held document citation (`FA-REF-080`).", "Don't cite an AgentUpload document on an Event before a human Reviewer has attested `Reviewed` (`FA-REF-086`)."]
+mistakes = ["Passing an unregistered event kind: use `sale`, `purchase`, `receipt`, `payment`, `shipment`, `return`, `accrual`, or `depreciation`.", "Citing an Event in `fa_post_post` that has not been recorded yet (`FA-REF-080`)."]
 
 [[mcp.tool]]
 cluster = "fa.forensics"
