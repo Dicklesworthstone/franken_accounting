@@ -203,7 +203,7 @@ struct VerifiedBankImport {
 
 fn predecessor_error(message: impl Into<String>) -> Refusal {
     Refusal::new(
-        code::DOCUMENT_INTAKE,
+        code::BANK_CONTINUITY,
         exit::REFUSAL,
         message,
         "plan §9.5 (explicit predecessor continuity is checked against the retained source)",

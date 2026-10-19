@@ -64,7 +64,7 @@ pub(super) fn conflict(message: impl Into<String>) -> Refusal {
 
 fn continuity(message: impl Into<String>) -> Refusal {
     Refusal::new(
-        code::DOCUMENT_INTAKE,
+        code::BANK_CONTINUITY,
         exit::REFUSAL,
         message,
         "plan §9.5 (same-book/account/unit, contiguous sequence, ordered dates and previous closing = opening)",

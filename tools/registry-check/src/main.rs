@@ -196,6 +196,44 @@ fn req_str_array(file: &str, table: &Table, key: &str) -> Result<Vec<String>, St
         .collect()
 }
 
+/// One nested object/bundle/statement schema. A format's `major` starts at
+/// 1; a breaking-major transition (plan Appendix A) is admissible only with
+/// its explicit transition: `versions` names every supported version in
+/// order, `["1:<name>", …, "<major>:<name>"]`. A bare major bump still fails.
+fn check_nested_schema(file: &str, text: &str) -> Result<(), String> {
+    let doc = toml::parse(text).map_err(|e| format!("{file}: {e}"))?;
+    if req_int(file, &doc.root, "schema_version")? != 1 {
+        return Err(format!("{file}: schema_version must be 1"));
+    }
+    let Some(major) = doc.root.get("major").and_then(Value::as_int) else {
+        return Ok(());
+    };
+    if major < 1 {
+        return Err(format!("{file}: major version must be at least 1"));
+    }
+    if major == 1 {
+        return Ok(());
+    }
+    let versions = doc
+        .root
+        .get("versions")
+        .and_then(Value::as_array)
+        .unwrap_or(&[]);
+    let declared = usize::try_from(major).is_ok_and(|count| versions.len() == count)
+        && versions.iter().enumerate().all(|(index, version)| {
+            version
+                .as_str()
+                .and_then(|text| text.strip_prefix(&format!("{}:", index + 1)))
+                .is_some_and(|name| !name.trim().is_empty())
+        });
+    if !declared {
+        return Err(format!(
+            "{file}: major version {major} requires its declared transition `versions = [\"1:<name>\", …, \"{major}:<name>\"]`"
+        ));
+    }
+    Ok(())
+}
+
 pub fn check_account_types(text: &str) -> Result<usize, String> {
     const F: &str = "account_types.toml";
     let doc = toml::parse(text).map_err(|e| format!("{F}: {e}"))?;
@@ -791,19 +829,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
                 if path.extension().and_then(|s| s.to_str()) == Some("toml") {
                     let content = fs::read_to_string(&path)
                         .map_err(|e| format!("{}: {e}", path.display()))?;
-                    let parsed =
-                        toml::parse(&content).map_err(|e| format!("{}: {e}", path.display()))?;
-                    if req_int(&path.display().to_string(), &parsed.root, "schema_version")? != 1 {
-                        return Err(format!("{}: schema_version must be 1", path.display()));
-                    }
-                    if let Some(major) = parsed.root.get("major").and_then(Value::as_int)
-                        && major != 1
-                    {
-                        return Err(format!(
-                            "{}: major version must be frozen at 1",
-                            path.display()
-                        ));
-                    }
+                    check_nested_schema(&path.display().to_string(), &content)?;
                     extra_files += 1;
                 }
             }
@@ -969,6 +995,49 @@ mod tests {
         assert_eq!(g0.total, 37);
         assert_eq!(g0.missing, 0);
         assert_eq!(g0.present + g0.owned, 37);
+    }
+
+    #[test]
+    fn planted_schema_majors_require_their_declared_transition() {
+        let base = "schema_version = 1\nname = \"X\"\n";
+        for admitted in [
+            "minor = 0\n",
+            "major = 1\n",
+            "major = 2\nversions = [\"1:old\", \"2:new\"]\n",
+        ] {
+            check_nested_schema("x.toml", &format!("{base}{admitted}"))
+                .unwrap_or_else(|err| panic!("{admitted}: {err}"));
+        }
+        for (planted, why) in [
+            ("major = 0\n", "at least 1"),
+            ("major = 2\n", "declared transition"),
+            ("major = 2\nversions = [\"1:old\"]\n", "declared transition"),
+            (
+                "major = 2\nversions = [\"2:new\", \"1:old\"]\n",
+                "declared transition",
+            ),
+            (
+                "major = 2\nversions = [\"1:old\", \"2: \"]\n",
+                "declared transition",
+            ),
+            (
+                "major = 2\nversions = [\"1:old\", 2]\n",
+                "declared transition",
+            ),
+            (
+                "major = 3\nversions = [\"1:a\", \"2:b\"]\n",
+                "declared transition",
+            ),
+        ] {
+            let err =
+                check_nested_schema("x.toml", &format!("{base}{planted}")).expect_err(planted);
+            assert!(
+                err.contains("x.toml") && err.contains(why),
+                "{planted}: {err}"
+            );
+        }
+        let err = check_nested_schema("x.toml", "schema_version = 2\n").expect_err("schema 2");
+        assert!(err.contains("schema_version must be 1"), "{err}");
     }
 
     #[test]

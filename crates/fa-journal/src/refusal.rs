@@ -159,6 +159,8 @@ pub mod code {
     pub const EVIDENCE_COMMIT: &str = "FA-REF-082";
     /// The document is empty, oversized, or names an unregistered kind, grade, or malformed mime.
     pub const DOCUMENT_INTAKE: &str = "FA-REF-083";
+    /// An explicit bank `--previous-import` fails §9.5 continuity, or its retained chain cannot be completely checked.
+    pub const BANK_CONTINUITY: &str = "FA-REF-165";
     /// The declared provenance grade is one only a verified receipt chain may confer.
     pub const GRADE_UNVERIFIED: &str = "FA-REF-084";
     /// A stored Document's mirrors disagree with its payload, or its payload does not verify.

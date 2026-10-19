@@ -522,6 +522,16 @@ exit = "usage"
 cite = "registries/evidence_policy.toml; plan §9.1 Document"
 fix = "add a non-empty file within max_document_bytes, with a registered --kind and a type/subtype --mime"
 
+# A well-formed statement whose explicit predecessor fails the §9.5 law is an
+# accounting refusal, not a malformed upload (FA-REF-083 stays `usage`).
+[[refusal]]
+code = "FA-REF-165"
+name = "BANK_CONTINUITY"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §9.5 (same bank account and currency, consecutive sequence, ordered dates, previous closing = opening; the complete retained chain within max_bank_predecessor_depth)"
+fix = "select the actual immediately preceding --previous-import; correct the statement or import it without a predecessor as explicitly unlinked evidence"
+
 [[refusal]]
 code = "FA-REF-084"
 name = "GRADE_UNVERIFIED"

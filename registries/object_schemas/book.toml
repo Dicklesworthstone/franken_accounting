@@ -5,6 +5,7 @@ owner = "fa-journal::genesis::BookSpec"
 major = 2
 minor = 0
 version_encoding = "u16 little endian; supported values 1 and 2"
+versions = ["1:calendar-derived-births", "2:journaled-births"]
 fields = ["version:u16", "book_id:bytes16", "name:string", "base_unit:u32", "calendar_id:string", "adjustment_periods:u8", "calendar_kind:union", "time_zone_policy:trailing<u8>", "entities:trailing<list<legal_entity>>", "opening_date:trailing<i32>"]
 version_1_fields = "identical to version 2; existing immutable bytes are never rewritten"
 version_1_births = "legacy calendar-derived baseline, limited to Period rows preceding the earliest retained CreatePeriods control; this does not prove original creation principal or detect a wholly missing old fiscal year"

@@ -1063,7 +1063,12 @@ fn predecessor_mismatches_refuse_without_publishing_any_new_import() {
                 previous,
             ],
         );
-        assert_ne!(status, 0, "{name}: {}", refusal.render());
+        assert_eq!(status, 3, "{name}: {}", refusal.render());
+        assert_eq!(
+            text(data(&refusal), "refusal_id"),
+            "FA-REF-165",
+            "{name}: a continuity failure is an accounting refusal, not a malformed upload"
+        );
         assert_eq!(
             head(&f.book),
             before,
@@ -1108,12 +1113,13 @@ fn predecessor_mismatches_refuse_without_publishing_any_new_import() {
             text(data(&overflow), "manifest_oid"),
         ],
     );
-    assert_ne!(
+    assert_eq!(
         status,
-        0,
+        3,
         "sequence addition must not wrap: {}",
         refusal.render()
     );
+    assert_eq!(text(data(&refusal), "refusal_id"), "FA-REF-165");
     assert_eq!(head(&f.book), overflow_head);
 }
 

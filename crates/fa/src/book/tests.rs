@@ -3313,15 +3313,17 @@ fn certificate_status_detects_period_catalog_changes_without_a_new_entry() {
         .unwrap()
         .unwrap();
     let original_at = certified.certificate.known_at;
-    // Period creation is supported and commits metadata without an Entry.
+    // Period creation commits one undated SchemaControl with the fiscal
+    // year's Period projections (fa-ehd); the control carries no legs.
     // An as-of report displays every discovered period through its cutoff.
-    book.create_periods(
-        2025,
-        VId(1),
-        &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
-    )
-    .unwrap()
-    .unwrap();
+    let (born_at, _) = book
+        .create_periods(
+            2025,
+            VId(1),
+            &Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
     let after = book.head().unwrap();
     assert!(after > original_at);
     let current = book
@@ -3329,12 +3331,23 @@ fn certificate_status_detects_period_catalog_changes_without_a_new_entry() {
         .unwrap()
         .unwrap();
     assert_ne!(current.report.periods, certified.report.periods);
+    assert_eq!(current.report.rows, certified.report.rows);
     assert_eq!(
-        current.certificate.journal_root,
-        certified.certificate.journal_root
+        current.certificate.journal_leaves,
+        certified.certificate.journal_leaves + 1,
+        "the fiscal-year birth is exactly one journaled control"
     );
-    assert_eq!(
-        current.certificate.journal_leaves, certified.certificate.journal_leaves,
+    let (control, recorded) = book
+        .read_entry(fa_journal::period_creation::creation_vid(
+            book.context(),
+            2025,
+        ))
+        .unwrap()
+        .expect("the retained birth control");
+    assert_eq!(recorded, born_at);
+    assert_eq!(control.proposal.class, EntryClass::SCHEMA_CONTROL);
+    assert!(
+        control.proposal.legs.is_empty(),
         "no later accounting Entry can explain this period-membership change"
     );
     let refusal = book
