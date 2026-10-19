@@ -975,7 +975,7 @@ fix = "preserve the original native history and verify_usage through Book or Asy
 [[refusal]]
 code = "FA-REF-168"
 name = "BANK_MATCH"
-owners = ["fa-journal", "fa"]
+owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §5.7 / §9.5 (one exact retained bank line and immutable cash leg per confirmation)"
 fix = "replay bank match under current full-source authority and confirm its exact unambiguous selection; occupied lines and cash legs cannot be reused or implicitly replaced"

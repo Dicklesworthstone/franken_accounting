@@ -777,19 +777,24 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     // after the certified prefix (its trunk is fixed at the fork).
     let status = match artifact.family() {
         ReportArtifactFamily::ScenarioDiff => {
+            if args.flag("--expect").is_some() {
+                return Err(usage(
+                    "scenario status uses its pinned intent prefix and does not accept report-policy expectations",
+                    "fa certificate status C:<scenario-certificate> --json",
+                ));
+            }
             let certificate = fa::ScenarioDiffCertificate::decode(&bytes)?;
             book.scenario_diff_status(principal, &capability, &certificate)??
         }
-        ReportArtifactFamily::Native
-        | ReportArtifactFamily::StatementDiff
-        | ReportArtifactFamily::StatementTrace => {
-            book.replay_report_artifact(principal, &capability, &bytes, Some(artifact.digest()))??;
-            book.certificate_status(artifact.source_certificate())??
-        }
         _ => {
-            return Err(certificate_invalid(
-                "selector status is available for native reports, statement comparisons/traces and scenario diffs; use fa replay for this family's historical verification",
-            ));
+            let expected = expectations::parse(args, &book, principal, &capability)?;
+            book.report_artifact_status(
+                principal,
+                &capability,
+                &bytes,
+                Some(artifact.digest()),
+                expected.borrowed(),
+            )??
         }
     };
     let certificate = artifact.source_certificate();

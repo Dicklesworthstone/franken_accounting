@@ -12,6 +12,7 @@ use fa_journal::bank::{
 use fa_journal::blob::DurableDirectory;
 use fa_journal::evidence::{Storage, document_record, fetch_document};
 use fa_journal::import::{BankFormat, BankImportManifest, BankImportWitness};
+use fa_journal::post::read_entry;
 use fa_journal::*;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{

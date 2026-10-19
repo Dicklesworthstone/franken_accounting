@@ -236,14 +236,14 @@ example = "fa payment --party V-17 --number ACH-OUT-1 --date 2026-03-25 --cash 1
 
 [[verb]]
 name = "commit"
-summary = "Commit an exact reviewed PostEntry plan after current capability, snapshot and native effects revalidation."
+summary = "Commit an exact reviewed PostEntry or atomic Replace plan after current capability, snapshot and native effects revalidation."
 writes = true
 subcommands = []
 flags = ["--plan", "--grant"]
 switches = []
-events = ["plan_committed"]
+events = ["plan_committed", "replacement_plan_committed"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["commit --plan <file|-> [--as <principal>] [--grant <op>]...", "The file is canonical binary bytes from --dry-run --plan-out; stdin also accepts the plan event's complete bytes hex string. The explicit commit confirms that authenticated exact artifact. The current caller independently supplies the same capability; no authority is taken from the file.", "The first commit atomically retains the canonical plan as a graph Certificate linked from the entry by CITES. Entry.plan_certificate remains absent because the pinned substrate has no generic object-store API. An exact retry returns the original identity and already_recorded=true. Any unrelated publication before the first commit invalidates this same-snapshot plan (exit 6); perform a new dry run and review its result."]
+usage = ["commit --plan <file|-> [--as <principal>] [--grant <op>]...", "The file is canonical binary bytes from --dry-run --plan-out; stdin also accepts the plan event's complete bytes hex string. PostEntry and atomic Replace plans are admitted. The explicit commit confirms that authenticated exact artifact. The current caller independently supplies the same capability; no authority is taken from the file.", "The first commit atomically retains the canonical plan as a graph Certificate linked from every member by CITES. A Replace plan publishes its Reversal and Replacement together and returns both identities; neither member may be committed separately. Entry.plan_certificate remains absent because the pinned substrate has no generic object-store API. An exact retry returns the original identities and already_recorded=true. An intervening accounting publication before the first commit invalidates the plan (exit 6); perform a new dry run and review its result."]
 example = "fa commit --plan entry.plan --book ./books/myco --json"
 
 [[verb]]
@@ -253,9 +253,9 @@ writes = true
 subcommands = []
 flags = ["--reason", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out", "--draft", "--replace-with"]
 switches = ["--dry-run"]
-events = ["reversed", "recorded", "plan", "draft_planned", "corrected"]
+events = ["reversed", "recorded", "plan", "draft_planned", "corrected", "replacement_plan"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["reverse <vid|E:vid> --reason <name|code> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--grant <op>]... [--evidence <oid>]... [--dry-run [--plan-out <new-file>]]", "The default effective date and period are the target's; --effective never chooses an open period automatically. The default key is reverse:<target vid>. Repeating the same request returns the original outcome; changing a committed reversal is refused.", "--dry-run rehearses the exact derived reversal without publishing it; commit its reviewed sealed plan with fa commit --plan <file|-> at the same book snapshot.", "Reasons are registered in reason_codes.toml (scope supersession): WrongAccount, WrongPeriod, WrongAmount, Duplicate, and the other listed codes. Other requires --description. A reason records the preparer's statement, not its truth.", "reverse <vid> --reason <name> --replace-with <file.json|->   (plan §8.2: the exact reversal and the corrected Replacement commit as one pair, both or neither. The replacement intent is an entry intent without class, reverses or reason; its effective_date, period and idempotency_key default to the target's date and period and replace:<vid>. Pairs have no --dry-run or --draft form yet; a Replacement posted alone is refused with FA-REF-160.)"]
+usage = ["reverse <vid|E:vid> --reason <name|code> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--grant <op>]... [--evidence <oid>]... [--dry-run [--plan-out <new-file>]]", "The default effective date and period are the target's; --effective never chooses an open period automatically. The default key is reverse:<target vid>. Repeating the same request returns the original outcome; changing a committed reversal is refused.", "--dry-run rehearses the exact derived reversal without publishing it; commit its reviewed sealed plan with fa commit --plan <file|-> at the same book snapshot.", "Reasons are registered in reason_codes.toml (scope supersession): WrongAccount, WrongPeriod, WrongAmount, Duplicate, and the other listed codes. Other requires --description. A reason records the preparer's statement, not its truth.", "reverse <vid> --reason <name> --replace-with <file.json|-> [--dry-run [--plan-out <new-file>]]   (plan §8.2: the exact reversal and the corrected Replacement commit as one pair, both or neither. The replacement intent is an entry intent without class, reverses or reason; its effective_date, period and idempotency_key default to the target's date and period and replace:<vid>. The dry-run returns one sealed plan containing both members; fa commit --plan <file|-> revalidates and publishes both atomically. Agent-profile plans are rehearsal only. Correction drafts remain unsupported; a Replacement posted alone is FA-REF-160.)"]
 example = "fa reverse <vid> --reason WrongAccount --book ./books/myco --json"
 
 [[verb]]
@@ -380,14 +380,14 @@ example = "fa replay trial-balance.cert --book ./books/myco --json"
 
 [[verb]]
 name = "certificate"
-summary = "Verify a complete native report, statement comparison or publication trace, then check whether later entries affect its final report selector."
+summary = "Verify a complete retained report, then check whether later entries affect its accounting selection."
 writes = false
 subcommands = ["status"]
-flags = []
+flags = ["--expect"]
 switches = []
 events = ["certificate_status"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["certificate status <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the complete certificate retained in this book; file and inline bytes are also accepted. Current or SupersededBy is evaluated against the current book after the complete artifact verifies; supersession does not erase the historical report. For a statement diff or trace, relevance begins at the final statement frontier and the returned oid remains the outer certificate. A scenario diff's trunk side is fixed at its fork, so only Plan records its scenario gained after the certified prefix supersede it (later_entries names them); known_at is the fork. Other report families can be replayed but refuse selector status until their own relevance law is implemented."]
+usage = ["certificate status <C:oid|oid|certificate-file|-> [--expect <json>]", "A 64-hex oid resolves the complete certificate retained in this book; file and inline bytes are also accepted. Current or SupersededBy is evaluated against the current book after the complete artifact verifies; supersession does not erase the historical report. For a statement diff or trace, relevance begins at the final statement frontier and the returned oid remains the outer certificate. A scenario diff's trunk side is fixed at its fork, so only Plan records its scenario gained after the certified prefix supersede it (later_entries names them); known_at is the fork.", "Roll-forward and general-ledger source certificates use their selected posted accounts, native units and inclusive closing cutoff. Later postings before the activity window count because they change opening stock; unrelated accounts, other currencies, pending reservations and activity after the cutoff do not. Direct, split and policy cash-flow certificates use the same financial selection and require --expect with the original independently retained request and classification, exactly as fa replay does. New cash activity supersedes the original classification even if it has no assignment in the old policy. Other report families refuse selector status until their own relevance law is implemented."]
 example = "fa certificate status trial-balance.cert --book ./books/myco --json"
 
 [[verb]]
@@ -1218,6 +1218,18 @@ name = "plan_committed"
 book = true
 doc = "The authenticated exact plan committed after current authority and native effects revalidation, atomically retaining its artifact as a graph Certificate and CITES edge. A retry sets already_recorded=true and returns the original entry identity and sequence with period=null; nothing new is written. The public plan and certificate digests identify the reviewed artifact; envelope certificate is null because there is no native object-store OID."
 fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string?", "already_recorded:bool", "plan_digest:hex", "certificate_digest:hex"]
+
+[[event]]
+name = "replacement_plan"
+book = true
+doc = "Zero-write rehearsal of one atomic Reversal and Replacement. The ordered members show both exact prepared entries. bytes carries one canonical joint-authenticated artifact; neither member authenticates as a standalone PostEntry plan. The certificate binds both requests, approvals, periods, capability, policy, basis and complete native effects. Agent-profile plans are rehearsal only; correction drafts remain unsupported. The joint Certificate and both CITES edges will be retained atomically on publication."
+fields = ["intent_kind:string", "target:hex", "principal:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "members:[replacement_plan_member]", "bytes:hex", "file:string?", "scope:string", "authority:string"]
+
+[[event]]
+name = "replacement_plan_committed"
+book = true
+doc = "The reviewed correction's Reversal, Replacement and joint plan certificate committed in one publication. An exact retry returns both original identities and their shared recorded_at with already_recorded=true and null periods; it writes nothing."
+fields = ["reversal:hex", "reversal_digest:hex", "replacement:hex", "replacement_digest:hex", "recorded_at:seq", "reversal_period:string?", "replacement_period:string?", "already_recorded:bool", "plan_digest:hex", "certificate_digest:hex"]
 
 [[event]]
 name = "reversed"
@@ -2209,6 +2221,11 @@ fields = ["side:string", "account:hex", "amount:amount", "memo:untrusted_text?"]
 name = "plan_leg"
 doc = "One proposed leg after actual admission, with the resolved account code and immutable account identity. Its amount is an exact decimal string with the book's unit."
 fields = ["ordinal:int", "account:string", "account_vid:hex", "side:string", "amount:amount"]
+
+[[shape]]
+name = "replacement_plan_member"
+doc = "One ordered member of the joint correction artifact: exact request and prepared-entry digests, accounting preview, provenance and approval count. The complete sealed entry and approvals are retained in the artifact bytes."
+fields = ["class:string", "effective_date:date", "period:string", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "entry_digest:hex", "legs:[plan_leg]", "supersedes:[lineage]", "evidence:[evidence_head]", "approvals:int"]
 
 [[shape]]
 name = "explained_cell"
@@ -3254,11 +3271,12 @@ name = "certificate_status"
 verb = "certificate"
 subcommands = ["status"]
 positionals = ["file?"]
+flags = ["--expect"]
 stdin_property = "certificate"
 stdin_kind = "string"
 stdin_via = "file"
 required = ["file"]
-dont = ["Don't treat SupersededBy as a failed historical replay: later entries can change today's report while the original still verifies."]
+dont = ["Don't treat SupersededBy as a failed historical replay: later entries can change today's report while the original still verifies.", "For direct, split or policy cash-flow certificates, supply expect as the independently retained request JSON string used for replay. A matching certificate digest does not substitute for expected account/date/unit scope and classification."]
 mistakes = ["Looking up an oid in a different book; the operator must launch the server against the original book."]
 
 [[mcp.tool]]

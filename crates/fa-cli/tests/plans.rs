@@ -191,6 +191,216 @@ impl Fixture {
 }
 
 #[test]
+fn binary_replacement_plan_survives_reopen_and_commits_both_reviewed_members() {
+    let f = Fixture::new();
+    let original = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("correction-original", "10.00"),
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let replacement = f.intent("corrected-sale", "12.34");
+    let output = f.dir.join("correction.plan");
+    let before = head(&f.book);
+    let planned = ok(
+        &f.book,
+        &[
+            "reverse",
+            text(&original, "vid"),
+            "--reason",
+            "WrongAmount",
+            "--replace-with",
+            &replacement,
+            "--evidence",
+            &f.evidence,
+            "--dry-run",
+            "--plan-out",
+            &output.display().to_string(),
+        ],
+    );
+    assert_eq!(text(&planned, "event"), "replacement_plan");
+    assert_eq!(text(&planned, "intent_kind"), "Replace");
+    assert_eq!(text(&planned, "scope"), "same-snapshot-replacement");
+    assert_eq!(text(&planned, "target"), text(&original, "vid"));
+    assert_eq!(integer(&planned, "snapshot_seq"), before);
+    assert_eq!(head(&f.book), before);
+    let members = get(&planned, "members").as_arr().unwrap();
+    assert_eq!(members.len(), 2);
+    assert_eq!(text(&members[0], "class"), "Reversal");
+    assert_eq!(text(&members[1], "class"), "Replacement");
+    let bytes = std::fs::read(&output).unwrap();
+    let plan = fa::ReplacementPlan::decode(&bytes).unwrap();
+    assert_eq!(plan.reversal().proposal().legs[0].amount.mantissa, 1000);
+    assert_eq!(plan.replacement().proposal().legs[0].amount.mantissa, 1234);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let committed = ok(
+        &f.book,
+        &["commit", "--plan", &output.display().to_string()],
+    );
+    assert_eq!(text(&committed, "event"), "replacement_plan_committed");
+    assert_eq!(get(&committed, "already_recorded"), &Json::Bool(false));
+    for field in ["plan_digest", "certificate_digest"] {
+        assert_eq!(text(&planned, field), text(&committed, field));
+    }
+    for (field, member) in [("reversal", &members[0]), ("replacement", &members[1])] {
+        let entry = ok(&f.book, &["entry", "show", text(&committed, field)]);
+        assert_eq!(
+            text(&entry, "proposal_digest"),
+            text(member, "proposal_digest")
+        );
+        assert_eq!(text(&entry, "entry_digest"), text(member, "entry_digest"));
+        assert_eq!(
+            integer(&entry, "recorded_at"),
+            integer(&committed, "recorded_at")
+        );
+    }
+    let committed_head = head(&f.book);
+    assert_eq!(committed_head, before + 1);
+    // Retry through a different transport and another process returns the
+    // same two immutable identities without resealing either description.
+    let (code, retry) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(&planned, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", retry.render());
+    assert_eq!(get(&retry, "already_recorded"), &Json::Bool(true));
+    for field in [
+        "reversal",
+        "replacement",
+        "reversal_digest",
+        "replacement_digest",
+        "plan_digest",
+        "certificate_digest",
+    ] {
+        assert_eq!(text(&retry, field), text(&committed, field));
+    }
+    assert_eq!(
+        integer(&retry, "recorded_at"),
+        integer(&committed, "recorded_at")
+    );
+    assert_eq!(get(&retry, "reversal_period"), &Json::Null);
+    assert_eq!(get(&retry, "replacement_period"), &Json::Null);
+    assert_eq!(head(&f.book), committed_head);
+}
+
+#[test]
+fn replacement_plan_rejects_changed_authority_stale_basis_and_invalid_second_member() {
+    let f = Fixture::new();
+    let original = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("pair-errors-original", "10.00"),
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let corrected = f.intent("pair-errors-corrected", "12.00");
+    let planned = ok(
+        &f.book,
+        &[
+            "reverse",
+            text(&original, "vid"),
+            "--reason",
+            "WrongAmount",
+            "--replace-with",
+            &corrected,
+            "--evidence",
+            &f.evidence,
+            "--dry-run",
+        ],
+    );
+    let before = head(&f.book);
+    let encoded = text(&planned, "bytes").as_bytes();
+    let (code, error) = run(
+        &f.book,
+        &["commit", "--plan", "-", "--as", "99"],
+        Some(encoded),
+    );
+    assert_eq!(code, 7, "{}", error.render());
+    assert_eq!(head(&f.book), before);
+    let unbalanced = write(
+        &f.dir,
+        "pair-unbalanced.json",
+        r#"{"legs":[{"side":"debit","account":"1000","amount":"12.00 USD"},{"side":"credit","account":"4000","amount":"11.99 USD"}]}"#,
+    );
+    let refused_output = f.dir.join("refused-correction.plan");
+    let (code, error) = run(
+        &f.book,
+        &[
+            "reverse",
+            text(&original, "vid"),
+            "--reason",
+            "WrongAmount",
+            "--replace-with",
+            &unbalanced,
+            "--evidence",
+            &f.evidence,
+            "--dry-run",
+            "--plan-out",
+            &refused_output.display().to_string(),
+        ],
+        None,
+    );
+    assert_eq!(code, 3, "{}", error.render());
+    assert_eq!(text(&error, "refusal_id"), "FA-REF-001");
+    assert!(!refused_output.exists());
+    assert_eq!(head(&f.book), before);
+    // A second legitimate transaction makes the accounting basis stale;
+    // committing the older pair cannot leave its reversal behind.
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("pair-errors-later", "1.00"),
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let advanced = head(&f.book);
+    let (code, error) = run(&f.book, &["commit", "--plan", "-"], Some(encoded));
+    assert_eq!(code, 6, "{}", error.render());
+    assert_eq!(text(&error, "refusal_id"), "FA-REF-034");
+    assert_eq!(head(&f.book), advanced);
+    let fresh = ok(
+        &f.book,
+        &[
+            "reverse",
+            text(&original, "vid"),
+            "--reason",
+            "WrongAmount",
+            "--replace-with",
+            &corrected,
+            "--evidence",
+            &f.evidence,
+            "--dry-run",
+        ],
+    );
+    let (code, committed) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(&fresh, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", committed.render());
+    assert_eq!(text(&committed, "event"), "replacement_plan_committed");
+    assert_eq!(head(&f.book), advanced + 1);
+}
+
+#[test]
 fn binary_plan_survives_reopen_preserves_seals_and_exact_retries() {
     let f = Fixture::new();
     let intent = f.intent("sale", "12.34");

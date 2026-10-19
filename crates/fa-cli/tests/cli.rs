@@ -2108,8 +2108,8 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
 
 /// fa-giar: a correction is one atomic pair. `fa reverse --replace-with`
 /// commits the exact reversal and the corrected Replacement at one sequence
-/// under one reason; an exact retry writes nothing; the forms that cannot
-/// carry a pair yet are refused before anything is published; and a
+/// under one reason; an exact retry writes nothing; unsupported drafts
+/// are refused before anything is published; and a
 /// Replacement posted alone names this command as its fix.
 #[test]
 fn reverse_with_a_replacement_posts_one_atomic_correction() -> std::io::Result<()> {
@@ -2156,7 +2156,6 @@ fn reverse_with_a_replacement_posts_one_atomic_correction() -> std::io::Result<(
     // Refused before anything is published.
     let before = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
     for (extra, replacement, expected) in [
-        (vec!["--dry-run"], corrected.as_str(), "no plan form"),
         (
             vec!["--draft", "d1"],
             corrected.as_str(),
@@ -5082,6 +5081,43 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         )
         .0,
         0
+    );
+    // Rehearse a separate correction and publish its complete pair artifact,
+    // covering both additive plan events through the declared robot schema.
+    let planned_original = write(
+        &dir,
+        "planned-correction-original.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"rent-pair-plan","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    let (code, original) = run(
+        true,
+        &["post", "--intent", &planned_original, "--evidence", &ev],
+    );
+    assert_eq!(code, 0, "{original}");
+    let pair_path = dir.join("atomic-correction.plan").display().to_string();
+    let (code, planned) = run(
+        true,
+        &[
+            "reverse",
+            field(&original, "vid").unwrap(),
+            "--reason",
+            "WrongAmount",
+            "--replace-with",
+            &corrected,
+            "--evidence",
+            &ev,
+            "--dry-run",
+            "--plan-out",
+            &pair_path,
+        ],
+    );
+    assert_eq!(code, 0, "{planned}");
+    assert_eq!(field(&planned, "event"), Some("replacement_plan"));
+    let (code, committed) = run(true, &["commit", "--plan", &pair_path]);
+    assert_eq!(code, 0, "{committed}");
+    assert_eq!(
+        field(&committed, "event"),
+        Some("replacement_plan_committed")
     );
     assert_eq!(
         run(true, &["export", "csv-gl", "--period", "FY2026-P03"]).0,

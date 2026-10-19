@@ -34,10 +34,10 @@ use fa::{
     CashFlowDefinition, CashFlowSection, IndirectCashFlowAdjustment, IndirectCashFlowDefinition,
     IndirectCashFlowRequest, MAX_ALLOCATION_REVIEW_BYTES, MAX_BALANCE_ALLOCATION_REVIEW_BYTES,
     MAX_PLAN_BYTES, MAX_SETTLEMENT_GROUP_REVIEW_BYTES, MAX_SETTLEMENT_REVIEW_BYTES, PostIntent,
-    PostPlan, ReportOutput, ReportSelection, RollForwardRequest, SettlementGroupRequest,
-    SettlementGroupReview, SettlementLegSelection, SettlementPostRequest, SettlementReview,
-    Statement, StatementDefinition, StatementDiffRequest, StatementEntryEvent, StatementSelection,
-    StatementTraceRequest, SummaryRequest, SummaryScope, TrialBalanceSelection,
+    PostPlan, ReplacementPlan, ReportOutput, ReportSelection, RollForwardRequest,
+    SettlementGroupRequest, SettlementGroupReview, SettlementLegSelection, SettlementPostRequest,
+    SettlementReview, Statement, StatementDefinition, StatementDiffRequest, StatementEntryEvent,
+    StatementSelection, StatementTraceRequest, SummaryRequest, SummaryScope, TrialBalanceSelection,
 };
 use fa_journal::BookContext;
 use fa_journal::{
@@ -5585,12 +5585,7 @@ fn correction(
     path: &str,
 ) -> Result<(), Fail> {
     const FIX: &str = "fa reverse <vid> --reason <name> --replace-with <corrected entry intent>; the intent carries the corrected legs (and optionally effective_date, description, evidence)";
-    if args.switch("--dry-run") || !args.flag_all("--plan-out").is_empty() {
-        return Err(usage(
-            "a correction pair has no plan form yet; nothing was posted",
-            "rehearse the reversal alone with fa reverse <vid> --reason <name> --dry-run, then post the pair",
-        ));
-    }
+    check_post_planning_options(args)?;
     if !args.flag_all("--draft").is_empty() {
         return Err(usage(
             "a correction pair cannot be planned into a draft yet; nothing was posted",
@@ -5676,6 +5671,15 @@ fn correction(
             kind: fa_model::SupersessionKind::Replaces,
             reason_code: reason.code,
         });
+    if args.switch("--dry-run") || out.is_bound_agent() {
+        let capability = reversal_req.capability.clone();
+        let reversal = PostIntent::new(reversal_req.proposal, reversal_req.approvals)
+            .map_err(|e| usage(format!("correction reversal: {e}"), FIX))?;
+        let replacement = PostIntent::new(replacement_req.proposal, replacement_req.approvals)
+            .map_err(|e| usage(format!("correction replacement: {e}"), FIX))?;
+        let plan = book.plan_replacement(reversal, replacement, &capability)??;
+        return emit_replacement_plan(out, &book, &ctx.files, args, &plan);
+    }
     let (reversal_posted, replacement_posted) =
         book.post_replacement_pair(reversal_req, replacement_req)??;
     out.at_book(&book)?;
@@ -6552,11 +6556,21 @@ pub(crate) fn post_document(
 /// A plan is portable canonical bytes, never an authority token supplied by
 /// the caller. Decode only within its format bound before the kernel checks
 /// its book authentication, capability binding, and current snapshot.
-fn read_post_plan(files: &Files, path: &str) -> Result<PostPlan, Fail> {
-    let bytes = read_plan_bytes(files, path, b"FA-POST-PLAN\0", "PostEntry")?;
-    PostPlan::decode(&bytes).map_err(|e| {
+enum CommitPlan {
+    Post(Box<PostPlan>),
+    Replacement(Box<ReplacementPlan>),
+}
+
+fn read_post_plan(files: &Files, path: &str) -> Result<CommitPlan, Fail> {
+    let bytes = read_plan_bytes(files, path, b"FA-", "PostEntry or Replace")?;
+    let decoded = if bytes.starts_with(ReplacementPlan::MAGIC) {
+        ReplacementPlan::decode(&bytes).map(|plan| CommitPlan::Replacement(Box::new(plan)))
+    } else {
+        PostPlan::decode(&bytes).map(|plan| CommitPlan::Post(Box::new(plan)))
+    };
+    decoded.map_err(|e| {
         usage(
-            format!("{path} is not a canonical PostEntry plan: {e}"),
+            format!("{path} is not a canonical posting plan: {e}"),
             "use the complete binary plan file or bytes hex string from a successful --dry-run",
         )
     })
@@ -6946,6 +6960,216 @@ pub(crate) fn emit_post_plan(
     Ok(())
 }
 
+fn emit_replacement_plan(
+    out: &Out,
+    book: &Book,
+    files: &Files,
+    args: &Args,
+    plan: &ReplacementPlan,
+) -> Result<(), Fail> {
+    let encode = |e| Fail::Internal(format!("encode admitted correction plan: {e}"));
+    let bytes = plan.canonical_bytes().map_err(encode)?;
+    let digest = hex(&plan.digest().map_err(encode)?);
+    let certificate_digest = hex(&plan.certificate_digest().map_err(encode)?);
+    let certificate = plan.replacement().certificate();
+    let target = plan.reversal().proposal().supersession[0].target;
+    let accounts: std::collections::BTreeMap<_, _> =
+        book.accounts()?.into_iter().map(|a| (a.vid, a)).collect();
+    let reasons = ReasonCodes::embedded().map_err(|e| Fail::Internal(e.to_string()))?;
+    let mut human = format!(
+        "Planned atomic correction of {:032x} at sequence {}; nothing was written.\nCertificate {certificate_digest}",
+        target.vid.0, certificate.snapshot_seq.0
+    );
+    let mut members = Vec::new();
+    for member in [plan.reversal(), plan.replacement()] {
+        let proposal = member.proposal();
+        let mut legs = Vec::new();
+        human.push_str(&format!(
+            "\n{} effective {} in {}:",
+            proposal.class.name().unwrap_or("?"),
+            proposal.effective_date,
+            member.certificate().period
+        ));
+        for (ordinal, leg) in proposal.legs.iter().enumerate() {
+            let account = accounts
+                .get(&leg.account_ref)
+                .ok_or_else(|| Fail::Internal("an admitted correction account is absent".into()))?;
+            let amount = render_amount(leg.amount, &book.context().units)?;
+            human.push_str(&format!(
+                "\n  {} {} {amount}",
+                side_name(leg.side),
+                account.code
+            ));
+            legs.push(obj(vec![
+                ("ordinal", Json::Int(ordinal as i128)),
+                ("account", s(&account.code)),
+                ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
+                ("side", s(side_name(leg.side))),
+                ("amount", s(amount)),
+            ]));
+        }
+        members.push(obj(vec![
+            ("class", s(proposal.class.name().unwrap_or("?"))),
+            ("effective_date", s(proposal.effective_date.render())),
+            ("period", s(&member.certificate().period)),
+            ("idempotency_key", s(hex(&proposal.idempotency_key))),
+            ("intent_digest", s(hex(&member.certificate().intent_digest))),
+            (
+                "proposal_digest",
+                s(hex(&member.certificate().proposal_digest)),
+            ),
+            (
+                "entry_digest",
+                s(hex(&member.prepared_entry().entry_digest)),
+            ),
+            ("legs", Json::Arr(legs)),
+            (
+                "supersedes",
+                Json::Arr(
+                    proposal
+                        .supersession
+                        .iter()
+                        .map(|link| lineage_json(link, &reasons))
+                        .collect(),
+                ),
+            ),
+            (
+                "evidence",
+                Json::Arr(
+                    proposal
+                        .evidence
+                        .iter()
+                        .map(|e| {
+                            obj(vec![
+                                ("document_oid", s(hex(&e.document_oid.0))),
+                                ("doc_commit", s(hex(&e.doc_commit))),
+                                ("role", Json::Int(i128::from(e.role))),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            ("approvals", Json::Int(member.approvals().len() as i128)),
+        ]));
+    }
+    let encoded = hex(&bytes);
+    let rehearsal = out.is_bound_agent();
+    let command = if out.is_bound() {
+        "fa_post_commit_plan".to_string()
+    } else {
+        let quoted = |word: &str| format!("'{}'", word.replace('\'', "'\\''"));
+        let mut command = format!(
+            "fa commit --plan {}",
+            quoted(args.flag("--plan-out").unwrap_or("-"))
+        );
+        for flag in ["--book", "--keys", "--as"] {
+            if let Some(value) = args.flag(flag) {
+                command.push_str(&format!(" {flag} {}", quoted(value)));
+            }
+        }
+        for grant in args.flag_all("--grant") {
+            command.push_str(&format!(" --grant {}", quoted(grant)));
+        }
+        command.push_str(" --json");
+        command
+    };
+    let actions = if rehearsal {
+        let warning = "This Agent-profile correction plan is a rehearsal and cannot commit to trunk (FA-REF-013). A Human must independently prepare, review and commit the complete pair; correction drafts are not available yet.";
+        out.warn(warning);
+        human.push_str(&format!("\n{warning}"));
+        Vec::new()
+    } else {
+        human.push_str(&format!("\nReview both entries, then {command}"));
+        vec![(command, "commit the complete artifact with the same independently supplied capability; forward data.bytes when the input is stdin".into())]
+    };
+    if args.flag("--plan-out").is_none() {
+        human.push_str(&format!(
+            "\nComplete canonical plan bytes (hex):\n{encoded}"
+        ));
+    }
+    if let Some(path) = args.flag("--plan-out") {
+        write_post_plan(files, path, &bytes)?;
+    }
+    out.at_book(book)?;
+    out.known_at(certificate.snapshot_seq);
+    out.event_with_actions(
+        "replacement_plan",
+        vec![
+            ("intent_kind", s("Replace")),
+            ("target", s(format!("{:032x}", target.vid.0))),
+            ("principal", s(format!("{:032x}", certificate.principal.0))),
+            ("effects_digest", s(hex(&certificate.effects_digest))),
+            (
+                "snapshot_seq",
+                Json::Int(i128::from(certificate.snapshot_seq.0)),
+            ),
+            (
+                "security_policy_epoch",
+                Json::Int(i128::from(certificate.security_policy_epoch)),
+            ),
+            (
+                "expires_at",
+                certificate
+                    .expires_at
+                    .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+            ),
+            (
+                "capability_commitment",
+                s(hex(&certificate.capability_commitment)),
+            ),
+            ("certificate_digest", s(certificate_digest)),
+            ("plan_digest", s(digest)),
+            ("members", Json::Arr(members)),
+            ("bytes", s(encoded)),
+            ("file", args.flag("--plan-out").map_or(Json::Null, s)),
+            ("scope", s("same-snapshot-replacement")),
+            (
+                "authority",
+                s(if out.is_bound() {
+                    "mcp-launch-config"
+                } else {
+                    "embedded-owner"
+                }),
+            ),
+        ],
+        &human,
+        &actions,
+    );
+    Ok(())
+}
+
+fn commit_replacement_cmd(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    plan: ReplacementPlan,
+) -> Result<(), Fail> {
+    let encode = |e| {
+        usage(
+            format!("correction plan: {e}"),
+            "pass the unchanged artifact from a successful correction dry-run",
+        )
+    };
+    let plan_digest = hex(&plan.digest().map_err(encode)?);
+    let certificate_digest = hex(&plan.certificate_digest().map_err(encode)?);
+    let capability = ctx.capability(args, &["post"])?;
+    let mut book = ctx.books.open(args)?;
+    let (reversal, replacement) = book.commit_replacement_plan(plan, &capability)??;
+    ctx.out.at_book(&book)?;
+    let already = matches!(replacement, Posted::AlreadyRecorded { .. });
+    ctx.out.event("replacement_plan_committed", vec![
+        ("reversal", s(format!("{:032x}", reversal.entry_ref().vid.0))),
+        ("reversal_digest", s(hex(&reversal.entry_ref().entry_digest))),
+        ("replacement", s(format!("{:032x}", replacement.entry_ref().vid.0))),
+        ("replacement_digest", s(hex(&replacement.entry_ref().entry_digest))),
+        ("recorded_at", Json::Int(i128::from(replacement.recorded_at().0))),
+        ("reversal_period", reversal.period().map_or(Json::Null, s)),
+        ("replacement_period", replacement.period().map_or(Json::Null, s)),
+        ("already_recorded", Json::Bool(already)),
+        ("plan_digest", s(&plan_digest)), ("certificate_digest", s(&certificate_digest)),
+    ], &format!("{} correction plan {plan_digest}: reversal {:032x} and replacement {:032x} at sequence {}", if already { "Already committed" } else { "Committed" }, reversal.entry_ref().vid.0, replacement.entry_ref().vid.0, replacement.recorded_at().0));
+    Ok(())
+}
+
 fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 1 || args.flag_all("--plan").len() != 1 {
         return Err(usage(
@@ -6958,7 +7182,10 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let path = args.require("--plan", "the exact reviewed plan file, or - for stdin")?;
-    let plan = read_post_plan(&ctx.files, path)?;
+    let plan = match read_post_plan(&ctx.files, path)? {
+        CommitPlan::Post(plan) => *plan,
+        CommitPlan::Replacement(plan) => return commit_replacement_cmd(ctx, args, *plan),
+    };
     let plan_digest = hex(&plan.digest().map_err(|e| {
         usage(
             format!("cannot identify plan: {e}"),

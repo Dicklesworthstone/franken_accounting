@@ -827,6 +827,19 @@ fn gl_families_certify_retain_and_replay_their_complete_original_artifacts() {
             "exact certification retry must not publish"
         );
         let expectation = expected.as_ref().map(Json::render);
+        let supports_status = matches!(family, "roll-forward" | "cash-flow");
+        if supports_status {
+            let mut status_args = vec!["certificate", "status", &locator];
+            if let Some(expected) = &expectation {
+                status_args.extend(["--expect", expected]);
+            }
+            let status = f.ok(&status_args);
+            let receipt = data(&status, "certificate_status");
+            assert_eq!(text(receipt, "status"), "Current");
+            assert_eq!(text(receipt, "oid"), text(metadata, "oid"));
+            assert_eq!(keys(receipt), pinned_fields("events", "certificate_status"));
+            assert_eq!(f.head(), before_retry, "freshness never publishes");
+        }
         for (index, input) in [locator.as_str(), cert_path.to_str().unwrap()]
             .into_iter()
             .enumerate()
@@ -887,6 +900,15 @@ fn gl_families_certify_retain_and_replay_their_complete_original_artifacts() {
                 }
             }
             let wrong_json = wrong.render();
+            if supports_status {
+                for additional in [Vec::new(), vec!["--expect", wrong_json.as_str()]] {
+                    let mut status_args = vec!["certificate", "status", &locator];
+                    status_args.extend(additional);
+                    let (code, errors) = f.run(&status_args);
+                    assert_eq!(code, 8, "freshness needs the original request: {errors:?}");
+                    assert_eq!(errors.len(), 1, "no freshness verdict may escape");
+                }
+            }
             let (code, errors) = f.run(&[
                 "replay",
                 &locator,
@@ -938,12 +960,18 @@ fn gl_families_certify_retain_and_replay_their_complete_original_artifacts() {
                 );
             }
         }
-        retained.push((locator, bytes, artifact.output().to_vec(), expectation));
+        retained.push((
+            locator,
+            bytes,
+            artifact.output().to_vec(),
+            expectation,
+            supports_status,
+        ));
     }
     let mut book = f.open();
     post(&mut book, 64);
     let later_head = book.head().unwrap();
-    for (locator, bytes, expected_output, expectation) in retained {
+    for (locator, bytes, expected_output, expectation, supports_status) in retained {
         let output = f.dir.join(format!("held-{}.report", &locator[2..]));
         let mut args = vec!["replay", "-", "--output", output.to_str().unwrap()];
         if let Some(expected) = &expectation {
@@ -955,6 +983,27 @@ fn gl_families_certify_retain_and_replay_their_complete_original_artifacts() {
             &locator[2..]
         );
         assert_eq!(std::fs::read(output).unwrap(), expected_output);
+        if supports_status {
+            let mut args = vec!["certificate", "status", &locator];
+            if let Some(expected) = &expectation {
+                args.extend(["--expect", expected]);
+            }
+            let status = held(&mut book, &f.dir, &args, Stdin::Missing);
+            let receipt = data(&status, "certificate_status");
+            assert_eq!(text(receipt, "status"), "SupersededBy");
+            assert_eq!(
+                receipt
+                    .get("later_entries")
+                    .and_then(Json::as_arr)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                receipt.get("checked_at"),
+                Some(&Json::Int(i128::from(later_head.0)))
+            );
+        }
         assert_eq!(book.head().unwrap(), later_head);
     }
 }
@@ -1751,6 +1800,17 @@ fn rule_policy_cash_flow_equals_its_explicit_leg_assignments_and_replays_only_ag
         text(data(&replayed, "report_replayed"), "family"),
         "policy-cash-flow"
     );
+    let status = f.ok(&["certificate", "status", &locator, "--expect", &generated]);
+    assert_eq!(
+        text(data(&status, "certificate_status"), "status"),
+        "Current"
+    );
+    let (exit, errors) = f.run(&["certificate", "status", &locator]);
+    assert_eq!(
+        exit, 8,
+        "policy freshness requires independent expectations: {errors:?}"
+    );
+    assert_eq!(errors.len(), 1);
 
     let (exit, errors) = f.run(&["replay", &locator]);
     assert_eq!(exit, 8, "{errors:?}");
@@ -1802,8 +1862,36 @@ fn rule_policy_cash_flow_equals_its_explicit_leg_assignments_and_replays_only_ag
         let (code, errors) = f.run(&["replay", &locator, "--expect", &expect]);
         assert_eq!(code, exit, "{why}: {errors:?}");
         assert_eq!(errors.len(), 1, "{why}");
+        let (code, errors) = f.run(&["certificate", "status", &locator, "--expect", &expect]);
+        assert_eq!(code, exit, "freshness also refuses {why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "no freshness verdict after {why}");
     }
     assert_eq!(f.head(), retained, "replays are reads");
+    let mut book = f.open();
+    post(&mut book, 64);
+    let later_head = book.head().unwrap();
+    drop(book);
+    let status = f.ok(&["certificate", "status", &locator, "--expect", &generated]);
+    let receipt = data(&status, "certificate_status");
+    assert_eq!(text(receipt, "status"), "SupersededBy");
+    assert_eq!(
+        receipt
+            .get("later_entries")
+            .and_then(Json::as_arr)
+            .unwrap()
+            .len(),
+        1
+    );
+    let replayed = f.ok(&["replay", &locator, "--expect", &generated]);
+    assert_eq!(
+        text(data(&replayed, "report_replayed"), "family"),
+        "policy-cash-flow"
+    );
+    assert_eq!(
+        f.head(),
+        later_head,
+        "freshness preserves the historical policy and journal"
+    );
 }
 
 #[test]
@@ -2120,6 +2208,24 @@ fn split_cash_flow_preserves_original_units_and_replays_exact_portions_at_its_fi
         );
         assert_eq!(std::fs::read(output).unwrap(), certificate.output());
     }
+    let current = f.ok(&[
+        "certificate",
+        "status",
+        &locator,
+        "--expect",
+        &expectation.render(),
+    ]);
+    assert_eq!(
+        text(data(&current, "certificate_status"), "status"),
+        "Current"
+    );
+    let (exit, errors) = f.run(&["certificate", "status", &locator]);
+    assert_eq!(
+        exit, 8,
+        "split freshness requires independent expectations: {errors:?}"
+    );
+    assert_eq!(errors.len(), 1);
+
     let (exit, errors) = f.run(&["replay", &locator]);
     assert_eq!(
         exit, 8,
@@ -2167,6 +2273,15 @@ fn split_cash_flow_preserves_original_units_and_replays_exact_portions_at_its_fi
         let (actual, errors) = f.run(&["replay", &locator, "--expect", &expected.render()]);
         assert_eq!(actual, code, "{why}: {errors:?}");
         assert_eq!(errors.len(), 1, "{why}");
+        let (actual, errors) = f.run(&[
+            "certificate",
+            "status",
+            &locator,
+            "--expect",
+            &expected.render(),
+        ]);
+        assert_eq!(actual, code, "freshness refuses {why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "no freshness verdict after {why}");
     }
     assert_eq!(f.head(), retained, "all replays and refusals are read-only");
     let mut book = f.open();
@@ -2189,5 +2304,26 @@ fn split_cash_flow_preserves_original_units_and_replays_exact_portions_at_its_fi
         exit, 8,
         "later native source is a different request: {errors:?}"
     );
-    assert_eq!(f.head(), later);
+    let status = f.ok(&[
+        "certificate",
+        "status",
+        &locator,
+        "--expect",
+        &expectation.render(),
+    ]);
+    let receipt = data(&status, "certificate_status");
+    assert_eq!(text(receipt, "status"), "SupersededBy");
+    assert_eq!(
+        receipt
+            .get("later_entries")
+            .and_then(Json::as_arr)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        receipt.get("checked_at"),
+        Some(&Json::Int(i128::from(later.0)))
+    );
+    assert_eq!(f.head(), later, "freshness never publishes");
 }

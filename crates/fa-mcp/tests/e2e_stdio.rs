@@ -680,6 +680,17 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         assert_eq!(replayed["family"], json!("split-cash-flow"));
         assert_eq!(replayed["output_digest"], certified[1]["output_digest"]);
     }
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_certificate_status",
+        json!({
+            "certificate":format!("C:{}", certified[1]["oid"].as_str().unwrap()),
+            "expect":split_expected.to_string()
+        }),
+    );
+    assert!(!error, "split freshness: {output}");
+    let status: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(status["status"], json!("Current"));
     let mut wrong_units = split_expected;
     wrong_units["policy"]["splits"][0]["portions"][0]["amount"] = json!("4.00 EUR");
     wrong_units["policy"]["splits"][0]["portions"][1]["amount"] = json!("6.00 EUR");
@@ -692,6 +703,16 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         error,
         "same-scale recipient currency substitution: {output}"
     );
+    assert_eq!(structured_error(&output)["refusal_id"], json!("FA-REF-150"));
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_certificate_status",
+        json!({
+            "certificate":format!("C:{}", certified[1]["oid"].as_str().unwrap()),
+            "expect":wrong_units.to_string()
+        }),
+    );
+    assert!(error, "freshness refuses recipient currency substitution: {output}");
     assert_eq!(structured_error(&output)["refusal_id"], json!("FA-REF-150"));
     assert_eq!(producer.finish(), 0);
 }
@@ -1597,6 +1618,159 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(retried["already_recorded"], json!(true));
     assert_eq!(retried["vid"], committed["vid"]);
     assert_eq!(retried["recorded_at"], committed["recorded_at"]);
+
+    // A correction plan carries BOTH sealed entries through the same inline
+    // transport. Agent rehearsal publishes neither; a matching Preparer
+    // commits the reviewed pair in one publication, with exact retries.
+    let before_pair = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let corrected_intent = json!({
+        "idempotency_key": "mcp-correction-replacement",
+        "description": "Corrected rent amount",
+        "legs": [
+            {"side": "debit", "account": "6000", "amount": "1400.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "1400.00 USD"},
+        ],
+    });
+    let correction_arguments = json!({
+        "vid": committed["vid"], "reason": "WrongAmount",
+        "key": "mcp-correction-reversal", "replace_with": corrected_intent,
+        "evidence": [oid], "dry_run": true,
+    });
+    let mut pair_agent = Mcp::start(&book);
+    pair_agent.discover();
+    let (is_error, text, result) = call_tool(
+        &mut pair_agent,
+        "fa_post_reverse",
+        correction_arguments.clone(),
+    );
+    assert!(!is_error, "Agent correction rehearsal: {text}");
+    let agent_pair: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(agent_pair["scope"], "same-snapshot-replacement");
+    assert_eq!(agent_pair["members"].as_array().unwrap().len(), 2);
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["events"], json!(["replacement_plan"]));
+    assert_eq!(envelope["next_actions"], json!([]));
+    assert_eq!(envelope["authority"]["profile"], "agent");
+    assert!(
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| {
+                warning
+                    .as_str()
+                    .is_some_and(|text| text.contains("FA-REF-013"))
+            })
+    );
+    let (is_error, text, _) = call_tool(
+        &mut pair_agent,
+        "fa_post_commit_plan",
+        json!({"plan": agent_pair["bytes"]}),
+    );
+    assert!(
+        is_error,
+        "an Agent rehearsal cannot grant trunk authority: {text}"
+    );
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-013");
+    assert_eq!(pair_agent.finish(), 0);
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_pair,
+        "Agent correction rehearsal and refused commit publish nothing",
+    );
+
+    let (is_error, text, result) = call_tool(&mut mcp, "fa_post_reverse", correction_arguments);
+    assert!(!is_error, "Preparer correction rehearsal: {text}");
+    let pair_plan: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(pair_plan["intent_kind"], "Replace");
+    assert_eq!(pair_plan["target"], committed["vid"]);
+    assert_eq!(pair_plan["scope"], "same-snapshot-replacement");
+    assert_eq!(pair_plan["authority"], "mcp-launch-config");
+    assert_eq!(pair_plan["file"], JsonValue::Null);
+    let members = pair_plan["members"].as_array().unwrap();
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0]["class"], "Reversal");
+    assert_eq!(members[1]["class"], "Replacement");
+    for (member, side, amount) in [
+        (&members[0], "credit", "1500.00 USD"),
+        (&members[1], "debit", "1400.00 USD"),
+    ] {
+        let expense = member["legs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|leg| leg["account"] == "6000")
+            .unwrap();
+        assert_eq!(expense["side"], side);
+        assert_eq!(expense["amount"], amount);
+    }
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["events"], json!(["replacement_plan"]));
+    assert_eq!(envelope["authority"], resource_envelope["authority"]);
+    assert_eq!(envelope["certificate"], JsonValue::Null);
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_pair,
+        "Preparer pair rehearsal publishes no entry or certificate",
+    );
+    let (is_error, text, result) = call_tool(
+        &mut mcp,
+        "fa_post_commit_plan",
+        json!({"plan": pair_plan["bytes"]}),
+    );
+    assert!(!is_error, "commit the reviewed correction pair: {text}");
+    let pair_committed: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(pair_committed["already_recorded"], false);
+    assert_eq!(
+        pair_committed["recorded_at"],
+        pair_plan["snapshot_seq"].as_u64().unwrap() + 1,
+    );
+    for field in ["plan_digest", "certificate_digest"] {
+        assert_eq!(pair_committed[field], pair_plan[field]);
+    }
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["events"], json!(["replacement_plan_committed"]));
+    assert_eq!(envelope["authority"], resource_envelope["authority"]);
+    for (field, member) in [("reversal", &members[0]), ("replacement", &members[1])] {
+        let (is_error, text, _) = call_tool(
+            &mut mcp,
+            "fa_read_show_entry",
+            json!({"vid": pair_committed[field]}),
+        );
+        assert!(!is_error, "read committed {field}: {text}");
+        let actual: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+        assert_eq!(actual["class"], member["class"]);
+        assert_eq!(actual["proposal_digest"], member["proposal_digest"]);
+        assert_eq!(actual["entry_digest"], member["entry_digest"]);
+        assert_eq!(actual["recorded_at"], pair_committed["recorded_at"]);
+    }
+    let after_pair = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_commit_plan",
+        json!({"plan": pair_plan["bytes"]}),
+    );
+    assert!(!is_error, "exact correction pair retry: {text}");
+    let pair_retry: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(pair_retry["already_recorded"], true);
+    for field in [
+        "reversal",
+        "replacement",
+        "reversal_digest",
+        "replacement_digest",
+        "recorded_at",
+        "plan_digest",
+        "certificate_digest",
+    ] {
+        assert_eq!(pair_retry[field], pair_committed[field]);
+    }
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        after_pair,
+    );
 
     // Conversely, a real accounting posting between plan and commit invalidates
     // the plan with FA-REF-034 (exit 6).
