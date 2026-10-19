@@ -7147,30 +7147,34 @@ fn approve_settlement_review_bytes(
     emit_approved(&ctx.out, &book, approved)
 }
 
+/// An allocation reads the book and posts to it: the presented capability
+/// is the principal's and is current (not expired or revoked) before
+/// anything is read or written.
+fn admit_allocation(book: &Book, who: VId, capability: &Capability) -> Result<(), Fail> {
+    let _ = book.read_scope(who, capability)??;
+    Ok(())
+}
+
+/// The allocation basis is the entry's driver evidence. It is supplied under
+/// the caller's capability, so `post` authority on this book is checked
+/// before the document is observed or written, and its uploader and grade
+/// derive from the capability (HumanUpload, or AgentUpload for an Agent).
 fn ensure_allocation_driver_imported(
     book: &mut Book,
     posting: &AllocationPosting,
-    who: VId,
     capability: &Capability,
 ) -> Result<fa_model::EvidenceRef, Fail> {
-    let book_id = book.context().book_id;
-    let driver_ev = posting.driver_evidence(book_id)?;
+    let driver_ev = posting.driver_evidence(book.context().book_id)?;
     if book.document_commitment(&driver_ev.document_oid)?.is_none() {
-        let basis_bytes = posting.basis_bytes()?;
-        let grade = if capability.profile() == fa_policy::Profile::Agent {
-            4
-        } else {
-            3
-        };
-        let doc = fa_journal::Document {
-            book_id,
-            kind: fa_journal::allocation::ALLOCATION_DOCUMENT_KIND,
-            mime: "application/x-fa-allocation-basis".into(),
-            grade,
-            retrieved_by: who,
-            bytes: basis_bytes,
-        };
-        book.add_document(&doc)??;
+        book.upload_document(
+            capability,
+            fa_journal::UploadRequest {
+                kind: fa_journal::allocation::ALLOCATION_DOCUMENT_KIND,
+                mime: "application/x-fa-allocation-basis".into(),
+                bytes: posting.basis_bytes()?,
+                asserted_grade: None,
+            },
+        )??;
     }
     Ok(driver_ev)
 }
@@ -7491,7 +7495,11 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let digest_text = args.require("--digest", "<64-hex review_digest>")?;
         let digest = parse_digest(digest_text, "--digest")?;
         let bytes = read_review_bytes(&ctx.files, review_arg, out.is_bound())?;
-        let mut book = ctx.books.open(args)?;
+        // Current authority (holder, book, expiry, revocation) is admitted
+        // before the book is observed or the basis document is written.
+        let mut book = ctx
+            .books
+            .open_admitted(args, |book| admit_allocation(book, who, &capability))?;
         let plan = if bytes.starts_with(b"FA-BAL-REVIEW\0") {
             let review = BalanceAllocationReview::decode(&bytes).map_err(|e| {
                 usage(
@@ -7499,12 +7507,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "supply the unchanged review exported by `fa allocate --review-out`",
                 )
             })?;
-            ensure_allocation_driver_imported(
-                &mut book,
-                review.review().posting(),
-                who,
-                &capability,
-            )?;
+            ensure_allocation_driver_imported(&mut book, review.review().posting(), &capability)?;
             let prop_digest = review.review().proposal_digest().map_err(|e| {
                 usage(
                     format!("invalid allocation review proposal: {e}"),
@@ -7529,7 +7532,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "supply the unchanged review exported by `fa allocate --review-out`",
                 )
             })?;
-            ensure_allocation_driver_imported(&mut book, review.posting(), who, &capability)?;
+            ensure_allocation_driver_imported(&mut book, review.posting(), &capability)?;
             let prop_digest = review.proposal_digest().map_err(|e| {
                 usage(
                     format!("invalid allocation review proposal: {e}"),
@@ -7559,7 +7562,9 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let path = args.require("--intent", "allocation.json (or - for stdin)")?;
     let text = ctx.files.read_text(path)?;
     let doc = parse_json(path, &text)?;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_allocation(book, who, &capability))?;
     let book_ctx = book.context().clone();
     let source_code = req_str(&doc, "source", "allocation intent")?;
     let source_vid = account_vid(book_ctx.book_id, source_code);
@@ -7625,7 +7630,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let driver_ev = if review_mode {
             prepared.posting().driver_evidence(book_ctx.book_id)?
         } else {
-            ensure_allocation_driver_imported(&mut book, prepared.posting(), who, &capability)?
+            ensure_allocation_driver_imported(&mut book, prepared.posting(), &capability)?
         };
         let mut evidence = document::parse_evidence(&doc, args, &mut book)?;
         if !evidence.contains(&driver_ev) {
@@ -7750,7 +7755,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let driver_ev = if review_mode {
             posting.driver_evidence(book_ctx.book_id)?
         } else {
-            ensure_allocation_driver_imported(&mut book, &posting, who, &capability)?
+            ensure_allocation_driver_imported(&mut book, &posting, &capability)?
         };
         let mut evidence = document::parse_evidence(&doc, args, &mut book)?;
         if !evidence.contains(&driver_ev) {

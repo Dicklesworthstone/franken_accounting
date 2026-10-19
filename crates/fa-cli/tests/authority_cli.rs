@@ -327,6 +327,13 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         br#"{"effective_date":"2026-03-15","idempotency_key":"what-if","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#,
     )
     .unwrap();
+    // A well-formed explicit allocation: without admission before the book
+    // opens, its basis document would be written before the kernel refused.
+    std::fs::write(
+        dir.join("allocation-intent.json"),
+        br#"{"source":"6000","source_side":"credit","total":"1.00 USD","effective_date":"2026-03-15","idempotency_key":"alloc-revoked","method":"largest_remainder","targets":[{"account":"1000","weight":1}]}"#,
+    )
+    .unwrap();
     let day = DateDay::parse("2026-03-15").unwrap();
     let units = UnitRegistry::embedded().unwrap();
     let mut book = Book::create_memory(
@@ -546,6 +553,7 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
             "--scenario",
             "nope",
         ],
+        vec!["allocate", "--intent", "allocation-intent.json"],
         vec!["scenario", "list"],
         vec!["scenario", "show", "nope"],
         vec!["scenario", "diff", "nope", "--period", "FY2026-P03"],
