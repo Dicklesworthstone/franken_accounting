@@ -11,6 +11,7 @@
 //! retention replays the complete family before publishing its immutable bytes.
 
 mod retention;
+mod status;
 pub(crate) use retention::ValidatedArtifact;
 
 use asupersync::fs::Vfs;

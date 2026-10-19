@@ -1133,6 +1133,66 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Rehearse both correction members under one native transaction, then abort.
+    /// Daily quotas need retained creation history already loaded; use
+    /// `plan_replacement_with_history` after opening a checkpointed book.
+    pub fn plan_replacement(
+        &mut self,
+        cx: &PurposeContexts,
+        reversal: fa_intents::PostIntent,
+        replacement: fa_intents::PostIntent,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::ReplacementPlan> {
+        cx.txn().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::plan_replacement(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability.clone(),
+            reversal,
+            replacement,
+        )?)
+    }
+
+    /// Rehearse the pair after admitted hydration of any daily-quota history.
+    /// Both members consume only staged budget, discarded with the rehearsal.
+    pub async fn plan_replacement_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        reversal: fa_intents::PostIntent,
+        replacement: fa_intents::PostIntent,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::ReplacementPlan> {
+        cx.txn().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::plan_replacement_with_history(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability.clone(),
+            reversal,
+            replacement,
+        )
+        .await?)
+    }
+
+    /// Reproduce and atomically publish a joint correction plan under current authority.
+    pub async fn commit_replacement_plan(
+        &mut self,
+        cx: &PurposeContexts,
+        plan: fa_intents::ReplacementPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(Posted, Posted)> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::commit_replacement_plan(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability.clone(),
+            plan,
+        )
+        .await?)
+    }
+
     /// Run the real posting preparation under the caller's transaction
     /// context, then abort it. No runtime or authority is created here.
     pub fn plan(

@@ -1,5 +1,6 @@
 mod cash_flow;
 mod retention;
+mod status;
 
 use super::*;
 use std::path::Path;
@@ -139,12 +140,22 @@ impl Harness {
         account_vid(self.book.context().book_id, code)
     }
     fn post(&mut self, key: &[u8], amount: i128) {
+        self.post_at(key, amount, day(10), "1000", "3000");
+    }
+    fn post_at(
+        &mut self,
+        key: &[u8],
+        amount: i128,
+        date: DateDay,
+        debit: &str,
+        credit: &str,
+    ) -> VId {
         let cx = self.cx();
         let legs = vec![
-            LegPayload::simple(Side::Debit, self.id("1000"), Amount::new(self.unit, amount)),
+            LegPayload::simple(Side::Debit, self.id(debit), Amount::new(self.unit, amount)),
             LegPayload::simple(
                 Side::Credit,
-                self.id("3000"),
+                self.id(credit),
                 Amount::new(self.unit, amount),
             ),
         ];
@@ -153,7 +164,7 @@ impl Harness {
             book_id: self.book.context().book_id,
             branch_id: Id128::TRUNK,
             class: EntryClass::ORIGINAL,
-            effective_date: day(10),
+            effective_date: date,
             document_date: None,
             description: self.book.seal_text(&cx, "Artifact source posting").unwrap(),
             effective_period: None,
@@ -186,7 +197,9 @@ impl Harness {
                 },
             ))
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .entry_ref()
+            .vid
     }
     fn artifacts(&self) -> Vec<ReportArtifact> {
         let cx = self.cx();

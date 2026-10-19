@@ -1228,6 +1228,31 @@ impl Book {
         ))
     }
 
+    /// Rehearse an exact reversal and replacement together without writing.
+    /// Their sealed requests and native effects travel in one portable plan.
+    pub fn plan_replacement(
+        &mut self,
+        reversal: fa_intents::PostIntent,
+        replacement: fa_intents::PostIntent,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::ReplacementPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.plan_replacement_with_history(&purposes, reversal, replacement, capability)
+        ))
+    }
+
+    /// Commit both members of a reviewed correction and their retaining
+    /// certificate atomically; exact retries return the original pair.
+    pub fn commit_replacement_plan(
+        &mut self,
+        plan: fa_intents::ReplacementPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(Posted, Posted)> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.commit_replacement_plan(&purposes, plan, capability)))
+    }
+
     /// Rehearse an intent through the posting kernel without publishing.
     ///
     /// The portable plan retains the original sealed proposal and approvals,
@@ -2009,6 +2034,23 @@ impl Book {
         certificate: &crate::ReportCertificate,
     ) -> Outcome<crate::CertificateStatus> {
         with_store!(&self.store, core => core.certificate_status(&self.purposes(), certificate))
+    }
+
+    /// Replay a complete report artifact, then check its own accounting scope
+    /// for later contributing entries. Cash-flow families require independent
+    /// replay expectations; neither a saved producer nor its digest grants
+    /// authority. A status check publishes no object.
+    pub fn report_artifact_status(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+        expected_digest: Option<&[u8; 32]>,
+        expected: crate::ReportArtifactExpectation<'_>,
+    ) -> Outcome<crate::CertificateStatus> {
+        with_store!(&self.store, core => core.report_artifact_status(
+            &self.purposes(), principal, capability, bytes, expected_digest, expected
+        ))
     }
 
     /// Persist a certificate lazily as an immutable object in this book.

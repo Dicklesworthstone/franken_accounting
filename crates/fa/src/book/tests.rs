@@ -4304,6 +4304,88 @@ fn certificate_status_tracks_migration_activation_not_staging_or_abandonment() {
 }
 
 #[test]
+fn retained_roll_forward_status_tracks_migration_activation_without_writing() {
+    use crate::{CertificateStatus, ReportArtifact, ReportArtifactExpectation, RollForwardRequest};
+    use fa_journal::migration::kind;
+    let capability = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
+    for outcome in [kind::ABANDON, kind::FINALIZE] {
+        let (mut book, usd, evidence, body) = certificate_migration_fixture(false);
+        let certify = |book: &Book| {
+            let request = RollForwardRequest {
+                accounts: vec![account_vid(body.book_id, "1000")],
+                units: vec![usd.0],
+                label: "Opening migration cash".into(),
+                effective_from: body.opening_date,
+                effective_through: body.opening_date,
+                known_at: Some(book.head().unwrap()),
+            };
+            let certified = book
+                .certify_roll_forward(VId(1), &capability, &request)
+                .unwrap()
+                .unwrap();
+            ReportArtifact::try_from(&certified.certificate).unwrap()
+        };
+        let status = |book: &Book, artifact: &ReportArtifact| {
+            book.report_artifact_status(
+                VId(1),
+                &capability,
+                &artifact.canonical_bytes().unwrap(),
+                Some(artifact.digest()),
+                ReportArtifactExpectation::AsSupplied,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let before_run = certify(&book);
+        let run = certificate_open_run(&mut book, evidence, &body);
+        let chunk =
+            certificate_stage_chunk(&mut book, evidence, &body, "FY2026-OPEN", body.opening_date);
+        let staged = certify(&book);
+        for artifact in [&before_run, &staged] {
+            assert_eq!(
+                status(&book, artifact),
+                CertificateStatus::Current {
+                    checked_at: book.head().unwrap()
+                },
+                "a staged migration changes no selected posted cash"
+            );
+        }
+        let control = certificate_transition_run(&mut book, run, outcome);
+        let head = book.head().unwrap();
+        for (artifact, causes) in [
+            (&before_run, vec![chunk, control]),
+            (&staged, vec![control]),
+        ] {
+            assert_eq!(
+                status(&book, artifact),
+                if outcome == kind::FINALIZE {
+                    CertificateStatus::SupersededBy {
+                        checked_at: head,
+                        later_entries: causes,
+                    }
+                } else {
+                    CertificateStatus::Current { checked_at: head }
+                },
+                "only finalization makes the staged entries contribute"
+            );
+            book.replay_report_artifact(
+                VId(1),
+                &capability,
+                &artifact.canonical_bytes().unwrap(),
+                Some(artifact.digest()),
+            )
+            .unwrap()
+            .unwrap();
+        }
+        assert_eq!(
+            book.head().unwrap(),
+            head,
+            "status and replay are read-only"
+        );
+    }
+}
+
+#[test]
 fn certificate_status_excludes_full_detail_summarized_by_opening_balances() {
     use crate::{CertificateStatus, TrialBalanceSelection};
     let (mut book, usd, evidence, body) = certificate_migration_fixture(true);
@@ -4379,6 +4461,37 @@ fn certificate_status_excludes_full_detail_summarized_by_opening_balances() {
 fn certificate_status_ignores_period_controls_but_tracks_later_reservation_releases() {
     use crate::{CertificateStatus, TrialBalanceSelection};
     let (mut book, usd, day, rent) = certified_fixture();
+    let read = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
+    let request = crate::RollForwardRequest {
+        accounts: vec![account_vid(book.context().book_id, "1000")],
+        units: vec![usd.0],
+        label: "Posted cash excludes reservations".into(),
+        effective_from: day,
+        effective_through: day,
+        known_at: Some(book.head().unwrap()),
+    };
+    let certified_cash = book
+        .certify_roll_forward(VId(1), &read, &request)
+        .unwrap()
+        .unwrap();
+    let cash = crate::ReportArtifact::try_from(&certified_cash.certificate).unwrap();
+    let assert_cash_current = |book: &Book| {
+        assert_eq!(
+            book.report_artifact_status(
+                VId(1),
+                &read,
+                &cash.canonical_bytes().unwrap(),
+                Some(cash.digest()),
+                crate::ReportArtifactExpectation::AsSupplied,
+            )
+            .unwrap()
+            .unwrap(),
+            CertificateStatus::Current {
+                checked_at: book.head().unwrap()
+            },
+            "reservation changes do not alter posted roll-forward contributions"
+        );
+    };
     let mut pending = book.read_entry(rent).unwrap().unwrap().0.proposal;
     pending.class = EntryClass::PENDING;
     pending.idempotency_key = b"certified-pending".to_vec();
@@ -4397,6 +4510,7 @@ fn certificate_status_ignores_period_controls_but_tracks_later_reservation_relea
         .unwrap()
         .unwrap()
         .entry_ref();
+    assert_cash_current(&book);
     let mut certificates = Vec::new();
     for selection in [
         TrialBalanceSelection::AsOf(day),
@@ -4461,6 +4575,7 @@ fn certificate_status_ignores_period_controls_but_tracks_later_reservation_relea
         book.balance_as_of(day, None).unwrap().pending_unit_totals[&usd.0],
         (0, 0)
     );
+    assert_cash_current(&book);
     for certified in certificates {
         assert!(
             matches!(

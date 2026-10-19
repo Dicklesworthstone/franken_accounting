@@ -225,7 +225,10 @@ impl PreparedBankMatch {
         db: &mut Database<V>,
         cx: &PurposeContexts,
     ) -> Outcome<BankMatchRecorded> {
-        let Self { txn, confirmation } = *self;
+        let Self {
+            mut txn,
+            confirmation,
+        } = *self;
         match txn.commit(db, &cx.commit()).await {
             Ok(recorded_at) => Ok(Ok(confirmation.recorded(recorded_at, false)?)),
             Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
