@@ -14,7 +14,7 @@
 //! effect transcript acyclic, including scheduled reversal target digests.
 
 use asupersync::fs::Vfs;
-use fa_intents::{PlanCertificate, PostIntent, PostPlan};
+use fa_intents::{PlanCertificate, PostIntent, PostPlan, ReplacementPlan};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{EntryClass, Id128, domain_digest, entry_mirrors, entry_vid};
 use fa_policy::Capability;
@@ -24,9 +24,11 @@ use fgdb_types::context::PurposeContexts;
 
 use crate::genesis::BookContext;
 use crate::policy;
-use crate::post::{PostPreparation, PostRequest, Posted, prepare_plan, prepare_post};
+use crate::post::{
+    PostPreparation, PostRequest, Posted, prepare_plan, prepare_post, prepare_replacement_pair,
+};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{edge_id, resolution_vid, reversal_vid, scalar_bytes};
+use crate::rows::{edge_id, replacement_vid, resolution_vid, reversal_vid, scalar_bytes};
 
 fn invalidated(message: impl Into<String>) -> Refusal {
     Refusal::new(
@@ -589,5 +591,428 @@ pub async fn commit_plan<V: Vfs + Clone>(
             }
         }
         other => Ok(other),
+    }
+}
+
+fn replacement_authentication(
+    book: &BookContext,
+    plan: &ReplacementPlan,
+) -> Result<[u8; 32], KernelError> {
+    let key = fgdb_crypto::derive_key(
+        "fa:replacement-plan-authentication-key:v1",
+        &book.seal_key.0,
+    );
+    Ok(fgdb_crypto::keyed_hash(&key, &plan.authentication_bytes().map_err(codec)?).0)
+}
+
+fn replacement_retention(
+    book: &BookContext,
+    plan: &ReplacementPlan,
+) -> Result<Vec<(fgdb_delta_types::PropertyKeyId, fgdb_types::CanonicalScalar)>, KernelError> {
+    Ok(vec![
+        (
+            property::FA_PAYLOAD,
+            scalar_bytes(
+                "correction plan payload",
+                plan.canonical_bytes().map_err(codec)?,
+            )?,
+        ),
+        (
+            property::FA_DIGEST,
+            scalar_bytes(
+                "correction certificate digest",
+                plan.certificate_digest().map_err(codec)?.to_vec(),
+            )?,
+        ),
+        (
+            property::BOOK_ID,
+            scalar_bytes("correction plan book", book.book_id.0.to_vec())?,
+        ),
+    ])
+}
+
+fn replacement_members(plan: &ReplacementPlan) -> [(VId, &PostPlan); 2] {
+    // ReplacementPlan::validate requires exactly one common target on both
+    // members, and its private fields cannot bypass that constructor.
+    let target = plan.reversal().proposal().supersession[0].target.vid;
+    [
+        (reversal_vid(target), plan.reversal()),
+        (replacement_vid(target), plan.replacement()),
+    ]
+}
+
+fn replacement_retention_batch(
+    book: &BookContext,
+    plan: &ReplacementPlan,
+) -> Result<WriteBatch, KernelError> {
+    let cvid = plan_certificate_vid(book.book_id, &plan.certificate_digest().map_err(codec)?);
+    let mut batch = WriteBatch::new(relation::CITES);
+    batch.create_vertex(
+        cvid,
+        vec![label::CERTIFICATE],
+        replacement_retention(book, plan)?,
+    );
+    for (vid, _) in replacement_members(plan) {
+        batch.add_edge(edge_id(relation::CITES, vid, cvid), vid, cvid, vec![]);
+    }
+    Ok(batch)
+}
+
+/// Rehearse the complete correction, including settlement undo and the
+/// replacement's use of the reversal overlay. Both members are sealed into
+/// one authenticated artifact. An Agent may rehearse but cannot publish it.
+/// A checkpoint-opened daily quota uses [`plan_replacement_with_history`]
+/// to hydrate its native creation history before this synchronous pipeline.
+pub fn plan_replacement<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: Capability,
+    reversal: PostIntent,
+    replacement: PostIntent,
+) -> Outcome<ReplacementPlan> {
+    if let Err(d) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
+        return Ok(Err(policy::refusal(&d)));
+    }
+    let commitment = capability
+        .commitment()
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let (prior, preparation) = match prepare_replacement_pair(
+        db,
+        ctx,
+        book,
+        request(&reversal, capability.clone()),
+        request(&replacement, capability.clone()),
+        true,
+    )? {
+        Ok(prepared) => prepared,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if prior.is_some() {
+        return Ok(Err(invalidated(
+            "the correction's reversal is already recorded; a new atomic pair cannot include a prior publication",
+        )));
+    }
+    let mut prepared = match preparation {
+        PostPreparation::AlreadyRecorded(_) => {
+            return Ok(Err(invalidated(
+                "this correction is already recorded; no new pair was planned",
+            )));
+        }
+        PostPreparation::Ready(prepared) => prepared,
+    };
+    let Some((first, period)) = prepared.paired_entry() else {
+        return Err(KernelError::Corrupt(
+            "correction rehearsal omitted its reversal".into(),
+        ));
+    };
+    let make = |intent: PostIntent, entry: fa_model::Entry, period: &str| {
+        let certificate = PlanCertificate {
+            book_id: entry.proposal.book_id,
+            branch_id: entry.proposal.branch_id,
+            principal: entry.proposal.principal_ref,
+            capability_commitment: commitment,
+            intent_digest: intent.digest().map_err(codec)?,
+            proposal_digest: entry.proposal_digest,
+            effects_digest: prepared.effects_digest()?,
+            snapshot_seq: prepared.basis(),
+            security_policy_epoch: prepared.security_policy_epoch(),
+            expires_at: capability.expires_at(),
+            period: period.to_string(),
+            authentication: [0; 32],
+        };
+        PostPlan::new(intent, entry, certificate).map_err(codec)
+    };
+    let unsigned = ReplacementPlan::new(
+        make(reversal, first.clone(), period)?,
+        make(replacement, prepared.entry().clone(), prepared.period())?,
+    )
+    .map_err(codec)?;
+    let tag = replacement_authentication(book, &unsigned)?;
+    let sign = |member: &PostPlan| {
+        let mut certificate = member.certificate().clone();
+        certificate.authentication = tag;
+        PostPlan::new(
+            member.intent().clone(),
+            member.prepared_entry().clone(),
+            certificate,
+        )
+        .map_err(codec)
+    };
+    let plan = ReplacementPlan::new(sign(unsigned.reversal())?, sign(unsigned.replacement())?)
+        .map_err(codec)?;
+    // Check the actual native retention budget before presenting a plan that
+    // another process will commit. This stages only; abort publishes nothing.
+    prepared.retain_plan(db, replacement_retention_batch(book, &plan)?)?;
+    prepared.abort();
+    Ok(Ok(plan))
+}
+
+/// Hydrate the complete native creation prefix required by a daily quota
+/// only after both requests pass current authority and portable-plan scope
+/// admission. Loading history consumes no budget and publishes no entries.
+pub async fn plan_replacement_with_history<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: Capability,
+    reversal: PostIntent,
+    replacement: PostIntent,
+) -> Outcome<ReplacementPlan> {
+    if !capability.daily_totals().is_empty() {
+        if let Err(denial) =
+            fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None)
+        {
+            return Ok(Err(policy::refusal(&denial)));
+        }
+        for intent in [&reversal, &replacement] {
+            if let Err(refusal) = crate::post::authorize_request(
+                db,
+                book,
+                &request(intent, capability.clone()),
+                crate::post::Admission::Plan,
+            )? {
+                return Ok(Err(refusal));
+            }
+        }
+        ctx.query()
+            .checkpoint()
+            .map_err(WriteTxnError::Interrupted)?;
+        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+            return Ok(Err(refusal));
+        }
+    }
+    plan_replacement(db, ctx, book, capability, reversal, replacement)
+}
+
+/// Lost acknowledgements return both original outcomes only when both
+/// immutable entries, the joint certificate and both retaining edges were
+/// born in the same publication. A direct correction cannot claim this plan.
+async fn recorded_replacement<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    plan: &ReplacementPlan,
+    cvid: VId,
+) -> Outcome<Option<(Posted, Posted)>> {
+    let members = replacement_members(plan);
+    let rows = [db.vertex(members[0].0)?, db.vertex(members[1].0)?];
+    if rows.iter().all(Option::is_none) {
+        return Ok(Ok(None));
+    }
+    let (Some(first), Some(second)) = (&rows[0], &rows[1]) else {
+        return Ok(Err(invalidated(
+            "only one member of the planned correction is recorded",
+        )));
+    };
+    let sequence = first.created_at;
+    let Some(before) = sequence.0.checked_sub(1).map(fgdb_types::CommitSeq) else {
+        return Ok(Err(invalidated(
+            "a correction cannot have creating sequence zero",
+        )));
+    };
+    if sequence != second.created_at
+        || sequence <= plan.reversal().certificate().snapshot_seq
+        || !accounting_unchanged_between(
+            db,
+            ctx,
+            plan.reversal().certificate().snapshot_seq,
+            before,
+            cvid,
+        )
+        .await?
+    {
+        return Ok(Err(invalidated(
+            "the correction was not recorded atomically against the reviewed basis",
+        )));
+    }
+    for ((vid, member), row) in members.into_iter().zip([first, second]) {
+        if row.labels.as_slice() != [label::ENTRY]
+            || row.retired_at.is_some()
+            || row.props != entry_mirrors(member.prepared_entry())?
+            || db.vertex_at(vid, before)?.is_some()
+            || db.vertex_at(vid, sequence)?.as_ref() != Some(row)
+        {
+            return Ok(Err(invalidated(
+                "a planned correction member differs from its original immutable entry",
+            )));
+        }
+        let eid = edge_id(relation::CITES, vid, cvid);
+        let Some(edge) = db.edge(eid)? else {
+            return Ok(Err(invalidated(
+                "a correction member has no retaining edge to the joint certificate",
+            )));
+        };
+        if edge.entry.src != vid
+            || edge.entry.dst != cvid
+            || edge.entry.relation != relation::CITES
+            || edge.entry.created_at != sequence
+            || edge.entry.retired_at.is_some()
+            || !edge.props.is_empty()
+            || db.edge_at(eid, sequence)?.as_ref() != Some(&edge)
+        {
+            return Ok(Err(invalidated(
+                "a correction certificate retaining edge changed or was not published with both entries",
+            )));
+        }
+    }
+    let Some(certificate) = db.vertex(cvid)? else {
+        return Ok(Err(invalidated(
+            "the correction has no retained evidence for this exact plan",
+        )));
+    };
+    if certificate.labels.as_slice() != [label::CERTIFICATE]
+        || certificate.retired_at.is_some()
+        || certificate.created_at != sequence
+        || certificate.props != replacement_retention(book, plan)?
+        || db.vertex_at(cvid, before)?.is_some()
+        || db.vertex_at(cvid, sequence)?.as_ref() != Some(&certificate)
+    {
+        return Ok(Err(invalidated(
+            "the joint correction certificate changed or was recorded separately",
+        )));
+    }
+    let posted = |(vid, member): (VId, &PostPlan)| Posted::AlreadyRecorded {
+        entry_ref: member.prepared_entry().entry_ref(vid),
+        recorded_at: sequence,
+    };
+    Ok(Ok(Some((posted(members[0]), posted(members[1])))))
+}
+
+/// Authenticate, revalidate and atomically publish both reviewed members.
+/// The artifact supplies no authority and cannot bypass either member's
+/// current policy, SoD or accounting checks, including on an exact retry.
+pub async fn commit_replacement_plan<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: Capability,
+    plan: ReplacementPlan,
+) -> Outcome<(Posted, Posted)> {
+    ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+    if let Err(error) = plan.validate() {
+        return Ok(Err(invalidated(error.to_string())));
+    }
+    let certificate = plan.replacement().certificate();
+    if certificate.book_id != book.book_id || certificate.branch_id != Id128::TRUNK {
+        return Ok(Err(invalidated(
+            "the correction does not target this book's trunk",
+        )));
+    }
+    if let Err(denial) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
+    for member in [plan.reversal(), plan.replacement()] {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &request(member.intent(), capability.clone()),
+            crate::post::Admission::Commit,
+        )? {
+            return Ok(Err(refusal));
+        }
+    }
+    let commitment = capability
+        .commitment()
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    if certificate.principal != capability.holder()
+        || certificate.capability_commitment != commitment
+        || certificate.expires_at != capability.expires_at()
+        || !same_tag(
+            &replacement_authentication(book, &plan)?,
+            &certificate.authentication,
+        )
+    {
+        return Ok(Err(invalidated(
+            "the correction plan changed or belongs to a different acting capability",
+        )));
+    }
+    if !capability.daily_totals().is_empty() {
+        ctx.query()
+            .checkpoint()
+            .map_err(WriteTxnError::Interrupted)?;
+        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+            return Ok(Err(refusal));
+        }
+    }
+    let cvid = plan_certificate_vid(book.book_id, &plan.certificate_digest().map_err(codec)?);
+    match recorded_replacement(db, ctx, book, &plan, cvid).await? {
+        Ok(Some(posted)) => return Ok(Ok(posted)),
+        Err(refusal) => return Ok(Err(refusal)),
+        Ok(None) => {}
+    }
+    let head = db.frontier()?;
+    if !accounting_unchanged_between(db, ctx, certificate.snapshot_seq, head, cvid).await? {
+        return Ok(Err(invalidated(
+            "the correction's accounting basis changed; rehearse the complete pair again",
+        )));
+    }
+    let preparation = prepare_replacement_pair(
+        db,
+        ctx,
+        book,
+        request(plan.reversal().intent(), capability.clone()),
+        request(plan.replacement().intent(), capability),
+        false,
+    )?;
+    let mut prepared = match preparation {
+        Ok((None, PostPreparation::Ready(prepared))) => prepared,
+        Err(refusal) => {
+            return Ok(Err(invalidated(format!(
+                "correction revalidation refused: {} ({})",
+                refusal.message, refusal.code
+            ))));
+        }
+        Ok(_) => {
+            return Ok(Err(invalidated(
+                "the correction identities are occupied without this plan's retained evidence",
+            )));
+        }
+    };
+    let first_matches = prepared.paired_entry().is_some_and(|(entry, period)| {
+        entry == plan.reversal().prepared_entry() && period == plan.reversal().certificate().period
+    });
+    if !first_matches
+        || prepared.entry() != plan.replacement().prepared_entry()
+        || prepared.period() != certificate.period
+        || prepared.basis() != head
+        || prepared.security_policy_epoch() != certificate.security_policy_epoch
+        || prepared.effects_digest()? != certificate.effects_digest
+    {
+        prepared.abort();
+        return Ok(Err(invalidated(
+            "the current transaction does not reproduce both reviewed entries, periods, policy and native effects",
+        )));
+    }
+    if db.vertex(cvid)?.is_some() {
+        prepared.abort();
+        return Ok(Err(invalidated(
+            "the correction certificate locator is occupied without both original outcomes",
+        )));
+    }
+    prepared.retain_plan(db, replacement_retention_batch(book, &plan)?)?;
+    match prepared.commit(db, ctx).await? {
+        Ok(replacement @ Posted::Committed { .. }) => {
+            let (vid, first) = replacement_members(&plan)[0];
+            Ok(Ok((
+                Posted::Committed {
+                    entry_ref: first.prepared_entry().entry_ref(vid),
+                    recorded_at: replacement.recorded_at(),
+                    period: first.certificate().period.clone(),
+                },
+                replacement,
+            )))
+        }
+        Ok(Posted::AlreadyRecorded { .. }) => {
+            match recorded_replacement(db, ctx, book, &plan, cvid).await? {
+                Ok(Some(posted)) => Ok(Ok(posted)),
+                Err(refusal) => Ok(Err(refusal)),
+                Ok(None) => Ok(Err(invalidated(
+                    "a publication race did not retain both correction outcomes",
+                ))),
+            }
+        }
+        Err(refusal) if refusal.exit == exit::CONFLICT => Ok(Err(invalidated(refusal.message))),
+        Err(refusal) => Ok(Err(refusal)),
     }
 }

@@ -398,6 +398,142 @@ impl PostPlan {
     }
 }
 
+/// One portable atomic correction. Both member transcripts bind the same
+/// complete native effect and current authority, and have a joint kernel
+/// authentication tag in a separate domain. Neither member authenticates as
+/// a standalone PostPlan. Existing single-entry wire formats are unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplacementPlan {
+    reversal: PostPlan,
+    replacement: PostPlan,
+}
+
+impl ReplacementPlan {
+    pub const MAGIC: &'static [u8; 16] = b"FA-REPLACE-PLAN\0";
+
+    pub fn new(reversal: PostPlan, replacement: PostPlan) -> Result<Self, IntentError> {
+        let plan = Self {
+            reversal,
+            replacement,
+        };
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    pub fn validate(&self) -> Result<(), IntentError> {
+        self.reversal.validate()?;
+        self.replacement.validate()?;
+        let a = self.reversal.certificate();
+        let b = self.replacement.certificate();
+        if a.book_id != b.book_id
+            || a.branch_id != b.branch_id
+            || a.principal != b.principal
+            || a.capability_commitment != b.capability_commitment
+            || a.snapshot_seq != b.snapshot_seq
+            || a.security_policy_epoch != b.security_policy_epoch
+            || a.expires_at != b.expires_at
+            || a.effects_digest != b.effects_digest
+            || a.authentication != b.authentication
+        {
+            return Err(IntentError::Invalid(
+                "correction members have different authority, basis, or effects",
+            ));
+        }
+        for (rev, rep) in [
+            (
+                self.reversal.intent().proposal(),
+                self.replacement.intent().proposal(),
+            ),
+            (self.reversal.proposal(), self.replacement.proposal()),
+        ] {
+            let shape = match (rev.supersession.as_slice(), rep.supersession.as_slice()) {
+                ([a], [b]) => {
+                    rev.class == fa_model::EntryClass::REVERSAL
+                        && rep.class == fa_model::EntryClass::REPLACEMENT
+                        && a.kind == fa_model::SupersessionKind::Reverses
+                        && b.kind == fa_model::SupersessionKind::Replaces
+                        && a.target == b.target
+                }
+                _ => false,
+            };
+            if !shape {
+                return Err(IntentError::Invalid(
+                    "a correction has one Reversal and one Replacement of the same target",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn reversal(&self) -> &PostPlan {
+        &self.reversal
+    }
+
+    #[must_use]
+    pub fn replacement(&self) -> &PostPlan {
+        &self.replacement
+    }
+
+    /// Both ordered member certificates, excluding only their authentication
+    /// tags. Each already commits its complete request, prepared proposal,
+    /// approvals through the intent digest, period and native effects.
+    pub fn authentication_bytes(&self) -> Result<Vec<u8>, IntentError> {
+        self.validate()?;
+        let mut w = Writer::new();
+        w.fixed(b"FA-REPLACE-CERT\0")
+            .u16(SCHEMA_MAJOR)
+            .u16(SCHEMA_MINOR)
+            .bytes(&self.reversal.certificate().authentication_bytes()?)
+            .bytes(&self.replacement.certificate().authentication_bytes()?);
+        Ok(w.finish()?)
+    }
+
+    pub fn certificate_digest(&self) -> Result<[u8; 32], IntentError> {
+        Ok(domain_digest(
+            b"fa:replacement-plan-certificate:v1",
+            &[
+                &self.authentication_bytes()?,
+                &self.reversal.certificate().authentication,
+            ],
+        ))
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, IntentError> {
+        self.validate()?;
+        let mut w = Writer::new();
+        w.fixed(Self::MAGIC)
+            .u16(SCHEMA_MAJOR)
+            .u16(SCHEMA_MINOR)
+            .bytes(&self.reversal.canonical_bytes()?)
+            .bytes(&self.replacement.canonical_bytes()?);
+        let bytes = w.finish()?;
+        bounded(&bytes, MAX_PLAN_BYTES)?;
+        Ok(bytes)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, IntentError> {
+        bounded(bytes, MAX_PLAN_BYTES)?;
+        let mut r = Reader::new(bytes);
+        if r.fixed::<16>("replacement_plan.magic")? != *Self::MAGIC {
+            return Err(IntentError::Invalid("wrong correction plan magic"));
+        }
+        version(&mut r)?;
+        let reversal = PostPlan::decode(r.bytes(MAX_PLAN_BYTES, "replacement_plan.reversal")?)?;
+        let replacement =
+            PostPlan::decode(r.bytes(MAX_PLAN_BYTES, "replacement_plan.replacement")?)?;
+        r.finish()?;
+        Self::new(reversal, replacement)
+    }
+
+    pub fn digest(&self) -> Result<[u8; 32], IntentError> {
+        Ok(domain_digest(
+            b"fa:replacement-plan:v1",
+            &[&self.canonical_bytes()?],
+        ))
+    }
+}
+
 const BATCH_MAGIC: &[u8; 9] = b"FA-BATCH\0";
 
 /// Hard decode bound for a whole batch transcript. Each member keeps its

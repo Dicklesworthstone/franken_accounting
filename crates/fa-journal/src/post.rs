@@ -215,8 +215,10 @@ pub struct PreparedPost {
 #[derive(Clone, Debug)]
 struct PairMember {
     capability: Capability,
+    entry: Entry,
     entry_ref: EntryRef,
     period: String,
+    effects_digest: [u8; 32],
 }
 
 /// Only the pair API supplies this context. A recorded reversal permits
@@ -256,6 +258,12 @@ impl PreparedPost {
         &self.entry
     }
 
+    pub(crate) fn paired_entry(&self) -> Option<(&Entry, &str)> {
+        self.paired_reversal
+            .as_ref()
+            .map(|member| (&member.entry, member.period.as_str()))
+    }
+
     pub(crate) fn period(&self) -> &str {
         &self.period
     }
@@ -265,7 +273,15 @@ impl PreparedPost {
     }
 
     pub(crate) fn effects_digest(&self) -> Result<[u8; 32], KernelError> {
-        Ok(self.effects_digest)
+        Ok(self
+            .paired_reversal
+            .as_ref()
+            .map_or(self.effects_digest, |first| {
+                fa_model::domain_digest(
+                    b"fa:replacement-effects:v1",
+                    &[&first.effects_digest, &self.effects_digest],
+                )
+            }))
     }
 
     /// Only the verified planning path appends its immutable graph evidence
@@ -1396,16 +1412,20 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             let PreparedPost {
                 txn,
                 request,
+                entry,
                 entry_ref,
                 period,
+                effects_digest,
                 ..
             } = *prepared;
             (
                 txn,
                 Some(PairMember {
                     capability: request.capability,
+                    entry,
                     entry_ref,
                     period,
+                    effects_digest,
                 }),
             )
         }
@@ -3346,7 +3366,7 @@ pub async fn post_replacement_pair<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let (prior, prepared) =
-        match prepare_replacement_pair(db, ctx, book, reversal_req, replacement_req)? {
+        match prepare_replacement_pair(db, ctx, book, reversal_req, replacement_req, false)? {
             Ok(pair) => pair,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -3394,13 +3414,19 @@ fn replacement_shape() -> Refusal {
 /// Retain both members' original witnesses and effects until one commit.
 /// Kept private so a caller cannot append a replacement to an arbitrary
 /// prepared operation or mistake a partial retry for a complete pair.
-fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     reversal_req: PostRequest,
     replacement_req: PostRequest,
+    planning: bool,
 ) -> Outcome<(Option<Posted>, PostPreparation)> {
+    let admission = if planning {
+        Admission::Plan
+    } else {
+        Admission::Commit
+    };
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let reversal = &reversal_req.proposal;
     let replacement = &replacement_req.proposal;
@@ -3436,12 +3462,13 @@ fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
                 "fix the named field and resubmit",
             )));
         }
-        if let Err(refusal) = authorize_request(db, book, request, Admission::Commit)? {
+        if let Err(refusal) = authorize_request(db, book, request, admission)? {
             return Ok(Err(refusal));
         }
     }
     let retry_request = reversal_req.clone();
-    let (prior, basis) = match prepare_post(db, ctx, book, reversal_req)? {
+    let (prior, basis) = match prepare_post_in(db, ctx, book, reversal_req, None, admission, None)?
+    {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => {
             // prepare_post has already proved proposal equivalence under
@@ -3469,16 +3496,10 @@ fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
         }
         Ok(PostPreparation::Ready(prepared)) => (None, ReplacementBasis::Staged(prepared)),
     };
-    Ok(prepare_post_in(
-        db,
-        ctx,
-        book,
-        replacement_req,
-        Some(basis),
-        Admission::Commit,
-        None,
-    )?
-    .map(|prepared| (prior, prepared)))
+    Ok(
+        prepare_post_in(db, ctx, book, replacement_req, Some(basis), admission, None)?
+            .map(|prepared| (prior, prepared)),
+    )
 }
 
 /// Explain the complete `SUPERSEDES` lineage component containing `vid` and its

@@ -1,0 +1,48 @@
+# Atomic correction plans (plan §8.2, §10.4, Appendix B; fa-giar/fa-we7).
+# This is an additive format. Existing PostIntent/PostPlan/PlanCertificate
+# bytes retain their v1 grammar; no single-entry tag is reinterpreted.
+schema_version = 1
+format = "FA-REPLACE-PLAN"
+major = 1
+minor = 0
+max_plan_bytes = 16781312
+certificate_domain = "fa:replacement-plan-certificate:v1"
+authentication_key_domain = "fa:replacement-plan-authentication-key:v1"
+plan_domain = "fa:replacement-plan:v1"
+effects_domain = "fa:replacement-effects:v1"
+retention_identity_domain = "fa:vid:post-plan-certificate:v1"
+
+# Canonical plan: fixed("FA-REPLACE-PLAN\0") || u16 major || u16 minor
+# || bytes(reversal PostPlan) || bytes(replacement PostPlan).
+# bytes is u32 little-endian length followed by the exact bounded body.
+# Both member plans target the same book, trunk, principal and capability,
+# use the same snapshot, current security epoch, expiry and native effect,
+# and name one common supersession target with Reverses/Replaces respectively.
+# Their periods, requests, sealed proposal bytes and approval lists remain
+# independent and are each bound by the existing PostPlan member checks.
+# Forward/unknown versions, trailing bytes and inconsistent members refuse.
+
+# Joint authentication preimage: fixed("FA-REPLACE-CERT\0") || u16 major
+# || u16 minor || bytes(reversal.certificate.authentication_bytes)
+# || bytes(replacement.certificate.authentication_bytes), in that order.
+# The kernel derives a book key in authentication_key_domain and authenticates
+# this preimage with fgdb_crypto::keyed_hash. Both member authentication fields
+# contain this same tag. The separate key domain prevents either member from
+# authenticating through the standalone PostEntry commit API.
+# Public certificate digest = domain_digest(certificate_domain,
+# [joint preimage, joint authentication tag]); plan digest commits all plan bytes.
+# Both certificates carry domain_digest(effects_domain,
+# [reversal member native effect, replacement member native effect]), in order.
+# This includes each member's native quota receipts and does not change the
+# effects bytes for any standalone PostEntry plan.
+
+# One Certificate vertex retains the complete plan and full joint digest;
+# both Entries cite it by CITES. Entries, certificate and retaining edges
+# must have the same original creating sequence. Exact retries recheck their
+# current original versions, complete payloads, full digests and links.
+# No certificate bytes supply current capability, approval or Agent promotion.
+# The planner stages retention before aborting, so the native row/transaction
+# budget can refuse before any successful portable plan is returned.
+# Both posting members plus one Certificate and two CITES edges publish in
+# one existing replacement transaction; no per-member publication or draft
+# support is implied. Source-native certificates are omitted by scratch replay.

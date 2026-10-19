@@ -668,6 +668,153 @@ fn planning_aborts_usage_batches_accumulate_and_conflicting_preparations_do_not_
 }
 
 #[test]
+fn replacement_plans_charge_both_members_atomically_and_never_charge_an_exact_retry() {
+    let mut h = Harness::new(100, true, true);
+    // The original uses an unbounded owner. The correction's daily quota
+    // must charge both its reversal and corrected posting, with no refund.
+    let original = h
+        .post(h.proposal(OWNER, 30, b"pair-quota-original"), &owner())
+        .unwrap()
+        .entry_ref();
+    let cap = h.quota.clone();
+    let correction = |h: &Harness, corrected: i128| {
+        let mut reversal = h.proposal(HOLDER, 30, b"pair-quota-reversal");
+        reversal.class = EntryClass::REVERSAL;
+        for leg in &mut reversal.legs {
+            leg.side = match leg.side {
+                Side::Debit => Side::Credit,
+                Side::Credit => Side::Debit,
+            };
+        }
+        reversal.unit_totals = EntryPayload::fold_unit_totals(&reversal.legs).unwrap();
+        reversal.supersession = vec![fa_model::Supersession {
+            target: original,
+            kind: fa_model::SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
+        let mut replacement = h.proposal(HOLDER, corrected, b"pair-quota-replacement");
+        replacement.class = EntryClass::REPLACEMENT;
+        replacement.supersession = vec![fa_model::Supersession {
+            target: original,
+            kind: fa_model::SupersessionKind::Replaces,
+            reason_code: 1,
+        }];
+        (
+            PostIntent::new(reversal, Vec::new()).unwrap(),
+            PostIntent::new(replacement, Vec::new()).unwrap(),
+        )
+    };
+    let cx = h.cx();
+    let at = h.head();
+    let vertices = h.db.vertices().unwrap();
+    let (reversal, replacement) = correction(&h, 71);
+    let refusal = h
+        .runtime
+        .block_on(plan_replacement_with_history(
+            &mut h.db,
+            &cx,
+            &h.book,
+            cap.clone(),
+            reversal,
+            replacement,
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, refusal::code::DAILY_CEILING, "{refusal}");
+    assert_eq!(h.head(), at);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert!(h.db.vertex(h.key().cell_vid()).unwrap().is_none());
+
+    let (reversal, replacement) = correction(&h, 70);
+    let plan = h
+        .runtime
+        .block_on(plan_replacement_with_history(
+            &mut h.db,
+            &cx,
+            &h.book,
+            cap.clone(),
+            reversal,
+            replacement,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(h.head(), at);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    let (first, second) = h
+        .runtime
+        .block_on(commit_replacement_plan(
+            &mut h.db,
+            &cx,
+            &h.book,
+            cap.clone(),
+            plan.clone(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.recorded_at(), second.recorded_at());
+    assert_eq!(h.head().0, at.0 + 1);
+    assert_eq!((h.cell().gross_debits, h.cell().generation), (100, 2));
+    for (generation, entry, gross, total) in [
+        (1, first.entry_ref(), 30, 30),
+        (2, second.entry_ref(), 70, 100),
+    ] {
+        let row = h.db.vertex(h.key().debit_vid(generation)).unwrap().unwrap();
+        let debit = UsageDebit::from_row(&row).unwrap();
+        assert_eq!(row.created_at, first.recorded_at());
+        assert_eq!(
+            (debit.entry, debit.gross_debits, debit.total_gross_debits),
+            (entry, gross, total)
+        );
+    }
+    let report = h.check(None);
+    assert!(report.is_green(), "{report:?}");
+    assert_eq!((report.charges_checked, report.cells_checked), (2, 1));
+
+    let at = h.head();
+    let retry = h
+        .runtime
+        .block_on(commit_replacement_plan(
+            &mut h.db,
+            &cx,
+            &h.book,
+            cap.clone(),
+            plan.clone(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(matches!(retry.0, Posted::AlreadyRecorded { .. }));
+    assert!(matches!(retry.1, Posted::AlreadyRecorded { .. }));
+    assert_eq!(retry.0.entry_ref(), first.entry_ref());
+    assert_eq!(retry.1.entry_ref(), second.entry_ref());
+    assert_eq!(h.head(), at);
+    assert_eq!((h.cell().gross_debits, h.cell().generation), (100, 2));
+
+    let request = RevocationRequest {
+        capability: owner(),
+        revoked: cap.commitment().unwrap(),
+        effective_date: day(),
+        idempotency_key: b"revoke-pair-quota".to_vec(),
+        description: seal(&h.book, "revoke pair quota"),
+    };
+    h.runtime
+        .block_on(revoke_capability(&mut h.db, &cx, &h.book, request))
+        .unwrap()
+        .unwrap();
+    let at = h.head();
+    let refusal = h
+        .runtime
+        .block_on(commit_replacement_plan(&mut h.db, &cx, &h.book, cap, plan))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        refusal.code, "FA-REF-023",
+        "current revocation precedes recorded outcomes"
+    );
+    assert_eq!(h.head(), at);
+    assert_eq!((h.cell().gross_debits, h.cell().generation), (100, 2));
+}
+
+#[test]
 fn a_committed_plan_consumes_once_and_tick_or_root_revocation_invalidates_prepared_usage() {
     let mut h = Harness::new(100, true, true);
     let cap = h.quota.clone();

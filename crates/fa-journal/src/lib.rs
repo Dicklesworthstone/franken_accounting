@@ -78,7 +78,7 @@ pub use evidence::{
     add_document_external, document_record, explain_entry_evidence, fetch_document,
     fetch_document_with, read_document,
 };
-pub use fa_intents::{PostBatch, PostIntent};
+pub use fa_intents::{PostBatch, PostIntent, ReplacementPlan};
 pub use fa_palimpsest::{
     LineageEdgeSummary, LineageEntrySummary, LineageReport, NetPosition, NettingLaw,
 };
@@ -114,7 +114,10 @@ pub use period::{
     verify_periods,
 };
 pub use period_history::{PeriodHistoryVerification, verify_periods_with_history};
-pub use plan::{commit_plan, plan_certificate_vid, plan_post, plan_post_with_history};
+pub use plan::{
+    commit_plan, commit_replacement_plan, plan_certificate_vid, plan_post, plan_post_with_history,
+    plan_replacement, plan_replacement_with_history,
+};
 pub use policy::{
     ActivationRequest, ApprovalRequest, Approved, IssuanceRequest, Issued, IssuedCapability,
     PolicyActivated, RevocationRequest, Revoked, activate_policy, activation_proposal,

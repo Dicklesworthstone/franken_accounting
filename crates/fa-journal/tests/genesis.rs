@@ -5877,6 +5877,69 @@ impl Harness {
             .block_on(async move { commit_plan(db, &ctx, book, capability, plan).await })
             .expect("plan commit kernel")
     }
+
+    fn replacement_plan(
+        &mut self,
+        reversal: PostRequest,
+        replacement: PostRequest,
+    ) -> Result<fa_intents::ReplacementPlan, Refusal> {
+        assert!(reversal.plan_certificate.is_none());
+        assert!(replacement.plan_certificate.is_none());
+        assert_eq!(
+            reversal.capability.commitment().unwrap(),
+            replacement.capability.commitment().unwrap()
+        );
+        let first = fa_intents::PostIntent::new(reversal.proposal, reversal.approvals).unwrap();
+        let second =
+            fa_intents::PostIntent::new(replacement.proposal, replacement.approvals).unwrap();
+        let ctx = self.ctx();
+        plan_replacement(
+            &mut self.db,
+            &ctx,
+            &self.book,
+            reversal.capability,
+            first,
+            second,
+        )
+        .expect("replacement planning kernel")
+    }
+
+    fn publish_replacement_plan(
+        &mut self,
+        plan: fa_intents::ReplacementPlan,
+        capability: &Capability,
+    ) -> Result<(Posted, Posted), Refusal> {
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(commit_replacement_plan(
+                &mut self.db,
+                &ctx,
+                &self.book,
+                capability.clone(),
+                plan,
+            ))
+            .expect("replacement plan commit kernel")
+    }
+
+    fn planned_rent_correction(&self, target: EntryRef) -> (PostRequest, PostRequest) {
+        (
+            self.request(
+                self.reversal_of_entry(target, b"portable-pair-reversal"),
+                &["post"],
+            ),
+            self.request(
+                replacement_proposal(
+                    target,
+                    self.proposal(
+                        self.rent_legs(125),
+                        b"portable-pair-replacement",
+                        EntryClass::REPLACEMENT,
+                    ),
+                ),
+                &["post"],
+            ),
+        )
+    }
 }
 
 /// fa-llx: `commit_plan` admits only whole-book tokens, so a token with a
@@ -7131,6 +7194,492 @@ fn memo_off_balance_and_statistical_legs_obey_fa_inv_01_memo() {
         .post(h.request(rev_stat, &["post"]))
         .expect("single-sided statistical reversal");
     assert!(matches!(reversed, Posted::Committed { .. }));
+}
+
+#[test]
+fn portable_replacement_plan_is_zero_write_and_retains_one_atomic_pair_certificate() {
+    let mut h = harness();
+    let original = h
+        .post(h.request(
+            h.proposal(
+                h.rent_legs(100),
+                b"portable-pair-original",
+                EntryClass::ORIGINAL,
+            ),
+            &["post"],
+        ))
+        .unwrap()
+        .entry_ref();
+    let (reversal, replacement) = h.planned_rent_correction(original);
+    let capability = reversal.capability.clone();
+    let basis = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let plan = h
+        .replacement_plan(reversal.clone(), replacement.clone())
+        .unwrap();
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert_eq!(
+        h.replacement_plan(reversal.clone(), replacement.clone())
+            .unwrap(),
+        plan
+    );
+    // Only the reversal's native Entry bytes change. The replacement and
+    // its own local effects stay identical, but the joint effects must bind
+    // the changed first member as well as the final member's transaction.
+    let mut changed_reversal = reversal;
+    changed_reversal.proposal.description = h.statement("Reviewed correction reason", 219);
+    let changed = h.replacement_plan(changed_reversal, replacement).unwrap();
+    assert_eq!(
+        changed.replacement().prepared_entry(),
+        plan.replacement().prepared_entry()
+    );
+    assert_ne!(
+        changed.reversal().prepared_entry(),
+        plan.reversal().prepared_entry()
+    );
+    assert_ne!(
+        changed.reversal().certificate().effects_digest,
+        plan.reversal().certificate().effects_digest
+    );
+    let bytes = plan.canonical_bytes().unwrap();
+    assert_eq!(fa_intents::ReplacementPlan::decode(&bytes).unwrap(), plan);
+    assert_ne!(
+        plan.certificate_digest().unwrap(),
+        plan.reversal().certificate().digest().unwrap()
+    );
+    assert_eq!(plan.reversal().certificate().snapshot_seq, basis);
+    assert_eq!(
+        plan.reversal().certificate().effects_digest,
+        plan.replacement().certificate().effects_digest
+    );
+
+    // A member carries a joint-domain authentication tag. Extracting either
+    // syntactically valid PostPlan cannot publish half the reviewed change.
+    for member in [plan.reversal(), plan.replacement()] {
+        assert_eq!(
+            h.publish_plan(member.clone(), &capability)
+                .unwrap_err()
+                .code,
+            "FA-REF-034"
+        );
+        assert_eq!(h.db.frontier().unwrap(), basis);
+    }
+    for offset in [0, 16, 18] {
+        let mut changed = bytes.clone();
+        changed[offset] ^= 1;
+        assert!(fa_intents::ReplacementPlan::decode(&changed).is_err());
+    }
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(fa_intents::ReplacementPlan::decode(&trailing).is_err());
+    assert!(
+        fa_intents::ReplacementPlan::new(plan.replacement().clone(), plan.reversal().clone())
+            .is_err()
+    );
+
+    let (first, second) = h
+        .publish_replacement_plan(plan.clone(), &capability)
+        .unwrap();
+    assert!(matches!(first, Posted::Committed { .. }));
+    assert!(matches!(second, Posted::Committed { .. }));
+    assert_eq!(first.recorded_at(), second.recorded_at());
+    assert_eq!(first.recorded_at().0, basis.0 + 1);
+    let cvid = plan_certificate_vid(h.book.book_id, &plan.certificate_digest().unwrap());
+    let certificate = h.db.vertex(cvid).unwrap().unwrap();
+    assert_eq!(certificate.created_at, first.recorded_at());
+    assert_eq!(
+        fa_journal::rows::bytes(&certificate, property::FA_PAYLOAD, "plan").unwrap(),
+        bytes
+    );
+    for (outcome, member) in [(&first, plan.reversal()), (&second, plan.replacement())] {
+        let (stored, at) = read_entry(&h.db, outcome.entry_ref().vid).unwrap().unwrap();
+        assert_eq!(&stored, member.prepared_entry());
+        assert_eq!(at, first.recorded_at());
+        let edge =
+            h.db.edge(edge_id(relation::CITES, outcome.entry_ref().vid, cvid))
+                .unwrap()
+                .unwrap();
+        assert_eq!(edge.entry.created_at, at);
+    }
+    // Later accounting activity invalidates an unpublished plan, but cannot
+    // erase a complete original outcome after a lost acknowledgement.
+    h.post(h.request(
+        h.proposal(h.rent_legs(2), b"after-portable-pair", EntryClass::ORIGINAL),
+        &["post"],
+    ))
+    .unwrap();
+    let head = h.db.frontier().unwrap();
+    let retry = h.publish_replacement_plan(plan, &capability).unwrap();
+    for (actual, original) in [(&retry.0, &first), (&retry.1, &second)] {
+        assert!(matches!(actual, Posted::AlreadyRecorded { .. }));
+        assert_eq!(actual.entry_ref(), original.entry_ref());
+        assert_eq!(actual.recorded_at(), original.recorded_at());
+    }
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn portable_replacement_plan_authenticates_both_members_and_rechecks_actual_native_effects() {
+    let mut h = harness();
+    let original = h
+        .post(h.request(
+            h.proposal(
+                h.rent_legs(100),
+                b"pair-auth-original",
+                EntryClass::ORIGINAL,
+            ),
+            &["post"],
+        ))
+        .unwrap()
+        .entry_ref();
+    let (reversal, replacement) = h.planned_rent_correction(original);
+    let capability = reversal.capability.clone();
+    let plan = h.replacement_plan(reversal, replacement).unwrap();
+    let before = h.db.frontier().unwrap();
+    let rebuild = |change: &dyn Fn(&mut fa_intents::PlanCertificate)| {
+        let member = |m: &fa_intents::PostPlan| {
+            let mut certificate = m.certificate().clone();
+            change(&mut certificate);
+            fa_intents::PostPlan::new(m.intent().clone(), m.prepared_entry().clone(), certificate)
+                .unwrap()
+        };
+        fa_intents::ReplacementPlan::new(member(plan.reversal()), member(plan.replacement()))
+            .unwrap()
+    };
+    for damage in ["effects", "basis", "epoch", "capability", "expiry", "tag"] {
+        let changed = rebuild(&|certificate| match damage {
+            "effects" => certificate.effects_digest[0] ^= 1,
+            "basis" => certificate.snapshot_seq.0 += 1,
+            "epoch" => certificate.security_policy_epoch += 1,
+            "capability" => certificate.capability_commitment[0] ^= 1,
+            "expiry" => certificate.expires_at = Some(fgdb_types::CommitSeq(before.0 + 5)),
+            "tag" => certificate.authentication[0] ^= 1,
+            _ => unreachable!(),
+        });
+        assert_eq!(
+            h.publish_replacement_plan(changed, &capability)
+                .unwrap_err()
+                .code,
+            "FA-REF-034",
+            "{damage}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+    for change_first in [true, false] {
+        let change = |m: &fa_intents::PostPlan| {
+            let mut certificate = m.certificate().clone();
+            certificate.period = h.april.clone();
+            fa_intents::PostPlan::new(m.intent().clone(), m.prepared_entry().clone(), certificate)
+                .unwrap()
+        };
+        let changed = if change_first {
+            fa_intents::ReplacementPlan::new(change(plan.reversal()), plan.replacement().clone())
+        } else {
+            fa_intents::ReplacementPlan::new(plan.reversal().clone(), change(plan.replacement()))
+        }
+        .unwrap();
+        assert_eq!(
+            h.publish_replacement_plan(changed, &capability)
+                .unwrap_err()
+                .code,
+            "FA-REF-034"
+        );
+    }
+    // Even an issuer with the book key cannot replace comparison against the
+    // actual pair transaction with a false but authentically signed claim.
+    let false_plan = rebuild(&|certificate| certificate.effects_digest[0] ^= 1);
+    let key = fgdb_crypto::derive_key(
+        "fa:replacement-plan-authentication-key:v1",
+        &h.book.seal_key.0,
+    );
+    let tag = fgdb_crypto::keyed_hash(&key, &false_plan.authentication_bytes().unwrap()).0;
+    let sign = |m: &fa_intents::PostPlan| {
+        let mut certificate = m.certificate().clone();
+        certificate.authentication = tag;
+        fa_intents::PostPlan::new(m.intent().clone(), m.prepared_entry().clone(), certificate)
+            .unwrap()
+    };
+    let changed = fa_intents::ReplacementPlan::new(
+        sign(false_plan.reversal()),
+        sign(false_plan.replacement()),
+    )
+    .unwrap();
+    let refusal = h
+        .publish_replacement_plan(changed, &capability)
+        .unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-034");
+    assert!(refusal.message.contains("native effects"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert!(h.db.vertex(reversal_vid(original.vid)).unwrap().is_none());
+    assert!(
+        h.db.vertex(fa_journal::rows::replacement_vid(original.vid))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn portable_replacement_plan_reuses_settlement_capacity_only_inside_the_atomic_overlay() {
+    let mut h = harness();
+    let invoice = h
+        .post(h.request(h.invoice(10_000, b"planned-pair-invoice"), &["post"]))
+        .unwrap()
+        .entry_ref();
+    let applies = |amount| Settlement {
+        target: invoice,
+        ordinal: 0,
+        amount: Amount::new(h.usd, amount),
+    };
+    let receipt_proposal = h.receipt(8_000, vec![applies(8_000)], b"planned-pair-receipt");
+    let corrected = h.receipt(6_000, vec![applies(6_000)], b"planned-pair-corrected");
+    let receipt = h
+        .post(h.request(receipt_proposal, &["post"]))
+        .unwrap()
+        .entry_ref();
+    let reversal = h.request(
+        h.reversal_of_entry(receipt, b"planned-pair-undo"),
+        &["post"],
+    );
+    let replacement = h.request(replacement_proposal(receipt, corrected), &["post"]);
+    let capability = reversal.capability.clone();
+    let before = h.db.frontier().unwrap();
+    let plan = h.replacement_plan(reversal, replacement).unwrap();
+    assert_eq!(h.applied_to(invoice.vid, 0), 8_000);
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let (first, second) = h.publish_replacement_plan(plan, &capability).unwrap();
+    assert_eq!(first.recorded_at(), second.recorded_at());
+    assert_eq!(h.applied_to(invoice.vid, 0), 6_000);
+    for (rel, source) in [
+        (relation::UNSETTLES, first.entry_ref().vid),
+        (relation::SETTLES, second.entry_ref().vid),
+    ] {
+        let edge =
+            h.db.edge(edge_id(rel, leg_vid(source, 1), leg_vid(invoice.vid, 0)))
+                .unwrap()
+                .unwrap();
+        assert_eq!(edge.entry.created_at, first.recorded_at());
+    }
+}
+
+#[test]
+fn portable_replacement_plan_requires_approvals_and_never_grants_agents_commit_authority() {
+    let mut h = harness();
+    let original = h
+        .post(h.request(
+            h.proposal(
+                h.rent_legs(100),
+                b"pair-authority-original",
+                EntryClass::ORIGINAL,
+            ),
+            &["post"],
+        ))
+        .unwrap()
+        .entry_ref();
+    let (mut reversal, mut replacement) = h.planned_rent_correction(original);
+    let agent = Capability::new(
+        PRINCIPAL,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap();
+    reversal.capability = agent.clone();
+    replacement.capability = agent.clone();
+    let before = h.db.frontier().unwrap();
+    let plan = h
+        .replacement_plan(reversal.clone(), replacement.clone())
+        .unwrap();
+    assert_eq!(
+        h.publish_replacement_plan(plan.clone(), &agent)
+            .unwrap_err()
+            .code,
+        "FA-REF-013"
+    );
+    let human = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    assert_eq!(
+        h.publish_replacement_plan(plan, &human).unwrap_err().code,
+        "FA-REF-034"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    h.transition(
+        &h.march.clone(),
+        PeriodTransition::Close,
+        b"planned-pair-close",
+    )
+    .unwrap();
+    let capability = Capability::embedded(PRINCIPAL, &["post", "post_closed"]).unwrap();
+    reversal.capability = capability.clone();
+    replacement.capability = capability.clone();
+    let before = h.db.frontier().unwrap();
+    assert_eq!(
+        h.replacement_plan(reversal.clone(), replacement.clone())
+            .unwrap_err()
+            .code,
+        "FA-REF-012"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+    replacement
+        .approvals
+        .push(h.approve_transition(replacement.proposal.proposal_digest().unwrap()));
+    reversal
+        .approvals
+        .push(h.approve_transition(reversal.proposal.proposal_digest().unwrap()));
+    let plan = h.replacement_plan(reversal, replacement).unwrap();
+    assert_eq!(plan.reversal().approvals().len(), 1);
+    assert_eq!(plan.replacement().approvals().len(), 1);
+    // Removing either approval and rehashing all public fields cannot borrow
+    // the authentic pair tag, including the optional reversal approval.
+    for remove_first in [true, false] {
+        let strip = |m: &fa_intents::PostPlan| {
+            let intent =
+                fa_intents::PostIntent::new(m.intent().proposal().clone(), Vec::new()).unwrap();
+            let entry = m.proposal().clone().seal(Vec::new(), None).unwrap();
+            let mut certificate = m.certificate().clone();
+            certificate.intent_digest = intent.digest().unwrap();
+            fa_intents::PostPlan::new(intent, entry, certificate).unwrap()
+        };
+        let changed = if remove_first {
+            fa_intents::ReplacementPlan::new(strip(plan.reversal()), plan.replacement().clone())
+        } else {
+            fa_intents::ReplacementPlan::new(plan.reversal().clone(), strip(plan.replacement()))
+        }
+        .unwrap();
+        let before = h.db.frontier().unwrap();
+        assert_eq!(
+            h.publish_replacement_plan(changed, &capability)
+                .unwrap_err()
+                .code,
+            "FA-REF-034"
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+    h.publish_replacement_plan(plan, &capability).unwrap();
+}
+
+#[test]
+fn portable_replacement_plan_refuses_stale_basis_direct_outcomes_and_damaged_retention() {
+    for damage in [
+        "stale",
+        "direct",
+        "certificate",
+        "reversal",
+        "replacement",
+        "first_cites",
+        "second_cites",
+    ] {
+        let mut h = harness();
+        let original = h
+            .post(h.request(
+                h.proposal(
+                    h.rent_legs(100),
+                    b"pair-retention-original",
+                    EntryClass::ORIGINAL,
+                ),
+                &["post"],
+            ))
+            .unwrap()
+            .entry_ref();
+        let (reversal, replacement) = h.planned_rent_correction(original);
+        let capability = reversal.capability.clone();
+        let plan = h
+            .replacement_plan(reversal.clone(), replacement.clone())
+            .unwrap();
+        if damage == "stale" {
+            h.post(h.request(
+                h.proposal(h.rent_legs(1), b"pair-stale-head", EntryClass::ORIGINAL),
+                &["post"],
+            ))
+            .unwrap();
+        } else if damage == "direct" {
+            h.post_pair(reversal, replacement).unwrap();
+        } else {
+            let (first, second) = h
+                .publish_replacement_plan(plan.clone(), &capability)
+                .unwrap();
+            let cvid = plan_certificate_vid(h.book.book_id, &plan.certificate_digest().unwrap());
+            let mut batch = fgdb::WriteBatch::new(relation::CITES);
+            let vertex = match damage {
+                "certificate" => Some(cvid),
+                "reversal" => Some(first.entry_ref().vid),
+                "replacement" => Some(second.entry_ref().vid),
+                _ => None,
+            };
+            if let Some(vid) = vertex {
+                batch.set_vertex_property(
+                    vid,
+                    property::FA_DIGEST,
+                    Some(CanonicalScalar::bytes(vec![0; 32]).unwrap()),
+                );
+            } else {
+                let vid = if damage == "first_cites" {
+                    first.entry_ref().vid
+                } else {
+                    second.entry_ref().vid
+                };
+                batch.delete_edge(edge_id(relation::CITES, vid, cvid));
+            }
+            h.write_raw(batch);
+        }
+        let head = h.db.frontier().unwrap();
+        assert_eq!(
+            h.publish_replacement_plan(plan, &capability)
+                .unwrap_err()
+                .code,
+            "FA-REF-034",
+            "{damage}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), head, "{damage}");
+        if damage == "stale" {
+            assert!(h.db.vertex(reversal_vid(original.vid)).unwrap().is_none());
+            assert!(
+                h.db.vertex(fa_journal::rows::replacement_vid(original.vid))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[test]
+fn portable_replacement_plan_refuses_invalid_second_member_without_staging_a_public_half() {
+    let mut h = harness();
+    let original = h
+        .post(h.request(
+            h.proposal(
+                h.rent_legs(100),
+                b"pair-invalid-original",
+                EntryClass::ORIGINAL,
+            ),
+            &["post"],
+        ))
+        .unwrap()
+        .entry_ref();
+    let (reversal, mut replacement) = h.planned_rent_correction(original);
+    replacement.proposal.legs[1].amount = Amount::new(h.usd, 124);
+    replacement.proposal.unit_totals =
+        EntryPayload::fold_unit_totals(&replacement.proposal.legs).unwrap();
+    let before = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    assert_eq!(
+        h.replacement_plan(reversal, replacement).unwrap_err().code,
+        "FA-REF-001"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+
+    // An independently recorded reversal is legitimate history, but cannot
+    // become half of a new atomic plan. Refuse it without diagnosing ledger
+    // corruption or publishing the absent replacement.
+    let (reversal, replacement) = h.planned_rent_correction(original);
+    h.post(reversal.clone()).unwrap();
+    let before = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let refusal = h.replacement_plan(reversal, replacement).unwrap_err();
+    assert_eq!(refusal.exit, exit::CONFLICT, "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
 }
 
 #[test]
