@@ -1001,3 +1001,142 @@ fn bound_finding_operations_require_current_explicit_ops_before_any_observation(
     );
     assert_eq!(number(data(&lines[0]), "finding_count"), 1);
 }
+
+#[test]
+fn a_run_review_decides_several_findings_in_one_transaction_or_none() {
+    let f = Fixture::new();
+    // A second weekend entry: jet.weekend now reports two findings.
+    f.post("sunday", "2026-01-11", "40.00 USD");
+    let basis = f.head().to_string();
+    let recorded = ok(
+        &f.book,
+        &[
+            "finding",
+            "record",
+            "jet.weekend",
+            "--as",
+            "investigator",
+            "--known-at",
+            &basis,
+        ],
+    );
+    let record = data(&recorded);
+    let certificate = text(record, "certificate").to_string();
+    let findings: Vec<String> = record
+        .get("finding_ids")
+        .and_then(Json::as_arr)
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(findings.len(), 2, "{record:?}");
+    let reviews = f.root.join("reviews.json");
+    let review_run = |file: &str| {
+        call(
+            &f.book,
+            &[
+                "finding",
+                "review",
+                "--certificate",
+                &certificate,
+                "--file",
+                file,
+                "--as",
+                "reviewer",
+            ],
+            None,
+        )
+    };
+    let before = f.head();
+
+    // One refused decision refuses the whole set: nothing is published.
+    std::fs::write(
+        &reviews,
+        format!(
+            r#"[{{"finding":"F:{}","action":"acknowledge","note":"Reviewed the Saturday entry"}},{{"finding":"F:{}","action":"dismiss","dismissal_reason":"explained","note":"No document attached"}}]"#,
+            findings[0], findings[1]
+        ),
+    )
+    .unwrap();
+    let (exit, refused) = review_run(reviews.to_str().unwrap());
+    assert_eq!(exit, 2, "{refused:?}");
+    assert!(
+        text(data(&refused[0]), "message")
+            .contains("reviews[1]: dismissing a finding requires retained evidence"),
+        "{refused:?}"
+    );
+    assert_eq!(f.head(), before, "a refused run review publishes nothing");
+
+    for (body, why) in [
+        (
+            format!(
+                r#"[{{"finding":"F:{}","action":"acknowledge","note":"x","reviewer":"me"}}]"#,
+                findings[0]
+            ),
+            "an unknown field",
+        ),
+        ("[]".to_string(), "an empty selection"),
+        (
+            format!(r#"{{"finding":"F:{}"}}"#, findings[0]),
+            "an object instead of an array",
+        ),
+    ] {
+        std::fs::write(&reviews, body).unwrap();
+        let (exit, refused) = review_run(reviews.to_str().unwrap());
+        assert_eq!(exit, 2, "{why}: {refused:?}");
+        assert_eq!(f.head(), before, "{why}");
+    }
+    let (exit, refused) = call(
+        &f.book,
+        &[
+            "finding",
+            "review",
+            "--certificate",
+            &certificate,
+            "--file",
+            reviews.to_str().unwrap(),
+            "--note",
+            "a single-review flag",
+            "--as",
+            "reviewer",
+        ],
+        None,
+    );
+    assert_eq!(exit, 2, "single-review flags never mix in: {refused:?}");
+
+    // Both decisions in one native transaction: one publication, certified order.
+    std::fs::write(
+        &reviews,
+        format!(
+            r#"[{{"finding":"F:{}","action":"dismiss","dismissal_reason":"explained","note":"Supported by the retained invoice","evidence":["D:{}"]}},{{"finding":"F:{}","action":"acknowledge","note":"Reviewed the Saturday entry"}}]"#,
+            findings[1], f.evidence, findings[0]
+        ),
+    )
+    .unwrap();
+    let (exit, decided) = review_run(reviews.to_str().unwrap());
+    assert_eq!(exit, 0, "{decided:?}");
+    assert_eq!(decided.len(), 2, "{decided:?}");
+    let reviewed: Vec<&Json> = decided
+        .iter()
+        .map(|event| {
+            assert_eq!(text(event, "event"), "finding_reviewed");
+            data(event).get("review").unwrap()
+        })
+        .collect();
+    assert_eq!(
+        reviewed[0].get("recorded_at"),
+        reviewed[1].get("recorded_at"),
+        "one native transaction"
+    );
+    assert_eq!(
+        [
+            text(reviewed[0], "finding_vid"),
+            text(reviewed[1], "finding_vid")
+        ],
+        [findings[0].as_str(), findings[1].as_str()],
+        "certified occurrence order, not request order"
+    );
+    assert_eq!(text(reviewed[0], "action"), "acknowledge");
+    assert_eq!(text(reviewed[1], "action"), "dismiss");
+    assert!(f.head() > before);
+}
