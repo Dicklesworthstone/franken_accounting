@@ -76,6 +76,14 @@ fa tb --book ./books/acme --period FY2026-P03 --activity --json
 fa tb --book ./books/acme --as-of 2026-03-15 --as-known-at 42 --json
 fa verify registers --book ./books/acme --period FY2026-P03 --json
 fa registers materialize --book ./books/acme --period FY2026-P03 --json
+# General-ledger lines, lead schedules, open-item aging and cash flow at one recorded snapshot.
+fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book ./books/acme --json
+fa gl roll-forward --account 1000,1200 --from 2026-03-01 --to 2026-03-31 --book ./books/acme --json
+# Tie open items to the control balance: one leaf, a list, or every posting leaf.
+fa gl aging --account 1200 --as-of 2026-03-31 --reconcile --book ./books/acme --json
+fa gl aging --all-posting --as-of 2026-03-31 --reconcile --book ./books/acme --json
+# Cash flow under an explicit policy: per-leg assignments, or account_rules plus overrides.
+fa gl cash-flow --account 1000 --from 2026-03-01 --to 2026-03-31 --policy cash-policy.json --book ./books/acme --json
 ```
 
 Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. `--as-known-at` also accepts an RFC 3339 instant when the book contains retained TimeEvidence ticks. It resolves the latest recorded sequence in the matching tick bucket, reports the original frontier and both brackets under `coordinate.time_evidence`, and refuses an instant before the first tick. Numeric UTC offsets and up to nine fractional digits are exact. `--as-of` remains a civil-date selector. These reports are exact payload folds; `tb` can retain a replay certificate as described below. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, retained replay, refusals and recovery with the actual binary.
