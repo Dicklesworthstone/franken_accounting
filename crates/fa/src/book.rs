@@ -2730,6 +2730,34 @@ impl Book {
         ))
     }
 
+    /// Bridge two retained statement certificates under current read
+    /// authority, replaying both in full; nothing is certified or written.
+    pub fn diff_statement_certificates(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        before: &crate::ReportCertificate,
+        after: &crate::ReportCertificate,
+    ) -> Outcome<crate::StatementDiff> {
+        with_store!(&self.store, core => core.diff_statement_certificates(
+            &self.purposes(), principal, capability, before, after
+        ))
+    }
+
+    /// Certify the bridge between two retained statement certificates, keeping
+    /// both original sources rather than re-certifying their frontiers.
+    pub fn compare_statement_certificates(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        before: &crate::ReportCertificate,
+        after: &crate::ReportCertificate,
+    ) -> Outcome<crate::CertifiedStatementDiff> {
+        with_store!(&self.store, core => core.compare_statement_certificates(
+            &self.purposes(), principal, capability, before, after
+        ))
+    }
+
     /// Reconcile a complete adjacent-publication trace to its net statement comparison.
     pub fn statement_trace(
         &self,
@@ -2763,6 +2791,20 @@ impl Book {
     ) -> Outcome<crate::StatementTrace> {
         with_store!(&self.store, core => core.replay_statement_trace(
             &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Attribute a saved statement comparison to every intermediate
+    /// publication, keeping its original endpoint certificates.
+    pub fn certify_statement_trace_from_diff(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        comparison: &crate::StatementDiffCertificate,
+        max_publications: usize,
+    ) -> Outcome<crate::CertifiedStatementTrace> {
+        with_store!(&self.store, core => core.certify_statement_trace_from_diff(
+            &self.purposes(), principal, capability, comparison, max_publications
         ))
     }
 

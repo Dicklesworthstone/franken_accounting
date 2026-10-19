@@ -317,6 +317,29 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
     ]);
     cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
     let oid = source_document(&dir, &b);
+    // The March income statement retained before and after the rent posting,
+    // so an agent can bridge exactly those two certificates below.
+    let retain = || {
+        let (code, stdout) = cli(&[
+            "statement",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+            "--book",
+            &b,
+            "--json",
+        ]);
+        assert_eq!(code, 0, "{stdout}");
+        let receipt = fa_cli::json::parse(stdout.lines().last().unwrap()).unwrap();
+        let digest = receipt
+            .get("data")
+            .unwrap()
+            .get("oid")
+            .and_then(Json::as_str);
+        format!("C:{}", digest.unwrap())
+    };
+    let reported = retain();
     let intent = dir.join("rent.json");
     std::fs::write(&intent, r#"{"idempotency_key":"statement-rent","effective_date":"2026-03-15","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#).unwrap();
     cli_data(&[
@@ -325,6 +348,18 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         intent.to_str().unwrap(),
         "--evidence",
         &oid,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let restated = retain();
+    let expected_bridge = cli_data(&[
+        "statement",
+        "diff",
+        "--before-certificate",
+        &reported,
+        "--after-certificate",
+        &restated,
         "--book",
         &b,
         "--json",
@@ -493,6 +528,38 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
     let denied = structured_error(&output);
     assert_eq!(denied["type"], json!("forbidden_path"));
     assert_eq!(denied["authority"]["profile"], json!("agent"));
+    // Two retained statements bridge by their oids. The stated period is
+    // checked against them, and a certificate input is never a host path.
+    let bridge = |period: &str, after: &str| {
+        json!({
+            "name": "diff", "for": period,
+            "before_certificate": reported, "after_certificate": after,
+        })
+    };
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        bridge("FY2026-P03", &restated),
+    );
+    assert!(!error, "{output}");
+    assert_eq!(output, expected_bridge);
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        bridge("FY2026-P02", &restated),
+    );
+    assert!(error, "{output}");
+    assert_eq!(structured_error(&output)["exit"], json!(8), "{output}");
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        bridge("FY2026-P03", chart.to_str().unwrap()),
+    );
+    assert!(error, "{output}");
+    assert!(
+        output.contains("--after-certificate cannot name a host filesystem path"),
+        "{output}"
+    );
     // The default reader cannot acquire produce authority from a certify flag.
     for (tool, args) in [
         (
@@ -780,6 +847,37 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         "a portfolio never replays without its request: {output}"
     );
     assert!(output.contains("--expect"), "{output}");
+    // A producer certifies the bridge between exactly those retained
+    // statements, then attributes it to each intermediate publication.
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_statement",
+        json!({
+            "name": "diff", "for": "FY2026-P03", "certify": true,
+            "before_certificate": reported, "after_certificate": restated,
+        }),
+    );
+    assert!(!error, "{output}");
+    let bridged: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(bridged.as_array().unwrap().len(), 2, "{output}");
+    let expected: JsonValue = fastmcp_rust::serde_json::from_str(&expected_bridge).unwrap();
+    assert_eq!(bridged[0], expected);
+    let comparison = format!("C:{}", bridged[1]["oid"].as_str().unwrap());
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_statement",
+        json!({"name": "trace", "for": "FY2026-P03", "from_diff": comparison, "certify": true}),
+    );
+    assert!(!error, "{output}");
+    let traced: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(traced.as_array().unwrap().len(), 2, "{output}");
+    let (error, replay, _) = call_tool(
+        &mut producer,
+        "fa_read_replay",
+        json!({"certificate": format!("C:{}", traced[1]["oid"].as_str().unwrap())}),
+    );
+    assert!(!error, "{replay}");
+    assert_eq!(replay, traced[0].to_string());
     assert_eq!(producer.finish(), 0);
 }
 

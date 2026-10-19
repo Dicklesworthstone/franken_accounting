@@ -204,6 +204,23 @@ fn read_certificate_bytes(
     Ok(decoded)
 }
 
+/// One certificate a command names in `flag` (a retained `C:<oid>`, a
+/// canonical file, or `-` for stdin), decoded as the family `decode` reads.
+/// A certificate of another family is refused under the flag that named it.
+pub(crate) fn certificate_input<T>(
+    book: &Book,
+    files: &Files,
+    flag: &str,
+    value: &str,
+    principal: VId,
+    capability: &Capability,
+    decode: impl FnOnce(&[u8]) -> Result<T, fa_journal::Refusal>,
+) -> Result<T, Fail> {
+    let bytes = read_certificate_bytes(book, files, value, principal, capability)?;
+    decode(&bytes)
+        .map_err(|refusal| certificate_invalid(format!("{flag} `{value}`: {}", refusal.message)))
+}
+
 /// Save an optional external copy, then retain the immutable certificate in
 /// the book. The copy is written only for a capability the retention admits
 /// (holder, read, book, expiry and revocation at the head), so a refused
