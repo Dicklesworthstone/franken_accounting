@@ -2,6 +2,7 @@
 //! A delivered artifact never supplies its own recipient expectations.
 
 use super::*;
+use fa::aging::portfolio::{AgingAccountScope, AgingPortfolioRequest};
 use fa::{
     AdjustmentCategory, AdjustmentSign, AgingBuckets, AgingReconciliationRequest, CashFlowActivity,
     CashFlowDefinition, IndirectCashFlowRequest, RollForwardRequest,
@@ -17,6 +18,7 @@ pub(super) enum Expected {
     CashFlow(RollForwardRequest, CashFlowDefinition),
     Indirect(IndirectCashFlowRequest),
     Reconciliation(AgingReconciliationRequest),
+    Portfolio(AgingPortfolioRequest),
 }
 
 impl Expected {
@@ -31,6 +33,7 @@ impl Expected {
             Self::Reconciliation(request) => {
                 fa::ReportArtifactExpectation::AgingReconciliation(request)
             }
+            Self::Portfolio(request) => fa::ReportArtifactExpectation::AgingPortfolio(request),
         }
     }
 }
@@ -190,7 +193,7 @@ pub(super) fn parse(args: &Args, book: &Book) -> Result<Expected, Fail> {
         return Err(invalid("--expect may be supplied only once"));
     }
     let Some(text) = args.flag("--expect") else {
-        // The unified verifier refuses AsSupplied for these three families.
+        // The unified verifier refuses AsSupplied for these four families.
         return Ok(Expected::AsSupplied);
     };
     check_size(text)?;
@@ -242,21 +245,48 @@ pub(super) fn parse(args: &Args, book: &Book) -> Result<Expected, Fail> {
         }
         "aging-reconciliation" => {
             exact_fields(&doc, &["kind", "account", "through", "known_at", "buckets"])?;
-            let bounds = array(&doc, "buckets")?
-                .iter()
-                .map(|item| match item {
-                    Json::Int(value) => u32::try_from(*value)
-                        .map_err(|_| invalid("expected aging bounds must be nonnegative u32 days")),
-                    _ => Err(invalid("expected aging bounds must be integer days")),
-                })
-                .collect::<Result<Vec<_>, Fail>>()?;
-            let buckets = AgingBuckets::new(bounds)
-                .map_err(|error| invalid(format!("invalid expected aging buckets: {error}")))?;
             Ok(Expected::Reconciliation(AgingReconciliationRequest {
                 account: account(string(&doc, "account")?, book)?,
                 effective_through: day(&doc, "through")?,
                 known_at: Some(fixed_prefix(&doc)?),
-                buckets,
+                buckets: aging_buckets(&doc)?,
+            }))
+        }
+        "aging-portfolio" => {
+            let selected = match string(&doc, "scope")? {
+                "all-posting" => false,
+                "selected" => true,
+                other => {
+                    return Err(invalid(format!(
+                        "expected portfolio scope must be all-posting or selected, not '{other}'"
+                    )));
+                }
+            };
+            let mut allowed = vec!["kind", "scope", "through", "known_at", "buckets"];
+            if selected {
+                allowed.push("accounts");
+            }
+            exact_fields(&doc, &allowed)?;
+            let scope = if selected {
+                AgingAccountScope::Selected(
+                    array(&doc, "accounts")?
+                        .iter()
+                        .map(|item| match item {
+                            Json::Str(text) => account(text, book),
+                            _ => Err(invalid(
+                                "expected portfolio accounts must be codes or 32-hex ids",
+                            )),
+                        })
+                        .collect::<Result<_, Fail>>()?,
+                )
+            } else {
+                AgingAccountScope::AllPosting
+            };
+            Ok(Expected::Portfolio(AgingPortfolioRequest {
+                scope,
+                effective_through: day(&doc, "through")?,
+                known_at: Some(fixed_prefix(&doc)?),
+                buckets: aging_buckets(&doc)?,
             }))
         }
         other => Err(invalid(format!(
@@ -405,24 +435,54 @@ pub(crate) fn reconciliation_expectation_json(request: &AgingReconciliationReque
         ("kind", s("aging-reconciliation")),
         ("account", s(format!("{:032x}", request.account.0))),
         ("through", s(request.effective_through.render())),
-        (
-            "known_at",
-            request
-                .known_at
-                .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
-        ),
-        (
-            "buckets",
-            Json::Arr(
-                request
-                    .buckets
-                    .upper_bounds()
-                    .iter()
-                    .map(|bound| Json::Int(i128::from(*bound)))
-                    .collect(),
-            ),
-        ),
+        ("known_at", known_at_json(request.known_at)),
+        ("buckets", buckets_json(&request.buckets)),
     ])
+}
+
+pub(crate) fn portfolio_expectation_json(request: &AgingPortfolioRequest) -> Json {
+    let mut fields = vec![("kind", s("aging-portfolio"))];
+    match &request.scope {
+        AgingAccountScope::AllPosting => fields.push(("scope", s("all-posting"))),
+        AgingAccountScope::Selected(ids) => {
+            fields.push(("scope", s("selected")));
+            fields.push((
+                "accounts",
+                Json::Arr(ids.iter().map(|id| s(format!("{:032x}", id.0))).collect()),
+            ));
+        }
+    }
+    fields.push(("through", s(request.effective_through.render())));
+    fields.push(("known_at", known_at_json(request.known_at)));
+    fields.push(("buckets", buckets_json(&request.buckets)));
+    obj(fields)
+}
+
+fn known_at_json(known_at: Option<CommitSeq>) -> Json {
+    known_at.map_or(Json::Null, |seq| Json::Int(i128::from(seq.0)))
+}
+
+fn buckets_json(buckets: &AgingBuckets) -> Json {
+    Json::Arr(
+        buckets
+            .upper_bounds()
+            .iter()
+            .map(|bound| Json::Int(i128::from(*bound)))
+            .collect(),
+    )
+}
+
+fn aging_buckets(doc: &Json) -> Result<AgingBuckets, Fail> {
+    let bounds = array(doc, "buckets")?
+        .iter()
+        .map(|item| match item {
+            Json::Int(value) => u32::try_from(*value)
+                .map_err(|_| invalid("expected aging bounds must be nonnegative u32 days")),
+            _ => Err(invalid("expected aging bounds must be integer days")),
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    AgingBuckets::new(bounds)
+        .map_err(|error| invalid(format!("invalid expected aging buckets: {error}")))
 }
 
 /// Apply the same transport bound before retaining a producer's certificate.
@@ -438,6 +498,9 @@ pub(super) fn validate_generated(expected: fa::ReportArtifactExpectation<'_>) ->
         }
         fa::ReportArtifactExpectation::AgingReconciliation(request) => {
             reconciliation_expectation_json(request)
+        }
+        fa::ReportArtifactExpectation::AgingPortfolio(request) => {
+            portfolio_expectation_json(request)
         }
         _ => return Ok(()),
     };

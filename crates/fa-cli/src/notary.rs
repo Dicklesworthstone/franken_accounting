@@ -8,7 +8,8 @@ mod expectations;
 mod procedure;
 
 pub(crate) use expectations::{
-    cash_flow_expectation_json, indirect_expectation_json, reconciliation_expectation_json,
+    cash_flow_expectation_json, indirect_expectation_json, portfolio_expectation_json,
+    reconciliation_expectation_json,
 };
 
 use std::io::Read;

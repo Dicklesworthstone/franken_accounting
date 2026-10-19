@@ -25,6 +25,7 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use fa::aging::portfolio::{AgingAccountScope, AgingPortfolioRequest};
 use fa::book::{Book, BookError, BookKeys, Entropy};
 use fa::{
     AdjustmentCategory, AdjustmentSign, AgingBuckets, AgingReconciliationRequest, AllocationMethod,
@@ -11191,6 +11192,182 @@ fn gl_certificate_preflight(
     Ok(())
 }
 
+fn aging_bands_json(bands: &[fa::AgingBand]) -> Vec<Json> {
+    bands
+        .iter()
+        .map(|b| {
+            obj(vec![
+                ("lower_inclusive", Json::Int(i128::from(b.lower_inclusive))),
+                (
+                    "upper_inclusive",
+                    b.upper_inclusive
+                        .map_or(Json::Null, |u| Json::Int(i128::from(u))),
+                ),
+            ])
+        })
+        .collect()
+}
+
+/// One row per native unit, shared by the single-leaf and portfolio events.
+fn aging_reconciliation_rows(
+    rec: &fa::AgingReconciliation,
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<Json>, Fail> {
+    rec.rows()
+        .iter()
+        .map(|r| {
+            let unit_code = registered_unit_code(fa_money::UnitId(r.unit_id), units)?.to_string();
+            let fmt = |m: i128| render_amount(Amount::new(fa_money::UnitId(r.unit_id), m), units);
+            Ok(obj(vec![
+                ("unit", s(&unit_code)),
+                ("posted_debits", s(fmt(r.posted_debits)?)),
+                ("posted_credits", s(fmt(r.posted_credits)?)),
+                ("pending_debits", s(fmt(r.pending_debits)?)),
+                ("pending_credits", s(fmt(r.pending_credits)?)),
+                ("open_debits", s(fmt(r.open_debits)?)),
+                ("open_credits", s(fmt(r.open_credits)?)),
+                ("open_item_count", Json::Int(i128::from(r.open_item_count))),
+                ("posted_net", s(fmt(r.posted_net)?)),
+                ("open_net", s(fmt(r.open_net)?)),
+                ("difference", s(fmt(r.difference)?)),
+            ]))
+        })
+        .collect()
+}
+
+/// `gl aging --reconcile` over every posting leaf or a selected list: one
+/// chart, one whole-book aging fold and one control trial balance at a single
+/// coordinate (plan §5.6–§5.7). Unselected leaves are listed as uncovered,
+/// never printed as zero. This is an internal consistency report, not a close
+/// permit or an external subledger attestation.
+#[allow(clippy::too_many_arguments)]
+fn gl_aging_portfolio(
+    out: &Out,
+    files: &Files,
+    args: &Args,
+    book: &mut Book,
+    who: VId,
+    capability: &Capability,
+    certify: bool,
+    request: AgingPortfolioRequest,
+) -> Result<(), Fail> {
+    let (portfolio, artifact) = if certify {
+        let certified = book.certify_aging_portfolio(who, capability, &request)??;
+        let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+        (certified.report, Some(artifact))
+    } else {
+        (
+            book.reconcile_aging_portfolio(who, capability, &request)??,
+            None,
+        )
+    };
+    // The library resolves HEAD once and orders a selection before reading;
+    // the replay expectation carries that normalized request.
+    let request = portfolio.request().clone();
+    let known_at = request.known_at.ok_or_else(|| {
+        Fail::Internal("an aging portfolio was returned without its fixed recorded sequence".into())
+    })?;
+    out.known_at(known_at);
+    let units = &book.context().units;
+    let accounts = portfolio
+        .accounts()
+        .iter()
+        .map(|rec| {
+            Ok(obj(vec![
+                ("account", s(&rec.account().code)),
+                ("account_vid", s(format!("{:032x}", rec.account().vid.0))),
+                ("name", s(&rec.account().name)),
+                ("reconciled", Json::Bool(rec.is_reconciled())),
+                ("rows", Json::Arr(aging_reconciliation_rows(rec, units)?)),
+                ("item_count", Json::Int(rec.aging().items.len() as i128)),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let uncovered: Vec<Json> = portfolio
+        .uncovered_accounts()
+        .iter()
+        .map(|row| {
+            obj(vec![
+                ("account", s(&row.code)),
+                ("account_vid", s(format!("{:032x}", row.vid.0))),
+                ("name", s(&row.name)),
+            ])
+        })
+        .collect();
+    let mut human = format!(
+        "aging portfolio as of {} at sequence {}: {} accounts, reconciled={}, complete={}, pending_reservations={}",
+        request.effective_through.render(),
+        known_at.0,
+        portfolio.accounts().len(),
+        portfolio.is_reconciled(),
+        portfolio.is_complete(),
+        portfolio.has_pending_reservations(),
+    );
+    for rec in portfolio.accounts() {
+        human.push_str(&format!(
+            "\n  {} {}: reconciled={}",
+            rec.account().code,
+            rec.account().name,
+            rec.is_reconciled()
+        ));
+    }
+    for row in portfolio.uncovered_accounts() {
+        human.push_str(&format!("\n  {} {}: not selected", row.code, row.name));
+    }
+    let scope = match &request.scope {
+        AgingAccountScope::AllPosting => "all-posting",
+        AgingAccountScope::Selected(_) => "selected",
+    };
+    let retained = artifact
+        .as_ref()
+        .map(|artifact| {
+            notary::retain_report_artifact_for(
+                book,
+                files,
+                args,
+                artifact,
+                capability,
+                fa::ReportArtifactExpectation::AgingPortfolio(&request),
+            )
+        })
+        .transpose()?;
+    let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+    out.event_with_certificate(
+        "aging_portfolio_reconciled",
+        vec![
+            ("scope", s(scope)),
+            ("known_at", Json::Int(i128::from(known_at.0))),
+            ("effective_through", s(request.effective_through.render())),
+            ("reconciled", Json::Bool(portfolio.is_reconciled())),
+            ("complete", Json::Bool(portfolio.is_complete())),
+            (
+                "pending_reservations",
+                Json::Bool(portfolio.has_pending_reservations()),
+            ),
+            ("accounts", Json::Arr(accounts)),
+            ("uncovered", Json::Arr(uncovered)),
+            (
+                "bands",
+                Json::Arr(aging_bands_json(&request.buckets.bands())),
+            ),
+        ],
+        &human,
+        digest.as_deref(),
+    );
+    if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+        notary::emit_report_artifact_for(
+            out,
+            args,
+            artifact,
+            "fa:aging-portfolio:v1",
+            &bytes,
+            &retained,
+            &notary::portfolio_expectation_json(&request),
+        );
+    }
+    Ok(())
+}
+
 fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.flag_all("--certificate-out").len() > 1 {
         return Err(usage(
@@ -11403,7 +11580,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             if args.positional.len() != 2 {
                 return Err(usage(
                     "unexpected gl aging argument",
-                    "fa gl aging [--account <code>] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] --book <dir>",
+                    "fa gl aging [--account <code[,code...]> | --all-posting] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] --book <dir>",
                 ));
             }
             let mut book = ctx.books.open_admitted(args, admit_report)?;
@@ -11445,12 +11622,69 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let known_at = gl_known_at(args, &book, out)?;
             out.effective(format!("as-of:{day}"));
             let units = &book.context().units;
+            let all_posting = args.switch("--all-posting");
+            if all_posting && !args.switch("--reconcile") {
+                return Err(usage(
+                    "--all-posting selects the accounts of an aging reconciliation",
+                    "fa gl aging --all-posting --as-of YYYY-MM-DD --reconcile --book <dir>",
+                ));
+            }
             if args.switch("--reconcile") {
-                let Some(acc_vid) = account else {
-                    return Err(usage(
-                        "--reconcile requires --account <code>",
-                        "fa gl aging --account 1200 --as-of YYYY-MM-DD --reconcile --book <dir>",
-                    ));
+                // One code keeps the single-leaf report. A comma list, or the
+                // explicit --all-posting, reconciles several leaves at one
+                // coordinate. A missing selection is never read as the whole book.
+                let acc_vid = match (account_code, all_posting) {
+                    (Some(code), false) if !code.contains(',') => {
+                        account_vid(book.context().book_id, code)
+                    }
+                    (None, false) => {
+                        return Err(usage(
+                            "--reconcile requires --account <code[,code...]> or --all-posting",
+                            "fa gl aging --account 1200 --as-of YYYY-MM-DD --reconcile --book <dir> (one leaf); --account 1200,2100 or --all-posting reconciles several leaves at one coordinate",
+                        ));
+                    }
+                    (Some(_), true) => {
+                        return Err(usage(
+                            "--all-posting and --account are separate account selections",
+                            "pass either --account <code[,code...]> or --all-posting",
+                        ));
+                    }
+                    (selection, _) => {
+                        let scope = match selection {
+                            None => AgingAccountScope::AllPosting,
+                            Some(codes) => {
+                                let codes: Vec<&str> = codes.split(',').map(str::trim).collect();
+                                if codes.iter().any(|code| code.is_empty()) {
+                                    return Err(usage(
+                                        "--account lists posting account codes separated by commas",
+                                        "fa gl aging --account 1200,2100 --as-of YYYY-MM-DD --reconcile --book <dir>",
+                                    ));
+                                }
+                                AgingAccountScope::Selected(
+                                    codes
+                                        .into_iter()
+                                        .map(|code| account_vid(book.context().book_id, code))
+                                        .collect(),
+                                )
+                            }
+                        };
+                        let request = AgingPortfolioRequest {
+                            scope,
+                            effective_through: day,
+                            known_at,
+                            buckets,
+                        };
+                        return gl_aging_portfolio(
+                            out,
+                            &ctx.files,
+                            args,
+                            &mut book,
+                            who,
+                            &capability,
+                            certify,
+                            request,
+                        );
+                    }
                 };
                 let mut request = AgingReconciliationRequest {
                     account: acc_vid,
@@ -11474,45 +11708,8 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     )
                 };
                 out.known_at(rec.known_at());
-                let bands: Vec<Json> = rec
-                    .aging()
-                    .bands
-                    .iter()
-                    .map(|b| {
-                        obj(vec![
-                            ("lower_inclusive", Json::Int(i128::from(b.lower_inclusive))),
-                            (
-                                "upper_inclusive",
-                                b.upper_inclusive
-                                    .map_or(Json::Null, |u| Json::Int(i128::from(u))),
-                            ),
-                        ])
-                    })
-                    .collect();
-                let rows: Vec<Json> = rec
-                    .rows()
-                    .iter()
-                    .map(|r| {
-                        let unit_code =
-                            registered_unit_code(fa_money::UnitId(r.unit_id), units)?.to_string();
-                        let fmt = |m: i128| {
-                            render_amount(Amount::new(fa_money::UnitId(r.unit_id), m), units)
-                        };
-                        Ok(obj(vec![
-                            ("unit", s(&unit_code)),
-                            ("posted_debits", s(fmt(r.posted_debits)?)),
-                            ("posted_credits", s(fmt(r.posted_credits)?)),
-                            ("pending_debits", s(fmt(r.pending_debits)?)),
-                            ("pending_credits", s(fmt(r.pending_credits)?)),
-                            ("open_debits", s(fmt(r.open_debits)?)),
-                            ("open_credits", s(fmt(r.open_credits)?)),
-                            ("open_item_count", Json::Int(i128::from(r.open_item_count))),
-                            ("posted_net", s(fmt(r.posted_net)?)),
-                            ("open_net", s(fmt(r.open_net)?)),
-                            ("difference", s(fmt(r.difference)?)),
-                        ]))
-                    })
-                    .collect::<Result<_, Fail>>()?;
+                let bands = aging_bands_json(&rec.aging().bands);
+                let rows = aging_reconciliation_rows(&rec, units)?;
                 let human = format!(
                     "aging reconciliation for {} ({}) as of {}: reconciled={}",
                     rec.account().code,

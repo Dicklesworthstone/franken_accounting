@@ -1206,3 +1206,267 @@ fn cash_flow_policy_typos_refuse_before_retention_and_optional_defaults_still_wo
         assert_eq!(f.head(), before, "{bad_field}: no artifact may be retained");
     }
 }
+
+/// Field names the pinned robot schema declares for one event or shape.
+fn pinned_fields(kind: &str, name: &str) -> Vec<String> {
+    let row = json::parse(include_str!("../../../registries/robot_schema/1.jsonl").trim_end())
+        .expect("the pin is one JSON line");
+    let entry = row
+        .get("data")
+        .and_then(|data| data.get(kind))
+        .and_then(Json::as_arr)
+        .expect("pinned list")
+        .iter()
+        .find(|entry| text(entry, "name") == name)
+        .unwrap_or_else(|| panic!("{name} is not a pinned {kind} entry"));
+    let mut names: Vec<String> = entry
+        .get("fields")
+        .and_then(Json::as_arr)
+        .expect("pinned fields")
+        .iter()
+        .map(|field| text(field, "name").to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+fn keys(value: &Json) -> Vec<String> {
+    let Json::Obj(fields) = value else {
+        panic!("expected an object: {value:?}");
+    };
+    let mut names: Vec<String> = fields.iter().map(|(name, _)| name.clone()).collect();
+    names.sort();
+    names
+}
+
+fn account_codes(value: &Json, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Json::as_arr)
+        .unwrap_or_else(|| panic!("missing {key}: {value:?}"))
+        .iter()
+        .map(|account| text(account, "account").to_string())
+        .collect()
+}
+
+fn portfolio_args<'a>(at: &'a str, selection: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "gl",
+        "aging",
+        "--as-of",
+        "2026-01-31",
+        "--as-known-at",
+        at,
+        "--reconcile",
+    ];
+    args.extend_from_slice(selection);
+    args
+}
+
+#[test]
+fn aging_portfolio_equals_each_single_leaf_reconciliation_and_replays_only_against_its_request() {
+    // 1000 and 4000 carry 64 postings; 2000 and 2001 are zero-activity leaves.
+    let f = Fixture::with_additional_cash_accounts(2);
+    let at = f.source_head.0.to_string();
+    let before = f.head();
+
+    let whole_events = f.ok(&portfolio_args(&at, &["--all-posting"]));
+    let whole = data(&whole_events, "aging_portfolio_reconciled");
+    assert_eq!(
+        keys(whole),
+        pinned_fields("events", "aging_portfolio_reconciled")
+    );
+    assert_eq!(text(whole, "scope"), "all-posting");
+    assert_eq!(
+        whole.get("known_at"),
+        Some(&Json::Int(i128::from(f.source_head.0)))
+    );
+    assert_eq!(text(whole, "effective_through"), "2026-01-31");
+    assert_eq!(
+        account_codes(whole, "accounts"),
+        ["1000", "2000", "2001", "4000"],
+        "every posting leaf in code order, zero-activity leaves included"
+    );
+    assert!(account_codes(whole, "uncovered").is_empty());
+    assert_eq!(whole.get("complete"), Some(&Json::Bool(true)));
+    let accounts = whole.get("accounts").and_then(Json::as_arr).unwrap();
+    let cash_rows = accounts[0].get("rows").and_then(Json::as_arr).unwrap();
+    assert_eq!(cash_rows.len(), 1, "{cash_rows:?}");
+    assert_eq!(text(&cash_rows[0], "posted_net"), "64.00 USD");
+
+    // Differential: each portfolio account is exactly the single-leaf
+    // reconciliation of that account at the same coordinate.
+    let mut every_reconciled = true;
+    for account in accounts {
+        assert_eq!(
+            keys(account),
+            pinned_fields("shapes", "aging_portfolio_account")
+        );
+        let code = text(account, "account");
+        let single_events = f.ok(&portfolio_args(&at, &["--account", code]));
+        assert!(
+            single_events
+                .iter()
+                .all(|row| text(row, "event") != "aging_portfolio_reconciled"),
+            "one code keeps the single-leaf report"
+        );
+        let single = data(&single_events, "aging_reconciled");
+        for field in ["account_vid", "name", "reconciled", "rows", "item_count"] {
+            assert_eq!(
+                account.get(field),
+                single.get(field),
+                "{code}.{field} differs from its single-leaf reconciliation"
+            );
+        }
+        assert_eq!(single.get("known_at"), whole.get("known_at"));
+        every_reconciled &= account.get("reconciled") == Some(&Json::Bool(true));
+    }
+    assert_eq!(whole.get("reconciled"), Some(&Json::Bool(every_reconciled)));
+
+    // A selection is order-free; unselected leaves are uncovered, not zero.
+    let selected_events = f.ok(&portfolio_args(&at, &["--account", "4000,1000"]));
+    let selected = data(&selected_events, "aging_portfolio_reconciled");
+    assert_eq!(text(selected, "scope"), "selected");
+    assert_eq!(account_codes(selected, "accounts"), ["1000", "4000"]);
+    assert_eq!(account_codes(selected, "uncovered"), ["2000", "2001"]);
+    assert_eq!(selected.get("complete"), Some(&Json::Bool(false)));
+    for account in selected.get("accounts").and_then(Json::as_arr).unwrap() {
+        assert!(
+            accounts.contains(account),
+            "a selected account reports what the whole book reports: {account:?}"
+        );
+    }
+    for uncovered in selected.get("uncovered").and_then(Json::as_arr).unwrap() {
+        assert_eq!(
+            keys(uncovered),
+            pinned_fields("shapes", "aging_portfolio_uncovered")
+        );
+    }
+
+    for (selection, why) in [
+        (vec!["--account", "1000,1000"], "a repeated leaf"),
+        (vec!["--account", "1000,9999"], "an unknown leaf"),
+        (vec!["--account", "1000,"], "an empty code"),
+        (
+            vec!["--account", "1000,2000", "--all-posting"],
+            "two selections",
+        ),
+        (vec![], "a missing selection is never the whole book"),
+    ] {
+        let (exit, errors) = f.run(&portfolio_args(&at, &selection));
+        assert_eq!(exit, 2, "{why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "{why}: {errors:?}");
+        assert_eq!(text(&errors[0], "event"), "error");
+    }
+    let (exit, errors) = f.run(&["gl", "aging", "--as-of", "2026-01-31", "--all-posting"]);
+    assert_eq!(exit, 2, "--all-posting without --reconcile: {errors:?}");
+    assert_eq!(
+        f.head(),
+        before,
+        "uncertified portfolios and refusals are reads"
+    );
+
+    let certified = f.ok(&portfolio_args(
+        &at,
+        &["--account", "4000,1000", "--certify"],
+    ));
+    assert_eq!(
+        data(&certified, "aging_portfolio_reconciled"),
+        selected,
+        "certification reports the same portfolio"
+    );
+    let metadata = data(&certified, "report_certificate");
+    assert_eq!(text(metadata, "output_format"), "fa:aging-portfolio:v1");
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let generated = text(metadata, "replay_command")
+        .split_once(" --expect '")
+        .unwrap()
+        .1
+        .split_once("' --book")
+        .unwrap()
+        .0
+        .to_string();
+    let expectation = json::parse(&generated).unwrap();
+    assert_eq!(text(&expectation, "kind"), "aging-portfolio");
+    assert_eq!(text(&expectation, "scope"), "selected");
+    assert_eq!(
+        expectation
+            .get("accounts")
+            .and_then(Json::as_arr)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        expectation.get("known_at"),
+        Some(&Json::Int(i128::from(f.source_head.0)))
+    );
+    let retained = f.head();
+    let replayed = f.ok(&["replay", &locator, "--expect", &generated]);
+    assert_eq!(
+        text(data(&replayed, "report_replayed"), "family"),
+        "aging-portfolio"
+    );
+
+    let (exit, errors) = f.run(&["replay", &locator]);
+    assert_eq!(exit, 8, "{errors:?}");
+    let refusal = data(&errors, "error");
+    assert!(
+        text(refusal, "message").contains("aging-portfolio report certificates replay only"),
+        "{refusal:?}"
+    );
+    assert!(text(refusal, "fix").contains("--expect"), "{refusal:?}");
+    let Json::Obj(fields) = &expectation else {
+        panic!("expected an object");
+    };
+    let changed = |key: &str, value: Option<Json>| {
+        Json::Obj(
+            fields
+                .iter()
+                .filter_map(|(name, original)| {
+                    if name == key {
+                        value.clone().map(|value| (name.clone(), value))
+                    } else {
+                        Some((name.clone(), original.clone()))
+                    }
+                })
+                .collect(),
+        )
+        .render()
+    };
+    let whole_scope = {
+        let Json::Obj(mut fields) = expectation.clone() else {
+            panic!("expected an object");
+        };
+        fields.retain(|(name, _)| name != "accounts");
+        for (name, value) in &mut fields {
+            if name == "scope" {
+                *value = s("all-posting");
+            }
+        }
+        Json::Obj(fields).render()
+    };
+    for (expect, exit, why) in [
+        (
+            changed("through", Some(s("2026-01-30"))),
+            8,
+            "a different cutoff",
+        ),
+        (whole_scope, 8, "the whole book is a different question"),
+        (
+            changed("known_at", Some(s("HEAD"))),
+            2,
+            "HEAD is never an expected prefix",
+        ),
+        (
+            changed("accounts", None),
+            2,
+            "a selected scope without accounts",
+        ),
+    ] {
+        let (code, errors) = f.run(&["replay", &locator, "--expect", &expect]);
+        assert_eq!(code, exit, "{why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "{why}");
+    }
+    assert_eq!(f.head(), retained, "replays are reads");
+}
