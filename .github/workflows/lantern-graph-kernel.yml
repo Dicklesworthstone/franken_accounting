@@ -21,9 +21,12 @@ on:
       - 'crates/fa-journal/src/closing.rs'
       - 'crates/fa-journal/src/chart/**'
       - 'crates/fa-cli/src/finding.rs'
+      - 'crates/fa-cli/src/migration_import.rs'
       - 'crates/fa-cli/src/lib.rs'
       - 'crates/fa-cli/tests/bank.rs'
       - 'crates/fa-cli/tests/findings.rs'
+      - 'crates/fa-cli/tests/daily_usage.rs'
+      - 'crates/fa-cli/tests/legacy_migration.rs'
       - 'crates/fa-formats/src/bank.rs'
       - 'crates/fa-formats/src/legacy.rs'
       - 'crates/fa-registers/src/reconciliation.rs'
@@ -247,7 +250,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test procedure_replay --test statements --test gl_certificates --test closing --test bank --test findings --test retained_report_storage --test robot_schema --test network --test authority_cli --no-fail-fast --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test procedure_replay --test statements --test gl_certificates --test closing --test bank --test findings --test retained_report_storage --test robot_schema --test network --test authority_cli --test daily_usage --test legacy_migration --no-fail-fast --jobs 2
       - name: Regress MCP report schemas and capability refusal parity
         if: ${{ !cancelled() }}
         shell: bash

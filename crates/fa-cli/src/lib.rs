@@ -28,6 +28,7 @@ mod intake;
 mod intake_provenance;
 pub mod json;
 pub mod lease;
+mod migration_import;
 pub(crate) mod notary;
 pub mod panic;
 mod proof;

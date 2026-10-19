@@ -728,6 +728,31 @@ pub fn parse_legacy_timestamp_ns(
     Ok(Some(day_secs.saturating_mul(1_000_000_000)))
 }
 
+// Some exports put transaction metadata on just one of its rows. Retain the
+// first supplied value, allow blank rows to inherit it, and refuse contradictory
+// values rather than silently attributing every leg to the first row's author
+// or legacy timestamp.
+fn merge_provenance_field<T: PartialEq>(
+    target: &mut Option<T>,
+    supplied: Option<T>,
+    format: &'static str,
+    line: usize,
+    field: &'static str,
+) -> Result<(), FormatError> {
+    if let Some(value) = supplied {
+        if target.as_ref().is_some_and(|old| old != &value) {
+            return Err(FormatError::Parse {
+                format,
+                detail: format!("line {line}: conflicting {field} within one legacy entry"),
+            });
+        }
+        if target.is_none() {
+            *target = Some(value);
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 1. QuickBooks Desktop IIF (`quickbooks_iif_v1`)
 // ---------------------------------------------------------------------------
@@ -863,6 +888,40 @@ pub fn parse_quickbooks_iif(
                         .map(|s| s.trim())
                         .unwrap_or("")
                 };
+                // SPL headers can have a different shape from TRNS. An absent
+                // metadata column in a declared SPL header is not permission to
+                // reinterpret an unrelated field at the TRNS column's offset.
+                let metadata_cols = if spl_cols.is_empty() {
+                    &trns_cols
+                } else {
+                    &spl_cols
+                };
+                let metadata = |col: &str| -> &str {
+                    metadata_cols
+                        .get(col)
+                        .and_then(|&i| fields.get(i))
+                        .map(|s| s.trim())
+                        .unwrap_or("")
+                };
+                let split_date = metadata("DATE");
+                if !split_date.is_empty()
+                    && parse_date_flexible(FMT, split_date)? != entry.effective_date
+                {
+                    return Err(FormatError::Parse {
+                        format: FMT,
+                        detail: format!(
+                            "line {}: conflicting effective date within one legacy entry",
+                            line_idx + 1
+                        ),
+                    });
+                }
+                merge_provenance_field(
+                    &mut entry.provenance.source_recorded_at_ns,
+                    parse_legacy_timestamp_ns(FMT, metadata("TIMESTAMP"))?,
+                    FMT,
+                    line_idx + 1,
+                    "recorded timestamp",
+                )?;
                 let raw_acct = get("ACCNT");
                 let acct = account_map.resolve(FMT, raw_acct)?;
                 let signed = parse_exact_decimal(FMT, get("AMOUNT"), scale)?;
@@ -1199,9 +1258,9 @@ fn parse_tabular_csv_with_format(
                     provenance: MigratedProvenance {
                         source_system: column_map.source_system.clone(),
                         source_id: entry_id.to_owned(),
-                        source_recorded_at_ns: ts_ns,
-                        source_entered_by: entered_by,
-                        source_approved_by: approved_by,
+                        source_recorded_at_ns: None,
+                        source_entered_by: None,
+                        source_approved_by: None,
                     },
                     effective_date: eff_date,
                     description: if desc.is_empty() {
@@ -1214,6 +1273,36 @@ fn parse_tabular_csv_with_format(
             );
         }
         let chunk = entries_by_id.get_mut(entry_id).unwrap();
+        if chunk.effective_date != eff_date {
+            return Err(FormatError::Parse {
+                format: fmt_name,
+                detail: format!(
+                    "line {}: conflicting effective date within one legacy entry",
+                    line_idx + 1
+                ),
+            });
+        }
+        merge_provenance_field(
+            &mut chunk.provenance.source_recorded_at_ns,
+            ts_ns,
+            fmt_name,
+            line_idx + 1,
+            "recorded timestamp",
+        )?;
+        merge_provenance_field(
+            &mut chunk.provenance.source_entered_by,
+            entered_by,
+            fmt_name,
+            line_idx + 1,
+            "entered-by identity",
+        )?;
+        merge_provenance_field(
+            &mut chunk.provenance.source_approved_by,
+            approved_by,
+            fmt_name,
+            line_idx + 1,
+            "approved-by identity",
+        )?;
         chunk.legs.push(FormatLeg {
             account_code,
             side,
@@ -1312,6 +1401,157 @@ ENDTRNS
                 } if legacy_account == "9999 · Mystery Suspense" && fix_hint.contains("[account_map]")
             ),
             "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn grouped_csv_rows_preserve_optional_provenance_and_refuse_conflicts() {
+        let units = UnitCatalog::embedded().expect("units");
+        let accounts = test_account_map();
+        let columns = LegacyColumnMap::parse_toml(
+            r#"[columns]
+source_system = "legacy-provenance-test"
+default_unit = "USD"
+entry_id_column = "entry"
+effective_date_column = "date"
+recorded_at_column = "recorded"
+account_column = "account"
+signed_amount_column = "amount"
+description_column = "memo"
+memo_column = "memo"
+entered_by_column = "entered"
+approved_by_column = "approved"
+"#,
+        )
+        .expect("columns");
+        let source = "\
+entry,date,recorded,account,amount,memo,entered,approved
+ENTRY-1,2025-12-31,,1000,125.00,Cash,,
+ENTRY-1,2025-12-31,2025-12-31T10:00:00Z,3000,-100.00,Capital,Alice,Carol
+ENTRY-1,2025-12-31,,4000,-25.00,Revenue,,
+";
+        let batch =
+            parse_generic_csv(source, &columns, &units, &accounts).expect("sparse metadata");
+        assert_eq!(batch.chunks.len(), 1);
+        let chunk = &batch.chunks[0];
+        assert_eq!(
+            chunk.effective_date,
+            DateDay::from_ymd(2025, 12, 31).unwrap()
+        );
+        assert_eq!(
+            chunk.provenance.source_recorded_at_ns,
+            Some(1_767_175_200_000_000_000)
+        );
+        assert_eq!(chunk.provenance.source_entered_by.as_deref(), Some("Alice"));
+        assert_eq!(
+            chunk.provenance.source_approved_by.as_deref(),
+            Some("Carol")
+        );
+        assert_eq!(
+            chunk
+                .legs
+                .iter()
+                .map(|leg| leg.memo.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("Cash"), Some("Capital"), Some("Revenue")]
+        );
+
+        // Repeated supplied values agree; blank values on either side inherit.
+        let repeated = source.replace("Revenue,,", "Revenue,Alice,Carol");
+        assert_eq!(
+            parse_generic_csv(&repeated, &columns, &units, &accounts)
+                .expect("consistent metadata")
+                .chunks[0]
+                .provenance,
+            chunk.provenance
+        );
+
+        for (changed, field) in [
+            (
+                source.replace("ENTRY-1,2025-12-31,,4000", "ENTRY-1,2026-01-01,,4000"),
+                "effective date",
+            ),
+            (
+                source.replace(
+                    "ENTRY-1,2025-12-31,,4000",
+                    "ENTRY-1,2025-12-31,2025-12-31T11:00:00Z,4000",
+                ),
+                "recorded timestamp",
+            ),
+            (
+                source.replace("Revenue,,", "Revenue,Bob,"),
+                "entered-by identity",
+            ),
+            (
+                source.replace("Revenue,,", "Revenue,,Dana"),
+                "approved-by identity",
+            ),
+        ] {
+            let error = parse_generic_csv(&changed, &columns, &units, &accounts)
+                .expect_err("one entry cannot silently discard inconsistent row metadata");
+            assert!(matches!(
+                error,
+                FormatError::Parse { detail, .. }
+                    if detail.contains("line 4") && detail.contains(field)
+            ));
+        }
+    }
+
+    #[test]
+    fn iif_splits_bind_declared_dates_and_preserve_optional_timestamps() {
+        let units = UnitCatalog::embedded().expect("units");
+        let accounts = test_account_map();
+        let source = "\
+!TRNS\tTRNSID\tDATE\tACCNT\tAMOUNT\tMEMO\tTIMESTAMP
+!SPL\tSPLID\tDATE\tACCNT\tAMOUNT\tMEMO\tTIMESTAMP
+TRNS\tENTRY-1\t2025-12-31\t1000\t125.00\tCash\t
+SPL\tSPL-1\t2025-12-31\t3000\t-100.00\tCapital\t2025-12-31T10:00:00Z
+SPL\tSPL-2\t\t4000\t-25.00\tRevenue\t
+ENDTRNS
+";
+        let batch =
+            parse_quickbooks_iif(source, &units, &accounts, "USD").expect("sparse metadata");
+        assert_eq!(batch.chunks.len(), 1);
+        assert_eq!(batch.chunks[0].legs.len(), 3);
+        assert_eq!(
+            batch.chunks[0].provenance.source_recorded_at_ns,
+            Some(1_767_175_200_000_000_000)
+        );
+
+        for (changed, field) in [
+            (
+                source.replace("SPL-2\t\t4000", "SPL-2\t2026-01-01\t4000"),
+                "effective date",
+            ),
+            (
+                source.replace("Revenue\t\n", "Revenue\t2025-12-31T11:00:00Z\n"),
+                "recorded timestamp",
+            ),
+        ] {
+            let error = parse_quickbooks_iif(&changed, &units, &accounts, "USD")
+                .expect_err("conflicting split metadata");
+            assert!(matches!(
+                error,
+                FormatError::Parse { detail, .. }
+                    if detail.contains("line 5") && detail.contains(field)
+            ));
+        }
+
+        // A declared SPL header without metadata must not borrow TRNS offsets
+        // that happen to point at a different SPL account, amount or memo.
+        let distinct_headers = "\
+!TRNS\tTRNSID\tDATE\tACCNT\tAMOUNT\tMEMO\tTIMESTAMP
+!SPL\tSPLID\tACCNT\tAMOUNT\tMEMO
+TRNS\tENTRY-2\t2025-12-31\t1000\t125.00\tCash\t2025-12-31T10:00:00Z
+SPL\tSPL-3\t3000\t-125.00\tCapital
+ENDTRNS
+";
+        let compact = parse_quickbooks_iif(distinct_headers, &units, &accounts, "USD")
+            .expect("SPL columns have their own declared shape");
+        assert_eq!(compact.chunks[0].legs.len(), 2);
+        assert_eq!(
+            compact.chunks[0].provenance.source_recorded_at_ns,
+            batch.chunks[0].provenance.source_recorded_at_ns
         );
     }
 

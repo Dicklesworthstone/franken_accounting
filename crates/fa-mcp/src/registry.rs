@@ -688,12 +688,7 @@ impl McpRegistry {
                 add(p.name.clone())?;
             }
             for f in t.flags.iter().chain(&t.switches) {
-                let via_flag = t.stdin.as_ref().is_some_and(|s| &s.via == f);
-                add(if via_flag {
-                    format!("{}_file", property(f))
-                } else {
-                    property(f)
-                })?;
+                add(t.flag_property(f))?;
             }
             if let Some(s) = &t.stdin {
                 add(s.property.clone())?;
@@ -892,13 +887,7 @@ impl McpRegistry {
         for (flag, values) in &parsed.flags {
             let prop = match flag.as_str() {
                 f if self.hidden_flags.iter().any(|h| h == f) => continue,
-                f if tool.flags.iter().any(|x| x == f) => {
-                    if tool.stdin.as_ref().is_some_and(|s| s.via == f) {
-                        format!("{}_file", property(f))
-                    } else {
-                        property(f)
-                    }
-                }
+                f if tool.flags.iter().any(|x| x == f) => tool.flag_property(f),
                 _ => continue,
             };
             let value = if self.is_repeat(flag) {
@@ -1076,7 +1065,12 @@ impl ToolSpec {
     /// `intent_file` when the flag is the stdin property's `via`.
     #[must_use]
     pub fn flag_property(&self, flag: &str) -> String {
-        if self.stdin.as_ref().is_some_and(|s| s.via == flag) {
+        if self.verb == "migrate"
+            && self.selector.as_deref() == Some("action")
+            && flag == "--action"
+        {
+            "import_action".into()
+        } else if self.stdin.as_ref().is_some_and(|s| s.via == flag) {
             format!("{}_file", property(flag))
         } else {
             property(flag)
@@ -3305,5 +3299,97 @@ mod tests {
             .expect("projection verification tool call");
         assert_eq!(call.tool, "fa_book_verify");
         assert_eq!(call.arguments, json!({"target": "projections"}));
+    }
+
+    #[test]
+    fn daily_usage_verification_preserves_its_historical_selector() {
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_for("verify", Some("usage"))
+            .expect("usage verifier");
+        let invocation = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "target": "usage", "as_known_at": "42"
+                }),
+            )
+            .expect("historical usage verification");
+        assert_eq!(
+            invocation.argv,
+            vec!["verify", "usage", "--as-known-at", "42", "--json"]
+        );
+        assert!(invocation.stdin.is_none());
+        let call = mcp
+            .command_to_call(reg, "fa verify usage --as-known-at 42 --json")
+            .expect("usage verification round trip");
+        assert_eq!(
+            call.arguments,
+            json!({"target": "usage", "as_known_at": "42"})
+        );
+    }
+
+    #[test]
+    fn migration_import_phase_does_not_collide_with_the_legacy_action_selector() {
+        use fa_cli::authority::{LaunchAuthority, LaunchProfile};
+
+        let (mcp, reg) = embedded();
+        let tool = mcp.tool_by_wire("fa_book_migrate").expect("migration tool");
+        let package = format!("D:{}", "ab".repeat(32));
+        let arguments = json!({"action": "import", "import_action": "show", "package": package});
+        let schema = tool.input_schema(&mcp, reg);
+        assert!(schema["properties"].get("action").is_some());
+        assert!(schema["properties"].get("import_action").is_some());
+        let invocation = tool
+            .invocation(&mcp, reg, &arguments)
+            .expect("retained package show");
+        assert_eq!(
+            invocation.argv,
+            vec![
+                "migrate",
+                "import",
+                "--action",
+                "show",
+                "--package",
+                &package,
+                "--json"
+            ]
+        );
+        assert!(invocation.stdin.is_none());
+        let call = mcp
+            .command_to_call(
+                reg,
+                &format!("fa migrate import --action show --package {package} --json"),
+            )
+            .expect("package show round trip");
+        assert_eq!(call.arguments, arguments);
+        let authority = LaunchAuthority::new(
+            std::path::PathBuf::from("/tmp/fa-migration-mcp-scope"),
+            None,
+            "migration-reader",
+            LaunchProfile::Preparer,
+            &["read", "post"],
+        )
+        .unwrap();
+        assert!(mcp.is_call_admissible(reg, &call, &authority));
+        for phase in ["prepare", "stage"] {
+            let arguments = if phase == "prepare" {
+                json!({"action": "import", "import_action": phase, "intent": {"run": "opening-run", "source": package, "format": "quickbooks-csv", "account_map": {"Cash": "1000"}}})
+            } else {
+                json!({"action": "import", "import_action": phase, "package": package, "chunk": 0, "approval": ["11".repeat(16), "22".repeat(16)]})
+            };
+            tool.invocation(&mcp, reg, &arguments)
+                .expect("valid import phase shape");
+            let write = ToolCall {
+                tool: call.tool.clone(),
+                arguments,
+                command: format!("fa migrate import --action {phase}"),
+            };
+            assert!(
+                !mcp.is_call_admissible(reg, &write, &authority),
+                "{phase} must retain operator migration authority"
+            );
+        }
     }
 }

@@ -1812,8 +1812,16 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         ("event", Some("record")) => &[Op::Post],
         ("event", Some("show" | "list")) => &[Op::Read],
         ("migrate", Some("show")) => &[Op::Read],
-        ("migrate", Some("open" | "stage" | "finalize" | "abandon")) => &[Op::Post, Op::Migrate],
-        ("capability", Some("revoke")) => &[Op::IssueCapability],
+        ("migrate", Some("import")) => match args.flag("--action") {
+            Some("show") => &[Op::Read],
+            Some("prepare" | "stage") => &[Op::Read, Op::Post, Op::Migrate],
+            _ => return None,
+        },
+        ("migrate", Some("open" | "stage" | "finalize" | "abandon")) => {
+            &[Op::Read, Op::Post, Op::Migrate]
+        }
+        ("capability", Some("revoke")) => &[Op::Read, Op::IssueCapability],
+        ("capability", Some("list" | "show")) => &[Op::Read],
         ("draft", Some("new" | "plan" | "discard")) => &[Op::Post],
         ("draft", Some("list" | "show")) => &[Op::Read],
         ("draft", Some("promote")) => &[Op::Approve],
@@ -4351,17 +4359,41 @@ fn emit_approved(out: &Out, book: &Book, approved: fa_journal::Approved) -> Resu
     Ok(())
 }
 
-/// `fa capability revoke --commitment <64-hex>` (plan §14.2; bead fa-1d6):
-/// journal a `PolicyControl` entry revoking a capability by its commitment.
-/// Requires `issue_capability` (`--grant issue_capability` in embedded posture)
-/// and dangerous-operation confirmation (`--yes`).
+/// Admit complete current authority before a command observes book metadata.
+pub(crate) fn admit_whole_book_read(
+    book: &Book,
+    capability: &Capability,
+    ops: &[fa_policy::Op],
+    purpose: &str,
+) -> Result<(), Fail> {
+    fa_policy::admit_read(capability, capability.holder(), book.context().book_id)
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| {
+            for op in ops {
+                fa_policy::require(capability, *op, purpose)?;
+            }
+            Ok(())
+        })
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    book.read_scope(capability.holder(), capability)??;
+    Ok(())
+}
+
+/// Issue, inspect or revoke a retained capability under current authority.
 fn capability_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
         Some("revoke") => {
             let commitment_text = args.require("--commitment", "<64-hex>")?;
             let revoked_commitment = parse_digest(commitment_text, "--commitment")?;
-            let capability = ctx.capability(args, &[])?;
-            let mut book = ctx.books.open(args)?;
+            let capability = ctx.capability(args, &["read"])?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                admit_whole_book_read(
+                    book,
+                    &capability,
+                    &[fa_policy::Op::IssueCapability],
+                    "revoking a capability",
+                )
+            })?;
             let default_date = book
                 .spec()?
                 .opening_date
@@ -4402,7 +4434,10 @@ fn capability_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         Some("issue") => capability_issue(ctx, args),
         Some("list") => {
-            let book = ctx.books.open(args)?;
+            let capability = ctx.capability(args, &["read"])?;
+            let book = ctx.books.open_admitted(args, |book| {
+                admit_whole_book_read(book, &capability, &[], "listing issued capabilities")
+            })?;
             let issued = book.issued_capabilities()?;
             ctx.out.at_book(&book)?;
             let rows: Vec<Json> = issued.iter().map(issued_json).collect();
@@ -4442,7 +4477,10 @@ fn capability_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("show") => {
             let commitment =
                 parse_digest(args.require("--commitment", "<64-hex>")?, "--commitment")?;
-            let book = ctx.books.open(args)?;
+            let capability = ctx.capability(args, &["read"])?;
+            let book = ctx.books.open_admitted(args, |book| {
+                admit_whole_book_read(book, &capability, &[], "showing an issued capability")
+            })?;
             let Some(issued) = book.issued_capability(&commitment)? else {
                 return Err(Refusal::new(
                     fa_journal::refusal::code::CAPABILITY_NOT_ISSUED,
@@ -4502,6 +4540,24 @@ fn issued_json(i: &fa_journal::IssuedCapability) -> Json {
             ),
         ),
         (
+            "daily_totals",
+            Json::Arr(
+                cap.daily_totals()
+                    .iter()
+                    .map(|(unit, max)| {
+                        obj(vec![
+                            ("unit_id", Json::Int(i128::from(unit.0))),
+                            ("max_mantissa", Json::Int(*max)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "daily_root",
+            cap.daily_root().map_or(Json::Null, |root| s(hex(&root))),
+        ),
+        (
             "expires_at",
             cap.expires_at()
                 .map_or(Json::Null, |at| Json::Int(i128::from(at.0))),
@@ -4521,7 +4577,7 @@ fn issued_json(i: &fa_journal::IssuedCapability) -> Json {
 /// file is written only after the issuance commits, so a refused issuance
 /// leaves no file; the secret is never journaled or printed.
 fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const FIX: &str = "fa capability issue --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--expires-at <seq>] --out <new-file> --as <issuer> --grant issue_capability --grant <each issued op>";
+    const FIX: &str = "fa capability issue --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--daily-total \"1000.00 USD\"]... [--expires-at <seq>] --out <new-file> --as <issuer> --grant issue_capability --grant <each issued op>";
     let holder = args.require("--holder", "<principal>")?.to_string();
     if holder.is_empty() || holder.len() > fa_policy::capability::MAX_TOKEN_PRINCIPAL_BYTES {
         return Err(usage("--holder is a 1..=256-byte principal name", FIX));
@@ -4556,6 +4612,15 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             FIX,
         ));
     }
+    let issuer = ctx.capability(args, &["read"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        admit_whole_book_read(
+            book,
+            &issuer,
+            &[fa_policy::Op::IssueCapability],
+            "issuing a capability",
+        )
+    })?;
     // The token is written only after the issuance commits; refuse an
     // existing path first, so a grant is never journaled with its secret lost.
     if std::fs::symlink_metadata(ctx.files.resolve(&out_path)).is_ok() {
@@ -4564,11 +4629,35 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "choose a new --out path for the holder's token",
         ));
     }
-    let issuer = ctx.capability(args, &[])?;
-    let mut book = ctx.books.open(args)?;
     let holder_vid = fa_model::principal_vid(&holder);
     let mut issued = Capability::new(holder_vid, profile, &ops, issuer.holder())
         .map_err(|e| usage(format!("the issued capability: {e}"), FIX))?;
+    // A daily limit is a root's shared budget, never a fresh allowance for
+    // each descendant. The kernel independently checks this lineage at issue.
+    for (unit, maximum) in issuer.daily_totals() {
+        issued = issued
+            .with_daily_total(*unit, *maximum)
+            .map_err(|e| usage(format!("inherited daily limit: {e}"), FIX))?;
+    }
+    if !issuer.daily_totals().is_empty() {
+        let root = match issuer.daily_root() {
+            Some(root) => root,
+            None => issuer
+                .commitment()
+                .map_err(|e| Fail::Internal(format!("issuer commitment: {e}")))?,
+        };
+        issued = issued
+            .with_daily_root(root)
+            .map_err(|e| usage(format!("inherited daily root: {e}"), FIX))?;
+    }
+    for text in args.flag_all("--daily-total") {
+        let amount = Amount::parse(text, &book.context().units).map_err(|e| {
+            usage(format!("--daily-total `{text}`: {e:?}"), "--daily-total \"1000.00 USD\" (an exact positive gross-debit limit for each registered unit)")
+        })?;
+        issued = issued
+            .with_daily_total(amount.unit, amount.mantissa)
+            .map_err(|e| usage(format!("--daily-total `{text}`: {e}"), FIX))?;
+    }
     for text in args.flag_all("--ceiling") {
         let amount = Amount::parse(text, &book.context().units).map_err(|e| {
             usage(
@@ -9677,25 +9766,97 @@ fn availability_fields(
     ])
 }
 
+fn usage_fields(v: &fa_journal::UsageVerification) -> Vec<(&'static str, Json)> {
+    vec![
+        ("known_at", Json::Int(i128::from(v.known_at.0))),
+        ("charges_checked", Json::Int(v.charges_checked as i128)),
+        ("cells_checked", Json::Int(v.cells_checked as i128)),
+        ("drift", Json::Arr(v.drift.iter().map(s).collect())),
+    ]
+}
+
+fn verify_usage_at(
+    book: &mut Book,
+    capability: &Capability,
+    known_at: Option<CommitSeq>,
+) -> Result<fa_journal::UsageVerification, Fail> {
+    let verified = match book.verify_usage(capability, known_at) {
+        Ok(result) => result?,
+        Err(BookError::Kernel(fa_journal::KernelError::Corrupt(problem))) => {
+            return Err(Fail::Verification {
+                message: format!("daily usage verification failed: {problem}"),
+                detail: obj(vec![("problem", s(&problem))]),
+                cite: Some("FA-INV-10.ceiling / FA-INV-04 (daily usage refolds from immutable admission history)".into()),
+                fix: Some("retain this finding with fa verify usage --json and the same --book and --as-known-at; preserve the original native history".into()),
+            });
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if !verified.is_green() {
+        return Err(Fail::Verification {
+            message: format!("daily usage differs from its immutable admission history: {}", verified.drift.join("; ")),
+            detail: obj(usage_fields(&verified)),
+            cite: Some("FA-INV-10.ceiling / FA-INV-04 (daily usage is a verified projection)".into()),
+            fix: Some("retain this finding with fa verify usage --json; preserve the original book history and do not reset a cell or replace a quota to bypass its spent capacity".into()),
+        });
+    }
+    Ok(verified)
+}
+
 fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let target = args.positional.get(1).map(String::as_str);
-    if args.flag("--as-known-at").is_some() && !matches!(target, Some("periods" | "close")) {
+    if args.flag("--as-known-at").is_some()
+        && !matches!(target, Some("periods" | "close" | "usage"))
+    {
         return Err(usage(
-            "--as-known-at is supported only by verify periods and verify close",
-            "select periods or close for historical verification, or omit --as-known-at",
+            "--as-known-at is supported only by verify periods, verify close and verify usage",
+            "select periods, close or usage for historical verification, or omit --as-known-at",
         ));
     }
     match target {
         Some("accumulator") => notary::verify_accumulator(ctx, args),
         Some("close") => crate::closing::verify_close(ctx, args),
+        Some("usage") => {
+            if args.positional.len() != 2
+                || args.flag("--period").is_some()
+                || args.flag("--fiscal-year").is_some()
+            {
+                return Err(usage(
+                    "verify usage checks every root, day and unit at one recorded prefix and takes no period filter",
+                    "fa verify usage [--as-known-at HEAD|<seq>|<RFC3339>] --book <dir> --json",
+                ));
+            }
+            let capability = ctx.capability(args, &["read", "verify"])?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                admit_whole_book_read(
+                    book,
+                    &capability,
+                    &[fa_policy::Op::Verify],
+                    "verifying daily usage",
+                )
+            })?;
+            let (known_at, _) = known_at_flag(args, &book, out)?;
+            let verified = verify_usage_at(&mut book, &capability, known_at)?;
+            out.known_at(verified.known_at);
+            out.event(
+                "usage_verified",
+                usage_fields(&verified),
+                &format!(
+                    "daily usage verified from immutable history: {} charges, {} cells agree at {}",
+                    verified.charges_checked, verified.cells_checked, verified.known_at.0
+                ),
+            );
+            Ok(())
+        }
         Some("registers") => {
             let principal = ctx.principal(args);
             let capability = ctx.capability(args, &["read", "verify"])?;
-            let book = ctx.books.open_admitted(args, |book| {
+            let mut book = ctx.books.open_admitted(args, |book| {
                 admit_registers(book, principal, &capability, "verifying derived registers")
             })?;
             let periods = selected_periods(args, &book)?;
+            verify_usage_at(&mut book, &capability, None)?;
             out.effective(periods_selector(&periods));
             let mut all_green = true;
             let mut details = Vec::new();
@@ -15070,15 +15231,63 @@ fn emit_migration_controlled(
     );
 }
 
+fn migration_capability(ctx: &Ctx<'_>, args: &Args, writing: bool) -> Result<Capability, Fail> {
+    let ops: &[&str] = if writing {
+        &["read", "post", "migrate"]
+    } else {
+        &["read"]
+    };
+    let capability = ctx.capability(args, ops)?;
+    for name in ops {
+        let op = fa_policy::Op::from_name(name)
+            .ok_or_else(|| Fail::Internal("migration operation is not registered".into()))?;
+        fa_policy::require(&capability, op, "migration run control")
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
+    fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None)
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    Ok(capability)
+}
+
+fn admit_migration(
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+    writing: bool,
+) -> Result<(), Fail> {
+    fa_policy::admit_read(capability, principal, book.context().book_id)
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    if writing {
+        fa_policy::admit(
+            capability,
+            &fa_policy::Intent {
+                principal,
+                trunk: true,
+                op: fa_policy::Op::Migrate,
+                book: book.context().book_id,
+                legs: &[],
+            },
+        )
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
+    // Current issuance and revocation precede input decoding, timestamp
+    // resolution, run lookup and trusted facade planning.
+    book.read_scope(principal, capability)??;
+    Ok(())
+}
+
 fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
+        Some("import") => crate::migration_import::import_cmd(ctx, args),
         Some("open") => {
+            let who = ctx.principal(args);
+            let capability = migration_capability(ctx, args, true)?;
+            let mut book = ctx
+                .books
+                .open_admitted(args, |book| admit_migration(book, who, &capability, true))?;
             let path = args.require("--intent", "run.json (or - for stdin)")?;
             let text = ctx.files.read_text(path)?;
             let doc = parse_json(path, &text)?;
-            let who = ctx.principal(args);
-            let capability = ctx.capability(args, &["migrate"])?;
-            let mut book = ctx.books.open(args)?;
             let body = parse_migration_run_body(&book, args, &doc)?;
             let key = args
                 .flag("--key")
@@ -15116,9 +15325,11 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         Some("stage") => {
             let who = ctx.principal(args);
-            let capability = ctx.capability(args, &["post", "migrate"])?;
+            let capability = migration_capability(ctx, args, true)?;
             let approval_flags = args.flag_all("--approval");
-            let mut book = ctx.books.open(args)?;
+            let mut book = ctx
+                .books
+                .open_admitted(args, |book| admit_migration(book, who, &capability, true))?;
             if let Some(plan_path) = args.flag("--plan") {
                 if args.switch("--dry-run") || args.flag("--plan-out").is_some() {
                     return Err(usage(
@@ -15346,9 +15557,11 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             };
             let plan_tag: u8 = if is_finalize { 1 } else { 2 };
             let who = ctx.principal(args);
-            let capability = ctx.capability(args, &["migrate"])?;
+            let capability = migration_capability(ctx, args, true)?;
             let approval_flags = args.flag_all("--approval");
-            let mut book = ctx.books.open(args)?;
+            let mut book = ctx
+                .books
+                .open_admitted(args, |book| admit_migration(book, who, &capability, true))?;
             let book_id = book.context().book_id;
             let (run_vid, proposal) = if let Some(plan_path) = args.flag("--plan") {
                 if args.switch("--dry-run") || args.flag("--plan-out").is_some() {
@@ -15468,6 +15681,8 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         }
         Some("show") => {
+            let who = ctx.principal(args);
+            let capability = migration_capability(ctx, args, false)?;
             let run_str = args
                 .positional
                 .get(2)
@@ -15479,7 +15694,9 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "fa migrate show <run_key_or_vid> --book <dir> --json",
                     )
                 })?;
-            let book = ctx.books.open(args)?;
+            let book = ctx
+                .books
+                .open_admitted(args, |book| admit_migration(book, who, &capability, false))?;
             let (known_at, _requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
             let run_vid = resolve_migration_run_vid(book.context().book_id, run_str);
             let Some(run) = book.migration_run(run_vid, known_at)? else {
