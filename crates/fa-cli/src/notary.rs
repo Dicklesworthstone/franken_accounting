@@ -166,8 +166,11 @@ fn read_certificate_bytes(
 }
 
 /// Save an optional external copy, then retain the immutable certificate in
-/// the book. A duplicate certificate reuses its original recorded sequence.
-/// The metadata write advances the book frontier, never the accounting fold.
+/// the book. The copy is written only for a capability the retention admits
+/// (holder, read, book, expiry and revocation at the head), so a refused
+/// retention leaves no host file. A duplicate certificate reuses its original
+/// recorded sequence. The metadata write advances the book frontier, never
+/// the accounting fold.
 pub(crate) fn retain_report_certificate(
     book: &mut Book,
     files: &Files,
@@ -190,6 +193,9 @@ pub(crate) fn retain_report_certificate(
                 "use --certify to receive the complete certificate as hex on stdout",
             ));
         }
+        fa_policy::admit_read(capability, capability.holder(), book.context().book_id)
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        book.admit_current(capability)??;
         crate::cli::write_new_output_file(files, path, &bytes, "certificate", "--certificate-out")?;
     }
     let retained = book.retain_certificate_authorized(certificate, capability)??;
