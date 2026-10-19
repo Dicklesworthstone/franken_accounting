@@ -316,7 +316,7 @@ checker_strength = "negative_fixture"
 first_gate = "G2"
 owner = "fa-bvx"
 checkers = ["fa-journal::tests/genesis.rs::period_state_mirror_refolds_from_journaled_period_control_transitions", "fa-cli::tests/cli.rs::verify_periods_reports_refolded_lifecycle_and_rejects_period_filters"]
-negatives = ["fa-journal::tests/genesis.rs::period_verification_detects_planted_state_and_topology_drift_without_mutation", "fa-cli::tests/cli.rs::verify_periods_exits_eight_on_planted_period_state_mirror_drift"]
+negatives = ["fa-journal::tests/genesis.rs::period_verification_detects_planted_state_and_topology_drift_without_mutation", "fa-cli::tests/cli.rs::verify_periods_exits_eight_on_mirror_drift_or_deleted_birth_history"]
 waiver = "forbidden"
 
 [[clause]]

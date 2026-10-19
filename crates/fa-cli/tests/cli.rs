@@ -5617,6 +5617,114 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(dc, 0, "{do_}\n{derr}");
     seen.extend(check_robot_output(&demo_args, dc, &do_));
 
+    // Year-end closing (fa-4o0): routes, review, close, verification and a
+    // zero re-close, the workflow tests/closing.rs exercises in depth.
+    let book3 = dir.join("book3");
+    let mut run3 = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(book3.as_path()), &argv);
+        assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        out
+    };
+    run3(&[
+        "book",
+        "create",
+        "--name",
+        "Events Co 3",
+        "--opening-date",
+        "2026-01-01",
+    ]);
+    let chart3 = write(
+        &dir,
+        "chart3.json",
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"3000","name":"Retained earnings","type":"Equity","unit":"USD"},
+            {"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}
+        ]}"#,
+    );
+    run3(&["chart", "import", &chart3]);
+    run3(&["period", "create", "--fiscal-year", "2026"]);
+    run3(&["period", "open", "FY2026-P12"]);
+    run3(&["period", "open", "FY2026-CLOSE"]);
+    let workpaper = write(
+        &dir,
+        "workpaper.txt",
+        "Reviewed workpaper documenting the year's sales and their closing computation.",
+    );
+    let added = run3(&[
+        "document",
+        "add",
+        &workpaper,
+        "--kind",
+        "Workpaper",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let workpaper_oid = field(&added, "oid").unwrap_or_default().to_string();
+    run3(&[
+        "close",
+        "map",
+        "--route",
+        "4000:3000",
+        "--effective-from",
+        "2026-01-01",
+        "--key",
+        "routes-2026",
+    ]);
+    run3(&["close", "routes", "--as-of", "2026-12-31"]);
+    let sale = write(
+        &dir,
+        "year-sale.json",
+        r#"{"effective_date":"2026-12-30","idempotency_key":"year-sale","legs":[{"side":"debit","account":"1000","amount":"100.00 USD"},{"side":"credit","account":"4000","amount":"100.00 USD"}]}"#,
+    );
+    run3(&["post", "--intent", &sale, "--evidence", &workpaper_oid]);
+    let review_out = dir.join("year-end.review").display().to_string();
+    run3(&[
+        "close",
+        "year-end",
+        "--fiscal-year",
+        "2026",
+        "--period",
+        "FY2026-CLOSE",
+        "--key",
+        "first",
+        "--evidence",
+        &workpaper_oid,
+        "--review-out",
+        &review_out,
+    ]);
+    run3(&[
+        "close",
+        "year-end",
+        "--fiscal-year",
+        "2026",
+        "--period",
+        "FY2026-CLOSE",
+        "--key",
+        "first",
+        "--evidence",
+        &workpaper_oid,
+        "--yes",
+    ]);
+    run3(&["verify", "close", "FY2026"]);
+    let zero = run3(&[
+        "close",
+        "year-end",
+        "--fiscal-year",
+        "2026",
+        "--period",
+        "FY2026-CLOSE",
+        "--key",
+        "zero",
+        "--evidence",
+        &workpaper_oid,
+        "--yes",
+    ]);
+    assert_eq!(field(&zero, "event"), Some("closing_noop"), "{zero}");
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events
@@ -6482,6 +6590,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("period", Some("close"), "always"),
     ("period", Some("lock"), "always"),
     ("period", Some("reopen"), "always"),
+    ("close", Some("year-end"), "always"),
     ("post", None, "grant:post_closed"),
     ("reverse", None, "grant:post_closed"),
     // Every verb that posts to trunk is dangerous under a post_closed grant.
