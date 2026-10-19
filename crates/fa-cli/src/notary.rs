@@ -604,6 +604,16 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let workpaper_out = args.flag("--workpaper-out");
+    // --workpaper returns the same text inline (the only form MCP can carry,
+    // since it accepts no host paths); --workpaper-out writes a file.
+    let workpaper_inline = args.switch("--workpaper");
+    if workpaper_inline && workpaper_out.is_some() {
+        return Err(usage(
+            "--workpaper returns the workpaper inline and --workpaper-out writes it to a file; choose one",
+            "fa replay C:<oid> --expect '<JSON>' --workpaper --json",
+        ));
+    }
+    let workpaper_requested = workpaper_inline || workpaper_out.is_some();
     let detail_view = match args.flag("--view") {
         None => false,
         Some("detail") if args.flag_all("--view").len() == 1 => true,
@@ -663,7 +673,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // A workpaper is a produced deliverable: it needs produce as well as read.
     let capability = ctx.capability(
         args,
-        if workpaper_out.is_some() {
+        if workpaper_requested {
             &["read", "produce"]
         } else {
             &["read"]
@@ -674,13 +684,16 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut book = ctx.books.open_admitted(args, |book| {
         fa_policy::admit_read(&capability, principal, book.context().book_id)
             .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
-            .and_then(|()| match workpaper_out {
-                Some(_) => fa_policy::require(
-                    &capability,
-                    fa_policy::Op::Produce,
-                    "exporting a replayed report workpaper",
-                ),
-                None => Ok(()),
+            .and_then(|()| {
+                if workpaper_requested {
+                    fa_policy::require(
+                        &capability,
+                        fa_policy::Op::Produce,
+                        "exporting a replayed report workpaper",
+                    )
+                } else {
+                    Ok(())
+                }
             })
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
         book.read_scope(principal, &capability)??;
@@ -728,7 +741,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             artifact.family().name()
         )));
     }
-    if workpaper_out.is_some() && !has_workpaper(artifact.family(), detail_view, aging_expected) {
+    if workpaper_requested && !has_workpaper(artifact.family(), detail_view, aging_expected) {
         return Err(unsupported_workpaper(artifact.family()));
     }
     if artifact.family() == ReportArtifactFamily::ScenarioDiff {
@@ -764,8 +777,8 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     )??;
     // The workpaper export replays the same certificate against the same
     // independent request; it is complete before any file is written.
-    let workpaper = workpaper_out
-        .map(|path| {
+    let workpaper = workpaper_requested
+        .then(|| {
             workpaper_jsonl(
                 &book,
                 principal,
@@ -775,7 +788,6 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 &expected,
                 detail_expected.as_ref(),
             )
-            .map(|text| (path, text))
         })
         .transpose()?;
     // Resolve typed reports before an output file or success event is emitted.
@@ -848,7 +860,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--output",
         )?;
     }
-    if let Some((path, text)) = &workpaper {
+    if let (Some(path), Some(text)) = (workpaper_out, &workpaper) {
         crate::cli::write_new_output_file(
             &ctx.files,
             path,
@@ -947,20 +959,35 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Some(&digest),
         );
     }
-    if let Some((path, text)) = workpaper {
+    if let Some(text) = workpaper {
         let lines = text.lines().count();
+        let human = match workpaper_out {
+            Some(path) => format!(
+                "Wrote the {} JSONL workpaper ({lines} lines) to {path}",
+                replayed.family.name()
+            ),
+            None => format!(
+                "{} JSONL workpaper ({lines} lines):\n{text}",
+                replayed.family.name()
+            ),
+        };
         ctx.out.event_with_certificate(
             "workpaper_exported",
             vec![
                 ("family", s(replayed.family.name())),
-                ("file", s(path)),
+                ("file", workpaper_out.map_or(Json::Null, s)),
                 ("bytes", Json::Int(text.len() as i128)),
                 ("lines", Json::Int(lines as i128)),
+                (
+                    "text",
+                    if workpaper_inline {
+                        s(&text)
+                    } else {
+                        Json::Null
+                    },
+                ),
             ],
-            &format!(
-                "Wrote the {} JSONL workpaper ({lines} lines) to {path}",
-                replayed.family.name()
-            ),
+            &human,
             Some(&digest),
         );
     }
