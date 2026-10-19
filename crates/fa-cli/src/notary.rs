@@ -491,6 +491,82 @@ fn emit_certificate(
     );
 }
 
+/// Families with a recipient-bound JSONL workpaper export (`--workpaper-out`).
+/// Effective-date aging also has one in the library, but it needs an
+/// independent aging request that replay does not accept yet.
+fn has_workpaper(family: ReportArtifactFamily, detail_view: bool) -> bool {
+    match family {
+        ReportArtifactFamily::RollForward => detail_view,
+        ReportArtifactFamily::CashFlow
+        | ReportArtifactFamily::AgingReconciliation
+        | ReportArtifactFamily::AgingPortfolio
+        | ReportArtifactFamily::StatementTrace => true,
+        _ => false,
+    }
+}
+
+fn unsupported_workpaper(family: ReportArtifactFamily) -> Fail {
+    usage(
+        format!(
+            "{} certificates have no JSONL workpaper export",
+            family.name()
+        ),
+        "--workpaper-out exports ledger detail (replay a roll-forward source with --view detail), cash-flow, aging-reconciliation, aging-portfolio and statement-trace certificates",
+    )
+}
+
+/// The library's workpaper export for one replayed family. Each export
+/// replays the certificate again against the same independent request under
+/// current read+produce authority and returns all of its text or none.
+fn workpaper_jsonl(
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+    family: ReportArtifactFamily,
+    bytes: &[u8],
+    expected: &expectations::Expected,
+    detail: Option<&fa::RollForwardRequest>,
+) -> Result<String, Fail> {
+    use expectations::Expected;
+    Ok(match (family, expected, detail) {
+        (ReportArtifactFamily::RollForward, _, Some(request)) => book.general_ledger_jsonl(
+            principal,
+            capability,
+            &fa::RollForwardCertificate::decode(bytes)?,
+            request,
+        )??,
+        (ReportArtifactFamily::CashFlow, Expected::CashFlow(request, definition), _) => book
+            .cash_flow_jsonl(
+                principal,
+                capability,
+                &fa::CashFlowCertificate::decode(bytes)?,
+                request,
+                definition,
+            )??,
+        (ReportArtifactFamily::AgingReconciliation, Expected::Reconciliation(request), _) => book
+            .effective_date_aging_reconciliation_jsonl(
+                principal,
+                capability,
+                &fa::AgingReconciliationCertificate::decode(bytes)?,
+                request,
+            )??,
+        (ReportArtifactFamily::AgingPortfolio, Expected::Portfolio(request), _) => book
+            .aging_portfolio_jsonl(
+                principal,
+                capability,
+                &fa::aging::portfolio::AgingPortfolioCertificate::decode(bytes)?,
+                request,
+            )??,
+        (ReportArtifactFamily::StatementTrace, Expected::AsSupplied, _) => book
+            .statement_trace_jsonl(
+                principal,
+                capability,
+                &fa::StatementTraceCertificate::decode(bytes)?,
+            )??,
+        (family, _, _) => return Err(unsupported_workpaper(family)),
+    })
+}
+
 pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
         return Err(usage(
@@ -508,6 +584,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa replay C:<oid> --output <new-file> --json",
         ));
     }
+    if args.flag_all("--workpaper-out").len() > 1
+        || args
+            .flag("--workpaper-out")
+            .is_some_and(|path| path.is_empty() || path == "-")
+    {
+        return Err(usage(
+            "--workpaper-out names exactly one new file for the replayed JSONL workpaper",
+            "fa replay C:<oid> --expect '<JSON>' --workpaper-out <new-file> --json",
+        ));
+    }
+    let workpaper_out = args.flag("--workpaper-out");
     let detail_view = match args.flag("--view") {
         None => false,
         Some("detail") if args.flag_all("--view").len() == 1 => true,
@@ -564,17 +651,41 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
     }
     let principal = ctx.principal(args);
-    let capability = ctx.capability(args, &["read"])?;
+    // A workpaper is a produced deliverable: it needs produce as well as read.
+    let capability = ctx.capability(
+        args,
+        if workpaper_out.is_some() {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
     // Saved provenance grants no current authority. Admission precedes
     // stamping book metadata, fetching retained bytes or reading a file.
     let mut book = ctx.books.open_admitted(args, |book| {
         fa_policy::admit_read(&capability, principal, book.context().book_id)
             .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+            .and_then(|()| match workpaper_out {
+                Some(_) => fa_policy::require(
+                    &capability,
+                    fa_policy::Op::Produce,
+                    "exporting a replayed report workpaper",
+                ),
+                None => Ok(()),
+            })
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
         book.read_scope(principal, &capability)??;
         book.prepare_report_history(principal, &capability, None)??;
         Ok(())
     })?;
+    if let Some(path) = workpaper_out
+        && std::fs::symlink_metadata(ctx.files.resolve(path)).is_ok()
+    {
+        return Err(usage(
+            format!("workpaper output {path} already exists"),
+            "choose a new --workpaper-out path; an existing file is never overwritten",
+        ));
+    }
     let expected = expectations::parse(args, &book, principal, &capability)?;
     let detail_expected = if detail_view {
         Some(crate::cli::parse_gl_scope(
@@ -600,6 +711,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(certificate_invalid(
             "--view detail requires a roll-forward source certificate",
         ));
+    }
+    if workpaper_out.is_some() && !has_workpaper(artifact.family(), detail_view) {
+        return Err(unsupported_workpaper(artifact.family()));
     }
     if artifact.family() == ReportArtifactFamily::ScenarioDiff {
         // Its replay re-materializes the scenario with exactly the intents it
@@ -632,6 +746,22 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some(artifact.digest()),
         expected.borrowed(),
     )??;
+    // The workpaper export replays the same certificate against the same
+    // independent request; it is complete before any file is written.
+    let workpaper = workpaper_out
+        .map(|path| {
+            workpaper_jsonl(
+                &book,
+                principal,
+                &capability,
+                artifact.family(),
+                &bytes,
+                &expected,
+                detail_expected.as_ref(),
+            )
+            .map(|text| (path, text))
+        })
+        .transpose()?;
     // Resolve typed reports before an output file or success event is emitted.
     // A generic receipt always identifies the original family's exact bytes.
     let native = if artifact.family() == ReportArtifactFamily::Native {
@@ -691,6 +821,15 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             &replayed.output,
             "replayed report",
             "--output",
+        )?;
+    }
+    if let Some((path, text)) = &workpaper {
+        crate::cli::write_new_output_file(
+            &ctx.files,
+            path,
+            text.as_bytes(),
+            "replayed workpaper",
+            "--workpaper-out",
         )?;
     }
     let digest = hex(artifact.digest());
@@ -779,6 +918,23 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 replayed.family.name(),
                 replayed.known_at.0,
                 replayed.output.len(),
+            ),
+            Some(&digest),
+        );
+    }
+    if let Some((path, text)) = workpaper {
+        let lines = text.lines().count();
+        ctx.out.event_with_certificate(
+            "workpaper_exported",
+            vec![
+                ("family", s(replayed.family.name())),
+                ("file", s(path)),
+                ("bytes", Json::Int(text.len() as i128)),
+                ("lines", Json::Int(lines as i128)),
+            ],
+            &format!(
+                "Wrote the {} JSONL workpaper ({lines} lines) to {path}",
+                replayed.family.name()
             ),
             Some(&digest),
         );

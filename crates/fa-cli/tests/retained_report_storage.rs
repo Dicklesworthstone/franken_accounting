@@ -2348,3 +2348,196 @@ fn split_cash_flow_preserves_original_units_and_replays_exact_portions_at_its_fi
     );
     assert_eq!(f.head(), later, "freshness never publishes");
 }
+
+fn generated_expectation(metadata: &Json) -> String {
+    text(metadata, "replay_command")
+        .split_once(" --expect '")
+        .unwrap()
+        .1
+        .split_once("' --book")
+        .unwrap()
+        .0
+        .to_string()
+}
+
+#[test]
+fn replay_workpapers_equal_the_library_export_and_never_overwrite_or_widen_families() {
+    let f = Fixture::with_additional_cash_accounts(1);
+    let at = f.source_head.0.to_string();
+    let operator = fa_model::principal_vid("operator");
+    let read_produce = Capability::embedded(operator, &["read", "produce"]).unwrap();
+
+    // Aging portfolio: the file is exactly the library's export of the same
+    // certificate and request, and writing it publishes nothing.
+    let certified = f.ok(&portfolio_args(
+        &at,
+        &["--account", "4000,1000", "--certify"],
+    ));
+    let metadata = data(&certified, "report_certificate");
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let expect = generated_expectation(metadata);
+    let portfolio_path = f.dir.join("portfolio.jsonl");
+    let retained = f.head();
+    let events = f.ok(&[
+        "replay",
+        &locator,
+        "--expect",
+        &expect,
+        "--workpaper-out",
+        portfolio_path.to_str().unwrap(),
+    ]);
+    let exported = data(&events, "workpaper_exported");
+    assert_eq!(
+        keys(exported),
+        pinned_fields("events", "workpaper_exported")
+    );
+    assert_eq!(text(exported, "family"), "aging-portfolio");
+    assert_eq!(text(exported, "file"), portfolio_path.to_str().unwrap());
+    let written = std::fs::read_to_string(&portfolio_path).unwrap();
+    assert_eq!(
+        exported.get("bytes"),
+        Some(&Json::Int(written.len() as i128))
+    );
+    assert_eq!(
+        exported.get("lines"),
+        Some(&Json::Int(written.lines().count() as i128))
+    );
+    assert!(written.lines().count() > 1, "{written}");
+    for line in written.lines() {
+        assert!(matches!(json::parse(line), Ok(Json::Obj(_))), "{line}");
+    }
+    let certificate =
+        fa::aging::portfolio::AgingPortfolioCertificate::decode(&unhex(text(metadata, "bytes")))
+            .unwrap();
+    {
+        let book = f.open();
+        let library = book
+            .aging_portfolio_jsonl(
+                operator,
+                &read_produce,
+                &certificate,
+                &certificate.request().unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(written, library, "the CLI writes the library's export");
+    }
+    assert_eq!(f.head(), retained, "exporting a workpaper is a read");
+
+    // An existing file is never replaced; without its request the replay is
+    // refused before any file appears.
+    let (exit, _) = f.run(&[
+        "replay",
+        &locator,
+        "--expect",
+        &expect,
+        "--workpaper-out",
+        portfolio_path.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 2);
+    assert_eq!(std::fs::read_to_string(&portfolio_path).unwrap(), written);
+    let absent = f.dir.join("unexpected.jsonl");
+    let (exit, _) = f.run(&[
+        "replay",
+        &locator,
+        "--workpaper-out",
+        absent.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 8);
+    assert!(!absent.exists());
+
+    // Ledger detail: a roll-forward source replayed with --view detail.
+    let scope = [
+        "--account",
+        "1000",
+        "--unit",
+        "USD",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--label",
+        "January detail",
+        "--as-known-at",
+        at.as_str(),
+    ];
+    let mut certify = vec!["gl", "detail"];
+    certify.extend(scope);
+    certify.push("--certify");
+    let certified = f.ok(&certify);
+    let detail_retained = f.head();
+    let metadata = data(&certified, "report_certificate");
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let detail_path = f.dir.join("detail.jsonl");
+    let mut replay = vec!["replay", locator.as_str(), "--view", "detail"];
+    replay.extend(scope);
+    replay.extend(["--workpaper-out", detail_path.to_str().unwrap()]);
+    let events = f.ok(&replay);
+    assert_eq!(
+        text(data(&events, "workpaper_exported"), "family"),
+        "roll-forward"
+    );
+    let written = std::fs::read_to_string(&detail_path).unwrap();
+    let source = fa::RollForwardCertificate::decode(&unhex(text(metadata, "bytes"))).unwrap();
+    {
+        let book = f.open();
+        let library = book
+            .general_ledger_jsonl(operator, &read_produce, &source, source.request())
+            .unwrap()
+            .unwrap();
+        assert_eq!(written, library, "the CLI writes the library's export");
+    }
+
+    // A family without an export is refused before replay and writes nothing:
+    // the same roll-forward source without --view detail.
+    let refused = f.dir.join("no-export.jsonl");
+    let (exit, errors) = f.run(&[
+        "replay",
+        &locator,
+        "--workpaper-out",
+        refused.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 2, "{errors:?}");
+    assert!(
+        text(data(&errors, "error"), "message")
+            .contains("roll-forward certificates have no JSONL workpaper export"),
+        "{errors:?}"
+    );
+    assert!(!refused.exists());
+
+    // A launch-bound session cannot name a host output path at all: the new
+    // flag is in the shared host-path containment list.
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        f.dir.clone(),
+        None,
+        "workpaper-reader",
+        fa_cli::authority::LaunchProfile::Agent,
+        &["read", "produce"],
+    )
+    .unwrap();
+    let bound = f.dir.join("bound.jsonl");
+    let args = [
+        "replay",
+        &locator,
+        "--workpaper-out",
+        bound.to_str().unwrap(),
+        "--json",
+    ]
+    .map(String::from);
+    let (code, captured) =
+        fa_cli::entry::fa_with_authority(&args, Files::default(), &authority, true);
+    assert_eq!(code, 2, "{}{}", captured.stdout, captured.stderr);
+    assert!(
+        captured
+            .stdout
+            .contains("--workpaper-out cannot name a host filesystem path"),
+        "{}",
+        captured.stdout
+    );
+    assert!(!bound.exists());
+    assert_eq!(
+        f.head(),
+        detail_retained,
+        "workpapers and refusals are reads"
+    );
+}

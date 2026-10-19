@@ -5682,6 +5682,28 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "--after",
         "HEAD",
     ]);
+    let trace_certificate = dir.join("trace.cert").display().to_string();
+    run2(&[
+        "statement",
+        "trace",
+        "--definition",
+        "balance-sheet",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        "8",
+        "--after",
+        "HEAD",
+        "--certificate-out",
+        &trace_certificate,
+    ]);
+    let trace_workpaper = dir.join("trace.jsonl").display().to_string();
+    run2(&[
+        "replay",
+        &trace_certificate,
+        "--workpaper-out",
+        &trace_workpaper,
+    ]);
 
     let mut bank_bytes = String::from("HEADER_PAGE_1_ACCOUNT_NUMBER_SECRET\n");
     while bank_bytes.len() < 4096 {

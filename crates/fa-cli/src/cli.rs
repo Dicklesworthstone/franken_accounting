@@ -2099,6 +2099,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--certificate-out",
         "--out",
         "--output",
+        "--workpaper-out",
         "--review-out",
         "--receipt-out",
     ] {
