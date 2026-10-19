@@ -9707,7 +9707,11 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("accumulator") => notary::verify_accumulator(ctx, args),
         Some("close") => crate::closing::verify_close(ctx, args),
         Some("registers") => {
-            let book = ctx.books.open(args)?;
+            let principal = ctx.principal(args);
+            let capability = ctx.capability(args, &["read", "verify"])?;
+            let book = ctx.books.open_admitted(args, |book| {
+                admit_registers(book, principal, &capability, "verifying derived registers")
+            })?;
             let periods = selected_periods(args, &book)?;
             out.effective(periods_selector(&periods));
             let mut all_green = true;
@@ -13621,11 +13625,39 @@ pub(crate) fn render_balance_explanation(
     Ok(())
 }
 
+/// A period's register cells fold every account of the book, and
+/// maintaining them publishes: current whole-book `read` and `verify`
+/// authority on trunk is admitted before the book is observed, exactly as
+/// `fa verify periods` admits it, so a revoked, expired or scoped token
+/// neither reads a fold nor advances the cache.
+fn admit_registers(
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+    what: &str,
+) -> Result<(), Fail> {
+    fa_policy::admit_read(capability, principal, book.context().book_id)
+        .and_then(|()| fa_policy::require(capability, fa_policy::Op::Verify, what))
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    let _ = book.read_scope(principal, capability)??;
+    Ok(())
+}
+
 fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
         Some("advance") => {
-            let mut book = ctx.books.open(args)?;
+            let principal = ctx.principal(args);
+            let capability = ctx.capability(args, &["read", "verify"])?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                admit_registers(
+                    book,
+                    principal,
+                    &capability,
+                    "maintaining derived registers",
+                )
+            })?;
             let periods = selected_periods(args, &book)?;
             for p in &periods {
                 out.effective(format!("period:{p}"));
@@ -13693,7 +13725,16 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         }
         Some("materialize") => {
-            let mut book = ctx.books.open(args)?;
+            let principal = ctx.principal(args);
+            let capability = ctx.capability(args, &["read", "verify"])?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                admit_registers(
+                    book,
+                    principal,
+                    &capability,
+                    "materializing derived registers",
+                )
+            })?;
             let periods = selected_periods(args, &book)?;
             // Rematerializing over cells a period already has rewrites them
             // (verbs.toml [[dangerous]]): every period is checked, and the
