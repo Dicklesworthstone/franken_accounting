@@ -22,6 +22,7 @@
 
 pub mod admit;
 pub mod approval;
+pub mod bank_matching;
 pub mod capability;
 pub mod decision;
 pub mod denial;
