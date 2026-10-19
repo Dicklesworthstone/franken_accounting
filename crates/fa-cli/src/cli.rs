@@ -10631,6 +10631,61 @@ fn parse_digest32(text: &str, what: &str) -> Result<[u8; 32], Fail> {
     Ok(out)
 }
 
+/// Reject unrecognized policy inputs before deriving or retaining a report.
+/// Existing optional defaults remain the responsibility of the typed parsers.
+pub(crate) fn validate_cash_flow_policy_fields(doc: &Json, indirect: bool) -> Result<(), Fail> {
+    let check = |value: &Json, allowed: &[&str], context: &str| -> Result<(), Fail> {
+        let Json::Obj(fields) = value else {
+            return Err(usage(
+                format!("{context} must be a JSON object"),
+                "use the documented direct or indirect cash-flow policy fields",
+            ));
+        };
+        for (field, _) in fields {
+            if !allowed.contains(&field.as_str()) {
+                return Err(usage(
+                    format!("unknown {context} field '{field}'"),
+                    "use the documented direct or indirect cash-flow policy fields",
+                ));
+            }
+        }
+        Ok(())
+    };
+    let allowed: &[&str] = if indirect {
+        &[
+            "name",
+            "cash_policy",
+            "cash_accounts",
+            "assignments",
+            "adjustments",
+        ]
+    } else {
+        &["name", "cash_accounts", "assignments"]
+    };
+    check(doc, allowed, "cash-flow policy")?;
+    for (field, allowed) in [
+        ("assignments", &["entry_digest", "leg_index", "activity"][..]),
+        (
+            "adjustments",
+            &["entry_digest", "leg_index", "category", "sign", "reason"][..],
+        ),
+    ] {
+        let Some(value) = doc.get(field) else {
+            continue;
+        };
+        let Json::Arr(items) = value else {
+            return Err(usage(
+                format!("cash-flow policy '{field}' must be an array"),
+                "provide an array of explicit journal-leg classifications or adjustments",
+            ));
+        };
+        for (index, item) in items.iter().enumerate() {
+            check(item, allowed, &format!("{field}[{index}]"))?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn parse_cash_flow_definition(
     doc: &Json,
     book_id: Id128,
@@ -11564,6 +11619,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "pass a valid JSON object for --policy",
                 )
             })?;
+            validate_cash_flow_policy_fields(&policy_doc, args.switch("--indirect"))?;
             let mut req = parse_gl_scope(
                 args,
                 &book,
@@ -11834,7 +11890,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "--account",
                 "<code> (an AnyUnit lot-tracked account such as 1400)",
             )?;
-            let book = ctx.books.open(args)?;
+            let book = ctx.books.open_admitted(args, admit_report)?;
             let account = account_vid(book.context().book_id, account_code);
             let effective_through = match args.flag("--as-of") {
                 Some(as_of) => {

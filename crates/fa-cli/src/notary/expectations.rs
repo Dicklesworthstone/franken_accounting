@@ -135,26 +135,19 @@ fn scope(doc: &Json, book: &Book) -> Result<RollForwardRequest, Fail> {
 }
 
 fn policy_shape(policy: &Json, indirect: bool) -> Result<(), Fail> {
-    let allowed: &[&str] = if indirect {
-        &["name", "cash_policy", "cash_accounts", "assignments", "adjustments"]
-    } else {
-        &["name", "cash_accounts", "assignments"]
-    };
-    exact_fields(policy, allowed)?;
+    crate::cli::validate_cash_flow_policy_fields(policy, indirect)?;
     string(policy, "name")?;
     for item in array(policy, "cash_accounts")? {
         if !matches!(item, Json::Str(code) if !code.is_empty()) {
-            return Err(invalid("expected cash_accounts must contain nonempty account codes or ids"));
+            return Err(invalid(
+                "expected cash_accounts must contain nonempty account codes or ids",
+            ));
         }
     }
-    for assignment in array(policy, "assignments")? {
-        exact_fields(assignment, &["entry_digest", "leg_index", "activity"])?;
-    }
+    array(policy, "assignments")?;
     if indirect {
         string(policy, "cash_policy")?;
-        for adjustment in array(policy, "adjustments")? {
-            exact_fields(adjustment, &["entry_digest", "leg_index", "category", "sign", "reason"])?;
-        }
+        array(policy, "adjustments")?;
     }
     Ok(())
 }

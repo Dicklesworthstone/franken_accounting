@@ -388,18 +388,28 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
             command.extend(mode.iter().copied());
             commands.push(command);
         }
-        for sub in ["detail", "roll-forward", "aging"] {
+        for sub in ["detail", "roll-forward", "aging", "cash-flow"] {
             let mut command = vec!["gl", sub, "--account", "1000", "--as-known-at", INSTANT];
             if sub == "aging" {
                 command.extend(["--as-of", "2026-03-31"]);
             } else {
                 command.extend(["--from", "2026-03-01", "--to", "2026-03-31"]);
             }
+            if sub == "cash-flow" {
+                command.extend(["--policy", "-"]);
+            }
             command.extend(mode.iter().copied());
+            if sub == "aging" {
+                let mut reconciliation = command.clone();
+                reconciliation.push("--reconcile");
+                commands.push(reconciliation);
+            }
             commands.push(command);
         }
     }
     commands.extend([
+        vec!["gl", "lots", "--account", "1000", "--as-known-at", INSTANT],
+        vec!["replay", "supplied.cert", "--expect", "{"],
         vec![
             "bank",
             "match",

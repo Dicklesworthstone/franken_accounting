@@ -999,3 +999,180 @@ fn gl_certification_refuses_missing_produce_authority_and_unsupported_lot_certif
     }
     assert_eq!(f.head(), before);
 }
+
+#[test]
+fn cash_flow_policy_typos_refuse_before_retention_and_optional_defaults_still_work() {
+    let f = Fixture::new();
+    let at = f.source_head.0.to_string();
+    let baseline = f.ok(&[
+        "gl",
+        "detail",
+        "--account",
+        "1000,4000",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--as-known-at",
+        &at,
+    ]);
+    let lines = data(&baseline, "general_ledger")
+        .get("lines")
+        .and_then(Json::as_arr)
+        .unwrap();
+    let assignments: Vec<Json> = lines
+        .iter()
+        .filter(|line| text(line, "account") == "1000")
+        .map(|line| {
+            obj(vec![
+                ("entry_digest", line.get("entry_digest").unwrap().clone()),
+                ("leg_index", line.get("leg_index").unwrap().clone()),
+                ("activity", s("operating")),
+            ])
+        })
+        .collect();
+    assert_eq!(assignments.len(), 64);
+    // The two distinct, equal revenue legs have opposite adjustment signs.
+    // Their cited contributions cancel exactly; this is a valid indirect
+    // control case without changing the earnings-to-cash reconciliation.
+    let adjustments: Vec<Json> = lines
+        .iter()
+        .filter(|line| text(line, "account") == "4000")
+        .take(2)
+        .enumerate()
+        .map(|(index, line)| {
+            obj(vec![
+                ("entry_digest", line.get("entry_digest").unwrap().clone()),
+                ("leg_index", line.get("leg_index").unwrap().clone()),
+                ("category", s("non_operating")),
+                (
+                    "sign",
+                    s(if index == 0 {
+                        "debit_minus_credit"
+                    } else {
+                        "credit_minus_debit"
+                    }),
+                ),
+                ("reason", s("offsetting classification control")),
+            ])
+        })
+        .collect();
+    assert_eq!(adjustments.len(), 2);
+    let direct = obj(vec![("assignments", Json::Arr(assignments.clone()))]);
+    let indirect = obj(vec![
+        ("assignments", Json::Arr(assignments.clone())),
+        ("adjustments", Json::Arr(adjustments.clone())),
+    ]);
+    let policy_path = f.dir.join("checked-policy.json");
+    let run_args = |indirect: bool, empty_period: bool| {
+        let mut args = vec![
+            "gl",
+            "cash-flow",
+            "--account",
+            "1000",
+            "--from",
+            if empty_period {
+                "2026-02-01"
+            } else {
+                "2026-01-01"
+            },
+            "--to",
+            if empty_period {
+                "2026-02-28"
+            } else {
+                "2026-01-31"
+            },
+            "--as-known-at",
+            at.as_str(),
+            "--policy",
+            policy_path.to_str().unwrap(),
+        ];
+        if indirect {
+            args.extend([
+                "--indirect",
+                "--income-period",
+                if empty_period { "FY2026-P02" } else { PERIOD },
+            ]);
+        }
+        args
+    };
+    // Names, cash_accounts, assignments, cash_policy, and adjustments retain
+    // their existing optional defaults when the period has no cash movement.
+    for indirect_mode in [false, true] {
+        std::fs::write(&policy_path, "{}").unwrap();
+        let events = f.ok(&run_args(indirect_mode, true));
+        let name = if indirect_mode {
+            "indirect_cash_flow"
+        } else {
+            "cash_flow"
+        };
+        assert_eq!(
+            text(data(&events, name), "policy"),
+            if indirect_mode {
+                "indirect-cash-flow"
+            } else {
+                "cash-flow"
+            },
+        );
+    }
+    // Both complete control policies also work with their optional names
+    // and cash account lists omitted.
+    for (indirect_mode, policy) in [(false, &direct), (true, &indirect)] {
+        std::fs::write(&policy_path, policy.render()).unwrap();
+        f.ok(&run_args(indirect_mode, false));
+    }
+    let before = f.head();
+    assert_eq!(before, f.source_head);
+    let add_field = |doc: &Json, key: &str, value: Json| {
+        let Json::Obj(mut fields) = doc.clone() else {
+            panic!("object");
+        };
+        fields.push((key.into(), value));
+        Json::Obj(fields)
+    };
+    let direct_only_violation = add_field(&direct, "cash_policy", s("indirect-only"));
+    let indirect_typo = add_field(&indirect, "classification_override", Json::Bool(true));
+    let mut mistyped_assignments = assignments;
+    mistyped_assignments[0] =
+        add_field(&mistyped_assignments[0], "activity_override", s("investing"));
+    let assignment_typo = obj(vec![("assignments", Json::Arr(mistyped_assignments))]);
+    let mut mistyped_adjustments = adjustments;
+    mistyped_adjustments[0] = add_field(
+        &mistyped_adjustments[0],
+        "sign_override",
+        s("credit_minus_debit"),
+    );
+    let Json::Obj(mut indirect_fields) = indirect else {
+        panic!("indirect policy object");
+    };
+    for (name, value) in &mut indirect_fields {
+        if name == "adjustments" {
+            *value = Json::Arr(mistyped_adjustments.clone());
+        }
+    }
+    let adjustment_typo = Json::Obj(indirect_fields);
+    for (indirect_mode, bad_field, policy) in [
+        (false, "cash_policy", direct_only_violation),
+        (true, "classification_override", indirect_typo),
+        (false, "activity_override", assignment_typo),
+        (true, "sign_override", adjustment_typo),
+    ] {
+        std::fs::write(&policy_path, policy.render()).unwrap();
+        let output = f.dir.join(format!("{bad_field}.certificate"));
+        let mut args = run_args(indirect_mode, false);
+        args.extend(["--certificate-out", output.to_str().unwrap()]);
+        let (code, errors) = f.run(&args);
+        assert_eq!(code, 2, "{bad_field}: {errors:?}");
+        assert_eq!(errors.len(), 1, "{bad_field}: {errors:?}");
+        let error = errors[0].render();
+        assert!(
+            error.contains("unknown") && error.contains(bad_field),
+            "{error}"
+        );
+        assert!(
+            !output.exists(),
+            "{bad_field}: no external certificate may be created"
+        );
+        assert_eq!(f.head(), before, "{bad_field}: no artifact may be retained");
+    }
+}

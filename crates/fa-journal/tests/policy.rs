@@ -1418,7 +1418,11 @@ fn revoked_chart_authority_is_checked_before_existing_periods_are_observed() {
     let ctx = h.ctx();
     let period = fa_model::period_vid(&h.book.calendar.id, &h.march);
     let mut corrupt = WriteBatch::new(relation::IN_BOOK);
-    corrupt.set_vertex_property(period, property::PERIOD_START, CanonicalScalar::Bool(true));
+    corrupt.set_vertex_property(
+        period,
+        property::PERIOD_START,
+        Some(CanonicalScalar::Bool(true)),
+    );
     h.runtime
         .block_on(h.db.write(&ctx.commit(), corrupt))
         .unwrap();
