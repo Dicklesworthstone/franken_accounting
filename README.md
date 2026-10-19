@@ -667,6 +667,7 @@ fa party relate O-1 ACME --kind owns --basis equity_voting --valid-from 2025-01-
 fa instrument add operating-account.json --book acme.fabook --json
 fa entity add acme-de.json --book acme.fabook --json
 fa party bind V-17 --external-id qbo:55 --book acme.fabook --json
+fa party identifiers V-17 --identifier bank_routing=<routing> --identifier bank_account=<account> --key chg-2026-03-17 --book acme.fabook --json
 fa chart open office-supplies.json --opened 2026-03-01 --book acme.fabook --json
 ```
 

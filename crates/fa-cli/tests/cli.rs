@@ -4948,6 +4948,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["verify", "open-items"]).0, 0);
+    assert_eq!(run(true, &["verify", "replay"]).0, 0);
     assert_eq!(run(true, &["verify", "projections"]).0, 0);
     assert_eq!(run(true, &["verify", "availability"]).0, 0);
     assert_eq!(run(true, &["verify", "schedules"]).0, 0);
@@ -11381,6 +11382,202 @@ fn legal_entities_and_external_id_bindings_are_recorded_from_the_cli() -> std::i
     assert_eq!(code, 2, "{out}");
     let (code, out, _) = run(&["party", "bind", "NOBODY", "--external-id", "qbo:56"]);
     assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
+/// fa-lzrn: a party's identifier set (its bank details) is replaced under a
+/// named change; the values are sealed and never echoed; an exact retry is
+/// the recorded change; the same change id with other values is a conflict.
+#[test]
+fn party_identifiers_are_replaced_under_a_named_change_and_never_echoed() -> std::io::Result<()> {
+    let dir = tmp("identifiers")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Identifiers Co"]).0,
+        0
+    );
+    let vendor = write(
+        &dir,
+        "vendor.json",
+        r#"{"code":"V-17","kind":"Vendor","name":"Acme Supplies"}"#,
+    );
+    assert_eq!(fa(Some(&book), &["party", "add", &vendor, "--json"]).0, 0);
+    let run = |args: &[&str]| {
+        let mut full = args.to_vec();
+        full.push("--json");
+        fa(Some(&book), &full)
+    };
+    let change = [
+        "party",
+        "identifiers",
+        "V-17",
+        "--identifier",
+        "bank_routing=021000021",
+        "--identifier",
+        "bank_account=4417123456",
+        "--key",
+        "chg-1",
+    ];
+    let (code, out, err) = run(&change);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let recorded = doc(&out);
+    assert_eq!(text(&recorded, "object"), "party_identifiers");
+    assert_eq!(text(&recorded, "code"), "V-17");
+    assert_eq!(recorded.get("already_recorded"), Some(&Json::Bool(false)));
+    for secret in ["021000021", "4417123456"] {
+        assert!(
+            !out.contains(secret) && !err.contains(secret),
+            "an identifier value is never echoed: {out}\n{err}"
+        );
+    }
+    let (code, out, _) = run(&change);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    let (code, out, err) = run(&[
+        "party",
+        "identifiers",
+        "V-17",
+        "--identifier",
+        "bank_account=9999999999",
+        "--key",
+        "chg-1",
+    ]);
+    assert_eq!(code, 6, "one change id names one change: {out}\n{err}");
+    assert!(!out.contains("9999999999") && !err.contains("9999999999"));
+    let clear = ["party", "identifiers", "V-17", "--clear", "--key", "chg-2"];
+    let (code, out, _) = run(&clear);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(false)));
+    let (code, out, _) = run(&clear);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        doc(&out).get("already_recorded"),
+        Some(&Json::Bool(true)),
+        "the cleared set is the party's current set"
+    );
+    for (args, why) in [
+        (
+            vec![
+                "party",
+                "identifiers",
+                "V-17",
+                "--identifier",
+                "bank_account=1",
+            ],
+            "no --key",
+        ),
+        (
+            vec!["party", "identifiers", "V-17", "--key", "chg-3"],
+            "neither --identifier nor --clear",
+        ),
+        (
+            vec![
+                "party",
+                "identifiers",
+                "V-17",
+                "--clear",
+                "--identifier",
+                "a=1",
+                "--key",
+                "chg-3",
+            ],
+            "both --identifier and --clear",
+        ),
+        (
+            vec![
+                "party",
+                "identifiers",
+                "V-17",
+                "--identifier",
+                "bank_account",
+                "--key",
+                "chg-3",
+            ],
+            "no value",
+        ),
+        (
+            vec![
+                "party",
+                "identifiers",
+                "V-17",
+                "--identifier",
+                "a=1",
+                "--identifier",
+                "a=2",
+                "--key",
+                "chg-3",
+            ],
+            "a name twice",
+        ),
+        (
+            vec![
+                "party",
+                "identifiers",
+                "NOPE",
+                "--identifier",
+                "a=1",
+                "--key",
+                "chg-3",
+            ],
+            "an unknown party",
+        ),
+    ] {
+        let (code, out, _) = run(&args);
+        assert_eq!(code, 2, "{why}: {out}");
+    }
+    Ok(())
+}
+
+/// The whole history re-performs into an independent scratch book and
+/// agrees with the source commit by commit (`fa verify replay`).
+#[test]
+fn verify_replay_re_performs_the_history_into_an_independent_book() -> std::io::Result<()> {
+    let dir = tmp("replay")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Replay Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    let rent = write(
+        &dir,
+        "rent.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-15","idempotency_key":"rent","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6000","amount":"1500.00 USD"}},{{"side":"credit","account":"1000","amount":"1500.00 USD"}}]}}"#
+        ),
+    );
+    assert_eq!(fa(Some(&book), &["post", "--intent", &rent]).0, 0);
+    let run = |args: &[&str]| {
+        let mut full = args.to_vec();
+        full.push("--json");
+        fa(Some(&book), &full)
+    };
+    let (code, out, err) = run(&["verify", "replay"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let replayed = doc(&out);
+    assert!(int(&replayed, "pairs_checked").unwrap_or(0) > 0, "{out}");
+    assert!(int(&replayed, "entries_checked").unwrap_or(0) >= 1, "{out}");
+    assert_eq!(
+        int(&replayed, "pairs_checked"),
+        int(&replayed, "commits"),
+        "every replayed commit is checked: {out}"
+    );
+    assert_eq!(
+        run(&["verify", "replay", "--period", "FY2026-P03"]).0,
+        2,
+        "replay re-performs the whole history; it takes no period filter"
+    );
     Ok(())
 }
 

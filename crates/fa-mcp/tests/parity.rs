@@ -84,7 +84,11 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
                 ))
             // fa-s7x: promotion needs a principal holding approve who is not
             // the draft's owner, and --yes; no bound session holds either.
-            || (e.verb == "draft" && e.subcommand.as_deref() == Some("promote"));
+            || (e.verb == "draft" && e.subcommand.as_deref() == Some("promote"))
+            // fa-lzrn: replacing a party's bank identifiers is the plan
+            // §14.4 business-email-compromise vector; a Human operator does
+            // it on the host, never a launch-bound session.
+            || (e.verb == "party" && e.subcommand.as_deref() == Some("identifiers"));
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"

@@ -1785,7 +1785,7 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         ("scenario", Some("fork" | "run" | "discard")) => &[Op::Post],
         ("scenario", Some("list" | "show" | "diff")) => &[Op::Read],
         ("chart", Some("open" | "close" | "promote"))
-        | ("party", Some("add" | "relate" | "bind"))
+        | ("party", Some("add" | "relate" | "bind" | "identifiers"))
         | ("instrument" | "entity", Some("add")) => &[Op::SchemaChange],
         ("party" | "instrument" | "entity", Some("list")) => &[Op::Read],
         _ => return None,
@@ -2831,7 +2831,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 15. An Agent (or anyone) works on a draft (plan §15.2): `fa draft new <name>`, then the same post, reverse, reserve or resolve command with --draft <name> (or `fa draft plan <name> --intent <file|->`). Each intent is rehearsed under every posting law and journaled into the draft; nothing reaches trunk. `fa draft show <name> --json` lists the planned intents and the entries a promotion will create. A principal holding approve who is not the draft's owner runs `fa draft promote <name> --yes`: every intent is admitted again against current trunk (period law, ceilings, revocation, evidence) and all post in one batch, or none do; the planner stays each entry's principal. `fa draft discard <name>` closes a draft without posting. Over MCP the fa.draft cluster is on demand (`fa-mcp --cluster fa.draft`); promotion is host-only.\n\
 16. Correct an entry in one step: `fa reverse <vid> --reason WrongAmount --replace-with corrected.json --json` posts the exact reversal and the corrected entry together, both or neither, citing the target under one reason (event corrected). corrected.json is an ordinary entry intent (legs, optional effective_date and description); its date and period default to the target's.\n\
 17. Export for an auditor or another ledger: `fa export ads|saft|csv-gl|beancount|hledger --period FY2026-P03 [--out <new path>] --json` writes what the trial balance folds (pending holds excluded) with its export coordinate certificate; ads writes four tables into a new directory. It needs read and produce. Over MCP the fa.io cluster is on demand.\n\
-18. Maintain the chart and the REA graph: `fa chart open <account.json> --opened <day>`, `fa chart close <code> --on <day>`, `fa chart promote <code> --on <day>`; `fa party add <party.json>`, `fa party relate <from> <to> --kind owns --basis equity_voting --valid-from <day> --pct 51/100`, `fa instrument add <instrument.json>`, `fa entity add <entity.json>` (a legal entity's jurisdiction, functional unit and life span; a code declared at book creation is lifted), `fa party bind <code> --external-id qbo:55`. Each is a journaled schema change (schema_change authority) and no date defaults to today. Events then name parties with --participant and instruments with --resource <label>:<amount>:<instrument>.\n\
+18. Maintain the chart and the REA graph: `fa chart open <account.json> --opened <day>`, `fa chart close <code> --on <day>`, `fa chart promote <code> --on <day>`; `fa party add <party.json>`, `fa party relate <from> <to> --kind owns --basis equity_voting --valid-from <day> --pct 51/100`, `fa instrument add <instrument.json>`, `fa entity add <entity.json>` (a legal entity's jurisdiction, functional unit and life span; a code declared at book creation is lifted), `fa party bind <code> --external-id qbo:55`, `fa party identifiers <code> --identifier bank_account=<value>... --key <change-id>` (replaces the party's identifier set under a named change; values sealed, never echoed; host-only over MCP). Each is a journaled schema change (schema_change authority) and no date defaults to today. Events then name parties with --participant and instruments with --resource <label>:<amount>:<instrument>.\n\
 19. Read a period as it was first reported: `fa tb --period FY2026-P03 --as-originally-reported --json` pins known-at to the period's first Lock (never its first Close, never HEAD); a period never locked is refused with FA-REF-161.\n\
 20. Typed documents: `fa invoice --party C-17 --number 10442 --date 2026-03-14 --receivable 1200 --revenue 4000 --line 'qty=10 unit_price=\"125.00 USD\" item=SKU-9' --evidence <oid> --dry-run --json` (and `fa bill ... --payable 2000 --expense 6000`) builds the entry from its lines and posts through fa post's path (--dry-run, --plan-out, --draft); `fa receipt --party C-17 --number WIRE-IN-1 --cash 1000 --receivable 1200 --amount \"1290.00 USD\" --applies <invoice vid>` (and `fa payment`) settles it, its number becoming the cash leg's memo that fa bank match compares with a statement line's reference. You name every account; there is no tax or posting rule yet. An intent leg may name `entity` and `party` codes; in a multi-entity book every leg names its entity. `fa document list [--kind BankStatement]` lists held documents as metadata.\n\
 21. Ask what-if or but-for (plan §15.2, §15.6.5): `fa scenario fork but-for-breach --from 2025-07-01 [--at HEAD|<seq>] --evidence <assumption oid>` forks a counterfactual over the trunk prefix at that sequence; `fa scenario run but-for-breach --intent receipt.json` (or fa post, invoice, bill, receipt or payment with --scenario but-for-breach) rehearses each intent on the scenario and journals it there, never on trunk; `fa scenario diff but-for-breach --period FY2025-P12 --json` is the exact change per account and unit against trunk as known at the fork (the damages schedule). Each run and diff replays the trunk prefix into a scratch book and posts every intent again under every posting law. `fa tb|statement|explain|open-items|gl ... --branch scenario:but-for-breach` runs the same read on the scenario's replay (uncertified; the coordinate names the branch). The diff is not yet a replayable certificate.\n";
@@ -9997,6 +9997,41 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ),
                 })
             }
+        }
+        Some("replay") => {
+            // Re-performance (plan §15.2, §16): every accounting commit is
+            // replayed into an independent scratch book and checked against
+            // the source pair by pair, entry by entry and fold by fold.
+            if args.positional.len() != 2
+                || args.flag("--period").is_some()
+                || args.flag("--fiscal-year").is_some()
+            {
+                return Err(usage(
+                    "verify replay re-performs the whole history and takes no argument",
+                    "fa verify replay --book <dir> [--json]",
+                ));
+            }
+            let mut book = ctx.books.open(args)?;
+            let keys = BookKeys::generate(&Entropy::production())?;
+            let (scratch, map) = book.replay_into_scratch(None, keys, Entropy::production())??;
+            let v = book.verify_replay(&scratch, &map)??;
+            out.known_at(map.source_prefix);
+            out.event(
+                "replay_verified",
+                vec![
+                    ("source_prefix", Json::Int(i128::from(map.source_prefix.0))),
+                    ("commits", Json::Int(map.pairs.len() as i128)),
+                    ("pairs_checked", Json::Int(v.pairs_checked as i128)),
+                    ("entries_checked", Json::Int(v.entries_checked as i128)),
+                    ("folds_checked", Json::Int(v.folds_checked as i128)),
+                    ("seq_map_digest", s(hex(&v.seq_map_digest))),
+                ],
+                &format!(
+                    "history through {} re-performed into an independent scratch book: {} commits, {} entries and {} period folds agree",
+                    map.source_prefix.0, v.pairs_checked, v.entries_checked, v.folds_checked
+                ),
+            );
+            Ok(())
         }
         other => Err(unhandled("verify", other)),
     }

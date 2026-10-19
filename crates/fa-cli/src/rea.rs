@@ -29,9 +29,10 @@ pub(crate) fn party_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("add") => party_add(ctx, args),
         Some("relate") => party_relate(ctx, args),
         Some("bind") => party_bind(ctx, args),
+        Some("identifiers") => party_identifiers(ctx, args),
         Some("list") => party_list(ctx, args),
         _ => Err(usage(
-            "party has the subcommands add, relate, bind and list",
+            "party has the subcommands add, relate, bind, identifiers and list",
             PARTY_EXAMPLE,
         )),
     }
@@ -776,6 +777,95 @@ fn entity_list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// instrument (plan §4.5): the id another system knows it by, sealed with
 /// the book's key. One (system, id) names one vertex; the default key names
 /// the target and system, never the sealed id.
+/// `fa party identifiers <code> --identifier <name>=<value>... --key <change>`
+/// (plan §4.5, §14.4): replace a party's identifier set (bank routing and
+/// account numbers, tax ids). Changing a vendor's bank details is the
+/// business-email-compromise vector, so the change is named by the caller's
+/// --key (no default: one derived from the values would leak them, one
+/// derived from the code would collide across changes), every value is
+/// sealed with the book's key and never echoed, and the change needs
+/// schema_change authority. `--clear` removes every identifier.
+fn party_identifiers(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str = "fa party identifiers <party code> --identifier <name>=<value>... --key <change-id>   (or --clear --key <change-id>)";
+    let [_, _, target] = args.positional.as_slice() else {
+        return Err(usage("party identifiers needs one party code", FIX));
+    };
+    let key = match args.flag_all("--key").as_slice() {
+        [key] if !key.is_empty() => *key,
+        _ => {
+            return Err(usage(
+                "party identifiers needs exactly one --key naming the change (for example chg-2026-03-17)",
+                FIX,
+            ));
+        }
+    };
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for raw in args.flag_all("--identifier") {
+        let Some((name, value)) = raw
+            .split_once('=')
+            .filter(|(name, value)| !name.is_empty() && !value.is_empty())
+        else {
+            // Never echo the value: it may be a bank account number.
+            return Err(usage("an --identifier is not <name>=<value>", FIX));
+        };
+        pairs.push((name.to_string(), value.to_string()));
+    }
+    if pairs.is_empty() != args.switch("--clear") {
+        return Err(usage(
+            "give the new identifier set with --identifier <name>=<value>..., or --clear to remove every identifier",
+            FIX,
+        ));
+    }
+    pairs.sort();
+    if let Some(pair) = pairs.windows(2).find(|w| w[0].0 == w[1].0) {
+        return Err(usage(
+            format!("identifier `{}` is given twice", pair[0].0),
+            FIX,
+        ));
+    }
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["schema_change"])?;
+    let mut book = ctx.books.open(args)?;
+    let rea = book.rea_snapshot(None)?;
+    let Some(party) = rea.parties.values().find(|p| p.code == *target) else {
+        return Err(usage(
+            format!("no party `{target}` in this book"),
+            "fa party list names them",
+        ));
+    };
+    let party_vid = party.vid;
+    let seal = &book.context().seal_key;
+    let current: Option<Vec<(String, String)>> = party
+        .identifiers
+        .iter()
+        .map(|(name, value)| {
+            value
+                .open(seal, fa_model::limits::MAX_DESCRIPTION_BYTES)
+                .ok()
+                .map(|v| (name.clone(), v))
+        })
+        .collect();
+    let held = current.is_some_and(|mut current| {
+        current.sort();
+        current == pairs
+    });
+    if let Some(recorded) = recorded_retry(&book, who, key, party_vid, held)? {
+        return emit_recorded(&ctx.out, &book, "party_identifiers", target, &recorded);
+    }
+    let mut identifiers = Vec::with_capacity(pairs.len());
+    for (name, value) in &pairs {
+        identifiers.push((name.clone(), book.seal_text(value)?));
+    }
+    let update = fa_model::PartyIdentifierUpdate {
+        party_vid,
+        identifiers,
+    };
+    let date = date_flag(args, DateDay(0))?;
+    let recorded =
+        book.update_party_identifiers(&update, who, date, key.as_bytes(), &capability)??;
+    emit_recorded(&ctx.out, &book, "party_identifiers", target, &recorded)
+}
+
 fn party_bind(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     const FIX: &str =
         "fa party bind <party|entity|instrument code> --external-id <system>:<id> [--key K]";
