@@ -111,6 +111,18 @@ usage = ["period create --fiscal-year N", "period list", "period open|soft-close
 example = "fa period open FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
+name = "close"
+summary = "Journal nominal-to-equity routes, prepare an exact year-end close or delta reclose, and preserve its sealed proposal for independent approvals and native posting plans."
+writes = true
+subcommands = ["map","routes","year-end"]
+flags = ["--route","--effective-from","--as-of","--as-known-at","--fiscal-year","--period","--key","--description","--evidence","--approval","--review","--review-out","--digest","--plan-out","--grant"]
+switches = ["--dry-run","--review-only"]
+events = ["closing_routes_recorded","closing_routes","closing_reviewed","closing_noop","posted","recorded","plan"]
+exits = [0,2,3,4,5,6,7]
+usage = ["close map --route <nominal-code>:<equity-code>... --effective-from YYYY-MM-DD --key K [--description TEXT]   (journal a complete routing version; Revenue and Expense posting leaves route to Equity posting leaves)","close routes --as-of YYYY-MM-DD [--as-known-at <sequence>]","close year-end --fiscal-year N --period FY<N>-CLOSE --key K [--description TEXT] [--evidence <oid>]... [--review-only | --review-out <new-file> | --dry-run [--plan-out <new-file>] | --yes]","close year-end --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--dry-run [--plan-out <new-file>] | --yes]","A review preserves the exact sealed PostIntent and intrinsic source basis; approve its proposal_digest with fa approve --proposal <digest> --as <independent-approver>. Then restore the review and cite that approval. Relevant journal or routing changes require a new review; approval publications alone do not.","A native --dry-run plan writes nothing. Commit its exact bytes with fa commit --plan <file|-> --grant read --grant close and the same --as/--grant. A first close zeros current fiscal-year nominal balances; a reclose includes prior Closing legs and transfers only the residual; a zero residual publishes no entry.","This intrinsic close supports the native base unit and undimensioned or legal-entity-only balances. Unsupported FX or general dimensions refuse. Closed periods retain their independent approval requirement; Locked case-bound reclose and the full CloseTask DAG remain unavailable."]
+example = "fa close year-end --fiscal-year 2026 --period FY2026-CLOSE --key close-2026 --review-only --book ./books/myco --json"
+
+[[verb]]
 name = "approve"
 summary = "Record an approval of a planned proposal's digest or a reviewed allocation/settlement review artifact under the caller's capability (journaled; bound to the current security policy epoch)."
 writes = true
@@ -539,12 +551,12 @@ example = "fa export ads --period FY2026-P03 --out ./ads-2026-03 --book ./books/
 name = "verify"
 summary = "Verify derived state against the journal: leg projections, refolded registers, open-item applied mirrors, limited accounts' availability cells, scheduled reversals, complete native period history, or accumulator states (exit 8 on drift)."
 writes = false
-subcommands = ["registers", "open-items", "availability", "accumulator", "projections", "schedules", "periods", "replay"]
+subcommands = ["registers", "open-items", "availability", "accumulator", "projections", "schedules", "periods", "replay", "close"]
 flags = ["--period", "--fiscal-year"]
 switches = []
-events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified", "projections_verified", "schedules_verified", "periods_verified", "replay_verified"]
-exits = [0, 2, 4, 5, 7, 8]
-usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify replay   (re-performs every accounting commit into an independent scratch book and checks it against the source pair by pair, entry by entry and fold by fold; no period filter; exit 8 on any difference)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)", "verify periods [--as-known-at HEAD|<seq>|<RFC3339>] (loads the complete native journal history through one selected prefix, verifies immutable Entry births, then checks every Period against its birth baseline and PeriodControl transitions; current read and verify authority required; no period filter; missing history or deleted declarations never produce a successful verification)"]
+events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified", "projections_verified", "schedules_verified", "periods_verified", "replay_verified", "close_verified"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["verify close FY2026 [--as-known-at <sequence>] (check nominal-zero at the last Closing and later deltas at that recorded prefix; exit 8 when a close or reclose is needed)", "verify registers ((--period <code>)... | --fiscal-year N)", "verify replay   (re-performs every accounting commit into an independent scratch book and checks it against the source pair by pair, entry by entry and fold by fold; no period filter; exit 8 on any difference)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)", "verify periods [--as-known-at HEAD|<seq>|<RFC3339>] (loads the complete native journal history through one selected prefix, verifies immutable Entry births, then checks every Period against its birth baseline and PeriodControl transitions; current read and verify authority required; no period filter; missing history or deleted declarations never produce a successful verification)"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -717,6 +729,12 @@ expands = ["gl", "lots"]
 # already has materialized register cells). Gate: every operation the plan
 # names dangerous has a row (fa-cli dangerous-operation test), and every row
 # is refused without --yes and admitted with it.
+
+[[dangerous]]
+verb = "close"
+subcommand = "year-end"
+condition = "always"
+safe = "prepare the exact closing proposal with --review-only, or rehearse its native posting with --dry-run; inspect the nominal residuals and obtain any required independent approval before committing"
 
 [[dangerous]]
 verb = "period"
@@ -3203,6 +3221,47 @@ positionals = ["id?"]
 required = []
 dont = ["Don't invent a procedure id or a parameter name: `action: \"list\"` returns every registered procedure with its pinned default and meaning.", "Don't treat a finding as a conclusion: it is a statistic with citations; every cited handle resolves and should be read before anything is asserted.", "Don't pass an instant to known_at: procedures run at HEAD or a recorded sequence."]
 mistakes = ["Passing a parameter in display units (10000.00) instead of the unit's mantissa (1000000 at scale 2); the listing's `meaning` says which.", "Running aging.* or trace.* without effective_through (they are historical folds and are refused naming it).", "Running trace.* without account and source (the commingled account and the deposit entry).", "Overriding a parameter with a float; parameters are integers in the registered unit."]
+
+# Intrinsic fiscal-year closing (fa-4o0).
+[[event]]
+name = "closing_routes_recorded"
+book = true
+doc = "A complete effective-dated nominal-to-equity route map recorded as an immutable SchemaChange control in one witnessed transaction. already_recorded returns the original control on an exact semantic retry."
+fields = ["effective_from:date","routes:int","control_entry:hex","recorded_at:seq","digest:hex","already_recorded:bool"]
+
+[[event]]
+name = "closing_routes"
+book = true
+doc = "The latest applicable complete routing map at the selected effective date and recorded prefix, under current whole-book read authority. found=false means no map applies; every optional header is then null and routes is empty."
+fields = ["as_of:date","known_at:seq","found:bool","effective_from:date?","control_entry:hex?","recorded_at:seq?","digest:hex?","routes:[closing_route]"]
+
+[[event]]
+name = "closing_reviewed"
+book = true
+doc = "An unexecuted exact year-end Closing proposal encoded as the existing canonical PostIntent. Its intrinsic basis binds the complete selected source contributions and journaled routing map. Review bytes preserve sealed fields across approval commits; approvals bind proposal_digest, while review_digest authenticates the complete retained artifact to its reviewer. Revalidation recomputes the native source; this event is neither a PostPlan nor a certification or posting permit."
+fields = ["fiscal_year:int","period:string","closing_date:date","known_at:seq","routes_entry:hex","routes_digest:hex","source_digest:hex","latest_close:hex?","residuals:[closing_residual]","legs:[plan_leg]","review_digest:hex","proposal_digest:hex","bytes:hex","file:string?","scope:string"]
+
+[[event]]
+name = "closing_noop"
+book = true
+doc = "The selected nominal balances, including previous Closing legs, have no residual. No entry, review file, approval, certificate or metadata was published; latest_close may be null when no first close exists."
+fields = ["fiscal_year:int","period:string","known_at:seq","latest_close:hex?","reason:string"]
+
+[[event]]
+name = "close_verified"
+book = true
+doc = "Native verification refolded nominal balances at the latest Closing and at the current selected prefix. Success requires nominal_zero_at_close=true and needs_reclose=false. Missing closing evidence, invalid closing balances or later residuals instead produce an exit-8 verification error carrying the same detail."
+fields = ["fiscal_year:int","known_at:seq","latest_close:hex?","last_closed_at:seq?","nominal_zero_at_close:bool?","needs_reclose:bool","residuals:[closing_residual]"]
+
+[[shape]]
+name = "closing_route"
+doc = "One nominal posting account's explicitly journaled Equity destination."
+fields = ["account:string","account_vid:hex","closes_to:string","equity_vid:hex"]
+
+[[shape]]
+name = "closing_residual"
+doc = "An exact debit-minus-credit nominal balance before close, preserving the native unit and optional legal entity. closes_to is the destination Equity account VID; a positive net requires a credit to the nominal account."
+fields = ["account:string","account_vid:hex","closes_to:hex","entity:hex?","unit_id:int","net:amount"]
 
 [[shape]]
 name = "bank_import_predecessor"

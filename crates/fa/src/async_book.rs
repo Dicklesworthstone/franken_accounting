@@ -306,6 +306,43 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Derive exact Closing legs from immutable fiscal-year contributions,
+    /// including previous Closing legs so a reclose transfers only the delta.
+    /// Preparation publishes nothing and grants no approval or posting authority.
+    pub fn prepare_year_end_close(
+        &self,
+        cx: &PurposeContexts,
+        request: &fa_journal::closing::YearEndCloseRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::closing::PreparedYearEndClose> {
+        Ok(fa_journal::closing::prepare_year_end_close(
+            &self.db,
+            cx,
+            &self.context,
+            capability,
+            request,
+        )?)
+    }
+
+    /// Recompute nominal balances at the last Closing and the selected prefix.
+    /// A later adjustment is reported separately as a required delta reclose.
+    pub fn verify_year_end_close(
+        &self,
+        cx: &PurposeContexts,
+        fiscal_year: i32,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::closing::YearEndCloseVerification> {
+        Ok(fa_journal::closing::verify_year_end_close(
+            &self.db,
+            cx,
+            &self.context,
+            capability,
+            fiscal_year,
+            known_at,
+        )?)
+    }
+
     pub async fn install_chart(
         &mut self,
         cx: &PurposeContexts,

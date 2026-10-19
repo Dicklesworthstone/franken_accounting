@@ -119,6 +119,10 @@ pub use fa_intents::{
     IntentError, MAX_BATCH_BYTES, MAX_PLAN_BYTES, PlanCertificate, PostBatch, PostIntent, PostPlan,
 };
 pub use fa_journal::chart::{ClosingRoutes, ClosingRoutesRecorded, ClosingRoutesRequest};
+pub use fa_journal::closing::{
+    ClosingRecord, ClosingResidual, PreparedYearEndClose, YearEndCloseRequest,
+    YearEndCloseVerification,
+};
 pub use fa_journal::{
     AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, DocumentEvidenceSummary,
     EventRow, EvidenceExplanation, ExternalIdRow, InstantSelection, InstrumentRow, LegalEntityRow,

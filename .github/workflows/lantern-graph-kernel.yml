@@ -15,6 +15,10 @@ on:
       - 'crates/fa-journal/src/import.rs'
       - 'crates/fa-journal/src/import/**'
       - 'crates/fa-cli/src/bank.rs'
+      - 'crates/fa-cli/src/closing.rs'
+      - 'crates/fa-cli/tests/closing.rs'
+      - 'crates/fa-journal/src/closing.rs'
+      - 'crates/fa-journal/src/chart/**'
       - 'crates/fa-cli/src/finding.rs'
       - 'crates/fa-cli/src/lib.rs'
       - 'crates/fa-cli/tests/bank.rs'
@@ -48,7 +52,6 @@ on:
       - 'crates/fa-journal/src/fx.rs'
       - 'crates/fa-journal/src/rea.rs'
       - 'crates/fa-journal/src/chart.rs'
-      - 'crates/fa-journal/src/chart/**'
       - 'crates/fa-journal/src/genesis.rs'
       - 'crates/fa-journal/src/period.rs'
       - 'crates/fa-journal/src/period_creation.rs'
@@ -61,6 +64,7 @@ on:
       - 'crates/fa-journal/tests/genesis.rs'
       - 'crates/fa-journal/tests/policy.rs'
       - 'crates/fa-model/src/entry.rs'
+      - 'crates/fa-model/src/closing.rs'
       - 'crates/fa-model/src/mirrors.rs'
       - 'registries/entry_classes.toml'
       - 'registries/sod_policy.toml'
@@ -192,6 +196,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-model --lib closing --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib chart::closing --jobs 2
       - name: Test bank statement parsers, retained intake and exact matching
         if: ${{ !cancelled() }}
@@ -215,7 +220,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test procedure_replay --test statements --test gl_certificates --test bank --test findings --test retained_report_storage --test robot_schema --test network --test authority_cli --no-fail-fast --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test procedure_replay --test statements --test gl_certificates --test closing --test bank --test findings --test retained_report_storage --test robot_schema --test network --test authority_cli --no-fail-fast --jobs 2
       - name: Regress MCP report schemas and capability refusal parity
         if: ${{ !cancelled() }}
         shell: bash

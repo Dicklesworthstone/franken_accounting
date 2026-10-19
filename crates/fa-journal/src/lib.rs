@@ -22,6 +22,7 @@ pub mod attestation;
 pub mod batch;
 pub mod blob;
 pub mod chart;
+pub mod closing;
 pub mod custody;
 pub mod draft;
 pub mod entity;

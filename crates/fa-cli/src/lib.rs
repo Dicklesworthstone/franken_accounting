@@ -19,6 +19,7 @@ pub mod authority;
 mod bank;
 pub mod cli;
 pub mod client;
+mod closing;
 mod document;
 pub mod entry;
 mod export;

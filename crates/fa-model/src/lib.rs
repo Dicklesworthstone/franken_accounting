@@ -22,6 +22,7 @@
 
 pub mod account;
 pub mod canon;
+pub mod closing;
 pub mod entry;
 pub mod erasable;
 pub mod ids;
@@ -33,6 +34,7 @@ pub mod unit;
 
 pub use account::AccountType;
 pub use canon::{DecodeError, EncodeError, Reader, Writer};
+pub use closing::YearEndCloseBasis;
 pub use entry::{
     BaseTotals, ControlKind, ControlPayload, Disposition, Entry, EntryClass, EntryError,
     EntryOrigin, EntryPayload, EvidenceRef, ExternalId, IntakeSource, LegPayload, Pending,

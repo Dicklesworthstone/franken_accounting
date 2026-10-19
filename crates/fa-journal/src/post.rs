@@ -288,7 +288,10 @@ impl PreparedPost {
     /// Hand a batch member's staged transaction to the next member (plan
     /// §5.8), keeping what the batch commit reports for this member.
     pub(crate) fn into_member(self) -> Result<(WriteTxn, BatchMember), KernelError> {
-        if self.planning || self.paired_reversal.is_some() {
+        if self.planning
+            || self.paired_reversal.is_some()
+            || self.request.proposal.class == EntryClass::CLOSING
+        {
             self.txn.abort();
             return Err(KernelError::Corrupt(
                 "a dry-run preparation or a replacement pair never joins a batch".into(),
@@ -342,6 +345,14 @@ impl PreparedPost {
         if let Err(d) = fa_policy::current(&request.capability, db.frontier()?) {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
+        }
+        if request.proposal.class == EntryClass::CLOSING {
+            let frontier = db.frontier()?;
+            let basis = txn.basis();
+            if frontier != basis {
+                txn.abort();
+                return Ok(Err(crate::closing::frontier_changed(basis, frontier)));
+            }
         }
         match txn.commit(db, &commit).await {
             Ok(seq) => Ok(Ok(Posted::Committed {
@@ -747,7 +758,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
 
 /// The classes admitted by the single-entry path (step 1b). Replacement
 /// is admitted only by its private, atomic pair context.
-const POSTED_CLASSES: [EntryClass; 8] = [
+const POSTED_CLASSES: [EntryClass; 9] = [
     EntryClass::ORIGINAL,
     EntryClass::ADJUSTING,
     EntryClass::REVERSAL,
@@ -756,6 +767,7 @@ const POSTED_CLASSES: [EntryClass; 8] = [
     EntryClass::MIGRATION,
     EntryClass::ALLOCATION,
     EntryClass::REVALUATION,
+    EntryClass::CLOSING,
 ];
 
 /// Run the production posting pipeline through staging, retaining its
@@ -921,6 +933,27 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     let is_replacement = proposal.class == EntryClass::REPLACEMENT;
     if !POSTED_CLASSES.contains(&proposal.class) && !is_replacement {
         return Ok(Err(not_implemented(class_name)));
+    }
+    // Closing is an intrinsic, source-bound computation, not a generic
+    // balanced posting class. Current Read/Close and whole-book scope are
+    // required before its aggregate or routing map can be observed.
+    let closing = match crate::closing::admit(proposal) {
+        Ok(basis) => basis,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if closing.is_some() {
+        if let Err(refusal) = crate::closing::authorize(db, book, &req.capability, true)? {
+            return Ok(Err(refusal));
+        }
+        if carried.is_some() || matches!(admission, Admission::Promote(_)) {
+            return Ok(Err(Refusal::new(
+                code::CLASS_NOT_IMPLEMENTED,
+                exit::REFUSAL,
+                "a fiscal-year close cannot join an atomic batch or draft promotion",
+                "plan §5.10 / §7.5 (complete aggregate dependency)",
+                "review and commit the close as its own native PostPlan",
+            )));
+        }
     }
     // Allocation is admitted only by recomputing its exact, evidence-bound
     // native legs. This also rejects its provenance on a different class.
@@ -1453,6 +1486,17 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     if is_replacement && pair_recorded_at.is_some() {
         txn.abort();
         return Ok(Err(identity_conflict(Identity::Replacement, evid)));
+    }
+
+    // Outcome recognition remains first. A new close must reproduce its
+    // original reviewed source and the current complete nominal population.
+    // PreparedPost::commit additionally guards the entire preparation
+    // frontier, including zero-result and newly appended contributions.
+    if let Some(basis) = &closing
+        && let Err(refusal) = crate::closing::validate_post(&txn, db, ctx, book, proposal, basis)?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
     }
 
     // A fresh correction names a registered reason. Outcome recognition

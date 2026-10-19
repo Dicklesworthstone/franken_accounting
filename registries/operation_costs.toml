@@ -471,3 +471,18 @@ hot_object_exceptions = []
 external_authorities = "none"
 complexity_witness = "O(chart controls + routed accounts) replay and schema/account/policy witnesses; one control publication; exact retries return the original control"
 notes = "The closing map is append-only and selected independently by effective date and recorded prefix. No shared mutable routing head or extra publication is introduced."
+
+[[operation_class]]
+id = "year_end_close"
+name = "Mechanical fiscal-year close and delta reclose"
+substrate_class = "Read-only source derivation and ordinary native single-entry plan/commit"
+substrate_transactions = "0 for preparation or zero residual; 1 for confirmed posting; 0 for an exact plan retry"
+today_posture = "Recompute retained contributions and the applicable routing map; rehearse without publication, then publish Closing entry and its native plan certificate together"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "Ordinary single-entry posting census and retained PostPlan Certificate; intrinsic YearEndCloseBasis is carried in Entry extension 12"
+hot_object_exceptions = []
+external_authorities = "none; independent approvals are retained native Approval records obtained by separate explicit operations"
+complexity_witness = "O(retained journal + chart + nominal groups + closing legs) checked-integer folds, complete contribution digest and route replay; the commit guards the observed publication frontier in addition to ordinary native witnesses"
+notes = "Prior Closing legs participate in the fold so reclose transfers only residual activity. Zero residual publishes nothing. Full-year base-unit and undimensioned/legal-entity-only scope is enforced. Review bytes use the existing PostIntent wire and publish nothing; approval-only commits preserve its source basis. Closing uses ordinary period, evidence, authority, approval, idempotency and balance laws. Atomic batch/draft promotion cannot bypass the required complete source basis. This is the intrinsic closing operation, not the full CloseTask DAG or Locked case-bound reclose."

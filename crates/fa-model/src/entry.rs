@@ -100,6 +100,9 @@ pub const SCENARIO_BODY_EXTENSION: u16 = 10;
 /// `u16 version ‖ bytes post_intent ‖ bytes capability`. It never posts to
 /// trunk; every materialization posts it into a scratch replay.
 pub const SCENARIO_INTENT_EXTENSION: u16 = 11;
+/// Extension tag 12, the intrinsic YearEndClose v1 source and routing basis.
+/// The kernel recomputes its complete fold on every Closing admission.
+pub const YEAR_END_CLOSE_EXTENSION: u16 = 12;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -114,6 +117,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     DRAFT_INTENT_EXTENSION,
     SCENARIO_BODY_EXTENSION,
     SCENARIO_INTENT_EXTENSION,
+    YEAR_END_CLOSE_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1606,6 +1610,19 @@ impl EntryPayload {
                     "must match EntryOrigin::Rule event_ref when both are present",
                 ));
             }
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == YEAR_END_CLOSE_EXTENSION)
+            && (self.class != EntryClass::CLOSING
+                || !matches!(&self.origin, EntryOrigin::Intent { intent_kind: 1, .. })
+                || crate::closing::YearEndCloseBasis::decode(bytes).is_err())
+        {
+            return Err(invalid(
+                "extensions.year_end_close",
+                "requires a canonical intrinsic YearEndClose basis on a Closing PostEntry intent",
+            ));
         }
         for leg in &self.legs {
             leg.validate()?;

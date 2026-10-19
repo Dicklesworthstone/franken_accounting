@@ -8872,3 +8872,426 @@ fn draft_promotion_re_admits_every_intent_and_refuses_without_partial_effect() {
     assert_eq!(view.state, DraftState::Discarded);
     assert_eq!(view.closed.expect("Discard record").by, APPROVER);
 }
+
+// Native mechanical YearEndClose (§7.5). These exercise the ordinary
+// posting/plan/approval paths against real MemVfs transactions.
+fn year_end_close_fixture() -> (Harness, VId) {
+    let mut h = harness();
+    let ctx = h.ctx();
+    let cap = Capability::embedded(PRINCIPAL, &["schema_change", "read", "close"]).unwrap();
+    let day = DateDay::from_ymd(2026, 1, 1).unwrap();
+    let spec = AccountSpec {
+        code: "3000".into(),
+        name: "Retained earnings".into(),
+        account_type: fa_model::AccountType::EQUITY.0,
+        normal_balance: 1,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: None,
+        limit: None,
+    };
+    let description = Erasable::seal(
+        &"Year-end equity destination".to_string(),
+        None,
+        &h.book.seal_key,
+        [51; 32],
+        [52; 24],
+    );
+    let equity = h
+        .runtime
+        .block_on(open_account(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &spec,
+            day,
+            None,
+            PRINCIPAL,
+            day,
+            b"year-close-equity",
+            description,
+            &cap,
+        ))
+        .unwrap()
+        .unwrap()
+        .account_vid;
+    let routes = [(h.rent, equity), (h.revenue, equity)].into();
+    year_end_close_routes(&mut h, routes, b"close-routes");
+    h.transition("FY2026-CLOSE", PeriodTransition::Open, b"open-closing")
+        .unwrap();
+    (h, equity)
+}
+
+fn year_end_close_routes(
+    h: &mut Harness,
+    routes: std::collections::BTreeMap<VId, VId>,
+    key: &[u8],
+) {
+    let ctx = h.ctx();
+    let request = fa_journal::chart::ClosingRoutesRequest {
+        principal: PRINCIPAL,
+        effective_from: DateDay::from_ymd(2026, 1, 1).unwrap(),
+        routes,
+        idempotency_key: key.to_vec(),
+        description: Erasable::seal(
+            &"Reviewed closing destinations".to_string(),
+            None,
+            &h.book.seal_key,
+            [53; 32],
+            [54; 24],
+        ),
+    };
+    let cap = Capability::embedded(PRINCIPAL, &["schema_change", "read", "close"]).unwrap();
+    h.runtime
+        .block_on(fa_journal::chart::set_closing_routes(
+            &mut h.db, &ctx, &h.book, &cap, request,
+        ))
+        .unwrap()
+        .unwrap();
+}
+
+fn year_end_close_prepare(h: &Harness) -> fa_journal::closing::PreparedYearEndClose {
+    let cap = Capability::embedded(PRINCIPAL, &["read", "post", "close"]).unwrap();
+    fa_journal::closing::prepare_year_end_close(
+        &h.db,
+        &h.ctx(),
+        &h.book,
+        &cap,
+        &fa_journal::closing::YearEndCloseRequest {
+            fiscal_year: 2026,
+            closing_period: "FY2026-CLOSE".into(),
+        },
+    )
+    .unwrap()
+    .unwrap()
+}
+
+fn year_end_close_proposal(
+    h: &Harness,
+    prepared: &fa_journal::closing::PreparedYearEndClose,
+    key: &[u8],
+) -> EntryPayload {
+    let mut template = h.proposal(Vec::new(), key, EntryClass::CLOSING);
+    template.effective_date = prepared.closing_date();
+    template.effective_period = Some(fa_model::PeriodRef {
+        calendar: h.book.calendar.id.clone(),
+        code: prepared.request().closing_period.clone(),
+    });
+    prepared.proposal(template).unwrap()
+}
+
+fn year_end_close_verify(
+    h: &Harness,
+    at: Option<fgdb_types::CommitSeq>,
+) -> fa_journal::closing::YearEndCloseVerification {
+    let cap = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    fa_journal::closing::verify_year_end_close(&h.db, &h.ctx(), &h.book, &cap, 2026, at)
+        .unwrap()
+        .unwrap()
+}
+
+/// Independent debit-minus-credit fold over authoritative journal bytes.
+fn year_end_close_net(h: &Harness, account: VId, at: fgdb_types::CommitSeq) -> i128 {
+    let (start, end) = h.book.calendar.year_bounds(2026).unwrap();
+    let mut net = 0_i128;
+    for row in h.db.vertices_at(at).unwrap() {
+        if !row.labels.contains(&fa_model::symbols::label::ENTRY) {
+            continue;
+        }
+        let (entry, _) = fa_journal::post::read_entry_at(&h.db, row.vid, at)
+            .unwrap()
+            .unwrap();
+        if entry.proposal.class == EntryClass::PENDING
+            || entry.proposal.class.is_control()
+            || entry.proposal.effective_date < start
+            || entry.proposal.effective_date > end
+        {
+            continue;
+        }
+        for leg in &entry.proposal.legs {
+            if leg.account_ref == account {
+                net = match leg.side {
+                    Side::Debit => net.checked_add(leg.amount.mantissa),
+                    Side::Credit => net.checked_sub(leg.amount.mantissa),
+                }
+                .unwrap();
+            }
+        }
+    }
+    net
+}
+
+#[test]
+fn year_end_close_first_delta_zero_and_historical_verification() {
+    let (mut h, equity) = year_end_close_fixture();
+    h.post(h.request(h.invoice(20_000, b"year-income"), &["post"]))
+        .unwrap();
+    h.post(h.request(
+        h.proposal(h.rent_legs(7_000), b"year-expense", EntryClass::ORIGINAL),
+        &["post"],
+    ))
+    .unwrap();
+    let before = h.db.frontier().unwrap();
+    let prepared = year_end_close_prepare(&h);
+    assert_eq!(h.db.frontier().unwrap(), before, "prepare is read-only");
+    assert_eq!(prepared.legs().len(), 4);
+    assert_eq!(
+        prepared.closing_date(),
+        DateDay::from_ymd(2026, 12, 31).unwrap()
+    );
+    let proposal = year_end_close_proposal(&h, &prepared, b"year-close-1");
+    let cap = Capability::embedded(PRINCIPAL, &["read", "post", "close"]).unwrap();
+    let plan = h
+        .post_plan(h.request(proposal.clone(), &["read", "post", "close"]))
+        .unwrap();
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        before,
+        "planning publishes nothing"
+    );
+    let first = h.publish_plan(plan, &cap).unwrap();
+    assert_eq!(
+        first.recorded_at().0,
+        before.0 + 1,
+        "one native publication"
+    );
+    let first_at = first.recorded_at();
+    assert_eq!(year_end_close_net(&h, h.rent, first_at), 0);
+    assert_eq!(year_end_close_net(&h, h.revenue, first_at), 0);
+    assert_eq!(year_end_close_net(&h, equity, first_at), -13_000);
+    let retry = h
+        .post(h.request(proposal, &["read", "post", "close"]))
+        .unwrap();
+    assert!(matches!(retry, Posted::AlreadyRecorded { .. }));
+    assert_eq!(retry.entry_ref(), first.entry_ref());
+    assert_eq!(h.db.frontier().unwrap(), first_at);
+    let first_check = year_end_close_verify(&h, None);
+    assert!(first_check.is_green());
+    assert!(!first_check.needs_reclose);
+
+    // Later backdated nominal activity leaves the historical close valid;
+    // the next mechanical close transfers exactly the additional balance.
+    h.post(h.request(h.invoice(3_000, b"late-income"), &["post"]))
+        .unwrap();
+    let historical = year_end_close_verify(&h, Some(first_at));
+    assert!(historical.is_green());
+    assert!(!historical.needs_reclose);
+    let current = year_end_close_verify(&h, None);
+    assert!(current.is_green());
+    assert!(current.needs_reclose);
+    let delta = year_end_close_prepare(&h);
+    assert_eq!(delta.legs().len(), 2);
+    assert!(
+        delta
+            .residuals()
+            .iter()
+            .any(|r| r.account == h.rent && r.net == 0)
+    );
+    assert!(
+        delta
+            .residuals()
+            .iter()
+            .any(|r| r.account == h.revenue && r.net == -3_000)
+    );
+    let second = h
+        .post(h.request(
+            year_end_close_proposal(&h, &delta, b"year-close-2"),
+            &["read", "post", "close"],
+        ))
+        .unwrap();
+    assert_eq!(year_end_close_net(&h, h.rent, second.recorded_at()), 0);
+    assert_eq!(year_end_close_net(&h, h.revenue, second.recorded_at()), 0);
+    assert_eq!(
+        year_end_close_net(&h, equity, second.recorded_at()),
+        -16_000
+    );
+    assert_eq!(year_end_close_net(&h, equity, first_at), -13_000);
+    let head = h.db.frontier().unwrap();
+    let noop = year_end_close_prepare(&h);
+    assert!(noop.is_noop());
+    assert!(noop.legs().is_empty());
+    assert!(noop.residuals().iter().all(|r| r.net == 0));
+    let empty = h.proposal(Vec::new(), b"zero-close", EntryClass::CLOSING);
+    assert!(
+        noop.proposal(empty).is_err(),
+        "zero delta cannot become an empty entry"
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert!(!year_end_close_verify(&h, None).needs_reclose);
+}
+
+#[test]
+fn year_end_close_balanced_forgery_and_raw_closing_are_refused() {
+    let (mut h, _) = year_end_close_fixture();
+    h.post(h.request(h.invoice(20_000, b"forgery-income"), &["post"]))
+        .unwrap();
+    h.post(h.request(
+        h.proposal(h.rent_legs(7_000), b"forgery-expense", EntryClass::ORIGINAL),
+        &["post"],
+    ))
+    .unwrap();
+    let prepared = year_end_close_prepare(&h);
+    let good = year_end_close_proposal(&h, &prepared, b"forged-close");
+    let before = h.db.frontier().unwrap();
+    let mut raw = good.clone();
+    raw.extensions.clear();
+    raw.schema_minor = 0;
+    let refused = h
+        .post(h.request(raw, &["read", "post", "close"]))
+        .unwrap_err();
+    assert_eq!(refused.code, "FA-REF-102");
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    // Removing a complete balanced account/destination pair still balances;
+    // only full-source recomputation detects the omitted nominal account.
+    let mut omitted = good.clone();
+    omitted.legs.drain(0..2);
+    omitted.unit_totals = EntryPayload::fold_unit_totals(&omitted.legs).unwrap();
+    omitted.validate().unwrap();
+    let refused = h
+        .post(h.request(omitted, &["read", "post", "close"]))
+        .unwrap_err();
+    assert_eq!((refused.code, refused.exit), ("FA-REF-034", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), before);
+    h.post(h.request(good, &["read", "post", "close"])).unwrap();
+}
+
+#[test]
+fn year_end_close_same_net_new_sources_invalidate_a_review() {
+    let (mut h, _) = year_end_close_fixture();
+    h.post(h.request(h.invoice(20_000, b"basis-income"), &["post"]))
+        .unwrap();
+    let original = year_end_close_prepare(&h);
+    let reviewed = year_end_close_proposal(&h, &original, b"reviewed-close");
+    let extra = h
+        .post(h.request(h.invoice(123, b"same-net-extra"), &["post"]))
+        .unwrap();
+    h.post(h.request(
+        h.reversal_of_entry(extra.entry_ref(), b"same-net-reversal"),
+        &["post"],
+    ))
+    .unwrap();
+    let after = year_end_close_prepare(&h);
+    assert_eq!(original.legs(), after.legs(), "the net money is unchanged");
+    assert_ne!(
+        original.source_digest(),
+        after.source_digest(),
+        "the source set changed"
+    );
+    let head = h.db.frontier().unwrap();
+    let refused = h
+        .post_plan(h.request(reviewed, &["read", "post", "close"]))
+        .unwrap_err();
+    assert_eq!((refused.code, refused.exit), ("FA-REF-034", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn year_end_close_native_preparation_cannot_miss_an_appended_contribution() {
+    let (mut h, _) = year_end_close_fixture();
+    h.post(h.request(h.invoice(20_000, b"race-income"), &["post"]))
+        .unwrap();
+    let calculation = year_end_close_prepare(&h);
+    let proposal = year_end_close_proposal(&h, &calculation, b"race-close");
+    let entry = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"race-close");
+    let request = h.request(proposal, &["read", "post", "close"]);
+    let ctx = h.ctx();
+    let ready = match prepare_post(&mut h.db, &ctx, &h.book, request)
+        .unwrap()
+        .unwrap()
+    {
+        PostPreparation::Ready(ready) => ready,
+        PostPreparation::AlreadyRecorded(_) => panic!("a new close must be fresh"),
+    };
+    h.post(h.request(h.invoice(99, b"racing-income"), &["post"]))
+        .unwrap();
+    let head = h.db.frontier().unwrap();
+    let refused = h
+        .runtime
+        .block_on(ready.commit(&mut h.db, &ctx))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refused.code, refused.exit), ("FA-REF-034", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert!(read_entry(&h.db, entry).unwrap().is_none());
+    assert_eq!(year_end_close_net(&h, h.revenue, head), -20_099);
+}
+
+#[test]
+fn year_end_close_closed_reclose_survives_review_then_exact_approval() {
+    let (mut h, _) = year_end_close_fixture();
+    h.post(h.request(h.invoice(20_000, b"closed-income"), &["post"]))
+        .unwrap();
+    let initial = year_end_close_prepare(&h);
+    h.post(h.request(
+        year_end_close_proposal(&h, &initial, b"open-initial-close"),
+        &["read", "post", "close"],
+    ))
+    .unwrap();
+    h.transition(
+        "FY2026-CLOSE",
+        PeriodTransition::SoftClose,
+        b"soft-close-closing",
+    )
+    .unwrap();
+    h.transition("FY2026-CLOSE", PeriodTransition::Close, b"close-closing")
+        .unwrap();
+    h.post(h.request(h.invoice(777, b"closed-late-income"), &["post"]))
+        .unwrap();
+    let prepared = year_end_close_prepare(&h);
+    let proposal = year_end_close_proposal(&h, &prepared, b"approved-reclose");
+    let mut request = h.request(proposal, &["read", "post", "close", "post_closed"]);
+    let before = h.db.frontier().unwrap();
+    assert!(
+        h.post_plan(request.clone()).is_err(),
+        "Closed reclose requires an approval"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let approval = h.approve_transition(request.proposal.proposal_digest().unwrap());
+    request.approvals = vec![approval];
+    assert!(h.db.frontier().unwrap() > prepared.known_at());
+    let capability = request.capability.clone();
+    let plan = h
+        .post_plan(request)
+        .expect("approval metadata preserves the reviewed source");
+    h.publish_plan(plan, &capability).unwrap();
+    let verified = year_end_close_verify(&h, None);
+    assert!(verified.is_green());
+    assert!(!verified.needs_reclose);
+}
+
+#[test]
+fn year_end_close_requires_current_whole_book_authority_and_complete_routes() {
+    let (mut h, equity) = year_end_close_fixture();
+    h.post(h.request(h.invoice(20_000, b"unrouted-income"), &["post"]))
+        .unwrap();
+    let request = fa_journal::closing::YearEndCloseRequest {
+        fiscal_year: 2026,
+        closing_period: "FY2026-CLOSE".into(),
+    };
+    let head = h.db.frontier().unwrap();
+    for cap in [
+        Capability::embedded(PRINCIPAL, &["post", "close"]).unwrap(),
+        Capability::embedded(PRINCIPAL, &["read", "post", "close"])
+            .unwrap()
+            .for_periods(&["FY2026-CLOSE"])
+            .unwrap(),
+    ] {
+        assert!(
+            fa_journal::closing::prepare_year_end_close(&h.db, &h.ctx(), &h.book, &cap, &request,)
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+    let routes = [(h.rent, equity)].into();
+    year_end_close_routes(&mut h, routes, b"incomplete-close-routes");
+    let head = h.db.frontier().unwrap();
+    let cap = Capability::embedded(PRINCIPAL, &["read", "post", "close"]).unwrap();
+    let refused =
+        fa_journal::closing::prepare_year_end_close(&h.db, &h.ctx(), &h.book, &cap, &request)
+            .unwrap()
+            .unwrap_err();
+    assert!(refused.message.contains("no reviewed closing destination"));
+    assert_eq!(h.db.frontier().unwrap(), head);
+}

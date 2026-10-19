@@ -73,6 +73,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("book", book_cmd),
     ("chart", chart_cmd),
     ("period", period_cmd),
+    ("close", crate::closing::close_cmd),
     ("approve", approve_cmd),
     ("capability", capability_cmd),
     ("draft", draft_cmd),
@@ -1668,12 +1669,13 @@ fn period_plan_only(verb: &str, args: &Args) -> bool {
 /// These concrete handlers prepare and abort the real posting transaction.
 /// No other verb may use a dry-run flag to bypass its confirmation gate.
 fn post_plan_only(verb: &str, args: &Args) -> bool {
-    matches!(
+    (matches!(
         verb,
         "post" | "allocate" | "settle" | "reverse" | "reserve" | "resolve"
-    ) && (args.switch("--dry-run")
-        || args.switch("--review-only")
-        || args.flag("--review-out").is_some())
+    ) || (verb == "close" && args.positional.get(1).map(String::as_str) == Some("year-end")))
+        && (args.switch("--dry-run")
+            || args.switch("--review-only")
+            || args.flag("--review-out").is_some())
 }
 
 /// Required capability operations for a command on the launch-bound surface, or
@@ -1713,6 +1715,9 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
             _,
         ) => &[Op::Read],
         ("verify" | "registers", _) => &[Op::Read, Op::Verify],
+        ("close", Some("map")) => &[Op::Read, Op::SchemaChange],
+        ("close", Some("routes")) => &[Op::Read],
+        ("close", Some("year-end")) => &[Op::Read, Op::Post, Op::Close],
         (
             "post" | "commit" | "reverse" | "reserve" | "resolve" | "invoice" | "bill" | "receipt"
             | "payment",
@@ -5075,7 +5080,7 @@ pub(crate) fn plan_document_into_scenario(
 }
 
 /// A 64-hex digest from a flag.
-fn parse_digest(text: &str, what: &str) -> Result<[u8; 32], Fail> {
+pub(crate) fn parse_digest(text: &str, what: &str) -> Result<[u8; 32], Fail> {
     let bad = || {
         usage(
             format!("{what} `{text}` is not a 64-hex digest"),
@@ -5107,7 +5112,7 @@ fn kind_name(k: PeriodKind) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// A 32-hex entry identity from an intent field.
-fn parse_vid(text: &str, what: &str) -> Result<VId, Fail> {
+pub(crate) fn parse_vid(text: &str, what: &str) -> Result<VId, Fail> {
     u128::from_str_radix(text, 16).map(VId).map_err(|_| {
         usage(
             format!("{what} `{text}` is not a 32-hex vid"),
@@ -5683,7 +5688,7 @@ fn post_batch_document(ctx: &mut Ctx<'_>, args: &Args, doc: &Json) -> Result<(),
     Ok(())
 }
 
-fn check_post_planning_options(args: &Args) -> Result<(), Fail> {
+pub(crate) fn check_post_planning_options(args: &Args) -> Result<(), Fail> {
     if args.flag_all("--plan-out").len() > 1 {
         return Err(usage(
             "--plan-out may be supplied only once",
@@ -6472,7 +6477,7 @@ pub(crate) fn write_post_plan(files: &Files, path: &str, bytes: &[u8]) -> Result
     write_new_output_file(files, path, bytes, "plan", "--plan-out")
 }
 
-fn emit_post_plan(
+pub(crate) fn emit_post_plan(
     out: &Out,
     book: &Book,
     files: &Files,
@@ -6555,6 +6560,16 @@ fn emit_post_plan(
         }
         for grant in args.flag_all("--grant") {
             command.push_str(&format!(" --grant {}", quoted(grant)));
+        }
+        if proposal.class == EntryClass::CLOSING {
+            // The owner close command explicitly holds these operations.
+            // A restored plan never grants them; the commit caller supplies
+            // the same capability through these ordinary command arguments.
+            for grant in ["read", "close"] {
+                if !args.flag_all("--grant").contains(&grant) {
+                    command.push_str(&format!(" --grant {}", quoted(grant)));
+                }
+            }
         }
         command.push_str(" --json");
         command
@@ -6737,6 +6752,15 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if ctx.out.is_bound() && voids {
         gate(&ctx.out, args, "resolve", None, &Condition::Voids)?;
     }
+    if plan.proposal().class == EntryClass::CLOSING {
+        gate(
+            &ctx.out,
+            args,
+            "close",
+            Some("year-end"),
+            &Condition::Always,
+        )?;
+    }
     let capability = ctx.capability(args, &["post"])?;
     let mut book = ctx.books.open(args)?;
     let (entry_ref, recorded_at, period, already_recorded) =
@@ -6774,7 +6798,7 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-fn emit_posted(
+pub(crate) fn emit_posted(
     out: &Out,
     posted: Posted,
     class_name: &str,
@@ -6916,7 +6940,7 @@ fn decode_hex_bytes(text: &str, what: &str) -> Result<Vec<u8>, Fail> {
         .collect()
 }
 
-fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Result<Vec<u8>, Fail> {
+pub(crate) fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Result<Vec<u8>, Fail> {
     let is_inline_hex = path != "-"
         && path.len() >= 28
         && path.len().is_multiple_of(2)
@@ -6978,7 +7002,8 @@ fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Result<Vec<u8>, 
             "pass the complete review bytes from a successful review",
         ));
     }
-    if bytes.starts_with(b"FA-ALLOC-REVIEW\0")
+    if bytes.starts_with(b"FA-INTENT\0")
+        || bytes.starts_with(b"FA-ALLOC-REVIEW\0")
         || bytes.starts_with(b"FA-BAL-REVIEW\0")
         || bytes.starts_with(b"FA-SETTLEMENT-REVIEW\0")
         || bytes.starts_with(b"FA-SETTLEMENT-GROUP-REVIEW\0")
@@ -7000,7 +7025,7 @@ fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Result<Vec<u8>, 
     decode_hex_bytes(text, "review")
 }
 
-fn write_review_file(files: &Files, path: &str, bytes: &[u8]) -> Result<(), Fail> {
+pub(crate) fn write_review_file(files: &Files, path: &str, bytes: &[u8]) -> Result<(), Fail> {
     if path.is_empty() || path == "-" {
         return Err(usage(
             "--review-out names a new file; - is not an output file",
@@ -9639,6 +9664,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
         Some("accumulator") => notary::verify_accumulator(ctx, args),
+        Some("close") => crate::closing::verify_close(ctx, args),
         Some("registers") => {
             let book = ctx.books.open(args)?;
             let periods = selected_periods(args, &book)?;
@@ -10829,7 +10855,10 @@ pub(crate) fn validate_cash_flow_policy_fields(doc: &Json, indirect: bool) -> Re
     };
     check(doc, allowed, "cash-flow policy")?;
     for (field, allowed) in [
-        ("assignments", &["entry_digest", "leg_index", "activity"][..]),
+        (
+            "assignments",
+            &["entry_digest", "leg_index", "activity"][..],
+        ),
         (
             "adjustments",
             &["entry_digest", "leg_index", "category", "sign", "reason"][..],
@@ -11414,7 +11443,10 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
                     (certified.report, Some(artifact))
                 } else {
-                    (book.reconcile_effective_date_aging(who, &capability, &request)??, None)
+                    (
+                        book.reconcile_effective_date_aging(who, &capability, &request)??,
+                        None,
+                    )
                 };
                 out.known_at(rec.known_at());
                 let bands: Vec<Json> = rec
@@ -11463,16 +11495,19 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     rec.effective_through().render(),
                     rec.is_reconciled()
                 );
-                let retained = artifact.as_ref().map(|artifact| {
-                    notary::retain_report_artifact_for(
-                        &mut book,
-                        &ctx.files,
-                        args,
-                        artifact,
-                        &capability,
-                        fa::ReportArtifactExpectation::AgingReconciliation(&request),
-                    )
-                }).transpose()?;
+                let retained = artifact
+                    .as_ref()
+                    .map(|artifact| {
+                        notary::retain_report_artifact_for(
+                            &mut book,
+                            &ctx.files,
+                            args,
+                            artifact,
+                            &capability,
+                            fa::ReportArtifactExpectation::AgingReconciliation(&request),
+                        )
+                    })
+                    .transpose()?;
                 let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
                 out.event_with_certificate(
                     "aging_reconciled",
@@ -11732,7 +11767,8 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     definition: indirect_def,
                 };
                 let (report, artifact) = if certify {
-                    let certified = book.certify_indirect_cash_flow(who, &capability, &request)??;
+                    let certified =
+                        book.certify_indirect_cash_flow(who, &capability, &request)??;
                     request.cash.known_at = Some(certified.certificate().known_at());
                     let artifact = fa::ReportArtifact::try_from(certified.certificate())?;
                     (certified.report().clone(), Some(artifact))
@@ -11811,16 +11847,19 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     report.units().len(),
                     report.contributions().len()
                 );
-                let retained = artifact.as_ref().map(|artifact| {
-                    notary::retain_report_artifact_for(
-                        &mut book,
-                        &ctx.files,
-                        args,
-                        artifact,
-                        &capability,
-                        fa::ReportArtifactExpectation::IndirectCashFlow(&request),
-                    )
-                }).transpose()?;
+                let retained = artifact
+                    .as_ref()
+                    .map(|artifact| {
+                        notary::retain_report_artifact_for(
+                            &mut book,
+                            &ctx.files,
+                            args,
+                            artifact,
+                            &capability,
+                            fa::ReportArtifactExpectation::IndirectCashFlow(&request),
+                        )
+                    })
+                    .transpose()?;
                 let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
                 out.event_with_certificate(
                     "indirect_cash_flow",
@@ -11913,16 +11952,22 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     source.effective_through().render(),
                     cf.units().len()
                 );
-                let retained = artifact.as_ref().map(|artifact| {
-                    notary::retain_report_artifact_for(
-                        &mut book,
-                        &ctx.files,
-                        args,
-                        artifact,
-                        &capability,
-                        fa::ReportArtifactExpectation::CashFlow { request: &req, definition: &cash_def },
-                    )
-                }).transpose()?;
+                let retained = artifact
+                    .as_ref()
+                    .map(|artifact| {
+                        notary::retain_report_artifact_for(
+                            &mut book,
+                            &ctx.files,
+                            args,
+                            artifact,
+                            &capability,
+                            fa::ReportArtifactExpectation::CashFlow {
+                                request: &req,
+                                definition: &cash_def,
+                            },
+                        )
+                    })
+                    .transpose()?;
                 let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
                 out.event_with_certificate(
                     "cash_flow",
