@@ -23,9 +23,9 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::genesis::{BookContext, BookSpec};
 use crate::policy;
-use crate::refusal::{code, exit};
+use crate::refusal::{Outcome, code, exit};
 use crate::rows::{book_root, edge_id};
-use crate::{KernelError, Outcome, Refusal};
+use crate::{KernelError, Refusal};
 
 mod codec;
 mod verify;
