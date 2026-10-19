@@ -704,7 +704,10 @@ fn gl_families_certify_retain_and_replay_their_complete_original_artifacts() {
             ("policy", policy.clone()),
         ];
         if kind == "indirect-cash-flow" {
-            fields.push(("income_periods", Json::Arr(vec![s(PERIOD)])));
+            fields.push((
+                "income_periods",
+                Json::Arr(vec![s("FY2026-OPEN"), s(PERIOD)]),
+            ));
         }
         obj(fields)
     };
@@ -776,7 +779,7 @@ fn gl_families_certify_retain_and_replay_their_complete_original_artifacts() {
                 indirect_path.to_str().unwrap(),
                 "--indirect",
                 "--income-period",
-                PERIOD,
+                "FY2026-OPEN,FY2026-P01",
             ]);
         }
         let cert_path = f.dir.join(format!("{name}.cert"));
@@ -1091,7 +1094,11 @@ fn cash_flow_policy_typos_refuse_before_retention_and_optional_defaults_still_wo
             args.extend([
                 "--indirect",
                 "--income-period",
-                if empty_period { "FY2026-P02" } else { PERIOD },
+                if empty_period {
+                    "FY2026-P02"
+                } else {
+                    "FY2026-OPEN,FY2026-P01"
+                },
             ]);
         }
         args
