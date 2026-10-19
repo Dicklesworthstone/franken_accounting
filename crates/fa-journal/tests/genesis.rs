@@ -9404,3 +9404,184 @@ fn year_end_close_explicit_pin_observes_history_but_never_restores_revoked_autho
     }
     assert_eq!(h.db.frontier().unwrap(), revoked_at);
 }
+
+fn year_end_close_retire_rent(h: &mut Harness) {
+    let ctx = h.ctx();
+    let day = DateDay::from_ymd(2026, 6, 1).unwrap();
+    let description = h.statement("Retire the zero-balance nominal account", 90);
+    let capability = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    let recorded = h
+        .runtime
+        .block_on(fa_journal::close_account(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            "6000",
+            day,
+            PRINCIPAL,
+            day,
+            b"retire-year-close-rent",
+            description,
+            &capability,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(recorded.account_vid, h.rent);
+}
+
+#[test]
+fn year_end_close_retired_zero_accounts_keep_source_and_lifecycle_dependencies() {
+    let (mut h, equity) = year_end_close_fixture();
+    let expense = h
+        .post(h.request(
+            h.proposal(h.rent_legs(500), b"retired-expense", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .unwrap();
+    h.post(h.request(
+        h.reversal_of_entry(expense.entry_ref(), b"retired-expense-reversal"),
+        &["post"],
+    ))
+    .unwrap();
+    h.post(h.request(h.invoice(13_000, b"retired-year-income"), &["post"]))
+        .unwrap();
+    let before_retirement = year_end_close_prepare(&h);
+    let prior_review = year_end_close_proposal(&h, &before_retirement, b"pre-retirement-review");
+    year_end_close_retire_rent(&mut h);
+    let mapped = year_end_close_prepare(&h);
+    assert_eq!(mapped.legs(), before_retirement.legs());
+    assert_ne!(mapped.source_digest(), before_retirement.source_digest());
+    assert!(
+        mapped
+            .residuals()
+            .iter()
+            .any(|row| row.account == h.rent && row.net == 0)
+    );
+    assert!(mapped.legs().iter().all(|leg| leg.account_ref != h.rent));
+    let head = h.db.frontier().unwrap();
+    let refusal = h
+        .post_plan(h.request(prior_review, &["read", "post", "close"]))
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    // A revised complete map may omit the retired zero account. Its old
+    // contributions still participate, and its lifecycle remains a dependency.
+    let routes = [(h.revenue, equity)].into();
+    year_end_close_routes(&mut h, routes, b"active-year-close-routes");
+    let unmapped = year_end_close_prepare(&h);
+    assert_eq!(unmapped.legs(), mapped.legs());
+    assert_eq!(year_end_close_net(&h, h.rent, h.db.frontier().unwrap()), 0);
+    let reviewed = year_end_close_proposal(&h, &unmapped, b"unrouted-zero-review");
+
+    // Promotion is a native schema effect, not a test-only row mutation.
+    // The nominal source stays zero and the map and monetary legs stay fixed.
+    let ctx = h.ctx();
+    let promoted_on = DateDay::from_ymd(2026, 4, 1).unwrap();
+    let description = h.statement("Promote the retired zero account", 91);
+    let capability = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    h.runtime
+        .block_on(fa_journal::promote_to_summary(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            "6000",
+            promoted_on,
+            PRINCIPAL,
+            promoted_on,
+            b"promote-retired-year-close-rent",
+            description,
+            &capability,
+        ))
+        .unwrap()
+        .unwrap();
+    let promoted = year_end_close_prepare(&h);
+    assert_eq!(promoted.legs(), unmapped.legs());
+    assert_eq!(promoted.routes_digest(), unmapped.routes_digest());
+    assert_ne!(promoted.source_digest(), unmapped.source_digest());
+    let head = h.db.frontier().unwrap();
+    let refusal = h
+        .post_plan(h.request(reviewed, &["read", "post", "close"]))
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let posted = h
+        .post(h.request(
+            year_end_close_proposal(&h, &promoted, b"retired-zero-year-close"),
+            &["read", "post", "close"],
+        ))
+        .unwrap();
+    assert_eq!(year_end_close_net(&h, h.rent, posted.recorded_at()), 0);
+    assert_eq!(year_end_close_net(&h, h.revenue, posted.recorded_at()), 0);
+    assert_eq!(
+        year_end_close_net(&h, equity, posted.recorded_at()),
+        -13_000
+    );
+    let verified = year_end_close_verify(&h, None);
+    assert!(verified.is_green());
+    assert!(!verified.needs_reclose);
+}
+
+#[test]
+fn year_end_close_refuses_nonzero_retired_accounts_with_or_without_a_route() {
+    let (mut h, equity) = year_end_close_fixture();
+    let expense = h
+        .post(h.request(
+            h.proposal(h.rent_legs(500), b"inactive-expense", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .unwrap();
+    h.post(h.request(
+        h.reversal_of_entry(expense.entry_ref(), b"inactive-expense-reversal"),
+        &["post"],
+    ))
+    .unwrap();
+    h.post(h.request(h.invoice(1_000, b"inactive-year-income"), &["post"]))
+        .unwrap();
+    year_end_close_retire_rent(&mut h);
+    let zero = year_end_close_prepare(&h);
+    let reviewed = year_end_close_proposal(&h, &zero, b"inactive-zero-review");
+
+    // The late-recorded expense is still effective inside [opened, closed),
+    // so the native posting law admits it. A December Closing leg is outside.
+    h.post(h.request(
+        h.proposal(
+            h.rent_legs(1),
+            b"late-retired-expense",
+            EntryClass::ORIGINAL,
+        ),
+        &["post"],
+    ))
+    .unwrap();
+    let request = fa_journal::closing::YearEndCloseRequest {
+        fiscal_year: 2026,
+        closing_period: "FY2026-CLOSE".into(),
+    };
+    let capability = Capability::embedded(PRINCIPAL, &["read", "post", "close"]).unwrap();
+    for omit_route in [false, true] {
+        if omit_route {
+            let routes = [(h.revenue, equity)].into();
+            year_end_close_routes(&mut h, routes, b"omit-nonzero-inactive-route");
+        }
+        let head = h.db.frontier().unwrap();
+        let refusal = fa_journal::closing::prepare_year_end_close(
+            &h.db,
+            &h.ctx(),
+            &h.book,
+            &capability,
+            &request,
+        )
+        .unwrap()
+        .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-102", exit::REFUSAL));
+        assert!(refusal.message.contains("nonzero fiscal-year balance"));
+        assert!(refusal.message.contains("6000"));
+        assert!(
+            h.post_plan(h.request(reviewed.clone(), &["read", "post", "close"]))
+                .is_err()
+        );
+        assert_eq!(year_end_close_net(&h, h.rent, head), 1);
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+}

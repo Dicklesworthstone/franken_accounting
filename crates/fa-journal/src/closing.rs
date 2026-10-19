@@ -184,7 +184,7 @@ fn unsupported(message: impl core::fmt::Display) -> Refusal {
         exit::REFUSAL,
         format!("year-end close: {message}"),
         "plan §7.5; FA-INV-03.nominal-zero; intrinsic YearEndClose v1",
-        "use reviewed Revenue/Expense-to-Equity routes, native base-currency amounts and supported legal-entity dimensions; prepare a fresh complete close",
+        "use reviewed Revenue/Expense-to-Equity routes, native base-currency amounts and supported legal-entity dimensions; prepare and review fa close year-end --fiscal-year <year> --period FY<year>-CLOSE --key <new-key> --review-only (plan §7.5 / fa-4o0)",
     )
 }
 
@@ -317,13 +317,17 @@ fn route_account(
     nominal: bool,
     unit: UnitId,
     day: DateDay,
+    require_posting: bool,
 ) -> Result<&AccountRow, Refusal> {
     let row = chart
         .accounts()
         .get(&account)
         .ok_or_else(|| unsupported("a closing route names an unknown account"))?;
     let kind = AccountType(row.account_type);
-    if !row.is_leaf || (nominal && !kind.is_flow()) || (!nominal && kind != AccountType::EQUITY) {
+    if (require_posting && !row.is_leaf)
+        || (nominal && !kind.is_flow())
+        || (!nominal && kind != AccountType::EQUITY)
+    {
         return Err(unsupported(
             "closing routes must map Revenue/Expense leaves to Equity leaves",
         ));
@@ -338,16 +342,55 @@ fn route_account(
             "a closing route account does not accept the book's native base currency",
         ));
     }
-    if !chart
-        .account_effectivity(account)
-        .unwrap_or_default()
-        .is_effective_at(day)
+    if require_posting
+        && !chart
+            .account_effectivity(account)
+            .unwrap_or_default()
+            .is_effective_at(day)
     {
         return Err(unsupported(
             "a closing route account is not effective at the fiscal-year-end date",
         ));
     }
     Ok(row)
+}
+
+/// Keep dormant account declarations in the source commitment even when
+/// they emit no Closing leg. The existing route binding bytes are unchanged.
+fn bind_account(
+    source: &mut fgdb_crypto::Hasher,
+    chart: &ChartSnapshot,
+    row: &AccountRow,
+) -> Result<(), KernelError> {
+    let mut encoded = Writer::new();
+    encoded
+        .u128(row.vid.0)
+        .str(&row.code)
+        .str(&row.name)
+        .u8(row.account_type)
+        .u8(row.normal_balance)
+        .bool(row.is_leaf)
+        .u64(row.created_at.0);
+    match row.unit_policy {
+        UnitPolicy::Single(unit) => {
+            encoded.u8(0).u32(unit.0);
+        }
+        UnitPolicy::AnyCurrency => {
+            encoded.u8(1);
+        }
+        UnitPolicy::AnyUnit => {
+            encoded.u8(2);
+        }
+    }
+    encoded.bytes(
+        &chart
+            .account_effectivity(row.vid)
+            .unwrap_or_default()
+            .encode_payload()?
+            .unwrap_or_default(),
+    );
+    source.update(&encoded.finish()?);
+    Ok(())
 }
 
 fn observe<V: Vfs + Clone>(
@@ -393,42 +436,16 @@ fn observe<V: Vfs + Clone>(
     source.update(&[period.state as u8]);
     source.update(&routes.control_entry.0.to_le_bytes());
     source.update(&routes.digest);
-    // Every declared route is validated and bound, even when its balance is
-    // zero. A changed account cannot be hidden by leaving its leg out.
+    // Every declared route remains structurally checked and bound, including
+    // zero balances. Posting activity is required only for emitted legs:
+    // a legitimately retired zero account needs no year-end posting.
     for (account, destination) in &routes.routes {
         for (vid, nominal) in [(*account, true), (*destination, false)] {
-            let row = match route_account(&chart, vid, nominal, spec.base_unit, end) {
+            let row = match route_account(&chart, vid, nominal, spec.base_unit, end, false) {
                 Ok(row) => row,
                 Err(refusal) => return Ok(Err(refusal)),
             };
-            let mut encoded = Writer::new();
-            encoded
-                .u128(row.vid.0)
-                .str(&row.code)
-                .str(&row.name)
-                .u8(row.account_type)
-                .u8(row.normal_balance)
-                .bool(row.is_leaf)
-                .u64(row.created_at.0);
-            match row.unit_policy {
-                UnitPolicy::Single(unit) => {
-                    encoded.u8(0).u32(unit.0);
-                }
-                UnitPolicy::AnyCurrency => {
-                    encoded.u8(1);
-                }
-                UnitPolicy::AnyUnit => {
-                    encoded.u8(2);
-                }
-            }
-            encoded.bytes(
-                &chart
-                    .account_effectivity(vid)
-                    .unwrap_or_default()
-                    .encode_payload()?
-                    .unwrap_or_default(),
-            );
-            source.update(&encoded.finish()?);
+            bind_account(&mut source, &chart, row)?;
         }
     }
     let mut entries = Vec::new();
@@ -480,12 +497,6 @@ fn observe<V: Vfs + Clone>(
                     "a nominal contribution uses foreign currency or a base-valuation law",
                 )));
             }
-            if !routes.routes.contains_key(&leg.account_ref) {
-                return Ok(Err(unsupported(format!(
-                    "nominal account {} has activity but no reviewed closing destination",
-                    account.code
-                ))));
-            }
             let entity = match closing_entity(&spec, leg) {
                 Ok(entity) => entity,
                 Err(refusal) => return Ok(Err(refusal)),
@@ -509,8 +520,42 @@ fn observe<V: Vfs + Clone>(
     }
     let mut residuals = Vec::new();
     let mut legs = Vec::new();
+    let mut bound_unrouted = BTreeSet::new();
     for ((account, entity), net) in balances {
-        let closes_to = routes.routes[&account];
+        let row = &chart.accounts()[&account];
+        let inactive = !row.is_leaf
+            || !chart
+                .account_effectivity(account)
+                .unwrap_or_default()
+                .is_effective_at(end);
+        if inactive && net != 0 {
+            return Ok(Err(unsupported(format!(
+                "nominal account {} has a nonzero fiscal-year balance but is not a posting leaf effective at fiscal-year end",
+                row.code
+            ))));
+        }
+        let closes_to = match routes.routes.get(&account) {
+            Some(destination) => *destination,
+            None if inactive && net == 0 => {
+                let row = match route_account(&chart, account, true, spec.base_unit, end, false) {
+                    Ok(row) => row,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
+                if bound_unrouted.insert(account) {
+                    // Newly admissible unrouted zero accounts keep their
+                    // complete contribution and lifecycle dependencies.
+                    source.update(b"fa:year-end-close-unrouted-zero:v1");
+                    bind_account(&mut source, &chart, row)?;
+                }
+                continue;
+            }
+            None => {
+                return Ok(Err(unsupported(format!(
+                    "nominal account {} has activity but no reviewed closing destination",
+                    row.code
+                ))));
+            }
+        };
         residuals.push(ClosingResidual {
             account,
             account_code: chart.accounts()[&account].code.clone(),
@@ -532,7 +577,14 @@ fn observe<V: Vfs + Clone>(
         } else {
             (Side::Debit, Side::Credit)
         };
-        for (target, side) in [(account, nominal_side), (closes_to, equity_side)] {
+        for (target, side, nominal) in [
+            (account, nominal_side, true),
+            (closes_to, equity_side, false),
+        ] {
+            if let Err(refusal) = route_account(&chart, target, nominal, spec.base_unit, end, true)
+            {
+                return Ok(Err(refusal));
+            }
             let mut leg = LegPayload::simple(side, target, Amount::new(spec.base_unit, magnitude));
             if let Some(entity) = entity {
                 leg.dimension_set = vec![(LEGAL_ENTITY_DIMENSION, entity)];
