@@ -3,8 +3,9 @@
 
 use super::*;
 use fa::aging::portfolio::{AgingAccountScope, AgingPortfolioRequest};
+use fa::cash_flow_policy::CashFlowPolicy;
 use fa::{
-    AdjustmentCategory, AdjustmentSign, AgingBuckets, AgingReconciliationRequest, CashFlowActivity,
+    AdjustmentCategory, AdjustmentSign, AgingBuckets, AgingReconciliationRequest,
     CashFlowDefinition, IndirectCashFlowRequest, RollForwardRequest,
 };
 use fa_model::account_vid;
@@ -19,6 +20,7 @@ pub(super) enum Expected {
     Indirect(IndirectCashFlowRequest),
     Reconciliation(AgingReconciliationRequest),
     Portfolio(AgingPortfolioRequest),
+    PolicyCashFlow(RollForwardRequest, CashFlowPolicy),
 }
 
 impl Expected {
@@ -34,6 +36,9 @@ impl Expected {
                 fa::ReportArtifactExpectation::AgingReconciliation(request)
             }
             Self::Portfolio(request) => fa::ReportArtifactExpectation::AgingPortfolio(request),
+            Self::PolicyCashFlow(request, policy) => {
+                fa::ReportArtifactExpectation::PolicyCashFlow { request, policy }
+            }
         }
     }
 }
@@ -193,7 +198,7 @@ pub(super) fn parse(args: &Args, book: &Book) -> Result<Expected, Fail> {
         return Err(invalid("--expect may be supplied only once"));
     }
     let Some(text) = args.flag("--expect") else {
-        // The unified verifier refuses AsSupplied for these four families.
+        // The unified verifier refuses AsSupplied for these five families.
         return Ok(Expected::AsSupplied);
     };
     check_size(text)?;
@@ -242,6 +247,34 @@ pub(super) fn parse(args: &Args, book: &Book) -> Result<Expected, Fail> {
                 income_periods,
                 definition: indirect,
             }))
+        }
+        "policy-cash-flow" => {
+            exact_fields(
+                &doc,
+                &[
+                    "kind", "accounts", "units", "label", "from", "through", "known_at", "policy",
+                ],
+            )?;
+            let request = scope(&doc, book)?;
+            let policy = field(&doc, "policy")?;
+            crate::cli::validate_cash_flow_rules_policy_fields(policy, false)?;
+            string(policy, "name")?;
+            for item in array(policy, "cash_accounts")? {
+                if !matches!(item, Json::Str(code) if !code.is_empty()) {
+                    return Err(invalid(
+                        "expected cash_accounts must contain nonempty account codes or ids",
+                    ));
+                }
+            }
+            array(policy, "account_rules")?;
+            array(policy, "overrides")?;
+            let policy = crate::cli::parse_cash_flow_rules_policy(
+                policy,
+                book.context().book_id,
+                &request.accounts,
+                "",
+            )?;
+            Ok(Expected::PolicyCashFlow(request, policy))
         }
         "aging-reconciliation" => {
             exact_fields(&doc, &["kind", "account", "through", "known_at", "buckets"])?;
@@ -354,13 +387,7 @@ fn policy_fields(definition: &CashFlowDefinition) -> Vec<(&'static str, Json)> {
                             ("leg_index", Json::Int(i128::from(assignment.leg_index))),
                             (
                                 "activity",
-                                s(match assignment.activity {
-                                    CashFlowActivity::Operating => "operating",
-                                    CashFlowActivity::Investing => "investing",
-                                    CashFlowActivity::Financing => "financing",
-                                    CashFlowActivity::ExchangeEffect => "exchange_effect",
-                                    CashFlowActivity::InternalTransfer => "internal_transfer",
-                                }),
+                                s(crate::cli::cash_flow_activity_name(assignment.activity)),
                             ),
                         ])
                     })
@@ -377,6 +404,45 @@ pub(crate) fn cash_flow_expectation_json(
     let mut fields = scope_fields(request);
     fields.push(("kind", s("cash-flow")));
     fields.push(("policy", obj(policy_fields(definition))));
+    obj(fields)
+}
+
+pub(crate) fn policy_cash_flow_expectation_json(
+    request: &RollForwardRequest,
+    policy: &CashFlowPolicy,
+) -> Json {
+    // Overrides render exactly as a direct policy's assignments do.
+    let mut policy_json = policy_fields(&CashFlowDefinition {
+        name: policy.name.clone(),
+        cash_accounts: policy.cash_accounts.clone(),
+        assignments: policy.overrides.clone(),
+    });
+    for (name, _) in &mut policy_json {
+        if *name == "assignments" {
+            *name = "overrides";
+        }
+    }
+    policy_json.push((
+        "account_rules",
+        Json::Arr(
+            policy
+                .account_rules
+                .iter()
+                .map(|rule| {
+                    obj(vec![
+                        ("account", s(format!("{:032x}", rule.account_id))),
+                        (
+                            "activity",
+                            s(crate::cli::cash_flow_activity_name(rule.activity)),
+                        ),
+                    ])
+                })
+                .collect(),
+        ),
+    ));
+    let mut fields = scope_fields(request);
+    fields.push(("kind", s("policy-cash-flow")));
+    fields.push(("policy", obj(policy_json)));
     obj(fields)
 }
 
@@ -501,6 +567,9 @@ pub(super) fn validate_generated(expected: fa::ReportArtifactExpectation<'_>) ->
         }
         fa::ReportArtifactExpectation::AgingPortfolio(request) => {
             portfolio_expectation_json(request)
+        }
+        fa::ReportArtifactExpectation::PolicyCashFlow { request, policy } => {
+            policy_cash_flow_expectation_json(request, policy)
         }
         _ => return Ok(()),
     };

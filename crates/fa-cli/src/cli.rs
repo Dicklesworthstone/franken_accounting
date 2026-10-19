@@ -10956,73 +10956,205 @@ pub(crate) fn parse_cash_flow_definition(
             ));
         }
     };
-    let assignments = match get("assignments") {
-        None => Vec::new(),
+    let assignments = parse_cash_flow_assignments(get("assignments"), "assignment")?;
+    Ok(CashFlowDefinition {
+        name,
+        cash_accounts,
+        assignments,
+    })
+}
+
+fn parse_cash_flow_activity(act: &str) -> Result<CashFlowActivity, Fail> {
+    Ok(match act {
+        "operating" | "Operating" => CashFlowActivity::Operating,
+        "investing" | "Investing" => CashFlowActivity::Investing,
+        "financing" | "Financing" => CashFlowActivity::Financing,
+        "exchange_effect" | "exchange_effects" | "ExchangeEffect" => {
+            CashFlowActivity::ExchangeEffect
+        }
+        "internal_transfer" | "InternalTransfer" => CashFlowActivity::InternalTransfer,
+        other => {
+            return Err(usage(
+                format!("unknown cash-flow activity `{other}`"),
+                "use operating, investing, financing, exchange_effect, or internal_transfer",
+            ));
+        }
+    })
+}
+
+/// Whole original cash legs: a direct policy's `assignments` or a rule
+/// policy's `overrides` (`what` names one item in messages).
+fn parse_cash_flow_assignments(
+    value: Option<&Json>,
+    what: &str,
+) -> Result<Vec<CashFlowAssignment>, Fail> {
+    match value {
+        None => Ok(Vec::new()),
         Some(Json::Arr(items)) => items
             .iter()
             .map(|item| {
                 let Json::Obj(af) = item else {
                     return Err(usage(
-                        "each assignment must be a JSON object",
+                        format!("each {what} must be a JSON object"),
                         r#"{"entry_digest":"...","leg_index":0,"activity":"operating"}"#,
                     ));
                 };
                 let aget = |k: &str| af.iter().find(|(n, _)| n == k).map(|(_, v)| v);
                 let Some(Json::Str(digest_hex)) = aget("entry_digest") else {
                     return Err(usage(
-                        "assignment requires string `entry_digest`",
+                        format!("{what} requires string `entry_digest`"),
                         r#"{"entry_digest":"<64-hex>","leg_index":0,"activity":"operating"}"#,
                     ));
                 };
-                let entry_digest = parse_digest32(digest_hex, "assignment.entry_digest")?;
+                let entry_digest = parse_digest32(digest_hex, &format!("{what}.entry_digest"))?;
                 let Some(Json::Int(leg_idx)) = aget("leg_index") else {
                     return Err(usage(
-                        "assignment requires integer `leg_index`",
+                        format!("{what} requires integer `leg_index`"),
                         r#"{"entry_digest":"<64-hex>","leg_index":0,"activity":"operating"}"#,
                     ));
                 };
                 let leg_index = u32::try_from(*leg_idx).map_err(|_| {
-                    usage("assignment `leg_index` must fit in u32", r#""leg_index":0"#)
+                    usage(
+                        format!("{what} `leg_index` must fit in u32"),
+                        r#""leg_index":0"#,
+                    )
                 })?;
                 let Some(Json::Str(act)) = aget("activity") else {
                     return Err(usage(
-                        "assignment requires string `activity`",
+                        format!("{what} requires string `activity`"),
                         r#""activity":"operating|investing|financing|exchange_effect|internal_transfer""#,
                     ));
-                };
-                let activity = match act.as_str() {
-                    "operating" | "Operating" => CashFlowActivity::Operating,
-                    "investing" | "Investing" => CashFlowActivity::Investing,
-                    "financing" | "Financing" => CashFlowActivity::Financing,
-                    "exchange_effect" | "exchange_effects" | "ExchangeEffect" => {
-                        CashFlowActivity::ExchangeEffect
-                    }
-                    "internal_transfer" | "InternalTransfer" => CashFlowActivity::InternalTransfer,
-                    other => {
-                        return Err(usage(
-                            format!("unknown cash-flow activity `{other}`"),
-                            "use operating, investing, financing, exchange_effect, or internal_transfer",
-                        ));
-                    }
                 };
                 Ok(CashFlowAssignment {
                     entry_digest,
                     leg_index,
-                    activity,
+                    activity: parse_cash_flow_activity(act)?,
                 })
             })
-            .collect::<Result<_, Fail>>()?,
-        _ => {
+            .collect(),
+        _ => Err(usage(
+            format!("`{what}s` must be an array"),
+            format!(
+                r#""{what}s":[{{"entry_digest":"...","leg_index":0,"activity":"operating"}}]"#
+            ),
+        )),
+    }
+}
+
+pub(crate) fn cash_flow_activity_name(activity: CashFlowActivity) -> &'static str {
+    match activity {
+        CashFlowActivity::Operating => "operating",
+        CashFlowActivity::Investing => "investing",
+        CashFlowActivity::Financing => "financing",
+        CashFlowActivity::ExchangeEffect => "exchange_effect",
+        CashFlowActivity::InternalTransfer => "internal_transfer",
+    }
+}
+
+const RULES_POLICY_EXAMPLE: &str = r#"{"name":"cash-rules-v1","cash_accounts":["1000"],"account_rules":[{"account":"4000","activity":"operating"}],"overrides":[]}"#;
+
+/// A rule policy (fa-i9yn) is its own format: `account_rules` classify non-cash
+/// counterpart accounts and `overrides` fix whole cash legs. The direct and
+/// indirect formats refuse `account_rules`; this one refuses their fields.
+pub(crate) fn validate_cash_flow_rules_policy_fields(
+    doc: &Json,
+    indirect: bool,
+) -> Result<(), Fail> {
+    if indirect {
+        return Err(usage(
+            "account_rules policies classify direct cash flow; --indirect takes explicit assignments and adjustments",
+            "drop --indirect, or pass an indirect policy with assignments and adjustments",
+        ));
+    }
+    let check = |value: &Json, allowed: &[&str], context: &str| -> Result<(), Fail> {
+        let Json::Obj(fields) = value else {
             return Err(usage(
-                "`assignments` must be an array",
-                r#""assignments":[{"entry_digest":"...","leg_index":0,"activity":"operating"}]"#,
+                format!("{context} must be a JSON object"),
+                RULES_POLICY_EXAMPLE,
             ));
+        };
+        for (field, _) in fields {
+            if !allowed.contains(&field.as_str()) {
+                return Err(usage(
+                    format!("unknown {context} field '{field}'"),
+                    RULES_POLICY_EXAMPLE,
+                ));
+            }
         }
+        Ok(())
     };
-    Ok(CashFlowDefinition {
-        name,
-        cash_accounts,
-        assignments,
+    check(
+        doc,
+        &["name", "cash_accounts", "account_rules", "overrides"],
+        "cash-flow rule policy",
+    )?;
+    for (field, allowed) in [
+        ("account_rules", &["account", "activity"][..]),
+        ("overrides", &["entry_digest", "leg_index", "activity"][..]),
+    ] {
+        let Some(value) = doc.get(field) else {
+            continue;
+        };
+        let Json::Arr(items) = value else {
+            return Err(usage(
+                format!("cash-flow rule policy '{field}' must be an array"),
+                RULES_POLICY_EXAMPLE,
+            ));
+        };
+        for (index, item) in items.iter().enumerate() {
+            check(item, allowed, &format!("{field}[{index}]"))?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_cash_flow_rules_policy(
+    doc: &Json,
+    book_id: Id128,
+    default_accounts: &[VId],
+    default_name: &str,
+) -> Result<fa::cash_flow_policy::CashFlowPolicy, Fail> {
+    // Name and cash accounts parse exactly as a direct policy's do; the
+    // validator has already refused `assignments` in this format.
+    let direct = parse_cash_flow_definition(doc, book_id, default_accounts, default_name)?;
+    let Some(Json::Arr(items)) = doc.get("account_rules") else {
+        return Err(usage(
+            "a rule policy requires an `account_rules` array",
+            RULES_POLICY_EXAMPLE,
+        ));
+    };
+    let account_rules = items
+        .iter()
+        .map(|item| {
+            let Some(Json::Str(code)) = item.get("account") else {
+                return Err(usage(
+                    "account rule requires string `account` (a non-cash posting account code)",
+                    RULES_POLICY_EXAMPLE,
+                ));
+            };
+            let account_id = if code.len() == 32 && code.bytes().all(|b| b.is_ascii_hexdigit()) {
+                u128::from_str_radix(code, 16)
+                    .map_err(|_| usage("invalid 32-hex account vid", RULES_POLICY_EXAMPLE))?
+            } else {
+                account_vid(book_id, code).0
+            };
+            let Some(Json::Str(activity)) = item.get("activity") else {
+                return Err(usage(
+                    "account rule requires string `activity`",
+                    r#""activity":"operating|investing|financing|exchange_effect""#,
+                ));
+            };
+            Ok(fa::cash_flow_policy::CashFlowAccountRule {
+                account_id,
+                activity: parse_cash_flow_activity(activity)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    Ok(fa::cash_flow_policy::CashFlowPolicy {
+        name: direct.name,
+        cash_accounts: direct.cash_accounts,
+        account_rules,
+        overrides: parse_cash_flow_assignments(doc.get("overrides"), "override")?,
     })
 }
 
@@ -11363,6 +11495,155 @@ fn gl_aging_portfolio(
             &bytes,
             &retained,
             &notary::portfolio_expectation_json(&request),
+        );
+    }
+    Ok(())
+}
+
+/// One `cash_flow_unit` row per native unit, shared by direct and policy cash flow.
+fn cash_flow_units_json(
+    cf: &fa::CashFlow,
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<Json>, Fail> {
+    let section_json = |sec: CashFlowSection, unit_id: u32| -> Result<Json, Fail> {
+        let fmt = |m: i128| render_amount(Amount::new(fa_money::UnitId(unit_id), m), units);
+        Ok(obj(vec![
+            ("inflows", s(fmt(sec.inflows)?)),
+            ("outflows", s(fmt(sec.outflows)?)),
+            ("net", s(fmt(sec.net)?)),
+        ]))
+    };
+    cf.units()
+        .iter()
+        .map(|u| {
+            let unit_code = registered_unit_code(fa_money::UnitId(u.unit_id), units)?.to_string();
+            let fmt = |m: i128| render_amount(Amount::new(fa_money::UnitId(u.unit_id), m), units);
+            Ok(obj(vec![
+                ("unit", s(&unit_code)),
+                ("opening", s(fmt(u.opening)?)),
+                ("operating", section_json(u.operating, u.unit_id)?),
+                ("investing", section_json(u.investing, u.unit_id)?),
+                ("financing", section_json(u.financing, u.unit_id)?),
+                (
+                    "exchange_effects",
+                    section_json(u.exchange_effects, u.unit_id)?,
+                ),
+                ("net_change", s(fmt(u.net_change)?)),
+                ("closing", s(fmt(u.closing)?)),
+            ]))
+        })
+        .collect()
+}
+
+/// `gl cash-flow` with a rule policy (fa-i9yn): each selected cash leg's
+/// activity derives from its non-cash counterparts' account rules, or from an
+/// explicit whole-leg override, and the original cash engine then classifies
+/// it. No amount is split, netted or inferred; `decisions` records the basis
+/// of every leg. The policy is a professional input, not approved or journaled.
+#[allow(clippy::too_many_arguments)]
+fn gl_policy_cash_flow(
+    out: &Out,
+    files: &Files,
+    args: &Args,
+    book: &mut Book,
+    who: VId,
+    capability: &Capability,
+    certify: bool,
+    mut request: RollForwardRequest,
+    policy: fa::cash_flow_policy::CashFlowPolicy,
+) -> Result<(), Fail> {
+    let (report, artifact) = if certify {
+        let certified =
+            book.certify_cash_flow_with_policy(who, capability, &request, &policy)??;
+        request.known_at = Some(certified.certificate().known_at());
+        let artifact = fa::ReportArtifact::try_from(certified.certificate())?;
+        (certified.report().clone(), Some(artifact))
+    } else {
+        (
+            book.cash_flow_with_policy(who, capability, &request, &policy)??,
+            None,
+        )
+    };
+    // The certificate binds the policy the report carries.
+    let policy = report.policy().clone();
+    let cf = report.report();
+    let source = cf.source();
+    out.known_at(source.known_at());
+    let units = &book.context().units;
+    let cash_accounts: Vec<Json> = source.accounts().iter().map(|a| s(&a.code)).collect();
+    let unit_rows = cash_flow_units_json(cf, units)?;
+    let decisions: Vec<Json> = report
+        .decisions()
+        .iter()
+        .map(|decision| {
+            obj(vec![
+                ("entry_digest", s(hex(&decision.entry_digest))),
+                ("leg_index", Json::Int(i128::from(decision.leg_index))),
+                ("activity", s(cash_flow_activity_name(decision.activity))),
+                (
+                    "basis",
+                    s(match decision.basis {
+                        fa::cash_flow_policy::CashFlowDecisionBasis::AccountRules => {
+                            "account_rules"
+                        }
+                        fa::cash_flow_policy::CashFlowDecisionBasis::ExplicitOverride => "override",
+                        fa::cash_flow_policy::CashFlowDecisionBasis::InternalTransfer => {
+                            "internal_transfer"
+                        }
+                    }),
+                ),
+            ])
+        })
+        .collect();
+    let human = format!(
+        "policy cash flow `{}` ({}..={}): {} unit(s), {} cash leg decision(s)",
+        policy.name,
+        source.effective_from().render(),
+        source.effective_through().render(),
+        cf.units().len(),
+        report.decisions().len()
+    );
+    let retained = artifact
+        .as_ref()
+        .map(|artifact| {
+            notary::retain_report_artifact_for(
+                book,
+                files,
+                args,
+                artifact,
+                capability,
+                fa::ReportArtifactExpectation::PolicyCashFlow {
+                    request: &request,
+                    policy: &policy,
+                },
+            )
+        })
+        .transpose()?;
+    let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+    out.event_with_certificate(
+        "policy_cash_flow",
+        vec![
+            ("policy", s(&policy.name)),
+            ("label", s(source.label())),
+            ("known_at", Json::Int(i128::from(source.known_at().0))),
+            ("effective_from", s(source.effective_from().render())),
+            ("effective_through", s(source.effective_through().render())),
+            ("cash_accounts", Json::Arr(cash_accounts)),
+            ("units", Json::Arr(unit_rows)),
+            ("decisions", Json::Arr(decisions)),
+        ],
+        &human,
+        digest.as_deref(),
+    );
+    if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+        notary::emit_report_artifact_for(
+            out,
+            args,
+            artifact,
+            "fa:policy-cash-flow:v1",
+            &bytes,
+            &retained,
+            &notary::policy_cash_flow_expectation_json(&request, &policy),
         );
     }
     Ok(())
@@ -11949,7 +12230,14 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "pass a valid JSON object for --policy",
                 )
             })?;
-            validate_cash_flow_policy_fields(&policy_doc, args.switch("--indirect"))?;
+            // `account_rules` selects the rule-policy format; the direct and
+            // indirect formats still refuse it as an unknown field.
+            let rules = policy_doc.get("account_rules").is_some();
+            if rules {
+                validate_cash_flow_rules_policy_fields(&policy_doc, args.switch("--indirect"))?;
+            } else {
+                validate_cash_flow_policy_fields(&policy_doc, args.switch("--indirect"))?;
+            }
             let mut req = parse_gl_scope(
                 args,
                 &book,
@@ -12115,6 +12403,24 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     );
                 }
                 Ok(())
+            } else if rules {
+                let policy = parse_cash_flow_rules_policy(
+                    &policy_doc,
+                    book.context().book_id,
+                    &req.accounts,
+                    "cash-flow",
+                )?;
+                gl_policy_cash_flow(
+                    out,
+                    &ctx.files,
+                    args,
+                    &mut book,
+                    who,
+                    &capability,
+                    certify,
+                    req,
+                    policy,
+                )
             } else {
                 let cash_def = parse_cash_flow_definition(
                     &policy_doc,
@@ -12134,39 +12440,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 out.known_at(source.known_at());
                 let cash_accounts: Vec<Json> =
                     source.accounts().iter().map(|a| s(&a.code)).collect();
-                let section_json = |sec: CashFlowSection, unit_id: u32| -> Result<Json, Fail> {
-                    let fmt =
-                        |m: i128| render_amount(Amount::new(fa_money::UnitId(unit_id), m), units);
-                    Ok(obj(vec![
-                        ("inflows", s(fmt(sec.inflows)?)),
-                        ("outflows", s(fmt(sec.outflows)?)),
-                        ("net", s(fmt(sec.net)?)),
-                    ]))
-                };
-                let unit_rows: Vec<Json> = cf
-                    .units()
-                    .iter()
-                    .map(|u| {
-                        let unit_code =
-                            registered_unit_code(fa_money::UnitId(u.unit_id), units)?.to_string();
-                        let fmt = |m: i128| {
-                            render_amount(Amount::new(fa_money::UnitId(u.unit_id), m), units)
-                        };
-                        Ok(obj(vec![
-                            ("unit", s(&unit_code)),
-                            ("opening", s(fmt(u.opening)?)),
-                            ("operating", section_json(u.operating, u.unit_id)?),
-                            ("investing", section_json(u.investing, u.unit_id)?),
-                            ("financing", section_json(u.financing, u.unit_id)?),
-                            (
-                                "exchange_effects",
-                                section_json(u.exchange_effects, u.unit_id)?,
-                            ),
-                            ("net_change", s(fmt(u.net_change)?)),
-                            ("closing", s(fmt(u.closing)?)),
-                        ]))
-                    })
-                    .collect::<Result<_, Fail>>()?;
+                let unit_rows = cash_flow_units_json(&cf, units)?;
                 let human = format!(
                     "cash flow `{}` ({}..={}): {} unit(s)",
                     cf.definition().name,

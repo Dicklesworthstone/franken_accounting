@@ -5339,6 +5339,23 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "--policy",
         &cf_direct,
     ]);
+    let cf_rules = write(
+        &dir,
+        "cf_rules.json",
+        r#"{"name":"cf-r","cash_accounts":["1000"],"account_rules":[{"account":"6000","activity":"operating"}]}"#,
+    );
+    run2(&[
+        "gl",
+        "cash-flow",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--policy",
+        &cf_rules,
+    ]);
     let cf_indirect = write(
         &dir,
         "cf_indirect.json",

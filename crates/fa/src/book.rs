@@ -2599,6 +2599,33 @@ impl Book {
         ))
     }
 
+    /// Derive each cash leg's activity from an explicit reusable policy (account
+    /// rules for non-cash counterparts, whole-leg overrides) at one native prefix.
+    pub fn cash_flow_with_policy(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::RollForwardRequest,
+        policy: &crate::cash_flow_policy::CashFlowPolicy,
+    ) -> Outcome<crate::cash_flow_policy::PolicyCashFlow> {
+        with_store!(&self.store, core => core.cash_flow_with_policy(
+            &self.purposes(), principal, capability, request, policy
+        ))
+    }
+
+    /// Certify a policy-derived cash flow through the original cash engine.
+    pub fn certify_cash_flow_with_policy(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::RollForwardRequest,
+        policy: &crate::cash_flow_policy::CashFlowPolicy,
+    ) -> Outcome<crate::cash_flow_policy::CertifiedPolicyCashFlow> {
+        with_store!(&self.store, core => core.certify_cash_flow_with_policy(
+            &self.purposes(), principal, capability, request, policy
+        ))
+    }
+
     /// Read an indirect earnings-to-cash workpaper at one native prefix under current read authority.
     pub fn indirect_cash_flow(
         &self,

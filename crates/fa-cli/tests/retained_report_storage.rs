@@ -1470,3 +1470,330 @@ fn aging_portfolio_equals_each_single_leaf_reconciliation_and_replays_only_again
     }
     assert_eq!(f.head(), retained, "replays are reads");
 }
+
+/// The fields of one JSON object, as `Json::Obj` holds them.
+type JsonFields = Vec<(String, Json)>;
+
+fn cash_flow_args<'a>(at: &'a str, policy: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "gl",
+        "cash-flow",
+        "--account",
+        "1000",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--as-known-at",
+        at,
+        "--policy",
+        policy,
+    ];
+    args.extend_from_slice(extra);
+    args
+}
+
+#[test]
+fn rule_policy_cash_flow_equals_its_explicit_leg_assignments_and_replays_only_against_its_policy() {
+    // Every posting is Dr 1000 (cash) / Cr 4000 (revenue), 1.00 USD each.
+    let f = Fixture::new();
+    let at = f.source_head.0.to_string();
+    let before = f.head();
+    let policy_path = f.dir.join("rule-policy.json");
+    let policy_arg = policy_path.to_str().unwrap();
+    let rules = || {
+        Json::Arr(vec![obj(vec![
+            ("account", s("4000")),
+            ("activity", s("operating")),
+        ])])
+    };
+    std::fs::write(
+        &policy_path,
+        obj(vec![
+            ("name", s("cash-rules-v1")),
+            ("account_rules", rules()),
+        ])
+        .render(),
+    )
+    .unwrap();
+    let derived_events = f.ok(&cash_flow_args(&at, policy_arg, &[]));
+    let derived = data(&derived_events, "policy_cash_flow");
+    assert_eq!(keys(derived), pinned_fields("events", "policy_cash_flow"));
+    assert_eq!(text(derived, "policy"), "cash-rules-v1");
+    let decisions = derived.get("decisions").and_then(Json::as_arr).unwrap();
+    assert_eq!(decisions.len(), 64, "one decision per selected cash leg");
+    for decision in decisions {
+        assert_eq!(
+            keys(decision),
+            pinned_fields("shapes", "cash_flow_decision")
+        );
+        assert_eq!(text(decision, "activity"), "operating");
+        assert_eq!(text(decision, "basis"), "account_rules");
+    }
+    let derived_units = derived.get("units").and_then(Json::as_arr).unwrap();
+    assert_eq!(derived_units.len(), 1);
+    assert_eq!(
+        text(derived_units[0].get("operating").unwrap(), "inflows"),
+        "64.00 USD"
+    );
+
+    // Differential: the same legs assigned explicitly through the direct
+    // format produce exactly the same cash flow.
+    let assignments: Vec<Json> = decisions
+        .iter()
+        .map(|decision| {
+            obj(vec![
+                (
+                    "entry_digest",
+                    decision.get("entry_digest").unwrap().clone(),
+                ),
+                ("leg_index", decision.get("leg_index").unwrap().clone()),
+                ("activity", decision.get("activity").unwrap().clone()),
+            ])
+        })
+        .collect();
+    std::fs::write(
+        &policy_path,
+        obj(vec![
+            ("name", s("cash-rules-v1")),
+            ("assignments", Json::Arr(assignments)),
+        ])
+        .render(),
+    )
+    .unwrap();
+    let explicit_events = f.ok(&cash_flow_args(&at, policy_arg, &[]));
+    let explicit = data(&explicit_events, "cash_flow");
+    for field in [
+        "policy",
+        "label",
+        "known_at",
+        "effective_from",
+        "effective_through",
+        "cash_accounts",
+        "units",
+    ] {
+        assert_eq!(
+            derived.get(field),
+            explicit.get(field),
+            "{field}: a rule policy must equal its explicit leg assignments"
+        );
+    }
+
+    // An explicit whole-leg override takes precedence over the account rule.
+    let overridden = &decisions[0];
+    let override_policy = || {
+        obj(vec![
+            ("name", s("cash-rules-v1")),
+            ("account_rules", rules()),
+            (
+                "overrides",
+                Json::Arr(vec![obj(vec![
+                    (
+                        "entry_digest",
+                        overridden.get("entry_digest").unwrap().clone(),
+                    ),
+                    ("leg_index", overridden.get("leg_index").unwrap().clone()),
+                    ("activity", s("financing")),
+                ])]),
+            ),
+        ])
+    };
+    std::fs::write(&policy_path, override_policy().render()).unwrap();
+    let with_override_events = f.ok(&cash_flow_args(&at, policy_arg, &[]));
+    let with_override = data(&with_override_events, "policy_cash_flow");
+    let override_decisions: Vec<&Json> = with_override
+        .get("decisions")
+        .and_then(Json::as_arr)
+        .unwrap()
+        .iter()
+        .filter(|decision| text(decision, "basis") == "override")
+        .collect();
+    assert_eq!(override_decisions.len(), 1);
+    assert_eq!(text(override_decisions[0], "activity"), "financing");
+    assert_eq!(
+        override_decisions[0].get("entry_digest"),
+        overridden.get("entry_digest")
+    );
+    let unit = &with_override.get("units").and_then(Json::as_arr).unwrap()[0];
+    assert_eq!(text(unit.get("operating").unwrap(), "inflows"), "63.00 USD");
+    assert_eq!(text(unit.get("financing").unwrap(), "inflows"), "1.00 USD");
+
+    let revenue_leg = obj(vec![
+        (
+            "entry_digest",
+            overridden.get("entry_digest").unwrap().clone(),
+        ),
+        ("leg_index", Json::Int(1)),
+        ("activity", s("operating")),
+    ]);
+    for (policy, extra, why) in [
+        (
+            obj(vec![
+                ("account_rules", rules()),
+                ("assignments", Json::Arr(Vec::new())),
+            ]),
+            vec![],
+            "a rule policy cannot also carry assignments",
+        ),
+        (
+            obj(vec![("overrides", Json::Arr(Vec::new()))]),
+            vec![],
+            "overrides belong to a rule policy",
+        ),
+        (
+            obj(vec![(
+                "account_rules",
+                Json::Arr(vec![obj(vec![
+                    ("account", s("4000")),
+                    ("activity", s("operating")),
+                    ("note", s("not a policy input")),
+                ])]),
+            )]),
+            vec![],
+            "unknown rule fields are refused, not discarded",
+        ),
+        (
+            obj(vec![(
+                "account_rules",
+                Json::Arr(vec![obj(vec![
+                    ("account", s("9999")),
+                    ("activity", s("operating")),
+                ])]),
+            )]),
+            vec![],
+            "a rule must name an existing non-cash leaf",
+        ),
+        (
+            obj(vec![(
+                "account_rules",
+                Json::Arr(vec![obj(vec![
+                    ("account", s("4000")),
+                    ("activity", s("internal_transfer")),
+                ])]),
+            )]),
+            vec![],
+            "an internal transfer is not an account rule",
+        ),
+        (
+            obj(vec![
+                ("account_rules", rules()),
+                ("overrides", Json::Arr(vec![revenue_leg])),
+            ]),
+            vec![],
+            "an override must name a selected cash leg",
+        ),
+        (
+            obj(vec![("account_rules", rules())]),
+            vec!["--indirect", "--income-period", "FY2026-P01"],
+            "a rule policy does not combine with --indirect",
+        ),
+    ] {
+        std::fs::write(&policy_path, policy.render()).unwrap();
+        let (exit, errors) = f.run(&cash_flow_args(&at, policy_arg, &extra));
+        assert_eq!(exit, 2, "{why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "{why}: {errors:?}");
+        assert_eq!(text(&errors[0], "event"), "error");
+    }
+    assert_eq!(
+        f.head(),
+        before,
+        "uncertified reports and refusals are reads"
+    );
+
+    std::fs::write(&policy_path, override_policy().render()).unwrap();
+    let certified = f.ok(&cash_flow_args(&at, policy_arg, &["--certify"]));
+    assert_eq!(
+        data(&certified, "policy_cash_flow"),
+        with_override,
+        "certification reports the same cash flow"
+    );
+    let metadata = data(&certified, "report_certificate");
+    assert_eq!(text(metadata, "output_format"), "fa:policy-cash-flow:v1");
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let generated = text(metadata, "replay_command")
+        .split_once(" --expect '")
+        .unwrap()
+        .1
+        .split_once("' --book")
+        .unwrap()
+        .0
+        .to_string();
+    let expectation = json::parse(&generated).unwrap();
+    assert_eq!(text(&expectation, "kind"), "policy-cash-flow");
+    let expected_policy = expectation.get("policy").unwrap();
+    assert_eq!(
+        expected_policy
+            .get("account_rules")
+            .and_then(Json::as_arr)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        expected_policy
+            .get("overrides")
+            .and_then(Json::as_arr)
+            .unwrap()
+            .len(),
+        1
+    );
+    let retained = f.head();
+    let replayed = f.ok(&["replay", &locator, "--expect", &generated]);
+    assert_eq!(
+        text(data(&replayed, "report_replayed"), "family"),
+        "policy-cash-flow"
+    );
+
+    let (exit, errors) = f.run(&["replay", &locator]);
+    assert_eq!(exit, 8, "{errors:?}");
+    let refusal = data(&errors, "error");
+    assert!(
+        text(refusal, "message").contains("policy-cash-flow report certificates replay only"),
+        "{refusal:?}"
+    );
+    assert!(text(refusal, "fix").contains("--expect"), "{refusal:?}");
+    let with_policy = |edit: &dyn Fn(&mut JsonFields)| {
+        let Json::Obj(mut fields) = expectation.clone() else {
+            panic!("expected an object");
+        };
+        for (name, value) in &mut fields {
+            if name == "policy" {
+                let Json::Obj(policy) = value else {
+                    panic!("expected a policy object");
+                };
+                edit(policy);
+            }
+        }
+        Json::Obj(fields).render()
+    };
+    let investing_rule = with_policy(&|policy: &mut JsonFields| {
+        for (name, value) in policy.iter_mut() {
+            if name == "account_rules" {
+                *value = Json::Arr(vec![obj(vec![
+                    ("account", s("4000")),
+                    ("activity", s("investing")),
+                ])]);
+            }
+        }
+    });
+    let no_overrides = with_policy(&|policy: &mut JsonFields| {
+        for (name, value) in policy.iter_mut() {
+            if name == "overrides" {
+                *value = Json::Arr(Vec::new());
+            }
+        }
+    });
+    let unknown_field = with_policy(&|policy: &mut JsonFields| {
+        policy.push(("assignments".into(), Json::Arr(Vec::new())));
+    });
+    for (expect, exit, why) in [
+        (investing_rule, 8, "a different account rule"),
+        (no_overrides, 8, "a dropped override"),
+        (unknown_field, 2, "a direct-format field is never discarded"),
+    ] {
+        let (code, errors) = f.run(&["replay", &locator, "--expect", &expect]);
+        assert_eq!(code, exit, "{why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "{why}");
+    }
+    assert_eq!(f.head(), retained, "replays are reads");
+}
