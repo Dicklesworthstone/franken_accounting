@@ -19,8 +19,8 @@ use fa::{
     AgingCertificate, AgingReconciliationCertificate, AllocationReview, BalanceAllocationReview,
     BalanceRequest, Book, BookKeys, BundleRequest, BundleScope, CashFlowCertificate, Entropy,
     IndirectCashFlowCertificate, PlanCertificate, PostIntent, PostPlan, ProofKind, ProofRequest,
-    ReportCertificate, RollForwardCertificate, SettlementGroupReview, SettlementReview,
-    StatementDiffCertificate, SummaryCertificate, TrialBalanceSelection,
+    ReportCertificate, RollForwardCertificate, ScenarioDiffCertificate, SettlementGroupReview,
+    SettlementReview, StatementDiffCertificate, SummaryCertificate, TrialBalanceSelection,
 };
 use fa_journal::{
     AccountSpec, BookSpec, Capability, Document, PostRequest, RedactedView, RunBody,
@@ -347,6 +347,11 @@ pub fn fuzz_payload_decoders(bytes: &[u8]) {
     {
         assert_eq!(StatementDiffCertificate::decode(&re), Ok(cert));
     }
+    if let Ok(cert) = ScenarioDiffCertificate::decode(bytes)
+        && let Ok(re) = cert.canonical_bytes()
+    {
+        assert_eq!(ScenarioDiffCertificate::decode(&re), Ok(cert));
+    }
     if let Ok(review) = AllocationReview::decode(bytes)
         && let Ok(re) = review.canonical_bytes()
     {
@@ -568,6 +573,7 @@ struct GoldenSeeds {
     unit_bytes: Vec<u8>,
     plan_bytes: Vec<u8>,
     report_cert_bytes: Vec<u8>,
+    scenario_diff_cert_bytes: Vec<u8>,
     state_bytes: Vec<u8>,
     checkpoint_bytes: Vec<u8>,
     receipt_bytes: Vec<u8>,
@@ -868,6 +874,77 @@ fn build_golden_seeds() -> GoldenSeeds {
     let bundle_bytes = produced_bundle.bundle.bytes;
     let receipt_bytes = produced_bundle.receipt;
 
+    // A scenario forked at the head with one counterfactual sale run in it,
+    // and its certified diff (fa-k07b). Built last, so every seed above
+    // keeps its bytes.
+    let scenario_cap = Capability::embedded(who, &["post"]).expect("post cap");
+    book.open_scenario(
+        scenario_cap.clone(),
+        "golden",
+        fa_journal::ScenarioFork {
+            at: None,
+            from: None,
+            assumptions: Vec::new(),
+        },
+        date,
+        "Golden counterfactual",
+    )
+    .expect("open scenario")
+    .expect("scenario admitted");
+    let legs3 = vec![
+        LegPayload::simple(Side::Debit, cash, Amount::new(usd, 2_500)),
+        LegPayload::simple(Side::Credit, rev, Amount::new(usd, 2_500)),
+    ];
+    let proposal3 = EntryPayload {
+        schema_minor: 0,
+        book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::ORIGINAL,
+        effective_date: date,
+        document_date: None,
+        description: book
+            .seal_text("Golden counterfactual sale")
+            .expect("seal text"),
+        effective_period: None,
+        unit_totals: EntryPayload::fold_unit_totals(&legs3).expect("unit totals"),
+        legs: legs3,
+        control: None,
+        base_totals: None,
+        idempotency_key: b"golden-scenario-1".to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([3; 32]),
+            intent_kind: 1,
+        },
+        principal_ref: who,
+        session_ref: None,
+        evidence: vec![source_doc.evidence_ref(1)],
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    };
+    book.run_in_scenario(
+        scenario_cap,
+        "golden",
+        PostIntent::new(proposal3, Vec::new()).expect("valid PostIntent"),
+    )
+    .expect("run in scenario")
+    .expect("scenario run admitted");
+    let scenario_diff_cert_bytes = book
+        .certify_scenario_diff(
+            who,
+            &produce_cap,
+            "golden",
+            &["FY2026-P03".to_string()],
+            false,
+        )
+        .expect("certify scenario diff")
+        .expect("scenario diff admitted")
+        .certificate
+        .canonical_bytes()
+        .expect("encode scenario diff certificate");
+
     GoldenSeeds {
         public_key,
         verify_checkpoint,
@@ -879,6 +956,7 @@ fn build_golden_seeds() -> GoldenSeeds {
         unit_bytes,
         plan_bytes,
         report_cert_bytes,
+        scenario_diff_cert_bytes,
         state_bytes,
         checkpoint_bytes,
         receipt_bytes,
@@ -927,6 +1005,7 @@ pub fn seeds_for_target(target_name: &str) -> Vec<Vec<u8>> {
             seeds.push(g.unit_bytes.clone());
             seeds.push(g.plan_bytes.clone());
             seeds.push(g.report_cert_bytes.clone());
+            seeds.push(g.scenario_diff_cert_bytes.clone());
         }
         "notary_state_and_proofs" => {
             seeds.push(g.state_bytes.clone());
@@ -1077,6 +1156,19 @@ mod tests {
             assert!(seeds >= files.len());
             assert!(mutated >= 64);
         }
+    }
+
+    /// The scenario diff seed is a real certificate, so mutations start
+    /// from a decodable container; a truncated one is refused, never a panic.
+    #[test]
+    fn the_scenario_diff_seed_is_a_canonical_certificate() {
+        let bytes = &golden_seeds().scenario_diff_cert_bytes;
+        let cert = ScenarioDiffCertificate::decode(bytes).expect("a scenario diff certificate");
+        assert_eq!(&cert.canonical_bytes().expect("encodes"), bytes);
+        assert_eq!(cert.name(), "golden");
+        assert_eq!(cert.intents().len(), 1);
+        assert!(seeds_for_target("payload_decoders").contains(bytes));
+        assert!(ScenarioDiffCertificate::decode(&bytes[..bytes.len() - 1]).is_err());
     }
 
     #[test]
