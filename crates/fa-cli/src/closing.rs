@@ -220,13 +220,20 @@ fn show_routes(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let effective = day(args, "--as-of")?;
     let requested_at = known_at(args)?;
     let capability = ctx.capability(args, &["read"])?;
-    let book = ctx
-        .books
-        .open_admitted(args, |book| admit_history(book, &capability))?;
-    let at = requested_at.unwrap_or(book.head()?);
-    let routes = book.closing_routes_at(effective, Some(at), &capability)??;
-    let accounts: BTreeMap<_, _> = book
-        .accounts()?
+    let mut selected = None;
+    ctx.books.open_admitted(args, |book| {
+        let routes = book.closing_routes_at(effective, requested_at, &capability)??;
+        let at = match requested_at {
+            Some(at) => at,
+            None => book.head()?,
+        };
+        let accounts = book.accounts_at(at, &capability)??;
+        selected = Some((at, routes, accounts));
+        Ok(())
+    })?;
+    let (at, routes, accounts) =
+        selected.ok_or_else(|| Fail::Internal("closing routing history is missing".into()))?;
+    let accounts: BTreeMap<_, _> = accounts
         .into_iter()
         .map(|row| (row.vid, row.code))
         .collect();

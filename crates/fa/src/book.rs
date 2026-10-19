@@ -1835,6 +1835,17 @@ impl Book {
         with_store!(&self.store, core => core.accounts(&self.purposes()))
     }
 
+    /// Accounts from a recorded chart prefix under current read authority.
+    pub fn accounts_at(
+        &self,
+        known_at: CommitSeq,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Vec<AccountRow>> {
+        with_store!(&self.store, core =>
+            core.accounts_at(&self.purposes(), known_at, capability)
+        )
+    }
+
     /// The register fold of one period (plan §5.3).
     pub fn fold_period(&self, period_code: &str) -> Result<Fold, BookError> {
         with_store!(&self.store, core => core.fold_period(&self.purposes(), period_code))

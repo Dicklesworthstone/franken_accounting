@@ -279,7 +279,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 capability,
                 &fa_policy::Reach {
                     branch: Some(fa_model::Id128::TRUNK),
-                    observes: fa_policy::Observes::At(at),
+                    observes: known_at
+                        .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
                     periods: None,
                     through: None,
                     accounts: None,
@@ -1875,6 +1876,49 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 
     pub fn accounts(&self, cx: &PurposeContexts) -> Result<Vec<AccountRow>, BookError> {
         self.query(cx, |db, _| Ok(fa_journal::genesis::list_accounts(db)?))
+    }
+
+    /// Accounts from one recorded chart prefix, sorted by code. Authority
+    /// remains current even when the chart observation is pinned to history.
+    pub fn accounts_at(
+        &self,
+        cx: &PurposeContexts,
+        known_at: CommitSeq,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Vec<AccountRow>> {
+        self.query(cx, |db, book| {
+            if let Err(refusal) =
+                fa_journal::policy::admit_reads(db, book, capability.holder(), capability)?
+            {
+                return Ok(Err(refusal));
+            }
+            if let Err(denial) = fa_policy::reach(
+                capability,
+                &fa_policy::Reach {
+                    branch: Some(fa_model::Id128::TRUNK),
+                    observes: fa_policy::Observes::At(known_at),
+                    periods: None,
+                    through: None,
+                    accounts: None,
+                },
+                None,
+            ) {
+                return Ok(Err(fa_journal::policy::refusal(&denial)));
+            }
+            if known_at > db.frontier().map_err(KernelError::from)? {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_journal::refusal::code::STRUCTURE,
+                    fa_journal::exit::USAGE,
+                    "chart history cannot select a future recorded sequence",
+                    "plan §4.3 (journaled chart history)",
+                    "select an existing recorded sequence",
+                )));
+            }
+            let chart = fa_journal::chart::read_at(db, book, known_at)?;
+            let mut accounts: Vec<_> = chart.accounts().values().cloned().collect();
+            accounts.sort_by(|left, right| left.code.cmp(&right.code));
+            Ok(Ok(accounts))
+        })
     }
 
     pub fn fold_period(&self, cx: &PurposeContexts, period: &str) -> Result<Fold, BookError> {

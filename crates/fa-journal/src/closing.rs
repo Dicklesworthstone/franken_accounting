@@ -672,8 +672,24 @@ pub fn verify_year_end_close<V: Vfs + Clone>(
         .checkpoint()
         .map_err(fgdb::WriteTxnError::Interrupted)?;
     query.with_restriction(|| {
-        if let Err(refusal) = authorize(db, book, capability, false)? {
+        // Historical observation never restores expired or revoked authority.
+        // Admit the current token before selecting the prefix it may observe.
+        if let Err(refusal) = crate::policy::admit_reads(db, book, capability.holder(), capability)?
+        {
             return Ok(Err(refusal));
+        }
+        if let Err(denial) = fa_policy::reach(
+            capability,
+            &Reach {
+                branch: Some(Id128::TRUNK),
+                observes: known_at.map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                periods: None,
+                through: None,
+                accounts: None,
+            },
+            None,
+        ) {
+            return Ok(Err(crate::policy::refusal(&denial)));
         }
         let at = known_at.unwrap_or(db.frontier()?);
         let Some(period) = book

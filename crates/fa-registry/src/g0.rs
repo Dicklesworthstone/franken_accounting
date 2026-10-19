@@ -786,7 +786,7 @@ impl ClaimsLintConfig {
 // The 19 Appendix G classes plus the registered native bank-import extension.
 // Require their identities, not merely a row count: an unrelated class cannot
 // replace an existing operation's cost contract.
-const REQUIRED_OPERATION_CLASS_IDS: [&str; 20] = [
+const REQUIRED_OPERATION_CLASS_IDS: [&str; 22] = [
     "balance_read_at_watermark",
     "certified_report",
     "single_entry_post",
@@ -807,6 +807,8 @@ const REQUIRED_OPERATION_CLASS_IDS: [&str; 20] = [
     "ceiling_bearing_post",
     "bulk_migration",
     "bank_statement_import",
+    "closing_routes_record",
+    "year_end_close",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2709,7 +2711,7 @@ mod tests {
 
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         assert_eq!(op_costs.hot_object_exceptions.len(), 2);
-        assert_eq!(op_costs.classes.len(), 20);
+        assert_eq!(op_costs.classes.len(), 22);
         assert_eq!(op_costs.kernel_op_witnesses.len(), 9);
 
         let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
@@ -2757,6 +2759,14 @@ mod tests {
             "1 for a new statement; 0 for an exact retry"
         );
         assert!(bank.hot_object_exceptions.is_empty());
+
+        for id in ["closing_routes_record", "year_end_close"] {
+            let closing = op_costs.class(id).expect("native closing cost contract");
+            assert_eq!(closing.today_transactions, 1);
+            assert_eq!(closing.barrier_count, 2);
+            assert_eq!(closing.today_barrier_count, 2);
+            assert!(closing.hot_object_exceptions.is_empty());
+        }
 
         // Preserve row count and all class references while substituting each
         // identity. A count-only guard would accept every one of these edits.

@@ -17,6 +17,7 @@ on:
       - 'crates/fa-cli/src/bank.rs'
       - 'crates/fa-cli/src/closing.rs'
       - 'crates/fa-cli/tests/closing.rs'
+      - 'crates/fa/tests/closing_history.rs'
       - 'crates/fa-journal/src/closing.rs'
       - 'crates/fa-journal/src/chart/**'
       - 'crates/fa-cli/src/finding.rs'
@@ -198,6 +199,7 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-model --lib closing --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib chart::closing --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test closing_history --jobs 2
       - name: Test bank statement parsers, retained intake and exact matching
         if: ${{ !cancelled() }}
         shell: bash

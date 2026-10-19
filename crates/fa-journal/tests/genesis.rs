@@ -9298,3 +9298,109 @@ fn year_end_close_requires_current_whole_book_authority_and_complete_routes() {
     assert!(refused.message.contains("no reviewed closing destination"));
     assert_eq!(h.db.frontier().unwrap(), head);
 }
+
+#[test]
+fn year_end_close_explicit_pin_observes_history_but_never_restores_revoked_authority() {
+    let (mut h, _) = year_end_close_fixture();
+    h.post(h.request(h.invoice(20_000, b"pinned-close-income"), &["post"]))
+        .unwrap();
+    let calculation = year_end_close_prepare(&h);
+    let first = h
+        .post(h.request(
+            year_end_close_proposal(&h, &calculation, b"pinned-close"),
+            &["read", "post", "close"],
+        ))
+        .unwrap();
+    let pin = first.recorded_at();
+    let capability = Capability::embedded(PRINCIPAL, &["read"])
+        .unwrap()
+        .known_at_most(pin)
+        .on_branch(Id128::TRUNK)
+        .unwrap();
+    let historical = fa_journal::closing::verify_year_end_close(
+        &h.db,
+        &h.ctx(),
+        &h.book,
+        &capability,
+        2026,
+        Some(pin),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(historical.known_at, pin);
+    assert!(historical.is_green());
+    assert!(!historical.needs_reclose);
+    assert!(
+        historical
+            .residuals
+            .iter()
+            .all(|residual| residual.net == 0)
+    );
+
+    // An implicit HEAD read remains forbidden even while HEAD equals the
+    // token's pin; selecting that same prefix explicitly is a separate act.
+    assert_eq!(h.db.frontier().unwrap(), pin);
+    let implicit = fa_journal::closing::verify_year_end_close(
+        &h.db,
+        &h.ctx(),
+        &h.book,
+        &capability,
+        2026,
+        None,
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!((implicit.code, implicit.exit), ("FA-REF-011", exit::SAFETY));
+    assert!(implicit.message.contains("known_at"));
+
+    h.post(h.request(h.invoice(777, b"after-pinned-close"), &["post"]))
+        .unwrap();
+    let head = h.db.frontier().unwrap();
+    assert!(head > pin);
+    assert!(year_end_close_verify(&h, None).needs_reclose);
+    let retained = fa_journal::closing::verify_year_end_close(
+        &h.db,
+        &h.ctx(),
+        &h.book,
+        &capability,
+        2026,
+        Some(pin),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(retained, historical, "later activity is outside the pin");
+    for at in [Some(head), None] {
+        let refusal = fa_journal::closing::verify_year_end_close(
+            &h.db,
+            &h.ctx(),
+            &h.book,
+            &capability,
+            2026,
+            at,
+        )
+        .unwrap()
+        .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", exit::SAFETY));
+        assert!(refusal.message.contains("known_at"));
+    }
+    assert_eq!(h.db.frontier().unwrap(), head, "verification never writes");
+
+    // Revocation is checked at today's frontier, not at the selected
+    // historical prefix, including before any later scope denial.
+    h.revoke(&capability, 89);
+    let revoked_at = h.db.frontier().unwrap();
+    for at in [Some(pin), Some(head), None] {
+        let refusal = fa_journal::closing::verify_year_end_close(
+            &h.db,
+            &h.ctx(),
+            &h.book,
+            &capability,
+            2026,
+            at,
+        )
+        .unwrap()
+        .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-023", exit::SAFETY));
+    }
+    assert_eq!(h.db.frontier().unwrap(), revoked_at);
+}
