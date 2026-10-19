@@ -22,7 +22,8 @@ use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::edge_id;
 
 use super::{
-    ImportDocument, ImportRecorded, ImportRequest, prepare, receipt_of, recorded_or_conflict,
+    BankImportManifest, BankImportWitness, ImportDocument, ImportRecorded, ImportRequest, prepare,
+    receipt_of, recorded_or_conflict,
 };
 
 /// An exact retry needs no publication; a new run retains all original witnesses.
@@ -46,6 +47,7 @@ pub struct PreparedImport {
     run: VId,
     recorded: Vec<fa_model::Oid>,
     already_held: Vec<fa_model::Oid>,
+    document_kinds: Vec<(fa_model::Oid, u8)>,
 }
 
 impl core::fmt::Debug for PreparedImport {
@@ -92,15 +94,21 @@ impl PreparedImport {
         expected: &crate::rows::AccountRow,
     ) -> Outcome<()> {
         if expected.vid != fa_model::account_vid(self.book.book_id, &expected.code) {
-            return Ok(Err(conflict("the import account mapping belongs to another book")));
+            return Ok(Err(conflict(
+                "the import account mapping belongs to another book",
+            )));
         }
         let Some(row) = self.txn.vertex(db, expected.vid)? else {
-            return Ok(Err(conflict("the import account disappeared before preparation")));
+            return Ok(Err(conflict(
+                "the import account disappeared before preparation",
+            )));
         };
         if !row.labels.contains(&label::ACCOUNT)
             || crate::rows::AccountRow::decode(&row)? != *expected
         {
-            return Ok(Err(conflict("the import account changed before preparation")));
+            return Ok(Err(conflict(
+                "the import account changed before preparation",
+            )));
         }
         Ok(Ok(()))
     }
@@ -124,8 +132,8 @@ impl PreparedImport {
             .copied()
             .collect();
         let fresh: BTreeSet<_> = self.recorded.iter().copied().collect();
-        let policy = EvidencePolicy::embedded()
-            .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+        let policy =
+            EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
         let mut graph = BTreeMap::new();
         for document in documents {
             let child = document.oid();
@@ -206,6 +214,65 @@ impl PreparedImport {
         Ok(Ok(self))
     }
 
+    fn bank_authority(&self) -> Result<(), Refusal> {
+        fa_policy::admit_read(
+            &self.capability,
+            self.capability.holder(),
+            self.book.book_id,
+        )
+        .and_then(|()| {
+            fa_policy::require(
+                &self.capability,
+                fa_policy::Op::Reconcile,
+                "binding a bank predecessor",
+            )
+        })
+        .and_then(|()| {
+            fa_policy::reach(&self.capability, &fa_policy::Reach::whole_book(true), None)
+        })
+        .map_err(|denial| refusal(&denial))
+    }
+
+    /// Retain the exact prior receipt and document rows used when replaying
+    /// the source. Every ancestor remains a point witness until publication.
+    pub fn witness_bank_import<V: Vfs + Clone>(
+        &mut self,
+        db: &Database<V>,
+        expected: &BankImportWitness,
+    ) -> Outcome<()> {
+        if let Err(refusal) = self.bank_authority() {
+            return Ok(Err(refusal));
+        }
+        expected.retain(&self.txn, db, self.book.book_id)
+    }
+
+    /// Bind this statement's explicit predecessor in the original import
+    /// transaction. A matching concurrent publication returns its original
+    /// receipt; the caller then aborts this pending import. A different link
+    /// refuses. With no predecessor, retain only the native absence witness.
+    pub fn bind_bank_statement<V: Vfs + Clone>(
+        &mut self,
+        db: &mut Database<V>,
+        manifest: &BankImportManifest,
+        previous: Option<&BankImportWitness>,
+    ) -> Outcome<Option<ImportRecorded>> {
+        if let Err(refusal) = self.bank_authority() {
+            return Ok(Err(refusal));
+        }
+        let receipt = receipt_of(&self.entry, self.run, CommitSeq(0)).ok_or_else(|| {
+            KernelError::Corrupt("prepared bank import has no native receipt".into())
+        })?;
+        super::bank::bind_statement(
+            &mut self.txn,
+            db,
+            self.book.book_id,
+            manifest,
+            receipt,
+            &self.document_kinds,
+            previous,
+        )
+    }
+
     /// Recheck expiry and commit the original witnessed transaction. Never
     /// refresh its policy/revocation witnesses after external bytes are written.
     pub async fn commit<V: Vfs + Clone>(
@@ -221,6 +288,7 @@ impl PreparedImport {
             run,
             recorded,
             already_held,
+            document_kinds: _,
         } = self;
         let commit = cx.commit();
         if let Err(error) = commit.checkpoint() {
@@ -323,6 +391,7 @@ pub(super) struct AdmittedImport {
     run: VId,
     pub(super) documents: Vec<ImportDocument>,
     already_held: Vec<fa_model::Oid>,
+    document_kinds: Vec<(fa_model::Oid, u8)>,
 }
 
 impl AdmittedImport {
@@ -382,6 +451,7 @@ impl AdmittedImport {
             run: self.run,
             recorded: self.documents.into_iter().map(|doc| doc.oid).collect(),
             already_held: self.already_held,
+            document_kinds: self.document_kinds,
         }))
     }
 }
@@ -471,7 +541,9 @@ pub(super) fn admit<V: Vfs + Clone>(
     let entry = proposal.seal(Vec::new(), None)?;
     let mut documents = Vec::new();
     let mut already_held = Vec::new();
+    let mut document_kinds = Vec::with_capacity(docs.len());
     for doc in docs {
+        document_kinds.push((doc.oid, doc.document.kind));
         cx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
         match txn.vertex(db, document_vid(&doc.oid))? {
             Some(row) => {
@@ -502,6 +574,7 @@ pub(super) fn admit<V: Vfs + Clone>(
         run,
         documents,
         already_held,
+        document_kinds,
     }))))
 }
 

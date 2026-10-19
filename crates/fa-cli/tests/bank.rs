@@ -852,3 +852,335 @@ fn quoted_csv_descriptions_survive_retention_reopen_and_exact_matching() {
     );
     assert_eq!(head(&f.book), after_import);
 }
+
+fn continuity_csv(
+    sequence: u64,
+    bank: &str,
+    date: &str,
+    opening: &str,
+    closing: &str,
+    reference: &str,
+) -> String {
+    format!(
+        "{CSV_HEADER}{sequence},{bank},USD,{date},{opening},{closing},{date},{date},CRDT,25.00,Customer,{reference}\n"
+    )
+}
+
+fn linked_import(f: &Fixture, name: &str, raw: &str, previous: &str) -> Json {
+    let path = f.file(name, raw);
+    ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "import",
+            &path,
+            "--bank-format",
+            "csv",
+            "--account",
+            "1000",
+            "--previous-import",
+            previous,
+        ],
+    )
+}
+
+#[test]
+fn explicit_predecessors_bind_original_receipts_and_replay_the_retained_chain() {
+    let f = Fixture::new();
+    let first = f.import(
+        "chain-first.csv",
+        "csv",
+        &continuity_csv(10, "BANK-CHAIN", "2026-03-31", "0.00", "25.00", "FIRST"),
+    );
+    let first_data = data(&first);
+    let first_oid = text(first_data, "manifest_oid");
+    assert_eq!(text(first_data, "continuity"), "unlinked");
+    assert_eq!(integer(first_data, "verified_predecessors"), 0);
+    assert_eq!(first_data.get("predecessor"), Some(&Json::Null));
+
+    let second_raw = continuity_csv(11, "BANK-CHAIN", "2026-04-30", "25.00", "50.00", "SECOND");
+    let before = head(&f.book);
+    let path = f.file("second-unprivileged.csv", &second_raw);
+    let (status, refusal) = run(
+        &f.book,
+        &[
+            "bank",
+            "import",
+            &path,
+            "--bank-format",
+            "csv",
+            "--account",
+            "1000",
+            "--previous-import",
+            first_oid,
+        ],
+    );
+    assert_ne!(
+        status, 0,
+        "replaying retained source requires explicit disclosure authority"
+    );
+    assert!(refusal.render().contains("privileged"));
+    assert_eq!(head(&f.book), before);
+
+    let second = linked_import(&f, "chain-second.csv", &second_raw, first_oid);
+    let second_data = data(&second);
+    assert_eq!(
+        head(&f.book),
+        before + 1,
+        "link, documents, native provenance and import publish together"
+    );
+    assert_eq!(text(second_data, "continuity"), "verified_predecessor");
+    assert_eq!(integer(second_data, "verified_predecessors"), 1);
+    let predecessor = second_data.get("predecessor").unwrap();
+    assert_eq!(text(predecessor, "manifest_oid"), first_oid);
+    assert_eq!(
+        text(predecessor, "statement_oid"),
+        text(first_data, "statement_oid")
+    );
+    assert_eq!(
+        text(predecessor, "statement_commit"),
+        text(first_data, "statement_commit")
+    );
+    assert_eq!(
+        text(predecessor, "receipt_hash"),
+        text(first_data, "receipt_hash")
+    );
+    assert_eq!(
+        integer(predecessor, "recorded_at"),
+        integer(first_data, "recorded_at")
+    );
+    assert_eq!(integer(predecessor, "sequence_number"), 10);
+    assert_eq!(text(predecessor, "closing_balance"), "25.00 USD");
+
+    let after = head(&f.book);
+    let other_path = f.file("chain-second-retry.csv", &second_raw);
+    let repeated = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "import",
+            &other_path,
+            "--bank-format",
+            "csv",
+            "--account",
+            "1000",
+            "--previous-import",
+            first_oid,
+            "--as",
+            "another-authorized-uploader",
+        ],
+    );
+    assert_eq!(
+        data(&repeated).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        text(data(&repeated), "manifest_oid"),
+        text(second_data, "manifest_oid")
+    );
+    assert_eq!(
+        text(data(&repeated), "receipt_hash"),
+        text(second_data, "receipt_hash")
+    );
+    assert_eq!(
+        data(&repeated).get("predecessor"),
+        second_data.get("predecessor")
+    );
+    assert_eq!(head(&f.book), after);
+
+    let third = linked_import(
+        &f,
+        "chain-third.csv",
+        &continuity_csv(12, "BANK-CHAIN", "2026-05-31", "50.00", "75.00", "THIRD"),
+        text(second_data, "manifest_oid"),
+    );
+    assert_eq!(integer(data(&third), "verified_predecessors"), 2);
+    let before_match = head(&f.book);
+    let matched = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            text(data(&third), "manifest_oid"),
+        ],
+    );
+    assert_eq!(integer(data(&matched), "verified_predecessors"), 2);
+    assert_eq!(text(data(&matched), "continuity"), "verified_predecessor");
+    assert_eq!(data(&matched).get("confirmed"), Some(&Json::Bool(false)));
+    assert_eq!(
+        head(&f.book),
+        before_match,
+        "continuity replay does not confirm reconciliation"
+    );
+    let original = ok_privileged(&f.book, &["bank", "match", "--import", first_oid]);
+    assert_eq!(
+        text(data(&original), "continuity"),
+        "unlinked",
+        "v1 remains explicitly readable"
+    );
+    assert_eq!(integer(data(&original), "verified_predecessors"), 0);
+}
+
+#[test]
+fn predecessor_mismatches_refuse_without_publishing_any_new_import() {
+    let f = Fixture::new();
+    let first_raw = continuity_csv(20, "BANK-STRICT", "2026-03-31", "0.00", "25.00", "FIRST");
+    let first = f.import("strict-first.csv", "csv", &first_raw);
+    let previous = text(data(&first), "manifest_oid");
+    let before = head(&f.book);
+    for (name, raw) in [
+        (
+            "gap",
+            continuity_csv(22, "BANK-STRICT", "2026-04-30", "25.00", "50.00", "NEXT"),
+        ),
+        (
+            "opening",
+            continuity_csv(21, "BANK-STRICT", "2026-04-30", "20.00", "45.00", "NEXT"),
+        ),
+        (
+            "date",
+            continuity_csv(21, "BANK-STRICT", "2026-03-20", "25.00", "50.00", "NEXT"),
+        ),
+        (
+            "bank",
+            continuity_csv(21, "DIFFERENT-BANK", "2026-04-30", "25.00", "50.00", "NEXT"),
+        ),
+        ("self", first_raw),
+    ] {
+        let path = f.file(&format!("strict-{name}.csv"), &raw);
+        let (status, refusal) = run_privileged(
+            &f.book,
+            &[
+                "bank",
+                "import",
+                &path,
+                "--bank-format",
+                "csv",
+                "--account",
+                "1000",
+                "--previous-import",
+                previous,
+            ],
+        );
+        assert_ne!(status, 0, "{name}: {}", refusal.render());
+        assert_eq!(
+            head(&f.book),
+            before,
+            "{name} must not record its source, manifest or run"
+        );
+    }
+    let overflow = f.import(
+        "overflow-first.csv",
+        "csv",
+        &continuity_csv(
+            u64::MAX,
+            "BANK-OVERFLOW",
+            "2026-03-31",
+            "0.00",
+            "25.00",
+            "LAST",
+        ),
+    );
+    let overflow_head = head(&f.book);
+    let path = f.file(
+        "overflow-next.csv",
+        &continuity_csv(
+            0,
+            "BANK-OVERFLOW",
+            "2026-04-30",
+            "25.00",
+            "50.00",
+            "WRAPPED",
+        ),
+    );
+    let (status, refusal) = run_privileged(
+        &f.book,
+        &[
+            "bank",
+            "import",
+            &path,
+            "--bank-format",
+            "csv",
+            "--account",
+            "1000",
+            "--previous-import",
+            text(data(&overflow), "manifest_oid"),
+        ],
+    );
+    assert_ne!(
+        status,
+        0,
+        "sequence addition must not wrap: {}",
+        refusal.render()
+    );
+    assert_eq!(head(&f.book), overflow_head);
+}
+
+#[test]
+fn a_valid_alternative_predecessor_cannot_fork_an_already_linked_statement() {
+    let f = Fixture::new();
+    let left = f.import(
+        "fork-left.csv",
+        "csv",
+        &continuity_csv(1, "BANK-FORK", "2026-03-31", "0.00", "25.00", "LEFT"),
+    );
+    let right = f.import(
+        "fork-right.csv",
+        "csv",
+        &continuity_csv(1, "BANK-FORK", "2026-03-31", "0.00", "25.00", "RIGHT"),
+    );
+    let raw = continuity_csv(2, "BANK-FORK", "2026-04-30", "25.00", "50.00", "NEXT");
+    let selected = linked_import(&f, "fork-next.csv", &raw, text(data(&left), "manifest_oid"));
+    let before = head(&f.book);
+    let path = f.file("fork-conflict.csv", &raw);
+    let (status, refusal) = run_privileged(
+        &f.book,
+        &[
+            "bank",
+            "import",
+            &path,
+            "--bank-format",
+            "csv",
+            "--account",
+            "1000",
+            "--previous-import",
+            text(data(&right), "manifest_oid"),
+            "--as",
+            "different-uploader",
+        ],
+    );
+    assert_ne!(status, 0);
+    assert_eq!(
+        text(data(&refusal), "refusal_id"),
+        fa_journal::refusal::code::IDEMPOTENCY_CONFLICT
+    );
+    assert!(
+        refusal
+            .render()
+            .contains(text(data(&selected), "manifest_oid"))
+    );
+    assert_eq!(head(&f.book), before);
+
+    let (status, refusal) = run(
+        &f.book,
+        &[
+            "bank",
+            "import",
+            &path,
+            "--bank-format",
+            "csv",
+            "--account",
+            "1000",
+        ],
+    );
+    assert_ne!(
+        status, 0,
+        "omitting the predecessor cannot replace a recorded choice"
+    );
+    assert_eq!(
+        text(data(&refusal), "refusal_id"),
+        fa_journal::refusal::code::IDEMPOTENCY_CONFLICT
+    );
+    assert_eq!(head(&f.book), before);
+}

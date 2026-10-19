@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use fa::bank::{BankFormat, BankImportRequest, BankMatchRequest};
+use fa::bank::{BankFormat, BankImportManifest, BankImportRequest, BankMatchRequest};
 use fa_model::{Oid, account_vid};
 use fa_money::{Amount, Side};
 use fa_policy::Op;
@@ -16,19 +16,20 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, known_at_flag, untrusted_text_json, usage};
 use crate::json::{Json, obj, s};
 
-const IMPORT_EXAMPLE: &str = "fa bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code> --json";
+const IMPORT_EXAMPLE: &str = "fa bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code> [--previous-import <manifest_oid> --grant privileged] --json";
 const MATCH_EXAMPLE: &str = "fa bank match --import <manifest_oid> --grant privileged [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>] --json (embedded-owner CLI with explicit full-source authority)";
 
 pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let sub = args.positional.get(1).map(String::as_str);
     let allowed: &[&str] = match sub {
-        Some("import") => &["--bank-format", "--account"],
+        Some("import") => &["--bank-format", "--account", "--previous-import"],
         Some("match") => &["--import", "--date-window", "--as-known-at"],
         _ => &[],
     };
     for flag in [
         "--bank-format",
         "--account",
+        "--previous-import",
         "--import",
         "--date-window",
         "--as-known-at",
@@ -102,6 +103,30 @@ fn money(mantissa: i128, unit: fa_money::UnitId, book: &fa::Book) -> Result<Json
         })
 }
 
+fn predecessor_json(manifest: &BankImportManifest, book: &fa::Book) -> Result<Json, Fail> {
+    let Some(previous) = &manifest.predecessor else {
+        return Ok(Json::Null);
+    };
+    Ok(obj(vec![
+        ("manifest_oid", s(hex(&previous.manifest_oid.0))),
+        ("manifest_commit", s(hex(&previous.manifest_commit))),
+        ("statement_oid", s(hex(&previous.statement_oid.0))),
+        ("statement_commit", s(hex(&previous.statement_commit))),
+        ("import_run", s(format!("{:032x}", previous.import_run.0))),
+        ("receipt_hash", s(hex(&previous.receipt_hash))),
+        ("recorded_at", Json::Int(i128::from(previous.recorded_at.0))),
+        (
+            "sequence_number",
+            Json::Int(i128::from(previous.sequence_number)),
+        ),
+        ("statement_date", s(previous.statement_date.render())),
+        (
+            "closing_balance",
+            money(previous.closing_balance, manifest.unit, book)?,
+        ),
+    ]))
+}
+
 fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let [_, _, path] = args.positional.as_slice() else {
         return Err(usage(
@@ -117,6 +142,9 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )
     })?;
     let account_code = required(args, "--account", IMPORT_EXAMPLE)?;
+    let previous_manifest = one_flag(args, "--previous-import", IMPORT_EXAMPLE)?
+        .map(|value| crate::document::hex32(value, "--previous-import").map(Oid))
+        .transpose()?;
     let capability = ctx.capability(args, &["read", "post", "reconcile"])?;
     admit(&capability, true)?;
     // Current authority precedes response metadata as well as source input.
@@ -136,6 +164,7 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             account,
             format,
             bytes,
+            previous_manifest,
         },
     )??;
     let manifest = &recorded.manifest;
@@ -167,9 +196,12 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("receipt_hash", s(hex(&recorded.receipt.receipt.receipt_hash))),
         ("recorded_at", Json::Int(i128::from(recorded.receipt.receipt.recorded_at.0))),
         ("already_recorded", Json::Bool(recorded.receipt.already_recorded)),
-    ], &format!("{} bank statement #{} for {account_code}: {} lines; manifest {oid}; an authorized operator can inspect exact proposals with fa bank match --import {oid} --grant privileged",
+        ("continuity", s(if manifest.predecessor.is_some() { "verified_predecessor" } else { "unlinked" })),
+        ("verified_predecessors", Json::Int(recorded.verified_predecessors as i128)),
+        ("predecessor", predecessor_json(manifest, &book)?),
+    ], &format!("{} bank statement #{} for {account_code}: {} lines; {} predecessor links verified (the oldest manifest remains explicitly unlinked); manifest {oid}; inspect proposals with fa bank match --import {oid} --grant privileged",
         if recorded.receipt.already_recorded { "already recorded" } else { "imported" },
-        manifest.sequence_number, manifest.line_oids.len()));
+        manifest.sequence_number, manifest.line_oids.len(), recorded.verified_predecessors));
     Ok(())
 }
 
@@ -438,6 +470,19 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("decision_epoch", s(hex(&report.decision_epoch))),
         ("method", s("exact_amount_date_reference")),
         ("confirmed", Json::Bool(false)),
+        (
+            "continuity",
+            s(if report.manifest.predecessor.is_some() {
+                "verified_predecessor"
+            } else {
+                "unlinked"
+            }),
+        ),
+        (
+            "verified_predecessors",
+            Json::Int(report.verified_predecessors as i128),
+        ),
+        ("predecessor", predecessor_json(&report.manifest, &book)?),
         ("line_count", Json::Int(report.lines.len() as i128)),
         ("proposed_count", Json::Int(matched as i128)),
         ("ambiguous_count", Json::Int(ambiguous_count as i128)),

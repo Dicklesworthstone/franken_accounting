@@ -1,0 +1,20 @@
+# Canonical bank intake and its immutable continuity projection (fa-zbne).
+schema_version = 1
+name = "BankImportManifest"
+owner = "fa-journal::import::bank"
+major = 2
+minor = 0
+externally_verifiable = true
+
+# Unlinked v1 sources keep their original exact bytes and native identities.
+# A linked v2 manifest adds the immediate prior statement's original receipt.
+versions = ["1:unlinked", "2:explicit-predecessor"]
+predecessor_fields = ["manifest_oid:bytes32", "manifest_commit:bytes32", "statement_oid:bytes32", "statement_commit:bytes32", "import_run:u128", "receipt_hash:bytes32", "recorded_at:u64", "sequence_number:u64", "statement_date:i32", "closing_balance:amount"]
+max_predecessor_depth = 4096
+
+[[decision]]
+field = "BankStatementLink"
+appendix_a = "Retained bank statement continuity and sequence/opening-balance checks (§9.4-§9.5)"
+code_type = "fa-journal::import::bank; label BankStatementLink=44"
+rationale = "One immutable deterministic row per book, mapped GL account and current statement OID binds the exact current canonical manifest and its native ImportRun/receipt. Four DERIVED_FROM edges connect the current/prior ImportRuns and current/prior manifest Documents. The row publishes in the existing import transaction. Its absent/equal native point witness prevents competing predecessor links, including across uploaders; matching retries return the original receipt. Prior receipts and source documents remain original transaction witnesses. This projection is checked against retained canonical manifests and receipts; it is not independent authority or a confirmed reconciliation."
+tracking_bead = "fa-zbne"

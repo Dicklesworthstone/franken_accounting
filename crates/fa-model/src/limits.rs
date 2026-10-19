@@ -52,6 +52,10 @@ pub const MAX_CLOCK_SKEW_NS: u64 = 31_622_400_000_000_000;
 /// Concurrent `fad` client connections served at once (fa-een).
 pub const MAX_DAEMON_CONNECTIONS: usize = 64;
 
+/// Maximum retained predecessor links verified for one bank statement chain.
+/// An oversized chain refuses; a truncated chain never establishes continuity.
+pub const MAX_BANK_PREDECESSOR_DEPTH: usize = 4096;
+
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
     ("max_entry_bytes", MAX_ENTRY_BYTES as u64),
@@ -93,6 +97,10 @@ pub const ALL: &[(&str, u64)] = &[
     ("max_tick_utc_ns", MAX_TICK_UTC_NS),
     ("max_clock_skew_ns", MAX_CLOCK_SKEW_NS),
     ("max_daemon_connections", MAX_DAEMON_CONNECTIONS as u64),
+    (
+        "max_bank_predecessor_depth",
+        MAX_BANK_PREDECESSOR_DEPTH as u64,
+    ),
 ];
 
 #[cfg(test)]

@@ -15,7 +15,7 @@ use fa_journal::custody::CustodyBody;
 use fa_journal::evidence::Document;
 use fa_journal::refusal::{Refusal, code, exit};
 use fa_journal::{DocumentRead, ImportRecorded, KernelError, RunReceipt, UnitPolicy};
-use fa_model::{AccountType, EntryClass, Id128, IntakeSource, Oid, Reader, Writer, domain_digest};
+use fa_model::{AccountType, EntryClass, IntakeSource, Oid, domain_digest};
 use fa_money::{Side, UnitId};
 use fa_policy::{Capability, Op, Profile, Reach};
 use fa_registers::reconciliation::{
@@ -28,173 +28,15 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::{AsyncBook, BookError, IntakeAction, Outcome};
 
-const IMPORT_MAGIC: &[u8; 14] = b"FA-BANK-IMPORT";
-const IMPORT_MAJOR: u16 = 1;
-const IMPORT_MINOR: u16 = 0;
+use fa_journal::import::BankImportWitness;
+use fa_journal::import::bank::{BANK_LINE_MIME as LINE_MIME, BANK_MANIFEST_MIME as MANIFEST_MIME};
+pub use fa_journal::import::{BankFormat, BankImportManifest, BankImportPredecessor};
+
 const PARSER_REVISION: u16 = 1;
-const MANIFEST_MIME: &str = "application/vnd.frankenaccounting.bank-import";
-const LINE_MIME: &str = "application/vnd.frankenaccounting.bank-line";
 
 /// A statement and its manifest occupy the two remaining slots of the
 /// registered atomic Docket import bound. No partial statement is admitted.
 pub const MAX_BANK_LINES: usize = fa_model::limits::MAX_IMPORT_DOCUMENTS - 2;
-
-/// An explicitly selected parser. Its tag and revision are retained so a
-/// later match never asks the caller to reinterpret the original evidence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BankFormat {
-    Camt053,
-    Camt052,
-    Bai2,
-    Ofx,
-    Mt940,
-    Csv,
-}
-
-impl BankFormat {
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Camt053 => "camt053",
-            Self::Camt052 => "camt052",
-            Self::Bai2 => "bai2",
-            Self::Ofx => "ofx",
-            Self::Mt940 => "mt940",
-            Self::Csv => "csv",
-        }
-    }
-
-    #[must_use]
-    pub fn parse_name(name: &str) -> Option<Self> {
-        match name {
-            "camt053" => Some(Self::Camt053),
-            "camt052" => Some(Self::Camt052),
-            "bai2" => Some(Self::Bai2),
-            "ofx" => Some(Self::Ofx),
-            "mt940" => Some(Self::Mt940),
-            "csv" => Some(Self::Csv),
-            _ => None,
-        }
-    }
-
-    const fn tag(self) -> u8 {
-        match self {
-            Self::Camt053 => 1,
-            Self::Camt052 => 2,
-            Self::Bai2 => 3,
-            Self::Ofx => 4,
-            Self::Mt940 => 5,
-            Self::Csv => 6,
-        }
-    }
-
-    fn from_tag(tag: u8) -> Option<Self> {
-        match tag {
-            1 => Some(Self::Camt053),
-            2 => Some(Self::Camt052),
-            3 => Some(Self::Bai2),
-            4 => Some(Self::Ofx),
-            5 => Some(Self::Mt940),
-            6 => Some(Self::Csv),
-            _ => None,
-        }
-    }
-
-    const fn mime(self) -> &'static str {
-        match self {
-            Self::Camt053 | Self::Camt052 => "application/xml",
-            Self::Csv => "text/csv",
-            Self::Ofx => "application/x-ofx",
-            Self::Bai2 | Self::Mt940 => "text/plain",
-        }
-    }
-}
-
-/// The immutable, content-addressed interpretation of one source statement.
-/// The account is the importer's explicit mapping, not a parser guess.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BankImportManifest {
-    pub book_id: Id128,
-    pub account: VId,
-    pub format: BankFormat,
-    pub statement_oid: Oid,
-    pub statement_commit: [u8; 32],
-    pub unit: UnitId,
-    pub sequence_number: u64,
-    pub statement_date: DateDay,
-    pub opening_balance: i128,
-    pub closing_balance: i128,
-    /// Document OIDs in statement order, distinct from BankStatementLine::oid.
-    pub line_oids: Vec<Oid>,
-}
-
-impl BankImportManifest {
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
-        let mut w = Writer::new();
-        w.fixed(IMPORT_MAGIC)
-            .u16(IMPORT_MAJOR)
-            .u16(IMPORT_MINOR)
-            .fixed(&self.book_id.0)
-            .u128(self.account.0)
-            .u8(self.format.tag())
-            .u16(PARSER_REVISION)
-            .fixed(&self.statement_oid.0)
-            .fixed(&self.statement_commit)
-            .u32(self.unit.0)
-            .u64(self.sequence_number)
-            .i32(self.statement_date.0)
-            .i128(self.opening_balance)
-            .i128(self.closing_balance)
-            .list(&self.line_oids, |w, oid| {
-                w.fixed(&oid.0);
-            });
-        w.finish()
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, fa_model::DecodeError> {
-        let mut r = Reader::new(bytes);
-        if r.fixed::<14>("bank_import.magic")? != *IMPORT_MAGIC
-            || r.u16("bank_import.major")? != IMPORT_MAJOR
-            || r.u16("bank_import.minor")? != IMPORT_MINOR
-        {
-            return Err(r.invalid("bank_import.version"));
-        }
-        let book_id = Id128(r.fixed("bank_import.book")?);
-        let account = VId(r.u128("bank_import.account")?);
-        let format = BankFormat::from_tag(r.u8("bank_import.parser")?)
-            .ok_or_else(|| r.invalid("bank_import.parser"))?;
-        if r.u16("bank_import.parser_revision")? != PARSER_REVISION {
-            return Err(r.invalid("bank_import.parser_revision"));
-        }
-        let result = Self {
-            book_id,
-            account,
-            format,
-            statement_oid: Oid(r.fixed("bank_import.statement_oid")?),
-            statement_commit: r.fixed("bank_import.statement_commit")?,
-            unit: UnitId(r.u32("bank_import.unit")?),
-            sequence_number: r.u64("bank_import.sequence")?,
-            statement_date: DateDay(r.i32("bank_import.statement_date")?),
-            opening_balance: r.i128("bank_import.opening")?,
-            closing_balance: r.i128("bank_import.closing")?,
-            line_oids: r.list(MAX_BANK_LINES, "bank_import.lines", |r| {
-                r.fixed("bank_import.line_oid").map(Oid)
-            })?,
-        };
-        if result.line_oids.iter().collect::<BTreeSet<_>>().len() != result.line_oids.len() {
-            return Err(r.invalid("bank_import.duplicate_line"));
-        }
-        r.finish()?;
-        Ok(result)
-    }
-
-    fn closure(&self, manifest_oid: Oid) -> Vec<Oid> {
-        let mut closure = self.line_oids.clone();
-        closure.extend([self.statement_oid, manifest_oid]);
-        closure.sort();
-        closure
-    }
-}
 
 /// Bytes are the exact original upload. No source grade or party identity
 /// supplied by the caller can override the authenticated import session.
@@ -203,6 +45,9 @@ pub struct BankImportRequest {
     pub account: VId,
     pub format: BankFormat,
     pub bytes: Vec<u8>,
+    /// Explicit prior retained import. None preserves the original unlinked
+    /// v1 interpretation; it does not claim a complete statement history.
+    pub previous_manifest: Option<Oid>,
 }
 
 #[derive(Clone, Debug)]
@@ -210,6 +55,8 @@ pub struct BankImportRecorded {
     pub manifest_oid: Oid,
     pub manifest: BankImportManifest,
     pub receipt: ImportRecorded,
+    /// Replayed predecessor links, ending at an explicitly unlinked manifest.
+    pub verified_predecessors: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -251,6 +98,7 @@ pub struct BankMatchReport {
     pub book_closing_balance: i128,
     /// Statement closing less posted book closing, in the bound unit.
     pub closing_difference: i128,
+    pub verified_predecessors: usize,
 }
 
 fn intake_error(message: impl Into<String>) -> Refusal {
@@ -346,6 +194,46 @@ fn bank_lines(extract: &BankStatementExtract, statement_oid: Oid) -> Vec<BankSta
         .collect()
 }
 
+struct VerifiedBankImport {
+    manifest: BankImportManifest,
+    extract: BankStatementExtract,
+    lines: Vec<BankStatementLine>,
+    witness: BankImportWitness,
+}
+
+fn predecessor_error(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::DOCUMENT_INTAKE,
+        exit::REFUSAL,
+        message,
+        "plan §9.5 (explicit predecessor continuity is checked against the retained source)",
+        "select the immediately preceding --previous-import for this bank account; correct source gaps or import without a predecessor as explicitly unlinked evidence",
+    )
+}
+
+fn same_bank_source(
+    current: &BankStatementExtract,
+    previous: &BankStatementExtract,
+) -> Result<(), Refusal> {
+    if current.instrument_account_id.trim().is_empty()
+        || previous.instrument_account_id.trim().is_empty()
+        || current.instrument_account_id != previous.instrument_account_id
+        || current.currency != previous.currency
+    {
+        return Err(predecessor_error(
+            "the retained predecessor identifies a different bank account or currency, or its bank identity is absent",
+        ));
+    }
+    Ok(())
+}
+
+fn chain_bound() -> Refusal {
+    predecessor_error(format!(
+        "bank predecessor history exceeds max_bank_predecessor_depth={}; no prefix was accepted as the complete checked chain",
+        fa_model::limits::MAX_BANK_PREDECESSOR_DEPTH,
+    ))
+}
+
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     fn authorize_bank(&self, cx: &PurposeContexts, cap: &Capability) -> Outcome<()> {
         if let Err(denial) = fa_policy::admit_read(cap, cap.holder(), self.context().book_id)
@@ -396,9 +284,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
-    /// One atomic intake; exact re-imports return the original receipt even
-    /// from a different authorized uploader. Parser output is conservatively
-    /// AgentUpload evidence; it never upgrades the retained source's grade.
+    /// One atomic intake. Linked v2 imports replay their explicit predecessor
+    /// chain and publish one native, immutable choice for this account/source.
+    /// Exact re-imports return the original receipt across authorized uploaders.
     pub async fn import_bank_statement(
         &mut self,
         cx: &PurposeContexts,
@@ -413,7 +301,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(intake_error(format!(
                 "bank statement exceeds max_document_bytes={}",
-                policy.max_document_bytes
+                policy.max_document_bytes,
             ))));
         }
         let extract = match parsed(request.format, &request.bytes) {
@@ -430,7 +318,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "parsed line units differ from the statement's registered book currency",
             )));
         }
-        let account = match self.bank_account(cx, request.account, unit, self.head(cx)?)? {
+        let known_at = self.head(cx)?;
+        let account = match self.bank_account(cx, request.account, unit, known_at)? {
             Ok(account) => account,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -442,6 +331,39 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             retrieved_by: capability.holder(),
             bytes: request.bytes,
         };
+        let predecessors = if let Some(previous_oid) = request.previous_manifest {
+            let previous = match self
+                .load_bank_import(cx, capability, previous_oid, known_at)
+                .await?
+            {
+                Ok(previous) => previous,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if let Err(refusal) = same_bank_source(&extract, &previous.extract) {
+                return Ok(Err(refusal));
+            }
+            let witnesses = match self
+                .verify_bank_predecessors(cx, capability, &previous, known_at)
+                .await?
+            {
+                Ok(witnesses) => witnesses,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if witnesses.len() > fa_model::limits::MAX_BANK_PREDECESSOR_DEPTH {
+                return Ok(Err(chain_bound()));
+            }
+            if witnesses
+                .iter()
+                .any(|previous| previous.manifest().statement_oid == source.oid())
+            {
+                return Ok(Err(predecessor_error(
+                    "the selected predecessor history already contains this source statement",
+                )));
+            }
+            witnesses
+        } else {
+            Vec::new()
+        };
         let lines = bank_lines(&extract, source.oid());
         let mut documents = Vec::with_capacity(lines.len() + 2);
         let derived_grade = fa_journal::upload::upload_grade(&policy, Profile::Agent)?;
@@ -449,8 +371,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let mut line_oids = Vec::with_capacity(lines.len());
         for line in lines {
             let bytes = line.canonical_bytes().map_err(|e| corrupt(e.to_string()))?;
-            // The wire must be consumable by the retained BankLine decoder,
-            // including all string and positive-mantissa bounds.
             BankStatementLine::decode(&bytes).map_err(|e| corrupt(e.to_string()))?;
             let document = Document {
                 book_id: self.context().book_id,
@@ -475,7 +395,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             opening_balance: extract.opening_balance,
             closing_balance: extract.closing_balance,
             line_oids,
+            predecessor: predecessors.first().map(BankImportWitness::predecessor),
         };
+        if let Some(previous) = predecessors.first()
+            && let Err(refusal) = manifest.verify_predecessor(previous)
+        {
+            return Ok(Err(refusal));
+        }
         let mut derivations = documents.clone();
         documents.push(source);
         let manifest_document = Document {
@@ -491,11 +417,60 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let manifest_oid = manifest_document.oid();
         derivations.push(manifest_document.clone());
         documents.push(manifest_document);
+        let existing_link = match self.query(cx, |db, book| {
+            Ok(fa_journal::import::read_bank_statement_link(
+                db,
+                book.book_id,
+                manifest.account,
+                manifest.statement_oid,
+            )?)
+        })? {
+            Ok(link) => link,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Some(existing) = existing_link {
+            if existing.manifest != manifest || existing.manifest_oid != manifest_oid {
+                return Ok(Err(Refusal::new(
+                    code::IDEMPOTENCY_CONFLICT,
+                    exit::CONFLICT,
+                    format!(
+                        "this account's statement already has predecessor linkage in manifest {}",
+                        fa_journal::evidence::hex(&existing.manifest_oid.0),
+                    ),
+                    "plan §4.9; §9.5 (one immutable predecessor choice per account/source statement)",
+                    "repeat the original statement, parser, account and --previous-import; another uploader or import key cannot replace the recorded link",
+                )));
+            }
+            let retry_at = self.head(cx)?;
+            let verified = match self
+                .load_bank_import(cx, capability, manifest_oid, retry_at)
+                .await?
+            {
+                Ok(verified) => verified,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            return Ok(Ok(BankImportRecorded {
+                manifest_oid,
+                receipt: ImportRecorded {
+                    receipt: verified.witness.receipt().clone(),
+                    recorded: Vec::new(),
+                    already_held: manifest.closure(manifest_oid),
+                    already_recorded: true,
+                },
+                manifest,
+                verified_predecessors: predecessors.len(),
+            }));
+        }
         let previous_receipt = match self.bank_import_receipt(cx, &manifest, manifest_oid)? {
             Ok(receipt) => receipt,
             Err(refusal) => return Ok(Err(refusal)),
         };
         if let Some(receipt) = previous_receipt {
+            if manifest.predecessor.is_some() {
+                return Ok(Err(closure_drift(
+                    "a linked manifest was imported without its atomic native predecessor record",
+                )));
+            }
             return Ok(Ok(BankImportRecorded {
                 manifest_oid,
                 manifest: manifest.clone(),
@@ -505,6 +480,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     already_held: manifest.closure(manifest_oid),
                     already_recorded: true,
                 },
+                verified_predecessors: 0,
             }));
         }
         let key = fa_journal::evidence::hex(&manifest_oid.0);
@@ -539,24 +515,53 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     prepared.abort();
                     return Ok(Err(refusal));
                 }
-                let prepared = match prepared.with_document_derivations(
-                    &mut self.db,
-                    cx,
-                    &derivations,
-                )? {
-                    Ok(prepared) => prepared,
-                    Err(refusal) => return Ok(Err(refusal)),
-                };
+                for previous in &predecessors {
+                    if let Err(refusal) = prepared.witness_bank_import(&self.db, previous)? {
+                        prepared.abort();
+                        return Ok(Err(refusal));
+                    }
+                }
+                match prepared.bind_bank_statement(&mut self.db, &manifest, predecessors.first())? {
+                    Err(refusal) => {
+                        prepared.abort();
+                        return Ok(Err(refusal));
+                    }
+                    Ok(Some(recorded)) => {
+                        prepared.abort();
+                        return Ok(Ok(BankImportRecorded {
+                            manifest_oid,
+                            manifest,
+                            receipt: recorded,
+                            verified_predecessors: predecessors.len(),
+                        }));
+                    }
+                    Ok(None) => {}
+                }
+                let prepared =
+                    match prepared.with_document_derivations(&mut self.db, cx, &derivations)? {
+                        Ok(prepared) => prepared,
+                        Err(refusal) => return Ok(Err(refusal)),
+                    };
                 match prepared.commit(&mut self.db, cx).await? {
                     Ok(receipt) => receipt,
                     Err(refusal) => return Ok(Err(refusal)),
                 }
             }
         };
+        if receipt.already_recorded && manifest.predecessor.is_some() {
+            let retry_at = self.head(cx)?;
+            if let Err(refusal) = self
+                .load_bank_import(cx, capability, manifest_oid, retry_at)
+                .await?
+            {
+                return Ok(Err(refusal));
+            }
+        }
         Ok(Ok(BankImportRecorded {
             manifest_oid,
             manifest,
             receipt,
+            verified_predecessors: predecessors.len(),
         }))
     }
 
@@ -585,11 +590,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             let Some(receipt) = fa_journal::import::read_run(db, *run)? else {
                 return Ok(Err(closure_drift("manifest import run is missing")));
             };
-            Ok(fa_journal::import::verify_receipt(
-                &receipt,
+            Ok(fa_journal::import::verify_receipt_in(
+                db,
                 book.book_id,
+                &receipt,
                 &manifest.closure(manifest_oid),
-            )
+            )?
             .map(|()| Some(receipt)))
         })
     }
@@ -600,7 +606,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         oid: Oid,
     ) -> Outcome<Document> {
-        const FULL_SOURCE_AUTHORITY: &str = "matching must replay the complete original BankStatement; a redacted view cannot supply those bytes. Use an authorized capability allowing full source disclosure. On the embedded-owner CLI, pass --grant privileged explicitly; launch-bound MCP templates cannot add or hold that operation";
+        const FULL_SOURCE_AUTHORITY: &str = "bank continuity and matching must replay the complete original BankStatement; a redacted view cannot supply those bytes. Use an authorized capability allowing full source disclosure. On the embedded-owner CLI, pass --grant privileged explicitly; launch-bound MCP templates cannot add or hold that operation";
         Ok(match self.read_document_for(cx, capability, &oid).await? {
             Err(mut refusal) if refusal.code == code::REDACTED_VIEW_ABSENT => {
                 refusal.fix = FULL_SOURCE_AUTHORITY.into();
@@ -612,35 +618,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 code::CAPABILITY,
                 exit::SAFETY,
                 "the bank import's retained evidence is redacted under this capability",
-                "plan §9.5–§9.6 (matching requires the exact statement and parsed closure)",
+                "plan §9.5–§9.6 (bank continuity and matching require the exact statement and parsed closure)",
                 FULL_SOURCE_AUTHORITY,
             )),
         })
     }
 
-    /// Recreate deterministic exact-amount/date/reference proposals from a
-    /// verified intake and one journal prefix. The source and every parsed
-    /// line remain evidence; neither candidate scores nor proposals confirm a
-    /// match, change an amount, or lock a reconciled period.
-    pub async fn match_bank_statement(
+    /// Capture native publication witnesses before replaying the complete
+    /// governed source and every canonical line. This is shared by matching
+    /// and explicit continuity; no caller-supplied prior balance is accepted.
+    async fn load_bank_import(
         &mut self,
         cx: &PurposeContexts,
         capability: &Capability,
-        request: BankMatchRequest,
-    ) -> Outcome<BankMatchReport> {
-        if let Err(refusal) = self.authorize_bank(cx, capability)? {
-            return Ok(Err(refusal));
-        }
-        let Ok(window) = i32::try_from(request.date_window_days) else {
-            return Ok(Err(intake_error(
-                "the matching date window exceeds the civil-date domain",
-            )));
-        };
-        let seq = self.query(cx, |db, _| {
-            Ok(fa_registers::resolve_known_at(db, request.known_at)?)
-        })?;
+        manifest_oid: Oid,
+        seq: CommitSeq,
+    ) -> Outcome<VerifiedBankImport> {
         let document = match self
-            .full_bank_document(cx, capability, request.manifest_oid)
+            .full_bank_document(cx, capability, manifest_oid)
             .await?
         {
             Ok(doc) => doc,
@@ -659,7 +654,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if manifest.book_id != self.context().book_id {
             return Ok(Err(closure_drift("manifest belongs to another book")));
         }
-        let receipt = match self.bank_import_receipt(cx, &manifest, request.manifest_oid)? {
+        let receipt = match self.bank_import_receipt(cx, &manifest, manifest_oid)? {
             Ok(Some(receipt)) => receipt,
             Ok(None) => return Ok(Err(closure_drift("manifest has no retained receipt"))),
             Err(refusal) => return Ok(Err(refusal)),
@@ -673,6 +668,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 format!("select --as-known-at {} or later", receipt.recorded_at.0),
             )));
         }
+        let witness = match self.query(cx, |db, book| {
+            Ok(BankImportWitness::capture(
+                db,
+                book.book_id,
+                &document,
+                &receipt,
+            )?)
+        })? {
+            Ok(witness) => witness,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let source = match self
             .full_bank_document(cx, capability, manifest.statement_oid)
             .await?
@@ -722,6 +728,104 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 )));
             }
         }
+        Ok(Ok(VerifiedBankImport {
+            manifest,
+            extract,
+            lines,
+            witness,
+        }))
+    }
+
+    async fn verify_bank_predecessors(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        first: &VerifiedBankImport,
+        known_at: CommitSeq,
+    ) -> Outcome<Vec<BankImportWitness>> {
+        let mut witnesses = vec![first.witness.clone()];
+        let mut seen_manifests = BTreeSet::from([first.witness.manifest_oid()]);
+        let mut seen_sources = BTreeSet::from([first.manifest.statement_oid]);
+        let mut current = first.manifest.clone();
+        let mut bank_identity = first.extract.instrument_account_id.clone();
+        let mut currency = first.extract.currency.clone();
+        while let Some(binding) = current.predecessor.clone() {
+            if witnesses.len() > fa_model::limits::MAX_BANK_PREDECESSOR_DEPTH {
+                return Ok(Err(chain_bound()));
+            }
+            if !seen_manifests.insert(binding.manifest_oid)
+                || !seen_sources.insert(binding.statement_oid)
+            {
+                return Ok(Err(closure_drift(
+                    "the predecessor history repeats a manifest or source statement",
+                )));
+            }
+            let previous = match self
+                .load_bank_import(cx, capability, binding.manifest_oid, known_at)
+                .await?
+            {
+                Ok(previous) => previous,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if let Err(refusal) = current.verify_predecessor(&previous.witness) {
+                return Ok(Err(refusal));
+            }
+            if bank_identity.trim().is_empty()
+                || previous.extract.instrument_account_id.trim().is_empty()
+                || bank_identity != previous.extract.instrument_account_id
+                || currency != previous.extract.currency
+            {
+                return Ok(Err(closure_drift(
+                    "the predecessor chain changes its bank account identity or currency",
+                )));
+            }
+            bank_identity = previous.extract.instrument_account_id;
+            currency = previous.extract.currency;
+            current = previous.manifest;
+            witnesses.push(previous.witness);
+        }
+        Ok(Ok(witnesses))
+    }
+
+    /// Recreate deterministic exact-amount/date/reference proposals from a
+    /// verified intake and one journal prefix. The source and every parsed
+    /// line remain evidence; neither candidate scores nor proposals confirm a
+    /// match, change an amount, or lock a reconciled period.
+    pub async fn match_bank_statement(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        request: BankMatchRequest,
+    ) -> Outcome<BankMatchReport> {
+        if let Err(refusal) = self.authorize_bank(cx, capability)? {
+            return Ok(Err(refusal));
+        }
+        let Ok(window) = i32::try_from(request.date_window_days) else {
+            return Ok(Err(intake_error(
+                "the matching date window exceeds the civil-date domain",
+            )));
+        };
+        let seq = self.query(cx, |db, _| {
+            Ok(fa_registers::resolve_known_at(db, request.known_at)?)
+        })?;
+        let verified = match self
+            .load_bank_import(cx, capability, request.manifest_oid, seq)
+            .await?
+        {
+            Ok(verified) => verified,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let predecessors = match self
+            .verify_bank_predecessors(cx, capability, &verified, seq)
+            .await?
+        {
+            Ok(witnesses) => witnesses,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let verified_predecessors = predecessors.len().saturating_sub(1);
+        let manifest = verified.manifest;
+        let lines = verified.lines;
+        let unit = manifest.unit;
         let account = match self.bank_account(cx, manifest.account, unit, seq)? {
             Ok(account) => account,
             Err(refusal) => return Ok(Err(refusal)),
@@ -861,6 +965,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             proposals,
             book_closing_balance,
             closing_difference,
+            verified_predecessors,
         }))
     }
 }
@@ -868,6 +973,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fa_model::Id128;
 
     fn manifest() -> BankImportManifest {
         BankImportManifest {
@@ -882,6 +988,7 @@ mod tests {
             opening_balance: 100,
             closing_balance: 125,
             line_oids: vec![Oid([7; 32])],
+            predecessor: None,
         }
     }
 

@@ -114,3 +114,8 @@ value = 31622400000000000
 [[limit]]
 name = "max_daemon_connections"
 value = 64
+
+# Retained predecessor statements walked by one continuity verification.
+[[limit]]
+name = "max_bank_predecessor_depth"
+value = 4096

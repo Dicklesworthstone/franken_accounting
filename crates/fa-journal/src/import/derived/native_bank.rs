@@ -4,7 +4,7 @@
 //! They validate the complete existing versioned wire before projecting its
 //! explicit source pointers. The bank facade still reparses original evidence.
 
-use fa_model::{Id128, Oid, Reader, limits};
+use fa_model::{Oid, Reader, limits};
 use fa_registry::evidence_policy::EvidencePolicy;
 
 use crate::{Document, Refusal};
@@ -30,11 +30,7 @@ pub(super) fn sources(
     line_sources(reader).map(Some)
 }
 
-fn check_kind(
-    document: &Document,
-    policy: &EvidencePolicy,
-    expected: &str,
-) -> Result<(), Refusal> {
+fn check_kind(document: &Document, policy: &EvidencePolicy, expected: &str) -> Result<(), Refusal> {
     if policy.kind_by_name(expected).map(|kind| kind.tag) != Some(document.kind) {
         return Err(invalid(format!(
             "the canonical bank source format requires document kind {expected}"
@@ -71,42 +67,15 @@ fn line_sources(mut reader: Reader<'_>) -> Result<Vec<Oid>, Refusal> {
 }
 
 fn manifest_sources(document: &Document) -> Result<Vec<Oid>, Refusal> {
-    let mut reader = Reader::new(&document.bytes);
-    if reader.fixed::<14>("bank_import.magic").map_err(malformed)? != *MANIFEST_MAGIC
-        || reader.u16("bank_import.major").map_err(malformed)? != 1
-        || reader.u16("bank_import.minor").map_err(malformed)? != 0
-    {
-        return Err(invalid("unsupported bank import manifest version"));
-    }
-    let book = Id128(reader.fixed("bank_import.book").map_err(malformed)?);
-    if book != document.book_id {
+    let manifest = crate::import::BankImportManifest::decode(&document.bytes).map_err(malformed)?;
+    if manifest.book_id != document.book_id {
         return Err(invalid("bank manifest source list belongs to another book"));
     }
-    reader.u128("bank_import.account").map_err(malformed)?;
-    let parser = reader.u8("bank_import.parser").map_err(malformed)?;
-    if !(1..=6).contains(&parser)
-        || reader.u16("bank_import.parser_revision").map_err(malformed)? != 1
-    {
-        return Err(invalid("unsupported bank import parser or revision"));
-    }
-    let statement = Oid(reader.fixed("bank_import.statement_oid").map_err(malformed)?);
-    reader
-        .fixed::<32>("bank_import.statement_commit")
-        .map_err(malformed)?;
-    reader.u32("bank_import.unit").map_err(malformed)?;
-    reader.u64("bank_import.sequence").map_err(malformed)?;
-    reader.i32("bank_import.statement_date").map_err(malformed)?;
-    reader.i128("bank_import.opening").map_err(malformed)?;
-    reader.i128("bank_import.closing").map_err(malformed)?;
-    let mut sources = reader
-        .list(
-            limits::MAX_IMPORT_DOCUMENTS.saturating_sub(2),
-            "bank_import.lines",
-            |reader| reader.fixed("bank_import.line_oid").map(Oid),
-        )
-        .map_err(malformed)?;
-    reader.finish().map_err(malformed)?;
-    sources.push(statement);
+    // These are the current statement's parser inputs. The separately
+    // authenticated BankStatementLink binds prior-import continuity and its
+    // two ImportRuns; a prior statement is never re-imported as current input.
+    let mut sources = manifest.line_oids;
+    sources.push(manifest.statement_oid);
     sources.sort();
     if sources.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err(invalid("a bank manifest lists each source exactly once"));

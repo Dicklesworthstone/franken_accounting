@@ -149,6 +149,12 @@ name = "IntentOutcome"
 id = 43
 name = "Scenario"
 
+# fa-zbne: immutable selected predecessor for one bank statement/account.
+# Its native point witness prevents concurrent conflicting linked imports.
+[[label]]
+id = 44
+name = "BankStatementLink"
+
 # ---- property keys --------------------------------------------------------
 [[property]]
 id = 1

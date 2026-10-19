@@ -69,6 +69,7 @@ symbols!(
         (REGISTER_STATE, "RegisterState", 41),
         (INTENT_OUTCOME, "IntentOutcome", 42),
         (SCENARIO, "Scenario", 43),
+        (BANK_STATEMENT_LINK, "BankStatementLink", 44),
     ]
 );
 
