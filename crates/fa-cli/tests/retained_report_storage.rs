@@ -2422,6 +2422,24 @@ fn replay_workpapers_equal_the_library_export_and_never_overwrite_or_widen_famil
             .unwrap();
         assert_eq!(written, library, "the CLI writes the library's export");
     }
+    assert_eq!(exported.get("text"), Some(&Json::Null));
+    // Inline: the same text in the event, which is the form MCP carries.
+    let inline_events = f.ok(&["replay", &locator, "--expect", &expect, "--workpaper"]);
+    let inline = data(&inline_events, "workpaper_exported");
+    assert_eq!(inline.get("file"), Some(&Json::Null));
+    assert_eq!(text(inline, "text"), written);
+    let both = f.dir.join("both.jsonl");
+    let (exit, _) = f.run(&[
+        "replay",
+        &locator,
+        "--expect",
+        &expect,
+        "--workpaper",
+        "--workpaper-out",
+        both.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 2, "inline and file workpapers are one choice");
+    assert!(!both.exists());
     assert_eq!(f.head(), retained, "exporting a workpaper is a read");
 
     // An existing file is never replaced; without its request the replay is
