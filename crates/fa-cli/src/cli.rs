@@ -846,6 +846,9 @@ pub(crate) struct BookSource<'a> {
     said: Rc<RefCell<Said>>,
     /// The command's [`Files::cwd`], which its book path is relative to.
     cwd: Option<PathBuf>,
+    /// The launch-bound session's capability: every book it opens admits
+    /// it as current authority before anything is read or stamped.
+    bound: Option<Capability>,
 }
 
 impl BookSource<'_> {
@@ -871,6 +874,13 @@ impl BookSource<'_> {
 
     pub(crate) fn open(&mut self, args: &Args) -> Result<BookRef<'_>, Fail> {
         let book = self.books.open(args, self.cwd.as_deref())?;
+        // A bound session's token is current (not expired, not revoked, its
+        // `books` caveat admits this book) before the book is read, its
+        // coordinate stamped, or a scenario materialized (doctrine 8). The
+        // command's own ops and scope are judged where it reads or writes.
+        if let Some(capability) = &self.bound {
+            book.admit_current(capability)??;
+        }
         let book = select_branch(args, book, &self.said)?;
         stamp(&self.said, &book)?;
         Ok(book)
@@ -1281,6 +1291,7 @@ fn run_scoped(
         books,
         said: Rc::clone(&out.said),
         cwd: files.cwd.clone(),
+        bound: authority.map(|authority| authority.capability().clone()),
     };
     if let Some(daemon) = &daemon_files {
         // The daemon never trusts a client working directory outside --files-root;

@@ -557,6 +557,15 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         vec!["registers", "advance", "--period", "FY2026-P03"],
         vec!["registers", "materialize", "--period", "FY2026-P03"],
         vec!["verify", "registers", "--period", "FY2026-P03"],
+        // Handlers that open the book without their own admission: the
+        // bound session's token is admitted as current at the open itself.
+        vec!["tb", "--period", "FY2026-P03"],
+        vec!["entry", "show", "00000000000000000000000000000001"],
+        vec!["explain", "period", "FY2026-P03"],
+        vec!["triage"],
+        vec!["verify", "accumulator"],
+        vec!["verify", "projections"],
+        vec!["verify", "replay"],
         vec!["scenario", "list"],
         vec!["scenario", "show", "nope"],
         vec!["scenario", "diff", "nope", "--period", "FY2026-P03"],

@@ -2921,6 +2921,24 @@ impl Book {
         }))
     }
 
+    /// Admit `capability` as current authority over this book before
+    /// anything else is read (doctrine 8): its `books` caveat admits this
+    /// book, and at the head it is neither expired nor revoked (a
+    /// holder-bound token must also have been issued here). It requires no
+    /// op and judges no scope caveat: what a command then reads or writes is
+    /// admitted by that command ([`Book::read_scope`], or the kernel at the
+    /// write). A host that binds a session to a capability calls this on
+    /// every open, so a token expired or revoked now observes nothing.
+    pub fn admit_current(&self, capability: &fa_policy::Capability) -> Outcome<()> {
+        if let Err(denial) = fa_policy::scope(capability, self.context().book_id) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.query(&purposes, |db, book| {
+            Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
+        }))
+    }
+
     /// Install the complete effective-dated nominal-to-equity routing map.
     pub fn set_closing_routes(
         &mut self,
