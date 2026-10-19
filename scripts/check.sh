@@ -12,18 +12,24 @@
 # not installed) is `UNRUN` + `FAIL`, never a silent green. The contract is
 # scripts/lib/gate_verdict.sh, adopted verbatim from FrankenGraphDB.
 #
-# COVERED STEPS (23 total in full mode):
-#   fmt, check, clippy (-D warnings), test + test-inventory-witness (fa-czx),
+# STEPS (26 in full mode):
+#   fmt, check, clippy (-D warnings), test-list + test, gate-evidence
+#   (completion markers, test-inventory witness, per-crate ratchet, fa-czx)
+#   and its planted negative, invariants (fa-37f) and its planted negative,
+#   robot-schema (fa-12x), fuzz-smoke (fa-tre), bench-smoke (fa-tu58),
 #   conformance-mutation (fa-zy1), deny, ubs, shellcheck, registries-embedded,
 #   registry-check (tools/registry-check: schema validation, claims lint,
 #   foundation API consumption, negative-checker disjointness, fa-szi / fa-r3d),
-#   scoreboards (xtask scoreboard: vision + gate scoreboards, fa-e9z / fa-7s6d),
-#   file-coverage (every tracked file claimed by a gate or exempted with a
-#   reason, fa-szi), readme-agents-sync (fa-4v5), beads-cycles (br dep cycles),
-#   forbidden-deps, resolved-foundation-graph (fa-c23), reference-boundary, and
-#   tree-integrity.
-#   Verb parity (verbs.toml vs CLI vs MCP) runs under `test` via
-#   crates/fa-mcp/tests/parity.rs and crates/fa-mcp/tests/deny_rows.rs (fa-xex).
+#   forbidden-deps, foundations (resolved-foundation-graph, fa-c23) and its
+#   planted negative, doctrine (fa-598p) and its planted negative,
+#   reference-boundary, and topology (fa-37f) and its planted negative.
+#   Scoreboards (crates/fa-cli/tests/scoreboard.rs, fa-e9z / fa-7s6d) and verb
+#   parity (verbs.toml vs CLI vs MCP: crates/fa-mcp/tests/parity.rs and
+#   deny_rows.rs, fa-xex) run under `test`.
+#   NOT IMPLEMENTED: earlier versions of this header also listed file-coverage
+#   (every tracked file claimed by a gate or exempted with a reason),
+#   readme-agents-sync, beads-cycles (br dep cycles) and tree-integrity. No
+#   step has ever checked them; a green run says nothing about them.
 #   Exact-tree proof manifests and merge-train scripts are tracked in fa-u7u.
 #
 # Usage: bash scripts/check.sh            # everything
