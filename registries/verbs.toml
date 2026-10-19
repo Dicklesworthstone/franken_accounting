@@ -2314,6 +2314,11 @@ on_demand = true
 doc = "Bank source intake and reproducible exact match proposals: retained parser/account manifests, verified evidence closure, explicit candidate windows and complete decision cards. Matching governed BankStatement sources requires full disclosure authority that current MCP launch templates cannot hold; an independently authorized operator must perform those matches. No confirmation or monetary posting."
 
 [[mcp.cluster]]
+name = "fa.close"
+on_demand = true
+doc = "Inspect journaled fiscal-year closing routes and verify the last mechanical close at an explicitly selected history prefix. Routing changes and close preparation/publication remain host-side operations under independent schema, close and approval authority."
+
+[[mcp.cluster]]
 name = "fa.notary"
 on_demand = true
 doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements) and evidence bundles, checked independently without book keys (plan §15.4: discoverable on demand)."
@@ -2347,6 +2352,16 @@ reason = "host-only: replacing a party's bank or tax identifiers is the business
 verb = "draft"
 subcommand = "promote"
 reason = "host-only: promotion needs a principal holding approve, distinct from the draft's owner, and --yes; a bound MCP session can hold neither (plan §15.2/§15.4 registered exclusion, fa-s7x)"
+
+[[mcp.excluded]]
+verb = "close"
+subcommand = "map"
+reason = "host-only: changing the reviewed Revenue/Expense-to-Equity routing map requires schema_change, which neither launch-bound MCP templates nor their issued tokens may hold (plan §7.5/§15.4 registered exclusion)"
+
+[[mcp.excluded]]
+verb = "close"
+subcommand = "year-end"
+reason = "host-only: preparing or publishing the intrinsic fiscal-year close requires close and post, and Closed reclose additionally requires an independent approval; close and approval are outside MCP launch ceilings and a tool cannot supply dangerous confirmation (plan §7.5/§15.4 registered exclusion)"
 
 [[mcp.excluded]]
 verb = "capability"
@@ -3164,6 +3179,32 @@ flags = ["--proposal", "--review", "--digest"]
 required = []
 dont = ["Don't approve a proposal you planned in this session: segregation of duties (FA-REF-008) needs another principal.", "Don't invent a digest: `proposal` is the `proposal_digest` a `period_transition` with `dry_run: true` returned, or supply `review` (complete hex bytes) and `digest` (`review_digest`) from an allocation or settlement review."]
 mistakes = ["A placeholder such as \"<proposal_digest>\" in `proposal`.", "Trying to change principal or self-issue approve: this session is launch-bound, and Agent/Preparer profiles do not permit approval."]
+
+# ---- fa.close ---------------------------------------------------------------
+
+[[mcp.tool]]
+cluster = "fa.close"
+name = "routes"
+verb = "close"
+subcommands = ["routes"]
+positionals = []
+flags = ["--as-of", "--as-known-at"]
+switches = []
+required = ["--as-of"]
+dont = ["Don't combine account names from HEAD with a historical routing map; this tool reads both from the selected as_known_at prefix.", "Don't use this read to change destinations; an authorized operator records a complete map with fa close map."]
+mistakes = ["Omitting as_of, which selects the routing map's effective date.", "Passing an instant as as_of; it is a civil date such as 2026-12-31. as_known_at is a recorded sequence; omit it to select HEAD."]
+
+[[mcp.tool]]
+cluster = "fa.close"
+name = "verify"
+verb = "verify"
+subcommands = ["close"]
+positionals = ["fiscal_year"]
+flags = ["--as-known-at"]
+switches = []
+required = ["fiscal_year"]
+dont = ["Don't treat historical nominal_zero_at_close as proof that later activity is closed; needs_reclose reports residual activity at the selected prefix.", "Don't post a balancing entry to change the verification result; the operator prepares and reviews the complete intrinsic close. Current read and verify authority applies even to historical queries."]
+mistakes = ["Passing a date or period code as fiscal_year; supply a year such as FY2026 or 2026.", "Passing a period filter; this target checks the complete fiscal year and creates no Closing entry."]
 
 # ---- fa.evidence ------------------------------------------------------------
 

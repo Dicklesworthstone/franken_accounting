@@ -88,7 +88,11 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             // fa-lzrn: replacing a party's bank identifiers is the plan
             // §14.4 business-email-compromise vector; a Human operator does
             // it on the host, never a launch-bound session.
-            || (e.verb == "party" && e.subcommand.as_deref() == Some("identifiers"));
+            || (e.verb == "party" && e.subcommand.as_deref() == Some("identifiers"))
+            // The reviewed closing map and intrinsic close need schema_change
+            // or close, outside both launch templates and issued-token ceilings.
+            || (e.verb == "close"
+                && matches!(e.subcommand.as_deref(), Some("map" | "year-end")));
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"
@@ -413,6 +417,86 @@ fn the_gate_fails_on_planted_defects() {
                 println!("fa-mcp parity negative: {what}: {e}");
                 assert!(e.contains(expect), "{what}: `{e}` does not name `{expect}`");
             }
+        }
+    }
+}
+
+#[test]
+fn closing_reads_lower_to_exact_history_and_mutations_remain_host_only() {
+    let (mcp, reg) = embedded();
+    assert!(mcp.cluster("fa.close").unwrap().on_demand);
+    assert_eq!(mcp.tools_of("fa.close").count(), 2);
+    let routes = mcp.tool_for("close", Some("routes")).unwrap();
+    assert_eq!(routes.wire_name(), "fa_close_routes");
+    let route_args = json!({"as_of": "2026-12-31", "as_known_at": "17"});
+    let route_call = routes.invocation(&mcp, reg, &route_args).unwrap();
+    assert_eq!(
+        route_call.argv,
+        vec![
+            "close",
+            "routes",
+            "--as-of",
+            "2026-12-31",
+            "--as-known-at",
+            "17",
+            "--json"
+        ]
+    );
+    assert!(route_call.stdin.is_none());
+    assert!(routes.invocation(&mcp, reg, &json!({})).is_err());
+    let translated = mcp
+        .command_to_call(
+            reg,
+            "fa close routes --as-of 2026-12-31 --as-known-at 17 --json",
+        )
+        .unwrap();
+    assert_eq!(translated.tool, "fa_close_routes");
+    assert_eq!(translated.arguments, route_args);
+
+    let verify = mcp.tool_for("verify", Some("close")).unwrap();
+    assert_eq!(verify.wire_name(), "fa_close_verify");
+    let verify_args = json!({"fiscal_year": "FY2026", "as_known_at": "17"});
+    let verification = verify.invocation(&mcp, reg, &verify_args).unwrap();
+    assert_eq!(
+        verification.argv,
+        vec!["verify", "close", "FY2026", "--as-known-at", "17", "--json"]
+    );
+    assert!(verification.stdin.is_none());
+    let schema = verify.input_schema(&mcp, reg);
+    assert_eq!(schema["properties"]["fiscal_year"]["type"], json!("string"));
+    assert!(schema["properties"].get("period").is_none());
+    assert!(verify.invocation(&mcp, reg, &json!({})).is_err());
+    let translated = mcp
+        .command_to_call(reg, "fa verify close FY2026 --as-known-at 17 --json")
+        .unwrap();
+    assert_eq!(translated.tool, "fa_close_verify");
+    assert_eq!(translated.arguments, verify_args);
+
+    for (call, operations) in [
+        (&route_call, &["read"][..]),
+        (&verification, &["read", "verify"][..]),
+    ] {
+        let parsed = fa_cli::args::parse(&call.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        let admitted = fa_cli::cli::bound_command_ops(&call.argv[0], &parsed).unwrap();
+        assert_eq!(
+            admitted.iter().map(|op| op.name()).collect::<Vec<_>>(),
+            operations
+        );
+    }
+    for subcommand in ["map", "year-end"] {
+        assert!(mcp.tool_for("close", Some(subcommand)).is_none());
+        assert!(mcp.excluded.iter().any(|excluded| {
+            excluded.verb == "close"
+                && excluded.subcommand.as_deref() == Some(subcommand)
+                && excluded.reason.contains("host-only")
+        }));
+    }
+    for profile in [
+        fa_cli::authority::LaunchProfile::Agent,
+        fa_cli::authority::LaunchProfile::Preparer,
+    ] {
+        for operation in ["schema_change", "close", "approve"] {
+            assert!(!profile.ceiling().iter().any(|op| op.name() == operation));
         }
     }
 }

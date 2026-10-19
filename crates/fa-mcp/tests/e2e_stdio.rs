@@ -297,7 +297,7 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         "--json",
     ]);
     let chart = dir.join("chart.json");
-    std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#).unwrap();
+    std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Retained earnings","type":"Equity","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#).unwrap();
     cli_data(&[
         "chart",
         "import",
@@ -329,6 +329,72 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         &b,
         "--json",
     ]);
+    // Close the real year's nominal balance with separately retained Workpaper
+    // evidence before computing either CLI or bound-MCP historical expectations.
+    cli_data(&[
+        "close",
+        "map",
+        "--route",
+        "6000:3000",
+        "--effective-from",
+        "2026-01-01",
+        "--key",
+        "mcp-close-routes",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-CLOSE", "--book", &b, "--json"]);
+    let workpaper = dir.join("closing-workpaper.txt");
+    std::fs::write(&workpaper, "FY2026 nominal close calculation (fa-mcp e2e)").unwrap();
+    let held = cli_data(&[
+        "document",
+        "add",
+        workpaper.to_str().unwrap(),
+        "--kind",
+        "Workpaper",
+        "--grade",
+        "HumanUpload",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let held: JsonValue = fastmcp_rust::serde_json::from_str(&held).unwrap();
+    let workpaper_oid = held["oid"].as_str().unwrap();
+    let (code, output) = cli(&[
+        "close",
+        "year-end",
+        "--fiscal-year",
+        "2026",
+        "--period",
+        "FY2026-CLOSE",
+        "--key",
+        "mcp-year-close",
+        "--evidence",
+        workpaper_oid,
+        "--yes",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{output}");
+    let expected_close = cli_data(&["verify", "close", "FY2026", "--book", &b, "--json"]);
+    let closed: JsonValue = fastmcp_rust::serde_json::from_str(&expected_close).unwrap();
+    assert_eq!(closed["nominal_zero_at_close"], json!(true));
+    assert_eq!(closed["needs_reclose"], json!(false));
+    let close_pin = closed["known_at"].as_u64().unwrap().to_string();
+    let expected_routes = cli_data(&[
+        "close",
+        "routes",
+        "--as-of",
+        "2026-12-31",
+        "--as-known-at",
+        &close_pin,
+        "--book",
+        &b,
+        "--json",
+    ]);
+
     let expected = cli_data(&[
         "statement",
         "income-statement",
@@ -340,8 +406,43 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         &b,
         "--json",
     ]);
-    let mut mcp = Mcp::start(&book);
+    let mut mcp = Mcp::start_with(
+        &book,
+        &[
+            "--cluster",
+            "fa.close",
+            "--grant",
+            "read",
+            "--grant",
+            "verify",
+        ],
+    );
     mcp.discover();
+    for (tool, arguments, expected_data, event) in [
+        (
+            "fa_close_routes",
+            json!({"as_of": "2026-12-31", "as_known_at": close_pin}),
+            &expected_routes,
+            "closing_routes",
+        ),
+        (
+            "fa_close_verify",
+            json!({"fiscal_year": "FY2026", "as_known_at": close_pin}),
+            &expected_close,
+            "close_verified",
+        ),
+    ] {
+        let (error, output, metadata) = call_tool(&mut mcp, tool, arguments);
+        assert!(!error, "{tool}: {output}");
+        assert_eq!(&output, expected_data, "{tool}");
+        let envelope: JsonValue =
+            fastmcp_rust::serde_json::from_str(metadata["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(envelope["events"], json!([event]));
+        assert_eq!(envelope["authority"]["profile"], json!("agent"));
+    }
+    // The following HEAD report also detects an accidental publication by a
+    // closing inspection tool: its known_at must still match the host result.
     let (error, output, metadata) = call_tool(
         &mut mcp,
         "fa_read_statement",

@@ -1093,7 +1093,12 @@ impl VerbTool {
     #[must_use]
     pub fn new(adapter: Arc<Adapter>, spec: ToolSpec) -> Self {
         let reg = adapter.reg;
-        let writes = reg.verb(&spec.verb).is_some_and(|v| v.writes);
+        // The close verb also owns mutations, but its routes tool only reads.
+        // Keep the exception exact so a mixed or future closing tool cannot
+        // inherit read-only annotations for a write operation.
+        let reads_closing_routes =
+            spec.verb == "close" && matches!(spec.subcommands.as_slice(), [sub] if sub == "routes");
+        let writes = reg.verb(&spec.verb).is_some_and(|v| v.writes) && !reads_closing_routes;
         let mut description = spec.description(&adapter.mcp, reg);
         description.push_str(&spec.launch_admission_note(reg, &adapter.authority));
         let definition = Tool {
@@ -2160,6 +2165,25 @@ mod tests {
             assert_eq!(err.kind, "forbidden_path", "{bad_path}: {err:?}");
             assert_eq!(err.exit, 2);
             assert_eq!(err.detail["argument"], "file");
+        }
+    }
+
+    #[test]
+    fn closing_read_tools_have_read_only_idempotent_annotations() {
+        let adapter = Arc::new(Adapter::new(config()).expect("adapter"));
+        for (wire, read_only) in [
+            ("fa_close_routes", true),
+            ("fa_close_verify", true),
+            ("fa_post_post", false),
+        ] {
+            let spec = adapter.mcp.tool_by_wire(wire).expect("tool").clone();
+            let tool = VerbTool::new(Arc::clone(&adapter), spec);
+            let annotations = tool.definition().annotations.expect("annotations");
+            assert_eq!(annotations.read_only, Some(read_only), "{wire}");
+            assert_eq!(annotations.idempotent, Some(read_only), "{wire}");
+            if read_only {
+                assert_eq!(annotations.destructive, Some(false), "{wire}");
+            }
         }
     }
 

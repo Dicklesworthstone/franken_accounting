@@ -1839,10 +1839,13 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                         Decision::Admit | Decision::Refuse => class.to_string(),
                     })
                     .collect();
+                // Only Resolution has a release disposition. Asking the
+                // matrix for release admission does not turn another class
+                // (including case-bound Closing) into a releasable hold.
                 let releases: Vec<String> = matrix
                     .admitting(state, true)
                     .into_iter()
-                    .filter(|(class, _)| posted(class))
+                    .filter(|(class, _)| *class == "Resolution" && posted(class))
                     .map(|(class, _)| format!("{class} releases"))
                     .collect();
                 let name = state.name();
