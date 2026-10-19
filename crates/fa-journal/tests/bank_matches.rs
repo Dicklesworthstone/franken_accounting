@@ -15,8 +15,9 @@ use fa_journal::import::{BankFormat, BankImportManifest, BankImportWitness};
 use fa_journal::*;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128, IntakeSource, LegPayload,
-    Oid, SealKey, Supersession, SupersessionKind, SymbolTable, Writer, account_vid, domain_digest,
+    ApprovalRef, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128, IntakeSource,
+    LegPayload, Oid, PeriodRef, SealKey, Supersession, SupersessionKind, SymbolTable, Writer,
+    account_vid, domain_digest,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_policy::{BenefitInterval, Capability, DecisionCandidate, DecisionFeature, Op, Profile};
@@ -52,6 +53,9 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        Self::with_opening_date(None)
+    }
+    fn with_opening_date(opening_date: Option<DateDay>) -> Self {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
         let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -79,7 +83,7 @@ impl Harness {
             calendar,
             time_zone_policy: None,
             entities: Vec::new(),
-            opening_date: None,
+            opening_date,
         };
         runtime
             .block_on(create_book(&mut db, &cx, &spec, &units, &symbols))
@@ -114,7 +118,7 @@ impl Harness {
                 &book,
                 &chart,
                 OWNER,
-                day(),
+                opening_date.map_or(day(), |_| DateDay::from_ymd(2026, 1, 1).unwrap()),
                 b"chart",
                 seal(&book, "chart"),
                 &schema,
@@ -193,6 +197,20 @@ impl Harness {
         self.db.frontier().unwrap()
     }
     fn entry(&mut self, amounts: &[i128], reference: &str, key: &[u8]) -> EntryRef {
+        let request = PostRequest {
+            proposal: self.entry_payload(amounts, reference, key),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: cap(OWNER),
+        };
+        let cx = self.cx();
+        self.runtime
+            .block_on(post(&mut self.db, &cx, &self.book, request))
+            .unwrap()
+            .unwrap()
+            .entry_ref()
+    }
+    fn entry_payload(&self, amounts: &[i128], reference: &str, key: &[u8]) -> EntryPayload {
         let mut legs = Vec::new();
         for amount in amounts {
             let mut leg = LegPayload::simple(
@@ -208,7 +226,7 @@ impl Harness {
             account_vid(self.book.book_id, "4000"),
             Amount::new(self.usd, amounts.iter().sum()),
         ));
-        let proposal = EntryPayload {
+        EntryPayload {
             schema_minor: fa_model::entry::SCHEMA_MINOR,
             book_id: self.book.book_id,
             branch_id: Id128::TRUNK,
@@ -234,19 +252,25 @@ impl Harness {
             external_ids: Vec::new(),
             extensions: Vec::new(),
             tags: Vec::new(),
-        };
-        let request = PostRequest {
-            proposal,
-            approvals: Vec::new(),
-            plan_certificate: None,
-            capability: cap(OWNER),
-        };
-        let cx = self.cx();
-        self.runtime
-            .block_on(post(&mut self.db, &cx, &self.book, request))
-            .unwrap()
-            .unwrap()
-            .entry_ref()
+        }
+    }
+    fn approve(&mut self, digest: [u8; 32]) -> Vec<ApprovalRef> {
+        [VId(9), VId(10)]
+            .into_iter()
+            .map(|principal| {
+                let request = ApprovalRequest {
+                    capability: Capability::embedded(principal, &["approve"]).unwrap(),
+                    approved_proposal_digest: digest,
+                    role: 0,
+                };
+                let cx = self.cx();
+                self.runtime
+                    .block_on(record_approval(&mut self.db, &cx, &self.book, request))
+                    .unwrap()
+                    .unwrap()
+                    .approval()
+            })
+            .collect()
     }
     fn imported(
         &mut self,
@@ -262,6 +286,15 @@ impl Harness {
         reference: &str,
         cents: &[i128],
         key: &[u8],
+    ) -> (BankImportWitness, Vec<Document>) {
+        self.imported_lines_at(reference, cents, key, day())
+    }
+    fn imported_lines_at(
+        &mut self,
+        reference: &str,
+        cents: &[i128],
+        key: &[u8],
+        booking_date: DateDay,
     ) -> (BankImportWitness, Vec<Document>) {
         let policy = EvidencePolicy::embedded().unwrap();
         let kind = |name| policy.kind_by_name(name).unwrap().tag;
@@ -284,8 +317,8 @@ impl Harness {
                 .fixed(&source.oid().0)
                 .u64(1)
                 .u32(u32::try_from(index + 1).unwrap())
-                .i32(day().0)
-                .i32(day().0)
+                .i32(booking_date.0)
+                .i32(booking_date.0)
                 .u8(1)
                 .u32(self.usd.0)
                 .i128(*amount)
@@ -308,7 +341,7 @@ impl Harness {
             statement_commit: source.doc_commit(),
             unit: self.usd,
             sequence_number: 1,
-            statement_date: day(),
+            statement_date: booking_date,
             opening_balance: 0,
             closing_balance: cents.iter().sum(),
             line_oids: lines.iter().map(Document::oid).collect(),
@@ -328,7 +361,7 @@ impl Harness {
             principal: OWNER,
             source: IntakeSource::Upload { principal: OWNER },
             idempotency_key: key.to_vec(),
-            effective_date: day(),
+            effective_date: booking_date,
             description: seal(&self.book, "bank import"),
             documents,
         };
@@ -763,6 +796,181 @@ fn confirmation_and_claim_damage_fail_closed_without_rewriting_earlier_facts() {
         assert_eq!(h.head(), before);
         assert!(h.confirm(&cap(CONFIRMER), request).is_err());
         assert_eq!(h.head(), before);
+    }
+}
+
+#[test]
+fn a_confirmed_migration_leg_requires_its_run_at_the_selected_prefix() {
+    for remove_run in [false, true] {
+        // The opening period is natively born Locked before this book's
+        // March go-live; the migration follows its real approved lifecycle.
+        let mut h = Harness::with_opening_date(Some(DateDay::from_ymd(2026, 3, 1).unwrap()));
+        let opening = DateDay::from_ymd(2026, 1, 1).unwrap();
+        let evidence = Document {
+            book_id: h.book.book_id,
+            kind: EvidencePolicy::embedded()
+                .unwrap()
+                .kind_by_name("Spreadsheet")
+                .unwrap()
+                .tag,
+            mime: "text/csv".into(),
+            grade: 3,
+            retrieved_by: OWNER,
+            bytes: b"account,unit,mantissa\n1000,USD,30000\n4000,USD,-30000\n".to_vec(),
+        };
+        let cx = h.cx();
+        h.runtime
+            .block_on(add_document(&mut h.db, &cx, &h.book, &evidence))
+            .unwrap()
+            .unwrap();
+        let body = RunBody {
+            book_id: h.book.book_id,
+            run_key: "bank-opening".into(),
+            source_system: "legacy-bank".into(),
+            mode: RunMode::OpeningOnly,
+            trial_balance: evidence.oid(),
+            opening_date: opening,
+            lines: vec![
+                TrialBalanceLine {
+                    account_code: "1000".into(),
+                    unit: h.usd,
+                    mantissa: 30_000,
+                },
+                TrialBalanceLine {
+                    account_code: "4000".into(),
+                    unit: h.usd,
+                    mantissa: -30_000,
+                },
+            ],
+            periods: Vec::new(),
+            detail_base: Vec::new(),
+            sole_opening_source: false,
+        };
+        let migration_cap = Capability::embedded(OWNER, &["post", "migrate"]).unwrap();
+        let open = RunControlRequest {
+            proposal: open_proposal(
+                &h.book,
+                OWNER,
+                &body,
+                vec![evidence.evidence_ref(1)],
+                b"open-bank-migration",
+                seal(&h.book, "open bank migration"),
+            )
+            .unwrap(),
+            capability: migration_cap.clone(),
+            approvals: Vec::new(),
+        };
+        h.runtime
+            .block_on(open_run(&mut h.db, &cx, &h.book, &body, open))
+            .unwrap()
+            .unwrap();
+        let mut proposal = h.entry_payload(&[10_000, 20_000], "WIRE", b"migrated-cash");
+        proposal.class = EntryClass::MIGRATION;
+        proposal.effective_date = opening;
+        proposal.effective_period = Some(PeriodRef {
+            calendar: h.book.calendar.id.clone(),
+            code: "FY2026-OPEN".into(),
+        });
+        proposal.origin = EntryOrigin::Migration {
+            run_ref: body.vid(),
+            source_system: body.source_system.clone(),
+            source_id: seal(&h.book, "legacy cash opening"),
+            source_recorded_at_ns: None,
+            source_entered_by: None,
+            source_approved_by: None,
+            batch_oid: evidence.oid(),
+        };
+        proposal.evidence = vec![evidence.evidence_ref(1)];
+        let approvals = h.approve(proposal.proposal_digest().unwrap());
+        let request = PostRequest {
+            proposal,
+            approvals,
+            plan_certificate: None,
+            capability: migration_cap.clone(),
+        };
+        let entry = h
+            .runtime
+            .block_on(post(&mut h.db, &cx, &h.book, request))
+            .unwrap()
+            .unwrap()
+            .entry_ref();
+        let proposal = plan_run_transition(
+            &h.db,
+            &h.book,
+            body.vid(),
+            fa_journal::migration::kind::FINALIZE,
+            OWNER,
+            b"finalize-bank-migration",
+            seal(&h.book, "finalize bank migration"),
+        )
+        .unwrap()
+        .unwrap();
+        let approvals = h.approve(proposal.proposal_digest().unwrap());
+        h.runtime
+            .block_on(transition_run(
+                &mut h.db,
+                &cx,
+                &h.book,
+                RunControlRequest {
+                    proposal,
+                    capability: migration_cap,
+                    approvals,
+                },
+            ))
+            .unwrap()
+            .unwrap();
+        let (import, lines) =
+            h.imported_lines_at("WIRE", &[10_000, 20_000], b"opening-statement", opening);
+        let mut first = h.request(import.clone(), lines[0].clone(), entry, 0);
+        first.lines = lines.clone();
+        let mut second = h.request(import, lines[1].clone(), entry, 1);
+        second.lines = lines;
+        let recorded = h.confirm(&cap(CONFIRMER), first.clone()).unwrap();
+        let BankMatchPreparation::Ready(prepared) =
+            prepare_bank_match(&mut h.db, &cx, &h.book, &cap(CONFIRMER), second)
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("the distinct migrated cash leg is still available");
+        };
+        assert_eq!(h.read(recorded.match_vid, None).unwrap().unwrap(), recorded);
+        let mut damage = WriteBatch::new(relation::IN_MIGRATION_RUN);
+        if remove_run {
+            damage.delete_vertex(body.vid());
+        } else {
+            damage.set_vertex_property(
+                body.vid(),
+                property::STATE,
+                Some(RunState::Abandoned.scalar()),
+            );
+        }
+        h.write(damage);
+        let damaged_at = h.head();
+        assert_eq!(
+            h.read(recorded.match_vid, None).unwrap_err().code,
+            refusal::code::BANK_MATCH_DRIFT
+        );
+        assert_eq!(
+            h.confirm(&cap(CONFIRMER), first).unwrap_err().code,
+            refusal::code::BANK_MATCH_DRIFT
+        );
+        assert_eq!(
+            h.read(recorded.match_vid, Some(recorded.recorded_at))
+                .unwrap()
+                .unwrap(),
+            recorded,
+            "a later damaged run cannot rewrite the valid original confirmation"
+        );
+        assert_eq!(
+            h.runtime
+                .block_on(prepared.commit(&mut h.db, &cx))
+                .unwrap()
+                .unwrap_err()
+                .code,
+            refusal::code::CONFLICT,
+            "publication must retain the migration-run visibility witness"
+        );
+        assert_eq!(h.head(), damaged_at);
     }
 }
 

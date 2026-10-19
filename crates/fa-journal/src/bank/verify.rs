@@ -711,6 +711,23 @@ fn sources<V: Vfs + Clone>(
             "the confirmed cash Entry changed or disappeared",
         )));
     }
+    // An unchanged Migration Entry is part of the posting universe only
+    // while its run remains visible at this selected prefix. The original
+    // proposal's visibility, checked above, cannot stand in for that fact.
+    match crate::migration::visible_at(db, &source.entry, at, &mut BTreeMap::new()) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Ok(Err(drift(
+                "the confirmed migration cash leg is no longer visible at the selected prefix",
+            )));
+        }
+        Err(KernelError::Corrupt(message)) => {
+            return Ok(Err(drift(format!(
+                "the confirmed migration cash leg's selected run projection cannot be verified: {message}"
+            ))));
+        }
+        Err(error) => return Err(error),
+    }
     let Some(leg) = source
         .entry
         .proposal
