@@ -380,14 +380,14 @@ example = "fa replay trial-balance.cert --book ./books/myco --json"
 
 [[verb]]
 name = "certificate"
-summary = "Verify a complete native report, statement comparison or publication trace, then check whether later entries affect its final report selector."
+summary = "Verify a complete native report, summary trial balance, statement comparison or publication trace, then check whether later entries affect its final report selector."
 writes = false
 subcommands = ["status"]
 flags = []
 switches = []
 events = ["certificate_status"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["certificate status <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the complete certificate retained in this book; file and inline bytes are also accepted. Current or SupersededBy is evaluated against the current book after the complete artifact verifies; supersession does not erase the historical report. For a statement diff or trace, relevance begins at the final statement frontier and the returned oid remains the outer certificate. A scenario diff's trunk side is fixed at its fork, so only Plan records its scenario gained after the certified prefix supersede it (later_entries names them); known_at is the fork. Other report families can be replayed but refuse selector status until their own relevance law is implemented."]
+usage = ["certificate status <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the complete certificate retained in this book; file and inline bytes are also accepted. Current or SupersededBy is evaluated against the current book after the complete artifact verifies; supersession does not erase the historical report. For a statement diff or trace, relevance begins at the final statement frontier and the returned oid remains the outer certificate. A scenario diff's trunk side is fixed at its fork, so only Plan records its scenario gained after the certified prefix supersede it (later_entries names them); known_at is the fork. A summary trial balance is Changed, with empty later_entries, when its root and effective selector no longer reproduces the certified report exactly at HEAD. Other report families can be replayed but refuse selector status until their own relevance law is implemented."]
 example = "fa certificate status trial-balance.cert --book ./books/myco --json"
 
 [[verb]]
@@ -1348,7 +1348,7 @@ fields = ["family:string", "file:string?", "bytes:int", "lines:int", "text:strin
 [[event]]
 name = "certificate_status"
 book = true
-doc = "A verified certificate is Current when no later entry affects its selector, otherwise SupersededBy with the later entry identities. For a scenario diff those are the Plan records its scenario gained after the certified prefix, and known_at is the fork. Its original known_at remains replayable in both cases. checked_at is the frontier at which status was evaluated."
+doc = "A verified certificate is Current when no later entry affects its selector, otherwise SupersededBy with the later entry identities. For a scenario diff those are the Plan records its scenario gained after the certified prefix, and known_at is the fork. A summary trial balance is Current when its root and effective selector reproduces the certified report exactly at checked_at (amounts, posted and pending columns, group membership, empty roots and uncovered leaves), otherwise Changed with empty later_entries: that law compares the report, not entries. Its original known_at remains replayable in every case. checked_at is the frontier at which status was evaluated."
 fields = ["oid:hex", "status:string", "known_at:seq", "checked_at:seq", "later_entries:[hex]", "replay_scope:string", "authority:string"]
 
 [[event]]
@@ -3248,7 +3248,7 @@ stdin_property = "certificate"
 stdin_kind = "string"
 stdin_via = "file"
 required = ["file"]
-dont = ["Don't treat SupersededBy as a failed historical replay: later entries can change today's report while the original still verifies."]
+dont = ["Don't treat SupersededBy or a summary trial balance's Changed as a failed historical replay: later entries can change today's report while the original still verifies."]
 mistakes = ["Looking up an oid in a different book; the operator must launch the server against the original book."]
 
 [[mcp.tool]]
