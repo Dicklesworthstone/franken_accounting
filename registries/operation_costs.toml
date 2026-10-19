@@ -456,3 +456,18 @@ hot_object_exceptions = []
 external_authorities = "none; bank files are caller-supplied evidence, never a synchronous network call"
 complexity_witness = "O(input bytes + lines) parse, canonical projection and bounded document admission; one witnessed account read; at most 1022 lines and 16 MiB of original input; bounded source-list/DAG validation and source-edge projection in the same import transaction; held-child lineage is checked at the original transaction basis"
 notes = "No monetary entries or match decisions. Re-reading reparses retained source and verifies complete projected bytes. Source custody uses the actual intake profile; derived evidence is conservatively self-sourced. DERIVED_FROM adds no publication or shared mutable object. The two-line all-fresh inline fixture writes 9 vertices and 13 edges in one publication; exact retries write nothing. External blobs are durable before graph publication; the two-barrier floor describes the inline fixture. Existing derived documents retain their original lineage."
+
+[[operation_class]]
+id = "closing_routes_record"
+name = "Journaled nominal-to-equity closing routes"
+substrate_class = "One witnessed SchemaChange control transaction"
+substrate_transactions = "1 for a new complete routing map; 0 for a semantic retry"
+today_posture = "Canonical effective-dated routes publish once with their attributable SchemaChange entry"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 SchemaChange entry carrying the complete canonical routing map and its ordinary book projection; no Account field is rewritten"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "O(chart controls + routed accounts) replay and schema/account/policy witnesses; one control publication; exact retries return the original control"
+notes = "The closing map is append-only and selected independently by effective date and recorded prefix. No shared mutable routing head or extra publication is introduced."

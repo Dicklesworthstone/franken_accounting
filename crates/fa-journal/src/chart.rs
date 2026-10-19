@@ -4,10 +4,18 @@
 //!
 //! Supports chart installation (`kind = 1`) and journaled account lifecycle
 //! controls (`kind = 2` open_account, `kind = 3` close_account, `kind = 4`
-//! promote_to_summary). Unknown schema controls fail closed until their chart
+//! promote_to_summary), plus effective closing maps (`kind = 12`). Unknown
+//! schema controls fail closed until their chart
 //! effect is understood. The low-level reader follows the register-read
 //! contract: callers admit authority and enter their query context before
 //! invoking it.
+
+mod closing;
+
+pub use closing::{
+    ClosingRoutes, ClosingRoutesRecorded, ClosingRoutesRequest, MAX_CLOSING_ROUTES,
+    SCHEMA_CHANGE_CLOSING_ROUTES, closing_routes_at, set_closing_routes,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -132,6 +140,7 @@ pub struct ChartSnapshot {
     effectivity: BTreeMap<VId, AccountEffectivity>,
     parents: BTreeMap<VId, VId>,
     children: BTreeMap<VId, Vec<VId>>,
+    closing_routes: Vec<ClosingRoutes>,
 }
 
 impl ChartSnapshot {
@@ -191,6 +200,7 @@ fn corrupt(message: impl Into<String>) -> KernelError {
 #[derive(Clone, Debug)]
 enum ChartOp {
     Install(Vec<AccountSpec>),
+    ClosingRoutes(closing::ClosingRoutesSpec),
     OpenAccount {
         spec: AccountSpec,
         opened: DateDay,
@@ -300,6 +310,19 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
                     code,
                     promotion_date,
                 }
+            }
+            Some(ControlPayload::SchemaChange {
+                kind: SCHEMA_CHANGE_CLOSING_ROUTES,
+                canonical_bytes,
+            }) => {
+                let spec = closing::ClosingRoutesSpec::decode(canonical_bytes)
+                    .map_err(|error| corrupt(format!("control {:032x}: {error}", row.vid.0)))?;
+                if spec.effective_from != entry.proposal.effective_date {
+                    return Err(corrupt(
+                        "closing-map start differs from its schema-control date",
+                    ));
+                }
+                ChartOp::ClosingRoutes(spec)
             }
             Some(ControlPayload::SchemaChange {
                 kind,
@@ -421,8 +444,18 @@ fn replay_controls(
     let mut accounts = BTreeMap::new();
     let mut effectivity: BTreeMap<VId, AccountEffectivity> = BTreeMap::new();
     let mut parents = BTreeMap::new();
-    for (created_at, _, op) in controls {
+    let mut closing_routes = Vec::new();
+    for (created_at, control_entry, op) in controls {
         match op {
+            ChartOp::ClosingRoutes(spec) => {
+                if created_at > known_at {
+                    return Err(corrupt("a closing map lies after the selected frontier"));
+                }
+                // Validate the declaration in its recorded chart state. A
+                // subsequent lifecycle change cannot rewrite an older map.
+                spec.validate(&accounts, &effectivity).map_err(corrupt)?;
+                closing_routes.push(spec.recorded(book, control_entry, created_at)?);
+            }
             ChartOp::Install(specs) => {
                 let mut batch_vids = Vec::with_capacity(specs.len());
                 for spec in specs {
@@ -546,7 +579,7 @@ fn replay_controls(
             }
         }
     }
-    finalize_snapshot(known_at, accounts, effectivity, parents)
+    finalize_snapshot(known_at, accounts, effectivity, parents, closing_routes)
 }
 
 #[cfg(test)]
@@ -567,7 +600,7 @@ fn assemble(
             &mut parents,
         )?;
     }
-    finalize_snapshot(known_at, accounts, BTreeMap::new(), parents)
+    finalize_snapshot(known_at, accounts, BTreeMap::new(), parents, Vec::new())
 }
 
 fn finalize_snapshot(
@@ -575,6 +608,7 @@ fn finalize_snapshot(
     accounts: BTreeMap<VId, AccountRow>,
     effectivity: BTreeMap<VId, AccountEffectivity>,
     parents: BTreeMap<VId, VId>,
+    closing_routes: Vec<ClosingRoutes>,
 ) -> Result<ChartSnapshot, KernelError> {
     let mut children: BTreeMap<VId, Vec<VId>> = BTreeMap::new();
     for (child, parent) in &parents {
@@ -612,6 +646,7 @@ fn finalize_snapshot(
         effectivity,
         parents,
         children,
+        closing_routes,
     })
 }
 

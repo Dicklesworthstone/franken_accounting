@@ -239,6 +239,73 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(seal(cx, &self.entropy, &self.context.seal_key, text)?)
     }
 
+    /// Journal a complete effective-dated Revenue/Expense-to-Equity routing map.
+    /// The kernel retains schema, account, capability and policy witnesses in
+    /// the same transaction as the immutable SchemaChange control.
+    pub async fn set_closing_routes(
+        &mut self,
+        cx: &PurposeContexts,
+        request: fa_journal::chart::ClosingRoutesRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::chart::ClosingRoutesRecorded> {
+        Ok(fa_journal::chart::set_closing_routes(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            request,
+        )
+        .await?)
+    }
+
+    /// Select the journaled routing version at an explicit effective date and
+    /// recorded prefix. Current whole-book authority is checked before history.
+    pub fn closing_routes_at(
+        &self,
+        cx: &PurposeContexts,
+        effective_date: DateDay,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Option<fa_journal::chart::ClosingRoutes>> {
+        self.query(cx, |db, book| {
+            if let Err(refusal) =
+                fa_journal::policy::admit_reads(db, book, capability.holder(), capability)?
+            {
+                return Ok(Err(refusal));
+            }
+            let head = db.frontier().map_err(KernelError::from)?;
+            let at = known_at.unwrap_or(head);
+            if let Err(denial) = fa_policy::reach(
+                capability,
+                &fa_policy::Reach {
+                    branch: Some(fa_model::Id128::TRUNK),
+                    observes: fa_policy::Observes::At(at),
+                    periods: None,
+                    through: None,
+                    accounts: None,
+                },
+                None,
+            ) {
+                return Ok(Err(fa_journal::policy::refusal(&denial)));
+            }
+            if at > head {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_journal::refusal::code::STRUCTURE,
+                    fa_journal::exit::USAGE,
+                    "closing routing history cannot select a future recorded sequence",
+                    "plan §7.5 (journaled closing routes)",
+                    "select HEAD or an existing recorded sequence",
+                )));
+            }
+            Ok(Ok(fa_journal::chart::closing_routes_at(
+                db,
+                book,
+                effective_date,
+                at,
+            )?))
+        })
+    }
+
     pub async fn install_chart(
         &mut self,
         cx: &PurposeContexts,

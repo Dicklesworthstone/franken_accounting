@@ -32,3 +32,10 @@ appendix_a = "Book genesis and Period birth authority (plan §7.3, FA-INV-02)"
 code_type = "fa-journal::genesis::BookSpec"
 rationale = "New Book payloads use u16 version 2 with the version-1 field layout, requiring a retained CreatePeriods declaration for every Period birth. Version-1 payloads remain decodable. Their periods created before the earliest retained CreatePeriods control use the original calendar-derived baseline, reported as legacy_periods without claiming recorded creator provenance. No old declaration is synthesized and no old payload is rewritten. This baseline cannot discover an entirely absent legacy year or prove a removed sole cutover control; version-2 books have no such fallback."
 tracking_bead = "fa-ehd"
+
+[[decision]]
+field = "SchemaChange.kind=12"
+appendix_a = "Effective-dated Account closes_to routes (plan §7.5)"
+code_type = "fa-journal::chart::closing::ClosingRoutes; SchemaChange subkind 12"
+rationale = "One canonical SchemaChange entry retains the complete sorted Revenue/Expense-to-Equity route map, effective date and digest. Chart replay validates the complete map at its recorded point; historical selection uses both effective date and recorded prefix. The write witnesses account definitions, schema controls and current policy/capability authority in its own native transaction. It never rewrites Account canonical fields or a shared mutable routing head. SchemaChange subkind 12 is distinct from the existing scenario ControlKind 12 and period-creation SchemaChange subkind 13."
+tracking_bead = "fa-4o0"

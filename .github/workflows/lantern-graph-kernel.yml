@@ -48,6 +48,7 @@ on:
       - 'crates/fa-journal/src/fx.rs'
       - 'crates/fa-journal/src/rea.rs'
       - 'crates/fa-journal/src/chart.rs'
+      - 'crates/fa-journal/src/chart/**'
       - 'crates/fa-journal/src/genesis.rs'
       - 'crates/fa-journal/src/period.rs'
       - 'crates/fa-journal/src/period_creation.rs'
@@ -173,6 +174,12 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test policy --jobs 2 -- --nocapture
+      - name: Test native journaled closing routing maps
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib chart::closing --jobs 2
       - name: Test bank statement parsers, retained intake and exact matching
         if: ${{ !cancelled() }}
         shell: bash

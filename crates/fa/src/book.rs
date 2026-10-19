@@ -2852,6 +2852,31 @@ impl Book {
         }))
     }
 
+    /// Install the complete effective-dated nominal-to-equity routing map.
+    pub fn set_closing_routes(
+        &mut self,
+        request: fa_journal::chart::ClosingRoutesRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::chart::ClosingRoutesRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.set_closing_routes(&purposes, request, capability)
+        ))
+    }
+
+    /// Read routing history under current whole-book read authority.
+    pub fn closing_routes_at(
+        &self,
+        effective_date: DateDay,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Option<fa_journal::chart::ClosingRoutes>> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core =>
+            core.closing_routes_at(&purposes, effective_date, known_at, capability)
+        )
+    }
+
     /// Derive a period-balance allocation instruction from the current immutable journal.
     pub fn prepare_balance_allocation(
         &self,

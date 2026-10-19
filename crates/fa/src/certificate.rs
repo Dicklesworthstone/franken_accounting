@@ -1364,6 +1364,13 @@ fn statement_chart_additions<V: Vfs + Clone>(
                 canonical_bytes,
             }) => canonical_bytes,
             Some(ControlPayload::SchemaChange { kind: 2..=11, .. }) => continue,
+            Some(ControlPayload::SchemaChange { kind: 12, .. }) => {
+                // Routing controls change no account membership. Validate the
+                // complete canonical chart history before treating this as an
+                // unrelated control; a malformed route map is not skippable.
+                fa_journal::chart::read_at(db, book, journal.through_seq)?;
+                continue;
+            }
             _ => {
                 return Ok(Err(invalid("chart install lacks its recorded chart body")));
             }
