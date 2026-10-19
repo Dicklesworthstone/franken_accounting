@@ -2410,6 +2410,31 @@ impl Book {
         ))
     }
 
+    /// Reconcile every selected posting leaf (or all of them) at ONE coordinate
+    /// under current whole-book read authority; unselected leaves stay explicit.
+    pub fn reconcile_aging_portfolio(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::aging::portfolio::AgingPortfolioRequest,
+    ) -> Outcome<crate::aging::portfolio::AgingPortfolio> {
+        with_store!(&self.store, core => core.reconcile_aging_portfolio(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify the whole portfolio from one shared aging/control source pair.
+    pub fn certify_aging_portfolio(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::aging::portfolio::AgingPortfolioRequest,
+    ) -> Outcome<crate::aging::portfolio::CertifiedAgingPortfolio> {
+        with_store!(&self.store, core => core.certify_aging_portfolio(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
     /// Replay any AsSupplied-supported report artifact under current authority.
     /// Families whose correctness depends on recipient-selected parameters
     /// (cash flow and aging reconciliation) intentionally refuse this shortcut.

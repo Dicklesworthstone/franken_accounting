@@ -5313,6 +5313,14 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "1000",
         "--reconcile",
     ]);
+    run2(&[
+        "gl",
+        "aging",
+        "--as-of",
+        "2026-03-25",
+        "--all-posting",
+        "--reconcile",
+    ]);
     run2(&["lots", "--account", "1400"]);
     let cf_direct = write(
         &dir,
