@@ -750,6 +750,26 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
     let receipt = replayed.as_array().unwrap().last().unwrap();
     assert_eq!(receipt["family"], json!("aging-portfolio"), "{output}");
     assert_eq!(receipt["output_digest"], certified[1]["output_digest"]);
+    // MCP accepts no host paths, so the recipient-bound workpaper comes back
+    // inline in workpaper_exported.text.
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_replay",
+        json!({"certificate": portfolio, "expect": expect, "workpaper": true}),
+    );
+    assert!(!error, "{output}");
+    let replayed: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    let exported = replayed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event.get("text").is_some_and(JsonValue::is_string))
+        .unwrap_or_else(|| panic!("no inline workpaper: {output}"));
+    assert_eq!(exported["family"], json!("aging-portfolio"));
+    assert_eq!(exported["file"], JsonValue::Null);
+    let workpaper = exported["text"].as_str().unwrap();
+    assert!(workpaper.lines().count() > 1, "{workpaper}");
+    assert_eq!(exported["lines"], json!(workpaper.lines().count()));
     let (error, output, _) = call_tool(
         &mut producer,
         "fa_read_replay",
