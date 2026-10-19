@@ -1,6 +1,6 @@
 //! Retained legacy GL sources to independently approved migration chunks.
 //!
-//! Preparation binds an existing OpeningOnly or PeriodBalances run and its
+//! Preparation binds an existing OpeningOnly, PeriodBalances or FullDetail run and its
 //! independently declared trial balances to one source, mapping and sealed proposals. The
 //! resulting Workpaper is the resume handle. Show and stage replay that complete
 //! source closure; staging submits the retained bytes to the native Migration
@@ -8,6 +8,11 @@
 //! the run, and an explicit abandon leaves its staged history invisible.
 //! PeriodBalances names its opening source entries explicitly; every other
 //! source entry keeps its effective date in a declared Historical period.
+//! FullDetail also preserves earlier history and special-period routing. Its
+//! cumulative chain starts from the independently declared detail base, and
+//! the native run predicate determines which finalized chunks affect balances.
+//! Legacy applications are not reconstructed: settlement-ready opening legs
+//! must already represent individual items net of their legacy applications.
 //! The package has the admitted Human operator's upload custody, not a
 //! Generated-grade receipt. Its source bindings and transformations must replay
 //! before inspection or staging; its custody receipt does not prove them.
@@ -26,7 +31,7 @@ use fa_model::{
 use fa_money::{Side, UnitId};
 use fa_policy::{Capability, Intent, Op, Profile};
 use fa_registry::evidence_policy::EvidencePolicy;
-use fa_time::{DateDay, PeriodKind, PeriodState};
+use fa_time::{DateDay, PeriodDef, PeriodKind, PeriodState};
 use fgdb_types::VId;
 
 use crate::args::Args;
@@ -40,6 +45,8 @@ const PACKAGE_MIME: &str = "application/vnd.frankenaccounting.legacy-opening-imp
 const PERIOD_BALANCES_DOMAIN: &[u8] = b"FA-LEGACY-PERIOD-BALANCES-IMPORT\0";
 const PERIOD_BALANCES_MIME: &str =
     "application/vnd.frankenaccounting.legacy-period-balances-import.v1";
+const FULL_DETAIL_DOMAIN: &[u8] = b"FA-LEGACY-FULL-DETAIL-IMPORT\0";
+const FULL_DETAIL_MIME: &str = "application/vnd.frankenaccounting.legacy-full-detail-import.v1";
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_PACKAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHUNKS: usize = 4096;
@@ -261,6 +268,7 @@ struct ImportRequest {
     account_map: BTreeMap<String, String>,
     column_map: Option<String>,
     opening_entries: Option<BTreeSet<String>>,
+    entry_periods: Option<BTreeMap<String, String>>,
 }
 
 fn format_name(format: LegacyFormat) -> &'static str {
@@ -290,6 +298,7 @@ impl ImportRequest {
                     | "account_map"
                     | "column_map"
                     | "opening_entries"
+                    | "entry_periods"
             ) || !seen.insert(key)
             {
                 return Err(usage(
@@ -374,7 +383,40 @@ impl ImportRequest {
                     format!(
                         "opening_entries must be an array of 1..={MAX_CHUNKS} source entry IDs"
                     ),
-                    "PeriodBalances requires an explicit opening_entries array; omit it for OpeningOnly",
+                    "PeriodBalances and non-sole FullDetail require explicit opening_entries; omit it for OpeningOnly and sole-source FullDetail",
+                ));
+            }
+        };
+        let entry_periods = match value.get("entry_periods") {
+            None => None,
+            Some(Json::Obj(entries)) if entries.len() <= MAX_CHUNKS => {
+                let mut periods = BTreeMap::new();
+                for (id, period) in entries {
+                    let code = period
+                        .as_str()
+                        .filter(|code| !code.is_empty() && code.trim() == *code)
+                        .ok_or_else(|| usage(
+                            "entry_periods values must be exact nonempty fiscal period codes",
+                            "name the source journal's actual period, including its Opening, Adjustment or Closing discriminator when applicable",
+                        ))?;
+                    if id.is_empty()
+                        || id.trim() != id
+                        || periods.insert(id.clone(), code.to_owned()).is_some()
+                    {
+                        return Err(usage(
+                            "entry_periods keys must be unique exact nonempty source journal IDs without surrounding whitespace",
+                            "use each original source journal ID once; the importer never guesses a special period from descriptions or amounts",
+                        ));
+                    }
+                }
+                Some(periods)
+            }
+            Some(_) => {
+                return Err(usage(
+                    format!(
+                        "entry_periods must be an object with at most {MAX_CHUNKS} source journal IDs"
+                    ),
+                    "FullDetail accepts entry_periods: {\"legacy-close\": \"FY2025-CLOSE\"}; omit the field for other modes",
                 ));
             }
         };
@@ -386,6 +428,7 @@ impl ImportRequest {
             account_map,
             column_map,
             opening_entries,
+            entry_periods,
         })
     }
 
@@ -416,6 +459,17 @@ impl ImportRequest {
                 Json::Arr(entries.iter().map(s).collect()),
             ));
         }
+        if let Some(periods) = &self.entry_periods {
+            fields.push((
+                "entry_periods",
+                Json::Obj(
+                    periods
+                        .iter()
+                        .map(|(id, period)| (id.clone(), s(period)))
+                        .collect(),
+                ),
+            ));
+        }
         obj(fields).render()
     }
 }
@@ -424,14 +478,15 @@ impl ImportRequest {
 enum PackageKind {
     OpeningOnly,
     PeriodBalances,
+    FullDetail,
 }
 
 impl PackageKind {
-    fn for_run(run: &Run) -> Result<Self, Fail> {
+    fn for_run(run: &Run) -> Self {
         match run.body.mode {
-            RunMode::OpeningOnly => Ok(Self::OpeningOnly),
-            RunMode::PeriodBalances => Ok(Self::PeriodBalances),
-            RunMode::FullDetail => Err(invalid("FullDetail has no retained import package format")),
+            RunMode::OpeningOnly => Self::OpeningOnly,
+            RunMode::PeriodBalances => Self::PeriodBalances,
+            RunMode::FullDetail => Self::FullDetail,
         }
     }
 
@@ -439,6 +494,7 @@ impl PackageKind {
         match self {
             Self::OpeningOnly => PACKAGE_DOMAIN,
             Self::PeriodBalances => PERIOD_BALANCES_DOMAIN,
+            Self::FullDetail => FULL_DETAIL_DOMAIN,
         }
     }
 
@@ -446,6 +502,7 @@ impl PackageKind {
         match self {
             Self::OpeningOnly => PACKAGE_MIME,
             Self::PeriodBalances => PERIOD_BALANCES_MIME,
+            Self::FullDetail => FULL_DETAIL_MIME,
         }
     }
 
@@ -453,6 +510,7 @@ impl PackageKind {
         match self {
             Self::OpeningOnly => "OpeningOnly",
             Self::PeriodBalances => "PeriodBalances",
+            Self::FullDetail => "FullDetail",
         }
     }
 }
@@ -503,6 +561,8 @@ impl Package {
             PackageKind::OpeningOnly
         } else if bytes.starts_with(PERIOD_BALANCES_DOMAIN) {
             PackageKind::PeriodBalances
+        } else if bytes.starts_with(FULL_DETAIL_DOMAIN) {
+            PackageKind::FullDetail
         } else {
             return Err(invalid("unsupported package domain"));
         };
@@ -575,21 +635,39 @@ fn full_document(book: &mut Book, cap: &Capability, oid: Oid) -> Result<Document
 }
 
 fn load_run(book: &Book, vid: VId) -> Result<Run, Fail> {
-    let run = book.migration_run(vid, None)?.ok_or_else(|| usage("the selected migration run does not exist", "open an OpeningOnly or PeriodBalances run with independently retained trial balance documents and exact typed lines before importing"))?;
-    if !matches!(
-        run.body.mode,
-        RunMode::OpeningOnly | RunMode::PeriodBalances
-    ) || run.body.lines.is_empty()
+    let run = book.migration_run(vid, None)?.ok_or_else(|| usage("the selected migration run does not exist", "open an OpeningOnly, PeriodBalances or FullDetail run with independently retained trial balance documents and exact typed lines before importing"))?;
+    if run.body.lines.is_empty()
+        && !(run.body.mode == RunMode::FullDetail && run.body.sole_opening_source)
     {
         return Err(usage(
-            "legacy import supports OpeningOnly and PeriodBalances runs with independently declared trial balances",
-            "use OpeningOnly for opening stock, or PeriodBalances for opening stock and elapsed Historical periods; FullDetail's earlier-history and sole-source modes are not supported by this importer",
+            "a run with separate opening stock requires independently declared opening lines",
+            "declare exact opening lines, or use FullDetail sole_opening_source with neither opening lines nor detail_base when historical detail is the entire source of balances",
         ));
     }
     Ok(run)
 }
 
 fn opening_period(book: &Book, run: &Run, preparing: bool) -> Result<String, Fail> {
+    if run.body.mode == RunMode::FullDetail && run.body.sole_opening_source {
+        // Native sole-source runs post no own Opening chunk. Its code is a
+        // calendar label, not an instruction to create or lock a period that
+        // may lie outside the complete historical span.
+        let calendar = &book.context().calendar;
+        let fiscal_year = calendar
+            .fiscal_year_of(run.body.opening_date)
+            .map_err(|error| {
+                invalid(format!(
+                    "run opening date is outside the calendar: {error:?}"
+                ))
+            })?;
+        return calendar
+            .periods_for_year(fiscal_year)
+            .map_err(|error| invalid(format!("run opening calendar is unavailable: {error:?}")))?
+            .into_iter()
+            .find(|period| period.kind == PeriodKind::Opening)
+            .map(|period| period.code)
+            .ok_or_else(|| invalid("the run's fiscal year has no Opening period"));
+    }
     let candidates: Vec<_> = book
         .periods()?
         .into_iter()
@@ -632,7 +710,7 @@ fn parse_source(
     match (run.body.mode, &request.opening_entries) {
         (RunMode::OpeningOnly, Some(_)) => {
             return Err(usage(
-                "opening_entries applies only to PeriodBalances imports",
+                "opening_entries applies only to PeriodBalances and non-sole FullDetail imports",
                 "omit opening_entries for OpeningOnly; that mode imports the complete source as opening stock",
             ));
         }
@@ -642,7 +720,25 @@ fn parse_source(
                 "list the exact source journal IDs representing opening stock; all other entries keep their source dates in the run's declared Historical periods",
             ));
         }
+        (RunMode::FullDetail, Some(_)) if run.body.sole_opening_source => {
+            return Err(usage(
+                "sole-source FullDetail has no opening_entries",
+                "omit opening_entries; every source journal is dated historical detail, and the native sole-source run admits no separate own Opening chunk",
+            ));
+        }
+        (RunMode::FullDetail, None) if !run.body.sole_opening_source => {
+            return Err(usage(
+                "non-sole FullDetail requires explicit opening_entries",
+                "list source journals representing separate opening stock; all remaining journals retain their dates in the declared historical span",
+            ));
+        }
         _ => {}
+    }
+    if request.entry_periods.is_some() && run.body.mode != RunMode::FullDetail {
+        return Err(usage(
+            "entry_periods applies only to FullDetail imports",
+            "omit entry_periods for OpeningOnly or PeriodBalances; FullDetail explicitly distinguishes dated historical opening, adjustment and closing journals",
+        ));
     }
     let source_text = std::str::from_utf8(&source.bytes).map_err(|_| {
         usage(
@@ -830,6 +926,256 @@ fn check_balance(fold: &BalanceFold, lines: &[TrialBalanceLine], at: &str) -> Re
     Ok(())
 }
 
+fn full_detail_routes(
+    book: &Book,
+    request: &ImportRequest,
+    run: &Run,
+    batch: &LegacyImportBatch,
+    opening: &str,
+) -> Result<Vec<SourceRoute>, Fail> {
+    let calendar = &book.context().calendar;
+    let rows = book.periods()?;
+    let mut declared_rows = Vec::with_capacity(run.body.periods.len());
+    for declared in &run.body.periods {
+        let row = rows
+            .iter()
+            .find(|row| row.calendar_id == calendar.id && row.code == declared.period_code)
+            .ok_or_else(|| invalid("a declared FullDetail Historical period is absent"))?;
+        if row.kind != PeriodKind::Historical || row.state != PeriodState::Locked {
+            return Err(invalid(
+                "FullDetail requires each declared Normal period to be born Historical and Locked",
+            ));
+        }
+        declared_rows.push(row);
+    }
+    let (Some(first), Some(last)) = (declared_rows.first(), declared_rows.last()) else {
+        return Err(invalid("FullDetail has no declared Historical span"));
+    };
+    let (from, to) = (first.start, last.end);
+    let go_live = book
+        .spec()?
+        .opening_date
+        .ok_or_else(|| invalid("FullDetail needs the book's declared opening date"))?;
+    if from >= to || to > go_live || (!run.body.sole_opening_source && from > run.body.opening_date)
+    {
+        return Err(invalid(
+            "FullDetail's declared span does not cover its required historical opening chain",
+        ));
+    }
+    let first_year = calendar.fiscal_year_of(from).map_err(|error| {
+        invalid(format!(
+            "historical span starts outside the calendar: {error:?}"
+        ))
+    })?;
+    let last_year = calendar.fiscal_year_of(to).map_err(|error| {
+        invalid(format!(
+            "historical span ends outside the calendar: {error:?}"
+        ))
+    })?;
+    let mut order = Vec::new();
+    for fiscal_year in first_year..=last_year {
+        for period in calendar.periods_for_year(fiscal_year).map_err(|error| {
+            invalid(format!(
+                "historical fiscal calendar is unavailable: {error:?}"
+            ))
+        })? {
+            if period.start >= from && period.end <= to && period.code != opening {
+                order.push(period);
+            }
+        }
+    }
+    // Match native FullDetail ordering: Opening, Normal, Adjustment, Closing.
+    // Adjustment ordinal breaks ties in the same order as calendar generation.
+    order.sort_by_key(PeriodDef::chronological_key);
+    if order
+        .iter()
+        .filter(|period| period.kind == PeriodKind::Normal)
+        .map(|period| period.code.as_str())
+        .ne(run
+            .body
+            .periods
+            .iter()
+            .map(|period| period.period_code.as_str()))
+    {
+        return Err(invalid(
+            "FullDetail's declared Normal periods are not the complete contiguous calendar span",
+        ));
+    }
+    let mut seen_ids = BTreeSet::new();
+    let mut seen_opening = BTreeSet::new();
+    let mut opening_fold = BalanceFold::new();
+    let mut period_folds: BTreeMap<&str, BalanceFold> = BTreeMap::new();
+    let mut routes = Vec::with_capacity(batch.chunks.len());
+    for (index, chunk) in batch.chunks.iter().enumerate() {
+        let id = chunk.provenance.source_id.as_str();
+        if !seen_ids.insert(id) {
+            return Err(usage(
+                "FullDetail source journal IDs are ambiguous",
+                "retain a source export with one unique ID per journal; entry_periods and opening_entries never select a guessed row",
+            ));
+        }
+        let named = request
+            .entry_periods
+            .as_ref()
+            .and_then(|periods| periods.get(id));
+        let is_opening = request
+            .opening_entries
+            .as_ref()
+            .is_some_and(|entries| entries.contains(id));
+        let (route, fold) = if is_opening {
+            if named.is_some() {
+                return Err(usage(
+                    "a source journal occurs in both opening_entries and entry_periods",
+                    "select separate opening stock with opening_entries, and route historical detail with entry_periods; a journal cannot serve both purposes",
+                ));
+            }
+            if chunk.effective_date > run.body.opening_date {
+                return Err(usage(
+                    "a selected opening entry is dated after the run opening date",
+                    "select opening-stock journals dated on or before the run's fiscal-year start; historical detail preserves its source dates",
+                ));
+            }
+            seen_opening.insert(id);
+            (
+                SourceRoute {
+                    date: run.body.opening_date,
+                    period: opening.to_owned(),
+                },
+                &mut opening_fold,
+            )
+        } else {
+            let period = if let Some(code) = named {
+                order
+                    .iter()
+                    .find(|period| period.code == *code && period.contains(chunk.effective_date))
+                    .ok_or_else(|| usage(
+                        format!("source entry {index} names a period outside its source date or the run's admitted FullDetail span"),
+                        "entry_periods must name a declared Historical Normal period or an Opening, Adjustment or Closing period inside that span; own opening stock belongs only in opening_entries",
+                    ))?
+            } else {
+                let candidates: Vec<_> = order
+                    .iter()
+                    .filter(|period| period.contains(chunk.effective_date))
+                    .collect();
+                let [period] = candidates.as_slice() else {
+                    return Err(usage(
+                        format!(
+                            "source entry {index} does not resolve to one unambiguous FullDetail period"
+                        ),
+                        "supply entry_periods for dates shared by historical Normal, Opening, Adjustment or Closing periods; include only detail in the declared span and never infer a closing journal from its description",
+                    ));
+                };
+                *period
+            };
+            let row = rows
+                .iter()
+                .find(|row| row.calendar_id == calendar.id && row.code == period.code)
+                .ok_or_else(|| usage(
+                    format!("source entry {index} targets a fiscal period that has not been created"),
+                    "create the historical fiscal year's native periods before preparing; the importer never creates or transitions periods",
+                ))?;
+            let expected_kind = if period.kind == PeriodKind::Normal {
+                PeriodKind::Historical
+            } else {
+                period.kind
+            };
+            if row.kind != expected_kind
+                || row.state != PeriodState::Locked
+                || row.start != period.start
+                || row.end != period.end
+            {
+                return Err(invalid(
+                    "a FullDetail destination is not the matching locked historical calendar period",
+                ));
+            }
+            (
+                SourceRoute {
+                    date: chunk.effective_date,
+                    period: period.code.clone(),
+                },
+                period_folds.entry(period.code.as_str()).or_default(),
+            )
+        };
+        // Preserve every source leg and its ordinal. In particular, separate
+        // net open-invoice legs must never collapse into an account total.
+        for leg in &chunk.legs {
+            let amount = match leg.side {
+                Side::Debit => leg.amount.mantissa,
+                Side::Credit => leg
+                    .amount
+                    .mantissa
+                    .checked_neg()
+                    .ok_or_else(|| invalid("source credit cannot be negated exactly"))?,
+            };
+            add_balance(fold, &leg.account_code, leg.amount.unit, amount)?;
+        }
+        routes.push(route);
+    }
+    if request
+        .opening_entries
+        .as_ref()
+        .is_some_and(|selected| selected.len() != seen_opening.len())
+    {
+        return Err(usage(
+            "opening_entries contains an ID absent from the complete source",
+            "use exact source journal IDs for the separate opening-stock entries",
+        ));
+    }
+    if request
+        .entry_periods
+        .as_ref()
+        .is_some_and(|periods| periods.keys().any(|id| !seen_ids.contains(id.as_str())))
+    {
+        return Err(usage(
+            "entry_periods contains an ID absent from the complete source",
+            "map only exact retained source journal IDs; period selections remain private sealed configuration",
+        ));
+    }
+    check_balance(&opening_fold, &run.body.lines, "at the opening")?;
+    let mut chain = BalanceFold::new();
+    for line in &run.body.detail_base {
+        add_balance(&mut chain, &line.account_code, line.unit, line.mantissa)?;
+    }
+    let mut opening_checked = run.body.sole_opening_source;
+    for period in &order {
+        if !opening_checked && period.start >= run.body.opening_date {
+            check_balance(
+                &chain,
+                &run.body.lines,
+                "at the historical opening boundary",
+            )?;
+            opening_checked = true;
+        }
+        if let Some(movement) = period_folds.get(period.code.as_str()) {
+            for ((account, unit), amount) in movement {
+                add_balance(&mut chain, account, *unit, *amount)?;
+            }
+        }
+        if let Some(declared) = run
+            .body
+            .periods
+            .iter()
+            .find(|declared| declared.period_code == period.code)
+        {
+            // A Normal period's checkpoint is pre-adjustment and pre-closing;
+            // quiet periods still tie out without an invented zero-value JE.
+            check_balance(
+                &chain,
+                &declared.lines,
+                &format!("through `{}`", period.code),
+            )?;
+        }
+    }
+    if !opening_checked {
+        check_balance(
+            &chain,
+            &run.body.lines,
+            "at the historical opening boundary",
+        )?;
+    }
+    Ok(routes)
+}
+
 fn source_routes(
     book: &Book,
     request: &ImportRequest,
@@ -846,6 +1192,9 @@ fn source_routes(
                 period: opening.to_owned(),
             })
             .collect());
+    }
+    if run.body.mode == RunMode::FullDetail {
+        return full_detail_routes(book, request, run, batch, opening);
     }
     let selected = request
         .opening_entries
@@ -969,17 +1318,20 @@ fn route_proposals(
     if proposals.len() != routes.len() {
         return Err(invalid("source routing and proposal counts differ"));
     }
-    if kind == PackageKind::PeriodBalances {
-        for (index, (proposal, route)) in proposals.iter_mut().zip(routes).enumerate() {
-            proposal.effective_date = route.date;
-            proposal
-                .effective_period
-                .as_mut()
-                .ok_or_else(|| invalid("source proposal has no period"))?
-                .code
-                .clone_from(&route.period);
-            proposal.idempotency_key = format!("legacy-period-balances:v1:{index}").into_bytes();
-        }
+    let prefix = match kind {
+        PackageKind::OpeningOnly => return Ok(()),
+        PackageKind::PeriodBalances => "legacy-period-balances:v1",
+        PackageKind::FullDetail => "legacy-full-detail:v1",
+    };
+    for (index, (proposal, route)) in proposals.iter_mut().zip(routes).enumerate() {
+        proposal.effective_date = route.date;
+        proposal
+            .effective_period
+            .as_mut()
+            .ok_or_else(|| invalid("source proposal has no period"))?
+            .code
+            .clone_from(&route.period);
+        proposal.idempotency_key = format!("{prefix}:{index}").into_bytes();
     }
     Ok(())
 }
@@ -1141,7 +1493,10 @@ fn retained_package(
     for summary in book.documents(None)?? {
         if summary.kind != kind
             || summary.grade != grade
-            || !matches!(summary.mime.as_str(), PACKAGE_MIME | PERIOD_BALANCES_MIME)
+            || !matches!(
+                summary.mime.as_str(),
+                PACKAGE_MIME | PERIOD_BALANCES_MIME | FULL_DETAIL_MIME
+            )
         {
             continue;
         }
@@ -1181,7 +1536,10 @@ fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Load
     if document.oid() != selected
         || document.kind != kind
         || document.grade != grade
-        || !matches!(document.mime.as_str(), PACKAGE_MIME | PERIOD_BALANCES_MIME)
+        || !matches!(
+            document.mime.as_str(),
+            PACKAGE_MIME | PERIOD_BALANCES_MIME | FULL_DETAIL_MIME
+        )
     {
         return Err(invalid(
             "selected Document is not a legacy import Workpaper retained by a Human upload",
@@ -1212,7 +1570,7 @@ fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Load
         ));
     }
     let run = load_run(book, package.run)?;
-    if package.kind != PackageKind::for_run(&run)? {
+    if package.kind != PackageKind::for_run(&run) {
         return Err(invalid("package mode differs from the migration run"));
     }
     if run.body.digest().map_err(BookError::Kernel)? != package.run_body_digest {
@@ -1312,7 +1670,7 @@ fn fields(book: &Book, loaded: &Loaded) -> Result<Vec<(&'static str, Json)>, Fai
             if let Some(date) = proposal.document_date {
                 fields.push(("document_date", s(date.render())));
             }
-            if loaded.package.kind == PackageKind::PeriodBalances {
+            if loaded.package.kind != PackageKind::OpeningOnly {
                 fields.push((
                     "effective_period",
                     s(&proposal
@@ -1322,13 +1680,23 @@ fn fields(book: &Book, loaded: &Loaded) -> Result<Vec<(&'static str, Json)>, Fai
                         .code),
                 ));
             }
+            if loaded.package.kind == PackageKind::FullDetail {
+                fields.push((
+                    "counts_after_finalize",
+                    Json::Bool(
+                        loaded.run.state != RunState::Abandoned
+                            && (loaded.run.body.sole_opening_source
+                                || proposal.effective_date >= loaded.run.body.opening_date),
+                    ),
+                ));
+            }
             if let Some(chunk) = loaded.tie.chunks.iter().find(|chunk| chunk.vid == vid) {
                 fields.push(("recorded_at", Json::Int(i128::from(chunk.recorded_at.0))));
             }
             Ok(obj(fields))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
-    Ok(vec![
+    let mut fields = vec![
         ("package_oid", s(hex(&loaded.document.oid().0))),
         ("package_commit", s(hex(&loaded.document.doc_commit()))),
         ("run_vid", s(format!("{:032x}", loaded.run.vid.0))),
@@ -1349,7 +1717,14 @@ fn fields(book: &Book, loaded: &Loaded) -> Result<Vec<(&'static str, Json)>, Fai
         ("run_state", s(loaded.run.state.name())),
         ("ties_out", Json::Bool(loaded.tie.mismatches.is_empty())),
         ("chunks", Json::Arr(chunks)),
-    ])
+    ];
+    if loaded.package.kind == PackageKind::FullDetail {
+        fields.push((
+            "sole_opening_source",
+            Json::Bool(loaded.run.body.sole_opening_source),
+        ));
+    }
+    Ok(fields)
 }
 
 fn review_text(book: &Book, loaded: &Loaded) -> Result<String, Fail> {
@@ -1367,7 +1742,7 @@ fn review_text(book: &Book, loaded: &Loaded) -> Result<String, Fail> {
                 .proposal_digest()
                 .map_err(|error| invalid(error.to_string()))?),
             proposal.effective_date.render(),
-            if loaded.package.kind == PackageKind::PeriodBalances {
+            if loaded.package.kind != PackageKind::OpeningOnly {
                 format!(
                     " in {}",
                     proposal
@@ -1381,6 +1756,15 @@ fn review_text(book: &Book, loaded: &Loaded) -> Result<String, Fail> {
             },
             source.effective_date.render()
         ));
+        if loaded.package.kind == PackageKind::FullDetail {
+            if loaded.run.state == RunState::Abandoned {
+                lines.push("  abandoned run; this chunk remains permanently invisible to balances and open items".into());
+            } else if !loaded.run.body.sole_opening_source
+                && proposal.effective_date < loaded.run.body.opening_date
+            {
+                lines.push("  retained historical detail; excluded from balances and open items after finalization".into());
+            }
+        }
         for (leg, source) in proposal.legs.iter().zip(&source.legs) {
             lines.push(format!(
                 "  {} {} {}",
@@ -1436,7 +1820,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             let period = opening_period(&book, &run, true)?;
             let routes = source_routes(&book, &request, &run, &batch, &period)?;
-            let kind = PackageKind::for_run(&run)?;
+            let kind = PackageKind::for_run(&run);
             let mut proposals = batch.to_chunk_proposals_with_sealer(
                 book.context(),
                 run.vid,

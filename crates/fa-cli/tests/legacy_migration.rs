@@ -32,6 +32,47 @@ const COLUMNS: &str = "[columns]\nsource_system = \"legacy-csv\"\nentry_id_colum
 const GENERIC: &str = "entry,date,recorded,account,amount,description,memo,entered,approved\nprivate-source-entry-one,2025-12-30,2025-12-30T15:20:00Z,Private legacy checking account,125.50,Private retained description,Private retained cash memo,legacy-preparer,legacy-reviewer\nprivate-source-entry-one,2025-12-30,2025-12-30T15:20:00Z,Private legacy opening equity,-125.50,Private retained description,Private retained equity memo,legacy-preparer,legacy-reviewer\n";
 const PERIOD_ACTIVITY: &str = "private-january-revenue,2026-01-01,Private legacy checking account,20.00,,USD,Private January cash,2026-01-02T12:30:00Z,private-period-author\nprivate-january-revenue,2026-01-01,Private legacy revenue,,20.00,USD,Private January revenue,2026-01-02T12:30:00Z,private-period-author\nprivate-january-expense,2026-01-20,Private legacy expense,5.00,,USD,Private January expense,2026-01-21T12:30:00Z,private-period-author\nprivate-january-expense,2026-01-20,Private legacy checking account,,5.00,USD,Private January payment,2026-01-21T12:30:00Z,private-period-author\nprivate-march-revenue,2026-03-15,Private legacy checking account,30.00,,USD,Private March cash,2026-03-16T12:30:00Z,private-period-author\nprivate-march-revenue,2026-03-15,Private legacy revenue,,30.00,USD,Private March revenue,2026-03-16T12:30:00Z,private-period-author\n";
 
+fn full_detail_source(sole: bool) -> String {
+    let mut source = format!("{}\n", QB.lines().next().unwrap());
+    if sole {
+        source.push_str("private-history-funding,2025-01-01,Private legacy checking account,100.00,,USD,Private founding deposit,2025-01-02T12:00:00Z,private-history-author\nprivate-history-funding,2025-01-01,Private legacy opening equity,,100.00,USD,Private founding capital,2025-01-02T12:00:00Z,private-history-author\n");
+    }
+    source.push_str("private-history-revenue,2025-12-15,Private legacy checking account,20.00,,USD,Private prior-year cash,2025-12-16T12:00:00Z,private-history-author\nprivate-history-revenue,2025-12-15,Private legacy revenue,,20.00,USD,Private prior-year revenue,2025-12-16T12:00:00Z,private-history-author\n");
+    if sole {
+        source.push_str("private-history-adjustment,2025-12-31,Private legacy expense,2.00,,USD,Private year-end adjustment,2025-12-31T12:00:00Z,private-history-author\nprivate-history-adjustment,2025-12-31,Private legacy checking account,,2.00,USD,Private year-end payment,2025-12-31T12:00:00Z,private-history-author\nprivate-history-close,2025-12-31,Private legacy revenue,20.00,,USD,Private close revenue,2025-12-31T18:00:00Z,private-history-author\nprivate-history-close,2025-12-31,Private legacy expense,,2.00,USD,Private close expense,2025-12-31T18:00:00Z,private-history-author\nprivate-history-close,2025-12-31,Private legacy opening equity,,18.00,USD,Private close earnings,2025-12-31T18:00:00Z,private-history-author\n");
+    } else {
+        source.push_str("private-history-close,2025-12-31,Private legacy revenue,20.00,,USD,Private close revenue,2025-12-31T18:00:00Z,private-history-author\nprivate-history-close,2025-12-31,Private legacy opening equity,,20.00,USD,Private close earnings,2025-12-31T18:00:00Z,private-history-author\nprivate-full-opening,2025-12-31,Private legacy checking account,120.00,,USD,Private next-year opening cash,2025-12-31T19:00:00Z,private-history-author\nprivate-full-opening,2025-12-31,Private legacy opening equity,,120.00,USD,Private next-year opening equity,2025-12-31T19:00:00Z,private-history-author\nprivate-full-january-sale,2026-01-01,Private legacy checking account,5.00,,USD,Private January sale cash,2026-01-02T12:00:00Z,private-history-author\nprivate-full-january-sale,2026-01-01,Private legacy revenue,,5.00,USD,Private January sale revenue,2026-01-02T12:00:00Z,private-history-author\nprivate-full-january-payment,2026-01-20,Private legacy expense,3.00,,USD,Private January expense,2026-01-21T12:00:00Z,private-history-author\nprivate-full-january-payment,2026-01-20,Private legacy checking account,,3.00,USD,Private January payment,2026-01-21T12:00:00Z,private-history-author\nprivate-full-march-sale,2026-03-15,Private legacy checking account,10.00,,USD,Private March sale cash,2026-03-16T12:00:00Z,private-history-author\nprivate-full-march-sale,2026-03-15,Private legacy revenue,,10.00,USD,Private March sale revenue,2026-03-16T12:00:00Z,private-history-author\n");
+    }
+    source
+}
+
+fn tb_lines(lines: &[(&str, &str)]) -> Json {
+    Json::Arr(
+        lines
+            .iter()
+            .map(|(account, net)| {
+                obj(vec![
+                    ("account", s(*account)),
+                    ("unit", s("USD")),
+                    ("net", s(*net)),
+                ])
+            })
+            .collect(),
+    )
+}
+
+fn tb_document(period: &str, lines: &[(&str, &str)]) -> String {
+    let mut document = format!("period,{period}\naccount,unit,debit,credit\n");
+    for (account, net) in lines {
+        if let Some(credit) = net.strip_prefix('-') {
+            document.push_str(&format!("{account},USD,,{credit}\n"));
+        } else {
+            document.push_str(&format!("{account},USD,{net},\n"));
+        }
+    }
+    document
+}
+
 fn data(value: &Json) -> &Json {
     value.get("data").expect("robot data")
 }
@@ -111,6 +152,7 @@ struct Fixture {
     run_vid: String,
     format: String,
     opening_entries: Option<Vec<String>>,
+    entry_periods: Option<Json>,
     period_trial_balances: Vec<String>,
 }
 
@@ -152,6 +194,7 @@ impl Fixture {
             run_vid: String::new(),
             format: format.into(),
             opening_entries: None,
+            entry_periods: None,
             period_trial_balances: Vec::new(),
         };
         let chart = fixture.file("chart.json", &format!(r#"{{"accounts":[{{"code":"1000","name":"Cash","type":"Asset","unit":"{unit}"}},{{"code":"3000","name":"Opening equity","type":"Equity","unit":"{unit}"}}]}}"#));
@@ -192,6 +235,148 @@ impl Fixture {
             middle_tb_kind,
         );
         fixture
+    }
+
+    fn full_detail(sole: bool, source_kind: &str) -> (Self, Json) {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = loop {
+            let path = std::env::temp_dir().join(format!(
+                "fa-full-detail-migration-cli-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => break path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create retained fixture {}: {error}", path.display()),
+            }
+        };
+        let book = dir.join("book");
+        ok(
+            &book,
+            &[
+                "book",
+                "create",
+                "--name",
+                "Full historical legacy import",
+                "--base-unit",
+                "USD",
+                "--opening-date",
+                if sole { "2026-01-01" } else { "2026-04-01" },
+            ],
+        );
+        let mut fixture = Self {
+            dir,
+            book,
+            unit: "USD".into(),
+            source: String::new(),
+            trial_balance: String::new(),
+            run_vid: String::new(),
+            format: "quickbooks-csv".into(),
+            opening_entries: (!sole).then(|| vec!["private-full-opening".into()]),
+            entry_periods: Some(obj(vec![("private-history-close", s("FY2025-CLOSE"))])),
+            period_trial_balances: Vec::new(),
+        };
+        if sole {
+            fixture.entry_periods = Some(obj(vec![
+                ("private-history-funding", s("FY2025-OPEN")),
+                ("private-history-adjustment", s("FY2025-A1")),
+                ("private-history-close", s("FY2025-CLOSE")),
+            ]));
+        }
+        let chart = fixture.file("full-detail-chart.json", r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Opening equity","type":"Equity","unit":"USD"},{"code":"4000","name":"Legacy revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Legacy expense","type":"Expense","unit":"USD"}]}"#);
+        ok(&fixture.book, &["chart", "import", &chart]);
+        ok(
+            &fixture.book,
+            &["period", "create", "--fiscal-year", "2025"],
+        );
+        if !sole {
+            ok(
+                &fixture.book,
+                &["period", "create", "--fiscal-year", "2026"],
+            );
+        }
+        fixture.source = fixture.document(
+            "full-detail-original.csv",
+            &full_detail_source(sole),
+            source_kind,
+        );
+        let opening: &[(&str, &str)] = if sole {
+            &[]
+        } else {
+            &[("1000", "120.00"), ("3000", "-120.00")]
+        };
+        fixture.trial_balance = fixture.document(
+            "full-detail-opening-tb.csv",
+            &tb_document("separate-opening", opening),
+            "Spreadsheet",
+        );
+        let mut balances = Vec::new();
+        if sole {
+            for month in 1..=11 {
+                balances.push((
+                    format!("FY2025-P{month:02}"),
+                    vec![("1000", "100.00"), ("3000", "-100.00")],
+                ));
+            }
+        }
+        balances.push((
+            "FY2025-P12".to_owned(),
+            vec![("1000", "120.00"), ("3000", "-100.00"), ("4000", "-20.00")],
+        ));
+        if !sole {
+            for (period, cash, revenue) in [
+                ("FY2026-P01", "122.00", "-5.00"),
+                ("FY2026-P02", "122.00", "-5.00"),
+                ("FY2026-P03", "132.00", "-15.00"),
+            ] {
+                balances.push((
+                    period.to_owned(),
+                    vec![
+                        ("1000", cash),
+                        ("3000", "-120.00"),
+                        ("4000", revenue),
+                        ("6000", "3.00"),
+                    ],
+                ));
+            }
+        }
+        let mut periods = Vec::new();
+        for (period, lines) in balances {
+            let document = fixture.document(
+                &format!("full-detail-{period}.csv"),
+                &tb_document(&period, &lines),
+                "Spreadsheet",
+            );
+            periods.push(obj(vec![
+                ("period", s(period)),
+                ("trial_balance", s(&document)),
+                ("lines", tb_lines(&lines)),
+            ]));
+            fixture.period_trial_balances.push(document);
+        }
+        let body = obj(vec![
+            ("run_key", s("full-detail-history")),
+            ("source_system", s("quickbooks-csv")),
+            ("mode", s("FullDetail")),
+            ("trial_balance", s(&fixture.trial_balance)),
+            ("opening_date", s("2026-01-01")),
+            ("lines", tb_lines(opening)),
+            ("periods", Json::Arr(periods)),
+            (
+                "detail_base",
+                tb_lines(if sole {
+                    &[]
+                } else {
+                    &[("1000", "100.00"), ("3000", "-100.00")]
+                }),
+            ),
+            ("sole_opening_source", Json::Bool(sole)),
+        ]);
+        let path = fixture.file("full-detail-run.json", &body.render());
+        let opened = ok(&fixture.book, &["migrate", "open", "--intent", &path]);
+        fixture.run_vid = text(data(&opened), "run_vid").into();
+        (fixture, body)
     }
 
     fn open_period_run(
@@ -333,7 +518,7 @@ impl Fixture {
 
     fn intent(&self) -> Json {
         let mut mappings = vec![(LEGACY_CASH, s("1000")), (LEGACY_EQUITY, s("3000"))];
-        if self.opening_entries.is_some() {
+        if self.opening_entries.is_some() || self.entry_periods.is_some() {
             mappings.extend([(LEGACY_REVENUE, s("4000")), (LEGACY_EXPENSE, s("6000"))]);
         }
         let mut fields = vec![
@@ -350,6 +535,9 @@ impl Fixture {
                 "opening_entries",
                 Json::Arr(entries.iter().map(s).collect()),
             ));
+        }
+        if let Some(periods) = &self.entry_periods {
+            fields.push(("entry_periods", periods.clone()));
         }
         obj(fields)
     }
@@ -586,6 +774,724 @@ impl Fixture {
         assert_eq!(head(&self.book), before_retry);
         ok(&self.book, &["verify", "registers", "--period", OPENING]);
     }
+}
+
+fn stage_full_detail(fixture: &Fixture, prepared: &Json, period: &str) -> Vec<(String, String)> {
+    let package = text(data(prepared), "package_oid");
+    let chunks = rows(data(prepared), "chunks");
+    let approvals: Vec<_> = chunks
+        .iter()
+        .map(|chunk| {
+            let digest = text(chunk, "proposal_digest");
+            (
+                fixture.approve(digest, "full-detail-reviewer-one"),
+                fixture.approve(digest, "full-detail-reviewer-two"),
+            )
+        })
+        .collect();
+    for (count, index) in (0..chunks.len()).rev().enumerate() {
+        let (first, second) = &approvals[index];
+        let before = head(&fixture.book);
+        let staged = fixture.stage(package, index, &[first, second]);
+        assert_eq!(text(&staged, "event"), "migration_import_staged");
+        assert_eq!(
+            text(data(&staged), "entry_vid"),
+            text(&chunks[index], "entry_vid")
+        );
+        assert_eq!(
+            integer(data(&staged), "recorded_count"),
+            (count + 1) as i128
+        );
+        assert_eq!(
+            data(&staged).get("ready_to_finalize"),
+            Some(&Json::Bool(count + 1 == chunks.len()))
+        );
+        assert!(integer(data(&staged), "recorded_at") > before);
+        assert_eq!(fixture.cash_at(period, None), "0.00 USD");
+        let book = fixture.open();
+        let vid = VId(u128::from_str_radix(text(data(&staged), "entry_vid"), 16).unwrap());
+        let (entry, recorded) = book.read_entry(vid).unwrap().unwrap();
+        assert_eq!(
+            i128::from(recorded.0),
+            integer(data(&staged), "recorded_at")
+        );
+        assert_eq!(
+            entry.proposal.effective_date.render(),
+            text(&chunks[index], "effective_date")
+        );
+        assert_eq!(
+            entry.proposal.effective_period.as_ref().unwrap().code,
+            text(&chunks[index], "effective_period")
+        );
+        assert_eq!(
+            entry.proposal.legs.len() as i128,
+            integer(&chunks[index], "leg_count")
+        );
+        drop(book);
+        let before_retry = head(&fixture.book);
+        let retried = fixture.stage(package, index, &[first, second]);
+        assert_eq!(
+            data(&retried).get("already_recorded"),
+            Some(&Json::Bool(true))
+        );
+        assert_eq!(
+            data(&retried).get("recorded_at"),
+            data(&staged).get("recorded_at")
+        );
+        assert_eq!(head(&fixture.book), before_retry);
+    }
+    assert_eq!(
+        data(&fixture.show(package)).get("ties_out"),
+        Some(&Json::Bool(true))
+    );
+    approvals
+}
+
+fn assert_cash_open_items(fixture: &Fixture, before_finalize: i128, expected: &[(&str, i128)]) {
+    let book = fixture.open();
+    let account = fa_model::account_vid(book.context().book_id, "1000");
+    let before = fgdb_types::CommitSeq(u64::try_from(before_finalize).unwrap());
+    assert!(
+        book.open_items(Some(account), Some(before))
+            .unwrap()
+            .is_empty()
+    );
+    let mut actual: Vec<_> = book
+        .open_items(Some(account), None)
+        .unwrap()
+        .iter()
+        .map(|item| {
+            assert_eq!(item.applied, 0);
+            assert_eq!(item.applied_out, 0);
+            assert_eq!(item.open, item.original);
+            let signed = match item.side {
+                fa_money::Side::Debit => item.open,
+                fa_money::Side::Credit => item.open.checked_neg().unwrap(),
+            };
+            (item.effective_date.render(), signed)
+        })
+        .collect();
+    actual.sort();
+    let expected: Vec<_> = expected
+        .iter()
+        .map(|(date, net)| (date.to_string(), *net))
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "open items obey the same native migration cutoff as stock balances"
+    );
+}
+
+#[test]
+fn full_detail_preserves_history_and_counts_only_the_separate_opening_and_later_detail() {
+    let (fixture, _) = Fixture::full_detail(false, "Spreadsheet");
+    let prepared = fixture.prepare();
+    assert_eq!(text(data(&prepared), "mode"), "FullDetail");
+    assert_eq!(
+        data(&prepared).get("sole_opening_source"),
+        Some(&Json::Bool(false))
+    );
+    assert_eq!(integer(data(&prepared), "chunk_count"), 6);
+    assert!(!prepared.render().contains("private-"));
+    let package = text(data(&prepared), "package_oid").to_owned();
+    let chunks = rows(data(&prepared), "chunks");
+    let mut before_opening = 0;
+    let mut own_opening = 0;
+    for chunk in chunks {
+        let period = text(chunk, "effective_period");
+        let date = text(chunk, "effective_date");
+        let historical = period.starts_with("FY2025-");
+        assert_eq!(
+            chunk.get("counts_after_finalize"),
+            Some(&Json::Bool(!historical))
+        );
+        if historical {
+            before_opening += 1;
+            assert_eq!(date, text(chunk, "document_date"));
+            assert!(matches!(period, "FY2025-P12" | "FY2025-CLOSE"));
+        } else if period == OPENING {
+            own_opening += 1;
+            assert_eq!(date, "2026-01-01");
+            assert_eq!(text(chunk, "document_date"), "2025-12-31");
+        } else {
+            assert_eq!(date, text(chunk, "document_date"));
+            assert!(matches!(period, "FY2026-P01" | "FY2026-P03"));
+        }
+    }
+    assert_eq!((before_opening, own_opening), (2, 1));
+    let before_retry = head(&fixture.book);
+    let repeated = fixture.prepare();
+    assert_eq!(data(&repeated).get("chunks"), data(&prepared).get("chunks"));
+    assert_eq!(text(data(&repeated), "package_oid"), package);
+    assert_eq!(
+        data(&repeated).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(head(&fixture.book), before_retry);
+    let approvals = stage_full_detail(&fixture, &prepared, "FY2026-P03");
+    let before_finalize = head(&fixture.book);
+    assert_eq!(
+        text(data(&fixture.finalize("full-detail-finalize.plan")), "to"),
+        "Finalized"
+    );
+    for (period, cash, movement) in [
+        (OPENING, "125.00 USD", "120.00 USD"),
+        ("FY2026-P01", "122.00 USD", "2.00 USD"),
+        ("FY2026-P02", "122.00 USD", "0.00 USD"),
+        ("FY2026-P03", "132.00 USD", "10.00 USD"),
+    ] {
+        assert_eq!(fixture.cash_at(period, None), cash, "stock at {period}");
+        assert_eq!(
+            fixture.cash_activity(period),
+            movement,
+            "movement in {period}"
+        );
+        assert_eq!(fixture.cash_at(period, Some(before_finalize)), "0.00 USD");
+        ok(&fixture.book, &["verify", "registers", "--period", period]);
+    }
+    for period in ["FY2025-P12", "FY2025-CLOSE"] {
+        assert_eq!(fixture.cash_at(period, None), "0.00 USD");
+        let report = ok(&fixture.book, &["tb", "--period", period, "--activity"]);
+        assert!(
+            rows(data(&report), "rows").is_empty(),
+            "old {period} stays drill-down evidence"
+        );
+    }
+    assert_cash_open_items(
+        &fixture,
+        before_finalize,
+        &[
+            ("2026-01-01", 500),
+            ("2026-01-01", 12_000),
+            ("2026-01-20", -300),
+            ("2026-03-15", 1_000),
+        ],
+    );
+    let before_retry = head(&fixture.book);
+    let repeated = fixture.prepare();
+    assert_eq!(text(data(&repeated), "run_state"), "Finalized");
+    assert_eq!(text(data(&repeated), "package_oid"), package);
+    let retried = fixture.stage(&package, 0, &[&approvals[0].0, &approvals[0].1]);
+    assert_eq!(
+        data(&retried).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(head(&fixture.book), before_retry);
+}
+
+#[test]
+fn sole_full_detail_imports_older_opening_adjustment_and_closing_without_an_own_opening_period() {
+    let (fixture, _) = Fixture::full_detail(true, "Spreadsheet");
+    {
+        let book = fixture.open();
+        assert!(
+            book.periods()
+                .unwrap()
+                .iter()
+                .all(|period| !period.code.starts_with("FY2026-"))
+        );
+    }
+    let prepared = fixture.prepare();
+    assert_eq!(text(data(&prepared), "mode"), "FullDetail");
+    assert_eq!(
+        data(&prepared).get("sole_opening_source"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(text(data(&prepared), "opening_period"), OPENING);
+    let chunks = rows(data(&prepared), "chunks");
+    assert_eq!(chunks.len(), 4);
+    let mut periods: Vec<_> = chunks
+        .iter()
+        .map(|chunk| text(chunk, "effective_period"))
+        .collect();
+    periods.sort_unstable();
+    assert_eq!(
+        periods,
+        ["FY2025-A1", "FY2025-CLOSE", "FY2025-OPEN", "FY2025-P12"]
+    );
+    for chunk in chunks {
+        assert_eq!(chunk.get("counts_after_finalize"), Some(&Json::Bool(true)));
+        assert_eq!(text(chunk, "effective_date"), text(chunk, "document_date"));
+        let expected_legs = if text(chunk, "effective_period") == "FY2025-CLOSE" {
+            3
+        } else {
+            2
+        };
+        assert_eq!(integer(chunk, "leg_count"), expected_legs);
+    }
+    let package = text(data(&prepared), "package_oid").to_owned();
+    let mut book = fixture.open();
+    let reader = Capability::embedded(VId(504), &["read"]).unwrap();
+    let DocumentRead::Full(document) = book
+        .read_document_for(&reader, &parse_oid(&package))
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("full-detail package is retained under current read authority");
+    };
+    assert_eq!(
+        document.mime,
+        "application/vnd.frankenaccounting.legacy-full-detail-import.v1"
+    );
+    assert!(
+        document
+            .bytes
+            .starts_with(b"FA-LEGACY-FULL-DETAIL-IMPORT\0")
+    );
+    drop(book);
+    let approvals = stage_full_detail(&fixture, &prepared, "FY2025-P12");
+    let before_finalize = head(&fixture.book);
+    assert_eq!(
+        text(data(&fixture.finalize("sole-finalize.plan")), "to"),
+        "Finalized"
+    );
+    assert_eq!(fixture.cash_at("FY2025-P01", None), "100.00 USD");
+    assert_eq!(fixture.cash_at("FY2025-P12", None), "118.00 USD");
+    assert_eq!(
+        fixture.cash_at("FY2025-P12", Some(before_finalize)),
+        "0.00 USD"
+    );
+    for (period, movement) in [
+        ("FY2025-OPEN", "100.00 USD"),
+        ("FY2025-P01", "0.00 USD"),
+        ("FY2025-P12", "20.00 USD"),
+        ("FY2025-A1", "-2.00 USD"),
+        ("FY2025-CLOSE", "0.00 USD"),
+    ] {
+        assert_eq!(fixture.cash_activity(period), movement);
+        ok(&fixture.book, &["verify", "registers", "--period", period]);
+    }
+    assert_cash_open_items(
+        &fixture,
+        before_finalize,
+        &[
+            ("2025-01-01", 10_000),
+            ("2025-12-15", 2_000),
+            ("2025-12-31", -200),
+        ],
+    );
+    let book = fixture.open();
+    assert!(
+        book.periods()
+            .unwrap()
+            .iter()
+            .all(|period| !period.code.starts_with("FY2026-"))
+    );
+    drop(book);
+    let before_retry = head(&fixture.book);
+    let repeated = fixture.stage(&package, 0, &[&approvals[0].0, &approvals[0].1]);
+    assert_eq!(
+        data(&repeated).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        text(data(&fixture.show(&package)), "run_state"),
+        "Finalized"
+    );
+    assert_eq!(head(&fixture.book), before_retry);
+}
+
+fn full_detail_variant(fixture: &Fixture, mut body: Json, key: &str) -> String {
+    set_field(&mut body, "run_key", s(key));
+    let path = fixture.file(&format!("{key}-run.json"), &body.render());
+    let opened = ok(&fixture.book, &["migrate", "open", "--intent", &path]);
+    text(data(&opened), "run_vid").to_owned()
+}
+
+#[test]
+fn full_detail_rejects_ambiguous_routes_and_every_wrong_chain_checkpoint_without_publication() {
+    let (fixture, body) = Fixture::full_detail(false, "Spreadsheet");
+    let original = fixture.intent();
+    let mut cases = Vec::new();
+    let mut missing = original.clone();
+    let Json::Obj(fields) = &mut missing else {
+        panic!("import object")
+    };
+    fields.retain(|(key, _)| key != "opening_entries");
+    cases.push((
+        "missing-opening-selection",
+        missing,
+        Some("requires explicit opening_entries"),
+    ));
+    for (name, periods, message) in [
+        (
+            "ambiguous-december-31",
+            obj(Vec::new()),
+            Some("unambiguous FullDetail period"),
+        ),
+        (
+            "unknown-source-id",
+            obj(vec![
+                ("private-history-close", s("FY2025-CLOSE")),
+                ("unknown-source-id", s("FY2025-P12")),
+            ]),
+            Some("absent from the complete source"),
+        ),
+        (
+            "overlapping-opening",
+            obj(vec![
+                ("private-history-close", s("FY2025-CLOSE")),
+                ("private-full-opening", s("FY2026-P01")),
+            ]),
+            Some("both opening_entries and entry_periods"),
+        ),
+        (
+            "wrong-source-date",
+            obj(vec![("private-history-close", s("FY2026-P01"))]),
+            Some("outside its source date"),
+        ),
+        (
+            "outside-declared-span",
+            obj(vec![("private-history-close", s("FY2025-P11"))]),
+            Some("outside its source date"),
+        ),
+        (
+            "unknown-period",
+            obj(vec![("private-history-close", s("FY2025-UNKNOWN"))]),
+            Some("outside its source date"),
+        ),
+        (
+            "duplicate-source-routing",
+            Json::Obj(vec![
+                ("private-history-close".into(), s("FY2025-CLOSE")),
+                ("private-history-close".into(), s("FY2025-P12")),
+            ]),
+            None,
+        ),
+    ] {
+        let mut intent = original.clone();
+        set_field(&mut intent, "entry_periods", periods);
+        cases.push((name, intent, message));
+    }
+    let mut unknown_opening = original.clone();
+    set_field(
+        &mut unknown_opening,
+        "opening_entries",
+        Json::Arr(vec![s("private-full-opening"), s("unknown-opening-source")]),
+    );
+    cases.push((
+        "unknown-opening-selection",
+        unknown_opening,
+        Some("absent from the complete source"),
+    ));
+    let mut duplicate_opening = original.clone();
+    set_field(
+        &mut duplicate_opening,
+        "opening_entries",
+        Json::Arr(vec![s("private-full-opening"), s("private-full-opening")]),
+    );
+    cases.push((
+        "duplicate-opening-selection",
+        duplicate_opening,
+        Some("repeats a source entry ID"),
+    ));
+    let source = fixture.document(
+        "full-detail-late-opening.csv",
+        &full_detail_source(false).replace(
+            "private-full-opening,2025-12-31",
+            "private-full-opening,2026-01-02",
+        ),
+        "Spreadsheet",
+    );
+    let mut late_opening = original.clone();
+    set_field(&mut late_opening, "source", s(source));
+    cases.push((
+        "opening-stock-after-opening",
+        late_opening,
+        Some("dated after the run opening date"),
+    ));
+    let without_close = full_detail_source(false)
+        .lines()
+        .filter(|line| !line.starts_with("private-history-close,"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let source = fixture.document(
+        "full-detail-missing-close.csv",
+        &without_close,
+        "Spreadsheet",
+    );
+    let mut missing_close = original.clone();
+    set_field(&mut missing_close, "source", s(source));
+    set_field(&mut missing_close, "entry_periods", obj(Vec::new()));
+    cases.push((
+        "historical-close-missing",
+        missing_close,
+        Some("historical opening boundary"),
+    ));
+    let iif = "!TRNS\tTRNSID\tDATE\tACCNT\tAMOUNT\n!SPL\tSPLID\tDATE\tACCNT\tAMOUNT\n!ENDTRNS\nTRNS\tprivate-history-duplicate\t2025-12-15\tPrivate legacy checking account\t20.00\nSPL\tprivate-duplicate-split-one\t2025-12-15\tPrivate legacy revenue\t-20.00\nENDTRNS\nTRNS\tprivate-history-duplicate\t2025-12-16\tPrivate legacy checking account\t20.00\nSPL\tprivate-duplicate-split-two\t2025-12-16\tPrivate legacy revenue\t-20.00\nENDTRNS\n";
+    let source = fixture.document("full-detail-ambiguous.iif", iif, "Spreadsheet");
+    let mut iif_body = body.clone();
+    set_field(&mut iif_body, "source_system", s("quickbooks-iif"));
+    let iif_run = full_detail_variant(&fixture, iif_body, "ambiguous-source-journals");
+    let mut ambiguous_source = original.clone();
+    set_field(&mut ambiguous_source, "run", s(iif_run));
+    set_field(&mut ambiguous_source, "source", s(source));
+    set_field(&mut ambiguous_source, "format", s("quickbooks-iif"));
+    set_field(&mut ambiguous_source, "entry_periods", obj(Vec::new()));
+    cases.push((
+        "ambiguous-source-journals",
+        ambiguous_source,
+        Some("FullDetail source journal IDs are ambiguous"),
+    ));
+    let mut wrong_base_body = body.clone();
+    set_field(
+        &mut wrong_base_body,
+        "detail_base",
+        tb_lines(&[("1000", "101.00"), ("3000", "-101.00")]),
+    );
+    let wrong_base = full_detail_variant(&fixture, wrong_base_body, "wrong-detail-base");
+    let mut wrong_base_intent = original.clone();
+    set_field(&mut wrong_base_intent, "run", s(wrong_base));
+    cases.push((
+        "wrong-detail-base",
+        wrong_base_intent,
+        Some("through `FY2025-P12`"),
+    ));
+    let mut wrong_later_body = body;
+    let mut periods = rows(&wrong_later_body, "periods").to_vec();
+    let wrong_lines = [
+        ("1000", "123.00"),
+        ("3000", "-120.00"),
+        ("4000", "-6.00"),
+        ("6000", "3.00"),
+    ];
+    let wrong_tb = fixture.document(
+        "wrong-full-detail-february.csv",
+        &tb_document("FY2026-P02", &wrong_lines),
+        "Spreadsheet",
+    );
+    set_field(&mut periods[2], "trial_balance", s(wrong_tb));
+    set_field(&mut periods[2], "lines", tb_lines(&wrong_lines));
+    set_field(&mut wrong_later_body, "periods", Json::Arr(periods));
+    let wrong_later = full_detail_variant(&fixture, wrong_later_body, "wrong-later-checkpoint");
+    let mut wrong_later_intent = original.clone();
+    set_field(&mut wrong_later_intent, "run", s(wrong_later));
+    cases.push((
+        "wrong-february-final-march-still-ties",
+        wrong_later_intent,
+        Some("through `FY2026-P02`"),
+    ));
+    for (name, intent, message) in cases {
+        let path = fixture.file(&format!("{name}.json"), &intent.render());
+        let before = head(&fixture.book);
+        let (status, refused) = run(
+            &fixture.book,
+            &[
+                "migrate", "import", "--action", "prepare", "--intent", &path,
+            ],
+        );
+        assert_eq!(status, 2, "{name}: {}", refused.render());
+        if let Some(message) = message {
+            assert!(
+                refused.render().contains(message),
+                "{name}: {}",
+                refused.render()
+            );
+        }
+        assert_eq!(
+            head(&fixture.book),
+            before,
+            "{name}: no partial package or chunk"
+        );
+    }
+    let prepared = fixture.prepare();
+    assert_eq!(integer(data(&prepared), "recorded_count"), 0);
+    assert_eq!(integer(data(&prepared), "chunk_count"), 6);
+    assert_eq!(fixture.cash_at("FY2026-P03", None), "0.00 USD");
+    let package = text(data(&prepared), "package_oid");
+    let (opening_index, opening) = rows(data(&prepared), "chunks")
+        .iter()
+        .enumerate()
+        .find(|(_, chunk)| text(chunk, "effective_period") == OPENING)
+        .unwrap();
+    let digest = text(opening, "proposal_digest");
+    let first = fixture.approve(digest, "abandon-reviewer-one");
+    let second = fixture.approve(digest, "abandon-reviewer-two");
+    fixture.stage(package, opening_index, &[&first, &second]);
+    let before_abandon = head(&fixture.book);
+    let plan = fixture
+        .dir
+        .join("full-detail-abandon.plan")
+        .display()
+        .to_string();
+    ok(
+        &fixture.book,
+        &["migrate", "abandon", &fixture.run_vid, "--plan-out", &plan],
+    );
+    let abandoned = ok(
+        &fixture.book,
+        &["migrate", "abandon", &fixture.run_vid, "--plan", &plan],
+    );
+    assert_eq!(text(data(&abandoned), "to"), "Abandoned");
+    let after_abandon = head(&fixture.book);
+    let shown = fixture.show(package);
+    assert_eq!(text(data(&shown), "run_state"), "Abandoned");
+    assert_eq!(integer(data(&shown), "recorded_count"), 1);
+    assert!(
+        rows(data(&shown), "chunks")
+            .iter()
+            .all(|chunk| { chunk.get("counts_after_finalize") == Some(&Json::Bool(false)) })
+    );
+    assert_eq!(fixture.cash_at("FY2026-P03", None), "0.00 USD");
+    assert_eq!(fixture.cash_at(OPENING, None), "0.00 USD");
+    assert_cash_open_items(&fixture, before_abandon, &[]);
+    assert_eq!(head(&fixture.book), after_abandon);
+
+    let (sole, _) = Fixture::full_detail(true, "Spreadsheet");
+    let mut invalid = sole.intent();
+    set_field(
+        &mut invalid,
+        "opening_entries",
+        Json::Arr(vec![s("private-history-funding")]),
+    );
+    let path = sole.file("sole-with-separate-opening.json", &invalid.render());
+    let before = head(&sole.book);
+    let (status, refused) = run(
+        &sole.book,
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
+    );
+    assert_eq!(status, 2, "{}", refused.render());
+    assert!(
+        refused
+            .render()
+            .contains("sole-source FullDetail has no opening_entries")
+    );
+    assert_eq!(head(&sole.book), before);
+
+    let opening_only = Fixture::quickbooks();
+    let mut invalid = opening_only.intent();
+    set_field(
+        &mut invalid,
+        "entry_periods",
+        obj(vec![("private-source-entry-one", s(OPENING))]),
+    );
+    let path = opening_only.file("opening-only-with-detail-routing.json", &invalid.render());
+    let before = head(&opening_only.book);
+    let (status, refused) = run(
+        &opening_only.book,
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
+    );
+    assert_eq!(status, 2, "{}", refused.render());
+    assert!(
+        refused
+            .render()
+            .contains("entry_periods applies only to FullDetail")
+    );
+    assert_eq!(head(&opening_only.book), before);
+}
+
+#[test]
+fn full_detail_replay_requires_original_source_authority_and_rejects_rehashed_period_routing() {
+    let (fixture, _) = Fixture::full_detail(false, "BankStatement");
+    let path = fixture.file("full-detail-governed.json", &fixture.intent().render());
+    let before = head(&fixture.book);
+    let (status, refused) = run(
+        &fixture.book,
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
+    );
+    assert_eq!(status, 3, "{}", refused.render());
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-142");
+    assert!(!refused.render().contains("private-history-close"));
+    assert_eq!(head(&fixture.book), before);
+    let prepared = ok(
+        &fixture.book,
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            &path,
+            "--grant",
+            "privileged",
+        ],
+    );
+    let package = text(data(&prepared), "package_oid");
+    for action in ["show", "stage"] {
+        let mut args = vec![
+            "migrate",
+            "import",
+            "--action",
+            action,
+            "--package",
+            package,
+        ];
+        if action == "stage" {
+            args.extend(["--chunk", "0"]);
+        }
+        let before = head(&fixture.book);
+        let (status, refused) = run(&fixture.book, &args);
+        assert_eq!(status, 3, "{}", refused.render());
+        assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-142");
+        assert!(!refused.render().contains(LEGACY_CASH));
+        assert_eq!(head(&fixture.book), before);
+    }
+    for change_date in [false, true] {
+        let forged = rewrite_package(&fixture, package, |_, proposals| {
+            let closing = proposals
+                .iter_mut()
+                .find(|proposal| {
+                    proposal
+                        .effective_period
+                        .as_ref()
+                        .is_some_and(|period| period.code == "FY2025-CLOSE")
+                })
+                .unwrap();
+            if change_date {
+                closing.effective_date = fa_time::DateDay::parse("2025-12-30").unwrap();
+            } else {
+                closing.effective_period.as_mut().unwrap().code = "FY2025-P12".into();
+            }
+        });
+        for action in ["show", "stage"] {
+            let mut args = vec![
+                "migrate",
+                "import",
+                "--action",
+                action,
+                "--package",
+                &forged,
+                "--grant",
+                "privileged",
+            ];
+            if action == "stage" {
+                args.extend(["--chunk", "0"]);
+            }
+            let before = head(&fixture.book);
+            let (status, refused) = run(&fixture.book, &args);
+            assert_eq!(
+                status,
+                8,
+                "date={change_date}, action={action}: {}",
+                refused.render()
+            );
+            assert_eq!(head(&fixture.book), before);
+        }
+    }
+    let before_retry = head(&fixture.book);
+    let repeated = ok(
+        &fixture.book,
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            &path,
+            "--grant",
+            "privileged",
+        ],
+    );
+    assert_eq!(text(data(&repeated), "package_oid"), package);
+    assert_eq!(data(&repeated).get("chunks"), data(&prepared).get("chunks"));
+    assert_eq!(integer(data(&repeated), "recorded_count"), 0);
+    assert_eq!(head(&fixture.book), before_retry);
 }
 
 #[test]
@@ -1663,6 +2569,15 @@ fn rewrite_package(
             "application/vnd.frankenaccounting.legacy-period-balances-import.v1"
         );
         b"FA-LEGACY-PERIOD-BALANCES-IMPORT\0"
+    } else if document
+        .bytes
+        .starts_with(b"FA-LEGACY-FULL-DETAIL-IMPORT\0")
+    {
+        assert_eq!(
+            document.mime,
+            "application/vnd.frankenaccounting.legacy-full-detail-import.v1"
+        );
+        b"FA-LEGACY-FULL-DETAIL-IMPORT\0"
     } else {
         assert!(document.bytes.starts_with(b"FA-LEGACY-OPENING-IMPORT\0"));
         assert_eq!(
