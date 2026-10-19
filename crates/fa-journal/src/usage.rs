@@ -273,10 +273,16 @@ pub(crate) fn judge<V: Vfs + Clone>(
                     "the last usage receipt is not an unchanged debit of its same-commit source entry",
                 )));
             }
-            // The source commit supplies the receipt's immutable coordinate;
-            // a row's current created_at alone could be a rewritten version.
+            // A current row's created_at is its content-version start, not
+            // necessarily its birth. Prove both native creations before
+            // trusting that shared coordinate or its historical snapshot.
             let last_committed = db.vertex_at(last_row.vid, txn.basis())?.is_some();
             if last_committed {
+                if let Err(refusal) =
+                    same_publication_births(db, contexts, source_at, &last_row, &source)?
+                {
+                    return Ok(Err(refusal));
+                }
                 let Some(original) = db.vertex_at(last_row.vid, source_at)? else {
                     return Ok(Err(mismatch(
                         "the last usage receipt's creating snapshot is unavailable",
@@ -385,10 +391,89 @@ pub(crate) fn judge<V: Vfs + Clone>(
     Ok(Ok(Some(Judged { moves })))
 }
 
+/// Only native CreateVertex rows establish a receipt's and source's original
+/// publication. The pinned substrate permanently spends deleted identities,
+/// so a creation at this coordinate cannot be a later resurrection. Inspect
+/// this one retained commit; no full-prefix refold is needed for an existing
+/// cell. Earlier members of the same uncommitted batch bypass this check.
+fn same_publication_births<V: Vfs + Clone>(
+    db: &Database<V>,
+    contexts: &PurposeContexts,
+    at: CommitSeq,
+    receipt: &VertexRow,
+    source: &VertexRow,
+) -> Outcome<()> {
+    let cx = contexts.txn();
+    cx.checkpoint().map_err(fgdb::WriteTxnError::Interrupted)?;
+    let Some(before) = at.0.checked_sub(1) else {
+        return Ok(Err(mismatch(
+            "a committed usage receipt cannot precede native history",
+        )));
+    };
+    let Some(batch) = db.delta_since(CommitSeq(before))?.next() else {
+        return Ok(Err(mismatch(
+            "the last usage receipt's native creating commit is unavailable",
+        )));
+    };
+    if batch.commit_seq() != at {
+        return Ok(Err(mismatch(
+            "the last usage receipt's native creating commit is unavailable",
+        )));
+    }
+    let mut receipt_born = false;
+    let mut source_born = false;
+    let invalid_birth = || {
+        mismatch(
+            "the last usage receipt and source are not their unchanged same-publication native births; a joint rewrite cannot restore spent capacity",
+        )
+    };
+    for coordinate in batch.coordinate_entries() {
+        for row in &coordinate.rows {
+            cx.checkpoint().map_err(fgdb::WriteTxnError::Interrupted)?;
+            if let DeltaRow::CreateVertex {
+                vid,
+                birth_ordinal,
+                labels,
+                props,
+                ..
+            } = row
+            {
+                if *vid == receipt.vid {
+                    if receipt_born
+                        || *birth_ordinal != receipt.birth_ordinal
+                        || labels.as_slice() != [label::USAGE_DEBIT]
+                        || labels != &receipt.labels
+                        || props != &receipt.props
+                    {
+                        return Ok(Err(invalid_birth()));
+                    }
+                    receipt_born = true;
+                }
+                if *vid == source.vid {
+                    if source_born
+                        || *birth_ordinal != source.birth_ordinal
+                        || labels.as_slice() != [label::ENTRY]
+                        || labels != &source.labels
+                        || props != &source.props
+                    {
+                        return Ok(Err(invalid_birth()));
+                    }
+                    source_born = true;
+                }
+            }
+        }
+    }
+    if !receipt_born || !source_born {
+        return Ok(Err(invalid_birth()));
+    }
+    Ok(Ok(()))
+}
+
 /// An absent derived cell does not prove a quota is fresh. Only the complete
 /// authenticated creation prefix can establish that both its identity and
-/// first immutable receipt have never been used. Existing cells use bounded
-/// point witnesses; this history read is needed only to establish a new day.
+/// first immutable receipt have never been used. Existing cells use point
+/// witnesses and one retained birth commit; this full-prefix read is needed
+/// only to establish a new day.
 fn never_created<V: Vfs + Clone>(
     db: &Database<V>,
     contexts: &PurposeContexts,

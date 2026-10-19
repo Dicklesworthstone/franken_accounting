@@ -842,3 +842,72 @@ fn restored_cells_and_deleted_or_relabelled_receipts_never_restore_capacity() {
         assert_eq!(h.head(), before, "damaged state cannot publish a spend");
     }
 }
+
+#[test]
+fn jointly_rewriting_the_source_receipt_and_cell_cannot_restore_spent_capacity() {
+    let mut h = Harness::new(100, true, true);
+    let cap = h.quota.clone();
+    let source = h
+        .post(h.proposal(HOLDER, 60, b"original-sixty"), &cap)
+        .unwrap()
+        .entry_ref();
+    let intact = h.head();
+    let source_row = h.db.vertex(source.vid).unwrap().unwrap();
+    let original = fa_model::Entry::decode(
+        &rows::bytes(
+            &source_row,
+            fa_model::symbols::property::FA_PAYLOAD,
+            "source entry",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut proposal = original.proposal;
+    for leg in &mut proposal.legs {
+        leg.amount.mantissa = 1;
+    }
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    let rewritten = proposal
+        .seal(original.approvals, original.plan_certificate)
+        .unwrap();
+    let old = h.cell();
+    let mut receipt =
+        UsageDebit::from_row(&h.db.vertex(old.key.debit_vid(1)).unwrap().unwrap()).unwrap();
+    receipt.entry = rewritten.entry_ref(source.vid);
+    receipt.gross_debits = 1;
+    receipt.total_gross_debits = 1;
+    let cell = UsageCell {
+        gross_debits: 1,
+        ..old
+    };
+    let mut damage = WriteBatch::new(relation::HAS_LEG);
+    for (key, value) in fa_model::entry_mirrors(&rewritten).unwrap() {
+        damage.set_vertex_property(source.vid, key, Some(value));
+    }
+    for (key, value) in receipt.properties().unwrap() {
+        damage.set_vertex_property(receipt.vid(), key, Some(value));
+    }
+    for (key, value) in cell.properties().unwrap() {
+        damage.set_vertex_property(cell.key.cell_vid(), key, Some(value));
+    }
+    h.write(damage);
+    let before = h.head();
+    let source_row = h.db.vertex(source.vid).unwrap().unwrap();
+    let receipt_row = h.db.vertex(receipt.vid()).unwrap().unwrap();
+    assert_eq!(source_row.created_at, before);
+    assert_eq!(receipt_row.created_at, before);
+    assert_ne!(before, intact);
+    assert_eq!(UsageDebit::from_row(&receipt_row).unwrap(), receipt);
+    assert_eq!(h.cell(), cell);
+    assert!(h.check(Some(intact)).is_green());
+    assert!(!h.check(None).is_green());
+    // The rewritten rows agree on a version timestamp, digest and total1.
+    // Only their native births expose the original60 before this new60.
+    let refused = h
+        .post(h.proposal(HOLDER, 60, b"attempt-second-sixty"), &cap)
+        .unwrap_err();
+    assert_eq!(refused.code, refusal::code::USAGE_MISMATCH);
+    assert!(refused.message.contains("native births"));
+    assert_eq!(h.head(), before);
+    assert_eq!(h.cell(), cell);
+}

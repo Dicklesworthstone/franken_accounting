@@ -890,6 +890,19 @@ impl BookSource<'_> {
         Ok(book)
     }
 
+    /// Admit a bound token before resolving or reading command input paths.
+    /// This opens only the trusted launch book and emits no book coordinate;
+    /// the handler still admits its concrete operation and scope afterward.
+    fn admit_current_before_input(
+        &mut self,
+        args: &Args,
+        capability: &Capability,
+    ) -> Result<(), Fail> {
+        let book = self.books.open(args, self.cwd.as_deref())?;
+        book.admit_current(capability)??;
+        Ok(())
+    }
+
     /// Open for native admission without first disclosing the book or its
     /// frontier in an error envelope. Only admitted reads receive a coordinate.
     pub(crate) fn open_admitted(
@@ -1247,7 +1260,14 @@ fn run_scoped(
     };
     if let Some(authority) = authority {
         for flag in [
-            "--as", "--grant", "--yes", "--book", "--keys", "--via", "--token",
+            "--as",
+            "--grant",
+            "--yes",
+            "--book",
+            "--keys",
+            "--via",
+            "--token",
+            "--issuer-token",
         ] {
             if args.flags.contains_key(flag) || args.switch(flag) {
                 return usage_error_with_authority(
@@ -1619,6 +1639,15 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
         ));
     };
     check_flags(reg, Some(verb), args)?;
+    if args.flag("--issuer-token").is_some()
+        && (verb.name != "capability"
+            || args.positional.get(1).map(String::as_str) != Some("issue"))
+    {
+        return Err(usage(
+            "--issuer-token is only valid for capability issue",
+            "fa capability issue --issuer-token <existing-token-file> --holder <principal> --profile agent|human --op <op>... --out <new-file>",
+        ));
+    }
     if args.switch("--help") {
         return emit_help(out, reg, Some(verb));
     }
@@ -1652,6 +1681,12 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
     }
     gate_from_argv(out, reg, verb, args, ctx.authority.as_ref())?;
     admit_bound_command(ctx, verb, args)?;
+    if !host_path_arguments(&verb.name, args).is_empty()
+        && let Some(authority) = &ctx.authority
+    {
+        ctx.books
+            .admit_current_before_input(args, authority.capability())?;
+    }
     admit_bound_files(ctx, verb, args)?;
     admit_daemon_files(ctx, verb, args)?;
     let handler = HANDLERS
@@ -1966,7 +2001,7 @@ enum HostPath {
     /// A new file the command writes; its leaf may not exist yet.
     Output,
     /// Content a flag reads from the file (`--intent`, `--plan`, `--policy`,
-    /// `--file`, `--replace-with`).
+    /// `--file`, `--replace-with`, `--issuer-token`).
     Content,
     /// A review event read from the file.
     Review,
@@ -1997,7 +2032,14 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
             paths.push((flag, value, HostPath::Output));
         }
     }
-    for flag in ["--intent", "--plan", "--policy", "--file", "--replace-with"] {
+    for flag in [
+        "--intent",
+        "--plan",
+        "--policy",
+        "--file",
+        "--replace-with",
+        "--issuer-token",
+    ] {
         for value in args.flag_all(flag) {
             if value != "-" {
                 paths.push((flag, value, HostPath::Content));

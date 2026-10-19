@@ -703,6 +703,98 @@ fn cli_issuer_credentials_are_bounded_explicit_and_issue_only() {
 }
 
 #[test]
+fn daemon_issuer_credentials_stay_inside_the_configured_files_root() {
+    let fixture = Fixture::new(false);
+    fixture.issue_root(true);
+    let allowed = fixture.dir.join("allowed");
+    std::fs::create_dir(&allowed).unwrap();
+    let issuer = fixture.dir.join("root.token");
+    let output = allowed.join("must-not-be-issued.token");
+    assert!(issuer.is_absolute());
+    let before = fixture.head();
+    let mut book = fixture.open();
+    let args = [
+        "capability",
+        "issue",
+        "--issuer-token",
+        issuer.to_str().unwrap(),
+        "--holder",
+        "outside-issuer-child",
+        "--profile",
+        "human",
+        "--op",
+        "read",
+        "--out",
+        output.to_str().unwrap(),
+        "--json",
+    ]
+    .map(String::from);
+    let (status, captured) = fa_cli::cli::run_for_daemon(
+        &args,
+        &mut book,
+        fixture.book.clone(),
+        Some(allowed),
+        None,
+        fa_cli::cli::Stdin::Missing,
+        true,
+    );
+    assert_eq!(status, 2, "{captured:?}");
+    let lines: Vec<_> = captured.stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "{captured:?}");
+    fa_cli::verbs::registry()
+        .unwrap()
+        .check_line(lines[0])
+        .unwrap();
+    let refusal = json::parse(lines[0]).unwrap();
+    assert_eq!(text(&refusal, "event"), "error");
+    assert_eq!(text(data(&refusal), "class"), "usage");
+    assert_eq!(data(&refusal).get("refusal_id"), Some(&Json::Null));
+    let message = text(data(&refusal), "message");
+    assert!(message.contains("--issuer-token path"), "{refusal:?}");
+    assert!(
+        message.contains("outside the daemon --files-root"),
+        "{refusal:?}"
+    );
+    assert!(!output.exists());
+    assert_eq!(i128::from(book.head().unwrap().0), before);
+    drop(book);
+    assert_eq!(fixture.head(), before);
+}
+
+#[test]
+fn token_bound_cli_cannot_replace_its_authority_with_an_issuer_token() {
+    let fixture = Fixture::new(false);
+    let token = fixture.issue_root(false);
+    assert!(!token.capability().ops().contains(&Op::IssueCapability));
+    let before = fixture.head();
+    let (status, refusal) = fixture.run(&[
+        "--token",
+        "root.token",
+        "capability",
+        "issue",
+        "--issuer-token",
+        "root.token",
+        "--holder",
+        "launch-override-child",
+        "--op",
+        "read",
+        "--out",
+        "launch-override-child.token",
+    ]);
+    assert_eq!(status, 2, "{refusal:?}");
+    assert_eq!(text(&refusal, "event"), "error");
+    assert_eq!(text(data(&refusal), "class"), "usage");
+    assert_eq!(data(&refusal).get("refusal_id"), Some(&Json::Null));
+    assert!(
+        text(data(&refusal), "message")
+            .contains("--issuer-token cannot override launch-bound authority"),
+        "{refusal:?}"
+    );
+    assert_eq!(fixture.head(), before);
+    assert!(!fixture.dir.join("launch-override-child.token").exists());
+}
+
+#[test]
 fn cli_daily_spending_without_retained_time_refuses_then_succeeds_under_a_tick() {
     let fixture = Fixture::new(false);
     fixture.issue_root(false);

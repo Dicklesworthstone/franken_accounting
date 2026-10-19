@@ -301,7 +301,7 @@ today_barrier_count = 2
 derived_objects = "single-entry census + one UsageCell create/CAS and one UsageDebit with source/issuance/tick links per charged native unit"
 hot_object_exceptions = ["UsageCell"]
 external_authorities = "none"
-complexity_witness = "O(legs + charged units) warm-cell admission and staged writes; retained creation-history scan for first use of a root/day/unit; checkpoint-opened daily operations may hydrate complete native history before admission preparation"
+complexity_witness = "O(legs + charged units) staging; existing cells additionally seek and inspect one retained creation commit per charged unit to bind receipt and source births; retained creation-history scan for first use of a root/day/unit; checkpoint-opened daily operations may hydrate complete native history before admission preparation"
 notes = "the second registered hot-object exception (§14.2); current root and presented issuance plus committed tick are witnessed in the same transaction; exact retries consume no usage and aborted preparations publish no charges"
 
 [[operation_class]]
