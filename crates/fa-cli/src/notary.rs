@@ -971,6 +971,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// An entry-relevance status as the `certificate_status` event reports it.
+fn entry_status(status: CertificateStatus) -> (&'static str, fgdb_types::CommitSeq, Vec<VId>) {
+    match status {
+        CertificateStatus::Current { checked_at } => ("Current", checked_at, Vec::new()),
+        CertificateStatus::SupersededBy {
+            checked_at,
+            later_entries,
+        } => ("SupersededBy", checked_at, later_entries),
+    }
+}
+
 pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.get(1).map(String::as_str) != Some("status") || args.positional.len() != 3 {
         return Err(usage(
@@ -998,32 +1009,39 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     // Status is meaningful only after the WHOLE artifact verifies. For a
     // comparison or trace, relevance starts at its final statement frontier;
     // a scenario diff is superseded only by Plan records its scenario gained
-    // after the certified prefix (its trunk is fixed at the fork).
+    // after the certified prefix (its trunk is fixed at the fork). A summary
+    // trial balance is Changed when its selector no longer reproduces it at
+    // HEAD; that law compares the report, so it names no later entries.
     let status = match artifact.family() {
+        ReportArtifactFamily::Summary => {
+            let certificate = fa::SummaryCertificate::decode(&bytes)?;
+            match book.summary_certificate_status(principal, &capability, &certificate)?? {
+                fa::SummaryCertificateStatus::Current { checked_at } => {
+                    ("Current", checked_at, Vec::new())
+                }
+                fa::SummaryCertificateStatus::Changed { checked_at, .. } => {
+                    ("Changed", checked_at, Vec::new())
+                }
+            }
+        }
         ReportArtifactFamily::ScenarioDiff => {
             let certificate = fa::ScenarioDiffCertificate::decode(&bytes)?;
-            book.scenario_diff_status(principal, &capability, &certificate)??
+            entry_status(book.scenario_diff_status(principal, &capability, &certificate)??)
         }
         ReportArtifactFamily::Native
         | ReportArtifactFamily::StatementDiff
         | ReportArtifactFamily::StatementTrace => {
             book.replay_report_artifact(principal, &capability, &bytes, Some(artifact.digest()))??;
-            book.certificate_status(artifact.source_certificate())??
+            entry_status(book.certificate_status(artifact.source_certificate())??)
         }
         _ => {
             return Err(certificate_invalid(
-                "selector status is available for native reports, statement comparisons/traces and scenario diffs; use fa replay for this family's historical verification",
+                "selector status is available for native reports, summary trial balances, statement comparisons/traces and scenario diffs; use fa replay for this family's historical verification",
             ));
         }
     };
     let certificate = artifact.source_certificate();
-    let (name, checked_at, later_entries) = match status {
-        CertificateStatus::Current { checked_at } => ("Current", checked_at, Vec::new()),
-        CertificateStatus::SupersededBy {
-            checked_at,
-            later_entries,
-        } => ("SupersededBy", checked_at, later_entries),
-    };
+    let (name, checked_at, later_entries) = status;
     ctx.out.known_at(checked_at);
     match &certificate.selection {
         ReportSelection::TrialBalance(selection) => {

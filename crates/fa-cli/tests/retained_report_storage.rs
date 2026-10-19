@@ -470,6 +470,18 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
             retained_at,
             "{family}: exact retry reuses its retention"
         );
+        // A summary has its own relevance law (the report reproduces at
+        // HEAD); the other two families still refuse selector status.
+        let (exit, status) = f.run(&["certificate", "status", &locator]);
+        if family == "summary" {
+            assert_eq!(exit, 0, "{status:?}");
+            let status = data(&status, "certificate_status");
+            assert_eq!(text(status, "status"), "Current");
+            assert_eq!(status.get("later_entries"), Some(&Json::Arr(Vec::new())));
+        } else {
+            assert_eq!(exit, 8, "{family}: {status:?}");
+        }
+        assert_eq!(f.head(), retained_at, "{family}: status is a read");
         originals.push((event_name, events, bytes, locator, file));
     }
     let mut book = f.open();
@@ -477,6 +489,16 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
     let later = book.head().unwrap();
     drop(book);
     for (event_name, original, bytes, locator, file) in originals {
+        if event_name == "summary_trial_balance" {
+            let status = f.ok(&["certificate", "status", &locator]);
+            let status = data(&status, "certificate_status");
+            assert_eq!(text(status, "status"), "Changed", "64 later postings");
+            assert_eq!(
+                status.get("checked_at"),
+                Some(&Json::Int(i128::from(later.0)))
+            );
+            assert_eq!(status.get("later_entries"), Some(&Json::Arr(Vec::new())));
+        }
         let artifact = fa::ReportArtifact::decode(&bytes).unwrap();
         for input in [locator.as_str(), file.to_str().unwrap()] {
             let replayed = f.ok(&["replay", input]);
