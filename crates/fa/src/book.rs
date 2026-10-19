@@ -3077,6 +3077,21 @@ impl Book {
         )))
     }
 
+    /// Review an explicit selection from one retained finding run in ONE
+    /// native transaction: any refused request refuses the whole set.
+    pub fn review_finding_run(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+        requests: &[crate::findings::review::FindingReviewRequest],
+    ) -> Outcome<Vec<crate::findings::review::FindingReview>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.review_finding_run(
+            &purposes, principal, capability, certificate, requests
+        )))
+    }
+
     /// Produce the original numbered workpaper from a replayed recorded run.
     pub fn finding_workpaper(
         &self,
