@@ -2446,6 +2446,103 @@ fn replay_workpapers_equal_the_library_export_and_never_overwrite_or_widen_famil
     assert_eq!(exit, 8);
     assert!(!absent.exists());
 
+    // Effective-date aging: the receipt now carries its request, a supplied
+    // request binds the replay, and the aging workpaper needs it.
+    let certified = f.ok(&[
+        "gl",
+        "aging",
+        "--account",
+        "1000",
+        "--as-of",
+        "2026-01-31",
+        "--bucket",
+        "0,30,60",
+        "--as-known-at",
+        &at,
+        "--certify",
+    ]);
+    let aging_metadata = data(&certified, "report_certificate");
+    let aging_locator = format!("C:{}", text(aging_metadata, "oid"));
+    let aging_expect = generated_expectation(aging_metadata);
+    let aging_doc = json::parse(&aging_expect).unwrap();
+    assert_eq!(text(&aging_doc, "kind"), "aging");
+    assert_eq!(
+        aging_doc.get("known_at"),
+        Some(&Json::Int(i128::from(f.source_head.0)))
+    );
+    let as_supplied = f.ok(&["replay", &aging_locator]);
+    let bound = f.ok(&["replay", &aging_locator, "--expect", &aging_expect]);
+    assert_eq!(
+        data(&bound, "aging"),
+        data(&as_supplied, "aging"),
+        "binding the recipient's request changes no amount"
+    );
+    let Json::Obj(fields) = aging_doc.clone() else {
+        panic!("expected an object");
+    };
+    let earlier_cutoff = Json::Obj(
+        fields
+            .into_iter()
+            .map(|(name, value)| {
+                if name == "through" {
+                    (name, s("2026-01-30"))
+                } else {
+                    (name, value)
+                }
+            })
+            .collect(),
+    )
+    .render();
+    let (exit, errors) = f.run(&["replay", &aging_locator, "--expect", &earlier_cutoff]);
+    assert_eq!(exit, 8, "a different recipient question: {errors:?}");
+    let (exit, errors) = f.run(&["replay", &locator, "--expect", &aging_expect]);
+    assert_eq!(exit, 8, "{errors:?}");
+    assert!(
+        text(data(&errors, "error"), "message").contains("an aging expectation names"),
+        "an aging request on another family is refused, never ignored: {errors:?}"
+    );
+    let aging_path = f.dir.join("aging.jsonl");
+    let events = f.ok(&[
+        "replay",
+        &aging_locator,
+        "--expect",
+        &aging_expect,
+        "--workpaper-out",
+        aging_path.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        text(data(&events, "workpaper_exported"), "family"),
+        "effective-date-aging"
+    );
+    let written_aging = std::fs::read_to_string(&aging_path).unwrap();
+    let aging_certificate =
+        fa::AgingCertificate::decode(&unhex(text(aging_metadata, "bytes"))).unwrap();
+    {
+        let book = f.open();
+        let library = book
+            .effective_date_aging_jsonl(
+                operator,
+                &read_produce,
+                &aging_certificate,
+                &aging_certificate.request().unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            written_aging, library,
+            "the CLI writes the library's export"
+        );
+    }
+    let unbound = f.dir.join("aging-unbound.jsonl");
+    let (exit, _) = f.run(&[
+        "replay",
+        &aging_locator,
+        "--workpaper-out",
+        unbound.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 2, "an aging workpaper needs the recipient's request");
+    assert!(!unbound.exists());
+
     // Ledger detail: a roll-forward source replayed with --view detail.
     let scope = [
         "--account",
@@ -2487,6 +2584,14 @@ fn replay_workpapers_equal_the_library_export_and_never_overwrite_or_widen_famil
             .unwrap();
         assert_eq!(written, library, "the CLI writes the library's export");
     }
+    // Freshness parses the same expectations: an aging question on a
+    // roll-forward is refused, never ignored as an as-supplied replay.
+    let (exit, errors) = f.run(&["certificate", "status", &locator, "--expect", &aging_expect]);
+    assert_eq!(exit, 8, "{errors:?}");
+    assert!(
+        text(data(&errors, "error"), "message").contains("an aging expectation names"),
+        "{errors:?}"
+    );
 
     // A family without an export is refused before replay and writes nothing:
     // the same roll-forward source without --view detail.
