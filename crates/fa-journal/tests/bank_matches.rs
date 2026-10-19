@@ -7,7 +7,7 @@ use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::bank::{
     BankMatchPreparation, BankMatchRequest, bank_match_vid, bank_matched_leg_vid,
-    confirm_bank_match, prepare_bank_match, read_bank_match,
+    confirm_bank_match, prepare_bank_match, read_bank_match, read_bank_match_claims,
 };
 use fa_journal::blob::DurableDirectory;
 use fa_journal::evidence::{Storage, document_record, fetch_document};
@@ -297,6 +297,17 @@ impl Harness {
         key: &[u8],
         booking_date: DateDay,
     ) -> (BankImportWitness, Vec<Document>) {
+        self.imported_lines_on(reference, cents, key, &vec![booking_date; cents.len()])
+    }
+    fn imported_lines_on(
+        &mut self,
+        reference: &str,
+        cents: &[i128],
+        key: &[u8],
+        booking_dates: &[DateDay],
+    ) -> (BankImportWitness, Vec<Document>) {
+        assert_eq!(cents.len(), booking_dates.len());
+        let statement_date = booking_dates.iter().copied().max().unwrap_or(day());
         let policy = EvidencePolicy::embedded().unwrap();
         let kind = |name| policy.kind_by_name(name).unwrap().tag;
         let source = Document {
@@ -313,6 +324,7 @@ impl Harness {
         };
         let mut lines = Vec::new();
         for (index, amount) in cents.iter().enumerate() {
+            let booking_date = booking_dates[index];
             let mut w = Writer::new();
             w.bytes(LINE_DOMAIN)
                 .fixed(&source.oid().0)
@@ -342,7 +354,7 @@ impl Harness {
             statement_commit: source.doc_commit(),
             unit: self.usd,
             sequence_number: 1,
-            statement_date: booking_date,
+            statement_date,
             opening_balance: 0,
             closing_balance: cents.iter().sum(),
             line_oids: lines.iter().map(Document::oid).collect(),
@@ -362,7 +374,7 @@ impl Harness {
             principal: OWNER,
             source: IntakeSource::Upload { principal: OWNER },
             idempotency_key: key.to_vec(),
-            effective_date: booking_date,
+            effective_date: statement_date,
             description: seal(&self.book, "bank import"),
             documents,
         };
@@ -392,8 +404,17 @@ impl Harness {
         entry_ref: EntryRef,
         leg_ordinal: u16,
     ) -> BankMatchRequest {
+        self.request_as_candidate(import, line, entry_ref, leg_ordinal, u64::from(leg_ordinal))
+    }
+    fn request_as_candidate(
+        &self,
+        import: BankImportWitness,
+        line: Document,
+        entry_ref: EntryRef,
+        leg_ordinal: u16,
+        candidate_ordinal: u64,
+    ) -> BankMatchRequest {
         let oid = Oid(domain_digest(LINE_DOMAIN, &[&line.bytes]));
-        let candidate_ordinal = u64::from(leg_ordinal);
         let decision_card = fa_policy::decide_bank_match(
             None,
             [0; 32],
@@ -473,6 +494,21 @@ impl Harness {
                 vid,
                 at,
                 None,
+            ))
+            .unwrap()
+    }
+    fn claims(
+        &mut self,
+        at: Option<CommitSeq>,
+    ) -> Result<Vec<fa_journal::bank::BankMatchRecorded>, Refusal> {
+        let cx = self.cx();
+        self.runtime
+            .block_on(read_bank_match_claims(
+                &mut self.db,
+                &cx,
+                &self.book,
+                &cap(CONFIRMER),
+                at,
             ))
             .unwrap()
     }
@@ -663,6 +699,11 @@ fn a_maximum_statement_confirms_with_a_compact_record_and_a_real_external_manife
         .unwrap()
         .unwrap();
     assert_eq!(read, recorded);
+    assert_eq!(
+        h.claims(None).unwrap(),
+        vec![recorded.clone()],
+        "an external manifest cannot hide an immutable occupied cash leg"
+    );
     assert!(h.confirm(&cap(VId(9)), request).unwrap().already_recorded);
     assert_eq!(h.head(), recorded.recorded_at);
 }
@@ -686,6 +727,136 @@ fn separate_actual_cash_legs_can_confirm_but_one_cash_leg_cannot_be_spent_twice(
         refusal::code::IDEMPOTENCY_CONFLICT
     );
     assert_eq!(h.head(), before);
+}
+
+#[test]
+fn available_claims_reindex_actual_legs_and_preserve_saved_legacy_proposals() {
+    for legacy_index in [false, true] {
+        let mut h = Harness::new();
+        let entry = h.entry(&[10_000, 20_000, 30_000], "WIRE", b"three-cash-legs");
+        let (import, line) = h.imported("WIRE", 10_000, b"first-statement");
+        let first = h.request(import, line, entry, 0);
+        let unconfirmed_at = h.head();
+        assert!(h.claims(None).unwrap().is_empty());
+        let first_recorded = h.confirm(&cap(CONFIRMER), first.clone()).unwrap();
+        let (import, line) = h.imported("WIRE", 20_000, b"second-statement");
+        // Available index 1 now names actual leg 2. A saved raw index 1
+        // still names actual leg 1, and must never silently select leg 2.
+        let index = if legacy_index { 1 } else { 0 };
+        let second = h.request_as_candidate(import, line, entry, 1, index);
+        assert_eq!(h.claims(None).unwrap(), vec![first_recorded.clone()]);
+        assert!(h.claims(Some(unconfirmed_at)).unwrap().is_empty());
+        let recorded = h.confirm(&cap(CONFIRMER), second).unwrap();
+        assert_eq!(recorded.confirmation.entry_ref, entry);
+        assert_eq!(recorded.confirmation.leg_ordinal, 1);
+        assert_eq!(recorded.confirmation.candidate_ordinal, index);
+        assert_eq!(
+            h.claims(None).unwrap(),
+            vec![first_recorded.clone(), recorded.clone()]
+        );
+        assert_eq!(
+            h.claims(Some(first_recorded.recorded_at)).unwrap(),
+            vec![first_recorded.clone()]
+        );
+        let before_retry = h.head();
+        let retry = h.confirm(&cap(VId(9)), first).unwrap();
+        assert!(retry.already_recorded);
+        assert_eq!(retry.confirmation, first_recorded.confirmation);
+        assert_eq!(h.head(), before_retry);
+    }
+}
+
+#[test]
+fn resumed_selection_excludes_both_confirmed_lines_and_cash_legs_at_its_own_prefix() {
+    let mut h = Harness::new();
+    let first_entry = h.entry(&[10_000], "WIRE", b"first-day");
+    let later = DateDay::from_ymd(2026, 3, 17).unwrap();
+    let mut proposal = h.entry_payload(&[10_000], "WIRE", b"second-day");
+    proposal.effective_date = later;
+    let cx = h.cx();
+    let second_entry = h
+        .runtime
+        .block_on(post(
+            &mut h.db,
+            &cx,
+            &h.book,
+            PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(OWNER),
+            },
+        ))
+        .unwrap()
+        .unwrap()
+        .entry_ref();
+    let (import, lines) =
+        h.imported_lines_on("WIRE", &[10_000, 10_000], b"two-days", &[day(), later]);
+    let mut first = h.request(import.clone(), lines[0].clone(), first_entry, 0);
+    first.lines = lines.clone();
+    first.date_window_days = 0;
+    let original_prefix = h.head();
+    h.confirm(&cap(CONFIRMER), first).unwrap();
+
+    // At the old prefix a wider search is still ambiguous. A later
+    // confirmation must not be applied retroactively to that proposal.
+    let mut historical =
+        h.request_as_candidate(import.clone(), lines[1].clone(), second_entry, 0, 1);
+    historical.lines = lines.clone();
+    historical.source_known_at = original_prefix;
+    let before = h.head();
+    assert_eq!(
+        h.confirm(&cap(CONFIRMER), historical).unwrap_err().code,
+        refusal::code::BANK_MATCH
+    );
+    assert_eq!(h.head(), before);
+
+    // At the new prefix only line 2 and its cash leg remain available.
+    // Without either exclusion, this wider window is still ambiguous.
+    let mut second = h.request_as_candidate(import, lines[1].clone(), second_entry, 0, 0);
+    second.lines = lines;
+    let recorded = h.confirm(&cap(CONFIRMER), second).unwrap();
+    assert_eq!(recorded.confirmation.line_ordinal, 2);
+    assert_eq!(recorded.confirmation.entry_ref, second_entry);
+    assert_eq!(recorded.confirmation.leg_ordinal, 0);
+    assert_eq!(h.claims(None).unwrap().len(), 2);
+}
+
+#[test]
+fn hidden_claim_births_never_make_a_remaining_proposal_appear_available() {
+    for remove in [false, true] {
+        let mut h = Harness::new();
+        let entry = h.entry(&[10_000, 20_000], "WIRE", b"cash");
+        let (import, line) = h.imported("WIRE", 10_000, b"first");
+        let first = h.request(import, line, entry, 0);
+        let recorded = h.confirm(&cap(CONFIRMER), first).unwrap();
+        let claim = bank_matched_leg_vid(h.book.book_id, entry.vid, 0);
+        let mut damage = WriteBatch::new(relation::CITES);
+        if remove {
+            damage.delete_vertex(recorded.match_vid);
+            damage.delete_vertex(claim);
+        } else {
+            damage.set_vertex_label(recorded.match_vid, label::BANK_MATCH, false);
+            damage.set_vertex_label(claim, label::BANK_MATCHED_LEG, false);
+        }
+        h.write(damage);
+        assert_eq!(
+            h.claims(None).unwrap_err().code,
+            refusal::code::BANK_MATCH_DRIFT
+        );
+        assert_eq!(
+            h.claims(Some(recorded.recorded_at)).unwrap(),
+            vec![recorded]
+        );
+        let (import, line) = h.imported("WIRE", 20_000, b"remaining");
+        let remaining = h.request(import, line, entry, 1);
+        let before = h.head();
+        assert_eq!(
+            h.confirm(&cap(CONFIRMER), remaining).unwrap_err().code,
+            refusal::code::BANK_MATCH_DRIFT
+        );
+        assert_eq!(h.head(), before);
+    }
 }
 
 #[test]
@@ -986,6 +1157,19 @@ fn current_authority_and_privileged_source_admission_win_over_requested_history(
     let refusal = h.confirm(&lower, valid.clone()).unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::CAPABILITY);
     assert_eq!(refusal.exit, fa_journal::refusal::exit::SAFETY);
+    let cx = h.cx();
+    let refusal = h
+        .runtime
+        .block_on(read_bank_match_claims(
+            &mut h.db,
+            &cx,
+            &h.book,
+            &lower,
+            Some(CommitSeq(u64::MAX)),
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::CAPABILITY);
     let system = Capability::new(
         CONFIRMER,
         Profile::System,

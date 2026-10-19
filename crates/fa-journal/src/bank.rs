@@ -461,3 +461,37 @@ pub async fn read_bank_match<V: Vfs + Clone>(
     };
     Ok(verify::read_record(db, cx, book, &row, at, manifest)?.map(Some))
 }
+
+/// The complete immutable occupied-line/cash-leg set at a fixed prefix.
+/// Native births, canonical pair bindings, strong edge projections and cash
+/// Entry visibility are checked before any pair is returned. Missing or
+/// relabelled claims fail closed, including when both claim vertices were
+/// removed. This is an occupied-pair fact reader; to verify each original
+/// complete source closure, pass its retained manifest to read_bank_match.
+/// External manifests do not make an already claimed cash leg available.
+pub async fn read_bank_match_claims<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    known_at: Option<CommitSeq>,
+) -> Outcome<Vec<BankMatchRecorded>> {
+    if let Err(refusal) = admit_bank_match(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    checkpoint(cx)?;
+    if let Err(refusal) = crate::scratch::ensure_history(db, cx).await? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = admit_bank_match(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    let head = db.frontier()?;
+    let at = known_at.unwrap_or(head);
+    if at > head {
+        return Ok(Err(invalid(
+            "the occupied-pair coordinate is beyond the native book frontier",
+        )));
+    }
+    verify::claims_at(db, cx, book, at)
+}
