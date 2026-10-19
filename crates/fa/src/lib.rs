@@ -87,6 +87,9 @@ pub mod summary;
 pub mod summary_certificate;
 pub mod upload;
 
+#[cfg(test)]
+mod period_history_tests;
+
 pub use aging::{
     AGING_CERTIFICATE_FORMAT, AGING_OUTPUT_FORMAT, AgedOpenItem, AgingAmounts, AgingBand,
     AgingBuckets, AgingCell, AgingCertificate, AgingReconciliation, AgingReconciliationCertificate,
@@ -120,7 +123,8 @@ pub use fa_journal::{
     AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, DocumentEvidenceSummary,
     EventRow, EvidenceExplanation, ExternalIdRow, InstantSelection, InstrumentRow, LegalEntityRow,
     LineageEdgeSummary, LineageEntrySummary, LineageReport, ManualAssertionSummary, NetPosition,
-    NettingLaw, PartyRow, PeriodBalance, PeriodCheck, PeriodTransitionRecord, PeriodVerification,
+    NettingLaw, PartyRow, PeriodBalance, PeriodCheck, PeriodHistoryVerification,
+    PeriodTransitionRecord, PeriodVerification,
     ReaControlRecorded, ReaSnapshot, RelatedPartyHit, RelationshipRow, ReviewedSummary,
     RevocationRequest, Revoked, Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode,
     RunState, ScheduleVerification, SupplementSummary, TieOut, TieOutLine, TrialBalanceLine,

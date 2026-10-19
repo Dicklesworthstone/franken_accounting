@@ -9937,17 +9937,52 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             if args.positional.len() > 2 {
                 return Err(usage(
                     "verify periods takes no extra positional arguments",
-                    "fa verify periods --book <dir> [--json]",
+                    "fa verify periods --book <dir> [--as-known-at HEAD|<seq>|<RFC3339>] [--json]",
                 ));
             }
             if args.flag("--period").is_some() || args.flag("--fiscal-year").is_some() {
                 return Err(usage(
-                    "verify periods checks every Period vertex at the current head and takes no period filter",
-                    "fa verify periods --book <dir> [--json]",
+                    "verify periods checks complete journal history and every Period at the selected prefix; it takes no period filter",
+                    "fa verify periods --book <dir> [--as-known-at HEAD|<seq>|<RFC3339>] [--json]",
                 ));
             }
-            let book = ctx.books.open(args)?;
-            let v = book.verify_periods(None)?;
+            let principal = ctx.principal(args);
+            let capability = ctx.capability(args, &["read", "verify"])?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                // Admit current whole-book authority on trunk before branch
+                // selection, timestamp resolution, or native history loading.
+                fa_policy::admit_read(&capability, principal, book.context().book_id)
+                    .and_then(|()| {
+                        fa_policy::require(
+                            &capability,
+                            fa_policy::Op::Verify,
+                            "verifying complete period history",
+                        )
+                    })
+                    .and_then(|()| {
+                        fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None)
+                    })
+                    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+                book.read_scope(principal, &capability)??;
+                Ok(())
+            })?;
+            let (known_at, _) = known_at_flag(args, &book, out)?;
+            let verified = match book.verify_periods_with_history(principal, &capability, known_at) {
+                Ok(result) => result?,
+                Err(BookError::Kernel(fa_journal::KernelError::Corrupt(problem))) => {
+                    return Err(Fail::Verification {
+                        message: format!("period history verification failed: {problem}"),
+                        detail: obj(vec![("problem", s(&problem))]),
+                        cite: Some("FA-INV-02 (immutable journal history and rebuildable period state)".into()),
+                        fix: Some(
+                            "retain this finding with fa verify periods --json and the same --book and --as-known-at; preserve the original native history".into(),
+                        ),
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let history = verified.history;
+            let v = verified.periods;
             out.known_at(v.known_at);
             let periods: Vec<Json> = v
                 .periods
@@ -9974,6 +10009,14 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("periods_checked", Json::Int(v.periods_checked as i128)),
                 ("legacy_periods", Json::Int(v.legacy_periods as i128)),
                 (
+                    "history_commits_checked",
+                    Json::Int(i128::from(history.commits_checked)),
+                ),
+                (
+                    "history_entries_checked",
+                    Json::Int(history.entries_checked as i128),
+                ),
+                (
                     "transitions_checked",
                     Json::Int(v.transitions_checked as i128),
                 ),
@@ -9985,7 +10028,8 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "periods_verified",
                     fields,
                     &format!(
-                        "periods verified by refold: {} periods, {} transition(s), state mirrors agree at {}{}",
+                        "periods verified through native history: {} commits, {} immutable entries, {} periods, {} transition(s); state mirrors agree at {}{}",
+                        history.commits_checked, history.entries_checked,
                         v.periods_checked, v.transitions_checked, v.known_at.0,
                         if v.legacy_periods == 0 { String::new() } else {
                             format!("; {} legacy period(s) use the calendar baseline without journaled creation provenance", v.legacy_periods)
@@ -10001,9 +10045,9 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         v.drift.join("; ")
                     ),
                     detail: obj(fields),
-                    cite: Some("FA-INV-02 (period state is a rebuildable projection of PeriodControl transitions)".into()),
+                    cite: Some("FA-INV-02 (period state is a rebuildable projection of immutable birth declarations and PeriodControl transitions)".into()),
                     fix: Some(
-                        "retain this finding with fa verify periods --json and the same --book".into(),
+                        "retain this finding with fa verify periods --json and the same --book and --as-known-at".into(),
                     ),
                 })
             }

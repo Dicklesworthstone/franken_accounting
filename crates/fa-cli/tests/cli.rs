@@ -10170,9 +10170,11 @@ fn verify_periods_reports_refolded_lifecycle_and_rejects_period_filters() -> std
     let ok = |args: &[&str]| {
         let (code, out, err) = fa(Some(&book), args);
         assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
     };
     ok(&["book", "create", "--name", "Verify Periods Co", "--json"]);
-    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let created = ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let birth = field(&created, "recorded_at").expect("period birth sequence");
     ok(&["period", "open", "FY2026-P03", "--reason", "1", "--json"]);
     ok(&[
         "period",
@@ -10188,7 +10190,10 @@ fn verify_periods_reports_refolded_lifecycle_and_rejects_period_filters() -> std
     assert_eq!(field(&out, "event"), Some("periods_verified"));
     let d = doc(&out);
     assert_eq!(int(&d, "periods_checked"), Some(15));
+    assert_eq!(int(&d, "legacy_periods"), Some(0));
     assert_eq!(int(&d, "transitions_checked"), Some(2));
+    assert_eq!(int(&d, "history_entries_checked"), Some(3));
+    assert_eq!(int(&d, "history_commits_checked"), int(&d, "known_at"));
     assert!(arr(&d, "drift").is_empty());
     let p03 = arr(&d, "periods")
         .iter()
@@ -10199,6 +10204,27 @@ fn verify_periods_reports_refolded_lifecycle_and_rejects_period_filters() -> std
     assert_eq!(text(p03, "refolded_state"), "SoftClosed");
     assert_eq!(int(p03, "transitions"), Some(2));
     assert_eq!(p03.get("green"), Some(&Json::Bool(true)));
+
+    // The CLI reopens the real disk book for every command. An earlier
+    // prefix must retain its own birth state despite later state versions.
+    let earlier = ok(&[
+        "verify",
+        "periods",
+        "--as-known-at",
+        birth,
+        "--json",
+    ]);
+    let historical = doc(&earlier);
+    assert_eq!(int(&historical, "known_at"), birth.parse::<i128>().ok());
+    assert_eq!(int(&historical, "history_commits_checked"), int(&historical, "known_at"));
+    assert_eq!(int(&historical, "history_entries_checked"), Some(1));
+    assert_eq!(int(&historical, "transitions_checked"), Some(0));
+    let old_p03 = arr(&historical, "periods")
+        .iter()
+        .find(|p| p.get("code").and_then(Json::as_str) == Some("FY2026-P03"))
+        .expect("historical FY2026-P03 check row");
+    assert_eq!(text(old_p03, "stored_state"), "Future");
+    assert_eq!(text(old_p03, "refolded_state"), "Future");
 
     // Period filters and extra arguments are rejected with exit 2 (usage).
     for bad in [
@@ -10214,7 +10240,7 @@ fn verify_periods_reports_refolded_lifecycle_and_rejects_period_filters() -> std
 }
 
 #[test]
-fn verify_periods_exits_eight_on_planted_period_state_mirror_drift() -> std::io::Result<()> {
+fn verify_periods_exits_eight_on_mirror_drift_or_deleted_birth_history() -> std::io::Result<()> {
     use asupersync::runtime::RuntimeBuilder;
     use asupersync::types::Budget;
     use fa::{Book, BookKeys, Entropy};
@@ -10249,7 +10275,8 @@ fn verify_periods_exits_eight_on_planted_period_state_mirror_drift() -> std::io:
     )
     .unwrap();
     keys.save(&book.join("book.keys")).unwrap();
-    handle
+    let birth_control = fa_journal::period_creation::creation_vid(handle.context(), 2026);
+    let (birth, definitions) = handle
         .create_periods(
             2026,
             fgdb_types::VId(1),
@@ -10300,6 +10327,53 @@ fn verify_periods_exits_eight_on_planted_period_state_mirror_drift() -> std::io:
             .any(|d| d.contains("FY2026-P03") && d.contains("Closed") && d.contains("Open")),
         "{red}"
     );
+
+    // Remove the entire fiscal-year projection and its birth control.
+    // A live-row-only verifier has no surviving declaration to discover.
+    // The native history still proves that the immutable Entry was deleted.
+    let mut db = runtime
+        .block_on(Database::open(
+            &ctx.commit(),
+            &book.join("store"),
+            DatabaseKeys::new([63; 32], DatabaseSecurityNamespaceId([64; 32]), [65; 32]),
+        ))
+        .unwrap();
+    let mut deletion = WriteBatch::new(relation::IN_BOOK);
+    for vid in definitions
+        .iter()
+        .map(|period| fa_model::period_vid("fiscal", &period.code))
+        .chain(std::iter::once(birth_control))
+    {
+        deletion.delete_edge(fa_journal::rows::edge_id(
+            relation::IN_BOOK,
+            vid,
+            fa_journal::rows::book_root(),
+        ));
+        deletion.delete_vertex(vid);
+    }
+    runtime.block_on(db.write(&ctx.commit(), deletion)).unwrap();
+    drop(db);
+
+    let (code, deleted, err) = fa(Some(&book), &["verify", "periods", "--json"]);
+    assert_eq!(code, 8, "{deleted}\n{err}");
+    assert!(!deleted.contains("\"event\":\"periods_verified\""), "{deleted}");
+    let error = doc(&deleted);
+    assert_eq!(text(&error, "class"), "verification");
+    assert!(text(&error, "cite").contains("FA-INV-02"));
+    let detail = error.get("detail").expect("native history finding");
+    assert!(text(detail, "problem").contains("Entry"), "{deleted}");
+
+    let selected = birth.0.to_string();
+    let (code, historical, err) = fa(
+        Some(&book),
+        &["verify", "periods", "--as-known-at", &selected, "--json"],
+    );
+    assert_eq!(code, 0, "{historical}\n{err}");
+    let historical = doc(&historical);
+    assert_eq!(int(&historical, "known_at"), Some(i128::from(birth.0)));
+    assert_eq!(int(&historical, "periods_checked"), Some(15));
+    assert_eq!(int(&historical, "history_entries_checked"), Some(1));
+    assert!(arr(&historical, "drift").is_empty());
     Ok(())
 }
 

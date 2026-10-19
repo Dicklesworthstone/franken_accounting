@@ -2573,15 +2573,29 @@ impl Book {
     }
 
     /// Compare period projections with retained birth declarations and
-    /// transitions (`fa verify periods`, plan §7.3, FA-INV-02).
-    /// Complete journal integrity additionally requires
-    /// [`fa_journal::verify_entry_history`]; this projection check alone cannot
-    /// discover a year whose control and all period vertices were retired.
+    /// transitions (plan §7.3, FA-INV-02). Complete journal integrity additionally
+    /// requires [`Self::verify_periods_with_history`]; this projection check alone
+    /// cannot discover a year whose control and all period vertices were retired.
     pub fn verify_periods(
         &self,
         known_at: Option<CommitSeq>,
     ) -> Result<fa_journal::PeriodVerification, BookError> {
         with_store!(&self.store, core => core.verify_periods(&self.purposes(), known_at))
+    }
+
+    /// Verify complete native Entry history and period projections at one
+    /// captured prefix under current whole-book Read and Verify authority.
+    /// Loads retained history after checkpoint reopen without publishing.
+    pub fn verify_periods_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<fa_journal::PeriodHistoryVerification> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.verify_periods_with_history(&purposes, principal, capability, known_at)
+        ))
     }
 
     /// Explain an account's register cells in one period (`fa explain

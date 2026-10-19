@@ -52,6 +52,12 @@ on:
       - 'crates/fa-journal/src/genesis.rs'
       - 'crates/fa-journal/src/period.rs'
       - 'crates/fa-journal/src/period_creation.rs'
+      - 'crates/fa-journal/src/period_history.rs'
+      - 'crates/fa-journal/src/entry_history.rs'
+      - 'crates/fa/src/period_history_tests.rs'
+      - 'crates/fa/src/async_book.rs'
+      - 'crates/fa/src/projections/history_tests.rs'
+      - 'crates/fa-cli/tests/cli.rs'
       - 'crates/fa-journal/tests/genesis.rs'
       - 'crates/fa-journal/tests/policy.rs'
       - 'crates/fa-model/src/entry.rs'
@@ -168,6 +174,13 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib period_creation::tests --jobs 2 -- --nocapture
+      - name: Verify complete native period history through facade and CLI
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib period_history_tests --jobs 2 -- --nocapture
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test cli verify_periods --jobs 2 -- --nocapture
       - name: Regress journal capability and schema-change policy
         if: ${{ !cancelled() }}
         shell: bash

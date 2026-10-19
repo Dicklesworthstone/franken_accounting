@@ -135,6 +135,7 @@ fn handlers_cannot_add_operations_omitted_from_the_launch_grant() {
         vec!["approve", "--proposal", "not-yet-parsed", "--json"],
         vec!["checkpoint", "create", "--json"],
         vec!["verify", "registers", "--period", "FY2026-P03", "--json"],
+        vec!["verify", "periods", "--json"],
         vec!["registers", "advance", "--period", "FY2026-P03", "--json"],
         vec![
             "registers",
@@ -153,6 +154,7 @@ fn handlers_cannot_add_operations_omitted_from_the_launch_grant() {
         vec!["period", "list", "--json"],
         vec!["tb", "--period", "FY2026-P03", "--json"],
         vec!["verify", "registers", "--period", "FY2026-P03", "--json"],
+        vec!["verify", "periods", "--json"],
     ] {
         refused_before_open(&verifier, &argv, "FA-REF-011");
     }
@@ -248,14 +250,14 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         .unwrap();
     let issuer = Capability::embedded(
         principal_vid("report-issuer"),
-        &["issue_capability", "read", "produce", "post", "reconcile"],
+        &["issue_capability", "read", "verify", "produce", "post", "reconcile"],
     )
     .unwrap();
     let secret = [0x39; 32];
     let issued = Capability::new(
         principal_vid("report-preparer"),
         Profile::Human,
-        &[Op::Read, Op::Produce, Op::Post, Op::Reconcile],
+        &[Op::Read, Op::Verify, Op::Produce, Op::Post, Op::Reconcile],
         issuer.holder(),
     )
     .unwrap()
@@ -436,6 +438,8 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         vec!["entity", "list"],
         vec!["document", "list"],
         vec!["document", "list", "--kind", "BankStatement"],
+        vec!["verify", "periods", "--as-known-at", INSTANT],
+        vec!["verify", "periods", "--as-known-at", historical.as_str()],
         vec!["replay", "-"],
         vec!["replay", ZERO_DIGEST],
         vec!["replay", "supplied.cert", "--output", "unwritten.cert"],

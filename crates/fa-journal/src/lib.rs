@@ -36,6 +36,7 @@ pub mod limit;
 pub mod migration;
 pub mod period;
 pub mod period_creation;
+pub mod period_history;
 pub mod plan;
 pub mod policy;
 pub mod post;
@@ -109,6 +110,7 @@ pub use period::{
     plan_transition, prepare_transition, transition_name, transition_period, transition_proposal,
     verify_periods,
 };
+pub use period_history::{PeriodHistoryVerification, verify_periods_with_history};
 pub use plan::{commit_plan, plan_certificate_vid, plan_post};
 pub use policy::{
     ActivationRequest, ApprovalRequest, Approved, IssuanceRequest, Issued, IssuedCapability,

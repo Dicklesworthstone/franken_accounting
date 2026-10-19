@@ -2167,7 +2167,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 
     /// Compare period projections with retained declarations and transitions.
     /// This does not load or validate complete native Entry history; use
-    /// [`fa_journal::verify_entry_history`] for that independent integrity check.
+    /// [`Self::verify_periods_with_history`] for complete history verification.
     pub fn verify_periods(
         &self,
         cx: &PurposeContexts,
@@ -2176,6 +2176,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, book| {
             Ok(fa_journal::verify_periods(db, book, known_at)?)
         })
+    }
+
+    /// Verify native Entry integrity and period projections at one captured
+    /// prefix, loading complete retained history under current read authority.
+    /// No journal commit or projection repair is performed.
+    pub async fn verify_periods_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<fa_journal::PeriodHistoryVerification> {
+        Ok(fa_journal::verify_periods_with_history(
+            &mut self.db,
+            cx,
+            &self.context,
+            principal,
+            capability,
+            known_at,
+        )
+        .await?)
     }
 
     pub fn explain_balance(
