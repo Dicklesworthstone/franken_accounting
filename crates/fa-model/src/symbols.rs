@@ -256,6 +256,37 @@ impl SymbolTable {
         h.update(&self.canonical_bytes());
         h.finalize()
     }
+
+    /// Prove the digest of a literal label-ID prefix of this table. Every
+    /// property and relation binding must be unchanged; every retained label
+    /// keeps its exact name and ID. This is a bounded compatibility profile,
+    /// not a decoder for arbitrary prior registries or a symbol migration.
+    ///
+    /// The caller must authenticate `original` against the book's native
+    /// creation record before treating a match as historical evidence. A
+    /// mutable digest that happens to match a prefix is not that evidence.
+    ///
+    /// There is at most one existing-format hash per label, with no search
+    /// over subsets or combinations of the other symbol namespaces.
+    #[must_use]
+    pub fn matches_label_prefix_digest(&self, original: Digest) -> bool {
+        if self.digest() == original {
+            return true;
+        }
+        let mut by_id: Vec<_> = self.labels.iter().map(|(name, id)| (*id, name)).collect();
+        by_id.sort_unstable_by_key(|(id, _)| *id);
+        let mut prefix = self.clone();
+        for (_, name) in by_id.into_iter().rev() {
+            prefix.labels.remove(name);
+            if prefix.labels.is_empty() {
+                break;
+            }
+            if prefix.digest() == original {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 impl GraphSymbolResolver for SymbolTable {
@@ -350,5 +381,50 @@ mod tests {
             SymbolTable::compiled().digest(),
             SymbolTable::compiled().digest()
         );
+    }
+
+    #[test]
+    fn label_prefix_proofs_preserve_every_binding_and_both_other_namespaces() {
+        let current = SymbolTable::compiled();
+        assert!(current.matches_label_prefix_digest(current.digest()));
+        for ceiling in [43, 44, 46] {
+            let mut previous = current.clone();
+            previous.labels.retain(|_, id| *id <= ceiling);
+            assert!(current.matches_label_prefix_digest(previous.digest()));
+        }
+
+        let mut renamed = current.clone();
+        let entry = renamed.labels.remove("Entry").unwrap();
+        renamed.labels.insert("DifferentEntry".into(), entry);
+        let mut reassigned = current.clone();
+        reassigned.labels.insert("Entry".into(), 49);
+        let mut interior_removed = current.clone();
+        interior_removed.labels.remove("Entry");
+        let mut gap_filled = current.clone();
+        gap_filled.labels.insert("UnknownLegacyLabel".into(), 32);
+        let mut changed_property = current.clone();
+        changed_property.properties.insert("amount".into(), 69);
+        let mut removed_property = current.clone();
+        removed_property.properties.remove("unit_table_digest");
+        let mut changed_relation = current.clone();
+        changed_relation.relations.insert("POSTS_TO".into(), 38);
+        let mut removed_relation = current.clone();
+        removed_relation.relations.remove("IN_BATCH");
+        let mut no_labels = current.clone();
+        no_labels.labels.clear();
+        for incompatible in [
+            renamed,
+            reassigned,
+            interior_removed,
+            gap_filled,
+            changed_property,
+            removed_property,
+            changed_relation,
+            removed_relation,
+            no_labels,
+        ] {
+            assert!(!current.matches_label_prefix_digest(incompatible.digest()));
+        }
+        assert!(!current.matches_label_prefix_digest(Digest([0xa5; 32])));
     }
 }

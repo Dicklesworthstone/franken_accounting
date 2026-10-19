@@ -2509,6 +2509,72 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.trial_balance_at(cx, periods, None)
     }
 
+    /// Prepare retained history for an admitted report without publishing.
+    /// An older label registry needs its native Book creation record; an
+    /// explicit historical selector may also require loading past a checkpoint.
+    /// Current whole-book Read authority is checked before observation and
+    /// again after loading. Selected context integrity remains the report's
+    /// responsibility: a later forged mirror cannot invalidate an intact
+    /// earlier selected prefix. Current compiled-registry HEAD reads do not
+    /// load history.
+    pub async fn prepare_report_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<()> {
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let head = match fa_journal::policy::current_at(&self.db, &self.context, capability)? {
+            Ok(current) => current.at(),
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let selected = known_at.unwrap_or(head);
+        if selected > head {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_journal::refusal::code::STRUCTURE,
+                fa_journal::refusal::exit::USAGE,
+                format!(
+                    "report prefix {} exceeds the current head {}",
+                    selected.0, head.0,
+                ),
+                "plan §7.1 / §13.6 (reports select one retained prefix)",
+                format!("select a recorded sequence at or before {}", head.0),
+            )));
+        }
+        let needs_history = query.with_restriction(|| -> Result<bool, BookError> {
+            if selected < head {
+                return Ok(true);
+            }
+            let row = self
+                .db
+                .vertex_at(fa_journal::rows::book_root(), head)
+                .map_err(KernelError::from)?;
+            let stored = row.as_ref().and_then(|row| {
+                fa_journal::rows::prop(row, fa_model::symbols::property::SYMBOLS_DIGEST)
+            });
+            Ok(
+                !matches!(stored, Some(fgdb_types::CanonicalScalar::Bytes(bytes))
+                if bytes.as_slice() == self.context.symbols.digest().0),
+            )
+        })?;
+        if needs_history
+            && let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await?
+        {
+            return Ok(Err(refusal));
+        }
+        query.checkpoint().map_err(BookError::Context)?;
+        self.query(cx, |db, book| {
+            Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
+        })
+    }
+
     /// Certify a stock/activity trial balance at a fixed retained snapshot.
     /// The current whole-book embedded-owner authority is explicit in the
     /// certificate. Creating this artifact does not advance the journal.

@@ -39,6 +39,36 @@ fn certificate_invalid(message: impl Into<String>) -> Fail {
     ).into()
 }
 
+/// A comparison or trace may reach earlier sources than its final displayed
+/// coordinate. Prepare that actual retained prefix, never a sentinel cutoff.
+fn prepare_artifact_history(
+    book: &mut Book,
+    principal: VId,
+    capability: &Capability,
+    artifact: &ReportArtifact,
+    bytes: &[u8],
+) -> Result<(), Fail> {
+    let known_at = match artifact.family() {
+        ReportArtifactFamily::StatementDiff => {
+            let certificate = fa::StatementDiffCertificate::decode(bytes)?;
+            let (before, after) = certificate.sources();
+            before.known_at.min(after.known_at)
+        }
+        ReportArtifactFamily::StatementTrace => {
+            let certificate = fa::StatementTraceCertificate::decode(bytes)?;
+            certificate
+                .sources()
+                .iter()
+                .map(|source| source.known_at)
+                .min()
+                .ok_or_else(|| certificate_invalid("a statement trace has no source prefix"))?
+        }
+        _ => artifact.known_at(),
+    };
+    book.prepare_report_history(principal, capability, Some(known_at))??;
+    Ok(())
+}
+
 fn certificate_digest(text: &str) -> Result<Option<[u8; 32]>, Fail> {
     let explicit = text.strip_prefix("C:");
     let digits = explicit.unwrap_or(text);
@@ -535,6 +565,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
         book.read_scope(principal, &capability)??;
+        book.prepare_report_history(principal, &capability, None)??;
         Ok(())
     })?;
     let expected = expectations::parse(args, &book, principal, &capability)?;
@@ -557,6 +588,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         &capability,
     )?;
     let artifact = ReportArtifact::decode(&bytes)?;
+    prepare_artifact_history(&mut book, principal, &capability, &artifact, &bytes)?;
     if detail_view && artifact.family() != ReportArtifactFamily::RollForward {
         return Err(certificate_invalid(
             "--view detail requires a roll-forward source certificate",
@@ -761,6 +793,7 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
         book.read_scope(principal, &capability)??;
+        book.prepare_report_history(principal, &capability, None)??;
         Ok(())
     })?;
     let bytes = read_certificate_bytes(
@@ -771,6 +804,7 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         &capability,
     )?;
     let artifact = ReportArtifact::decode(&bytes)?;
+    prepare_artifact_history(&mut book, principal, &capability, &artifact, &bytes)?;
     // Status is meaningful only after the WHOLE artifact verifies. For a
     // comparison or trace, relevance starts at its final statement frontier;
     // a scenario diff is superseded only by Plan records its scenario gained

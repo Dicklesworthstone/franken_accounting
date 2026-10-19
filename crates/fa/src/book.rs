@@ -3056,6 +3056,22 @@ impl Book {
         with_store!(&self.store, core => core.period_activity(&self.purposes(), periods, known_at))
     }
 
+    /// Load a report's retained native history when its symbols or selected
+    /// prefix require it. Current whole-book Read admission precedes loading;
+    /// report evaluation verifies the selected context afterward. This never
+    /// publishes a journal commit or repairs a changed registry mirror.
+    pub fn prepare_report_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_report_history(&purposes, principal, capability, known_at)
+        ))
+    }
+
     /// The genesis spec journaled on the book root (base unit, calendar,
     /// opening date, entities).
     pub fn spec(&self) -> Result<BookSpec, BookError> {

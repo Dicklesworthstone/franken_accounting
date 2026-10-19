@@ -185,6 +185,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib certificate_store --jobs 2
+      - name: Verify additive symbol compatibility against original book creation
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-model --lib symbols --jobs 2 -- --nocapture
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib certificate::context_tests --jobs 2 -- --nocapture
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test report_symbol_compatibility --jobs 2 -- --nocapture
       - name: Verify canonical report and evidence bundle digests after registry changes
         if: ${{ !cancelled() }}
         shell: bash

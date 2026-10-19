@@ -25,7 +25,8 @@ use fa_registers::open_items::{OpenItemsReport, carries_open_items, open_items_r
 use fa_registers::{BalanceExplanation, TrialBalance};
 use fa_time::DateDay;
 use fgdb::{Database, NativeResultCertificate};
-use fgdb_crypto::Hasher;
+use fgdb_crypto::{Digest, Hasher};
+use fgdb_delta_types::DeltaRow;
 use fgdb_gql::{GqlParameters, GqlQueryPolicy};
 use fgdb_types::{CommitSeq, QueryCx, VId};
 
@@ -872,8 +873,7 @@ pub(crate) fn context_at<V: Vfs + Clone>(
     if spec.book_id != book.book_id
         || spec.calendar != book.calendar
         || bytes(&row, property::BOOK_ID, "certified book id")? != book.book_id.0
-        || bytes(&row, property::SYMBOLS_DIGEST, "certified symbol digest")?
-            != book.symbols.digest().0
+        || !symbols_match_at(db, book, &row, at)?
         || bytes(
             &row,
             property::UNIT_TABLE_DIGEST,
@@ -918,6 +918,95 @@ pub(crate) fn context_at<V: Vfs + Clone>(
     }
     Ok(())
 }
+
+/// Additive label IDs do not reinterpret a prior binding. The retained
+/// digest must nevertheless be the Book's original native creation value:
+/// changing a newer book's mirror to a valid older prefix is corruption.
+/// Mutable clock, security-policy and accumulator mirrors are deliberately
+/// outside this immutable genesis projection.
+fn symbols_match_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    selected: &fgdb::VertexRow,
+    at: CommitSeq,
+) -> Result<bool, BookError> {
+    let retained = bytes(
+        selected,
+        property::SYMBOLS_DIGEST,
+        "certified symbol digest",
+    )?;
+    let Ok(retained) = <[u8; 32]>::try_from(retained) else {
+        return Ok(false);
+    };
+    if retained == book.symbols.digest().0 {
+        return Ok(true);
+    }
+    if !book.symbols.matches_label_prefix_digest(Digest(retained)) {
+        return Ok(false);
+    }
+    let Some(genesis) = fa_journal::scratch::source_genesis(db)? else {
+        return Err(fa_journal::KernelError::Corrupt(
+            "symbol compatibility requires the Book's retained native creation".into(),
+        )
+        .into());
+    };
+    if genesis > at || selected.retired_at.is_some_and(|retired| retired <= at) {
+        return Ok(false);
+    }
+    let Some(before) = genesis.0.checked_sub(1) else {
+        return Ok(false);
+    };
+    let mut history = db
+        .delta_since(CommitSeq(before))
+        .map_err(fa_journal::KernelError::from)?;
+    let Some(batch) = history.next().filter(|batch| batch.commit_seq() == genesis) else {
+        return Err(fa_journal::KernelError::Corrupt(
+            "the Book's native creating commit is unavailable for symbol compatibility".into(),
+        )
+        .into());
+    };
+    let mut births = 0_u8;
+    for coordinate in batch.coordinate_entries() {
+        for delta in &coordinate.rows {
+            let DeltaRow::CreateVertex {
+                vid,
+                birth_ordinal,
+                labels,
+                props,
+                ..
+            } = delta
+            else {
+                continue;
+            };
+            if *vid != book_root() {
+                continue;
+            }
+            births = births.saturating_add(1);
+            if *birth_ordinal != selected.birth_ordinal || labels != &selected.labels {
+                return Ok(false);
+            }
+            for key in [
+                property::FA_PAYLOAD,
+                property::BOOK_ID,
+                property::BASE_UNIT,
+                property::CALENDAR_ID,
+                property::SYMBOLS_DIGEST,
+                property::UNIT_TABLE_DIGEST,
+            ] {
+                let original = props
+                    .iter()
+                    .find_map(|(candidate, value)| (*candidate == key).then_some(value));
+                if original.is_none() || original != fa_journal::rows::prop(selected, key) {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(births == 1)
+}
+
+#[cfg(test)]
+mod context_tests;
 
 fn certify_selected<V: Vfs + Clone>(
     db: &Database<V>,

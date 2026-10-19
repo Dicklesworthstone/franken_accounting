@@ -913,12 +913,12 @@ impl BookSource<'_> {
     pub(crate) fn open_admitted(
         &mut self,
         args: &Args,
-        admit: impl FnOnce(&Book) -> Result<(), Fail>,
+        admit: impl FnOnce(&mut Book) -> Result<(), Fail>,
     ) -> Result<BookRef<'_>, Fail> {
-        let book = self.books.open(args, self.cwd.as_deref())?;
+        let mut book = self.books.open(args, self.cwd.as_deref())?;
         // Authority is admitted on trunk, never on a scenario's replay: a
         // fork never resurrects revoked authority.
-        admit(&book)?;
+        admit(&mut book)?;
         let book = select_branch(args, book, &self.said)?;
         stamp(&self.said, &book)?;
         Ok(book)
@@ -8886,6 +8886,42 @@ fn tb_net(code: &str, debits: i128, credits: i128) -> Result<i128, Fail> {
     })
 }
 
+/// Complete report families admit their native input closure before loading
+/// history, including Produce when their existing retention contract needs it.
+fn prepare_certificate_history(
+    book: &mut Book,
+    capability: &Capability,
+    additional_ops: &[fa_policy::Op],
+    known_at: Option<CommitSeq>,
+) -> Result<(), Fail> {
+    admit_whole_book_read(
+        book,
+        capability,
+        additional_ops,
+        "certifying and retaining a report",
+    )?;
+    book.prepare_report_history(capability.holder(), capability, known_at)??;
+    Ok(())
+}
+
+/// Legacy native reports and certificates keep their Read-only admission contract.
+/// Full history can be loaded only by a current whole-book reader. A scoped
+/// caller keeps the existing evaluation path without loading additional data;
+/// this adapter does not manufacture a scoped native-history capability.
+fn prepare_native_certificate_history(
+    book: &mut Book,
+    capability: &Capability,
+    known_at: Option<CommitSeq>,
+) -> Result<(), Fail> {
+    fa_policy::admit_read(capability, capability.holder(), book.context().book_id)
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    book.admit_current(capability)??;
+    if fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None).is_ok() {
+        book.prepare_report_history(capability.holder(), capability, known_at)??;
+    }
+    Ok(())
+}
+
 fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let who = ctx.principal(args);
     let summary_cap = if args.switch("--summary") {
@@ -8928,7 +8964,12 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 })
                 .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
             book.read_scope(who, capability)??;
+            book.prepare_report_history(who, capability, None)??;
             Ok(())
+        })?
+    } else if let Some(capability) = certify_cap.as_ref() {
+        ctx.books.open_admitted(args, |book| {
+            prepare_native_certificate_history(book, capability, None)
         })?
     } else {
         ctx.books.open(args)?
@@ -9005,6 +9046,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         known_at = Some(book.originally_reported(&period)??.known_at);
     }
     if let Some(capability) = summary_cap {
+        book.prepare_report_history(who, &capability, known_at)??;
         let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
         if certify && requested_utc_ns.is_some() {
             return Err(usage(
@@ -9058,8 +9100,8 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let summary = book.summary_trial_balance(who, &capability, &request)??;
         return render_summary_trial_balance(out, &book, &summary, &selection, None);
     }
-    let (tb, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
-    {
+    let (tb, certificate) = if let Some(capability) = certify_cap.as_ref() {
+        prepare_native_certificate_history(&mut book, capability, known_at)?;
         let certified = match requested_utc_ns {
             Some(instant) => {
                 book.certify_trial_balance_at_instant(selection.clone(), instant)??
@@ -9312,7 +9354,18 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 &["read"]
             },
         )?;
-        let mut book = ctx.books.open(args)?;
+        let mut book = ctx.books.open_admitted(args, |book| {
+            prepare_certificate_history(
+                book,
+                &capability,
+                if certify {
+                    &[fa_policy::Op::Produce]
+                } else {
+                    &[]
+                },
+                Some(before),
+            )
+        })?;
         let comparison = StatementDiffRequest {
             selection,
             before,
@@ -9406,33 +9459,31 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .map(String::from)
             .collect(),
     };
-    let certify_cap = if args.switch("--certify") || args.flag("--certificate-out").is_some() {
-        Some(ctx.capability(args, &["read"])?)
-    } else {
-        None
-    };
-    let mut book = ctx.books.open(args)?;
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let capability = ctx.capability(args, &["read"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        prepare_native_certificate_history(book, &capability, None)
+    })?;
     let (known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
-    let (statement, certificate) =
-        if args.switch("--certify") || args.flag("--certificate-out").is_some() {
-            let certified = match requested_utc_ns {
-                Some(instant) => book.certify_statement_at_instant(selection, instant)??,
-                None => book.certify_statement(selection, known_at)??,
-            };
-            ctx.out
-                .time_selection(certified.certificate.time_selection.as_ref());
-            (certified.statement, Some(certified.certificate))
-        } else {
-            (book.statement(selection, known_at)??, None)
+    prepare_native_certificate_history(&mut book, &capability, known_at)?;
+    let (statement, certificate) = if certify {
+        let certified = match requested_utc_ns {
+            Some(instant) => book.certify_statement_at_instant(selection, instant)??,
+            None => book.certify_statement(selection, known_at)??,
         };
+        ctx.out
+            .time_selection(certified.certificate.time_selection.as_ref());
+        (certified.statement, Some(certified.certificate))
+    } else {
+        (book.statement(selection, known_at)??, None)
+    };
     // Render every amount, column and mapping before retaining a certificate
     // or emitting a success. Missing units never become printable fallbacks.
     let rendered = statement_presentation(&statement, &book.context().units)?;
     let retained = certificate
         .as_ref()
-        .zip(certify_cap.as_ref())
-        .map(|(certificate, cap)| {
-            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate, cap)
+        .map(|certificate| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate, &capability)
         })
         .transpose()?;
     let digest = certificate
@@ -10681,7 +10732,13 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         None
     };
     let out = &ctx.out;
-    let mut book = ctx.books.open(args)?;
+    let mut book = if let Some(capability) = certify_cap.as_ref() {
+        ctx.books.open_admitted(args, |book| {
+            prepare_native_certificate_history(book, capability, None)
+        })?
+    } else {
+        ctx.books.open(args)?
+    };
     if args.positional.len() != 1 {
         return Err(usage(
             "unexpected open-items argument",
@@ -10752,7 +10809,8 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             },
             None,
         )
-    } else if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+    } else if let Some(capability) = certify_cap.as_ref() {
+        prepare_native_certificate_history(&mut book, capability, known_at)?;
         let selection = ReportSelection::OpenItems { account };
         let certified = match requested_utc_ns {
             Some(instant) => book.certify_report_at_instant(selection, instant)??,
@@ -12587,14 +12645,18 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         },
     )?;
     let out = &ctx.out;
-    let admit_report = |book: &Book| -> Result<(), Fail> {
+    let admit_report = |book: &mut Book| -> Result<(), Fail> {
         if certify {
-            return gl_certificate_preflight(book, &ctx.files, args, &capability);
+            gl_certificate_preflight(book, &ctx.files, args, &capability)?;
+        } else {
+            fa_policy::admit_read(&capability, who, book.context().book_id)
+                .and_then(|()| {
+                    fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None)
+                })
+                .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+            book.read_scope(who, &capability)??;
         }
-        fa_policy::admit_read(&capability, who, book.context().book_id)
-            .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
-            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-        book.read_scope(who, &capability)??;
+        book.prepare_report_history(who, &capability, None)??;
         Ok(())
     };
     match sub {
@@ -12613,6 +12675,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "gl-detail",
                 "fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book <dir>",
             )?;
+            book.prepare_report_history(who, &capability, req.known_at)??;
             let (gl, artifact) = if certify {
                 let certified = book.certify_general_ledger(who, &capability, &req)??;
                 let artifact = fa::ReportArtifact::try_from(certified.source_certificate())?;
@@ -12665,6 +12728,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "roll-forward",
                 "fa gl roll-forward --account 1000 --from 2026-03-01 --to 2026-03-31 --book <dir>",
             )?;
+            book.prepare_report_history(who, &capability, req.known_at)??;
             let (rf, artifact) = if certify {
                 let certified = book.certify_roll_forward(who, &capability, &req)??;
                 let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
@@ -12814,6 +12878,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let account_code = args.flag("--account");
             let account = account_code.map(|code| account_vid(book.context().book_id, code));
             let known_at = gl_known_at(args, &book, out)?;
+            book.prepare_report_history(who, &capability, known_at)??;
             out.effective(format!("as-of:{day}"));
             let units = &book.context().units;
             let all_posting = args.switch("--all-posting");
@@ -13162,6 +13227,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "cash-flow",
                 "fa gl cash-flow --account 1000 --from 2026-03-01 --to 2026-03-31 --policy policy.json --book <dir>",
             )?;
+            book.prepare_report_history(who, &capability, req.known_at)??;
             let units = &book.context().units;
             if args.switch("--indirect") {
                 let income_periods: Vec<String> = args
@@ -13440,7 +13506,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "--account",
                 "<code> (an AnyUnit lot-tracked account such as 1400)",
             )?;
-            let book = ctx.books.open_admitted(args, admit_report)?;
+            let mut book = ctx.books.open_admitted(args, admit_report)?;
             let account = account_vid(book.context().book_id, account_code);
             let effective_through = match args.flag("--as-of") {
                 Some(as_of) => {
@@ -13456,6 +13522,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 None => None,
             };
             let (known_at, _) = known_at_flag(args, &book, out)?;
+            book.prepare_report_history(who, &capability, known_at)??;
             let report = book.lots(account, effective_through, known_at)?;
             out.known_at(report.known_at);
             let units = &book.context().units;
@@ -14666,8 +14733,17 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
-    let mut book = ctx.books.open(args)?;
+    let mut book = if let Some(capability) = certify_cap.as_ref() {
+        ctx.books.open_admitted(args, |book| {
+            prepare_native_certificate_history(book, capability, None)
+        })?
+    } else {
+        ctx.books.open(args)?
+    };
     let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+    if let Some(capability) = certify_cap.as_ref() {
+        prepare_native_certificate_history(&mut book, capability, known_at)?;
+    }
     let account = account_vid(book.context().book_id, code);
     let explain_error = |error| explanation_selection_error(&book, code, period, known_at, error);
     let (ex, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
