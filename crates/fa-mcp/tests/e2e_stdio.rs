@@ -432,6 +432,12 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         ),
         (
             "fa_proof_gl",
+            "roll-forward",
+            "general_ledger",
+            json!({"view": "detail", "account": "1000", "unit": "USD", "from": "2026-03-01", "to": "2026-03-31", "label": "MCP March detail", "certify": true}),
+        ),
+        (
+            "fa_proof_gl",
             "effective-date-aging",
             "aging",
             json!({"view": "aging", "account": "1000", "as_of": "2026-03-31", "bucket": ["0", "30", "60"], "certify": true}),
@@ -454,11 +460,22 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
             format!("C:{}", certified[1]["oid"].as_str().unwrap()),
             certified[1]["bytes"].as_str().unwrap().to_string(),
         ] {
-            let (error, output, metadata) = call_tool(
-                &mut producer,
-                "fa_read_replay",
-                json!({"certificate": certificate}),
-            );
+            let mut replay_args = if event_name == "general_ledger" {
+                json!({
+                    "certificate": certificate,
+                    "view": "detail",
+                    "account": "1000",
+                    "unit": "USD",
+                    "from": "2026-03-01",
+                    "to": "2026-03-31",
+                    "label": "MCP March detail",
+                    "as_known_at": certified[0]["known_at"].to_string(),
+                })
+            } else {
+                json!({"certificate": certificate})
+            };
+            let (error, output, metadata) =
+                call_tool(&mut producer, "fa_read_replay", replay_args.clone());
             assert!(!error, "{family}: {output}");
             let replayed: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
             assert_eq!(replayed[0], certified[0]);
@@ -469,6 +486,21 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
             )
             .unwrap();
             assert_eq!(envelope["events"], json!([event_name, "report_replayed"]));
+            if event_name == "general_ledger" {
+                let mut conflicting = replay_args.clone();
+                conflicting["expect"] = json!("{}");
+                let (error, output, metadata) =
+                    call_tool(&mut producer, "fa_read_replay", conflicting);
+                assert!(error, "conflicting detail request: {output}");
+                assert!(output.contains("separate request formats"), "{output}");
+                assert_eq!(metadata["content"].as_array().unwrap().len(), 1);
+                replay_args["account"] = json!("6000");
+                let (error, output, metadata) =
+                    call_tool(&mut producer, "fa_read_replay", replay_args);
+                assert!(error, "changed detail scope: {output}");
+                assert_eq!(structured_error(&output)["refusal_id"], json!("FA-REF-150"));
+                assert_eq!(metadata["content"].as_array().unwrap().len(), 1);
+            }
         }
     }
     assert_eq!(producer.finish(), 0);

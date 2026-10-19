@@ -274,6 +274,7 @@ pub(crate) fn emit_report_certificate(
             output_format: certificate.output_format(),
             output_digest: certificate.output_digest,
             replay_expectation: None,
+            replay_options: None,
         },
         bytes,
         retained,
@@ -297,6 +298,7 @@ pub(crate) fn emit_report_artifact(
             output_format,
             output_digest: artifact.output_digest(),
             replay_expectation: None,
+            replay_options: None,
         },
         bytes,
         retained,
@@ -322,6 +324,54 @@ pub(crate) fn emit_report_artifact_for(
             output_format,
             output_digest: artifact.output_digest(),
             replay_expectation: Some(&expectation),
+            replay_options: None,
+        },
+        bytes,
+        retained,
+    );
+}
+
+pub(crate) fn general_ledger_replay_options(
+    book: &Book,
+    report: &fa::GeneralLedger,
+) -> Result<String, Fail> {
+    let mut options = String::from(" --view detail");
+    for account in report.accounts() {
+        options.push_str(&format!(" --account {}", quoted_word(&account.code)));
+    }
+    for unit in report.units() {
+        let code =
+            crate::cli::registered_unit_code(fa_money::UnitId(*unit), &book.context().units)?;
+        options.push_str(&format!(" --unit {}", quoted_word(&code)));
+    }
+    options.push_str(&format!(
+        " --from {} --to {} --label {} --as-known-at {}",
+        report.effective_from(),
+        report.effective_through(),
+        quoted_word(report.label()),
+        report.known_at().0,
+    ));
+    Ok(options)
+}
+
+pub(crate) fn emit_general_ledger_certificate(
+    out: &Out,
+    args: &Args,
+    artifact: &ReportArtifact,
+    bytes: &[u8],
+    retained: &RetainedCertificate,
+    replay_options: &str,
+) {
+    emit_certificate(
+        out,
+        args,
+        CertificatePresentation {
+            source: artifact.source_certificate(),
+            digest: artifact.digest(),
+            output_format: "fa:roll-forward:v1",
+            output_digest: artifact.output_digest(),
+            replay_expectation: None,
+            replay_options: Some(replay_options),
         },
         bytes,
         retained,
@@ -334,6 +384,7 @@ struct CertificatePresentation<'a> {
     output_format: &'a str,
     output_digest: [u8; 32],
     replay_expectation: Option<&'a str>,
+    replay_options: Option<&'a str>,
 }
 
 fn emit_certificate(
@@ -357,7 +408,8 @@ fn emit_certificate(
     let expectation = presentation.replay_expectation.map_or_else(String::new, |expected| {
         format!(" --expect {}", quoted_word(expected))
     });
-    let command = format!("fa replay C:{digest}{expectation}{environment} --json");
+    let options = presentation.replay_options.unwrap_or("");
+    let command = format!("fa replay C:{digest}{expectation}{options}{environment} --json");
     let human = match file {
         Some(path) => format!(
             "Retained report certificate {digest} in the book at sequence {} and in {path}\n{command}",
@@ -410,6 +462,61 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa replay C:<oid> --output <new-file> --json",
         ));
     }
+    let detail_view = match args.flag("--view") {
+        None => false,
+        Some("detail") if args.flag_all("--view").len() == 1 => true,
+        Some(_) => {
+            return Err(usage(
+                "--view accepts only detail",
+                "fa replay C:<oid> --view detail --account <code> --unit <CODE> --from YYYY-MM-DD --to YYYY-MM-DD --label <label> --as-known-at <seq>",
+            ));
+        }
+    };
+    if detail_view && args.flag("--expect").is_some() {
+        return Err(usage(
+            "--view detail and --expect are separate request formats and cannot be combined",
+            "use the complete replay_command from the original certified ledger",
+        ));
+    }
+    let detail_flags = [
+        "--account",
+        "--unit",
+        "--from",
+        "--to",
+        "--label",
+        "--as-known-at",
+    ];
+    if !detail_view && detail_flags.iter().any(|flag| args.flag(flag).is_some()) {
+        return Err(usage(
+            "explicit ledger-view expectations require --view detail",
+            "use the complete replay_command from the original certified ledger",
+        ));
+    }
+    if detail_view {
+        for flag in ["--from", "--to", "--label", "--as-known-at"] {
+            if args.flag_all(flag).len() != 1 {
+                return Err(usage(
+                    format!("detail replay requires exactly one {flag}"),
+                    "use the independently reviewed account, unit, dates, label and recorded sequence from the original ledger request",
+                ));
+            }
+        }
+        if !args
+            .flag_all("--unit")
+            .into_iter()
+            .flat_map(|units| units.split(','))
+            .any(|unit| !unit.trim().is_empty())
+            || args
+                .flag("--as-known-at")
+                .and_then(|seq| seq.parse::<u64>().ok())
+                .is_none()
+        {
+            return Err(usage(
+                "detail replay requires explicit units and a numeric --as-known-at sequence, never HEAD",
+                "use the complete replay_command from the original certified ledger",
+            ));
+        }
+    }
     let principal = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
     // Saved provenance grants no current authority. Admission precedes
@@ -422,6 +529,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Ok(())
     })?;
     let expected = expectations::parse(args, &book)?;
+    let detail_expected = if detail_view {
+        Some(crate::cli::parse_gl_scope(
+            args,
+            &book,
+            &ctx.out,
+            "gl-detail",
+            "use the complete replay_command from the original certified ledger",
+        )?)
+    } else {
+        None
+    };
     let bytes = read_certificate_bytes(
         &book,
         &ctx.files,
@@ -430,6 +548,11 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         &capability,
     )?;
     let artifact = ReportArtifact::decode(&bytes)?;
+    if detail_view && artifact.family() != ReportArtifactFamily::RollForward {
+        return Err(certificate_invalid(
+            "--view detail requires a roll-forward source certificate",
+        ));
+    }
     let replayed = book.replay_report_artifact_for(
         principal,
         &capability,
@@ -462,9 +585,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
-    let roll_forward = if artifact.family() == ReportArtifactFamily::RollForward {
+    let roll_forward = if !detail_view && artifact.family() == ReportArtifactFamily::RollForward {
         let certificate = fa::RollForwardCertificate::decode(&bytes)?;
         Some(book.replay_roll_forward(principal, &capability, &certificate)??)
+    } else {
+        None
+    };
+    let detail = if let Some(expected) = detail_expected {
+        let source = fa::RollForwardCertificate::decode(&bytes)?;
+        let report = book.replay_general_ledger(principal, &capability, &source, &expected)??;
+        let presentation = crate::cli::general_ledger_presentation(&book, &report)?;
+        Some((report, presentation))
     } else {
         None
     };
@@ -534,6 +665,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             selection,
             Some(&digest),
         )?;
+        true
+    } else if let Some((report, presentation)) = detail {
+        crate::cli::render_general_ledger(&ctx.out, &report, presentation, Some(&digest));
         true
     } else if let Some(report) = roll_forward {
         crate::cli::render_roll_forward(&ctx.out, &book, &report, Some(&digest))?;

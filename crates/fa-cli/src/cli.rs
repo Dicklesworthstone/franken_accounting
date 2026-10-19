@@ -188,7 +188,7 @@ pub(crate) fn render_amount(
     amount.try_render(units).map_err(amount_corruption)
 }
 
-fn registered_unit_code(
+pub(crate) fn registered_unit_code(
     unit: fa_money::UnitId,
     units: &fa_money::UnitRegistry,
 ) -> Result<String, Fail> {
@@ -10316,7 +10316,7 @@ fn gl_known_at(args: &Args, book: &Book, out: &Out) -> Result<Option<CommitSeq>,
     Ok(known_at)
 }
 
-fn parse_gl_scope(
+pub(crate) fn parse_gl_scope(
     args: &Args,
     book: &Book,
     out: &Out,
@@ -10383,6 +10383,127 @@ fn parse_gl_scope(
         effective_through: to,
         known_at,
     })
+}
+
+pub(crate) struct GeneralLedgerPresentation {
+    fields: Vec<(&'static str, Json)>,
+    human: String,
+}
+
+/// Resolve every label, amount and index before retention, an output file, or
+/// a success event. Native reads and recipient-bound replay share this view.
+pub(crate) fn general_ledger_presentation(
+    book: &Book,
+    gl: &fa::GeneralLedger,
+) -> Result<GeneralLedgerPresentation, Fail> {
+    let units = &book.context().units;
+    let accounts_by_id: std::collections::BTreeMap<u128, _> =
+        gl.accounts().iter().map(|a| (a.id, a)).collect();
+    let cells: Vec<Json> = gl
+        .cells()
+        .iter()
+        .map(|c| {
+            let acc = accounts_by_id.get(&c.account_id).ok_or_else(|| {
+                Fail::Internal(format!(
+                    "gl cell references missing account {:032x}",
+                    c.account_id
+                ))
+            })?;
+            let unit_code = registered_unit_code(fa_money::UnitId(c.unit_id), units)?;
+            let fmt = |m: i128| render_amount(Amount::new(fa_money::UnitId(c.unit_id), m), units);
+            let line_count = c
+                .line_end
+                .checked_sub(c.line_start)
+                .ok_or_else(|| Fail::Internal("gl cell has an inverted line range".into()))?;
+            Ok(obj(vec![
+                ("account", s(&acc.code)),
+                ("account_vid", s(format!("{:032x}", c.account_id))),
+                ("name", s(&acc.name)),
+                (
+                    "type",
+                    s(AccountType(acc.account_type).name().unwrap_or("unknown")),
+                ),
+                ("unit", s(unit_code)),
+                ("opening", s(fmt(c.opening)?)),
+                ("debits", s(fmt(c.debits)?)),
+                ("credits", s(fmt(c.credits)?)),
+                ("net_change", s(fmt(c.net_change)?)),
+                ("closing", s(fmt(c.closing)?)),
+                ("line_count", Json::Int(i128::from(line_count))),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let lines: Vec<Json> = gl
+        .lines()
+        .iter()
+        .map(|line| {
+            let cell = gl
+                .cells()
+                .get(line.cell_index as usize)
+                .ok_or_else(|| Fail::Internal("gl line cell_index out of bounds".into()))?;
+            let acc = accounts_by_id
+                .get(&cell.account_id)
+                .ok_or_else(|| Fail::Internal("gl cell account missing".into()))?;
+            let bucket = gl
+                .buckets()
+                .get(line.bucket_index as usize)
+                .ok_or_else(|| Fail::Internal("gl line bucket_index out of bounds".into()))?;
+            let unit_code = registered_unit_code(fa_money::UnitId(cell.unit_id), units)?;
+            let fmt =
+                |m: i128| render_amount(Amount::new(fa_money::UnitId(cell.unit_id), m), units);
+            Ok(obj(vec![
+                ("account", s(&acc.code)),
+                ("unit", s(unit_code)),
+                ("entry_digest", s(hex(&line.entry_digest))),
+                ("leg_index", Json::Int(i128::from(line.leg_index))),
+                ("recorded_at", Json::Int(i128::from(line.recorded_seq))),
+                ("effective_date", s(line.effective_day.render())),
+                ("class", s(bucket.class.name().unwrap_or("unknown"))),
+                ("reason_code", s(&bucket.reason_code)),
+                ("debits", s(fmt(line.debits)?)),
+                ("credits", s(fmt(line.credits)?)),
+                ("running_balance", s(fmt(line.running_balance)?)),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    Ok(GeneralLedgerPresentation {
+        fields: vec![
+            ("label", s(gl.label())),
+            ("known_at", Json::Int(i128::from(gl.known_at().0))),
+            ("effective_from", s(gl.effective_from().render())),
+            ("effective_through", s(gl.effective_through().render())),
+            ("cells", Json::Arr(cells)),
+            ("lines", Json::Arr(lines)),
+        ],
+        human: format!(
+            "gl detail `{}` ({}..={}): {} cell(s), {} line(s)",
+            gl.label(),
+            gl.effective_from(),
+            gl.effective_through(),
+            gl.cells().len(),
+            gl.lines().len()
+        ),
+    })
+}
+
+pub(crate) fn render_general_ledger(
+    out: &Out,
+    gl: &fa::GeneralLedger,
+    presentation: GeneralLedgerPresentation,
+    certificate: Option<&str>,
+) {
+    out.known_at(gl.known_at());
+    out.effective(format!(
+        "between:{}..{}",
+        gl.effective_from(),
+        gl.effective_through()
+    ));
+    out.event_with_certificate(
+        "general_ledger",
+        presentation.fields,
+        &presentation.human,
+        certificate,
+    );
 }
 
 pub(crate) fn render_roll_forward(
@@ -11030,88 +11151,11 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             } else {
                 (book.general_ledger(who, &capability, &req)??, None)
             };
-            out.known_at(gl.known_at());
-            let units = &book.context().units;
-            let accounts_by_id: std::collections::BTreeMap<u128, _> =
-                gl.accounts().iter().map(|a| (a.id, a)).collect();
-            let cells: Vec<Json> = gl
-                .cells()
-                .iter()
-                .map(|c| {
-                    let acc = accounts_by_id.get(&c.account_id).ok_or_else(|| {
-                        Fail::Internal(format!(
-                            "gl cell references missing account {:032x}",
-                            c.account_id
-                        ))
-                    })?;
-                    let unit_code =
-                        registered_unit_code(fa_money::UnitId(c.unit_id), units)?.to_string();
-                    let fmt =
-                        |m: i128| render_amount(Amount::new(fa_money::UnitId(c.unit_id), m), units);
-                    let line_count = c.line_end.saturating_sub(c.line_start);
-                    Ok(obj(vec![
-                        ("account", s(&acc.code)),
-                        ("account_vid", s(format!("{:032x}", c.account_id))),
-                        ("name", s(&acc.name)),
-                        (
-                            "type",
-                            s(AccountType(acc.account_type).name().unwrap_or("unknown")),
-                        ),
-                        ("unit", s(&unit_code)),
-                        ("opening", s(fmt(c.opening)?)),
-                        ("debits", s(fmt(c.debits)?)),
-                        ("credits", s(fmt(c.credits)?)),
-                        ("net_change", s(fmt(c.net_change)?)),
-                        ("closing", s(fmt(c.closing)?)),
-                        ("line_count", Json::Int(i128::from(line_count))),
-                    ]))
-                })
-                .collect::<Result<_, Fail>>()?;
-            let lines: Vec<Json> = gl
-                .lines()
-                .iter()
-                .map(|line| {
-                    let cell = gl
-                        .cells()
-                        .get(line.cell_index as usize)
-                        .ok_or_else(|| Fail::Internal("gl line cell_index out of bounds".into()))?;
-                    let acc = accounts_by_id
-                        .get(&cell.account_id)
-                        .ok_or_else(|| Fail::Internal("gl cell account missing".into()))?;
-                    let bucket = gl
-                        .buckets()
-                        .get(line.bucket_index as usize)
-                        .ok_or_else(|| {
-                            Fail::Internal("gl line bucket_index out of bounds".into())
-                        })?;
-                    let unit_code =
-                        registered_unit_code(fa_money::UnitId(cell.unit_id), units)?.to_string();
-                    let fmt = |m: i128| {
-                        render_amount(Amount::new(fa_money::UnitId(cell.unit_id), m), units)
-                    };
-                    Ok(obj(vec![
-                        ("account", s(&acc.code)),
-                        ("unit", s(&unit_code)),
-                        ("entry_digest", s(hex(&line.entry_digest))),
-                        ("leg_index", Json::Int(i128::from(line.leg_index))),
-                        ("recorded_at", Json::Int(i128::from(line.recorded_seq))),
-                        ("effective_date", s(line.effective_day.render())),
-                        ("class", s(bucket.class.name().unwrap_or("unknown"))),
-                        ("reason_code", s(&bucket.reason_code)),
-                        ("debits", s(fmt(line.debits)?)),
-                        ("credits", s(fmt(line.credits)?)),
-                        ("running_balance", s(fmt(line.running_balance)?)),
-                    ]))
-                })
-                .collect::<Result<_, Fail>>()?;
-            let human = format!(
-                "gl detail `{}` ({}..={}): {} cell(s), {} line(s)",
-                gl.label(),
-                gl.effective_from().render(),
-                gl.effective_through().render(),
-                gl.cells().len(),
-                gl.lines().len()
-            );
+            let presentation = general_ledger_presentation(&book, &gl)?;
+            let replay_options = artifact
+                .as_ref()
+                .map(|_| notary::general_ledger_replay_options(&book, &gl))
+                .transpose()?;
             let retained = artifact
                 .as_ref()
                 .map(|artifact| {
@@ -11125,29 +11169,14 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 })
                 .transpose()?;
             let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
-            out.event_with_certificate(
-                "general_ledger",
-                vec![
-                    ("label", s(gl.label())),
-                    ("known_at", Json::Int(i128::from(gl.known_at().0))),
-                    ("effective_from", s(gl.effective_from().render())),
-                    ("effective_through", s(gl.effective_through().render())),
-                    ("cells", Json::Arr(cells)),
-                    ("lines", Json::Arr(lines)),
-                ],
-                &human,
-                digest.as_deref(),
-            );
-            if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+            render_general_ledger(out, &gl, presentation, digest.as_deref());
+            if let (Some(artifact), Some((bytes, retained)), Some(options)) =
+                (artifact.as_ref(), retained, replay_options.as_deref())
+            {
                 // Detail is the deterministic view of this complete source,
                 // not a newly invented general-ledger certificate format.
-                notary::emit_report_artifact(
-                    out,
-                    args,
-                    artifact,
-                    "fa:roll-forward:v1",
-                    &bytes,
-                    &retained,
+                notary::emit_general_ledger_certificate(
+                    out, args, artifact, &bytes, &retained, options,
                 );
             }
             Ok(())

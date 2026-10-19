@@ -355,6 +355,156 @@ fn certification_refuses_unsupported_modes_and_existing_output_without_writes() 
 }
 
 #[test]
+fn detail_replay_binds_the_independent_request_before_rendering_or_writing() {
+    let fixture = Fixture::new();
+    let selected = head(&fixture.book).to_string();
+    let next_sequence = (selected.parse::<u64>().unwrap() + 1).to_string();
+    let label = "March owner's detail";
+    let scope = vec![
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--label",
+        label,
+    ];
+    let certificate_path = fixture.dir.join("detail-scope.certificate");
+    let certified = ok(
+        &fixture.book,
+        &[
+            vec!["gl", "detail"],
+            scope.clone(),
+            vec!["--certificate-out", certificate_path.to_str().unwrap()],
+        ]
+        .concat(),
+    );
+    assert_eq!(certified.len(), 2);
+    let certificate = data(&certified[1]);
+    let handle = format!("C:{}", text(certificate, "oid"));
+    assert_eq!(
+        text(certificate, "replay_command"),
+        format!(
+            "fa replay {handle} --view detail --account '1000' --unit 'USD' --from 2026-03-01 --to 2026-03-31 --label 'March owner'\\''s detail' --as-known-at {selected} --book '{}' --json",
+            fixture.book.display(),
+        ),
+        "the default unit and HEAD resolution must become explicit, safely quoted expectations",
+    );
+    let source_bytes = std::fs::read(&certificate_path).unwrap();
+    let artifact = fa::ReportArtifact::decode(&source_bytes).unwrap();
+    assert_eq!(artifact.family().name(), "roll-forward");
+
+    fixture.post("detail-later-correction", "2026-03-12", "4000", "9.00 USD");
+    let after_correction = head(&fixture.book);
+    let replay_args = [
+        vec![
+            "replay",
+            &handle,
+            "--view",
+            "detail",
+            "--unit",
+            "USD",
+            "--as-known-at",
+            &selected,
+        ],
+        scope,
+    ]
+    .concat();
+    for input in [handle.as_str(), certificate_path.to_str().unwrap()] {
+        let mut args = replay_args.clone();
+        args[1] = input;
+        let replay = ok(&fixture.book, &args);
+        assert_eq!(replay.len(), 2);
+        assert_eq!(
+            replay[0], certified[0],
+            "original detailed lines and coordinate"
+        );
+        assert_eq!(text(&replay[1], "event"), "report_replayed");
+        assert_eq!(text(data(&replay[1]), "family"), "roll-forward");
+        assert_eq!(
+            data(&replay[1]).get("output_digest"),
+            certificate.get("output_digest"),
+        );
+    }
+
+    // Detail remains a view of the complete existing source. Canonical file
+    // exports keep that source's original format and digest.
+    let output = fixture.dir.join("detail-source.report");
+    let mut with_output = replay_args.clone();
+    with_output.extend(["--output", output.to_str().unwrap()]);
+    let replay = ok(&fixture.book, &with_output);
+    assert_eq!(replay[0], certified[0]);
+    assert_eq!(std::fs::read(output).unwrap(), artifact.output());
+
+    let refused_output = fixture.dir.join("detail-refusal-must-not-write.report");
+    for (flag, replacement, expected_exit) in [
+        ("--account", "4000", 8),
+        ("--unit", "EUR", 8),
+        ("--from", "2026-02-01", 8),
+        ("--to", "2026-03-30", 8),
+        ("--label", "A different request", 8),
+        ("--as-known-at", next_sequence.as_str(), 8),
+        ("--unit", " , ", 2),
+        ("--as-known-at", "HEAD", 2),
+    ] {
+        let mut changed = replay_args.clone();
+        let index = changed.iter().position(|value| *value == flag).unwrap();
+        changed[index + 1] = replacement;
+        changed.extend(["--output", refused_output.to_str().unwrap()]);
+        let (exit, refused, _) = run(&fixture.book, &changed);
+        assert_eq!(exit, expected_exit, "{flag}={replacement}: {refused:?}");
+        assert_eq!(refused.len(), 1);
+        assert_eq!(text(&refused[0], "event"), "error");
+        assert_eq!(refused[0].get("certificate"), Some(&Json::Null));
+        assert!(!refused_output.exists(), "a changed request must not write");
+    }
+    // Both independent request formats must never compete; the conflict is
+    // refused even when the certificate path cannot be opened.
+    let absent_source = fixture.dir.join("must-not-read.certificate");
+    let mut conflicting = replay_args.clone();
+    conflicting[1] = absent_source.to_str().unwrap();
+    conflicting.extend(["--expect", "{}", "--output", refused_output.to_str().unwrap()]);
+    let (exit, refused, _) = run(&fixture.book, &conflicting);
+    assert_eq!(exit, 2, "{refused:?}");
+    assert_eq!(refused.len(), 1);
+    assert!(text(data(&refused[0]), "message").contains("separate request formats"));
+    assert!(!refused_output.exists());
+
+    for missing in [
+        "--view",
+        "--account",
+        "--unit",
+        "--from",
+        "--to",
+        "--label",
+        "--as-known-at",
+    ] {
+        let mut changed = replay_args.clone();
+        let index = changed.iter().position(|value| *value == missing).unwrap();
+        drop(changed.drain(index..index + 2));
+        changed.extend(["--output", refused_output.to_str().unwrap()]);
+        let (exit, refused, _) = run(&fixture.book, &changed);
+        assert_eq!(exit, 2, "missing {missing}: {refused:?}");
+        assert_eq!(refused.len(), 1);
+        assert!(!refused_output.exists());
+    }
+    let mut damaged = source_bytes;
+    let last = damaged.len() - 1;
+    damaged[last] ^= 1;
+    let damaged_path = fixture.dir.join("detail-scope.damaged");
+    std::fs::write(&damaged_path, damaged).unwrap();
+    let mut damaged_args = replay_args;
+    damaged_args[1] = damaged_path.to_str().unwrap();
+    damaged_args.extend(["--output", refused_output.to_str().unwrap()]);
+    let (exit, refused, _) = run(&fixture.book, &damaged_args);
+    assert_eq!(exit, 8, "{refused:?}");
+    assert_eq!(refused.len(), 1);
+    assert!(!refused_output.exists());
+    assert_eq!(head(&fixture.book), after_correction, "all replays are reads");
+}
+
+#[test]
 fn instant_reads_keep_their_brackets_and_certification_requires_an_explicit_sequence() {
     use asupersync::Budget;
     use asupersync::runtime::RuntimeBuilder;
