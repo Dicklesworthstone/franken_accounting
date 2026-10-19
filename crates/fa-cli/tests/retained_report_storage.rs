@@ -858,6 +858,16 @@ fn gl_families_certify_retain_and_replay_their_complete_original_artifacts() {
                 "recipient-dependent family needs its expected scope: {errors:?}"
             );
             assert_eq!(errors.len(), 1);
+            let refusal = data(&errors, "error");
+            assert!(
+                text(refusal, "message")
+                    .contains(&format!("{family} report certificates replay only")),
+                "{refusal:?}"
+            );
+            assert!(
+                text(refusal, "fix").contains("--expect"),
+                "an omitted expectation must name --expect, not a damaged certificate: {refusal:?}"
+            );
             assert!(!absent_output.exists());
             let mut wrong = expected.clone().unwrap();
             let Json::Obj(fields) = &mut wrong else {
