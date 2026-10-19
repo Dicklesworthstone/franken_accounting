@@ -712,6 +712,8 @@ fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 \
 fa statement income-statement --for FY2026-P03 --compare FY2026-P02 \
   --known-at HEAD --certify --book ./books/myco --json
 fa replay C:<oid-from-report_certificate> --book ./books/myco --json
+fa statement diff --before-certificate C:<oid-as-reported> \
+  --after-certificate C:<oid-as-restated> --for FY2026-P03 --book ./books/myco --json
 ```
 
 Balance sheets include opening history through the selected period and show
@@ -728,6 +730,15 @@ also writes a binary copy without replacing an existing file. Replay uses the
 same checked presentation and preserves both columns after subsequent postings.
 MCP exposes this as `fa_read_statement`, under the fixed launch authority, with
 inline certification and no caller-selected output paths.
+
+Two retained certificates of the same statement compare directly. The
+`--before-certificate` and `--after-certificate` form replays both and bridges
+them, so the statement as reported (the certificate that was handed out) and as
+restated (a later certificate) are compared without selecting anything from
+HEAD. A stated `--for`, `--compare` or `--definition` is checked against the
+certificates. With `--certify` the comparison keeps those exact source
+certificates, and `fa statement trace --from-diff C:<oid> --certify` attributes
+it to each intermediate publication.
 
 This slice covers one book and native units. Custom company layouts, cash-flow
 and equity-roll-forward statements, consolidation, FX translation, and

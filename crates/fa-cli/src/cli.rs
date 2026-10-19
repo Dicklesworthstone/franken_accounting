@@ -2081,8 +2081,9 @@ enum HostPath {
     Review,
     /// An input file of `fa document import run`.
     ImportRun,
-    /// A positional input file: a chart, account, party, instrument, entity,
-    /// statement, document or certificate.
+    /// An input file: a positional chart, account, party, instrument, entity,
+    /// statement, document or certificate, or a statement certificate flag
+    /// (`--before-certificate`, `--after-certificate`, `--from-diff`).
     Input,
 }
 
@@ -2118,6 +2119,15 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         for value in args.flag_all(flag) {
             if value != "-" {
                 paths.push((flag, value, HostPath::Content));
+            }
+        }
+    }
+    for flag in ["--before-certificate", "--after-certificate", "--from-diff"] {
+        for value in args.flag_all(flag) {
+            let digits = value.strip_prefix("C:").unwrap_or(value);
+            let retained = digits.len() == 64 && digits.bytes().all(|b| b.is_ascii_hexdigit());
+            if value != "-" && !retained {
+                paths.push((flag, value, HostPath::Input));
             }
         }
     }
@@ -9531,6 +9541,9 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--after",
         "--max-publications",
         "--certificate-out",
+        "--before-certificate",
+        "--after-certificate",
+        "--from-diff",
     ] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(
@@ -9538,6 +9551,12 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --json",
             ));
         }
+    }
+    if ["--before-certificate", "--after-certificate", "--from-diff"]
+        .iter()
+        .any(|flag| args.flag(flag).is_some())
+    {
+        return statement_from_certificates(ctx, args);
     }
     let period = args.require("--for", "<period>, for example FY2026-P03")?;
     if period.is_empty() || args.flag("--compare").is_some_and(str::is_empty) {
@@ -9622,72 +9641,32 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         if mode == "diff" {
             if certify {
                 let certified = book.certify_statement_diff(who, &capability, &comparison)??;
-                let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
-                let (bytes, retained) = notary::retain_report_artifact(
-                    &mut book,
+                return emit_certified_statement_diff(
+                    &ctx.out,
                     &ctx.files,
                     args,
-                    &artifact,
+                    &mut book,
                     &capability,
-                )?;
-                render_statement_diff(
-                    &ctx.out,
-                    &book,
-                    &certified.report,
-                    Some(&hex(artifact.digest())),
-                )?;
-                notary::emit_report_artifact(
-                    &ctx.out,
-                    args,
-                    &artifact,
-                    "fa:statement-diff:v1",
-                    &bytes,
-                    &retained,
+                    &certified,
                 );
-                return Ok(());
             }
             let diff = book.statement_diff(who, &capability, &comparison)??;
             return render_statement_diff(&ctx.out, &book, &diff, None);
         }
-        let max_publications: usize = args
-            .flag("--max-publications")
-            .unwrap_or("64")
-            .parse()
-            .map_err(|_| {
-                usage(
-                    "--max-publications must be an integer in 1..=256",
-                    "--max-publications 64",
-                )
-            })?;
         let request = StatementTraceRequest {
             comparison,
-            max_publications,
+            max_publications: max_publications(args)?,
         };
         if certify {
             let certified = book.certify_statement_trace(who, &capability, &request)??;
-            let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
-            let (bytes, retained) = notary::retain_report_artifact(
-                &mut book,
+            return emit_certified_statement_trace(
+                &ctx.out,
                 &ctx.files,
                 args,
-                &artifact,
+                &mut book,
                 &capability,
-            )?;
-            render_statement_trace(
-                &ctx.out,
-                &book,
-                &certified.report,
-                Some(&hex(artifact.digest())),
-            )?;
-            notary::emit_report_artifact(
-                &ctx.out,
-                args,
-                &artifact,
-                "fa:statement-trace:v1",
-                &bytes,
-                &retained,
+                &certified,
             );
-            return Ok(());
         }
         let trace = book.statement_trace(who, &capability, &request)??;
         return render_statement_trace(&ctx.out, &book, &trace, None);
@@ -9742,6 +9721,293 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         notary::emit_report_certificate(&ctx.out, args, certificate, &bytes, &retained);
     }
     Ok(())
+}
+
+const STATEMENT_CERTIFICATES_EXAMPLE: &str = "fa statement diff --before-certificate C:<oid> --after-certificate C:<oid> [--certify] --json, or fa statement trace --from-diff C:<oid> [--max-publications 64] --certify --json";
+
+/// `--max-publications` for a statement trace (default 64); the library
+/// refuses a value outside 1..=256.
+fn max_publications(args: &Args) -> Result<usize, Fail> {
+    args.flag("--max-publications")
+        .unwrap_or("64")
+        .parse()
+        .map_err(|_| {
+            usage(
+                "--max-publications must be an integer in 1..=256",
+                "--max-publications 64",
+            )
+        })
+}
+
+/// Retain a certified statement comparison (after its replay), then render
+/// the bridge and its certificate.
+fn emit_certified_statement_diff(
+    out: &Out,
+    files: &Files,
+    args: &Args,
+    book: &mut Book,
+    capability: &Capability,
+    certified: &fa::CertifiedStatementDiff,
+) -> Result<(), Fail> {
+    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+    let (bytes, retained) =
+        notary::retain_report_artifact(book, files, args, &artifact, capability)?;
+    render_statement_diff(out, book, &certified.report, Some(&hex(artifact.digest())))?;
+    notary::emit_report_artifact(
+        out,
+        args,
+        &artifact,
+        "fa:statement-diff:v1",
+        &bytes,
+        &retained,
+    );
+    Ok(())
+}
+
+/// Retain a certified statement trace (after its replay), then render the
+/// publications and the trace certificate.
+fn emit_certified_statement_trace(
+    out: &Out,
+    files: &Files,
+    args: &Args,
+    book: &mut Book,
+    capability: &Capability,
+    certified: &fa::CertifiedStatementTrace,
+) -> Result<(), Fail> {
+    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+    let (bytes, retained) =
+        notary::retain_report_artifact(book, files, args, &artifact, capability)?;
+    render_statement_trace(out, book, &certified.report, Some(&hex(artifact.digest())))?;
+    notary::emit_report_artifact(
+        out,
+        args,
+        &artifact,
+        "fa:statement-trace:v1",
+        &bytes,
+        &retained,
+    );
+    Ok(())
+}
+
+/// The statement a caller says it means (`--for`, `--compare`,
+/// `--definition`) must be exactly the one the retained certificates answer.
+/// It is checked, never used to re-select; omitting it accepts theirs.
+fn statement_question_matches(args: &Args, selection: &fa::StatementSelection) -> Result<(), Fail> {
+    let definition = selection.definition.name();
+    let comparative: Vec<String> = args
+        .flag("--compare")
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let same_definition = args
+        .flag("--definition")
+        .is_none_or(|name| name == definition);
+    let same_periods = args
+        .flag("--for")
+        .is_none_or(|period| selection.periods == [period] && selection.comparative == comparative);
+    if same_definition && same_periods {
+        return Ok(());
+    }
+    let compared = if selection.comparative.is_empty() {
+        "no comparative".to_string()
+    } else {
+        format!("comparative {}", selection.comparative.join(", "))
+    };
+    Err(fa_journal::Refusal::new(
+        fa::certificate::code::CERTIFICATE_INVALID,
+        exit::VERIFICATION,
+        format!(
+            "the certificates answer {definition} for {} with {compared}, not the statement --for/--compare/--definition name",
+            selection.periods.join(", ")
+        ),
+        "plan §8.3 / §13.6 (a retained comparison answers only the question its sources were certified for)",
+        "pass the certificates of the statement you mean, or omit --for, --compare and --definition to accept theirs",
+    )
+    .into())
+}
+
+/// `statement diff --before-certificate --after-certificate` bridges two
+/// retained statement certificates; `statement trace --from-diff` attributes a
+/// saved comparison to every intermediate publication. Both replay what was
+/// retained and keep the original source certificates. Frontiers are never
+/// re-selected; a stated --for/--compare/--definition is checked against them.
+fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    for flag in [
+        "--before",
+        "--after",
+        "--known-at",
+        "--as-known-at",
+        "--branch",
+    ] {
+        if args.flag(flag).is_some() {
+            return Err(usage(
+                format!(
+                    "{flag} selects a frontier; certificate inputs already fix both frontiers on trunk"
+                ),
+                STATEMENT_CERTIFICATES_EXAMPLE,
+            ));
+        }
+    }
+    if args.flag("--compare").is_some() && args.flag("--for").is_none() {
+        return Err(usage(
+            "--compare names the comparative column of a --for period",
+            "--for FY2026-P03 --compare FY2026-P02, or omit both to accept the certificates' own periods",
+        ));
+    }
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let who = ctx.principal(args);
+    match args.positional[1].as_str() {
+        "diff" => {
+            if args.flag("--from-diff").is_some() || args.flag("--max-publications").is_some() {
+                return Err(usage(
+                    "--from-diff and --max-publications start a statement trace, not a statement diff",
+                    "fa statement trace --from-diff C:<oid> --certify --json",
+                ));
+            }
+            let (Some(before), Some(after)) = (
+                args.flag("--before-certificate"),
+                args.flag("--after-certificate"),
+            ) else {
+                return Err(usage(
+                    "a certificate comparison needs both --before-certificate and --after-certificate",
+                    STATEMENT_CERTIFICATES_EXAMPLE,
+                ));
+            };
+            if before == "-" && after == "-" {
+                return Err(usage(
+                    "only one certificate can arrive on stdin",
+                    "pass the other certificate as its C:<oid> or its saved file",
+                ));
+            }
+            let capability = ctx.capability(
+                args,
+                if certify {
+                    &["read", "produce"]
+                } else {
+                    &["read"]
+                },
+            )?;
+            // Admission precedes fetching retained bytes or reading a file.
+            let mut book = ctx.books.open_admitted(args, |book| {
+                prepare_certificate_history(
+                    book,
+                    &capability,
+                    if certify {
+                        &[fa_policy::Op::Produce]
+                    } else {
+                        &[]
+                    },
+                    None,
+                )
+            })?;
+            let decode = fa::ReportCertificate::decode;
+            let before = notary::certificate_input(
+                &book,
+                &ctx.files,
+                "--before-certificate",
+                before,
+                who,
+                &capability,
+                decode,
+            )?;
+            let after = notary::certificate_input(
+                &book,
+                &ctx.files,
+                "--after-certificate",
+                after,
+                who,
+                &capability,
+                decode,
+            )?;
+            // Mismatched sources are the library's refusal; this checks only
+            // the question the caller stated against the first source.
+            if let fa::ReportSelection::Statement(selection) = &before.selection {
+                statement_question_matches(args, selection)?;
+            }
+            // Both sources replay: load the earlier retained prefix.
+            book.prepare_report_history(
+                who,
+                &capability,
+                Some(before.known_at.min(after.known_at)),
+            )??;
+            if certify {
+                let certified =
+                    book.compare_statement_certificates(who, &capability, &before, &after)??;
+                return emit_certified_statement_diff(
+                    &ctx.out,
+                    &ctx.files,
+                    args,
+                    &mut book,
+                    &capability,
+                    &certified,
+                );
+            }
+            let diff = book.diff_statement_certificates(who, &capability, &before, &after)??;
+            render_statement_diff(&ctx.out, &book, &diff, None)
+        }
+        "trace" => {
+            if args.flag("--before-certificate").is_some()
+                || args.flag("--after-certificate").is_some()
+            {
+                return Err(usage(
+                    "a statement trace starts from one saved comparison: --from-diff, not --before-certificate or --after-certificate",
+                    "fa statement diff --before-certificate C:<oid> --after-certificate C:<oid> --certify --json, then fa statement trace --from-diff <its C:oid> --certify --json",
+                ));
+            }
+            let Some(comparison) = args.flag("--from-diff") else {
+                return Err(usage(
+                    "a statement trace from certificates needs --from-diff",
+                    STATEMENT_CERTIFICATES_EXAMPLE,
+                ));
+            };
+            if !certify {
+                return Err(usage(
+                    "statement trace --from-diff certifies every intermediate publication of the saved comparison; add --certify",
+                    "fa statement trace --from-diff C:<oid> --certify --json",
+                ));
+            }
+            let capability = ctx.capability(args, &["read", "produce"])?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                prepare_certificate_history(book, &capability, &[fa_policy::Op::Produce], None)
+            })?;
+            let limit = max_publications(args)?;
+            let comparison = notary::certificate_input(
+                &book,
+                &ctx.files,
+                "--from-diff",
+                comparison,
+                who,
+                &capability,
+                fa::StatementDiffCertificate::decode,
+            )?;
+            if let Ok(request) = comparison.request() {
+                statement_question_matches(args, &request.selection)?;
+            }
+            // The trace replays every publication from the earlier source on.
+            let (before, after) = comparison.sources();
+            book.prepare_report_history(
+                who,
+                &capability,
+                Some(before.known_at.min(after.known_at)),
+            )??;
+            let certified =
+                book.certify_statement_trace_from_diff(who, &capability, &comparison, limit)??;
+            emit_certified_statement_trace(
+                &ctx.out,
+                &ctx.files,
+                args,
+                &mut book,
+                &capability,
+                &certified,
+            )
+        }
+        other => Err(usage(
+            format!(
+                "certificate inputs select statement diff or statement trace, not statement {other}"
+            ),
+            STATEMENT_CERTIFICATES_EXAMPLE,
+        )),
+    }
 }
 
 fn statement_columns_json(statement: &Statement) -> Vec<Json> {
