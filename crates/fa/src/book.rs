@@ -2399,6 +2399,61 @@ impl Book {
         ))
     }
 
+    /// Selected cash detail as bounded JSONL, only after replaying the
+    /// certificate against the independently expected request and definition.
+    pub fn cash_flow_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::CashFlowCertificate,
+        expected: &crate::RollForwardRequest,
+        expected_definition: &crate::CashFlowDefinition,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.cash_flow_jsonl(
+            &self.purposes(), principal, capability, certificate, expected, expected_definition
+        ))
+    }
+
+    /// The aging workpaper plus control rows and conclusion, as bounded JSONL,
+    /// only after both sources replay against the expected question.
+    pub fn effective_date_aging_reconciliation_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::AgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.effective_date_aging_reconciliation_jsonl(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// Complete selected-account portfolio detail as bounded JSONL, only after
+    /// both sources, scope and coverage replay against the expected request.
+    pub fn aging_portfolio_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::aging::portfolio::AgingPortfolioCertificate,
+        expected: &crate::aging::portfolio::AgingPortfolioRequest,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.aging_portfolio_jsonl(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// A statement trace as bounded JSONL, only after every source and link replays.
+    pub fn statement_trace_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::StatementTraceCertificate,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.statement_trace_jsonl(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
     /// Produce a historical account lead schedule under current whole-book read authority.
     pub fn roll_forward(
         &self,
