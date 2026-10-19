@@ -158,6 +158,21 @@ fn invalid(message: impl Into<String>) -> Refusal {
     )
 }
 
+/// A recipient-dependent family replayed without its request names how to
+/// supply one, instead of suggesting the certificate itself is damaged.
+fn expectation_required(family: ReportArtifactFamily) -> Refusal {
+    Refusal::new(
+        crate::certificate::code::CERTIFICATE_INVALID,
+        exit::VERIFICATION,
+        format!(
+            "{} report certificates replay only against an independently supplied request and policy; none was supplied",
+            family.name()
+        ),
+        "plan §13.6; fa-oimc (family-specific canonical bytes and retained-history replay)",
+        "pass the request retained apart from the delivered certificate when it was certified: fa replay C:<oid> --expect '<JSON>' (the report_certificate event's replay_command), or the family's ReportArtifactExpectation",
+    )
+}
+
 impl ReportArtifact {
     /// Select EXACTLY one decoder from a bounded, borrowed format field. Unknown
     /// versions are refused; a failed decoder is never retried as another family.
@@ -534,6 +549,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "plan §15.2 (a scenario diff replays from its trunk certificate and its pinned intents)",
                     "replay it with fa replay (Book::replay_scenario_diff) and retain it with fa scenario diff --certify (Book::retain_scenario_diff)",
                 )));
+            }
+            (_, ReportArtifactExpectation::AsSupplied) => {
+                return Ok(Err(expectation_required(artifact.family())));
             }
             _ => {
                 return Ok(Err(invalid(
