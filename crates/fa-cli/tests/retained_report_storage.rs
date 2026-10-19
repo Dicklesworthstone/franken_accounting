@@ -1382,6 +1382,16 @@ fn aging_portfolio_equals_each_single_leaf_reconciliation_and_replays_only_again
     // A selection is order-free; unselected leaves are uncovered, not zero.
     let selected_events = f.ok(&portfolio_args(&at, &["--account", "4000,1000"]));
     let selected = data(&selected_events, "aging_portfolio_reconciled");
+    // Repeated --account flags select the same leaves as a comma list, as in
+    // the other gl subcommands; none of them is silently dropped.
+    let repeated_events = f.ok(&portfolio_args(
+        &at,
+        &["--account", "4000", "--account", "1000"],
+    ));
+    assert_eq!(
+        data(&repeated_events, "aging_portfolio_reconciled"),
+        selected
+    );
     assert_eq!(text(selected, "scope"), "selected");
     assert_eq!(account_codes(selected, "accounts"), ["1000", "4000"]);
     assert_eq!(account_codes(selected, "uncovered"), ["2000", "2001"]);
@@ -1416,6 +1426,18 @@ fn aging_portfolio_equals_each_single_leaf_reconciliation_and_replays_only_again
     }
     let (exit, errors) = f.run(&["gl", "aging", "--as-of", "2026-01-31", "--all-posting"]);
     assert_eq!(exit, 2, "--all-posting without --reconcile: {errors:?}");
+    for accounts in [
+        vec!["--account", "1000", "--account", "4000"],
+        vec!["--account", "1000,4000"],
+    ] {
+        let mut args = vec!["gl", "aging", "--as-of", "2026-01-31"];
+        args.extend(accounts);
+        let (exit, errors) = f.run(&args);
+        assert_eq!(
+            exit, 2,
+            "plain aging takes one account, never silently the last: {errors:?}"
+        );
+    }
     assert_eq!(
         f.head(),
         before,

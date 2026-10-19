@@ -13183,57 +13183,69 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 AgingBuckets::new(bounds)
                     .map_err(|e| usage(e.to_string(), "--bucket 0 --bucket 30 --bucket 60"))?
             };
-            let account_code = args.flag("--account");
-            let account = account_code.map(|code| account_vid(book.context().book_id, code));
+            // Every --account occurrence counts, as in the other gl subcommands:
+            // repeated flags and comma lists both name several leaves.
+            let account_codes: Vec<&str> = args
+                .flag_all("--account")
+                .into_iter()
+                .flat_map(|codes| codes.split(','))
+                .map(str::trim)
+                .collect();
+            let reconcile = args.switch("--reconcile");
+            if !reconcile && account_codes.len() > 1 {
+                return Err(usage(
+                    "gl aging ages one --account, or every account when --account is omitted",
+                    "fa gl aging --account 1200 --as-of YYYY-MM-DD --book <dir>; to tie several leaves to their control balances add --reconcile",
+                ));
+            }
+            let account = account_codes
+                .first()
+                .map(|code| account_vid(book.context().book_id, code));
             let known_at = gl_known_at(args, &book, out)?;
             book.prepare_report_history(who, &capability, known_at)??;
             out.effective(format!("as-of:{day}"));
             let units = &book.context().units;
             let all_posting = args.switch("--all-posting");
-            if all_posting && !args.switch("--reconcile") {
+            if all_posting && !reconcile {
                 return Err(usage(
                     "--all-posting selects the accounts of an aging reconciliation",
                     "fa gl aging --all-posting --as-of YYYY-MM-DD --reconcile --book <dir>",
                 ));
             }
-            if args.switch("--reconcile") {
-                // One code keeps the single-leaf report. A comma list, or the
-                // explicit --all-posting, reconciles several leaves at one
+            if reconcile {
+                // One code keeps the single-leaf report. Several codes, or the
+                // explicit --all-posting, reconcile several leaves at one
                 // coordinate. A missing selection is never read as the whole book.
-                let acc_vid = match (account_code, all_posting) {
-                    (Some(code), false) if !code.contains(',') => {
-                        account_vid(book.context().book_id, code)
-                    }
-                    (None, false) => {
+                let acc_vid = match (account_codes.as_slice(), all_posting) {
+                    ([code], false) => account_vid(book.context().book_id, code),
+                    ([], false) => {
                         return Err(usage(
                             "--reconcile requires --account <code[,code...]> or --all-posting",
                             "fa gl aging --account 1200 --as-of YYYY-MM-DD --reconcile --book <dir> (one leaf); --account 1200,2100 or --all-posting reconciles several leaves at one coordinate",
                         ));
                     }
-                    (Some(_), true) => {
+                    ([_, ..], true) => {
                         return Err(usage(
                             "--all-posting and --account are separate account selections",
                             "pass either --account <code[,code...]> or --all-posting",
                         ));
                     }
-                    (selection, _) => {
-                        let scope = match selection {
-                            None => AgingAccountScope::AllPosting,
-                            Some(codes) => {
-                                let codes: Vec<&str> = codes.split(',').map(str::trim).collect();
-                                if codes.iter().any(|code| code.is_empty()) {
-                                    return Err(usage(
-                                        "--account lists posting account codes separated by commas",
-                                        "fa gl aging --account 1200,2100 --as-of YYYY-MM-DD --reconcile --book <dir>",
-                                    ));
-                                }
-                                AgingAccountScope::Selected(
-                                    codes
-                                        .into_iter()
-                                        .map(|code| account_vid(book.context().book_id, code))
-                                        .collect(),
-                                )
+                    (codes, _) => {
+                        let scope = if codes.is_empty() {
+                            AgingAccountScope::AllPosting
+                        } else {
+                            if codes.iter().any(|code| code.is_empty()) {
+                                return Err(usage(
+                                    "--account lists posting account codes separated by commas",
+                                    "fa gl aging --account 1200,2100 --as-of YYYY-MM-DD --reconcile --book <dir>",
+                                ));
                             }
+                            AgingAccountScope::Selected(
+                                codes
+                                    .iter()
+                                    .map(|code| account_vid(book.context().book_id, code))
+                                    .collect(),
+                            )
                         };
                         let request = AgingPortfolioRequest {
                             scope,
@@ -13476,7 +13488,10 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 out.event_with_certificate(
                     "aging",
                     vec![
-                        ("account", account_code.map_or(Json::Null, s)),
+                        (
+                            "account",
+                            account_codes.first().map_or(Json::Null, |code| s(*code)),
+                        ),
                         ("known_at", Json::Int(i128::from(aging.known_at.0))),
                         ("effective_through", s(aging.effective_through.render())),
                         ("bands", Json::Arr(bands)),
