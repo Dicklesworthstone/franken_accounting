@@ -387,7 +387,7 @@ flags = []
 switches = []
 events = ["certificate_status"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["certificate status <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the complete certificate retained in this book; file and inline bytes are also accepted. Current or SupersededBy is evaluated against the current book after the complete artifact verifies; supersession does not erase the historical report. For a statement diff or trace, relevance begins at the final statement frontier and the returned oid remains the outer certificate. Other report families can be replayed but refuse selector status until their own relevance law is implemented."]
+usage = ["certificate status <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the complete certificate retained in this book; file and inline bytes are also accepted. Current or SupersededBy is evaluated against the current book after the complete artifact verifies; supersession does not erase the historical report. For a statement diff or trace, relevance begins at the final statement frontier and the returned oid remains the outer certificate. A scenario diff's trunk side is fixed at its fork, so only Plan records its scenario gained after the certified prefix supersede it (later_entries names them); known_at is the fork. Other report families can be replayed but refuse selector status until their own relevance law is implemented."]
 example = "fa certificate status trial-balance.cert --book ./books/myco --json"
 
 [[verb]]
@@ -1318,7 +1318,7 @@ fields = ["family:string", "known_at:seq", "output_bytes:int", "output_digest:he
 [[event]]
 name = "certificate_status"
 book = true
-doc = "A verified certificate is Current when no later entry affects its selector, otherwise SupersededBy with the later entry identities. Its original known_at remains replayable in both cases. checked_at is the frontier at which status was evaluated."
+doc = "A verified certificate is Current when no later entry affects its selector, otherwise SupersededBy with the later entry identities. For a scenario diff those are the Plan records its scenario gained after the certified prefix, and known_at is the fork. Its original known_at remains replayable in both cases. checked_at is the frontier at which status was evaluated."
 fields = ["oid:hex", "status:string", "known_at:seq", "checked_at:seq", "later_entries:[hex]", "replay_scope:string", "authority:string"]
 
 [[event]]

@@ -655,10 +655,12 @@ fa export ads --period FY2025-P12 --out ads-fy2025-12 --book acme.fabook --json
 fa bank import stmt-2026-03.camt053.xml --bank-format camt053 --account 1010 --book acme.fabook --json
 fa bank match --import <manifest_oid> --grant privileged --book acme.fabook --json
 
-# But for the breach: fork a scenario at the current trunk, run the receipts the contract would have produced in it (never on trunk), and diff it against trunk per account (available today; the scenario is a scratch replay of the trunk prefix plus its intents; reads take --branch scenario:<name>; a replayable diff certificate is target fa-k07b).
+# But for the breach: fork a scenario at the current trunk, run the receipts the contract would have produced in it (never on trunk), and diff it against trunk per account (available today; the scenario is a scratch replay of the trunk prefix plus its intents; reads take --branch scenario:<name>). --certify retains the diff as a certificate: trunk certified natively at the fork, the scenario bound to exactly the intents it held, so fa replay reproduces the damages schedule byte for byte later, and fa certificate status names the intents run since.
 fa scenario fork but-for-breach --from 2025-07-01 --evidence <contract_oid> --book acme.fabook --json
 fa scenario run but-for-breach --intent but-for-receipts.json --book acme.fabook --json
-fa scenario diff but-for-breach --period FY2025-P12 --book acme.fabook --json
+fa scenario diff but-for-breach --period FY2025-P12 --certify --book acme.fabook --json
+fa replay C:<oid> --book acme.fabook --json
+fa certificate status C:<oid> --book acme.fabook --json
 fa statement income-statement --for FY2025-P12 --branch scenario:but-for-breach --book acme.fabook --json
 
 # Who and what the events name: parties, a relationship, an instrument mirrored by a GL leaf, and a new account (available today).

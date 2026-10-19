@@ -26,8 +26,8 @@ use fgdb_types::{CommitSeq, VId};
 
 use super::ScenarioDiff;
 use crate::{
-    Book, Outcome, ReportCertificate, ReportOutput, ReportSelection, RetainedCertificate,
-    TrialBalanceSelection,
+    Book, CertificateStatus, Outcome, ReportCertificate, ReportOutput, ReportSelection,
+    RetainedCertificate, TrialBalanceSelection,
 };
 
 /// The family's format field (`ReportArtifact::decode` dispatches on it).
@@ -455,6 +455,44 @@ impl Book {
             ))),
             Err(refusal) => Ok(Err(refusal)),
         }
+    }
+
+    /// Whether certifying the scenario now would reproduce this
+    /// certificate, after the whole certificate replays under current
+    /// authority. Its trunk side is fixed at the fork, so later trunk
+    /// entries never supersede it; a Plan record the scenario gained after
+    /// the certified prefix does, and `later_entries` names those records
+    /// in planning order. A discarded scenario gains none.
+    pub fn scenario_diff_status(
+        &mut self,
+        principal: VId,
+        capability: &Capability,
+        certificate: &ScenarioDiffCertificate,
+    ) -> Outcome<CertificateStatus> {
+        if let Err(refusal) = self.replay_scenario_diff(principal, capability, certificate)? {
+            return Ok(Err(refusal));
+        }
+        let checked_at = self.head()?;
+        let Some(view) = self.scenario(&certificate.name)? else {
+            return Ok(Err(invalid(format!(
+                "this book has no scenario `{}`",
+                certificate.name
+            ))));
+        };
+        let later_entries: Vec<VId> = view
+            .intents
+            .iter()
+            .skip(certificate.intents.len())
+            .map(|planned| planned.record)
+            .collect();
+        Ok(Ok(if later_entries.is_empty() {
+            CertificateStatus::Current { checked_at }
+        } else {
+            CertificateStatus::SupersededBy {
+                checked_at,
+                later_entries,
+            }
+        }))
     }
 
     /// Replay a scenario diff certificate in full, then keep it in the book

@@ -747,7 +747,7 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     }
     let principal = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
-    let book = ctx.books.open_admitted(args, |book| {
+    let mut book = ctx.books.open_admitted(args, |book| {
         fa_policy::admit_read(&capability, principal, book.context().book_id)
             .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
@@ -762,21 +762,28 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         &capability,
     )?;
     let artifact = ReportArtifact::decode(&bytes)?;
-    if !matches!(
-        artifact.family(),
-        ReportArtifactFamily::Native
-            | ReportArtifactFamily::StatementDiff
-            | ReportArtifactFamily::StatementTrace
-    ) {
-        return Err(certificate_invalid(
-            "selector status is available for native reports and statement comparisons/traces; use fa replay for this family's historical verification",
-        ));
-    }
     // Status is meaningful only after the WHOLE artifact verifies. For a
-    // comparison or trace, relevance starts at its final statement frontier.
-    book.replay_report_artifact(principal, &capability, &bytes, Some(artifact.digest()))??;
+    // comparison or trace, relevance starts at its final statement frontier;
+    // a scenario diff is superseded only by Plan records its scenario gained
+    // after the certified prefix (its trunk is fixed at the fork).
+    let status = match artifact.family() {
+        ReportArtifactFamily::ScenarioDiff => {
+            let certificate = fa::ScenarioDiffCertificate::decode(&bytes)?;
+            book.scenario_diff_status(principal, &capability, &certificate)??
+        }
+        ReportArtifactFamily::Native
+        | ReportArtifactFamily::StatementDiff
+        | ReportArtifactFamily::StatementTrace => {
+            book.replay_report_artifact(principal, &capability, &bytes, Some(artifact.digest()))??;
+            book.certificate_status(artifact.source_certificate())??
+        }
+        _ => {
+            return Err(certificate_invalid(
+                "selector status is available for native reports, statement comparisons/traces and scenario diffs; use fa replay for this family's historical verification",
+            ));
+        }
+    };
     let certificate = artifact.source_certificate();
-    let status = book.certificate_status(certificate)??;
     let (name, checked_at, later_entries) = match status {
         CertificateStatus::Current { checked_at } => ("Current", checked_at, Vec::new()),
         CertificateStatus::SupersededBy {

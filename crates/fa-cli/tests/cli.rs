@@ -12622,6 +12622,7 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
     let (code, out, err) = run(&["post", "--intent", &cost, "--scenario", "but-for"]);
     assert_eq!(code, 0, "{out}\n{err}");
     assert_eq!(int(&doc(&out), "ordinal"), Some(2));
+    let cost_record = text(&doc(&out), "control_entry").to_string();
     assert_eq!(tb_rows(), trunk_before, "a scenario never posts to trunk");
     // Trunk moves on after the fork; the scenario is fixed at its fork.
     let later = intent(
@@ -12692,7 +12693,27 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
     let both = doc(out.lines().next().unwrap_or_default());
     assert_eq!(int(&both, "intents"), Some(2));
     assert_eq!(arr(&both, "rows"), arr(&diff, "rows"));
-    assert_ne!(text(&doc(&out), "oid"), oid, "a different intent prefix");
+    let both_oid = text(&doc(&out), "oid").to_string();
+    assert_ne!(both_oid, oid, "a different intent prefix");
+    // Status follows re-certification: trunk is fixed at the fork, so
+    // trunk's later bill supersedes nothing, while the scenario's second
+    // Plan record supersedes the one-intent certificate, which still
+    // replays. The certificate covering both intents is current.
+    let (code, out, err) = run(&["certificate", "status", &format!("C:{oid}")]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let status = doc(&out);
+    assert_eq!(text(&status, "status"), "SupersededBy", "{out}");
+    let later: Vec<&str> = arr(&status, "later_entries")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert_eq!(later, [cost_record.as_str()], "{out}");
+    assert_eq!(int(&status, "known_at"), fork_at, "{out}");
+    assert_eq!(field(&out, "certificate"), Some(oid.as_str()));
+    let (code, out, err) = run(&["certificate", "status", &format!("C:{both_oid}")]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(text(&doc(&out), "status"), "Current", "{out}");
+    assert!(arr(&doc(&out), "later_entries").is_empty(), "{out}");
     // A certificate whose output was altered never replays (exit 8).
     let mut bytes: Vec<u8> = (0..certificate_hex.len())
         .step_by(2)
@@ -12704,6 +12725,11 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
     std::fs::write(&tampered, &bytes)?;
     let (code, out, _) = run(&["replay", &tampered.display().to_string()]);
     assert_eq!(code, 8, "{out}");
+    let (code, out, _) = run(&["certificate", "status", &tampered.display().to_string()]);
+    assert_eq!(
+        code, 8,
+        "status needs the whole certificate to verify: {out}"
+    );
 
     // Reads select the scenario with --branch: the same command, on its
     // replay, with the branch in the envelope's coordinate.
