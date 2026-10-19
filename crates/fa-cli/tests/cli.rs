@@ -10412,6 +10412,18 @@ fn verify_periods_reports_refolded_lifecycle_and_rejects_period_filters() -> std
         assert_eq!(c, 2, "args={bad:?}: {o}\n{e}");
         assert_eq!(text(&doc(&o), "class"), "usage");
     }
+    // A selector on an unsupported verification must not silently verify HEAD.
+    // Reject it before opening a book, through the same surface MCP invokes.
+    for target in ["projections", "replay"] {
+        let (code, out, err) = fa(None, &["verify", target, "--as-known-at", "1", "--json"]);
+        assert_eq!(code, 2, "target={target}: {out}\n{err}");
+        let error = doc(&out);
+        assert_eq!(text(&error, "class"), "usage");
+        assert_eq!(
+            text(&error, "message"),
+            "--as-known-at is supported only by verify periods and verify close"
+        );
+    }
     Ok(())
 }
 

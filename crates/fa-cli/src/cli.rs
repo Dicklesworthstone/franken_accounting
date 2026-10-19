@@ -9679,7 +9679,14 @@ fn availability_fields(
 
 fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
-    match args.positional.get(1).map(String::as_str) {
+    let target = args.positional.get(1).map(String::as_str);
+    if args.flag("--as-known-at").is_some() && !matches!(target, Some("periods" | "close")) {
+        return Err(usage(
+            "--as-known-at is supported only by verify periods and verify close",
+            "select periods or close for historical verification, or omit --as-known-at",
+        ));
+    }
+    match target {
         Some("accumulator") => notary::verify_accumulator(ctx, args),
         Some("close") => crate::closing::verify_close(ctx, args),
         Some("registers") => {
