@@ -907,7 +907,7 @@ pub async fn create_instrument<V: asupersync::fs::Vfs + Clone>(
                 spec.code, spec.held_at_party.0
             ),
             "plan §4.5 (Instrument HELD_AT Party)",
-            "create the custodian/bank Party first (`fa party create`) and cite its VId",
+            "create the custodian/bank Party first (`fa party add <party.json>`) and cite its VId",
         )));
     }
     let Some(acct_row) = txn.vertex(db, spec.mirrors_account)? else {
@@ -1708,7 +1708,7 @@ pub async fn update_party_identifiers<V: asupersync::fs::Vfs + Clone>(
                 update.party_vid.0
             ),
             "plan §4.5",
-            "create the Party first (`fa party create`)",
+            "create the Party first (`fa party add <party.json>`)",
         )));
     };
     if !party_row.labels.contains(&label::PARTY) {
@@ -2037,7 +2037,7 @@ pub async fn record_event<V: asupersync::fs::Vfs + Clone>(
                         spec.code, res.label, inst.0
                     ),
                     "plan §4.1 Event, §4.5",
-                    "create the Instrument first (`fa instrument create`) before citing it on an event resource",
+                    "create the Instrument first (`fa instrument add <instrument.json>`) before citing it on an event resource",
                 )));
             }
         }

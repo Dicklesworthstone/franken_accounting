@@ -2142,7 +2142,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                             dim_val_vid.0
                         ),
                         "plan §4.1, §4.5 (Party dimension values are bound to created Party vertices)",
-                        "create the Party first (`fa party create`) or use party_value_vid(book_id, party_code)",
+                        "create the Party first (`fa party add <party.json>`) or use party_value_vid(book_id, party_code)",
                     )));
                 }
             }

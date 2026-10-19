@@ -420,6 +420,56 @@ fn the_registry_check_names_an_invented_verb_subcommand_or_flag() {
 }
 
 #[test]
+fn every_command_the_generated_demo_readme_prints_is_registered() {
+    // `fa demo init` writes a README.md telling its reader what to run next.
+    // Those lines are product output and get the same registry check as the
+    // README's own; the generator once printed `fa procedure run … --period`,
+    // a flag the procedure verb does not accept.
+    let book = fixture().join("demo");
+    let init = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(&book)
+        .args([
+            "demo",
+            "init",
+            "--scenario",
+            "retail",
+            "--seed",
+            "7",
+            "--json",
+        ])
+        .env_remove("FA_BOOK")
+        .output()
+        .expect("run fa demo init");
+    assert_eq!(
+        init.status.code(),
+        Some(0),
+        "{}\n{}",
+        String::from_utf8_lossy(&init.stdout),
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let readme = std::fs::read_to_string(book.join("README.md")).expect("the demo README");
+    let lines: Vec<&str> = readme
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("fa "))
+        .collect();
+    assert!(
+        lines.len() >= 10 && lines.iter().any(|l| l.starts_with("fa procedure run ")),
+        "the demo README's commands are not vacuous: {lines:#?}"
+    );
+    let reg = registry().expect("verbs.toml");
+    let wrong: Vec<String> = lines.iter().filter_map(|l| unregistered(reg, l)).collect();
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    // The planted negative: the line the generator used to print is named.
+    let stale = "fa procedure run duplicates.same_same_same --period FY2026-P03 --book . --json";
+    assert!(
+        unregistered(reg, stale).is_some_and(|why| why.contains("`--period`")),
+        "{stale}"
+    );
+}
+
+#[test]
 fn target_state_commands_below_tldr_are_registered_or_name_a_target_bead() {
     let reg = registry().expect("verbs.toml");
     let (_, after_tldr) = README

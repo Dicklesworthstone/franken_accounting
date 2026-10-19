@@ -2460,13 +2460,13 @@ pub fn render_readme(info: &DemoInitialized) -> String {
     out.push_str("fa verify open-items --book . --json\n");
     out.push_str("fa verify schedules --book . --json\n");
     out.push_str("fa verify periods --book . --json\n\n");
-    out.push_str("# Run Lantern audit/forensic procedures over FY2026-P03\n");
+    out.push_str("# Run Lantern audit/forensic procedures through FY2026-P03 (2026-03-31)\n");
     out.push_str("fa procedure list --json\n");
     out.push_str(
-        "fa procedure run duplicates.same_same_same --period FY2026-P03 --book . --json\n",
+        "fa procedure run duplicates.same_same_same --effective-through 2026-03-31 --book . --json\n",
     );
     out.push_str(
-        "fa procedure run duplicates.same_same_different --period FY2026-P03 --book . --json\n",
+        "fa procedure run duplicates.same_same_different --effective-through 2026-03-31 --book . --json\n",
     );
     out.push_str("```\n");
     out
