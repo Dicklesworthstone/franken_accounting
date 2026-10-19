@@ -18,16 +18,19 @@ use fa_cli::cli::{Files, Stdin};
 use fa_cli::entry::fa_with_authority;
 use fa_cli::json::{self, Json, obj, s};
 use fa_journal::DocumentRead;
-use fa_model::{Entry, Erasable, Oid, Reader, Writer};
+use fa_model::{Entry, EntryPayload, Erasable, Oid, Reader, Writer};
 use fa_policy::Capability;
 use fgdb_types::VId;
 
 const OPENING: &str = "FY2026-OPEN";
 const LEGACY_CASH: &str = "Private legacy checking account";
 const LEGACY_EQUITY: &str = "Private legacy opening equity";
+const LEGACY_REVENUE: &str = "Private legacy revenue";
+const LEGACY_EXPENSE: &str = "Private legacy expense";
 const QB: &str = "Transaction ID,Date,Account,Debit,Credit,Currency,Memo/Description,Created At,Created By\nprivate-source-entry-one,2025-12-20,Private legacy checking account,100.00,,USD,Private retained cash memo,2025-12-20T12:30:00Z,private-legacy-author\nprivate-source-entry-one,2025-12-20,Private legacy opening equity,,100.00,USD,Private retained equity memo,2025-12-20T12:30:00Z,private-legacy-author\nprivate-source-entry-two,2025-12-29,Private legacy checking account,25.50,,USD,Second cash memo,2025-12-29T09:00:00Z,private-legacy-author\nprivate-source-entry-two,2025-12-29,Private legacy opening equity,,25.50,USD,Second equity memo,2025-12-29T09:00:00Z,private-legacy-author\n";
 const COLUMNS: &str = "[columns]\nsource_system = \"legacy-csv\"\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\nrecorded_at_column = \"recorded\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\ndescription_column = \"description\"\nmemo_column = \"memo\"\nentered_by_column = \"entered\"\napproved_by_column = \"approved\"\n";
 const GENERIC: &str = "entry,date,recorded,account,amount,description,memo,entered,approved\nprivate-source-entry-one,2025-12-30,2025-12-30T15:20:00Z,Private legacy checking account,125.50,Private retained description,Private retained cash memo,legacy-preparer,legacy-reviewer\nprivate-source-entry-one,2025-12-30,2025-12-30T15:20:00Z,Private legacy opening equity,-125.50,Private retained description,Private retained equity memo,legacy-preparer,legacy-reviewer\n";
+const PERIOD_ACTIVITY: &str = "private-january-revenue,2026-01-01,Private legacy checking account,20.00,,USD,Private January cash,2026-01-02T12:30:00Z,private-period-author\nprivate-january-revenue,2026-01-01,Private legacy revenue,,20.00,USD,Private January revenue,2026-01-02T12:30:00Z,private-period-author\nprivate-january-expense,2026-01-20,Private legacy expense,5.00,,USD,Private January expense,2026-01-21T12:30:00Z,private-period-author\nprivate-january-expense,2026-01-20,Private legacy checking account,,5.00,USD,Private January payment,2026-01-21T12:30:00Z,private-period-author\nprivate-march-revenue,2026-03-15,Private legacy checking account,30.00,,USD,Private March cash,2026-03-16T12:30:00Z,private-period-author\nprivate-march-revenue,2026-03-15,Private legacy revenue,,30.00,USD,Private March revenue,2026-03-16T12:30:00Z,private-period-author\n";
 
 fn data(value: &Json) -> &Json {
     value.get("data").expect("robot data")
@@ -107,6 +110,8 @@ struct Fixture {
     trial_balance: String,
     run_vid: String,
     format: String,
+    opening_entries: Option<Vec<String>>,
+    period_trial_balances: Vec<String>,
 }
 
 impl Fixture {
@@ -146,6 +151,8 @@ impl Fixture {
             trial_balance: String::new(),
             run_vid: String::new(),
             format: format.into(),
+            opening_entries: None,
+            period_trial_balances: Vec::new(),
         };
         let chart = fixture.file("chart.json", &format!(r#"{{"accounts":[{{"code":"1000","name":"Cash","type":"Asset","unit":"{unit}"}},{{"code":"3000","name":"Opening equity","type":"Equity","unit":"{unit}"}}]}}"#));
         ok(&fixture.book, &["chart", "import", &chart]);
@@ -165,6 +172,105 @@ impl Fixture {
 
     fn quickbooks() -> Self {
         Self::new("quickbooks-csv", QB, "USD", "Spreadsheet", "2026-07-01")
+    }
+
+    fn period_balances(format: &str, source: &str, middle_tb_kind: &str) -> Self {
+        let mut fixture = Self::new(format, source, "USD", "Spreadsheet", "2026-04-01");
+        let chart = fixture.file("period-chart.json", r#"{"accounts":[{"code":"4000","name":"Legacy revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Legacy expense","type":"Expense","unit":"USD"}]}"#);
+        ok(&fixture.book, &["chart", "import", &chart]);
+        fixture.opening_entries = Some(vec![
+            "private-source-entry-one".into(),
+            "private-source-entry-two".into(),
+        ]);
+        (fixture.run_vid, fixture.period_trial_balances) = fixture.open_period_run(
+            "midyear-import",
+            [
+                ("140.50", "20.00"),
+                ("140.50", "20.00"),
+                ("170.50", "50.00"),
+            ],
+            middle_tb_kind,
+        );
+        fixture
+    }
+
+    fn open_period_run(
+        &self,
+        key: &str,
+        balances: [(&str, &str); 3],
+        middle_tb_kind: &str,
+    ) -> (String, Vec<String>) {
+        let mut periods = Vec::new();
+        let mut documents = Vec::new();
+        for (index, (cash, revenue)) in balances.into_iter().enumerate() {
+            let period = format!("FY2026-P{:02}", index + 1);
+            let document = self.document(
+                &format!("{key}-{period}.csv"),
+                &format!("period,{period}\naccount,unit,debit,credit\n1000,USD,{cash},\n3000,USD,,125.50\n4000,USD,,{revenue}\n6000,USD,5.00,\n"),
+                if index == 1 { middle_tb_kind } else { "Spreadsheet" },
+            );
+            periods.push(obj(vec![
+                ("period", s(period)),
+                ("trial_balance", s(&document)),
+                (
+                    "lines",
+                    Json::Arr(vec![
+                        obj(vec![
+                            ("account", s("1000")),
+                            ("unit", s("USD")),
+                            ("debit", s(cash)),
+                        ]),
+                        obj(vec![
+                            ("account", s("3000")),
+                            ("unit", s("USD")),
+                            ("credit", s("125.50")),
+                        ]),
+                        obj(vec![
+                            ("account", s("4000")),
+                            ("unit", s("USD")),
+                            ("credit", s(revenue)),
+                        ]),
+                        obj(vec![
+                            ("account", s("6000")),
+                            ("unit", s("USD")),
+                            ("debit", s("5.00")),
+                        ]),
+                    ]),
+                ),
+            ]));
+            documents.push(document);
+        }
+        let system = if self.format == "csv" {
+            "legacy-csv"
+        } else {
+            &self.format
+        };
+        let intent = obj(vec![
+            ("run_key", s(key)),
+            ("source_system", s(system)),
+            ("mode", s("PeriodBalances")),
+            ("trial_balance", s(&self.trial_balance)),
+            ("opening_date", s("2026-01-01")),
+            (
+                "lines",
+                Json::Arr(vec![
+                    obj(vec![
+                        ("account", s("1000")),
+                        ("unit", s("USD")),
+                        ("debit", s("125.50")),
+                    ]),
+                    obj(vec![
+                        ("account", s("3000")),
+                        ("unit", s("USD")),
+                        ("credit", s("125.50")),
+                    ]),
+                ]),
+            ),
+            ("periods", Json::Arr(periods)),
+        ]);
+        let path = self.file(&format!("{key}.json"), &intent.render());
+        let opened = ok(&self.book, &["migrate", "open", "--intent", &path]);
+        (text(data(&opened), "run_vid").into(), documents)
     }
 
     fn file(&self, name: &str, content: &str) -> String {
@@ -226,17 +332,24 @@ impl Fixture {
     }
 
     fn intent(&self) -> Json {
+        let mut mappings = vec![(LEGACY_CASH, s("1000")), (LEGACY_EQUITY, s("3000"))];
+        if self.opening_entries.is_some() {
+            mappings.extend([(LEGACY_REVENUE, s("4000")), (LEGACY_EXPENSE, s("6000"))]);
+        }
         let mut fields = vec![
             ("run", s(format!("MR:{}", self.run_vid))),
             ("source", s(format!("D:{}", self.source))),
             ("format", s(&self.format)),
-            (
-                "account_map",
-                obj(vec![(LEGACY_CASH, s("1000")), (LEGACY_EQUITY, s("3000"))]),
-            ),
+            ("account_map", obj(mappings)),
         ];
         if self.format == "csv" {
             fields.push(("column_map", s(COLUMNS)));
+        }
+        if let Some(entries) = &self.opening_entries {
+            fields.push((
+                "opening_entries",
+                Json::Arr(entries.iter().map(s).collect()),
+            ));
         }
         obj(fields)
     }
@@ -292,8 +405,12 @@ impl Fixture {
     }
 
     fn cash(&self, known_at: Option<i128>) -> String {
+        self.cash_at(OPENING, known_at)
+    }
+
+    fn cash_at(&self, period: &str, known_at: Option<i128>) -> String {
         let at = known_at.map(|value| value.to_string());
-        let mut args = vec!["tb", "--period", OPENING];
+        let mut args = vec!["tb", "--period", period];
         if let Some(at) = &at {
             args.extend(["--as-known-at", at]);
         }
@@ -307,6 +424,14 @@ impl Fixture {
             )
     }
 
+    fn cash_activity(&self, period: &str) -> String {
+        let result = ok(&self.book, &["tb", "--period", period, "--activity"]);
+        rows(data(&result), "rows")
+            .iter()
+            .find(|row| text(row, "code") == "1000")
+            .map_or_else(|| "0.00 USD".to_owned(), |row| text(row, "net").to_owned())
+    }
+
     fn open(&self) -> Book {
         Book::open_dir(
             &self.book,
@@ -314,6 +439,31 @@ impl Fixture {
             Entropy::deterministic(223),
         )
         .unwrap()
+    }
+
+    fn finalize(&self, name: &str) -> Json {
+        let plan = self.dir.join(name).display().to_string();
+        let planned = ok(
+            &self.book,
+            &["migrate", "finalize", &self.run_vid, "--plan-out", &plan],
+        );
+        let digest = text(data(&planned), "proposal_digest");
+        let first = self.approve(digest, "finalize-reviewer-one");
+        let second = self.approve(digest, "finalize-reviewer-two");
+        ok(
+            &self.book,
+            &[
+                "migrate",
+                "finalize",
+                &self.run_vid,
+                "--plan",
+                &plan,
+                "--approval",
+                &first,
+                "--approval",
+                &second,
+            ],
+        )
     }
 
     fn complete(&self) {
@@ -436,6 +586,482 @@ impl Fixture {
         assert_eq!(head(&self.book), before_retry);
         ok(&self.book, &["verify", "registers", "--period", OPENING]);
     }
+}
+
+#[test]
+fn period_balances_preserves_dated_activity_and_activates_elapsed_periods_atomically() {
+    let mut fixture = Fixture::period_balances(
+        "quickbooks-csv",
+        &format!("{QB}{PERIOD_ACTIVITY}"),
+        "Spreadsheet",
+    );
+    let prepared = fixture.prepare();
+    assert_eq!(text(data(&prepared), "mode"), "PeriodBalances");
+    let package = text(data(&prepared), "package_oid").to_owned();
+    let chunks = rows(data(&prepared), "chunks");
+    assert_eq!(chunks.len(), 5);
+    for (chunk, (period, date)) in chunks.iter().zip([
+        (OPENING, "2026-01-01"),
+        (OPENING, "2026-01-01"),
+        ("FY2026-P01", "2026-01-01"),
+        ("FY2026-P01", "2026-01-20"),
+        ("FY2026-P03", "2026-03-15"),
+    ]) {
+        assert_eq!(text(chunk, "effective_period"), period);
+        assert_eq!(text(chunk, "effective_date"), date);
+    }
+    assert_eq!(text(&chunks[2], "document_date"), "2026-01-01");
+    assert!(!prepared.render().contains("private-january-revenue"));
+    assert!(!prepared.render().contains(LEGACY_CASH));
+    let shown = fixture.show(&package);
+    assert_eq!(data(&shown).get("chunks"), data(&prepared).get("chunks"));
+    let mut approvals = Vec::new();
+    for chunk in chunks {
+        let digest = text(chunk, "proposal_digest");
+        approvals.push((
+            fixture.approve(digest, "period-reviewer-one"),
+            fixture.approve(digest, "period-reviewer-two"),
+        ));
+    }
+    for (count, index) in [4, 2, 0, 3, 1].into_iter().enumerate() {
+        let (first, second) = &approvals[index];
+        let staged = fixture.stage(&package, index, &[first, second]);
+        assert_eq!(
+            integer(data(&staged), "recorded_count"),
+            (count + 1) as i128
+        );
+        assert_eq!(
+            data(&staged).get("ready_to_finalize"),
+            Some(&Json::Bool(count == 4))
+        );
+        for period in [OPENING, "FY2026-P01", "FY2026-P02", "FY2026-P03"] {
+            assert_eq!(
+                fixture.cash_at(period, None),
+                "0.00 USD",
+                "{period} is staged, not active"
+            );
+        }
+        let before = head(&fixture.book);
+        let retried = fixture.stage(&package, index, &[first, second]);
+        assert_eq!(
+            data(&retried).get("already_recorded"),
+            Some(&Json::Bool(true))
+        );
+        assert_eq!(
+            integer(data(&retried), "recorded_at"),
+            integer(data(&staged), "recorded_at")
+        );
+        assert_eq!(head(&fixture.book), before);
+        if count == 0 {
+            let path = fixture
+                .dir
+                .join("incomplete-period-finalize.plan")
+                .display()
+                .to_string();
+            let (status, _) = run(
+                &fixture.book,
+                &["migrate", "finalize", &fixture.run_vid, "--plan-out", &path],
+            );
+            assert_ne!(
+                status, 0,
+                "a partial source cannot activate elapsed periods"
+            );
+            assert_eq!(head(&fixture.book), before);
+        }
+    }
+    let before_retry = head(&fixture.book);
+    fixture.opening_entries.as_mut().unwrap().reverse();
+    let retried = fixture.prepare();
+    assert_eq!(text(data(&retried), "package_oid"), package);
+    assert_eq!(
+        data(&retried).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        head(&fixture.book),
+        before_retry,
+        "canonical opening selection reuses exact sealed bytes"
+    );
+    assert_eq!(
+        data(&fixture.show(&package)).get("ties_out"),
+        Some(&Json::Bool(true))
+    );
+    let before_finalize = head(&fixture.book);
+    assert_eq!(
+        text(data(&fixture.finalize("period-finalize.plan")), "to"),
+        "Finalized"
+    );
+    for (period, cash, movement) in [
+        ("FY2026-P01", "140.50 USD", "15.00 USD"),
+        ("FY2026-P02", "140.50 USD", "0.00 USD"),
+        ("FY2026-P03", "170.50 USD", "30.00 USD"),
+    ] {
+        assert_eq!(fixture.cash_at(period, None), cash, "cumulative {period}");
+        assert_eq!(fixture.cash_activity(period), movement, "activity {period}");
+        assert_eq!(fixture.cash_at(period, Some(before_finalize)), "0.00 USD");
+        ok(&fixture.book, &["verify", "registers", "--period", period]);
+    }
+    assert_eq!(
+        fixture.cash_activity(OPENING),
+        "125.50 USD",
+        "January 1 activity is not opening stock"
+    );
+    ok(&fixture.book, &["verify", "registers", "--period", OPENING]);
+    let before_retry = head(&fixture.book);
+    let retried = fixture.prepare();
+    assert_eq!(text(data(&retried), "package_oid"), package);
+    assert_eq!(text(data(&retried), "run_state"), "Finalized");
+    assert_eq!(
+        data(&retried).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    let retried = fixture.stage(&package, 2, &[&approvals[2].0, &approvals[2].1]);
+    assert_eq!(
+        data(&retried).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(head(&fixture.book), before_retry);
+}
+
+#[test]
+fn period_balances_rejects_wrong_intermediate_balances_opening_selection_and_dates_before_publication()
+ {
+    let fixture = Fixture::period_balances(
+        "quickbooks-csv",
+        &format!("{QB}{PERIOD_ACTIVITY}"),
+        "Spreadsheet",
+    );
+    let original = fixture.intent();
+    let mut cases = Vec::new();
+    let mut missing = original.clone();
+    let Json::Obj(fields) = &mut missing else {
+        panic!("intent object")
+    };
+    fields.retain(|(key, _)| key != "opening_entries");
+    cases.push((
+        "missing-selection",
+        missing,
+        "requires explicit opening_entries",
+    ));
+    for (name, entries, message) in [
+        (
+            "duplicate-selection",
+            vec!["private-source-entry-one", "private-source-entry-one"],
+            "repeats a source entry ID",
+        ),
+        (
+            "unknown-selection",
+            vec![
+                "private-source-entry-one",
+                "private-source-entry-two",
+                "unknown-source-entry",
+            ],
+            "absent from the complete source",
+        ),
+        (
+            "unselected-opening",
+            vec!["private-source-entry-two"],
+            "outside the run's declared Historical periods",
+        ),
+        (
+            "same-day-activity-is-not-opening",
+            vec![
+                "private-source-entry-one",
+                "private-source-entry-two",
+                "private-january-revenue",
+            ],
+            "at the opening",
+        ),
+        (
+            "later-activity-is-not-opening",
+            vec![
+                "private-source-entry-one",
+                "private-source-entry-two",
+                "private-january-expense",
+            ],
+            "dated after the run opening date",
+        ),
+    ] {
+        let mut intent = original.clone();
+        set_field(
+            &mut intent,
+            "opening_entries",
+            Json::Arr(entries.into_iter().map(s).collect()),
+        );
+        cases.push((name, intent, message));
+    }
+    let mut current_period = original.clone();
+    let source = fixture.document(
+        "current-period-source.csv",
+        &format!(
+            "{QB}{}",
+            PERIOD_ACTIVITY.replace("2026-03-15", "2026-04-01")
+        ),
+        "Spreadsheet",
+    );
+    set_field(&mut current_period, "source", s(source));
+    cases.push((
+        "current-period-activity",
+        current_period,
+        "outside the run's declared Historical periods",
+    ));
+    let (wrong_run, _) = fixture.open_period_run(
+        "incorrect-intermediate",
+        [
+            ("140.50", "20.00"),
+            ("141.50", "21.00"),
+            ("170.50", "50.00"),
+        ],
+        "Spreadsheet",
+    );
+    let mut wrong_period = original.clone();
+    set_field(&mut wrong_period, "run", s(wrong_run));
+    cases.push((
+        "wrong-middle-tb-final-still-ties",
+        wrong_period,
+        "through `FY2026-P02`",
+    ));
+    let mut shared_source = original.clone();
+    set_field(
+        &mut shared_source,
+        "source",
+        s(&fixture.period_trial_balances[1]),
+    );
+    cases.push((
+        "source-is-period-tb",
+        shared_source,
+        "must be distinct retained Documents",
+    ));
+    for (name, intent, message) in cases {
+        let path = fixture.file(&format!("{name}.json"), &intent.render());
+        let before = head(&fixture.book);
+        let (status, refusal) = run(
+            &fixture.book,
+            &[
+                "migrate", "import", "--action", "prepare", "--intent", &path,
+            ],
+        );
+        assert_eq!(status, 2, "{name}: {}", refusal.render());
+        assert!(
+            refusal.render().contains(message),
+            "{name}: {}",
+            refusal.render()
+        );
+        assert_eq!(
+            head(&fixture.book),
+            before,
+            "{name} must not retain a partial package"
+        );
+    }
+    let prepared = fixture.prepare();
+    assert_eq!(integer(data(&prepared), "recorded_count"), 0);
+    assert_eq!(fixture.cash_at("FY2026-P03", None), "0.00 USD");
+}
+
+#[test]
+fn period_balances_refuses_ambiguous_iif_opening_ids_and_an_opening_only_selection_extension() {
+    let iif = "!TRNS\tTRNSID\tDATE\tACCNT\tAMOUNT\n!SPL\tSPLID\tDATE\tACCNT\tAMOUNT\n!ENDTRNS\nTRNS\tprivate-source-entry-one\t2025-12-20\tPrivate legacy checking account\t100.00\nSPL\tprivate-split-one\t2025-12-20\tPrivate legacy opening equity\t-100.00\nENDTRNS\nTRNS\tprivate-source-entry-one\t2025-12-29\tPrivate legacy checking account\t25.50\nSPL\tprivate-split-two\t2025-12-29\tPrivate legacy opening equity\t-25.50\nENDTRNS\n";
+    let fixture = Fixture::period_balances("quickbooks-iif", iif, "Spreadsheet");
+    let path = fixture.file("ambiguous-opening.json", &fixture.intent().render());
+    let before = head(&fixture.book);
+    let (status, refused) = run(
+        &fixture.book,
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
+    );
+    assert_eq!(status, 2, "{}", refused.render());
+    assert!(
+        refused
+            .render()
+            .contains("identifies more than one source entry")
+    );
+    assert_eq!(head(&fixture.book), before);
+
+    let fixture = Fixture::quickbooks();
+    let mut intent = fixture.intent();
+    set_field(
+        &mut intent,
+        "opening_entries",
+        Json::Arr(vec![s("private-source-entry-one")]),
+    );
+    let path = fixture.file("opening-only-selection.json", &intent.render());
+    let before = head(&fixture.book);
+    let (status, refused) = run(
+        &fixture.book,
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
+    );
+    assert_eq!(status, 2, "{}", refused.render());
+    assert!(refused.render().contains("applies only to PeriodBalances"));
+    assert_eq!(head(&fixture.book), before);
+}
+
+#[test]
+fn period_balances_replay_reauthorizes_every_declared_trial_balance() {
+    let fixture = Fixture::period_balances(
+        "quickbooks-csv",
+        &format!("{QB}{PERIOD_ACTIVITY}"),
+        "BankStatement",
+    );
+    let path = fixture.file("governed-period-import.json", &fixture.intent().render());
+    let before = head(&fixture.book);
+    let (status, refused) = run(
+        &fixture.book,
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
+    );
+    assert_eq!(status, 3, "{}", refused.render());
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-142");
+    assert_eq!(head(&fixture.book), before);
+    let prepared = ok(
+        &fixture.book,
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            &path,
+            "--grant",
+            "privileged",
+        ],
+    );
+    let package = text(data(&prepared), "package_oid");
+    let original = rewrite_package(&fixture, package, |_, proposals| {
+        assert!(
+            proposals
+                .iter()
+                .all(|proposal| proposal.evidence.len() == 5),
+            "every approved proposal cites the source, opening TB and all three period TBs"
+        );
+    });
+    assert_eq!(
+        original, package,
+        "inspection must preserve the exact package bytes"
+    );
+    for args in [
+        vec![
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
+        vec![
+            "migrate",
+            "import",
+            "--action",
+            "show",
+            "--package",
+            package,
+        ],
+        vec![
+            "migrate",
+            "import",
+            "--action",
+            "stage",
+            "--package",
+            package,
+            "--chunk",
+            "2",
+        ],
+    ] {
+        let before = head(&fixture.book);
+        let (status, refused) = run(&fixture.book, &args);
+        assert_eq!(status, 3, "{args:?}: {}", refused.render());
+        assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-142");
+        assert!(!refused.render().contains("private-january-revenue"));
+        assert!(!refused.render().contains(LEGACY_CASH));
+        assert_eq!(head(&fixture.book), before);
+    }
+    let shown = ok(
+        &fixture.book,
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "show",
+            "--package",
+            package,
+            "--grant",
+            "privileged",
+        ],
+    );
+    assert_eq!(data(&shown).get("chunks"), data(&prepared).get("chunks"));
+    let digest = text(&rows(data(&shown), "chunks")[2], "proposal_digest");
+    let first = fixture.approve(digest, "governed-period-reviewer-one");
+    let second = fixture.approve(digest, "governed-period-reviewer-two");
+    let staged = ok(
+        &fixture.book,
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "stage",
+            "--package",
+            package,
+            "--chunk",
+            "2",
+            "--approval",
+            &first,
+            "--approval",
+            &second,
+            "--grant",
+            "privileged",
+        ],
+    );
+    assert_eq!(integer(data(&staged), "recorded_count"), 1);
+    assert_eq!(fixture.cash_at("FY2026-P03", None), "0.00 USD");
+}
+
+#[test]
+fn period_balances_replay_rejects_rehashed_period_routing_and_evidence_changes() {
+    let fixture = Fixture::period_balances(
+        "quickbooks-csv",
+        &format!("{QB}{PERIOD_ACTIVITY}"),
+        "Spreadsheet",
+    );
+    let prepared = fixture.prepare();
+    let package = text(data(&prepared), "package_oid");
+    for change_period in [true, false] {
+        let forged = rewrite_package(&fixture, package, |_, proposals| {
+            if change_period {
+                assert_eq!(proposals[2].effective_date.render(), "2026-01-01");
+                proposals[2].effective_period.as_mut().unwrap().code = OPENING.into();
+            } else {
+                assert_eq!(proposals[2].evidence.len(), 5);
+                proposals[2].evidence.pop().unwrap();
+            }
+        });
+        assert_ne!(forged, package);
+        for action in ["show", "stage"] {
+            let mut args = vec![
+                "migrate",
+                "import",
+                "--action",
+                action,
+                "--package",
+                &forged,
+            ];
+            if action == "stage" {
+                args.extend(["--chunk", "2"]);
+            }
+            let before = head(&fixture.book);
+            let (status, refused) = run(&fixture.book, &args);
+            assert_eq!(status, 8, "{}", refused.render());
+            assert!(
+                refused
+                    .render()
+                    .contains("retained proposal structure differs")
+            );
+            assert_eq!(head(&fixture.book), before);
+        }
+    }
+    let shown = fixture.show(package);
+    assert_eq!(integer(data(&shown), "recorded_count"), 0);
+    assert_eq!(
+        text(&rows(data(&shown), "chunks")[2], "effective_period"),
+        "FY2026-P01"
+    );
 }
 
 #[test]
@@ -949,6 +1575,22 @@ fn launch_templates_cannot_self_grant_migration_or_consume_input_before_admissio
 // hostile native caller could. Rehashing both Entry envelopes and the Document
 // is deliberately insufficient: the CLI must replay the original source.
 fn forged_package(fixture: &Fixture, package: &str, change_memo: bool) -> String {
+    rewrite_package(fixture, package, |book, proposals| {
+        if change_memo {
+            proposals[0].legs[0].memo = Some(book.seal_text("forged private source memo").unwrap());
+        } else {
+            proposals[0].legs[0].amount.mantissa += 1;
+            proposals[0].legs[1].amount.mantissa += 1;
+            proposals[0].unit_totals = EntryPayload::fold_unit_totals(&proposals[0].legs).unwrap();
+        }
+    })
+}
+
+fn rewrite_package(
+    fixture: &Fixture,
+    package: &str,
+    change: impl FnOnce(&Book, &mut [EntryPayload]),
+) -> String {
     let mut book = fixture.open();
     let cap = Capability::embedded(VId(502), &["read"]).unwrap();
     let DocumentRead::Full(mut document) = book
@@ -958,9 +1600,24 @@ fn forged_package(fixture: &Fixture, package: &str, change_memo: bool) -> String
     else {
         panic!("full package");
     };
-    let mut reader = Reader::new(&document.bytes);
-    let domain: [u8; b"FA-LEGACY-OPENING-IMPORT\0".len()] = reader.fixed("domain").unwrap();
-    assert_eq!(&domain, b"FA-LEGACY-OPENING-IMPORT\0");
+    let domain: &[u8] = if document
+        .bytes
+        .starts_with(b"FA-LEGACY-PERIOD-BALANCES-IMPORT\0")
+    {
+        assert_eq!(
+            document.mime,
+            "application/vnd.frankenaccounting.legacy-period-balances-import.v1"
+        );
+        b"FA-LEGACY-PERIOD-BALANCES-IMPORT\0"
+    } else {
+        assert!(document.bytes.starts_with(b"FA-LEGACY-OPENING-IMPORT\0"));
+        assert_eq!(
+            document.mime,
+            "application/vnd.frankenaccounting.legacy-opening-import.v1"
+        );
+        b"FA-LEGACY-OPENING-IMPORT\0"
+    };
+    let mut reader = Reader::new(&document.bytes[domain.len()..]);
     assert_eq!(reader.u16("version").unwrap(), 1);
     let _: [u8; 16] = reader.fixed("book").unwrap();
     reader.u128("run").unwrap();
@@ -969,7 +1626,7 @@ fn forged_package(fixture: &Fixture, package: &str, change_memo: bool) -> String
     let _: [u8; 32] = reader.fixed("source commitment").unwrap();
     let _: Erasable<String> = Erasable::decode(&mut reader, 1024 * 1024).unwrap();
     let count = reader.count(4096, "proposals").unwrap();
-    let prefix = document.bytes[..reader.offset()].to_vec();
+    let prefix = document.bytes[..domain.len() + reader.offset()].to_vec();
     let mut proposals = Vec::new();
     for _ in 0..count {
         proposals.push(
@@ -983,14 +1640,7 @@ fn forged_package(fixture: &Fixture, package: &str, change_memo: bool) -> String
         );
     }
     reader.finish().unwrap();
-    if change_memo {
-        proposals[0].legs[0].memo = Some(book.seal_text("forged private source memo").unwrap());
-    } else {
-        proposals[0].legs[0].amount.mantissa += 1;
-        proposals[0].legs[1].amount.mantissa += 1;
-        proposals[0].unit_totals =
-            fa_model::EntryPayload::fold_unit_totals(&proposals[0].legs).unwrap();
-    }
+    change(&book, &mut proposals);
     let mut writer = Writer::new();
     writer.fixed(&prefix);
     for proposal in proposals {

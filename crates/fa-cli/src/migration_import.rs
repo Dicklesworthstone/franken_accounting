@@ -1,11 +1,13 @@
-//! Retained legacy GL sources to independently approved opening migration chunks.
+//! Retained legacy GL sources to independently approved migration chunks.
 //!
-//! Preparation binds an existing OpeningOnly run and its independently declared
-//! trial balance to one exact source, mapping and set of sealed proposals. The
+//! Preparation binds an existing OpeningOnly or PeriodBalances run and its
+//! independently declared trial balances to one source, mapping and sealed proposals. The
 //! resulting Workpaper is the resume handle. Show and stage replay that complete
 //! source closure; staging submits the retained bytes to the native Migration
 //! law. Only the existing independently approved finalize operation activates
 //! the run, and an explicit abandon leaves its staged history invisible.
+//! PeriodBalances names its opening source entries explicitly; every other
+//! source entry keeps its effective date in a declared Historical period.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -13,15 +15,15 @@ use fa::{Book, BookError};
 use fa_formats::legacy::{self, AccountMap, LegacyColumnMap, LegacyFormat, LegacyImportBatch};
 use fa_formats::{FormatError, UnitCatalog};
 use fa_journal::redaction::DocumentRead;
-use fa_journal::{Document, PostRequest, Posted, Run, RunMode, RunState, TieOut};
+use fa_journal::{Document, PostRequest, Posted, Run, RunMode, RunState, TieOut, TrialBalanceLine};
 use fa_model::{
     ApprovalRef, Entry, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, Oid, Reader,
     Writer, migration_entry_vid, migration_run_vid,
 };
-use fa_money::Side;
+use fa_money::{Side, UnitId};
 use fa_policy::{Capability, Intent, Op, Profile};
 use fa_registry::evidence_policy::EvidencePolicy;
-use fa_time::{PeriodKind, PeriodState};
+use fa_time::{DateDay, PeriodKind, PeriodState};
 use fgdb_types::VId;
 
 use crate::args::Args;
@@ -32,6 +34,9 @@ const EXAMPLE: &str = "fa migrate import --action prepare --intent import.json [
 const PACKAGE_DOMAIN: &[u8] = b"FA-LEGACY-OPENING-IMPORT\0";
 const PACKAGE_VERSION: u16 = 1;
 const PACKAGE_MIME: &str = "application/vnd.frankenaccounting.legacy-opening-import.v1";
+const PERIOD_BALANCES_DOMAIN: &[u8] = b"FA-LEGACY-PERIOD-BALANCES-IMPORT\0";
+const PERIOD_BALANCES_MIME: &str =
+    "application/vnd.frankenaccounting.legacy-period-balances-import.v1";
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_PACKAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHUNKS: usize = 4096;
@@ -43,7 +48,7 @@ impl From<FormatError> for Fail {
                 "supply every legacy account explicitly in the import intent's account_map object, mapped to an existing leaf account code; create missing target accounts before preparing"
             }
             _ => {
-                "correct the retained source or explicit account/column mapping, upload the corrected source as a new Document, and prepare a new empty OpeningOnly run; do not edit an approved package"
+                "correct the retained source or explicit account/column mapping, upload the corrected source as a new Document, and prepare a new empty migration run; do not edit an approved package"
             }
         };
         usage(error.to_string(), fix)
@@ -152,7 +157,7 @@ fn capability(ctx: &Ctx<'_>, args: &Args, writing: bool) -> Result<Capability, F
         return Err(fa_journal::Refusal::new(
             fa_journal::refusal::code::CAPABILITY,
             fa_journal::exit::SAFETY,
-            "opening migration preparation and staging require a Human principal",
+            "legacy migration preparation and staging require a Human principal",
             "plan §8.6 and §14.4; approved monetary migration on trunk",
             "use an independently authorized Human operator with read, post and migrate; collect the native independent approvals for each retained chunk",
         ).into());
@@ -252,6 +257,7 @@ struct ImportRequest {
     default_unit: Option<String>,
     account_map: BTreeMap<String, String>,
     column_map: Option<String>,
+    opening_entries: Option<BTreeSet<String>>,
 }
 
 fn format_name(format: LegacyFormat) -> &'static str {
@@ -274,7 +280,13 @@ impl ImportRequest {
         for (key, _) in fields {
             if !matches!(
                 key.as_str(),
-                "run" | "source" | "format" | "default_unit" | "account_map" | "column_map"
+                "run"
+                    | "source"
+                    | "format"
+                    | "default_unit"
+                    | "account_map"
+                    | "column_map"
+                    | "opening_entries"
             ) || !seen.insert(key)
             {
                 return Err(usage(
@@ -338,6 +350,31 @@ impl ImportRequest {
                 "include a TOML [columns] string in column_map for generic CSV; keep all account mappings in account_map",
             ));
         }
+        let opening_entries = match value.get("opening_entries") {
+            None => None,
+            Some(Json::Arr(entries)) if !entries.is_empty() && entries.len() <= MAX_CHUNKS => {
+                let mut selected = BTreeSet::new();
+                for entry in entries {
+                    let id = entry.as_str().filter(|id| !id.is_empty() && id.trim() == *id)
+                        .ok_or_else(|| usage(
+                            "opening_entries must contain exact nonempty legacy source entry IDs without surrounding whitespace",
+                            "list the source journal IDs that represent opening stock; entries on the opening date are not assumed to be opening stock",
+                        ))?;
+                    if !selected.insert(id.to_owned()) {
+                        return Err(usage("opening_entries repeats a source entry ID", EXAMPLE));
+                    }
+                }
+                Some(selected)
+            }
+            Some(_) => {
+                return Err(usage(
+                    format!(
+                        "opening_entries must be an array of 1..={MAX_CHUNKS} source entry IDs"
+                    ),
+                    "PeriodBalances requires an explicit opening_entries array; omit it for OpeningOnly",
+                ));
+            }
+        };
         Ok(Self {
             run: run_vid(book_id, required_text(&value, "run")?)?,
             source: oid(required_text(&value, "source")?, "source")?,
@@ -345,6 +382,7 @@ impl ImportRequest {
             default_unit: optional_text(&value, "default_unit")?,
             account_map,
             column_map,
+            opening_entries,
         })
     }
 
@@ -369,11 +407,55 @@ impl ImportRequest {
         if let Some(columns) = &self.column_map {
             fields.push(("column_map", s(columns)));
         }
+        if let Some(entries) = &self.opening_entries {
+            fields.push((
+                "opening_entries",
+                Json::Arr(entries.iter().map(s).collect()),
+            ));
+        }
         obj(fields).render()
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PackageKind {
+    OpeningOnly,
+    PeriodBalances,
+}
+
+impl PackageKind {
+    fn for_run(run: &Run) -> Result<Self, Fail> {
+        match run.body.mode {
+            RunMode::OpeningOnly => Ok(Self::OpeningOnly),
+            RunMode::PeriodBalances => Ok(Self::PeriodBalances),
+            RunMode::FullDetail => Err(invalid("FullDetail has no retained import package format")),
+        }
+    }
+
+    fn domain(self) -> &'static [u8] {
+        match self {
+            Self::OpeningOnly => PACKAGE_DOMAIN,
+            Self::PeriodBalances => PERIOD_BALANCES_DOMAIN,
+        }
+    }
+
+    fn mime(self) -> &'static str {
+        match self {
+            Self::OpeningOnly => PACKAGE_MIME,
+            Self::PeriodBalances => PERIOD_BALANCES_MIME,
+        }
+    }
+
+    fn mode_name(self) -> &'static str {
+        match self {
+            Self::OpeningOnly => "OpeningOnly",
+            Self::PeriodBalances => "PeriodBalances",
+        }
+    }
+}
+
 struct Package {
+    kind: PackageKind,
     book_id: Id128,
     run: VId,
     run_body_digest: [u8; 32],
@@ -387,7 +469,7 @@ impl Package {
     fn encode(&self) -> Result<Vec<u8>, Fail> {
         let mut writer = Writer::new();
         writer
-            .fixed(PACKAGE_DOMAIN)
+            .fixed(self.kind.domain())
             .u16(PACKAGE_VERSION)
             .fixed(&self.book_id.0)
             .u128(self.run.0)
@@ -414,14 +496,17 @@ impl Package {
         if bytes.len() > MAX_PACKAGE_BYTES {
             return Err(invalid("package exceeds 16 MiB"));
         }
-        let mut reader = Reader::new(bytes);
+        let kind = if bytes.starts_with(PACKAGE_DOMAIN) {
+            PackageKind::OpeningOnly
+        } else if bytes.starts_with(PERIOD_BALANCES_DOMAIN) {
+            PackageKind::PeriodBalances
+        } else {
+            return Err(invalid("unsupported package domain"));
+        };
+        let mut reader = Reader::new(&bytes[kind.domain().len()..]);
         let decode = |error: fa_model::DecodeError| invalid(error.to_string());
-        let domain: [u8; PACKAGE_DOMAIN.len()] =
-            reader.fixed("legacy_import.domain").map_err(decode)?;
-        if domain.as_slice() != PACKAGE_DOMAIN
-            || reader.u16("legacy_import.version").map_err(decode)? != PACKAGE_VERSION
-        {
-            return Err(invalid("unsupported package domain or version"));
+        if reader.u16("legacy_import.version").map_err(decode)? != PACKAGE_VERSION {
+            return Err(invalid("unsupported package version"));
         }
         let book_id = Id128(reader.fixed("legacy_import.book").map_err(decode)?);
         let run = VId(reader.u128("legacy_import.run").map_err(decode)?);
@@ -452,6 +537,7 @@ impl Package {
         }
         reader.finish().map_err(decode)?;
         Ok(Self {
+            kind,
             book_id,
             run,
             run_body_digest,
@@ -486,11 +572,15 @@ fn full_document(book: &mut Book, cap: &Capability, oid: Oid) -> Result<Document
 }
 
 fn load_run(book: &Book, vid: VId) -> Result<Run, Fail> {
-    let run = book.migration_run(vid, None)?.ok_or_else(|| usage("the selected migration run does not exist", "open an OpeningOnly run with an independently retained trial_balance document and exact typed lines before importing"))?;
-    if run.body.mode != RunMode::OpeningOnly || run.body.lines.is_empty() {
+    let run = book.migration_run(vid, None)?.ok_or_else(|| usage("the selected migration run does not exist", "open an OpeningOnly or PeriodBalances run with independently retained trial balance documents and exact typed lines before importing"))?;
+    if !matches!(
+        run.body.mode,
+        RunMode::OpeningOnly | RunMode::PeriodBalances
+    ) || run.body.lines.is_empty()
+    {
         return Err(usage(
-            "legacy import currently supports OpeningOnly runs with an independently declared trial balance",
-            "use an OpeningOnly run with explicit lines; this import does not replay historical period balances or FullDetail",
+            "legacy import supports OpeningOnly and PeriodBalances runs with independently declared trial balances",
+            "use OpeningOnly for opening stock, or PeriodBalances for opening stock and elapsed Historical periods; FullDetail's earlier-history and sole-source modes are not supported by this importer",
         ));
     }
     Ok(run)
@@ -530,11 +620,26 @@ fn parse_source(
     if source.oid() != request.source || source.book_id != book.context().book_id {
         return Err(invalid("source identity or book does not match"));
     }
-    if request.source == run.body.trial_balance {
+    if run.body.documents().contains(&request.source) {
         return Err(usage(
-            "the source and independently declared trial balance must be distinct retained Documents",
-            "retain the legacy trial balance separately, declare its exact lines when opening the run, then import the original journal export",
+            "the source and every independently declared trial balance must be distinct retained Documents",
+            "retain the opening and per-period legacy trial balances separately from the journal source, declare their exact lines when opening the run, then import the original export",
         ));
+    }
+    match (run.body.mode, &request.opening_entries) {
+        (RunMode::OpeningOnly, Some(_)) => {
+            return Err(usage(
+                "opening_entries applies only to PeriodBalances imports",
+                "omit opening_entries for OpeningOnly; that mode imports the complete source as opening stock",
+            ));
+        }
+        (RunMode::PeriodBalances, None) => {
+            return Err(usage(
+                "PeriodBalances requires explicit opening_entries",
+                "list the exact source journal IDs representing opening stock; all other entries keep their source dates in the run's declared Historical periods",
+            ));
+        }
+        _ => {}
     }
     let source_text = std::str::from_utf8(&source.bytes).map_err(|_| {
         usage(
@@ -641,7 +746,7 @@ fn parse_source(
         ));
     }
     for chunk in &batch.chunks {
-        if chunk.effective_date > run.body.opening_date {
+        if run.body.mode == RunMode::OpeningOnly && chunk.effective_date > run.body.opening_date {
             return Err(usage(
                 "OpeningOnly import contains a source entry dated after the run opening date",
                 "retain an export cut off at the opening date; this workflow preserves earlier dates as document_date and does not claim historical-period replay",
@@ -671,7 +776,7 @@ fn parse_source(
             }
         }
     }
-    if batch.trial_balance != run.body.lines {
+    if run.body.mode == RunMode::OpeningOnly && batch.trial_balance != run.body.lines {
         return Err(usage(
             "the complete mapped source does not tie exactly to the run's independently declared trial balance",
             "reconcile the legacy source, account mapping and declared trial balance before preparing; no package or chunk was recorded",
@@ -680,8 +785,219 @@ fn parse_source(
     Ok(batch)
 }
 
-fn evidence(source: &Document, trial_balance: &Document) -> Vec<EvidenceRef> {
-    let mut evidence = vec![source.evidence_ref(1), trial_balance.evidence_ref(1)];
+struct SourceRoute {
+    date: DateDay,
+    period: String,
+}
+
+type BalanceFold = BTreeMap<(String, UnitId), i128>;
+
+fn add_balance(
+    fold: &mut BalanceFold,
+    account: &str,
+    unit: UnitId,
+    amount: i128,
+) -> Result<(), Fail> {
+    let cell = fold.entry((account.to_owned(), unit)).or_insert(0);
+    *cell = cell.checked_add(amount).ok_or_else(|| usage(
+        "legacy period trial balance exceeds exact fixed-scale arithmetic bounds",
+        "reconcile the source and account mapping; the importer never wraps, rounds or inserts a balancing leg",
+    ))?;
+    Ok(())
+}
+
+fn check_balance(fold: &BalanceFold, lines: &[TrialBalanceLine], at: &str) -> Result<(), Fail> {
+    let actual: Vec<_> = fold
+        .iter()
+        .filter(|(_, amount)| **amount != 0)
+        .map(|((account, unit), amount)| TrialBalanceLine {
+            account_code: account.clone(),
+            unit: *unit,
+            mantissa: *amount,
+        })
+        .collect();
+    if actual != lines {
+        return Err(usage(
+            format!(
+                "the complete mapped source does not tie exactly to the independently declared trial balance {at}"
+            ),
+            "reconcile the opening entry selection, source dates, account mapping and every declared cumulative period balance; no package or chunk was recorded",
+        ));
+    }
+    Ok(())
+}
+
+fn source_routes(
+    book: &Book,
+    request: &ImportRequest,
+    run: &Run,
+    batch: &LegacyImportBatch,
+    opening: &str,
+) -> Result<Vec<SourceRoute>, Fail> {
+    if run.body.mode == RunMode::OpeningOnly {
+        return Ok(batch
+            .chunks
+            .iter()
+            .map(|_| SourceRoute {
+                date: run.body.opening_date,
+                period: opening.to_owned(),
+            })
+            .collect());
+    }
+    let selected = request
+        .opening_entries
+        .as_ref()
+        .ok_or_else(|| invalid("PeriodBalances has no opening entry selection"))?;
+    let rows = book.periods()?;
+    let go_live = book
+        .spec()?
+        .opening_date
+        .ok_or_else(|| invalid("PeriodBalances needs the book's declared opening date"))?;
+    let mut periods = Vec::with_capacity(run.body.periods.len());
+    for declared in &run.body.periods {
+        let row = rows
+            .iter()
+            .find(|row| {
+                row.code == declared.period_code && row.calendar_id == book.context().calendar.id
+            })
+            .ok_or_else(|| invalid("a declared Historical period is absent"))?;
+        if row.kind != PeriodKind::Historical
+            || row.state != PeriodState::Locked
+            || row.start < run.body.opening_date
+            || row.end > go_live
+        {
+            return Err(invalid(
+                "a declared elapsed period is not a locked Historical period inside the run's range",
+            ));
+        }
+        periods.push(row);
+    }
+    let mut seen_opening = BTreeSet::new();
+    let mut routes = Vec::with_capacity(batch.chunks.len());
+    let mut opening_fold = BalanceFold::new();
+    let mut period_folds: BTreeMap<&str, BalanceFold> = BTreeMap::new();
+    for (index, chunk) in batch.chunks.iter().enumerate() {
+        let (route, fold) = if selected.contains(&chunk.provenance.source_id) {
+            if !seen_opening.insert(chunk.provenance.source_id.as_str()) {
+                return Err(usage(
+                    "an opening_entries ID identifies more than one source entry",
+                    "retain an export with unambiguous journal IDs; opening stock is never selected by a guessed row or date",
+                ));
+            }
+            if chunk.effective_date > run.body.opening_date {
+                return Err(usage(
+                    "a selected opening entry is dated after the run opening date",
+                    "select only opening-stock source entries dated on or before the run's fiscal-year start; elapsed-period activity keeps its original date",
+                ));
+            }
+            (
+                SourceRoute {
+                    date: run.body.opening_date,
+                    period: opening.to_owned(),
+                },
+                &mut opening_fold,
+            )
+        } else {
+            let matches: Vec<_> = periods
+                .iter()
+                .filter(|period| {
+                    chunk.effective_date >= period.start && chunk.effective_date < period.end
+                })
+                .collect();
+            let [period] = matches.as_slice() else {
+                return Err(usage(
+                    format!(
+                        "source entry {index} is outside the run's declared Historical periods"
+                    ),
+                    "name opening-stock IDs in opening_entries and include only activity in declared elapsed periods; current-period activity and pre-opening detail need their own native workflow",
+                ));
+            };
+            (
+                SourceRoute {
+                    date: chunk.effective_date,
+                    period: period.code.clone(),
+                },
+                period_folds.entry(period.code.as_str()).or_default(),
+            )
+        };
+        for leg in &chunk.legs {
+            let amount = match leg.side {
+                Side::Debit => leg.amount.mantissa,
+                Side::Credit => leg
+                    .amount
+                    .mantissa
+                    .checked_neg()
+                    .ok_or_else(|| invalid("source credit cannot be negated exactly"))?,
+            };
+            add_balance(fold, &leg.account_code, leg.amount.unit, amount)?;
+        }
+        routes.push(route);
+    }
+    if seen_opening.len() != selected.len() {
+        return Err(usage(
+            "opening_entries contains an ID absent from the complete source",
+            "use each opening-stock source journal ID exactly once; source entry IDs remain private sealed configuration",
+        ));
+    }
+    check_balance(&opening_fold, &run.body.lines, "at the opening")?;
+    let mut cumulative = opening_fold;
+    for declared in &run.body.periods {
+        if let Some(movement) = period_folds.get(declared.period_code.as_str()) {
+            for ((account, unit), amount) in movement {
+                add_balance(&mut cumulative, account, *unit, *amount)?;
+            }
+        }
+        // A zero-activity period contributes no invented zero-value entry;
+        // its independently declared cumulative balance must still tie out.
+        check_balance(
+            &cumulative,
+            &declared.lines,
+            &format!("through `{}`", declared.period_code),
+        )?;
+    }
+    Ok(routes)
+}
+
+fn route_proposals(
+    kind: PackageKind,
+    proposals: &mut [EntryPayload],
+    routes: &[SourceRoute],
+) -> Result<(), Fail> {
+    if proposals.len() != routes.len() {
+        return Err(invalid("source routing and proposal counts differ"));
+    }
+    if kind == PackageKind::PeriodBalances {
+        for (index, (proposal, route)) in proposals.iter_mut().zip(routes).enumerate() {
+            proposal.effective_date = route.date;
+            proposal
+                .effective_period
+                .as_mut()
+                .ok_or_else(|| invalid("source proposal has no period"))?
+                .code
+                .clone_from(&route.period);
+            proposal.idempotency_key = format!("legacy-period-balances:v1:{index}").into_bytes();
+        }
+    }
+    Ok(())
+}
+
+fn trial_balance_documents(
+    book: &mut Book,
+    cap: &Capability,
+    run: &Run,
+) -> Result<Vec<Document>, Fail> {
+    run.body
+        .documents()
+        .into_iter()
+        .map(|oid| full_document(book, cap, oid))
+        .collect()
+}
+
+fn evidence(source: &Document, trial_balances: &[Document]) -> Vec<EvidenceRef> {
+    let mut evidence: Vec<_> = std::iter::once(source)
+        .chain(trial_balances)
+        .map(|document| document.evidence_ref(1))
+        .collect();
     evidence.sort();
     evidence.dedup();
     evidence
@@ -707,6 +1023,7 @@ fn source_replay(
     run: &Run,
     period: &str,
     evidence: Vec<EvidenceRef>,
+    routes: &[SourceRoute],
 ) -> Result<(), Fail> {
     let mut fields = VecDeque::new();
     for proposal in &package.proposals {
@@ -738,7 +1055,7 @@ fn source_replay(
         .first()
         .ok_or_else(|| invalid("empty package"))?
         .principal_ref;
-    let expected = batch.to_chunk_proposals_with_sealer(
+    let mut expected = batch.to_chunk_proposals_with_sealer(
         book.context(),
         run.vid,
         run.body.opening_date,
@@ -765,6 +1082,7 @@ fn source_replay(
             Ok::<_, Fail>(retained)
         },
     )?;
+    route_proposals(package.kind, &mut expected, routes)?;
     if !fields.is_empty() || expected != package.proposals {
         return Err(invalid(
             "retained proposal structure differs from the complete source, mapping or run",
@@ -817,7 +1135,10 @@ fn retained_package(
     // first complete package fixes this run's approval material permanently,
     // including when preparation's response was lost before any chunk staged.
     for summary in book.documents(None)?? {
-        if summary.kind != kind || summary.grade != grade || summary.mime != PACKAGE_MIME {
+        if summary.kind != kind
+            || summary.grade != grade
+            || !matches!(summary.mime.as_str(), PACKAGE_MIME | PERIOD_BALANCES_MIME)
+        {
             continue;
         }
         let document = full_document(book, cap, summary.oid)?;
@@ -856,13 +1177,16 @@ fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Load
     if document.oid() != selected
         || document.kind != kind
         || document.grade != grade
-        || document.mime != PACKAGE_MIME
+        || !matches!(document.mime.as_str(), PACKAGE_MIME | PERIOD_BALANCES_MIME)
     {
         return Err(invalid(
             "selected Document is not an original generated legacy import Workpaper",
         ));
     }
     let package = Package::decode(&document.bytes)?;
+    if document.mime != package.kind.mime() {
+        return Err(invalid("package media type differs from its encoded mode"));
+    }
     if package.book_id != book.context().book_id {
         return Err(invalid("package belongs to another book"));
     }
@@ -884,10 +1208,13 @@ fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Load
         ));
     }
     let run = load_run(book, package.run)?;
+    if package.kind != PackageKind::for_run(&run)? {
+        return Err(invalid("package mode differs from the migration run"));
+    }
     if run.body.digest().map_err(BookError::Kernel)? != package.run_body_digest {
         return Err(invalid("migration run body differs from the package"));
     }
-    let trial_balance = full_document(book, cap, run.body.trial_balance)?;
+    let trial_balances = trial_balance_documents(book, cap, &run)?;
     let config = package
         .request
         .open(&book.context().seal_key, MAX_REQUEST_BYTES)
@@ -903,13 +1230,15 @@ fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Load
     }
     let batch = parse_source(book, &mut request, &run, &source)?;
     let period = opening_period(book, &run, false)?;
+    let routes = source_routes(book, &request, &run, &batch, &period)?;
     source_replay(
         book,
         &package,
         &batch,
         &run,
         &period,
-        evidence(&source, &trial_balance),
+        evidence(&source, &trial_balances),
+        &routes,
     )?;
     let tie = recorded_chunks(book, &run, &package)?;
     Ok(Loaded {
@@ -979,6 +1308,16 @@ fn fields(book: &Book, loaded: &Loaded) -> Result<Vec<(&'static str, Json)>, Fai
             if let Some(date) = proposal.document_date {
                 fields.push(("document_date", s(date.render())));
             }
+            if loaded.package.kind == PackageKind::PeriodBalances {
+                fields.push((
+                    "effective_period",
+                    s(&proposal
+                        .effective_period
+                        .as_ref()
+                        .ok_or_else(|| invalid("retained period proposal has no period"))?
+                        .code),
+                ));
+            }
             if let Some(chunk) = loaded.tie.chunks.iter().find(|chunk| chunk.vid == vid) {
                 fields.push(("recorded_at", Json::Int(i128::from(chunk.recorded_at.0))));
             }
@@ -994,7 +1333,7 @@ fn fields(book: &Book, loaded: &Loaded) -> Result<Vec<(&'static str, Json)>, Fai
         ("source_oid", s(hex(&loaded.package.source.0))),
         ("source_commit", s(hex(&loaded.package.source_commit))),
         ("format", s(format_name(loaded.batch.format))),
-        ("mode", s("OpeningOnly")),
+        ("mode", s(loaded.package.kind.mode_name())),
         ("opening_date", s(loaded.run.body.opening_date.render())),
         ("opening_period", s(&loaded.period)),
         ("row_count", Json::Int(loaded.batch.row_count as i128)),
@@ -1019,11 +1358,23 @@ fn review_text(book: &Book, loaded: &Loaded) -> Result<String, Fail> {
         .enumerate()
     {
         lines.push(format!(
-            "chunk {index}: proposal {}; effective {}; source date {}",
+            "chunk {index}: proposal {}; effective {}{}; source date {}",
             hex(&proposal
                 .proposal_digest()
                 .map_err(|error| invalid(error.to_string()))?),
             proposal.effective_date.render(),
+            if loaded.package.kind == PackageKind::PeriodBalances {
+                format!(
+                    " in {}",
+                    proposal
+                        .effective_period
+                        .as_ref()
+                        .ok_or_else(|| invalid("retained period proposal has no period"))?
+                        .code
+                )
+            } else {
+                String::new()
+            },
             source.effective_date.render()
         ));
         for (leg, source) in proposal.legs.iter().zip(&source.legs) {
@@ -1055,7 +1406,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let run = load_run(&book, request.run)?;
         let tie = book.migration_tie_out(&run, None)?;
         let source = full_document(&mut book, &cap, request.source)?;
-        let trial_balance = full_document(&mut book, &cap, run.body.trial_balance)?;
+        let trial_balances = trial_balance_documents(&mut book, &cap, &run)?;
         let batch = parse_source(&book, &mut request, &run, &source)?;
         let config = request.canonical_text();
         if config.len() > MAX_REQUEST_BYTES {
@@ -1080,17 +1431,21 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ));
             }
             let period = opening_period(&book, &run, true)?;
-            let proposals = batch.to_chunk_proposals_with_sealer(
+            let routes = source_routes(&book, &request, &run, &batch, &period)?;
+            let kind = PackageKind::for_run(&run)?;
+            let mut proposals = batch.to_chunk_proposals_with_sealer(
                 book.context(),
                 run.vid,
                 run.body.opening_date,
                 Some(&period),
                 cap.holder(),
                 request.source,
-                evidence(&source, &trial_balance),
+                evidence(&source, &trial_balances),
                 |text| book.seal_text(text).map_err(Fail::Book),
             )?;
+            route_proposals(kind, &mut proposals, &routes)?;
             let package = Package {
+                kind,
                 book_id: book.context().book_id,
                 run: run.vid,
                 run_body_digest: run.body.digest().map_err(BookError::Kernel)?,
@@ -1103,7 +1458,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let document = Document {
                 book_id: book.context().book_id,
                 kind,
-                mime: PACKAGE_MIME.into(),
+                mime: package.kind.mime().into(),
                 grade,
                 retrieved_by: cap.holder(),
                 bytes: package.encode()?,
@@ -1134,8 +1489,8 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         ctx.out.at_book(&book)?;
         ctx.out.event("migration_import_prepared", output, &format!(
-            "prepared {} exact opening chunks for `{}`; package D:{}; source ties to the declared trial balance; collect independent approvals for each proposal digest before staging\n{review}",
-            loaded.package.proposals.len(), loaded.run.body.run_key, hex(&added.oid.0),
+            "prepared {} exact {} chunks for `{}`; package D:{}; source ties to every declared trial balance; collect independent approvals for each proposal digest before staging\n{review}",
+            loaded.package.proposals.len(), loaded.package.kind.mode_name(), loaded.run.body.run_key, hex(&added.oid.0),
         ));
         return Ok(());
     }
@@ -1145,8 +1500,8 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ctx.out.at_book(&book)?;
         let review = review_text(&book, &loaded)?;
         ctx.out.event("migration_import_package", fields(&book, &loaded)?, &format!(
-            "legacy opening package D:{} for `{}`: {}/{} exact chunks staged; run {}; finalization remains an independently approved native transition\n{review}",
-            hex(&package_oid.0), loaded.run.body.run_key, loaded.tie.chunks.len(), loaded.package.proposals.len(), loaded.run.state.name(),
+            "legacy {} package D:{} for `{}`: {}/{} exact chunks staged; run {}; finalization remains an independently approved native transition\n{review}",
+            loaded.package.kind.mode_name(), hex(&package_oid.0), loaded.run.body.run_key, loaded.tie.chunks.len(), loaded.package.proposals.len(), loaded.run.state.name(),
         ));
         return Ok(());
     }
