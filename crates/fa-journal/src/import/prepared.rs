@@ -354,29 +354,6 @@ fn derivation_acyclic(graph: &BTreeMap<fa_model::Oid, Vec<fa_model::Oid>>) -> bo
     true
 }
 
-#[cfg(test)]
-mod derivation_tests {
-    use super::*;
-    use fa_model::Oid;
-
-    #[test]
-    fn derivation_dag_refuses_cycles_including_indirect_cycles() {
-        let a = Oid([1; 32]);
-        let b = Oid([2; 32]);
-        let c = Oid([3; 32]);
-        assert!(derivation_acyclic(&BTreeMap::from([
-            (a, vec![b]),
-            (b, vec![c])
-        ])));
-        assert!(!derivation_acyclic(&BTreeMap::from([(a, vec![a])])));
-        assert!(!derivation_acyclic(&BTreeMap::from([
-            (a, vec![b]),
-            (b, vec![c]),
-            (c, vec![a])
-        ])));
-    }
-}
-
 #[allow(clippy::large_enum_variant)]
 pub(super) enum Admission {
     AlreadyRecorded(ImportRecorded),
@@ -604,4 +581,27 @@ pub fn prepare_import<V: Vfs + Clone>(
         }
     };
     Ok(Ok(ImportPreparation::Ready(admitted.stage(db, batches)?)))
+}
+
+#[cfg(test)]
+mod derivation_tests {
+    use super::*;
+    use fa_model::Oid;
+
+    #[test]
+    fn derivation_dag_refuses_cycles_including_indirect_cycles() {
+        let a = Oid([1; 32]);
+        let b = Oid([2; 32]);
+        let c = Oid([3; 32]);
+        assert!(derivation_acyclic(&BTreeMap::from([
+            (a, vec![b]),
+            (b, vec![c])
+        ])));
+        assert!(!derivation_acyclic(&BTreeMap::from([(a, vec![a])])));
+        assert!(!derivation_acyclic(&BTreeMap::from([
+            (a, vec![b]),
+            (b, vec![c]),
+            (c, vec![a])
+        ])));
+    }
 }
