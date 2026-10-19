@@ -640,6 +640,7 @@ pub(crate) fn verify_close(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     })?;
     let verification =
         verification.ok_or_else(|| Fail::Internal("close verification is missing".into()))?;
+    ctx.out.known_at(verification.known_at);
     ctx.out.effective(format!("fiscal-year:{year}"));
     let fields = vec![
         ("fiscal_year", Json::Int(i128::from(year))),

@@ -8919,6 +8919,9 @@ fn year_end_close_fixture() -> (Harness, VId) {
     year_end_close_routes(&mut h, routes, b"close-routes");
     h.transition("FY2026-CLOSE", PeriodTransition::Open, b"open-closing")
         .unwrap();
+    let workpaper = h.document(21, HUMAN_UPLOAD, b"Reviewed fiscal-year closing workpaper");
+    h.add_document(&workpaper).unwrap();
+    h.evidence = vec![workpaper.evidence_ref(ROLE_SOURCE)];
     (h, equity)
 }
 

@@ -116,7 +116,7 @@ impl Fixture {
         let source = write(
             &dir,
             "source.txt",
-            "Underlying sales and expense records for the closing regression.",
+            "Reviewed workpaper documenting the sales, expenses and year-end closing computation.",
         );
         let document = ok(
             &book,
@@ -125,7 +125,7 @@ impl Fixture {
                 "add",
                 &source,
                 "--kind",
-                "Receipt",
+                "Workpaper",
                 "--grade",
                 "HumanUpload",
             ],
@@ -302,9 +302,16 @@ fn closing_binary_first_close_delta_reclose_zero_noop_and_exact_plan_retry() {
     let original_close_at = after.to_string();
     let historical = ok(
         &f.book,
-        &["verify", "close", "FY2026", "--as-known-at", &original_close_at],
+        &[
+            "verify",
+            "close",
+            "FY2026",
+            "--as-known-at",
+            &original_close_at,
+        ],
     );
     assert_eq!(integer(&historical, "known_at"), after);
+    assert_eq!(integer(get(&historical, "coordinate"), "known_at"), after);
     assert_eq!(get(&historical, "needs_reclose"), &Json::Bool(false));
     let (_, delta) = f.review("delta");
     assert_eq!(
