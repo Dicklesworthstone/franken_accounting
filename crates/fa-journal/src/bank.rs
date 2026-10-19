@@ -401,21 +401,11 @@ pub fn prepare_bank_match<V: Vfs + Clone>(
         cash_leg,
         wire::match_edge_props(&confirmation)?,
     );
-    if let Err(error) = txn.write(db, batch) {
-        txn.abort();
-        return match error {
-            WriteTxnError::Write(fgdb::WriteError::IdentitySpent { .. }) => Ok(Err(drift(
-                "a retired native line or cash-leg identity cannot be reused for confirmation",
-            ))),
-            other => Err(other.into()),
-        };
-    }
     let mut references = WriteBatch::new(relation::CITES);
     for target in confirmation.source_vertices() {
         references.add_edge(edge_id(relation::CITES, vid, target), vid, target, vec![]);
     }
     references.add_edge(edge_id(relation::CITES, claim, vid), claim, vid, vec![]);
-    txn.write(db, references)?;
     let mut membership = WriteBatch::new(relation::IN_BOOK);
     for source in [vid, claim] {
         membership.add_edge(
@@ -425,7 +415,17 @@ pub fn prepare_bank_match<V: Vfs + Clone>(
             vec![],
         );
     }
-    txn.write(db, membership)?;
+    // Stage every relation partition together so the unique line/leg claims
+    // and their strong references share one publication and witness set.
+    if let Err(error) = txn.write_ordered(db, vec![batch, references, membership]) {
+        txn.abort();
+        return match error {
+            WriteTxnError::Write(fgdb::WriteError::IdentitySpent { .. }) => Ok(Err(drift(
+                "a retired native line or cash-leg identity cannot be reused for confirmation",
+            ))),
+            other => Err(other.into()),
+        };
+    }
     Ok(Ok(BankMatchPreparation::Ready(Box::new(
         PreparedBankMatch { txn, confirmation },
     ))))

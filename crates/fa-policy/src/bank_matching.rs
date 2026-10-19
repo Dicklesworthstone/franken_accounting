@@ -28,7 +28,8 @@ pub enum ReconciliationError {
     },
     /// A match or decision card attempted to alter a committed amount.
     AmountModified {
-        entry_ref: EntryRef,
+        // Keep the uncommon diagnostic from enlarging every matching Result.
+        entry_ref: Box<EntryRef>,
         committed: Amount,
         proposed: Amount,
     },
@@ -438,7 +439,7 @@ pub fn verify_match_preserves_committed_amounts(
 ) -> Result<(), ReconciliationError> {
     if !amounts_preserved(&[entry.amount], &[proposed_amount], card) {
         return Err(ReconciliationError::AmountModified {
-            entry_ref: entry.entry_ref,
+            entry_ref: Box::new(entry.entry_ref),
             committed: entry.amount,
             proposed: proposed_amount,
         });

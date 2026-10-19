@@ -1667,32 +1667,47 @@ fn fields(book: &Book, loaded: &Loaded) -> Result<Vec<(&'static str, Json)>, Fai
                 ("leg_count", Json::Int(proposal.legs.len() as i128)),
                 ("legs", Json::Arr(legs)),
             ];
-            if let Some(date) = proposal.document_date {
-                fields.push(("document_date", s(date.render())));
-            }
-            if loaded.package.kind != PackageKind::OpeningOnly {
-                fields.push((
-                    "effective_period",
+            fields.push((
+                "document_date",
+                proposal
+                    .document_date
+                    .map_or(Json::Null, |date| s(date.render())),
+            ));
+            fields.push((
+                "effective_period",
+                if loaded.package.kind != PackageKind::OpeningOnly {
                     s(&proposal
                         .effective_period
                         .as_ref()
                         .ok_or_else(|| invalid("retained period proposal has no period"))?
-                        .code),
-                ));
-            }
-            if loaded.package.kind == PackageKind::FullDetail {
-                fields.push((
-                    "counts_after_finalize",
+                        .code)
+                } else {
+                    Json::Null
+                },
+            ));
+            fields.push((
+                "counts_after_finalize",
+                if loaded.package.kind == PackageKind::FullDetail {
                     Json::Bool(
                         loaded.run.state != RunState::Abandoned
                             && (loaded.run.body.sole_opening_source
                                 || proposal.effective_date >= loaded.run.body.opening_date),
-                    ),
-                ));
-            }
-            if let Some(chunk) = loaded.tie.chunks.iter().find(|chunk| chunk.vid == vid) {
-                fields.push(("recorded_at", Json::Int(i128::from(chunk.recorded_at.0))));
-            }
+                    )
+                } else {
+                    Json::Null
+                },
+            ));
+            fields.push((
+                "recorded_at",
+                loaded
+                    .tie
+                    .chunks
+                    .iter()
+                    .find(|chunk| chunk.vid == vid)
+                    .map_or(Json::Null, |chunk| {
+                        Json::Int(i128::from(chunk.recorded_at.0))
+                    }),
+            ));
             Ok(obj(fields))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
@@ -1718,12 +1733,14 @@ fn fields(book: &Book, loaded: &Loaded) -> Result<Vec<(&'static str, Json)>, Fai
         ("ties_out", Json::Bool(loaded.tie.mismatches.is_empty())),
         ("chunks", Json::Arr(chunks)),
     ];
-    if loaded.package.kind == PackageKind::FullDetail {
-        fields.push((
-            "sole_opening_source",
-            Json::Bool(loaded.run.body.sole_opening_source),
-        ));
-    }
+    fields.push((
+        "sole_opening_source",
+        if loaded.package.kind == PackageKind::FullDetail {
+            Json::Bool(loaded.run.body.sole_opening_source)
+        } else {
+            Json::Null
+        },
+    ));
     Ok(fields)
 }
 
@@ -1881,9 +1898,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )??;
         output.push(("recorded_at", Json::Int(i128::from(added.recorded_at.0))));
         output.push(("already_recorded", Json::Bool(added.already_recorded)));
-        if let Some(path) = args.flag("--plan-out") {
-            output.push(("plan", s(path)));
-        }
+        output.push(("plan", args.flag("--plan-out").map_or(Json::Null, s)));
         ctx.out.at_book(&book)?;
         ctx.out.event("migration_import_prepared", output, &format!(
             "prepared {} exact {} chunks for `{}`; package D:{}; source ties to every declared trial balance; collect independent approvals for each proposal digest before staging\n{review}",

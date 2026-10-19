@@ -544,12 +544,31 @@ impl Fixture {
 
     fn prepare(&self) -> Json {
         let path = self.file("import.json", &self.intent().render());
-        ok(
+        let prepared = ok(
             &self.book,
             &[
                 "migrate", "import", "--action", "prepare", "--intent", &path,
             ],
-        )
+        );
+        assert_eq!(data(&prepared).get("plan"), Some(&Json::Null));
+        if text(data(&prepared), "mode") != "FullDetail" {
+            assert_eq!(
+                data(&prepared).get("sole_opening_source"),
+                Some(&Json::Null)
+            );
+            for chunk in rows(data(&prepared), "chunks") {
+                assert_eq!(chunk.get("counts_after_finalize"), Some(&Json::Null));
+                if text(data(&prepared), "mode") == "OpeningOnly" {
+                    assert_eq!(chunk.get("effective_period"), Some(&Json::Null));
+                }
+            }
+        }
+        if integer(data(&prepared), "recorded_count") == 0 {
+            for chunk in rows(data(&prepared), "chunks") {
+                assert_eq!(chunk.get("recorded_at"), Some(&Json::Null));
+            }
+        }
+        prepared
     }
 
     fn approve(&self, digest: &str, principal: &str) -> String {
@@ -2201,6 +2220,12 @@ fn locked_opening_period_and_nonoverwriting_output_are_explicit_preparation_boun
         "preserve this unrelated file"
     );
     assert_eq!(head(&fixture.book), before);
+    let without_copy = fixture.prepare();
+    assert_eq!(
+        data(&without_copy).get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+    let before_copy = head(&fixture.book);
     let copy = fixture.dir.join("fresh.package").display().to_string();
     let prepared = ok(
         &fixture.book,
@@ -2216,6 +2241,14 @@ fn locked_opening_period_and_nonoverwriting_output_are_explicit_preparation_boun
         ],
     );
     assert_eq!(text(data(&prepared), "plan"), copy);
+    assert_eq!(
+        data(&prepared).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    for field in ["package_oid", "package_commit", "chunks", "recorded_at"] {
+        assert_eq!(data(&prepared).get(field), data(&without_copy).get(field));
+    }
+    assert_eq!(head(&fixture.book), before_copy);
     let raw = std::fs::read(&copy).unwrap();
     for private in [
         LEGACY_CASH,
@@ -2247,6 +2280,20 @@ fn locked_opening_period_and_nonoverwriting_output_are_explicit_preparation_boun
         hex(&document.doc_commit()),
         text(data(&prepared), "package_commit")
     );
+    drop(book);
+    let repeated_without_copy = fixture.prepare();
+    assert_eq!(
+        data(&repeated_without_copy).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    for field in ["package_oid", "package_commit", "chunks", "recorded_at"] {
+        assert_eq!(
+            data(&repeated_without_copy).get(field),
+            data(&prepared).get(field)
+        );
+    }
+    assert_eq!(std::fs::read(&copy).unwrap(), raw);
+    assert_eq!(head(&fixture.book), before_copy);
 }
 
 #[test]
