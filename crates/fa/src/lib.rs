@@ -128,11 +128,10 @@ pub use fa_journal::{
     EventRow, EvidenceExplanation, ExternalIdRow, InstantSelection, InstrumentRow, LegalEntityRow,
     LineageEdgeSummary, LineageEntrySummary, LineageReport, ManualAssertionSummary, NetPosition,
     NettingLaw, PartyRow, PeriodBalance, PeriodCheck, PeriodHistoryVerification,
-    PeriodTransitionRecord, PeriodVerification,
-    ReaControlRecorded, ReaSnapshot, RelatedPartyHit, RelationshipRow, ReviewedSummary,
-    RevocationRequest, Revoked, Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode,
-    RunState, ScheduleVerification, SupplementSummary, TieOut, TieOutLine, TrialBalanceLine,
-    UploadRequest,
+    PeriodTransitionRecord, PeriodVerification, ReaControlRecorded, ReaSnapshot, RelatedPartyHit,
+    RelationshipRow, ReviewedSummary, RevocationRequest, Revoked, Run, RunBody, RunChunk,
+    RunControlRequest, RunControlled, RunMode, RunState, ScheduleVerification, SupplementSummary,
+    TieOut, TieOutLine, TrialBalanceLine, UploadRequest,
 };
 pub use fa_model::{
     EventKind, EventResource, EventSpec, InstrumentKind, InstrumentSpec, PartyKind, PartySpec,

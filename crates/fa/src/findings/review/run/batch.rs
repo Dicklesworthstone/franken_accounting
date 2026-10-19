@@ -27,17 +27,23 @@ pub(in crate::findings::review) fn prepare(
 ) -> Result<PreparedReview, Refusal> {
     check_request(request)?;
     if history.finding.finding_vid != request.finding_vid {
-        return Err(invalid("review request does not name its verified observation"));
+        return Err(invalid(
+            "review request does not name its verified observation",
+        ));
     }
     if history.finding.producer == principal {
-        return Err(fa_journal::policy::refusal(&fa_policy::Denial::SelfApproval {
-            rule: "finding_reviewer excludes the procedure certificate producer".into(),
-            approver: principal,
-        }));
+        return Err(fa_journal::policy::refusal(
+            &fa_policy::Denial::SelfApproval {
+                rule: "finding_reviewer excludes the procedure certificate producer".into(),
+                approver: principal,
+            },
+        ));
     }
     let ordinal = match request.expected_previous {
         None => 0,
-        Some(previous) => history.reviews.iter()
+        Some(previous) => history
+            .reviews
+            .iter()
             .position(|review| review.review_vid == previous)
             .map(|index| index + 1)
             .ok_or_else(conflict)?,
@@ -45,9 +51,12 @@ pub(in crate::findings::review) fn prepare(
     let body = Body {
         book,
         certificate: history.finding.certificate_digest,
-        ordinal: u32::try_from(ordinal).map_err(|_| refused("review ordinal exceeds its wire range"))?,
+        ordinal: u32::try_from(ordinal)
+            .map_err(|_| refused("review ordinal exceeds its wire range"))?,
         principal,
-        capability: capability.commitment().map_err(|e| invalid(format!("review capability: {e}")))?,
+        capability: capability
+            .commitment()
+            .map_err(|e| invalid(format!("review capability: {e}")))?,
         request: request.clone(),
     };
     let bytes = body.encode()?;
@@ -64,11 +73,17 @@ pub(in crate::findings::review) fn prepare(
         if request.action == FindingReviewAction::Reopen && !dismissed
             || request.action == FindingReviewAction::Acknowledge && dismissed
         {
-            return Err(refused("only a dismissal can be reopened; acknowledging a dismissed finding requires explicit reopening first"));
+            return Err(refused(
+                "only a dismissal can be reopened; acknowledging a dismissed finding requires explicit reopening first",
+            ));
         }
         None
     };
-    Ok(PreparedReview { body, bytes, existing })
+    Ok(PreparedReview {
+        body,
+        bytes,
+        existing,
+    })
 }
 
 fn mixed_publication() -> Refusal {
@@ -96,13 +111,23 @@ pub(in crate::findings::review) async fn publish<V: Vfs + Clone, B: Vfs + Clone>
         return Ok(Err(r));
     }
     if prepared.is_empty() || prepared.len() > FindingRunReviewHistory::MAX_BATCH_DECISIONS {
-        return Ok(Err(refused("atomic review requires 1..=64 decisions; no partial publication")));
+        return Ok(Err(refused(
+            "atomic review requires 1..=64 decisions; no partial publication",
+        )));
     }
     let mut unique = BTreeSet::new();
-    if prepared.iter().any(|p| !unique.insert(p.body.request.finding_vid)) {
-        return Ok(Err(refused("atomic review repeats a finding; one explicit decision per occurrence is required")));
+    if prepared
+        .iter()
+        .any(|p| !unique.insert(p.body.request.finding_vid))
+    {
+        return Ok(Err(refused(
+            "atomic review repeats a finding; one explicit decision per occurrence is required",
+        )));
     }
-    let recorded: Vec<_> = prepared.iter().filter_map(|p| p.existing.as_ref()).collect();
+    let recorded: Vec<_> = prepared
+        .iter()
+        .filter_map(|p| p.existing.as_ref())
+        .collect();
     if let Some(first) = recorded.first() {
         if recorded.len() != prepared.len()
             || recorded.iter().any(|r| r.recorded_at != first.recorded_at)
@@ -112,9 +137,16 @@ pub(in crate::findings::review) async fn publish<V: Vfs + Clone, B: Vfs + Clone>
         return Ok(Ok(recorded.into_iter().cloned().collect()));
     }
     // Validate shared document references once, before any write is staged.
-    let evidence: Vec<_> = prepared.iter().flat_map(|p| &p.body.request.evidence)
-        .copied().collect::<BTreeSet<_>>().into_iter().collect();
-    if let Err(r) = book.query(cx, |db, context| check_evidence(db, context, &evidence, head, head))? {
+    let evidence: Vec<_> = prepared
+        .iter()
+        .flat_map(|p| &p.body.request.evidence)
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if let Err(r) = book.query(cx, |db, context| {
+        check_evidence(db, context, &evidence, head, head)
+    })? {
         return Ok(Err(r));
     }
     let mut txn = book.db.begin(&cx.txn()).map_err(KernelError::from)?;
@@ -126,7 +158,9 @@ pub(in crate::findings::review) async fn publish<V: Vfs + Clone, B: Vfs + Clone>
         txn.abort();
         return Ok(Err(fa_journal::policy::refusal(&d)));
     }
-    if let Err(r) = fa_journal::policy::capability_witness(&txn, &book.db, book.context(), capability)? {
+    if let Err(r) =
+        fa_journal::policy::capability_witness(&txn, &book.db, book.context(), capability)?
+    {
         txn.abort();
         return Ok(Err(r));
     }
@@ -139,19 +173,36 @@ pub(in crate::findings::review) async fn publish<V: Vfs + Clone, B: Vfs + Clone>
         cx.txn().checkpoint().map_err(BookError::Context)?;
         let body = &prepared.body;
         let id = body.id();
-        if txn.vertex(&book.db, id).map_err(KernelError::from)?.is_some() {
+        if txn
+            .vertex(&book.db, id)
+            .map_err(KernelError::from)?
+            .is_some()
+        {
             txn.abort();
             return Ok(Err(conflict()));
         }
         let mut props = vec![
-            (property::FA_PAYLOAD, scalar_bytes("review payload", prepared.bytes.clone())?),
-            (property::FA_DIGEST, scalar_bytes("review digest", decision_digest(&prepared.bytes).to_vec())?),
-            (property::BOOK_ID, scalar_bytes("review book", book.context().book_id.0.to_vec())?),
+            (
+                property::FA_PAYLOAD,
+                scalar_bytes("review payload", prepared.bytes.clone())?,
+            ),
+            (
+                property::FA_DIGEST,
+                scalar_bytes("review digest", decision_digest(&prepared.bytes).to_vec())?,
+            ),
+            (
+                property::BOOK_ID,
+                scalar_bytes("review book", book.context().book_id.0.to_vec())?,
+            ),
         ];
         props.sort_by_key(|(key, _)| key.0);
         resolved.create_vertex(id, vec![label::FINDING], props);
         for (kind, target) in links(body) {
-            if txn.vertex(&book.db, target).map_err(KernelError::from)?.is_none() {
+            if txn
+                .vertex(&book.db, target)
+                .map_err(KernelError::from)?
+                .is_none()
+            {
                 txn.abort();
                 return Ok(Err(invalid("review target is no longer retained")));
             }
@@ -167,8 +218,12 @@ pub(in crate::findings::review) async fn publish<V: Vfs + Clone, B: Vfs + Clone>
         }
     }
     let mut batches = vec![resolved];
-    if has_previous { batches.push(supersedes); }
-    if !evidence.is_empty() { batches.push(citations); }
+    if has_previous {
+        batches.push(supersedes);
+    }
+    if !evidence.is_empty() {
+        batches.push(citations);
+    }
     if let Err(e) = txn.write_ordered(&mut book.db, batches) {
         txn.abort();
         return refused_write(e);
@@ -204,30 +259,59 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(r));
         }
         if requests.is_empty() || requests.len() > FindingRunReviewHistory::MAX_BATCH_DECISIONS {
-            return Ok(Err(refused("atomic review requires 1..=64 decisions; no partial publication")));
+            return Ok(Err(refused(
+                "atomic review requires 1..=64 decisions; no partial publication",
+            )));
         }
         let mut selected = BTreeMap::new();
         for request in requests {
-            if let Err(r) = check_request(request) { return Ok(Err(r)); }
+            if let Err(r) = check_request(request) {
+                return Ok(Err(r));
+            }
             if selected.insert(request.finding_vid, request).is_some() {
-                return Ok(Err(refused("atomic review repeats a finding; one explicit decision per occurrence is required")));
+                return Ok(Err(refused(
+                    "atomic review repeats a finding; one explicit decision per occurrence is required",
+                )));
             }
         }
         // One source replay and one complete Finding-history scan for the run,
         // rather than one replay/scan for each selected occurrence.
-        let history = match self.finding_run_review_history(cx, principal, capability, certificate, None).await? {
-            Ok(history) => history, Err(r) => return Ok(Err(r)),
+        let history = match self
+            .finding_run_review_history(cx, principal, capability, certificate, None)
+            .await?
+        {
+            Ok(history) => history,
+            Err(r) => return Ok(Err(r)),
         };
         let mut prepared = Vec::with_capacity(requests.len());
         for occurrence in &history.histories {
-            let Some(request) = selected.remove(&occurrence.finding.finding_vid) else { continue; };
-            match prepare(self.context().book_id, principal, capability, occurrence, request) {
-                Ok(decision) => prepared.push(decision), Err(r) => return Ok(Err(r)),
+            let Some(request) = selected.remove(&occurrence.finding.finding_vid) else {
+                continue;
+            };
+            match prepare(
+                self.context().book_id,
+                principal,
+                capability,
+                occurrence,
+                request,
+            ) {
+                Ok(decision) => prepared.push(decision),
+                Err(r) => return Ok(Err(r)),
             }
         }
         if !selected.is_empty() {
-            return Ok(Err(refused("atomic review contains a finding outside the named complete run")));
+            return Ok(Err(refused(
+                "atomic review contains a finding outside the named complete run",
+            )));
         }
-        publish(self, cx, principal, capability, history.checked_through, prepared).await
+        publish(
+            self,
+            cx,
+            principal,
+            capability,
+            history.checked_through,
+            prepared,
+        )
+        .await
     }
 }

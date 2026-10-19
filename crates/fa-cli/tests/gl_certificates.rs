@@ -464,7 +464,12 @@ fn detail_replay_binds_the_independent_request_before_rendering_or_writing() {
     let absent_source = fixture.dir.join("must-not-read.certificate");
     let mut conflicting = replay_args.clone();
     conflicting[1] = absent_source.to_str().unwrap();
-    conflicting.extend(["--expect", "{}", "--output", refused_output.to_str().unwrap()]);
+    conflicting.extend([
+        "--expect",
+        "{}",
+        "--output",
+        refused_output.to_str().unwrap(),
+    ]);
     let (exit, refused, _) = run(&fixture.book, &conflicting);
     assert_eq!(exit, 2, "{refused:?}");
     assert_eq!(refused.len(), 1);
@@ -501,7 +506,11 @@ fn detail_replay_binds_the_independent_request_before_rendering_or_writing() {
     assert_eq!(exit, 8, "{refused:?}");
     assert_eq!(refused.len(), 1);
     assert!(!refused_output.exists());
-    assert_eq!(head(&fixture.book), after_correction, "all replays are reads");
+    assert_eq!(
+        head(&fixture.book),
+        after_correction,
+        "all replays are reads"
+    );
 }
 
 #[test]

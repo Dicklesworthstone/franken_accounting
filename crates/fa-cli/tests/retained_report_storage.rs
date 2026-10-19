@@ -892,10 +892,12 @@ fn gl_families_certify_retain_and_replay_their_complete_original_artifacts() {
                     *value = s("HEAD");
                 }
             }
-            let (code, errors) = f.run(&[
-                "replay", &locator, "--expect", &floating_prefix.render(),
-            ]);
-            assert_eq!(code, 2, "HEAD must never replace the fixed expected prefix: {errors:?}");
+            let (code, errors) =
+                f.run(&["replay", &locator, "--expect", &floating_prefix.render()]);
+            assert_eq!(
+                code, 2,
+                "HEAD must never replace the fixed expected prefix: {errors:?}"
+            );
             if let Some(policy) = expected.as_ref().and_then(|doc| doc.get("policy")) {
                 let mut unknown_policy = expected.clone().unwrap();
                 let Json::Obj(fields) = &mut unknown_policy else {
@@ -910,10 +912,12 @@ fn gl_families_certify_retain_and_replay_their_complete_original_artifacts() {
                         *value = Json::Obj(policy_fields.clone());
                     }
                 }
-                let (code, errors) = f.run(&[
-                    "replay", &locator, "--expect", &unknown_policy.render(),
-                ]);
-                assert_eq!(code, 2, "unknown policy inputs must not be silently discarded: {errors:?}");
+                let (code, errors) =
+                    f.run(&["replay", &locator, "--expect", &unknown_policy.render()]);
+                assert_eq!(
+                    code, 2,
+                    "unknown policy inputs must not be silently discarded: {errors:?}"
+                );
             }
         }
         retained.push((locator, bytes, artifact.output().to_vec(), expectation));
@@ -990,8 +994,14 @@ fn gl_certification_refuses_missing_produce_authority_and_unsupported_lot_certif
         ];
         let (code, captured) = cli::run(
             &argv,
-            Books::Held { book: &mut book, dir: f.dir.clone() },
-            Files { cwd: None, stdin: Stdin::Forwarded(Vec::new()) },
+            Books::Held {
+                book: &mut book,
+                dir: f.dir.clone(),
+            },
+            Files {
+                cwd: None,
+                stdin: Stdin::Forwarded(Vec::new()),
+            },
             true,
         );
         assert_eq!(code, 2, "{}{}", captured.stdout, captured.stderr);
@@ -1140,8 +1150,11 @@ fn cash_flow_policy_typos_refuse_before_retention_and_optional_defaults_still_wo
     let direct_only_violation = add_field(&direct, "cash_policy", s("indirect-only"));
     let indirect_typo = add_field(&indirect, "classification_override", Json::Bool(true));
     let mut mistyped_assignments = assignments;
-    mistyped_assignments[0] =
-        add_field(&mistyped_assignments[0], "activity_override", s("investing"));
+    mistyped_assignments[0] = add_field(
+        &mistyped_assignments[0],
+        "activity_override",
+        s("investing"),
+    );
     let assignment_typo = obj(vec![("assignments", Json::Arr(mistyped_assignments))]);
     let mut mistyped_adjustments = adjustments;
     mistyped_adjustments[0] = add_field(

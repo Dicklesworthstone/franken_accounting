@@ -25,8 +25,11 @@ pub struct FindingRunCursor {
 impl FindingRunCursor {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
         let mut w = Writer::new();
-        w.fixed(CURSOR_FORMAT).fixed(&self.book.0).u64(self.known_at.0)
-            .u128(self.after.0).fixed(&self.inventory_digest);
+        w.fixed(CURSOR_FORMAT)
+            .fixed(&self.book.0)
+            .u64(self.known_at.0)
+            .u128(self.after.0)
+            .fixed(&self.inventory_digest);
         encoded(w)
     }
 
@@ -36,7 +39,8 @@ impl FindingRunCursor {
         if bytes.len() != CURSOR_FORMAT.len() + 16 + 8 + 16 + 32 {
             return Err(invalid("finding-run cursor has an invalid fixed length"));
         }
-        let bytes = bytes.strip_prefix(CURSOR_FORMAT)
+        let bytes = bytes
+            .strip_prefix(CURSOR_FORMAT)
             .ok_or_else(|| invalid("unsupported finding-run cursor format"))?;
         let fail = |e| invalid(format!("finding-run cursor: {e}"));
         let mut r = Reader::new(bytes);
@@ -51,7 +55,9 @@ impl FindingRunCursor {
     }
 
     #[must_use]
-    pub fn known_at(&self) -> CommitSeq { self.known_at }
+    pub fn known_at(&self) -> CommitSeq {
+        self.known_at
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +70,13 @@ pub struct FindingRunPageRequest {
 }
 
 impl Default for FindingRunPageRequest {
-    fn default() -> Self { Self { known_at: None, after: None, limit: 16 } }
+    fn default() -> Self {
+        Self {
+            known_at: None,
+            after: None,
+            limit: 16,
+        }
+    }
 }
 
 /// Bounded metadata from the fully replayed original run. No current human
@@ -113,7 +125,8 @@ fn manifest(payload: &[u8], book: Id128, id: VId, born: CommitSeq) -> Result<Man
     if payload.len() != FINDING_RUN_FORMAT.len() + 16 + 32 + 4 + 32 {
         return Err(invalid("finding run manifest has an invalid fixed length"));
     }
-    let bytes = payload.strip_prefix(FINDING_RUN_FORMAT)
+    let bytes = payload
+        .strip_prefix(FINDING_RUN_FORMAT)
         .ok_or_else(|| invalid("unsupported finding run manifest"))?;
     let fail = |e| invalid(format!("finding run manifest: {e}"));
     let mut r = Reader::new(bytes);
@@ -122,12 +135,22 @@ fn manifest(payload: &[u8], book: Id128, id: VId, born: CommitSeq) -> Result<Man
     let count = r.u32("run count").map_err(fail)?;
     let findings_digest = r.fixed("run findings digest").map_err(fail)?;
     r.finish().map_err(fail)?;
-    if book != source_book || count as usize > MAX_RECORDED_FINDINGS
+    if book != source_book
+        || count as usize > MAX_RECORDED_FINDINGS
         || finding_run_vid(book, &certificate) != id
     {
-        return Err(invalid("finding run manifest has a different book, identity or unsupported size"));
+        return Err(invalid(
+            "finding run manifest has a different book, identity or unsupported size",
+        ));
     }
-    Ok(Manifest { id, certificate, born, count, findings_digest, seen: BTreeSet::new() })
+    Ok(Manifest {
+        id,
+        certificate,
+        born,
+        count,
+        findings_digest,
+        seen: BTreeSet::new(),
+    })
 }
 
 struct Catalog {
@@ -141,72 +164,121 @@ struct Catalog {
 /// every occurrence's same-birth membership. Orphans and unknown formats refuse
 /// even when they would have fallen outside the requested result page.
 fn catalog<V: Vfs + Clone>(
-    db: &Database<V>, cx: &PurposeContexts, book: &BookContext, at: CommitSeq,
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    at: CommitSeq,
 ) -> Outcome<Catalog> {
     let head = db.frontier().map_err(KernelError::from)?;
-    if at > head { return Ok(Err(invalid("finding inventory cutoff exceeds the native frontier"))); }
+    if at > head {
+        return Ok(Err(invalid(
+            "finding inventory cutoff exceeds the native frontier",
+        )));
+    }
     let births = fa_journal::finding_history::finding_births(db, cx, head)?;
     let mut roots = BTreeMap::new();
     let mut occurrences = Vec::new();
     for (id, born) in births {
         cx.query().checkpoint().map_err(BookError::Context)?;
-        let row = db.vertex_at(id, born).map_err(KernelError::from)?
-            .ok_or_else(|| BookError::Kernel(KernelError::Corrupt("missing Finding birth row".into())))?;
+        let row = db
+            .vertex_at(id, born)
+            .map_err(KernelError::from)?
+            .ok_or_else(|| {
+                BookError::Kernel(KernelError::Corrupt("missing Finding birth row".into()))
+            })?;
         let Some(CanonicalScalar::Bytes(payload)) = prop(&row, property::FA_PAYLOAD) else {
-            return Ok(Err(invalid("Finding inventory member lacks a canonical payload")));
+            return Ok(Err(invalid(
+                "Finding inventory member lacks a canonical payload",
+            )));
         };
         if row.props.len() != 3
             || !matches!(prop(&row, property::BOOK_ID), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == book.book_id.0)
         {
-            return Ok(Err(invalid("Finding inventory member has invalid book or properties")));
+            return Ok(Err(invalid(
+                "Finding inventory member has invalid book or properties",
+            )));
         }
         // Reviews are separate records, never another analytic run. Review
         // policy and evidence are deliberately not represented by this API.
-        if payload.as_slice().starts_with(review::FINDING_REVIEW_FORMAT) { continue; }
-        if !matches!(prop(&row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == domain_digest(b"fa:finding-record-digest:v1", &[payload.as_slice()])) {
-            return Ok(Err(invalid("Finding inventory member digest differs from its body")));
+        if payload
+            .as_slice()
+            .starts_with(review::FINDING_REVIEW_FORMAT)
+        {
+            continue;
+        }
+        if !matches!(prop(&row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == domain_digest(b"fa:finding-record-digest:v1", &[payload.as_slice()]))
+        {
+            return Ok(Err(invalid(
+                "Finding inventory member digest differs from its body",
+            )));
         }
         if payload.as_slice().starts_with(FINDING_RUN_FORMAT) {
             let manifest = match manifest(payload.as_slice(), book.book_id, id, born) {
-                Ok(m) => m, Err(r) => return Ok(Err(r)),
+                Ok(m) => m,
+                Err(r) => return Ok(Err(r)),
             };
             if roots.insert(manifest.certificate, manifest).is_some() {
-                return Ok(Err(invalid("Finding inventory repeats a certificate publication")));
+                return Ok(Err(invalid(
+                    "Finding inventory repeats a certificate publication",
+                )));
             }
         } else if payload.as_slice().starts_with(FINDING_RECORD_FORMAT) {
             let (certificate, ordinal) = match locator(payload.as_slice(), book.book_id, id) {
-                Ok(p) => p, Err(r) => return Ok(Err(r)),
+                Ok(p) => p,
+                Err(r) => return Ok(Err(r)),
             };
             occurrences.push((certificate, ordinal, born));
         } else {
-            return Ok(Err(invalid("unsupported Finding-family inventory format; refusing incomplete discovery")));
+            return Ok(Err(invalid(
+                "unsupported Finding-family inventory format; refusing incomplete discovery",
+            )));
         }
     }
     for (certificate, ordinal, born) in occurrences {
         let Some(run) = roots.get_mut(&certificate) else {
-            return Ok(Err(invalid("Finding inventory has an occurrence without its complete run")));
+            return Ok(Err(invalid(
+                "Finding inventory has an occurrence without its complete run",
+            )));
         };
         if born != run.born || ordinal >= run.count || !run.seen.insert(ordinal) {
-            return Ok(Err(invalid("Finding inventory occurrence membership or publication differs")));
+            return Ok(Err(invalid(
+                "Finding inventory occurrence membership or publication differs",
+            )));
         }
     }
     let mut manifests = Vec::new();
     for (_, run) in roots {
         if run.seen.len() != run.count as usize {
-            return Ok(Err(invalid("Finding inventory run has missing occurrences; no partial page")));
+            return Ok(Err(invalid(
+                "Finding inventory run has missing occurrences; no partial page",
+            )));
         }
-        if run.born <= at { manifests.push(run); }
+        if run.born <= at {
+            manifests.push(run);
+        }
     }
     manifests.sort_by_key(|run| (run.born, run.id));
     let mut identity = Writer::new();
     identity.fixed(&book.book_id.0).u64(at.0);
     for run in &manifests {
-        identity.u128(run.id.0).fixed(&run.certificate).u64(run.born.0)
-            .u32(run.count).fixed(&run.findings_digest);
+        identity
+            .u128(run.id.0)
+            .fixed(&run.certificate)
+            .u64(run.born.0)
+            .u32(run.count)
+            .fixed(&run.findings_digest);
     }
-    let bytes = match encoded(identity) { Ok(b) => b, Err(r) => return Ok(Err(r)) };
+    let bytes = match encoded(identity) {
+        Ok(b) => b,
+        Err(r) => return Ok(Err(r)),
+    };
     let digest = domain_digest(b"fa:finding-inventory:v1", &[&bytes]);
-    Ok(Ok(Catalog { through: head, selected: at, digest, manifests }))
+    Ok(Ok(Catalog {
+        through: head,
+        selected: at,
+        digest,
+        manifests,
+    }))
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
@@ -222,67 +294,115 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: &FindingRunPageRequest,
     ) -> Outcome<FindingRunPage> {
-        if let Err(r) = authorize(self, cx, principal, capability, false)? { return Ok(Err(r)); }
+        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+            return Ok(Err(r));
+        }
         if request.limit == 0 || request.limit > MAX_FINDING_RUN_PAGE {
-            return Ok(Err(invalid("finding inventory page size must be in 1..=32")));
+            return Ok(Err(invalid(
+                "finding inventory page size must be in 1..=32",
+            )));
         }
         let head = self.head(cx)?;
         let at = if let Some(cursor) = &request.after {
             if cursor.book != self.context().book_id
                 || request.known_at.is_some_and(|at| at != cursor.known_at)
             {
-                return Ok(Err(invalid("finding inventory continuation has a different book or cutoff")));
+                return Ok(Err(invalid(
+                    "finding inventory continuation has a different book or cutoff",
+                )));
             }
             cursor.known_at
-        } else { request.known_at.unwrap_or(head) };
-        if let Err(r) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? { return Ok(Err(r)); }
+        } else {
+            request.known_at.unwrap_or(head)
+        };
+        if let Err(r) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(r));
+        }
         let catalog = match self.query(cx, |db, book| catalog(db, cx, book, at))? {
-            Ok(c) => c, Err(r) => return Ok(Err(r)),
+            Ok(c) => c,
+            Err(r) => return Ok(Err(r)),
         };
         let start = if let Some(cursor) = &request.after {
             if cursor.inventory_digest != catalog.digest {
-                return Ok(Err(invalid("finding inventory continuation does not match its complete native manifest")));
+                return Ok(Err(invalid(
+                    "finding inventory continuation does not match its complete native manifest",
+                )));
             }
             match catalog.manifests.iter().position(|m| m.id == cursor.after) {
                 Some(index) => index + 1,
-                None => return Ok(Err(invalid("finding inventory continuation anchor is absent"))),
+                None => {
+                    return Ok(Err(invalid(
+                        "finding inventory continuation anchor is absent",
+                    )));
+                }
             }
-        } else { 0 };
-        let end = start.saturating_add(request.limit).min(catalog.manifests.len());
+        } else {
+            0
+        };
+        let end = start
+            .saturating_add(request.limit)
+            .min(catalog.manifests.len());
         let mut runs = Vec::with_capacity(end - start);
         for manifest in &catalog.manifests[start..end] {
             cx.query().checkpoint().map_err(BookError::Context)?;
-            let run = match self.read_findings(cx, principal, capability, &manifest.certificate).await? {
-                Ok(r) => r, Err(r) => return Ok(Err(r)),
+            let run = match self
+                .read_findings(cx, principal, capability, &manifest.certificate)
+                .await?
+            {
+                Ok(r) => r,
+                Err(r) => return Ok(Err(r)),
             };
-            if run.run_vid != manifest.id || run.recorded_at != manifest.born
+            if run.run_vid != manifest.id
+                || run.recorded_at != manifest.born
                 || run.finding_ids.len() != manifest.count as usize
                 || run.report.findings_digest != manifest.findings_digest
             {
-                return Ok(Err(invalid("discovered Finding manifest differs from native certificate replay")));
+                return Ok(Err(invalid(
+                    "discovered Finding manifest differs from native certificate replay",
+                )));
             }
             runs.push(FindingRunSummary {
-                run_vid: run.run_vid, certificate_digest: run.certificate_digest,
-                recorded_at: run.recorded_at, producer: run.producer,
-                coordinate: run.report.coordinate, procedure: run.report.procedure,
-                version: run.report.version, finding_count: manifest.count,
+                run_vid: run.run_vid,
+                certificate_digest: run.certificate_digest,
+                recorded_at: run.recorded_at,
+                producer: run.producer,
+                coordinate: run.report.coordinate,
+                procedure: run.report.procedure,
+                version: run.report.version,
+                finding_count: manifest.count,
                 findings_digest: run.report.findings_digest,
             });
         }
         if self.head(cx)? != catalog.through {
-            return Ok(Err(Refusal::new(fa_journal::refusal::code::CONFLICT, exit::CONFLICT,
-                "book changed during finding inventory replay", "FA-INV-10/11",
-                "retry the same fixed-frontier inventory request")));
+            return Ok(Err(Refusal::new(
+                fa_journal::refusal::code::CONFLICT,
+                exit::CONFLICT,
+                "book changed during finding inventory replay",
+                "FA-INV-10/11",
+                "retry the same fixed-frontier inventory request",
+            )));
         }
-        if let Err(r) = authorize(self, cx, principal, capability, false)? { return Ok(Err(r)); }
+        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+            return Ok(Err(r));
+        }
         let next_cursor = if end < catalog.manifests.len() {
-            Some(FindingRunCursor { book: self.context().book_id, known_at: catalog.selected,
-                after: catalog.manifests[end - 1].id, inventory_digest: catalog.digest })
-        } else { None };
+            Some(FindingRunCursor {
+                book: self.context().book_id,
+                known_at: catalog.selected,
+                after: catalog.manifests[end - 1].id,
+                inventory_digest: catalog.digest,
+            })
+        } else {
+            None
+        };
         Ok(Ok(FindingRunPage {
-            book_id: self.context().book_id, known_at: catalog.selected,
-            checked_through: catalog.through, inventory_digest: catalog.digest,
-            total_recorded_runs: catalog.manifests.len() as u32, runs, next_cursor,
+            book_id: self.context().book_id,
+            known_at: catalog.selected,
+            checked_through: catalog.through,
+            inventory_digest: catalog.digest,
+            total_recorded_runs: catalog.manifests.len() as u32,
+            runs,
+            next_cursor,
         }))
     }
 }

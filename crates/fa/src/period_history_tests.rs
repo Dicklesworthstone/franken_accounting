@@ -64,7 +64,11 @@ impl Harness {
                 Entropy::deterministic(147),
             ))
             .unwrap();
-        Self { runtime, root, book }
+        Self {
+            runtime,
+            root,
+            book,
+        }
     }
 
     fn cx(&self) -> PurposeContexts {
@@ -78,7 +82,10 @@ impl Harness {
     fn create(&mut self, year: i32) -> (CommitSeq, Vec<PeriodDef>) {
         let cx = self.cx();
         self.runtime
-            .block_on(self.book.create_periods(&cx, year, PRINCIPAL, &cap(&["schema_change"])))
+            .block_on(
+                self.book
+                    .create_periods(&cx, year, PRINCIPAL, &cap(&["schema_change"])),
+            )
             .unwrap()
             .unwrap()
     }
@@ -89,12 +96,10 @@ impl Harness {
         known_at: Option<CommitSeq>,
     ) -> Outcome<PeriodHistoryVerification> {
         let cx = self.cx();
-        self.runtime.block_on(self.book.verify_periods_with_history(
-            &cx,
-            PRINCIPAL,
-            capability,
-            known_at,
-        ))
+        self.runtime.block_on(
+            self.book
+                .verify_periods_with_history(&cx, PRINCIPAL, capability, known_at),
+        )
     }
 
     fn mutate(&mut self, batch: WriteBatch) -> CommitSeq {
@@ -135,7 +140,9 @@ impl Harness {
                 let mut payload = bytes(&row, property::FA_PAYLOAD, "book fixture").unwrap();
                 payload[..2].copy_from_slice(&1_u16.to_le_bytes());
                 BookSpec::decode(&payload).unwrap();
-                let value = row.props.iter_mut()
+                let value = row
+                    .props
+                    .iter_mut()
                     .find(|(key, _)| *key == property::FA_PAYLOAD)
                     .unwrap();
                 value.1 = scalar_bytes("legacy book", payload).unwrap();
@@ -146,13 +153,16 @@ impl Harness {
             assert_eq!(edge.entry.relation, relation::IN_BOOK);
             genesis.add_edge(edge.entry.eid, edge.entry.src, edge.entry.dst, edge.props);
         }
-        let mut legacy = self.runtime
+        let mut legacy = self
+            .runtime
             .block_on(Database::open_memory(
                 &cx.commit(),
                 BookKeys::for_development(147).inner,
             ))
             .unwrap();
-        self.runtime.block_on(legacy.write(&cx.commit(), genesis)).unwrap();
+        self.runtime
+            .block_on(legacy.write(&cx.commit(), genesis))
+            .unwrap();
         self.book.db = legacy;
         self.projection_only_year(year)
     }
@@ -169,20 +179,46 @@ impl Harness {
                 PeriodKind::Historical => 4,
             };
             let mut props = vec![
-                (property::BOOK_ID, scalar_bytes("book_id", spec().book_id.0.to_vec()).unwrap()),
-                (property::CALENDAR_ID, scalar_text("calendar_id", &spec().calendar.id).unwrap()),
+                (
+                    property::BOOK_ID,
+                    scalar_bytes("book_id", spec().book_id.0.to_vec()).unwrap(),
+                ),
+                (
+                    property::CALENDAR_ID,
+                    scalar_text("calendar_id", &spec().calendar.id).unwrap(),
+                ),
                 (property::CODE, scalar_text("code", &period.code).unwrap()),
-                (property::FISCAL_YEAR, CanonicalScalar::Int(i64::from(period.fiscal_year))),
-                (property::ORDINAL, CanonicalScalar::Int(i64::from(period.ordinal))),
+                (
+                    property::FISCAL_YEAR,
+                    CanonicalScalar::Int(i64::from(period.fiscal_year)),
+                ),
+                (
+                    property::ORDINAL,
+                    CanonicalScalar::Int(i64::from(period.ordinal)),
+                ),
                 (property::PERIOD_KIND, CanonicalScalar::Int(kind)),
-                (property::PERIOD_START, CanonicalScalar::Int(i64::from(period.start.0))),
-                (property::PERIOD_END, CanonicalScalar::Int(i64::from(period.end.0))),
-                (property::STATE, CanonicalScalar::Int(i64::from(state.tag()))),
+                (
+                    property::PERIOD_START,
+                    CanonicalScalar::Int(i64::from(period.start.0)),
+                ),
+                (
+                    property::PERIOD_END,
+                    CanonicalScalar::Int(i64::from(period.end.0)),
+                ),
+                (
+                    property::STATE,
+                    CanonicalScalar::Int(i64::from(state.tag())),
+                ),
             ];
             props.sort_by_key(|(key, _)| key.0);
             let vid = period_vid(&spec().calendar.id, &period.code);
             batch.create_vertex(vid, vec![label::PERIOD], props);
-            batch.add_edge(edge_id(relation::IN_BOOK, vid, book_root()), vid, book_root(), vec![]);
+            batch.add_edge(
+                edge_id(relation::IN_BOOK, vid, book_root()),
+                vid,
+                book_root(),
+                vec![],
+            );
         }
         let sequence = self.mutate(batch);
         (sequence, declaration.definitions())
@@ -209,12 +245,8 @@ fn complete_period_history_counts_one_prefix_and_admits_read_only_agents() {
         .unwrap();
     let head = h.head();
     let before_root = h.book.db.partition_root().unwrap();
-    let agent = Capability::new(
-        PRINCIPAL,
-        Profile::Agent,
-        &[Op::Read, Op::Verify],
-        VId(99),
-    ).unwrap();
+    let agent =
+        Capability::new(PRINCIPAL, Profile::Agent, &[Op::Read, Op::Verify], VId(99)).unwrap();
     let current = h.verify(&agent, None).unwrap().unwrap();
     assert!(current.is_green(), "{:?}", current.periods.drift);
     assert_eq!(current.history.known_at, head);
@@ -246,7 +278,10 @@ fn retired_year_and_birth_control_fail_complete_history_but_old_prefix_stays_val
         h.verify(&verifier(), None),
         Err(BookError::Kernel(KernelError::Corrupt(_)))
     ));
-    assert_eq!(h.verify(&verifier(), Some(birth)).unwrap().unwrap(), original);
+    assert_eq!(
+        h.verify(&verifier(), Some(birth)).unwrap().unwrap(),
+        original
+    );
     assert_eq!(h.head(), head);
     assert_eq!(h.book.db.partition_root().unwrap(), root);
 }
@@ -271,8 +306,14 @@ fn genuine_legacy_baseline_is_valid_but_losing_its_sole_cutover_control_is_not()
             h.verify(&verifier(), None),
             Err(BookError::Kernel(KernelError::Corrupt(_)))
         ));
-        assert_eq!(h.verify(&verifier(), Some(cutover)).unwrap().unwrap(), mixed);
-        assert_eq!(h.verify(&verifier(), Some(legacy_at)).unwrap().unwrap(), legacy);
+        assert_eq!(
+            h.verify(&verifier(), Some(cutover)).unwrap().unwrap(),
+            mixed
+        );
+        assert_eq!(
+            h.verify(&verifier(), Some(legacy_at)).unwrap().unwrap(),
+            legacy
+        );
     }
 }
 
@@ -345,7 +386,12 @@ fn disk_checkpoint_reopen_loads_history_only_after_current_whole_book_admission(
     let keys = BookKeys::for_development(148);
     let mut book = runtime
         .block_on(AsyncBook::create_with_vfs(
-            &cx, UnixVfs, &directory, keys.clone(), spec(), Entropy::deterministic(148),
+            &cx,
+            UnixVfs,
+            &directory,
+            keys.clone(),
+            spec(),
+            Entropy::deterministic(148),
         ))
         .unwrap();
     let (birth, _) = runtime
@@ -356,7 +402,11 @@ fn disk_checkpoint_reopen_loads_history_only_after_current_whole_book_admission(
     drop(book);
     let mut book = runtime
         .block_on(AsyncBook::open_with_vfs(
-            &cx, UnixVfs, &directory, keys, Entropy::deterministic(149),
+            &cx,
+            UnixVfs,
+            &directory,
+            keys,
+            Entropy::deterministic(149),
         ))
         .unwrap();
     assert!(matches!(
@@ -379,10 +429,13 @@ fn disk_checkpoint_reopen_loads_history_only_after_current_whole_book_admission(
             .unwrap()
             .unwrap_err();
         assert_eq!(refusal.exit, fa_journal::exit::SAFETY);
-        assert!(matches!(
-            book.db.delta_since(CommitSeq(0)),
-            Err(ReadError::DeltaCursorRetired { retained_after, .. }) if retained_after == birth
-        ), "denied authority must not load native history");
+        assert!(
+            matches!(
+                book.db.delta_since(CommitSeq(0)),
+                Err(ReadError::DeltaCursorRetired { retained_after, .. }) if retained_after == birth
+            ),
+            "denied authority must not load native history"
+        );
     }
     let verified = runtime
         .block_on(book.verify_periods_with_history(&cx, PRINCIPAL, &verifier(), Some(birth)))
@@ -424,7 +477,10 @@ fn rewritten_v2_book_header_cannot_manufacture_legacy_period_eligibility() {
         h.verify(&verifier(), None),
         Err(BookError::Kernel(KernelError::Corrupt(_)))
     ));
-    assert_eq!(h.verify(&verifier(), Some(clean)).unwrap().unwrap(), original);
+    assert_eq!(
+        h.verify(&verifier(), Some(clean)).unwrap().unwrap(),
+        original
+    );
     assert_eq!(h.head(), damaged_at);
     assert_eq!(h.book.db.partition_root().unwrap(), damaged_root);
 }

@@ -1260,7 +1260,10 @@ pub fn parse_mt940(text: &str, units: &UnitCatalog) -> Result<BankStatementExtra
     }
 }
 
-fn parse_mt940_legacy(text: &str, units: &UnitCatalog) -> Result<BankStatementExtract, FormatError> {
+fn parse_mt940_legacy(
+    text: &str,
+    units: &UnitCatalog,
+) -> Result<BankStatementExtract, FormatError> {
     const FMT: &str = "swift_mt940";
     let mut instrument_id = String::new();
     let mut seq = 1u64;
@@ -1484,9 +1487,8 @@ fn parse_mt940_standard(
     let mut sequence_parts = sequence.split('/');
     let number = sequence_parts.next().unwrap_or("");
     let part = sequence_parts.next();
-    let valid_number = |value: &str| {
-        (1..=5).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_digit())
-    };
+    let valid_number =
+        |value: &str| (1..=5).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_digit());
     if !valid_number(number)
         || part.is_some_and(|value| !valid_number(value) || value.parse::<u64>() != Ok(1))
         || sequence_parts.next().is_some()
@@ -1599,7 +1601,10 @@ fn mt940_date(raw: &str) -> Result<DateDay, FormatError> {
     if raw.len() != 6 || !raw.bytes().all(|b| b.is_ascii_digit()) {
         return Err(camt_error(FMT, "MT940 requires a six-digit YYMMDD date"));
     }
-    parse_date_iso(FMT, &format!("20{}-{}-{}", &raw[..2], &raw[2..4], &raw[4..]))
+    parse_date_iso(
+        FMT,
+        &format!("20{}-{}-{}", &raw[..2], &raw[2..4], &raw[4..]),
+    )
 }
 
 fn mt940_entry_date(
@@ -2296,7 +2301,10 @@ Invoice 100
         assert_eq!(statement.lines[0].booking_date.render(), "2026-01-01");
         assert_eq!(statement.lines[0].value_date.render(), "2026-01-02");
         assert_eq!(statement.lines[0].reference, "INV-100//BANK-001");
-        assert_eq!(statement.lines[0].counterparty, "Acme Customer\nInvoice 100");
+        assert_eq!(
+            statement.lines[0].counterparty,
+            "Acme Customer\nInvoice 100"
+        );
         assert_eq!(
             statement
                 .lines
@@ -2438,6 +2446,9 @@ Invoice 100
         assert_eq!(statement.lines.len(), 6);
         assert_eq!(statement.lines[4].line_ordinal, 5);
         assert_eq!(statement.lines[5].line_ordinal, 6);
-        assert_ne!(statement.lines[4].line_digest, statement.lines[5].line_digest);
+        assert_ne!(
+            statement.lines[4].line_digest,
+            statement.lines[5].line_digest
+        );
     }
 }

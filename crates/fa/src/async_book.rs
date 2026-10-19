@@ -279,8 +279,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 capability,
                 &fa_policy::Reach {
                     branch: Some(fa_model::Id128::TRUNK),
-                    observes: known_at
-                        .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                    observes: known_at.map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
                     periods: None,
                     through: None,
                     accounts: None,

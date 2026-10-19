@@ -6,7 +6,10 @@ use fa_lantern::{Coordinate, Finding};
 use fa_model::Reader;
 
 mod inventory;
-pub use inventory::{FindingRunCursor, FindingRunPage, FindingRunPageRequest, FindingRunSummary, MAX_FINDING_RUN_PAGE};
+pub use inventory::{
+    FindingRunCursor, FindingRunPage, FindingRunPageRequest, FindingRunSummary,
+    MAX_FINDING_RUN_PAGE,
+};
 
 /// A single occurrence, with its original certified coordinate and publication.
 /// The entire source run and required graph edges were checked before selection.

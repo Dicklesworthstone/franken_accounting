@@ -411,9 +411,11 @@ fn emit_certificate(
                 .map(|path| format!(" {flag} {}", quoted_word(path)))
         })
         .collect();
-    let expectation = presentation.replay_expectation.map_or_else(String::new, |expected| {
-        format!(" --expect {}", quoted_word(expected))
-    });
+    let expectation = presentation
+        .replay_expectation
+        .map_or_else(String::new, |expected| {
+            format!(" --expect {}", quoted_word(expected))
+        });
     let options = presentation.replay_options.unwrap_or("");
     let command = format!("fa replay C:{digest}{expectation}{options}{environment} --json");
     let human = match file {

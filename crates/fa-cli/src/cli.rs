@@ -10013,7 +10013,8 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 Ok(())
             })?;
             let (known_at, _) = known_at_flag(args, &book, out)?;
-            let verified = match book.verify_periods_with_history(principal, &capability, known_at) {
+            let verified = match book.verify_periods_with_history(principal, &capability, known_at)
+            {
                 Ok(result) => result?,
                 Err(BookError::Kernel(fa_journal::KernelError::Corrupt(problem))) => {
                     return Err(Fail::Verification {

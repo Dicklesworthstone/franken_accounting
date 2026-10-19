@@ -60,7 +60,10 @@ pub async fn verify_periods_with_history<V: Vfs + Clone>(
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
             exit::USAGE,
-            format!("verification prefix {} exceeds the book head {}", basis.0, head.0),
+            format!(
+                "verification prefix {} exceeds the book head {}",
+                basis.0, head.0
+            ),
             "plan §7.1 (recorded prefixes)",
             format!("verify at or before {}", head.0),
         )));
@@ -90,7 +93,10 @@ pub async fn verify_periods_with_history<V: Vfs + Clone>(
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
             exit::USAGE,
-            format!("verification prefix {} precedes book genesis {}", basis.0, genesis.0),
+            format!(
+                "verification prefix {} precedes book genesis {}",
+                basis.0, genesis.0
+            ),
             "plan §7.1 (recorded prefixes)",
             format!("verify at or after {}", genesis.0),
         )));

@@ -18,7 +18,9 @@ use fa_policy::Profile;
 mod run;
 pub use run::{FindingRunReviewHistory, MAX_RUN_REVIEW_DECISIONS, MAX_RUN_REVIEW_NOTE_BYTES};
 pub mod workpaper;
-pub use workpaper::{FindingReviewWorkpaper, FINDING_REVIEW_WORKPAPER_FORMAT, MAX_FINDING_REVIEW_WORKPAPER_BYTES};
+pub use workpaper::{
+    FINDING_REVIEW_WORKPAPER_FORMAT, FindingReviewWorkpaper, MAX_FINDING_REVIEW_WORKPAPER_BYTES,
+};
 
 pub const FINDING_REVIEW_FORMAT: &[u8] = b"fa:finding-review:v1";
 pub const MAX_FINDING_REVIEWS: usize = 256;
@@ -562,14 +564,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(h) => h,
             Err(r) => return Ok(Err(r)),
         };
-        let prepared = match run::prepare(self.context().book_id, principal, capability, &history, request) {
+        let prepared = match run::prepare(
+            self.context().book_id,
+            principal,
+            capability,
+            &history,
+            request,
+        ) {
             Ok(prepared) => prepared,
             Err(r) => return Ok(Err(r)),
         };
-        match run::publish(self, cx, principal, capability, history.checked_through, vec![prepared]).await? {
+        match run::publish(
+            self,
+            cx,
+            principal,
+            capability,
+            history.checked_through,
+            vec![prepared],
+        )
+        .await?
+        {
             Ok(mut decisions) => match decisions.pop() {
                 Some(decision) => Ok(Ok(decision)),
-                None => Ok(Err(invalid("single review publication returned no decision"))),
+                None => Ok(Err(invalid(
+                    "single review publication returned no decision",
+                ))),
             },
             Err(r) => Ok(Err(r)),
         }

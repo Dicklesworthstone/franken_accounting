@@ -10361,16 +10361,13 @@ fn verify_periods_reports_refolded_lifecycle_and_rejects_period_filters() -> std
 
     // The CLI reopens the real disk book for every command. An earlier
     // prefix must retain its own birth state despite later state versions.
-    let earlier = ok(&[
-        "verify",
-        "periods",
-        "--as-known-at",
-        birth,
-        "--json",
-    ]);
+    let earlier = ok(&["verify", "periods", "--as-known-at", birth, "--json"]);
     let historical = doc(&earlier);
     assert_eq!(int(&historical, "known_at"), birth.parse::<i128>().ok());
-    assert_eq!(int(&historical, "history_commits_checked"), int(&historical, "known_at"));
+    assert_eq!(
+        int(&historical, "history_commits_checked"),
+        int(&historical, "known_at")
+    );
     assert_eq!(int(&historical, "history_entries_checked"), Some(1));
     assert_eq!(int(&historical, "transitions_checked"), Some(0));
     let old_p03 = arr(&historical, "periods")
@@ -10510,7 +10507,10 @@ fn verify_periods_exits_eight_on_mirror_drift_or_deleted_birth_history() -> std:
 
     let (code, deleted, err) = fa(Some(&book), &["verify", "periods", "--json"]);
     assert_eq!(code, 8, "{deleted}\n{err}");
-    assert!(!deleted.contains("\"event\":\"periods_verified\""), "{deleted}");
+    assert!(
+        !deleted.contains("\"event\":\"periods_verified\""),
+        "{deleted}"
+    );
     let error = doc(&deleted);
     assert_eq!(text(&error, "class"), "verification");
     assert!(text(&error, "cite").contains("FA-INV-02"));

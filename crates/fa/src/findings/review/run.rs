@@ -35,7 +35,9 @@ impl ReviewBudget {
         if decisions.is_none_or(|n| n > MAX_RUN_REVIEW_DECISIONS)
             || notes.is_none_or(|n| n > MAX_RUN_REVIEW_NOTE_BYTES)
         {
-            return Err(invalid("complete run review history exceeds its aggregate bound; no partial result"));
+            return Err(invalid(
+                "complete run review history exceeds its aggregate bound; no partial result",
+            ));
         }
         self.decisions += 1;
         self.note_bytes += note_bytes;
@@ -59,52 +61,86 @@ pub(super) fn read_many<V: Vfs + Clone>(
     let head = db.frontier().map_err(KernelError::from)?;
     let at = selected.unwrap_or(head);
     if at > head || at < published {
-        return Ok(Err(refused("review selector must lie between finding publication and the current frontier")));
+        return Ok(Err(refused(
+            "review selector must lie between finding publication and the current frontier",
+        )));
     }
     if findings.len() > MAX_RECORDED_FINDINGS {
         return Ok(Err(invalid("run exceeds its complete-finding bound")));
     }
     let mut index = BTreeMap::new();
     for (ordinal, finding) in findings.iter().enumerate() {
-        if finding.recorded_at != published || index.insert(finding.finding_vid, ordinal).is_some() {
-            return Ok(Err(invalid("run review selection has repeated or mismatched occurrences")));
+        if finding.recorded_at != published || index.insert(finding.finding_vid, ordinal).is_some()
+        {
+            return Ok(Err(invalid(
+                "run review selection has repeated or mismatched occurrences",
+            )));
         }
     }
-    let mut histories: Vec<_> = findings.into_iter().map(|finding| FindingReviewHistory {
-        finding, known_at: at, checked_through: head, reviews: Vec::new(),
-    }).collect();
+    let mut histories: Vec<_> = findings
+        .into_iter()
+        .map(|finding| FindingReviewHistory {
+            finding,
+            known_at: at,
+            checked_through: head,
+            reviews: Vec::new(),
+        })
+        .collect();
     let births = fa_journal::finding_history::finding_births(db, cx, head)?;
     let mut budget = ReviewBudget::default();
     for (id, born) in births {
         cx.query().checkpoint().map_err(BookError::Context)?;
-        let row = db.vertex_at(id, born).map_err(KernelError::from)?
-            .ok_or_else(|| BookError::Kernel(KernelError::Corrupt("missing Finding birth row".into())))?;
+        let row = db
+            .vertex_at(id, born)
+            .map_err(KernelError::from)?
+            .ok_or_else(|| {
+                BookError::Kernel(KernelError::Corrupt("missing Finding birth row".into()))
+            })?;
         let Some(CanonicalScalar::Bytes(payload)) = prop(&row, property::FA_PAYLOAD) else {
-            return Ok(Err(invalid("a Finding-family record lacks canonical bytes")));
+            return Ok(Err(invalid(
+                "a Finding-family record lacks canonical bytes",
+            )));
         };
         if payload.as_slice().starts_with(FINDING_RUN_FORMAT)
-            || payload.as_slice().starts_with(FINDING_RECORD_FORMAT) {
+            || payload.as_slice().starts_with(FINDING_RECORD_FORMAT)
+        {
             continue;
         }
         let body = match Body::decode(payload.as_slice()) {
-            Ok(body) => body, Err(r) => return Ok(Err(r)),
+            Ok(body) => body,
+            Err(r) => return Ok(Err(r)),
         };
-        if body.book != book.book_id || body.id() != id || row.props.len() != 3
+        if body.book != book.book_id
+            || body.id() != id
+            || row.props.len() != 3
             || !matches!(prop(&row, property::BOOK_ID), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == book.book_id.0)
-            || !matches!(prop(&row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == decision_digest(payload.as_slice())) {
-            return Ok(Err(invalid("finding review identity, book or digest differs from its original native record")));
+            || !matches!(prop(&row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == decision_digest(payload.as_slice()))
+        {
+            return Ok(Err(invalid(
+                "finding review identity, book or digest differs from its original native record",
+            )));
         }
-        let Some(&position) = index.get(&body.request.finding_vid) else { continue; };
+        let Some(&position) = index.get(&body.request.finding_vid) else {
+            continue;
+        };
         let history = &mut histories[position];
         let finding = &history.finding;
-        if body.certificate != finding.certificate_digest || body.principal == finding.producer
-            || born <= finding.recorded_at {
-            return Ok(Err(invalid("finding review source, reviewer or publication is inconsistent")));
+        if body.certificate != finding.certificate_digest
+            || body.principal == finding.producer
+            || born <= finding.recorded_at
+        {
+            return Ok(Err(invalid(
+                "finding review source, reviewer or publication is inconsistent",
+            )));
         }
         if history.reviews.len() >= MAX_FINDING_REVIEWS {
-            return Ok(Err(invalid("review history exceeds its complete-chain bound")));
+            return Ok(Err(invalid(
+                "review history exceeds its complete-chain bound",
+            )));
         }
-        if let Err(r) = budget.admit(body.request.note.len()) { return Ok(Err(r)); }
+        if let Err(r) = budget.admit(body.request.note.len()) {
+            return Ok(Err(r));
+        }
         let before = CommitSeq(born.0 - 1);
         if let Err(r) = check_evidence(db, book, &body.request.evidence, before, head)? {
             return Ok(Err(r));
@@ -117,13 +153,25 @@ pub(super) fn read_many<V: Vfs + Clone>(
             };
             let eid = edge_id(rel, id, target);
             let Some(edge) = db.edge_at(eid, head).map_err(KernelError::from)? else {
-                return Ok(Err(invalid("finding review lineage or evidence edge is missing")));
+                return Ok(Err(invalid(
+                    "finding review lineage or evidence edge is missing",
+                )));
             };
-            if edge.entry.src != id || edge.entry.dst != target || edge.entry.relation != rel
-                || edge.entry.created_at != born || edge.entry.retired_at.is_some()
-                || !edge.props.is_empty() || db.edge_at(eid, before).map_err(KernelError::from)?.is_some()
-                || db.edge_at(eid, born).map_err(KernelError::from)?.as_ref() != Some(&edge) {
-                return Ok(Err(invalid("finding review edge was rewritten or separately published")));
+            if edge.entry.src != id
+                || edge.entry.dst != target
+                || edge.entry.relation != rel
+                || edge.entry.created_at != born
+                || edge.entry.retired_at.is_some()
+                || !edge.props.is_empty()
+                || db
+                    .edge_at(eid, before)
+                    .map_err(KernelError::from)?
+                    .is_some()
+                || db.edge_at(eid, born).map_err(KernelError::from)?.as_ref() != Some(&edge)
+            {
+                return Ok(Err(invalid(
+                    "finding review edge was rewritten or separately published",
+                )));
             }
         }
         history.reviews.push(body.result(born));
@@ -135,11 +183,15 @@ pub(super) fn read_many<V: Vfs + Clone>(
         let mut dismissed = false;
         for (ordinal, review) in history.reviews.iter().enumerate() {
             cx.query().checkpoint().map_err(BookError::Context)?;
-            if review.ordinal as usize != ordinal || review.request.expected_previous != previous
+            if review.ordinal as usize != ordinal
+                || review.request.expected_previous != previous
                 || review.recorded_at <= previous_at
                 || review.request.action == FindingReviewAction::Reopen && !dismissed
-                || review.request.action == FindingReviewAction::Acknowledge && dismissed {
-                return Ok(Err(invalid("finding review history is missing a predecessor or violates its lifecycle")));
+                || review.request.action == FindingReviewAction::Acknowledge && dismissed
+            {
+                return Ok(Err(invalid(
+                    "finding review history is missing a predecessor or violates its lifecycle",
+                )));
             }
             dismissed = matches!(review.request.action, FindingReviewAction::Dismiss(_));
             previous = Some(review.review_vid);
@@ -162,24 +214,54 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certificate: &[u8; 32],
         known_at: Option<CommitSeq>,
     ) -> Outcome<FindingRunReviewHistory> {
-        if let Err(r) = authorize(self, cx, principal, capability, false)? { return Ok(Err(r)); }
-        if let Err(r) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? { return Ok(Err(r)); }
-        let run = match self.read_findings(cx, principal, capability, certificate).await? {
-            Ok(run) => run, Err(r) => return Ok(Err(r)),
+        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+            return Ok(Err(r));
+        }
+        if let Err(r) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(r));
+        }
+        let run = match self
+            .read_findings(cx, principal, capability, certificate)
+            .await?
+        {
+            Ok(run) => run,
+            Err(r) => return Ok(Err(r)),
         };
         if run.finding_ids.len() != run.report.findings.len() {
-            return Ok(Err(invalid("finding run occurrence coverage differs from its certificate")));
+            return Ok(Err(invalid(
+                "finding run occurrence coverage differs from its certificate",
+            )));
         }
-        let findings = run.finding_ids.iter().zip(&run.report.findings).enumerate().map(|(ordinal, (&finding_vid, finding))| RecordedFinding {
-            finding_vid, run_vid: run.run_vid, certificate_digest: run.certificate_digest,
-            ordinal: ordinal as u32, recorded_at: run.recorded_at, producer: run.producer,
-            coordinate: run.report.coordinate, finding: finding.clone(),
-        }).collect();
-        let checked = self.query(cx, |db, book| read_many(db, cx, book, findings, run.recorded_at, known_at))?;
-        if let Err(r) = authorize(self, cx, principal, capability, false)? { return Ok(Err(r)); }
-        Ok(checked.map(|(checked_through, known_at, histories)| FindingRunReviewHistory {
-            run, known_at, checked_through, histories,
-        }))
+        let findings = run
+            .finding_ids
+            .iter()
+            .zip(&run.report.findings)
+            .enumerate()
+            .map(|(ordinal, (&finding_vid, finding))| RecordedFinding {
+                finding_vid,
+                run_vid: run.run_vid,
+                certificate_digest: run.certificate_digest,
+                ordinal: ordinal as u32,
+                recorded_at: run.recorded_at,
+                producer: run.producer,
+                coordinate: run.report.coordinate,
+                finding: finding.clone(),
+            })
+            .collect();
+        let checked = self.query(cx, |db, book| {
+            read_many(db, cx, book, findings, run.recorded_at, known_at)
+        })?;
+        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+            return Ok(Err(r));
+        }
+        Ok(checked.map(
+            |(checked_through, known_at, histories)| FindingRunReviewHistory {
+                run,
+                known_at,
+                checked_through,
+                histories,
+            },
+        ))
     }
 }
 
@@ -190,7 +272,9 @@ mod tests {
     #[test]
     fn aggregate_review_bounds_are_checked_before_acceptance_without_truncation() {
         let mut count = ReviewBudget::default();
-        for _ in 0..MAX_RUN_REVIEW_DECISIONS { count.admit(0).unwrap(); }
+        for _ in 0..MAX_RUN_REVIEW_DECISIONS {
+            count.admit(0).unwrap();
+        }
         assert!(count.admit(0).is_err());
         assert_eq!(count.decisions, MAX_RUN_REVIEW_DECISIONS);
         let mut notes = ReviewBudget::default();

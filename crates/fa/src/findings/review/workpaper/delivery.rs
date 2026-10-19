@@ -25,18 +25,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         bytes: &[u8],
         expected: &FindingReviewExpectation,
     ) -> Outcome<FindingRunReviewHistory> {
-        if let Err(r) = authorize(self, cx, principal, capability, false)? { return Ok(Err(r)); }
-        let saved = match FindingReviewWorkpaper::decode(bytes) {
-            Ok(saved) => saved, Err(r) => return Ok(Err(r)),
-        };
-        let source = match ProcedureCertificate::decode(saved.observation_workpaper().certificate_bytes()) {
-            Ok(source) => source, Err(r) => return Ok(Err(r)),
-        };
-        if self.context().book_id != expected.book_id || source.book_id() != expected.book_id
-            || *source.digest() != expected.certificate_digest
-            || saved.review_known_at() != expected.review_known_at {
-            return Ok(Err(invalid("review workpaper does not answer the independently expected book, source certificate and review cutoff")));
+        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+            return Ok(Err(r));
         }
-        self.replay_finding_review_workpaper(cx, principal, capability, bytes).await
+        let saved = match FindingReviewWorkpaper::decode(bytes) {
+            Ok(saved) => saved,
+            Err(r) => return Ok(Err(r)),
+        };
+        let source =
+            match ProcedureCertificate::decode(saved.observation_workpaper().certificate_bytes()) {
+                Ok(source) => source,
+                Err(r) => return Ok(Err(r)),
+            };
+        if self.context().book_id != expected.book_id
+            || source.book_id() != expected.book_id
+            || *source.digest() != expected.certificate_digest
+            || saved.review_known_at() != expected.review_known_at
+        {
+            return Ok(Err(invalid(
+                "review workpaper does not answer the independently expected book, source certificate and review cutoff",
+            )));
+        }
+        self.replay_finding_review_workpaper(cx, principal, capability, bytes)
+            .await
     }
 }

@@ -518,8 +518,7 @@ pub fn match_bank_lines(
             if consumed_ordinals.contains(&entry.entry_ordinal) {
                 continue;
             }
-            let Some(day_delta) =
-                exact_cash_candidate(line, entry, config.max_date_window_days)?
+            let Some(day_delta) = exact_cash_candidate(line, entry, config.max_date_window_days)?
             else {
                 continue;
             };
@@ -1145,26 +1144,49 @@ mod tests {
     #[test]
     fn ambiguity_eligibility_agrees_with_pinned_matching_before_consumption() {
         let mut line = BankStatementLine {
-            statement_oid: Oid([41; 32]), statement_seq: 1, line_ordinal: 1,
-            booking_date: DateDay(100), value_date: DateDay(100),
-            side: Side::Credit, amount: Amount::new(UnitId(1), 100),
-            counterparty: "same payee".into(), reference: "INV-100".into(),
+            statement_oid: Oid([41; 32]),
+            statement_seq: 1,
+            line_ordinal: 1,
+            booking_date: DateDay(100),
+            value_date: DateDay(100),
+            side: Side::Credit,
+            amount: Amount::new(UnitId(1), 100),
+            counterparty: "same payee".into(),
+            reference: "INV-100".into(),
         };
         let mut entry = BookCandidateEntry {
-            entry_ref: EntryRef { vid: VId(42), entry_digest: [43; 32] },
-            entry_ordinal: 1, effective_date: DateDay(99), side: Side::Debit,
-            amount: line.amount, counterparty: "same payee".into(), reference: "inv-100".into(),
+            entry_ref: EntryRef {
+                vid: VId(42),
+                entry_digest: [43; 32],
+            },
+            entry_ordinal: 1,
+            effective_date: DateDay(99),
+            side: Side::Debit,
+            amount: line.amount,
+            counterparty: "same payee".into(),
+            reference: "inv-100".into(),
         };
         let config = MatcherConfig {
-            policy_epoch: None, enforced_policy_epoch: fixture_epoch(),
-            max_date_window_days: 1, pinned_fallback_only: true,
+            policy_epoch: None,
+            enforced_policy_epoch: fixture_epoch(),
+            max_date_window_days: 1,
+            pinned_fallback_only: true,
             advisory_learned_scores_bps: BTreeMap::new(),
         };
         let check = |line: &BankStatementLine, entry: &BookCandidateEntry, expected: bool| {
             assert_eq!(pinned_bank_candidate(line, entry, 1).unwrap(), expected);
-            let result = match_bank_lines(std::slice::from_ref(line), std::slice::from_ref(entry), &config, VId(7)).unwrap();
+            let result = match_bank_lines(
+                std::slice::from_ref(line),
+                std::slice::from_ref(entry),
+                &config,
+                VId(7),
+            )
+            .unwrap();
             assert_eq!(result[0].matched_entry_ordinal.is_some(), expected);
-            result[0].decision_card.verify_replay(config.enforced_policy_epoch).unwrap();
+            result[0]
+                .decision_card
+                .verify_replay(config.enforced_policy_epoch)
+                .unwrap();
         };
         check(&line, &entry, true);
         entry.reference = "DIFFERENT".into();
@@ -1180,7 +1202,10 @@ mod tests {
         entry.amount.mantissa = 99;
         check(&line, &entry, false);
         entry.amount = Amount::new(UnitId(2), 100);
-        assert!(matches!(pinned_bank_candidate(&line, &entry, 1), Err(ReconciliationError::UnitMismatch { .. })));
+        assert!(matches!(
+            pinned_bank_candidate(&line, &entry, 1),
+            Err(ReconciliationError::UnitMismatch { .. })
+        ));
     }
 
     #[test]

@@ -356,7 +356,14 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         .unwrap();
     let issuer = Capability::embedded(
         principal_vid("report-issuer"),
-        &["issue_capability", "read", "verify", "produce", "post", "reconcile"],
+        &[
+            "issue_capability",
+            "read",
+            "verify",
+            "produce",
+            "post",
+            "reconcile",
+        ],
     )
     .unwrap();
     let secret = [0x39; 32];
