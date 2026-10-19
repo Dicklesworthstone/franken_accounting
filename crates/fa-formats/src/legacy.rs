@@ -389,12 +389,38 @@ impl LegacyImportBatch {
         }
     }
 
-    /// Convert each `LegacyChunkEntry` into a `fa_model::EntryPayload` proposal
-    /// with `EntryClass::MIGRATION` and `EntryOrigin::Migration` provenance,
-    /// dated on `opening_date` (in the Opening period `opening_period_code`)
-    /// so all chunks stage into the `MigrationRun` and fold to `self.trial_balance`.
+    /// Compatibility entry point which refuses to seal without explicit entropy.
+    ///
+    /// Use [`Self::to_chunk_proposals_with_sealer`] with the caller's secure
+    /// sealer, then retain those exact proposals for approval and retry.
     #[allow(clippy::too_many_arguments)]
     pub fn to_chunk_proposals(
+        &self,
+        _book: &BookContext,
+        _run_ref: VId,
+        _opening_date: DateDay,
+        _opening_period_code: Option<&str>,
+        _principal_ref: VId,
+        _batch_oid: Oid,
+        _evidence: Vec<EvidenceRef>,
+    ) -> Result<Vec<EntryPayload>, FormatError> {
+        Err(FormatError::Parse {
+            format: self.format.registry_name(),
+            detail: "migration proposals require fresh capability-supplied salt and nonce for every private field; use to_chunk_proposals_with_sealer with Book::seal_text and retain the resulting exact proposal bytes for approval and retry".into(),
+        })
+    }
+
+    /// Build opening proposals with the caller's capability-supplied sealer.
+    ///
+    /// The sealer must supply fresh salt and nonce for every invocation (for
+    /// example, `Book::seal_text`). Neither source hashes nor row ordinals are
+    /// entropy. Retain these exact proposals before collecting approvals;
+    /// regenerating them creates new private commitments and approval digests.
+    /// The public idempotency key contains only a version and row ordinal;
+    /// the native migration entry identity separately binds the run, while
+    /// legacy source IDs remain sealed provenance.
+    #[allow(clippy::too_many_arguments)]
+    pub fn to_chunk_proposals_with_sealer<E, F>(
         &self,
         book: &BookContext,
         run_ref: VId,
@@ -403,16 +429,23 @@ impl LegacyImportBatch {
         principal_ref: VId,
         batch_oid: Oid,
         evidence: Vec<EvidenceRef>,
-    ) -> Result<Vec<EntryPayload>, FormatError> {
+        mut seal: F,
+    ) -> Result<Vec<EntryPayload>, E>
+    where
+        E: From<FormatError>,
+        F: FnMut(&str) -> Result<Erasable<String>, E>,
+    {
         let mut proposals = Vec::with_capacity(self.chunks.len());
         for (idx, chunk) in self.chunks.iter().enumerate() {
             let mut legs = Vec::with_capacity(chunk.legs.len());
             for leg in &chunk.legs {
-                legs.push(LegPayload::simple(
+                let mut payload = LegPayload::simple(
                     leg.side,
                     account_vid(book.book_id, &leg.account_code),
                     leg.amount,
-                ));
+                );
+                payload.memo = leg.memo.as_deref().map(&mut seal).transpose()?;
+                legs.push(payload);
             }
             let unit_totals =
                 EntryPayload::fold_unit_totals(&legs).map_err(|e| FormatError::Overflow {
@@ -420,36 +453,20 @@ impl LegacyImportBatch {
                     detail: e.to_string(),
                 })?;
 
-            let mut nonce_id = [0u8; 24];
-            nonce_id[..8].copy_from_slice(&(idx as u64).to_le_bytes());
-            nonce_id[8..16].copy_from_slice(&0xfa01_u64.to_le_bytes());
-
-            let source_id = Erasable::seal(
-                &chunk.provenance.source_id,
-                None,
-                &book.seal_key,
-                self.source_bytes_digest,
-                nonce_id,
-            );
-            let source_entered_by = chunk.provenance.source_entered_by.as_ref().map(|who| {
-                let mut n = nonce_id;
-                n[16] = 1;
-                Erasable::seal(who, None, &book.seal_key, self.source_bytes_digest, n)
-            });
-            let source_approved_by = chunk.provenance.source_approved_by.as_ref().map(|who| {
-                let mut n = nonce_id;
-                n[16] = 2;
-                Erasable::seal(who, None, &book.seal_key, self.source_bytes_digest, n)
-            });
-            let mut desc_nonce = nonce_id;
-            desc_nonce[16] = 3;
-            let description = Erasable::seal(
-                &chunk.description,
-                None,
-                &book.seal_key,
-                self.source_bytes_digest,
-                desc_nonce,
-            );
+            let source_id = seal(&chunk.provenance.source_id)?;
+            let source_entered_by = chunk
+                .provenance
+                .source_entered_by
+                .as_deref()
+                .map(&mut seal)
+                .transpose()?;
+            let source_approved_by = chunk
+                .provenance
+                .source_approved_by
+                .as_deref()
+                .map(&mut seal)
+                .transpose()?;
+            let description = seal(&chunk.description)?;
 
             let origin = EntryOrigin::Migration {
                 run_ref,
@@ -460,11 +477,7 @@ impl LegacyImportBatch {
                 source_approved_by,
                 batch_oid,
             };
-            let idempotency_key = format!(
-                "legacy:{}:{}:{}",
-                chunk.provenance.source_system, chunk.provenance.source_id, idx
-            )
-            .into_bytes();
+            let idempotency_key = format!("legacy-opening:v1:{idx}").into_bytes();
 
             proposals.push(EntryPayload {
                 schema_minor: fa_model::entry::SCHEMA_MINOR,
@@ -1541,6 +1554,9 @@ SAP-501,2025-12-28,2025-12-28T20:00:00Z,0000800000,-1900.25,Year-end AR billing,
                 .expect("transitioned");
         }
 
+        // Deterministic fixture entropy, unique across every field and batch
+        // in this test book. Production supplies Book::seal_text instead.
+        let mut sealing_counter = 0_u64;
         for batch in &batches {
             let doc_bytes = format!(
                 "legacy-tb:{}:{}:{}",
@@ -1605,8 +1621,23 @@ SAP-501,2025-12-28,2025-12-28T20:00:00Z,0000800000,-1900.25,Year-end AR billing,
                 .expect("open_run")
                 .expect("run opened");
 
+            let refused = batch.to_chunk_proposals(
+                &book,
+                opened.run,
+                opening_date,
+                Some("FY2026-OPEN"),
+                PRINCIPAL,
+                Oid(batch.source_bytes_digest),
+                vec![tb_evidence],
+            );
+            assert!(
+                refused
+                    .expect_err("the entropy-free bridge must fail closed")
+                    .to_string()
+                    .contains("to_chunk_proposals_with_sealer")
+            );
             let chunk_proposals = batch
-                .to_chunk_proposals(
+                .to_chunk_proposals_with_sealer(
                     &book,
                     opened.run,
                     opening_date,
@@ -1614,8 +1645,40 @@ SAP-501,2025-12-28,2025-12-28T20:00:00Z,0000800000,-1900.25,Year-end AR billing,
                     PRINCIPAL,
                     Oid(batch.source_bytes_digest),
                     vec![tb_evidence],
+                    |text| {
+                        sealing_counter = sealing_counter.checked_add(1).expect("fixture fields");
+                        let mut salt = [0x91; 32];
+                        salt[..8].copy_from_slice(&sealing_counter.to_le_bytes());
+                        let mut nonce = [0x92; 24];
+                        nonce[..8].copy_from_slice(&sealing_counter.to_le_bytes());
+                        Ok::<_, FormatError>(Erasable::seal(
+                            &text.to_string(),
+                            None,
+                            &book.seal_key,
+                            salt,
+                            nonce,
+                        ))
+                    },
                 )
                 .expect("chunk proposals");
+
+            for (index, (proposal, legacy)) in chunk_proposals.iter().zip(&batch.chunks).enumerate()
+            {
+                assert_eq!(
+                    proposal.idempotency_key,
+                    format!("legacy-opening:v1:{index}").as_bytes()
+                );
+                assert_eq!(proposal.document_date, Some(legacy.effective_date));
+                for (posted_leg, source_leg) in proposal.legs.iter().zip(&legacy.legs) {
+                    assert_eq!(
+                        posted_leg.memo.as_ref().map(|memo| memo
+                            .open(&book.seal_key, fa_model::limits::MAX_MEMO_BYTES)
+                            .unwrap()),
+                        source_leg.memo,
+                        "migration preserves the source leg's memo"
+                    );
+                }
+            }
 
             for prop in chunk_proposals {
                 let chunk_digest = prop.proposal_digest().expect("chunk digest");

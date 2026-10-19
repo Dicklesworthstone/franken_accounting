@@ -25,6 +25,7 @@ on:
       - 'crates/fa-cli/tests/bank.rs'
       - 'crates/fa-cli/tests/findings.rs'
       - 'crates/fa-formats/src/bank.rs'
+      - 'crates/fa-formats/src/legacy.rs'
       - 'crates/fa-registers/src/reconciliation.rs'
       - 'crates/fa/src/findings.rs'
       - 'crates/fa/src/findings/**'
@@ -209,6 +210,12 @@ jobs:
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --lib reconciliation --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib bank --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib import --jobs 2
+      - name: Test legacy formats and secure native migration proposals
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-formats --lib legacy --jobs 2 -- --nocapture
       - name: Test network engine, real journal and complete Lantern corpus
         if: ${{ !cancelled() }}
         shell: bash
