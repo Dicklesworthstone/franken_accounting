@@ -774,10 +774,9 @@ fn current_authority_and_privileged_source_admission_win_over_requested_history(
     let valid = h.request(import, line, entry, 0);
     let before = h.head();
     let lower = Capability::embedded(CONFIRMER, &["read", "reconcile"]).unwrap();
-    assert_eq!(
-        h.confirm(&lower, valid.clone()).unwrap_err().code,
-        "FA-REF-142"
-    );
+    let refusal = h.confirm(&lower, valid.clone()).unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::CAPABILITY);
+    assert_eq!(refusal.exit, fa_journal::refusal::exit::SAFETY);
     let system = Capability::new(
         CONFIRMER,
         Profile::System,
