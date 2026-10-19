@@ -4,6 +4,7 @@
 use super::*;
 use fa::aging::portfolio::{AgingAccountScope, AgingPortfolioRequest};
 use fa::cash_flow_policy::CashFlowPolicy;
+use fa::cash_flow_split::{CashFlowSplitDefinition, SplitCashFlow};
 use fa::{
     AdjustmentCategory, AdjustmentSign, AgingBuckets, AgingReconciliationRequest,
     CashFlowDefinition, IndirectCashFlowRequest, RollForwardRequest,
@@ -21,6 +22,7 @@ pub(super) enum Expected {
     Reconciliation(AgingReconciliationRequest),
     Portfolio(AgingPortfolioRequest),
     PolicyCashFlow(RollForwardRequest, CashFlowPolicy),
+    SplitCashFlow(RollForwardRequest, CashFlowSplitDefinition),
 }
 
 impl Expected {
@@ -38,6 +40,12 @@ impl Expected {
             Self::Portfolio(request) => fa::ReportArtifactExpectation::AgingPortfolio(request),
             Self::PolicyCashFlow(request, policy) => {
                 fa::ReportArtifactExpectation::PolicyCashFlow { request, policy }
+            }
+            Self::SplitCashFlow(request, definition) => {
+                fa::ReportArtifactExpectation::SplitCashFlow {
+                    request,
+                    definition,
+                }
             }
         }
     }
@@ -193,12 +201,17 @@ fn policy_shape(policy: &Json, indirect: bool) -> Result<(), Fail> {
     Ok(())
 }
 
-pub(super) fn parse(args: &Args, book: &Book) -> Result<Expected, Fail> {
+pub(super) fn parse(
+    args: &Args,
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+) -> Result<Expected, Fail> {
     if args.flag_all("--expect").len() > 1 {
         return Err(invalid("--expect may be supplied only once"));
     }
     let Some(text) = args.flag("--expect") else {
-        // The unified verifier refuses AsSupplied for these five families.
+        // The unified verifier refuses AsSupplied for request-bound families.
         return Ok(Expected::AsSupplied);
     };
     check_size(text)?;
@@ -275,6 +288,41 @@ pub(super) fn parse(args: &Args, book: &Book) -> Result<Expected, Fail> {
                 "",
             )?;
             Ok(Expected::PolicyCashFlow(request, policy))
+        }
+        "split-cash-flow" => {
+            exact_fields(
+                &doc,
+                &[
+                    "kind", "accounts", "units", "label", "from", "through", "known_at", "policy",
+                ],
+            )?;
+            let request = scope(&doc, book)?;
+            let policy = field(&doc, "policy")?;
+            crate::cli::validate_cash_flow_split_policy_fields(policy, false)?;
+            string(policy, "name")?;
+            for item in array(policy, "cash_accounts")? {
+                if !matches!(item, Json::Str(code) if !code.is_empty()) {
+                    return Err(invalid(
+                        "expected cash_accounts must contain nonempty account codes or ids",
+                    ));
+                }
+            }
+            array(policy, "splits")?;
+            let parsed = crate::cli::parse_cash_flow_splits(
+                policy,
+                book.context().book_id,
+                &request.accounts,
+                "",
+                &book.context().units,
+            )?;
+            // Read only under the recipient's admitted CURRENT authority and
+            // independently fixed scope. Units in a delivered certificate are
+            // not a substitute for the unit of the actual cited native leg.
+            let source = book.general_ledger(principal, capability, &request)??;
+            let definition = parsed
+                .bind_to_source(&source)
+                .map_err(|refusal| certificate_invalid(refusal.message))?;
+            Ok(Expected::SplitCashFlow(request, definition))
         }
         "aging-reconciliation" => {
             exact_fields(&doc, &["kind", "account", "through", "known_at", "buckets"])?;
@@ -496,6 +544,40 @@ pub(crate) fn indirect_expectation_json(request: &IndirectCashFlowRequest) -> Js
     obj(fields)
 }
 
+/// Split amounts are rendered using their original native leg units. The
+/// definition alone carries mantissas, so it cannot generate this transport.
+/// Check the full generated request before its caller writes any artifact.
+pub(crate) fn split_cash_flow_expectation_json(
+    request: &RollForwardRequest,
+    report: &SplitCashFlow,
+    units: &fa_money::UnitRegistry,
+) -> Result<Json, Fail> {
+    let definition = report.definition();
+    let policy = obj(vec![
+        ("name", s(&definition.name)),
+        (
+            "cash_accounts",
+            Json::Arr(
+                definition
+                    .cash_accounts
+                    .iter()
+                    .map(|id| s(format!("{id:032x}")))
+                    .collect(),
+            ),
+        ),
+        (
+            "splits",
+            Json::Arr(crate::cli::cash_flow_split_rows_json(report, units)?),
+        ),
+    ]);
+    let mut fields = scope_fields(request);
+    fields.push(("kind", s("split-cash-flow")));
+    fields.push(("policy", policy));
+    let doc = obj(fields);
+    check_size(&doc.render())?;
+    Ok(doc)
+}
+
 pub(crate) fn reconciliation_expectation_json(request: &AgingReconciliationRequest) -> Json {
     obj(vec![
         ("kind", s("aging-reconciliation")),
@@ -571,6 +653,10 @@ pub(super) fn validate_generated(expected: fa::ReportArtifactExpectation<'_>) ->
         fa::ReportArtifactExpectation::PolicyCashFlow { request, policy } => {
             policy_cash_flow_expectation_json(request, policy)
         }
+        // Split transport also needs the source unit of every original leg.
+        // Its producer checks the complete request in the source-bound
+        // split_cash_flow_expectation_json constructor before calling retain.
+        fa::ReportArtifactExpectation::SplitCashFlow { .. } => return Ok(()),
         _ => return Ok(()),
     };
     check_size(&doc.render())

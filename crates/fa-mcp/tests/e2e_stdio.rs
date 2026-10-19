@@ -604,6 +604,95 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
             }
         }
     }
+    // Split cash uses an inline policy object, while replay carries the
+    // independently retained unit-tagged request in a separate expect string.
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_proof_gl",
+        json!({"view":"detail","account":"1000","unit":"USD","from":"2026-03-01","to":"2026-03-31"}),
+    );
+    assert!(!error, "split source: {output}");
+    let source: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(source["lines"].as_array().unwrap().len(), 1);
+    let line = &source["lines"][0];
+    assert_eq!(line["credits"], json!("10.00 USD"));
+    let split_policy = json!({
+        "name":"mcp-payment-split",
+        "cash_accounts":["1000"],
+        "splits":[{
+            "entry_digest":line["entry_digest"],
+            "leg_index":line["leg_index"],
+            "reason":"Independently specified principal and interest",
+            "portions":[
+                {"activity":"operating","amount":"4.00 USD"},
+                {"activity":"financing","amount":"6.00 USD"}
+            ]
+        }]
+    });
+    let split_expected = json!({
+        "kind":"split-cash-flow",
+        "accounts":["1000"],"units":["USD"],"label":"cash-flow",
+        "from":"2026-03-01","through":"2026-03-31",
+        "known_at":source["known_at"],"policy":split_policy.clone()
+    });
+    let (error, output, metadata) = call_tool(
+        &mut producer,
+        "fa_proof_gl",
+        json!({
+            "view":"cash-flow","account":"1000","unit":"USD",
+            "from":"2026-03-01","to":"2026-03-31",
+            "as_known_at":source["known_at"].to_string(),
+            "policy":split_policy,"certify":true
+        }),
+    );
+    assert!(!error, "inline split policy: {output}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(
+        certified[0]["units"][0]["operating"]["outflows"],
+        json!("4.00 USD")
+    );
+    assert_eq!(
+        certified[0]["units"][0]["financing"]["outflows"],
+        json!("6.00 USD")
+    );
+    assert_eq!(
+        certified[1]["output_format"],
+        json!("fa:cash-flow-split:v1")
+    );
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(metadata["content"][1]["text"].as_str().unwrap())
+            .unwrap();
+    assert_eq!(
+        envelope["events"],
+        json!(["split_cash_flow", "report_certificate"])
+    );
+    for certificate in [
+        format!("C:{}", certified[1]["oid"].as_str().unwrap()),
+        certified[1]["bytes"].as_str().unwrap().to_string(),
+    ] {
+        let (error, output, _) = call_tool(
+            &mut producer,
+            "fa_read_replay",
+            json!({"certificate":certificate,"expect":split_expected.to_string()}),
+        );
+        assert!(!error, "split replay: {output}");
+        let replayed: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+        assert_eq!(replayed["family"], json!("split-cash-flow"));
+        assert_eq!(replayed["output_digest"], certified[1]["output_digest"]);
+    }
+    let mut wrong_units = split_expected;
+    wrong_units["policy"]["splits"][0]["portions"][0]["amount"] = json!("4.00 EUR");
+    wrong_units["policy"]["splits"][0]["portions"][1]["amount"] = json!("6.00 EUR");
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_replay",
+        json!({"certificate":certified[1]["bytes"],"expect":wrong_units.to_string()}),
+    );
+    assert!(
+        error,
+        "same-scale recipient currency substitution: {output}"
+    );
+    assert_eq!(structured_error(&output)["refusal_id"], json!("FA-REF-150"));
     assert_eq!(producer.finish(), 0);
 }
 

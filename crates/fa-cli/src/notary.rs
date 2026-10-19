@@ -9,7 +9,7 @@ mod procedure;
 
 pub(crate) use expectations::{
     cash_flow_expectation_json, indirect_expectation_json, policy_cash_flow_expectation_json,
-    portfolio_expectation_json, reconciliation_expectation_json,
+    portfolio_expectation_json, reconciliation_expectation_json, split_cash_flow_expectation_json,
 };
 
 use std::io::Read;
@@ -537,7 +537,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         book.read_scope(principal, &capability)??;
         Ok(())
     })?;
-    let expected = expectations::parse(args, &book)?;
+    let expected = expectations::parse(args, &book, principal, &capability)?;
     let detail_expected = if detail_view {
         Some(crate::cli::parse_gl_scope(
             args,

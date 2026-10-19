@@ -2654,6 +2654,35 @@ impl Book {
         ))
     }
 
+    /// Partition original cash legs at one native coordinate using this book's
+    /// existing runtime and query context. Each positive portion keeps its
+    /// source leg's unit and direction; the portions must total that leg exactly.
+    pub fn read_split_cash_flow(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::RollForwardRequest,
+        definition: &crate::cash_flow_split::CashFlowSplitDefinition,
+    ) -> Outcome<crate::cash_flow_split::SplitCashFlow> {
+        with_store!(&self.store, core => core.split_cash_flow(
+            &self.purposes(), principal, capability, request, definition
+        ))
+    }
+
+    /// Certify exact original-leg portions under current read+produce authority,
+    /// sharing the native producer and certificate with the async API.
+    pub fn certify_cash_flow_split(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::RollForwardRequest,
+        definition: &crate::cash_flow_split::CashFlowSplitDefinition,
+    ) -> Outcome<crate::cash_flow_split::CertifiedSplitCashFlow> {
+        with_store!(&self.store, core => core.certify_split_cash_flow(
+            &self.purposes(), principal, capability, request, definition
+        ))
+    }
+
     /// Read an indirect earnings-to-cash workpaper at one native prefix under current read authority.
     pub fn indirect_cash_flow(
         &self,

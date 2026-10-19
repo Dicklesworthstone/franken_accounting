@@ -11353,6 +11353,289 @@ pub(crate) fn cash_flow_activity_name(activity: CashFlowActivity) -> &'static st
     }
 }
 
+const SPLIT_POLICY_EXAMPLE: &str = r#"{"name":"loan-payments-v1","cash_accounts":["1000"],"splits":[{"entry_digest":"<64-hex>","leg_index":0,"reason":"Principal and interest","portions":[{"activity":"financing","amount":"80.00 USD"},{"activity":"operating","amount":"20.00 USD"}]}]}"#;
+
+/// Keep each supplied unit until the cited native cash leg has been checked.
+/// The library's portion type is an i128 in its source leg's unit, so passing
+/// only parsed mantissas would silently accept e.g. EUR portions of a USD leg.
+type CashFlowSourceUnits = std::collections::BTreeMap<([u8; 32], u32), fa_money::UnitId>;
+
+pub(crate) struct ParsedCashFlowSplits {
+    definition: fa::cash_flow_split::CashFlowSplitDefinition,
+    leg_units: CashFlowSourceUnits,
+}
+
+impl ParsedCashFlowSplits {
+    pub(crate) fn bind_to_source(
+        self,
+        source: &fa::GeneralLedger,
+    ) -> Result<fa::cash_flow_split::CashFlowSplitDefinition, Refusal> {
+        let source_units = cash_flow_source_units(source)?;
+        for (citation, unit) in self.leg_units {
+            match source_units.get(&citation) {
+                Some(source_unit) if *source_unit == unit => {}
+                Some(source_unit) => {
+                    return Err(cash_flow_split_source_refusal(format!(
+                        "cash split {} leg {} declares unit {}, but its native cash leg has unit {}",
+                        hex(&citation.0),
+                        citation.1,
+                        unit.0,
+                        source_unit.0,
+                    )));
+                }
+                None => {
+                    return Err(cash_flow_split_source_refusal(format!(
+                        "cash split {} leg {} is outside the selected native cash ledger",
+                        hex(&citation.0),
+                        citation.1,
+                    )));
+                }
+            }
+        }
+        Ok(self.definition)
+    }
+}
+
+fn cash_flow_split_source_refusal(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        fa_journal::refusal::code::STRUCTURE,
+        exit::USAGE,
+        message,
+        "plan §12.1 (cash portions preserve each original leg's native unit)",
+        "use gl detail at the same account, units, dates and known-at; quote every portion in its cited cash leg's unit and split that exact original amount",
+    )
+}
+
+fn cash_flow_source_units(source: &fa::GeneralLedger) -> Result<CashFlowSourceUnits, Refusal> {
+    source
+        .lines()
+        .iter()
+        .map(|line| {
+            let cell = source
+                .cells()
+                .get(line.cell_index as usize)
+                .ok_or_else(|| {
+                    cash_flow_split_source_refusal("cash split source leg has no native unit cell")
+                })?;
+            Ok((
+                (line.entry_digest, line.leg_index),
+                fa_money::UnitId(cell.unit_id),
+            ))
+        })
+        .collect()
+}
+
+/// Split policies are a separate format selected by `splits`. Every nested
+/// field is checked so a misspelled classification or amount cannot disappear.
+pub(crate) fn validate_cash_flow_split_policy_fields(
+    doc: &Json,
+    indirect: bool,
+) -> Result<(), Fail> {
+    if indirect {
+        return Err(usage(
+            "splits policies partition direct cash flow and cannot combine with --indirect",
+            "drop --indirect, or use an indirect policy with assignments and adjustments",
+        ));
+    }
+    let check = |value: &Json, allowed: &[&str], context: &str| -> Result<(), Fail> {
+        let Json::Obj(fields) = value else {
+            return Err(usage(
+                format!("{context} must be a JSON object"),
+                SPLIT_POLICY_EXAMPLE,
+            ));
+        };
+        for (field, _) in fields {
+            if !allowed.contains(&field.as_str()) {
+                return Err(usage(
+                    format!("unknown {context} field '{field}'"),
+                    SPLIT_POLICY_EXAMPLE,
+                ));
+            }
+        }
+        Ok(())
+    };
+    check(
+        doc,
+        &["name", "cash_accounts", "splits"],
+        "cash split policy",
+    )?;
+    let Some(Json::Arr(splits)) = doc.get("splits") else {
+        return Err(usage(
+            "cash split policy requires an array `splits`",
+            SPLIT_POLICY_EXAMPLE,
+        ));
+    };
+    for split in splits {
+        check(
+            split,
+            &["entry_digest", "leg_index", "reason", "portions"],
+            "cash split",
+        )?;
+        let Some(Json::Arr(portions)) = split.get("portions") else {
+            return Err(usage(
+                "each cash split requires an array `portions`",
+                SPLIT_POLICY_EXAMPLE,
+            ));
+        };
+        for portion in portions {
+            check(portion, &["activity", "amount"], "cash split portion")?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_cash_flow_splits(
+    doc: &Json,
+    book_id: Id128,
+    default_accounts: &[VId],
+    default_name: &str,
+    units: &fa_money::UnitRegistry,
+) -> Result<ParsedCashFlowSplits, Fail> {
+    use fa::cash_flow_split::{CashFlowLegSplit, CashFlowPortion, CashFlowSplitDefinition};
+
+    validate_cash_flow_split_policy_fields(doc, false)?;
+    // Share direct-policy name/account defaults, after the split format has
+    // excluded assignments and every other format's fields.
+    let base = parse_cash_flow_definition(doc, book_id, default_accounts, default_name)?;
+    let Some(Json::Arr(items)) = doc.get("splits") else {
+        return Err(usage(
+            "cash split policy requires `splits`",
+            SPLIT_POLICY_EXAMPLE,
+        ));
+    };
+    if items.len() > fa::MAX_GENERAL_LEDGER_LINES {
+        return Err(usage(
+            "cash split policy exceeds the native leg bound",
+            SPLIT_POLICY_EXAMPLE,
+        ));
+    }
+    let string = |value: &Json, field: &str| -> Result<String, Fail> {
+        match value.get(field) {
+            Some(Json::Str(text)) if !text.trim().is_empty() => Ok(text.clone()),
+            _ => Err(usage(
+                format!("cash split `{field}` requires a nonempty string"),
+                SPLIT_POLICY_EXAMPLE,
+            )),
+        }
+    };
+    let mut splits = Vec::with_capacity(items.len());
+    let mut leg_units = std::collections::BTreeMap::new();
+    for item in items {
+        let entry_digest = parse_digest32(&string(item, "entry_digest")?, "split.entry_digest")?;
+        let leg_index = match item.get("leg_index") {
+            Some(Json::Int(index)) => u32::try_from(*index)
+                .map_err(|_| usage("cash split leg_index must fit in u32", SPLIT_POLICY_EXAMPLE))?,
+            _ => {
+                return Err(usage(
+                    "cash split requires integer leg_index",
+                    SPLIT_POLICY_EXAMPLE,
+                ));
+            }
+        };
+        let reason = string(item, "reason")?;
+        let Some(Json::Arr(values)) = item.get("portions") else {
+            return Err(usage(
+                "cash split requires `portions`",
+                SPLIT_POLICY_EXAMPLE,
+            ));
+        };
+        if values.is_empty()
+            || values.len() > fa::cash_flow_split::MAX_CASH_FLOW_SPLIT_PARTS_PER_LEG
+        {
+            return Err(usage(
+                "each cash split needs one to five portions",
+                SPLIT_POLICY_EXAMPLE,
+            ));
+        }
+        let mut portions = Vec::with_capacity(values.len());
+        let mut leg_unit = None;
+        for value in values {
+            let text = string(value, "amount")?;
+            let amount = Amount::parse(&text, units).map_err(|error| {
+                usage(
+                    format!("cash split amount `{text}`: {error}"),
+                    SPLIT_POLICY_EXAMPLE,
+                )
+            })?;
+            if leg_unit.is_some_and(|unit| unit != amount.unit) {
+                return Err(usage(
+                    "all portions of one cash leg must declare the same native unit",
+                    SPLIT_POLICY_EXAMPLE,
+                ));
+            }
+            leg_unit = Some(amount.unit);
+            portions.push(CashFlowPortion {
+                activity: parse_cash_flow_activity(&string(value, "activity")?)?,
+                amount: amount.mantissa,
+            });
+        }
+        let unit =
+            leg_unit.ok_or_else(|| usage("cash split has no amount", SPLIT_POLICY_EXAMPLE))?;
+        if leg_units.insert((entry_digest, leg_index), unit).is_some() {
+            return Err(usage(
+                "cash split repeats an original leg",
+                SPLIT_POLICY_EXAMPLE,
+            ));
+        }
+        splits.push(CashFlowLegSplit {
+            entry_digest,
+            leg_index,
+            reason,
+            portions,
+        });
+    }
+    let definition = CashFlowSplitDefinition {
+        name: base.name,
+        cash_accounts: base.cash_accounts,
+        splits,
+    };
+    // The existing definition codec enforces bounded reasons, unique activities
+    // and strictly positive amounts before any native read or certificate write.
+    definition.canonical_bytes()?;
+    Ok(ParsedCashFlowSplits {
+        definition,
+        leg_units,
+    })
+}
+
+pub(crate) fn cash_flow_split_rows_json(
+    report: &fa::cash_flow_split::SplitCashFlow,
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<Json>, Fail> {
+    let source_units = cash_flow_source_units(report.source())?;
+    report
+        .definition()
+        .splits
+        .iter()
+        .map(|split| {
+            let unit = *source_units
+                .get(&(split.entry_digest, split.leg_index))
+                .ok_or_else(|| {
+                    cash_flow_split_source_refusal("cash split output has no cited native leg")
+                })?;
+            let portions = split
+                .portions
+                .iter()
+                .map(|portion| {
+                    Ok(obj(vec![
+                        ("activity", s(cash_flow_activity_name(portion.activity))),
+                        (
+                            "amount",
+                            s(render_amount(Amount::new(unit, portion.amount), units)?),
+                        ),
+                    ]))
+                })
+                .collect::<Result<Vec<_>, Fail>>()?;
+            Ok(obj(vec![
+                ("entry_digest", s(hex(&split.entry_digest))),
+                ("leg_index", Json::Int(i128::from(split.leg_index))),
+                ("reason", s(&split.reason)),
+                ("portions", Json::Arr(portions)),
+            ]))
+        })
+        .collect()
+}
+
 const RULES_POLICY_EXAMPLE: &str = r#"{"name":"cash-rules-v1","cash_accounts":["1000"],"account_rules":[{"account":"4000","activity":"operating"}],"overrides":[]}"#;
 
 /// A rule policy (fa-i9yn) is its own format: `account_rules` classify non-cash
@@ -11802,9 +12085,9 @@ fn gl_aging_portfolio(
     Ok(())
 }
 
-/// One `cash_flow_unit` row per native unit, shared by direct and policy cash flow.
+/// One `cash_flow_unit` row per native unit, shared by direct, policy and split cash flow.
 fn cash_flow_units_json(
-    cf: &fa::CashFlow,
+    cash_units: &[fa::CashFlowUnit],
     units: &fa_money::UnitRegistry,
 ) -> Result<Vec<Json>, Fail> {
     let section_json = |sec: CashFlowSection, unit_id: u32| -> Result<Json, Fail> {
@@ -11815,7 +12098,7 @@ fn cash_flow_units_json(
             ("net", s(fmt(sec.net)?)),
         ]))
     };
-    cf.units()
+    cash_units
         .iter()
         .map(|u| {
             let unit_code = registered_unit_code(fa_money::UnitId(u.unit_id), units)?.to_string();
@@ -11873,7 +12156,7 @@ fn gl_policy_cash_flow(
     out.known_at(source.known_at());
     let units = &book.context().units;
     let cash_accounts: Vec<Json> = source.accounts().iter().map(|a| s(&a.code)).collect();
-    let unit_rows = cash_flow_units_json(cf, units)?;
+    let unit_rows = cash_flow_units_json(cf.units(), units)?;
     let decisions: Vec<Json> = report
         .decisions()
         .iter()
@@ -11946,6 +12229,107 @@ fn gl_policy_cash_flow(
             &bytes,
             &retained,
             &notary::policy_cash_flow_expectation_json(&request, &policy),
+        );
+    }
+    Ok(())
+}
+
+/// An explicit split policy classifies portions of original cash legs. Resolve
+/// HEAD once, validate every supplied currency against that admitted native
+/// source, then use the same fixed prefix for computation and certification.
+#[allow(clippy::too_many_arguments)]
+fn gl_split_cash_flow(
+    out: &Out,
+    files: &Files,
+    args: &Args,
+    book: &mut Book,
+    who: VId,
+    capability: &Capability,
+    certify: bool,
+    mut request: RollForwardRequest,
+    parsed: ParsedCashFlowSplits,
+) -> Result<(), Fail> {
+    let source = book.general_ledger(who, capability, &request)??;
+    request.known_at = Some(source.known_at());
+    let definition = parsed.bind_to_source(&source)?;
+    drop(source);
+    let (report, artifact) = if certify {
+        let certified = book.certify_cash_flow_split(who, capability, &request, &definition)??;
+        let artifact = fa::ReportArtifact::try_from(certified.certificate())?;
+        (certified.report().clone(), Some(artifact))
+    } else {
+        (
+            book.read_split_cash_flow(who, capability, &request, &definition)??,
+            None,
+        )
+    };
+    let source = report.source();
+    out.known_at(source.known_at());
+    let units = &book.context().units;
+    let unit_rows = cash_flow_units_json(report.units(), units)?;
+    let split_rows = cash_flow_split_rows_json(&report, units)?;
+    let cash_accounts = source
+        .accounts()
+        .iter()
+        .map(|account| s(&account.code))
+        .collect();
+    // Formatting a replay expectation also checks its 1 MiB transport bound.
+    // This must happen before retention or creation of a certificate file.
+    let expected = artifact
+        .as_ref()
+        .map(|_| notary::split_cash_flow_expectation_json(&request, &report, units))
+        .transpose()?;
+    let human = format!(
+        "split cash flow `{}` ({}..={}): {} unit(s), {} original cash leg split(s)",
+        report.definition().name,
+        source.effective_from().render(),
+        source.effective_through().render(),
+        report.units().len(),
+        report.definition().splits.len(),
+    );
+    let retained = artifact
+        .as_ref()
+        .map(|artifact| {
+            notary::retain_report_artifact_for(
+                book,
+                files,
+                args,
+                artifact,
+                capability,
+                fa::ReportArtifactExpectation::SplitCashFlow {
+                    request: &request,
+                    definition: report.definition(),
+                },
+            )
+        })
+        .transpose()?;
+    let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+    out.event_with_certificate(
+        "split_cash_flow",
+        vec![
+            ("policy", s(&report.definition().name)),
+            ("label", s(source.label())),
+            ("known_at", Json::Int(i128::from(source.known_at().0))),
+            ("effective_from", s(source.effective_from().render())),
+            ("effective_through", s(source.effective_through().render())),
+            ("cash_accounts", Json::Arr(cash_accounts)),
+            ("units", Json::Arr(unit_rows)),
+            ("splits", Json::Arr(split_rows)),
+        ],
+        &human,
+        digest.as_deref(),
+    );
+    if let (Some(artifact), Some((bytes, retained)), Some(expected)) =
+        (artifact.as_ref(), retained, expected.as_ref())
+    {
+        notary::emit_report_artifact_for(
+            out,
+            args,
+            artifact,
+            fa::cash_flow_split::CASH_FLOW_SPLIT_FORMAT,
+            &bytes,
+            &retained,
+            expected,
         );
     }
     Ok(())
@@ -12532,10 +12916,14 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "pass a valid JSON object for --policy",
                 )
             })?;
-            // `account_rules` selects the rule-policy format; the direct and
-            // indirect formats still refuse it as an unknown field.
+            // Each richer policy format has an explicit selector. Its strict
+            // parser rejects fields from the other formats rather than ignoring
+            // a classification input supplied in the wrong shape.
+            let splits = policy_doc.get("splits").is_some();
             let rules = policy_doc.get("account_rules").is_some();
-            if rules {
+            if splits {
+                validate_cash_flow_split_policy_fields(&policy_doc, args.switch("--indirect"))?;
+            } else if rules {
                 validate_cash_flow_rules_policy_fields(&policy_doc, args.switch("--indirect"))?;
             } else {
                 validate_cash_flow_policy_fields(&policy_doc, args.switch("--indirect"))?;
@@ -12705,6 +13093,25 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     );
                 }
                 Ok(())
+            } else if splits {
+                let parsed = parse_cash_flow_splits(
+                    &policy_doc,
+                    book.context().book_id,
+                    &req.accounts,
+                    "cash-flow",
+                    &book.context().units,
+                )?;
+                gl_split_cash_flow(
+                    out,
+                    &ctx.files,
+                    args,
+                    &mut book,
+                    who,
+                    &capability,
+                    certify,
+                    req,
+                    parsed,
+                )
             } else if rules {
                 let policy = parse_cash_flow_rules_policy(
                     &policy_doc,
@@ -12742,7 +13149,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 out.known_at(source.known_at());
                 let cash_accounts: Vec<Json> =
                     source.accounts().iter().map(|a| s(&a.code)).collect();
-                let unit_rows = cash_flow_units_json(&cf, units)?;
+                let unit_rows = cash_flow_units_json(cf.units(), units)?;
                 let human = format!(
                     "cash flow `{}` ({}..={}): {} unit(s)",
                     cf.definition().name,

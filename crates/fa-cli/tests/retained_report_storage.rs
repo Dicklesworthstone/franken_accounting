@@ -177,6 +177,10 @@ fn day() -> DateDay {
 }
 
 fn post(book: &mut Book, n: u32) {
+    post_cash_movement(book, n, "USD", 100, Side::Debit);
+}
+
+fn post_cash_movement(book: &mut Book, n: u32, unit: &str, amount: i128, side: Side) {
     let document = Document {
         book_id: BOOK_ID,
         kind: 1,
@@ -186,17 +190,21 @@ fn post(book: &mut Book, n: u32) {
         bytes: b"source for report CLI postings".to_vec(),
     };
     book.add_document(&document).unwrap().unwrap();
-    let usd = book.context().units.lookup("USD").unwrap();
+    let unit = book.context().units.lookup(unit).unwrap();
+    let counterpart = match side {
+        Side::Debit => Side::Credit,
+        Side::Credit => Side::Debit,
+    };
     let legs = vec![
         LegPayload::simple(
-            Side::Debit,
+            side,
             account_vid(BOOK_ID, "1000"),
-            Amount::new(usd, 100),
+            Amount::new(unit, amount),
         ),
         LegPayload::simple(
-            Side::Credit,
+            counterpart,
             account_vid(BOOK_ID, "4000"),
-            Amount::new(usd, 100),
+            Amount::new(unit, amount),
         ),
     ];
     let proposal = EntryPayload {
@@ -1796,4 +1804,390 @@ fn rule_policy_cash_flow_equals_its_explicit_leg_assignments_and_replays_only_ag
         assert_eq!(errors.len(), 1, "{why}");
     }
     assert_eq!(f.head(), retained, "replays are reads");
+}
+
+#[test]
+fn split_cash_flow_preserves_original_units_and_replays_exact_portions_at_its_fixed_prefix() {
+    let mut f = Fixture::new();
+    let mut book = f.open();
+    // A mixed principal/interest outflow follows the 64 one-dollar receipts.
+    // A second currency shares the same scale; it must remain a separate stock.
+    post_cash_movement(&mut book, 64, "USD", 100, Side::Credit);
+    post_cash_movement(&mut book, 65, "EUR", 300, Side::Debit);
+    f.source_head = book.head().unwrap();
+    drop(book);
+    let at = f.source_head.0.to_string();
+    let baseline = f.ok(&[
+        "gl",
+        "detail",
+        "--account",
+        "1000",
+        "--unit",
+        "USD,EUR",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--as-known-at",
+        &at,
+    ]);
+    let lines = data(&baseline, "general_ledger")
+        .get("lines")
+        .and_then(Json::as_arr)
+        .unwrap();
+    assert_eq!(lines.len(), 66);
+    let portion =
+        |activity: &str, amount: &str| obj(vec![("activity", s(activity)), ("amount", s(amount))]);
+    let splits: Vec<Json> = lines
+        .iter()
+        .map(|line| {
+            let (reason, portions) = if text(line, "credits") == "1.00 USD" {
+                (
+                    "Principal and interest",
+                    vec![
+                        portion("financing", "0.80 USD"),
+                        portion("operating", "0.20 USD"),
+                    ],
+                )
+            } else if text(line, "debits") == "3.00 EUR" {
+                (
+                    "Operating receipt and asset disposal",
+                    vec![
+                        portion("operating", "1.00 EUR"),
+                        portion("investing", "2.00 EUR"),
+                    ],
+                )
+            } else {
+                assert_eq!(text(line, "debits"), "1.00 USD");
+                ("Operating receipt", vec![portion("operating", "1.00 USD")])
+            };
+            obj(vec![
+                ("entry_digest", line.get("entry_digest").unwrap().clone()),
+                ("leg_index", line.get("leg_index").unwrap().clone()),
+                ("reason", s(reason)),
+                ("portions", Json::Arr(portions)),
+            ])
+        })
+        .collect();
+    let policy = obj(vec![
+        ("name", s("mixed-payments-v1")),
+        ("cash_accounts", Json::Arr(vec![s("1000")])),
+        ("splits", Json::Arr(splits.clone())),
+    ]);
+    // Recipient inputs are independently constructed before producing an artifact.
+    let expectation = obj(vec![
+        ("kind", s("split-cash-flow")),
+        ("accounts", Json::Arr(vec![s("1000")])),
+        ("units", Json::Arr(vec![s("USD"), s("EUR")])),
+        ("label", s("cash-flow")),
+        ("from", s("2026-01-01")),
+        ("through", s("2026-01-31")),
+        ("known_at", Json::Int(i128::from(f.source_head.0))),
+        ("policy", policy.clone()),
+    ]);
+    let policy_path = f.dir.join("split-policy.json");
+    let policy_arg = policy_path.to_str().unwrap();
+    std::fs::write(&policy_path, policy.render()).unwrap();
+    let before = f.head();
+    let original_events = f.ok(&cash_flow_args(&at, policy_arg, &["--unit", "USD,EUR"]));
+    let original = data(&original_events, "split_cash_flow");
+    assert_eq!(keys(original), pinned_fields("events", "split_cash_flow"));
+    let rows = original.get("splits").and_then(Json::as_arr).unwrap();
+    assert_eq!(
+        rows.len(),
+        lines.len(),
+        "portions never synthesize original cash legs"
+    );
+    for split in rows {
+        assert_eq!(keys(split), pinned_fields("shapes", "cash_flow_leg_split"));
+        for part in split.get("portions").and_then(Json::as_arr).unwrap() {
+            assert_eq!(keys(part), pinned_fields("shapes", "cash_flow_portion"));
+        }
+    }
+    let units = original.get("units").and_then(Json::as_arr).unwrap();
+    assert_eq!(units.len(), 2);
+    let usd = units
+        .iter()
+        .find(|unit| text(unit, "unit") == "USD")
+        .unwrap();
+    assert_eq!(text(usd, "opening"), "0.00 USD");
+    assert_eq!(text(usd, "closing"), "63.00 USD");
+    assert_eq!(text(usd.get("operating").unwrap(), "inflows"), "64.00 USD");
+    assert_eq!(text(usd.get("operating").unwrap(), "outflows"), "0.20 USD");
+    assert_eq!(text(usd.get("financing").unwrap(), "outflows"), "0.80 USD");
+    assert_eq!(text(usd.get("financing").unwrap(), "net"), "-0.80 USD");
+    let eur = units
+        .iter()
+        .find(|unit| text(unit, "unit") == "EUR")
+        .unwrap();
+    assert_eq!(text(eur, "closing"), "3.00 EUR");
+    assert_eq!(text(eur.get("operating").unwrap(), "net"), "1.00 EUR");
+    assert_eq!(text(eur.get("investing").unwrap(), "net"), "2.00 EUR");
+
+    let mut held_book = f.open();
+    let held_events = held(
+        &mut held_book,
+        &f.dir,
+        &cash_flow_args(&at, "-", &["--unit", "USD,EUR"]),
+        Stdin::Forwarded(policy.render().into_bytes()),
+    );
+    assert_eq!(data(&held_events, "split_cash_flow"), original);
+    drop(held_book);
+    assert_eq!(
+        f.head(),
+        before,
+        "ordinary direct and held reports are read-only"
+    );
+
+    fn replace(value: &Json, key: &str, replacement: Json) -> Json {
+        let Json::Obj(mut fields) = value.clone() else {
+            panic!("expected object")
+        };
+        let field = fields.iter_mut().find(|(name, _)| name == key).unwrap();
+        field.1 = replacement;
+        Json::Obj(fields)
+    }
+    let receipt_index = lines
+        .iter()
+        .position(|line| text(line, "debits") == "1.00 USD")
+        .unwrap();
+    let with_receipt = |replacement: Json| {
+        let mut changed = splits.clone();
+        changed[receipt_index] = replacement;
+        replace(&policy, "splits", Json::Arr(changed))
+    };
+    let receipt = &splits[receipt_index];
+    let currency_substitution = with_receipt(replace(
+        receipt,
+        "portions",
+        Json::Arr(vec![portion("operating", "1.00 EUR")]),
+    ));
+    let mut unknown_fields = match policy.clone() {
+        Json::Obj(fields) => fields,
+        _ => unreachable!(),
+    };
+    unknown_fields.push(("account_rules".into(), Json::Arr(Vec::new())));
+    let mut repeated = splits.clone();
+    repeated.push(receipt.clone());
+    let mut omitted = splits.clone();
+    omitted.pop();
+    let refusals = vec![
+        (
+            currency_substitution.clone(),
+            vec![],
+            "same-scale EUR cannot replace a USD leg",
+        ),
+        (
+            with_receipt(replace(
+                receipt,
+                "portions",
+                Json::Arr(vec![portion("operating", "0.99 USD")]),
+            )),
+            vec![],
+            "the partition must total the original leg",
+        ),
+        (
+            with_receipt(replace(
+                receipt,
+                "portions",
+                Json::Arr(vec![
+                    portion("operating", "0.50 USD"),
+                    portion("operating", "0.50 USD"),
+                ]),
+            )),
+            vec![],
+            "each activity occurs once",
+        ),
+        (
+            with_receipt(replace(receipt, "leg_index", Json::Int(1))),
+            vec![],
+            "a non-cash counterpart is outside scope",
+        ),
+        (
+            with_receipt(replace(receipt, "reason", s(""))),
+            vec![],
+            "a split reason is mandatory",
+        ),
+        (
+            with_receipt(replace(
+                receipt,
+                "portions",
+                Json::Arr(vec![obj(vec![
+                    ("activity", s("operating")),
+                    ("amount", Json::Int(1)),
+                ])]),
+            )),
+            vec![],
+            "amounts must name the native unit",
+        ),
+        (
+            replace(&policy, "splits", Json::Arr(repeated)),
+            vec![],
+            "a cash leg cannot be repeated",
+        ),
+        (
+            replace(&policy, "splits", Json::Arr(omitted)),
+            vec![],
+            "every selected cash leg needs a split",
+        ),
+        (
+            Json::Obj(unknown_fields),
+            vec![],
+            "formats cannot mix classification fields",
+        ),
+        (
+            policy.clone(),
+            vec!["--indirect", "--income-period", PERIOD],
+            "split and indirect formats cannot mix",
+        ),
+    ];
+    for (index, (invalid_policy, extra, why)) in refusals.into_iter().enumerate() {
+        std::fs::write(&policy_path, invalid_policy.render()).unwrap();
+        let path = f.dir.join(format!("refused-split-{index}.cert"));
+        let mut args = cash_flow_args(&at, policy_arg, &["--unit", "USD,EUR"]);
+        args.extend(["--certificate-out", path.to_str().unwrap()]);
+        args.extend(extra);
+        let (exit, errors) = f.run(&args);
+        assert_eq!(exit, 2, "{why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "{why}: only the refusal is emitted");
+        assert!(
+            !path.exists(),
+            "{why}: failed policy cannot create a certificate file"
+        );
+        assert_eq!(
+            f.head(),
+            before,
+            "{why}: failed policy cannot retain a certificate"
+        );
+    }
+
+    std::fs::write(&policy_path, policy.render()).unwrap();
+    let cert_path = f.dir.join("split.cert");
+    let certified = f.ok(&cash_flow_args(
+        "HEAD",
+        policy_arg,
+        &[
+            "--unit",
+            "USD,EUR",
+            "--certificate-out",
+            cert_path.to_str().unwrap(),
+        ],
+    ));
+    assert_eq!(
+        data(&certified, "split_cash_flow"),
+        original,
+        "HEAD was fixed before retention"
+    );
+    let metadata = data(&certified, "report_certificate");
+    assert_eq!(text(metadata, "output_format"), "fa:cash-flow-split:v1");
+    let bytes = std::fs::read(&cert_path).unwrap();
+    assert_eq!(bytes, unhex(text(metadata, "bytes")));
+    let certificate = fa::cash_flow_split::CashFlowSplitCertificate::decode(&bytes).unwrap();
+    assert_eq!(certificate.known_at(), f.source_head);
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let retained = f.head();
+    let retry = f.ok(&cash_flow_args(
+        &at,
+        policy_arg,
+        &["--unit", "USD,EUR", "--certify"],
+    ));
+    assert_eq!(
+        text(data(&retry, "report_certificate"), "oid"),
+        text(metadata, "oid")
+    );
+    assert_eq!(
+        f.head(),
+        retained,
+        "same-prefix certification retry is idempotent"
+    );
+
+    for (index, input) in [locator.as_str(), cert_path.to_str().unwrap()]
+        .into_iter()
+        .enumerate()
+    {
+        let output = f.dir.join(format!("split-replay-{index}.bin"));
+        let replayed = f.ok(&[
+            "replay",
+            input,
+            "--expect",
+            &expectation.render(),
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        assert_eq!(
+            text(data(&replayed, "report_replayed"), "family"),
+            "split-cash-flow"
+        );
+        assert_eq!(std::fs::read(output).unwrap(), certificate.output());
+    }
+    let (exit, errors) = f.run(&["replay", &locator]);
+    assert_eq!(
+        exit, 8,
+        "a delivered split definition cannot supply recipient expectations: {errors:?}"
+    );
+    assert!(text(data(&errors, "error"), "fix").contains("--expect"));
+
+    let changed_activity = with_receipt(replace(
+        receipt,
+        "portions",
+        Json::Arr(vec![portion("financing", "1.00 USD")]),
+    ));
+    let changed_reason = with_receipt(replace(
+        receipt,
+        "reason",
+        s("Different accounting judgment"),
+    ));
+    for (expected, code, why) in [
+        (
+            replace(&expectation, "policy", currency_substitution),
+            8,
+            "recipient EUR/USD substitution",
+        ),
+        (
+            replace(&expectation, "policy", changed_activity),
+            8,
+            "same cash stock, different activity",
+        ),
+        (
+            replace(&expectation, "policy", changed_reason),
+            8,
+            "same amounts, different reason",
+        ),
+        (
+            replace(&expectation, "known_at", s("HEAD")),
+            2,
+            "recipient requires fixed prefix",
+        ),
+        (
+            replace(&expectation, "through", s("2026-01-30")),
+            8,
+            "different date window",
+        ),
+    ] {
+        let (actual, errors) = f.run(&["replay", &locator, "--expect", &expected.render()]);
+        assert_eq!(actual, code, "{why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "{why}");
+    }
+    assert_eq!(f.head(), retained, "all replays and refusals are read-only");
+    let mut book = f.open();
+    post(&mut book, 900);
+    let later = book.head().unwrap();
+    drop(book);
+    let output = f.dir.join("split-after-backdate.bin");
+    f.ok(&[
+        "replay",
+        &locator,
+        "--expect",
+        &expectation.render(),
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(std::fs::read(output).unwrap(), certificate.output());
+    let changed_prefix = replace(&expectation, "known_at", Json::Int(i128::from(later.0)));
+    let (exit, errors) = f.run(&["replay", &locator, "--expect", &changed_prefix.render()]);
+    assert_eq!(
+        exit, 8,
+        "later native source is a different request: {errors:?}"
+    );
+    assert_eq!(f.head(), later);
 }
