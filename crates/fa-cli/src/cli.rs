@@ -1752,7 +1752,10 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         }
         ("document", Some("erase")) => &[Op::Erase],
         ("document", Some("hold")) => {
-            if args.positional.get(2).map(String::as_str) == Some("show") {
+            if matches!(
+                args.positional.get(2).map(String::as_str),
+                Some("show" | "list")
+            ) {
                 &[Op::Read]
             } else {
                 &[Op::Hold]

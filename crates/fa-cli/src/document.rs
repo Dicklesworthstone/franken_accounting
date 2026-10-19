@@ -1020,12 +1020,61 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             );
             Ok(())
         }
+        Some("list") => {
+            // The holds active on one subject (an entry, a document or any
+            // held vertex), ascending: what blocks its erasure or release.
+            const FIX: &str = "fa document hold list --subject <vid|oid> --book <dir> --json";
+            let subject = match args.flag_all("--subject").as_slice() {
+                [one] => parse_subject_vid(one, "--subject")?,
+                _ => {
+                    return Err(usage(
+                        "`fa document hold list` takes exactly one --subject <vid|oid>",
+                        FIX,
+                    ));
+                }
+            };
+            if args.positional.len() != 3 {
+                return Err(usage("`fa document hold list` takes no argument", FIX));
+            }
+            let who = ctx.principal(args);
+            let cap = ctx.capability(args, &["read"])?;
+            let book = ctx
+                .books
+                .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+            let holds = book.legal_holds_on(subject)?;
+            ctx.out.at_book(&book)?;
+            ctx.out.event(
+                "legal_holds",
+                vec![
+                    ("subject", s(format!("{:032x}", subject.0))),
+                    (
+                        "holds",
+                        Json::Arr(holds.iter().map(|v| s(format!("{:032x}", v.0))).collect()),
+                    ),
+                ],
+                &if holds.is_empty() {
+                    format!("no active legal hold on {:032x}", subject.0)
+                } else {
+                    format!(
+                        "{} active legal hold(s) on {:032x}: {}",
+                        holds.len(),
+                        subject.0,
+                        holds
+                            .iter()
+                            .map(|v| format!("{:032x}", v.0))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
+            );
+            Ok(())
+        }
         other => Err(usage(
             format!(
-                "`fa hold` needs `place`, `release`, or `show`{}",
+                "`fa hold` needs `place`, `release`, `show` or `list`{}",
                 other.map_or_else(String::new, |o| format!(" (got `{o}`)"))
             ),
-            "fa hold place|release|show ...",
+            "fa hold place|release|show|list ...",
         )),
     }
 }

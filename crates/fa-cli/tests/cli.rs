@@ -5408,6 +5408,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         .unwrap_or_default()
         .to_string();
     run2(&["hold", "show", &hold_vid]);
+    run2(&["hold", "list", "--subject", &bank_oid]);
     let rel_plan = dir.join("rel_ev.plan").display().to_string();
     let (_, rel_planned) = run2(&[
         "hold",
@@ -8940,6 +8941,15 @@ fn docket_steward_and_migration_controls_round_trip() -> std::io::Result<()> {
     let shown_hold = ok(&["hold", "show", &hold_vid, "--json"]);
     assert_eq!(field(&shown_hold, "event"), Some("legal_hold"));
     assert_eq!(doc(&shown_hold).get("active"), Some(&Json::Bool(true)));
+    // The subject names its active hold: what blocks its erasure.
+    let held = ok(&["hold", "list", "--subject", &bank_oid, "--json"]);
+    assert_eq!(field(&held, "event"), Some("legal_holds"));
+    assert_eq!(arr(&doc(&held), "holds"), [Json::Str(hold_vid.clone())]);
+    let unheld = ok(&["hold", "list", "--subject", &order_oid, "--json"]);
+    assert!(
+        arr(&doc(&unheld), "holds").is_empty(),
+        "the authority document is not itself held: {unheld}"
+    );
 
     // Erase while under active legal hold -> refused with exit 7 (FA-REF-117)
     let erase_held = fail(&["erase", &bank_oid, "--yes", "--json"], 7);
@@ -8987,6 +8997,11 @@ fn docket_steward_and_migration_controls_round_trip() -> std::io::Result<()> {
         "--json",
     ]);
     assert_eq!(field(&released, "event"), Some("legal_hold_released"));
+    let after_release = ok(&["hold", "list", "--subject", &bank_oid, "--json"]);
+    assert!(
+        arr(&doc(&after_release), "holds").is_empty(),
+        "a released hold is no longer active: {after_release}"
+    );
 
     // Erase after hold release -> refused with exit 3 (FA-REF-088: financial records not erasable)
     let erase_after = fail(&["erase", &bank_oid, "--yes", "--json"], 3);
