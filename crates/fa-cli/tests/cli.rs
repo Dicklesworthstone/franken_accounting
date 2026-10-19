@@ -12703,11 +12703,11 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
     assert_eq!(code, 0, "{out}\n{err}");
     let status = doc(&out);
     assert_eq!(text(&status, "status"), "SupersededBy", "{out}");
-    let later: Vec<&str> = arr(&status, "later_entries")
+    let superseding: Vec<&str> = arr(&status, "later_entries")
         .iter()
         .filter_map(Json::as_str)
         .collect();
-    assert_eq!(later, [cost_record.as_str()], "{out}");
+    assert_eq!(superseding, [cost_record.as_str()], "{out}");
     assert_eq!(int(&status, "known_at"), fork_at, "{out}");
     assert_eq!(field(&out, "certificate"), Some(oid.as_str()));
     let (code, out, err) = run(&["certificate", "status", &format!("C:{both_oid}")]);
