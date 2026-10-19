@@ -74,6 +74,7 @@ pub mod projections;
 pub mod proof;
 pub mod report_artifact;
 pub mod roll_forward;
+pub mod scenario;
 pub mod settlement;
 pub mod settlement_group;
 pub mod settlement_group_review;
@@ -178,6 +179,7 @@ pub use roll_forward::{
     CertifiedRollForward, MAX_ROLL_FORWARD_CERTIFICATE_BYTES, MAX_ROLL_FORWARD_WORKPAPER_BYTES,
     ROLL_FORWARD_CERTIFICATE_FORMAT, RollForward, RollForwardCertificate, RollForwardRequest,
 };
+pub use scenario::{ScenarioBook, ScenarioDiff, ScenarioDiffRow, ScenarioRun};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,

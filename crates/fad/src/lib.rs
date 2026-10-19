@@ -762,6 +762,7 @@ impl Server<'_> {
     pub fn at(&self) -> Option<cli::At> {
         self.book.head().ok().map(|known_at| cli::At {
             book: self.book.context().book_id.to_hex(),
+            branch: "trunk".into(),
             known_at,
             effective: "all".into(),
         })

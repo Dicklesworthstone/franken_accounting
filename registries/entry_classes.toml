@@ -194,6 +194,18 @@ name = "DraftControl"
 kind = "control"
 supersession = "none"
 
+# A Scenario's lifecycle (plan §15.2, Appendix B `ForkScenario`; fa-k07b):
+# book-scoped and undated; ControlPayload::LifecycleTransition on the scenario —
+# Open (its body in extension 10 `fa:scenario-body:v1`: fork sequence and the
+# optional counterfactual start date; assumption documents as proof refs), Plan
+# (one counterfactual intent in extension 11 `fa:scenario-intent:v1`), Discard.
+# A scenario is never promoted: its intents post only into scratch replays.
+[[class]]
+tag = 26
+name = "ScenarioControl"
+kind = "control"
+supersession = "none"
+
 # ---- Control kinds (fa-g23) ---------------------------------------------------
 # `EntryOrigin::Control.control_kind`: the act that minted a control record. It
 # is durable in every control record's origin, so it is registered here rather
@@ -273,3 +285,9 @@ id = 11
 name = "draft_transition"
 class = "DraftControl"
 minted_by = "fa-journal draft::open_draft, draft::plan_into_draft, draft::promote_draft, draft::discard_draft"
+
+[[control_kind]]
+id = 12
+name = "scenario_transition"
+class = "ScenarioControl"
+minted_by = "fa-journal scenario::open_scenario, scenario::plan_into_scenario, scenario::discard_scenario"

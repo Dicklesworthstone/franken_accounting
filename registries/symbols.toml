@@ -143,6 +143,12 @@ name = "RegisterState"
 id = 42
 name = "IntentOutcome"
 
+# fa-k07b: a Scenario lifecycle object (plan §15.2): its immutable body and
+# state projection; its records are ScenarioControl entries.
+[[label]]
+id = 43
+name = "Scenario"
+
 # ---- property keys --------------------------------------------------------
 [[property]]
 id = 1

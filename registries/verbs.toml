@@ -147,11 +147,23 @@ usage = ["draft new <name> [--description <text>] [--as <principal>]   (opens an
 example = "fa draft new close-03 --as agent-7 --book ./books/myco --json"
 
 [[verb]]
+name = "scenario"
+summary = "Scenarios (plan §15.2, §15.6.5): counterfactual intent logs over a fixed trunk prefix. Fork one at a trunk sequence (HEAD by default) with an optional counterfactual start date and assumption documents, run intents in it (each rehearsed on the scenario's materialization: a scratch replay of the trunk prefix plus its earlier intents, under every posting law), inspect it, diff it against trunk as known at the fork, or discard it. A scenario never posts to trunk and is never promoted."
+writes = true
+subcommands = ["fork", "run", "list", "show", "diff", "discard"]
+flags = ["--at", "--from", "--evidence", "--event", "--intent", "--period", "--date", "--description", "--reason", "--grant"]
+switches = ["--activity"]
+events = ["scenario_forked", "scenario_run", "scenarios", "scenario_detail", "scenario_diff", "scenario_discarded"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["scenario fork <name> [--at HEAD|<seq>] [--from YYYY-MM-DD] [--evidence <assumption-document-oid>]... [--description <text>]   (forks at a trunk sequence, HEAD by default; --from is where the counterfactual starts: every intent run in the scenario is effective on or after it; trunk history is never filtered)", "scenario run <name> --intent <file.json|-> [--evidence <oid>]...   (rehearses the intent on the scenario's materialization and journals it into the scenario; also: fa post, invoice, bill, receipt or payment with --scenario <name>)", "scenario list", "scenario show <name>   (its fork, assumptions and intents in run order)", "scenario diff <name> --period <code>... [--activity]   (per account and unit, exact: trunk as known at the fork sequence against the scenario's materialization; only changed rows; stock balances, or period movement with --activity)", "scenario discard <name> [--reason <text>]   (the owner, or a principal holding approve, closes it; nothing is deleted)", "A scenario is materialized on every run and diff (plan §15.2 interim posture until substrate branches): the trunk prefix's accounting objects are replayed into a scratch book and every intent is posted again under every posting law. The diff binds the scenario body, its intent records, the fork sequence and the replay's SeqMap digest; it is not yet a retained, replayable certificate. Reads select a scenario with --branch scenario:<name> (tb, statement, explain, open-items, gl), uncertified."]
+example = "fa scenario fork but-for-breach --from 2025-07-01 --book ./books/myco --json"
+
+[[verb]]
 name = "post"
 summary = "Post one entry intent under the accounting laws (balance, period law, idempotency)."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on", "--draft"]
+flags = ["--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "batch_posted", "draft_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
@@ -163,7 +175,7 @@ name = "invoice"
 summary = "Post a customer invoice (plan §15.3, Appendix B): typed sugar over fa post that builds the Original entry from its lines, debiting the receivable for the party and crediting each line's revenue account. No posting rule or tax is inferred."
 writes = true
 subcommands = []
-flags = ["--party", "--number", "--date", "--receivable", "--revenue", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft"]
+flags = ["--party", "--number", "--date", "--receivable", "--revenue", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
@@ -176,7 +188,7 @@ name = "bill"
 summary = "Post a vendor bill (plan §15.3, Appendix B): typed sugar over fa post that builds the Original entry from its lines, crediting the payable for the party and debiting each line's expense account. No posting rule or tax is inferred."
 writes = true
 subcommands = []
-flags = ["--party", "--number", "--date", "--payable", "--expense", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft"]
+flags = ["--party", "--number", "--date", "--payable", "--expense", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
@@ -189,7 +201,7 @@ name = "receipt"
 summary = "Post a customer receipt (plan §15.3, Appendix B): cash debited, the receivable credited for the party, the credit applied to the open invoices --applies names. Typed sugar over fa post."
 writes = true
 subcommands = []
-flags = ["--party", "--number", "--date", "--cash", "--receivable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft"]
+flags = ["--party", "--number", "--date", "--cash", "--receivable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
@@ -202,7 +214,7 @@ name = "payment"
 summary = "Post a vendor payment (plan §15.3, Appendix B): the payable debited for the party, cash credited, the debit applied to the open bills --applies names. Typed sugar over fa post."
 writes = true
 subcommands = []
-flags = ["--party", "--number", "--date", "--cash", "--payable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft"]
+flags = ["--party", "--number", "--date", "--cash", "--payable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
@@ -323,11 +335,11 @@ name = "tb"
 summary = "Trial balance: leaf or summary stock/activity at a known-at frontier; opt-in certification retains the complete report's immutable certificate in the book."
 writes = true
 subcommands = []
-flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--certificate-out"]
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--certificate-out", "--branch"]
 switches = ["--activity", "--summary", "--certify", "--as-originally-reported"]
 events = ["trial_balance", "summary_trial_balance", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "tb --period <code> --as-originally-reported [--activity] [--certify]   (plan §7.4: one period as first reported, at the known-at of its first Lock transition (a StatementIssuance takes precedence once issuances are journaled); never its first Close, never HEAD. A period with neither is refused with FA-REF-161. Cannot be combined with --as-known-at.)", "tb --as-of YYYY-MM-DD [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed. --summary --certify binds the selected roots and exact group membership as well as the leaf source; it requires read and produce, and a sequence selector (HEAD or <seq>).", "Stock balances include opening history; --activity is selected-period movement. --summary folds disjoint leaf subtrees under each root account (all roots by default, or --root <code>...). Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Native certificates preserve the original instant resolution; the summary certificate format currently binds sequences only. Replay scope is fa-fold-over-prefix; no witness signature or physical timestamp claim."]
+usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "tb --period <code> --as-originally-reported [--activity] [--certify]   (plan §7.4: one period as first reported, at the known-at of its first Lock transition (a StatementIssuance takes precedence once issuances are journaled); never its first Close, never HEAD. A period with neither is refused with FA-REF-161. Cannot be combined with --as-known-at.)", "tb --as-of YYYY-MM-DD [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed. --summary --certify binds the selected roots and exact group membership as well as the leaf source; it requires read and produce, and a sequence selector (HEAD or <seq>).", "Stock balances include opening history; --activity is selected-period movement. --summary folds disjoint leaf subtrees under each root account (all roots by default, or --root <code>...). Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Native certificates preserve the original instant resolution; the summary certificate format currently binds sequences only. Replay scope is fa-fold-over-prefix; no witness signature or physical timestamp claim.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out or a known-at selector."]
 example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -335,11 +347,11 @@ name = "statement"
 summary = "Balance sheet or income statement from exact journal folds under a registered definition, with optional period comparatives, retained replay certificates, and frontier diff/trace bridges."
 writes = true
 subcommands = []
-flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out"]
+flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out", "--branch"]
 switches = ["--certify"]
 events = ["statement", "statement_diff", "statement_trace", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "statement diff --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>]", "statement trace --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>] [--max-publications 1..=256]", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity."]
+usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "statement diff --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>]", "statement trace --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>] [--max-publications 1..=256]", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out or a known-at selector."]
 example = "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --certify --book ./books/myco --json"
 
 [[verb]]
@@ -371,7 +383,7 @@ name = "open-items"
 summary = "Open items (plan §5.7): each live posted leg, its applications, and its open amount, with account metadata at the selected historical snapshot."
 writes = true
 subcommands = []
-flags = ["--account", "--as-of", "--as-known-at", "--certificate-out"]
+flags = ["--account", "--as-of", "--as-known-at", "--certificate-out", "--branch"]
 switches = ["--certify"]
 events = ["open_items", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 8]
@@ -383,7 +395,7 @@ name = "gl"
 summary = "General-ledger detail, account roll-forward lead schedules, effective-date open-item aging and control reconciliation, cost-basis lot schedules and relief planning, and direct/indirect cash-flow workpapers over one recorded snapshot."
 writes = true
 subcommands = ["detail", "roll-forward", "aging", "cash-flow", "lots"]
-flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--policy", "--income-period", "--relieve", "--law", "--regime", "--rounding-law", "--target", "--as-known-at", "--grant", "--certificate-out"]
+flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--policy", "--income-period", "--relieve", "--law", "--regime", "--rounding-law", "--target", "--as-known-at", "--grant", "--certificate-out", "--branch"]
 switches = ["--reconcile", "--indirect", "--certify"]
 events = ["general_ledger", "roll_forward", "aging", "aging_reconciled", "cash_flow", "indirect_cash_flow", "lots", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 7, 8]
@@ -395,7 +407,7 @@ name = "explain"
 summary = "Explain a leaf account's balance, a committed entry and its lineage, an entry's complete supersession lineage and net effect, an entry's evidence closure, a refusal code from the embedded catalog, a fiscal period's state and transitions, or a register cell's fold vs materialized state."
 writes = true
 subcommands = ["balance", "entry", "evidence", "refusal", "period", "register", "lineage"]
-flags = ["--period", "--unit", "--as-known-at", "--certificate-out"]
+flags = ["--period", "--unit", "--as-known-at", "--certificate-out", "--branch"]
 switches = ["--certify"]
 events = ["balance_explained", "entry_explained", "evidence_explained", "refusal_explained", "period_explained", "register_explained", "lineage_explained", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 8]
@@ -1058,6 +1070,42 @@ name = "draft_discarded"
 book = true
 doc = "A draft was closed without promotion by a DraftControl Discard record (or was already discarded by this principal: then nothing was written). Nothing is deleted."
 fields = ["draft:hex", "name:string", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "scenario_forked"
+book = true
+doc = "A scenario forked (or the recorded fork on an exact retry): its trunk fork sequence, the date its counterfactual starts, and the assumption documents it rests on. Nothing in a scenario is a trunk entry."
+fields = ["scenario:hex", "name:string", "control_entry:hex", "recorded_at:seq", "already_recorded:bool", "fork_at:seq", "from:date?", "assumptions:[hex]"]
+
+[[event]]
+name = "scenario_run"
+book = true
+doc = "An intent journaled into a scenario after its rehearsal on the scenario's materialization. ordinal is its position (from 1); entry is the identity the intent posts under in every materialization; rehearsed is false on a recorded retry, which rehearses nothing. Trunk receives the record, never the entry."
+fields = ["scenario:hex", "name:string", "control_entry:hex", "recorded_at:seq", "already_recorded:bool", "ordinal:int", "entry:hex", "rehearsed:bool"]
+
+[[event]]
+name = "scenarios"
+book = true
+doc = "Every scenario of the book, by forking sequence."
+fields = ["scenarios:[scenario_summary]"]
+
+[[event]]
+name = "scenario_detail"
+book = true
+doc = "One scenario: its fork, assumptions and intents in run order (each with the entry it posts in the scenario)."
+fields = ["scenario:scenario_summary", "intents:[draft_intent]"]
+
+[[event]]
+name = "scenario_diff"
+book = true
+doc = "The ledger-level difference a scenario makes (plan §15.6.5): per account and unit, trunk as known at fork_at against the scenario's materialization over the same periods, exact; only changed rows. delta = (scenario debits - credits) - (trunk debits - credits). body_digest, intents_digest and seq_map_digest bind what was compared; scenario_known_at is the materialization's own sequence. Not yet a retained, replayable certificate."
+fields = ["scenario:hex", "name:string", "fork_at:seq", "from:date?", "assumptions:[hex]", "periods:[string]", "activity:bool", "intents:int", "body_digest:hex", "intents_digest:hex", "seq_map_digest:hex", "scenario_known_at:seq", "rows:[scenario_diff_row]"]
+
+[[event]]
+name = "scenario_discarded"
+book = true
+doc = "A scenario closed; its records and intents are kept."
+fields = ["scenario:hex", "name:string", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
 name = "capability_issued"
@@ -1754,6 +1802,16 @@ doc = "One planned intent: its Plan record and the entry its promotion will crea
 fields = ["record:hex", "recorded_at:seq", "entry:hex", "class:string", "effective_date:date", "idempotency_key:hex", "legs:int", "principal:hex"]
 
 [[shape]]
+name = "scenario_summary"
+doc = "One scenario as its records state it: owner, state, the trunk sequence it replays, the date its counterfactual starts, its assumption documents and intent count."
+fields = ["scenario:hex", "name:string", "owner:hex", "state:string", "opened_at:seq", "fork_at:seq", "from:date?", "assumptions:[hex]", "intents:int", "discarded_at:seq?"]
+
+[[shape]]
+name = "scenario_diff_row"
+doc = "One account and unit a scenario changes: trunk and scenario debits and credits, and the signed change in its net (debits - credits) balance."
+fields = ["account:hex", "code:string", "name:string", "trunk_debits:amount", "trunk_credits:amount", "scenario_debits:amount", "scenario_credits:amount", "delta:amount"]
+
+[[shape]]
 name = "issued_capability"
 doc = "A capability as its journaled issuance records it (plan §14.2)."
 fields = ["commitment:hex", "control_entry:hex", "holder:hex", "issuer:hex", "profile:string", "ops:[string]", "ceilings:[capability_ceiling]", "expires_at:seq?", "issued_at:seq", "revoked_at:seq?"]
@@ -2180,6 +2238,11 @@ on_demand = true
 doc = "Drafts (plan §15.2): an Agent opens an intent log, plans intents into it (each rehearsed under every posting law), inspects or discards it. Promotion to trunk is a Human approver's host-side act."
 
 [[mcp.cluster]]
+name = "fa.scenario"
+on_demand = true
+doc = "Scenarios (plan §15.2, §15.6.5): fork a counterfactual over a fixed trunk prefix, run intents in it (each rehearsed on its scratch materialization), and diff it against trunk per account and unit. A scenario never posts to trunk."
+
+[[mcp.cluster]]
 name = "fa.post"
 doc = "Posting under the accounting laws: entries, two-phase holds and their resolutions, with explicit dry-run plans and exact plan commits. Every amount is a string with its unit; nothing is auto-balanced."
 
@@ -2438,6 +2501,34 @@ stdin_via = "--intent"
 required = []
 dont = ["Don't post a planned intent yourself: an Agent's work reaches trunk only when a Human holding approve promotes the draft (`fa draft promote` on the host).", "Don't re-plan an intent under its key with different content to \"fix\" it: that is an idempotency conflict; discard the draft and plan into a new one."]
 mistakes = ["Planning into a draft another principal owns (FA-REF-011).", "Planning into a promoted or discarded draft (FA-REF-158).", "Omitting `name` for new, plan, show or discard."]
+
+[[mcp.tool]]
+cluster = "fa.scenario"
+name = "manage"
+verb = "scenario"
+subcommands = ["fork", "run", "list", "show", "discard"]
+selector = "action"
+positionals = ["name?"]
+flags = ["--at", "--from", "--evidence", "--event", "--intent", "--description", "--reason"]
+switches = []
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+required = []
+dont = ["Don't expect a scenario's intents on trunk: they post only into the scenario's materialization, and a scenario is never promoted.", "Don't fork at a later sequence to pick up new trunk activity in an existing scenario: the fork sequence is fixed; fork a new scenario.", "Don't date an intent before the scenario's from date (FA-REF-164)."]
+mistakes = ["Running in a scenario another principal owns (FA-REF-011).", "Running in a discarded scenario (FA-REF-163).", "Omitting `name` for fork, run, show or discard."]
+
+[[mcp.tool]]
+cluster = "fa.scenario"
+name = "diff"
+verb = "scenario"
+subcommands = ["diff"]
+positionals = ["name"]
+flags = ["--period"]
+switches = ["--activity"]
+required = ["--period"]
+dont = ["Don't read the delta as trunk's balance: it is the scenario's change against trunk as known at the fork sequence.", "Don't treat the diff as a retained certificate yet: it binds digests of what it compared but cannot be replayed with fa replay."]
+mistakes = ["Omitting --period.", "Comparing a period created after the fork sequence (it does not exist in the scenario's replay)."]
 
 # ---- fa.chart ---------------------------------------------------------------
 
@@ -2910,7 +3001,7 @@ name = "trial_balance"
 verb = "tb"
 subcommands = []
 positionals = []
-flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root"]
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--branch"]
 required = []
 dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write."]
 mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Treating a known-at instant as an exact physical commit timestamp: it is a retained TimeEvidence bucket, with its frontier and brackets in the coordinate."]
@@ -2921,7 +3012,7 @@ name = "statement"
 verb = "statement"
 subcommands = []
 positionals = ["name"]
-flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at"]
+flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--branch"]
 required = ["name", "--for"]
 dont = ["Use name balance-sheet or income-statement (or diff|trace with definition and before), for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate, including diff and trace, and replay it with fa_read_replay. Certified comparisons and traces require read and produce on the launch capability. certificate_out is forbidden; certificate bytes and oid are returned inline."]
 mistakes = ["Omitting for, passing multiple for or compare periods, or using a date where a period code is required.", "Supplying known_at and as_known_at together: they name the same selector.", "Treating a later-period comparative as a different known-at snapshot; use a separate statement call for that question."]

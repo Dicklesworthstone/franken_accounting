@@ -856,6 +856,89 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, context| Ok(fa_journal::list_drafts(db, context)?))
     }
 
+    fn scenario_request(
+        &self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Result<fa_journal::ScenarioRequest, BookError> {
+        Ok(fa_journal::ScenarioRequest {
+            capability,
+            effective_date,
+            description: self.seal_text(cx, description)?,
+        })
+    }
+
+    /// Fork the scenario `name` (plan §15.2, Appendix B `ForkScenario`,
+    /// fa-k07b): a counterfactual over the trunk prefix at `fork.at` (the
+    /// head when absent), owned by the capability's holder.
+    pub async fn open_scenario(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        name: &str,
+        fork: fa_journal::ScenarioFork,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::ScenarioRecorded> {
+        let req = self.scenario_request(cx, capability, effective_date, description)?;
+        Ok(fa_journal::open_scenario(&mut self.db, cx, &self.context, name, fork, req).await?)
+    }
+
+    /// Journal `intent` into the open scenario `name`. The kernel checks its
+    /// shape only: rehearse it on the scenario's materialization first
+    /// ([`crate::Book::run_in_scenario`] does both).
+    pub async fn record_scenario_intent(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        name: &str,
+        intent: fa_journal::PostIntent,
+    ) -> Outcome<fa_journal::ScenarioRecorded> {
+        let date = intent.proposal().effective_date;
+        let description = format!("plan into scenario {name}");
+        let req = self.scenario_request(cx, capability, date, &description)?;
+        Ok(
+            fa_journal::plan_into_scenario(&mut self.db, cx, &self.context, name, intent, req)
+                .await?,
+        )
+    }
+
+    /// Close the open scenario `name`; nothing is deleted.
+    pub async fn discard_scenario(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        name: &str,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::ScenarioRecorded> {
+        let req = self.scenario_request(cx, capability, effective_date, description)?;
+        Ok(fa_journal::discard_scenario(&mut self.db, cx, &self.context, name, req).await?)
+    }
+
+    /// The scenario `name` as its records state it.
+    pub fn scenario(
+        &self,
+        cx: &PurposeContexts,
+        name: &str,
+    ) -> Result<Option<fa_journal::ScenarioView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_scenario(db, context, name)?)
+        })
+    }
+
+    /// Every scenario of the book.
+    pub fn scenarios(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<Vec<fa_journal::ScenarioView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::list_scenarios(db, context)?)
+        })
+    }
+
     pub async fn post(&mut self, cx: &PurposeContexts, req: PostRequest) -> Outcome<Posted> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         Ok(fa_journal::post(&mut self.db, cx, &self.context, req).await?)

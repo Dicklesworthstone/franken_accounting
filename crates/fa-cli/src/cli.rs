@@ -76,6 +76,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("approve", approve_cmd),
     ("capability", capability_cmd),
     ("draft", draft_cmd),
+    ("scenario", crate::scenario::scenario_cmd),
     ("post", post_cmd),
     ("invoice", crate::typed::invoice_cmd),
     ("bill", crate::typed::bill_cmd),
@@ -180,7 +181,10 @@ fn amount_corruption(error: fa_money::AmountError) -> Fail {
     )))
 }
 
-fn render_amount(amount: Amount, units: &fa_money::UnitRegistry) -> Result<String, Fail> {
+pub(crate) fn render_amount(
+    amount: Amount,
+    units: &fa_money::UnitRegistry,
+) -> Result<String, Fail> {
     amount.try_render(units).map_err(amount_corruption)
 }
 
@@ -265,14 +269,20 @@ struct Said {
     /// The launch template is Agent: trunk plans are rehearsals (FA-REF-013).
     agent: bool,
     owner_principal: Option<String>,
+    /// The branch a `--branch` read selected (`scenario:<name>`); trunk
+    /// when absent.
+    branch: Option<String>,
 }
 
 /// Where a robot line sits (plan §4.8): the book's id, and the branch
-/// (trunk; drafts and scenarios land later), recorded sequence and
-/// effective selector it describes.
+/// (`trunk`, or `scenario:<name>` for a read of a scenario's
+/// materialization), recorded sequence and effective selector it
+/// describes. A scenario read's `known_at` is its materialization's own
+/// sequence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct At {
     pub book: String,
+    pub branch: String,
     pub known_at: CommitSeq,
     pub effective: String,
 }
@@ -335,7 +345,7 @@ fn robot_line_with_actions(
             "coordinate",
             at.map_or(Json::Null, |a| {
                 obj(vec![
-                    ("branch", s("trunk")),
+                    ("branch", s(&a.branch)),
                     ("known_at", Json::Int(i128::from(a.known_at.0))),
                     ("effective", s(&a.effective)),
                     (
@@ -365,8 +375,10 @@ fn stamp(said: &RefCell<Said>, book: &Book) -> Result<(), Fail> {
         .as_ref()
         .map_or_else(|| "all".to_string(), |a| a.effective.clone());
     said.time_selection = None;
+    let branch = said.branch.clone().unwrap_or_else(|| "trunk".to_string());
     said.at = Some(At {
         book: book.context().book_id.to_hex(),
+        branch,
         known_at: head,
         effective,
     });
@@ -790,6 +802,44 @@ fn leased_on_open_held(error: &crate::lease::LeaseError, dir: &Path) -> Refusal 
 /// A command's book source: its [`Books`], stamping the envelope coordinate
 /// on every book it opens (plan Appendix D), so no handler can emit a book
 /// event without one.
+/// `--branch scenario:<name>` (plan §15.2, bead fa-k07b): the command reads
+/// the scenario's materialization (a scratch replay of the trunk prefix at
+/// its fork plus its intents) instead of trunk. Only read verbs register
+/// `--branch`, so no write reaches a replay. A scenario read is not yet
+/// certified, and trunk known-at selectors do not apply to it.
+fn select_branch<'b>(
+    args: &Args,
+    mut book: BookRef<'b>,
+    said: &RefCell<Said>,
+) -> Result<BookRef<'b>, Fail> {
+    let selector = match args.flag("--branch") {
+        None | Some("trunk") => return Ok(book),
+        Some(selector) => selector,
+    };
+    let Some(name) = selector.strip_prefix("scenario:") else {
+        return Err(usage(
+            format!("--branch `{selector}` is neither trunk nor scenario:<name>"),
+            "--branch scenario:<name> (fa scenario list --json), or omit --branch to read trunk",
+        ));
+    };
+    let trunk_selector = ["--as-known-at", "--known-at", "--before", "--after"]
+        .iter()
+        .any(|flag| args.flag(flag).is_some());
+    if trunk_selector
+        || args.switch("--certify")
+        || args.flag("--certificate-out").is_some()
+        || args.switch("--as-originally-reported")
+    {
+        return Err(usage(
+            "a scenario read is not certified yet, and trunk known-at selectors do not apply to its replay",
+            "drop --certify, --certificate-out, --as-originally-reported and any known-at, --before or --after selector, or read trunk without --branch",
+        ));
+    }
+    let scenario = book.materialize_scenario(name)??;
+    said.borrow_mut().branch = Some(selector.to_string());
+    Ok(BookRef::Owned(Box::new(scenario.book)))
+}
+
 pub(crate) struct BookSource<'a> {
     books: Books<'a>,
     said: Rc<RefCell<Said>>,
@@ -820,6 +870,7 @@ impl BookSource<'_> {
 
     pub(crate) fn open(&mut self, args: &Args) -> Result<BookRef<'_>, Fail> {
         let book = self.books.open(args, self.cwd.as_deref())?;
+        let book = select_branch(args, book, &self.said)?;
         stamp(&self.said, &book)?;
         Ok(book)
     }
@@ -832,7 +883,10 @@ impl BookSource<'_> {
         admit: impl FnOnce(&Book) -> Result<(), Fail>,
     ) -> Result<BookRef<'_>, Fail> {
         let book = self.books.open(args, self.cwd.as_deref())?;
+        // Authority is admitted on trunk, never on a scenario's replay: a
+        // fork never resurrects revoked authority.
         admit(&book)?;
+        let book = select_branch(args, book, &self.said)?;
         stamp(&self.said, &book)?;
         Ok(book)
     }
@@ -1728,6 +1782,8 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         ("draft", Some("new" | "plan" | "discard")) => &[Op::Post],
         ("draft", Some("list" | "show")) => &[Op::Read],
         ("draft", Some("promote")) => &[Op::Approve],
+        ("scenario", Some("fork" | "run" | "discard")) => &[Op::Post],
+        ("scenario", Some("list" | "show" | "diff")) => &[Op::Read],
         ("chart", Some("open" | "close" | "promote"))
         | ("party", Some("add" | "relate" | "bind"))
         | ("instrument" | "entity", Some("add")) => &[Op::SchemaChange],
@@ -1792,8 +1848,11 @@ pub fn bound_command_admissible(
     // remain refused.
     // It may also plan the post into its draft (plan §15.2): a draft record
     // is not a trunk entry, and only a Human holding `approve` promotes it.
+    // Or run it in a scenario, which never posts to trunk at all.
     let agent_rehearsal = matches!(verb, "post" | "reverse" | "reserve" | "resolve")
-        && (args.switch("--dry-run") || args.flag("--draft").is_some());
+        && (args.switch("--dry-run")
+            || args.flag("--draft").is_some()
+            || args.flag("--scenario").is_some());
     if authority.profile() == crate::authority::LaunchProfile::Agent
         && is_monetary_trunk_post
         && !agent_rehearsal
@@ -2774,7 +2833,8 @@ const GUIDE: &str = "fa robot-docs guide\n\
 17. Export for an auditor or another ledger: `fa export ads|saft|csv-gl|beancount|hledger --period FY2026-P03 [--out <new path>] --json` writes what the trial balance folds (pending holds excluded) with its export coordinate certificate; ads writes four tables into a new directory. It needs read and produce. Over MCP the fa.io cluster is on demand.\n\
 18. Maintain the chart and the REA graph: `fa chart open <account.json> --opened <day>`, `fa chart close <code> --on <day>`, `fa chart promote <code> --on <day>`; `fa party add <party.json>`, `fa party relate <from> <to> --kind owns --basis equity_voting --valid-from <day> --pct 51/100`, `fa instrument add <instrument.json>`, `fa entity add <entity.json>` (a legal entity's jurisdiction, functional unit and life span; a code declared at book creation is lifted), `fa party bind <code> --external-id qbo:55`. Each is a journaled schema change (schema_change authority) and no date defaults to today. Events then name parties with --participant and instruments with --resource <label>:<amount>:<instrument>.\n\
 19. Read a period as it was first reported: `fa tb --period FY2026-P03 --as-originally-reported --json` pins known-at to the period's first Lock (never its first Close, never HEAD); a period never locked is refused with FA-REF-161.\n\
-20. Typed documents: `fa invoice --party C-17 --number 10442 --date 2026-03-14 --receivable 1200 --revenue 4000 --line 'qty=10 unit_price=\"125.00 USD\" item=SKU-9' --evidence <oid> --dry-run --json` (and `fa bill ... --payable 2000 --expense 6000`) builds the entry from its lines and posts through fa post's path (--dry-run, --plan-out, --draft); `fa receipt --party C-17 --number WIRE-IN-1 --cash 1000 --receivable 1200 --amount \"1290.00 USD\" --applies <invoice vid>` (and `fa payment`) settles it, its number becoming the cash leg's memo that fa bank match compares with a statement line's reference. You name every account; there is no tax or posting rule yet. An intent leg may name `entity` and `party` codes; in a multi-entity book every leg names its entity. `fa document list [--kind BankStatement]` lists held documents as metadata.\n";
+20. Typed documents: `fa invoice --party C-17 --number 10442 --date 2026-03-14 --receivable 1200 --revenue 4000 --line 'qty=10 unit_price=\"125.00 USD\" item=SKU-9' --evidence <oid> --dry-run --json` (and `fa bill ... --payable 2000 --expense 6000`) builds the entry from its lines and posts through fa post's path (--dry-run, --plan-out, --draft); `fa receipt --party C-17 --number WIRE-IN-1 --cash 1000 --receivable 1200 --amount \"1290.00 USD\" --applies <invoice vid>` (and `fa payment`) settles it, its number becoming the cash leg's memo that fa bank match compares with a statement line's reference. You name every account; there is no tax or posting rule yet. An intent leg may name `entity` and `party` codes; in a multi-entity book every leg names its entity. `fa document list [--kind BankStatement]` lists held documents as metadata.\n\
+21. Ask what-if or but-for (plan §15.2, §15.6.5): `fa scenario fork but-for-breach --from 2025-07-01 [--at HEAD|<seq>] --evidence <assumption oid>` forks a counterfactual over the trunk prefix at that sequence; `fa scenario run but-for-breach --intent receipt.json` (or fa post, invoice, bill, receipt or payment with --scenario but-for-breach) rehearses each intent on the scenario and journals it there, never on trunk; `fa scenario diff but-for-breach --period FY2025-P12 --json` is the exact change per account and unit against trunk as known at the fork (the damages schedule). Each run and diff replays the trunk prefix into a scratch book and posts every intent again under every posting law. `fa tb|statement|explain|open-items|gl ... --branch scenario:but-for-breach` runs the same read on the scenario's replay (uncertified; the coordinate names the branch). The diff is not yet a replayable certificate.\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\
 \n\
@@ -4569,7 +4629,7 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 /// The undated control records' recorded date: `--date`, else the book's
 /// opening date (as `fa capability` uses).
-fn control_date(args: &Args, book: &Book) -> Result<DateDay, Fail> {
+pub(crate) fn control_date(args: &Args, book: &Book) -> Result<DateDay, Fail> {
     let default_date = book
         .spec()?
         .opening_date
@@ -4616,7 +4676,7 @@ fn draft_json(view: &fa_journal::DraftView) -> Json {
 }
 
 /// One planned intent as robot data: the entry its promotion will create.
-fn draft_intent_json(book: &Book, planned: &fa_journal::PlannedIntent) -> Json {
+pub(crate) fn draft_intent_json(book: &Book, planned: &fa_journal::PlannedIntent) -> Json {
     let p = planned.intent.proposal();
     let entry = fa_model::entry_vid(
         book.context().book_id,
@@ -4914,6 +4974,92 @@ fn plan_document_into_draft(
             entry.0,
             if recorded.already_recorded {
                 "; already planned"
+            } else {
+                ""
+            }
+        ),
+    );
+    Ok(())
+}
+
+/// `fa post|invoice|bill|receipt|payment --scenario <name>` and `fa scenario
+/// run` (plan §15.2, bead fa-k07b): build the intent exactly as the command
+/// would post it, rehearse it on the scenario's materialization (trunk at
+/// the fork sequence plus every earlier intent of the scenario), and journal
+/// it into the scenario. Trunk receives the record, never the entry.
+pub(crate) fn plan_document_into_scenario(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    name: &str,
+    forced: Option<EntryClass>,
+    doc: &Json,
+) -> Result<(), Fail> {
+    if args.flag("--draft").is_some() {
+        return Err(usage(
+            "--draft and --scenario name different intent logs; nothing was planned",
+            "plan into the draft with --draft <name>, or run in the scenario with --scenario <name>",
+        ));
+    }
+    if args.switch("--dry-run") || args.flag("--plan-out").is_some() {
+        return Err(usage(
+            "--scenario rehearses the intent on the scenario and journals it there; it is not a dry run",
+            "drop --dry-run/--plan-out to run the intent in the scenario, or drop --scenario to rehearse it on trunk",
+        ));
+    }
+    if args.flag("--balancing").is_some() {
+        return Err(usage(
+            "a scenario does not yet run saturating --balancing requests",
+            "run an intent with explicit amounts",
+        ));
+    }
+    if doc.get("intents").is_some() {
+        return Err(usage(
+            "a batch document cannot run in a scenario yet; nothing was planned",
+            "run each intent in the scenario in turn",
+        ));
+    }
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["post"])?;
+    let out = &ctx.out;
+    let mut book = ctx.books.open(args)?;
+    let BuiltPost { request: req, .. } =
+        build_post_request(out, &mut book, args, forced, doc, who, capability)?;
+    let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
+        usage(
+            format!("cannot run this entry in a scenario: {e}"),
+            "check the entry intent",
+        )
+    })?;
+    let p = intent.proposal();
+    let entry = fa_model::entry_vid(
+        book.context().book_id,
+        &p.principal_ref.0.to_le_bytes(),
+        &p.idempotency_key,
+    );
+    let run = book.run_in_scenario(req.capability, name, intent)??;
+    out.at_book(&book)?;
+    let recorded = &run.recorded;
+    out.event(
+        "scenario_run",
+        vec![
+            ("scenario", s(format!("{:032x}", recorded.scenario.0))),
+            ("name", s(name)),
+            (
+                "control_entry",
+                s(format!("{:032x}", recorded.control_entry.0)),
+            ),
+            ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
+            ("already_recorded", Json::Bool(recorded.already_recorded)),
+            ("ordinal", Json::Int(run.ordinal as i128)),
+            ("entry", s(format!("{:032x}", entry.0))),
+            ("rehearsed", Json::Bool(run.rehearsed.is_some())),
+        ],
+        &format!(
+            "ran in scenario {name} as intent #{} (entry {:032x} in the scenario; trunk unchanged){}",
+            run.ordinal,
+            entry.0,
+            if recorded.already_recorded {
+                "; already recorded"
             } else {
                 ""
             }
@@ -6078,6 +6224,10 @@ pub(crate) fn post_document(
     forced: Option<EntryClass>,
     doc: Json,
 ) -> Result<(), Fail> {
+    if let Some(name) = args.flag("--scenario") {
+        let name = name.to_string();
+        return plan_document_into_scenario(ctx, args, &name, forced, &doc);
+    }
     if let Some(name) = args.flag("--draft") {
         let name = name.to_string();
         return plan_document_into_draft(ctx, args, &name, forced, &doc);
@@ -15076,6 +15226,7 @@ mod tests {
             let out = Out::new(json, true);
             out.said.borrow_mut().at = Some(At {
                 book: "0a1b".into(),
+                branch: "trunk".into(),
                 known_at: CommitSeq(10),
                 effective: "all".into(),
             });
@@ -15171,6 +15322,7 @@ mod tests {
         assert!(rendered.is_ok(), "every amount renders");
         let at = At {
             book: "0a1b".into(),
+            branch: "trunk".into(),
             known_at: CommitSeq(9),
             effective: "all".into(),
         };

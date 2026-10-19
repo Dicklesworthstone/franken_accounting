@@ -384,6 +384,30 @@ cite = "plan §7.4 (AS ORIGINALLY REPORTED pins the first StatementIssuance, els
 fix = "read the period as currently stated (omit --as-originally-reported), or lock it once it is final: fa period lock {period}"
 
 [[refusal]]
+code = "FA-REF-162"
+name = "SCENARIO_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §15.2 (scenarios; bead fa-k07b)"
+fix = "list the book's scenarios with fa scenario list --json, or fork one with fa scenario fork <name>"
+
+[[refusal]]
+code = "FA-REF-163"
+name = "SCENARIO_NOT_OPEN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §15.2 (a discarded scenario is closed; its history is immutable)"
+fix = "fork a new scenario with fa scenario fork <name> and run its intents there"
+
+[[refusal]]
+code = "FA-REF-164"
+name = "SCENARIO_BEFORE_START"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §15.6.5 (a but-for scenario's counterfactual begins at its --from date)"
+fix = "date the intent on or after the scenario's from date, or fork a scenario with an earlier --from"
+
+[[refusal]]
 code = "FA-REF-052"
 name = "ALREADY_REVERSED"
 owners = ["fa-journal"]

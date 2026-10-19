@@ -85,6 +85,13 @@ pub mod code {
     pub const DRAFT_UNKNOWN: &str = "FA-REF-157";
     /// The draft is promoted or discarded: it takes no further records.
     pub const DRAFT_NOT_OPEN: &str = "FA-REF-158";
+    /// The book has no scenario by that name (plan §15.2, bead fa-k07b).
+    pub const SCENARIO_UNKNOWN: &str = "FA-REF-162";
+    /// The scenario is discarded: it takes no further records.
+    pub const SCENARIO_NOT_OPEN: &str = "FA-REF-163";
+    /// A scenario intent is effective before the scenario's counterfactual
+    /// start (`--from`).
+    pub const SCENARIO_BEFORE_START: &str = "FA-REF-164";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

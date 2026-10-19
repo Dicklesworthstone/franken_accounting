@@ -43,6 +43,8 @@ const IMPORT_TRANSITIONS: &[&str] = &["Import"];
 const HOLD_TRANSITIONS: &[&str] = &["Place", "Release"];
 /// A DraftSet's lifecycle (plan §15.2; fa-s7x).
 const DRAFT_TRANSITIONS: &[&str] = &["Open", "Plan", "Promote", "Discard"];
+/// A Scenario's lifecycle (plan §15.2; fa-k07b): never promoted.
+const SCENARIO_TRANSITIONS: &[&str] = &["Open", "Plan", "Discard"];
 const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "PolicyControl",
     "TimeControl",
@@ -52,6 +54,7 @@ const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "ImportControl",
     "HoldControl",
     "DraftControl",
+    "ScenarioControl",
 ];
 /// A MigrationRun's lifecycle (plan §8.6).
 const MIGRATION_TRANSITIONS: &[&str] = &["Open", "Finalize", "Abandon"];
@@ -313,6 +316,7 @@ impl SodPolicy {
                         "ImportControl" => IMPORT_TRANSITIONS,
                         "HoldControl" => HOLD_TRANSITIONS,
                         "DraftControl" => DRAFT_TRANSITIONS,
+                        "ScenarioControl" => SCENARIO_TRANSITIONS,
                         other => {
                             return Err(invalid(
                                 R,

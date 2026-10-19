@@ -1121,6 +1121,60 @@ impl Book {
         with_store!(&self.store, core => core.drafts(&self.purposes()))
     }
 
+    /// Fork the scenario `name` over the trunk prefix at `fork.at` (the head
+    /// when absent): plan §15.2, Appendix B `ForkScenario`, fa-k07b.
+    pub fn open_scenario(
+        &mut self,
+        capability: fa_journal::Capability,
+        name: &str,
+        fork: fa_journal::ScenarioFork,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::ScenarioRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.open_scenario(
+            &purposes, capability, name, fork, effective_date, description,
+        )))
+    }
+
+    /// Journal `intent` into the open scenario `name` without rehearsing it;
+    /// [`Book::run_in_scenario`] rehearses on the materialization first.
+    pub fn record_scenario_intent(
+        &mut self,
+        capability: fa_journal::Capability,
+        name: &str,
+        intent: fa_journal::PostIntent,
+    ) -> Outcome<fa_journal::ScenarioRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_scenario_intent(
+            &purposes, capability, name, intent,
+        )))
+    }
+
+    /// Discard the open scenario `name`; nothing is deleted.
+    pub fn discard_scenario(
+        &mut self,
+        capability: fa_journal::Capability,
+        name: &str,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::ScenarioRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.discard_scenario(
+            &purposes, capability, name, effective_date, description,
+        )))
+    }
+
+    /// The scenario `name` as its records state it.
+    pub fn scenario(&self, name: &str) -> Result<Option<fa_journal::ScenarioView>, BookError> {
+        with_store!(&self.store, core => core.scenario(&self.purposes(), name))
+    }
+
+    /// Every scenario of the book.
+    pub fn scenarios(&self) -> Result<Vec<fa_journal::ScenarioView>, BookError> {
+        with_store!(&self.store, core => core.scenarios(&self.purposes()))
+    }
+
     /// Post one entry under the accounting laws (plan §5).
     pub fn post(&mut self, req: PostRequest) -> Outcome<Posted> {
         let purposes = self.purposes();

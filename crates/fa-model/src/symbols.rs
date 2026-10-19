@@ -68,6 +68,7 @@ symbols!(
         (TRANSPARENCY_CHECKPOINT, "TransparencyCheckpoint", 40),
         (REGISTER_STATE, "RegisterState", 41),
         (INTENT_OUTCOME, "IntentOutcome", 42),
+        (SCENARIO, "Scenario", 43),
     ]
 );
 

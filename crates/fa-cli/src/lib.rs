@@ -31,6 +31,7 @@ pub(crate) mod notary;
 pub mod panic;
 mod proof;
 mod rea;
+mod scenario;
 mod templates;
 mod triage;
 mod typed;

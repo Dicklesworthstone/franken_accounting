@@ -354,12 +354,11 @@ id = "WF-LCD-01"
 workflow = "litigation-consultant-damages"
 ordinal = 1
 vision_row = "VC-26"
-description = "Fork a counterfactual scenario branch (`fa scenario fork`)"
+description = "Fork a counterfactual scenario (`fa scenario fork`; materialized as a scratch replay until substrate branches ship)"
 argv = ["scenario", "fork", "but-for-breach", "--from", "2026-03-01", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-k07b"
+expected = "works"
+expected_exit = 0
+expected_event = "scenario_forked"
 
 [[workflow_step]]
 id = "WF-LCD-02"

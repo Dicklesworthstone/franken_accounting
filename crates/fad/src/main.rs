@@ -275,6 +275,7 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
     let at = match book.head() {
         Ok(known_at) => cli::At {
             book: book_id.clone(),
+            branch: "trunk".into(),
             known_at,
             effective: "all".into(),
         },

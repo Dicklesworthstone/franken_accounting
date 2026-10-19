@@ -1258,6 +1258,7 @@ mod tests {
                 (9, "migration_run"),
                 (10, "capability_issuance"),
                 (11, "draft_transition"),
+                (12, "scenario_transition"),
             ]
         );
         assert_eq!(

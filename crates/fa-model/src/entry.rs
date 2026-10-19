@@ -90,6 +90,16 @@ pub const DRAFT_BODY_EXTENSION: u16 = 8;
 /// post_intent ‖ bytes capability`: the intent's canonical bytes and the
 /// planner's capability, which its promotion replays.
 pub const DRAFT_INTENT_EXTENSION: u16 = 9;
+/// Extension tag 10, `fa:scenario-body:v1` (plan §15.2, Appendix B
+/// `ForkScenario`, bead fa-k07b): a scenario's immutable body on its
+/// `ScenarioControl` Open record — `u16 version ‖ book_id[16] ‖ str name ‖
+/// u128 owner_principal ‖ u64 fork_at ‖ u8 has_from ‖ [i32 from_day]`.
+pub const SCENARIO_BODY_EXTENSION: u16 = 10;
+/// Extension tag 11, `fa:scenario-intent:v1` (bead fa-k07b): one
+/// counterfactual intent on a scenario's `ScenarioControl` Plan record —
+/// `u16 version ‖ bytes post_intent ‖ bytes capability`. It never posts to
+/// trunk; every materialization posts it into a scratch replay.
+pub const SCENARIO_INTENT_EXTENSION: u16 = 11;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -102,6 +112,8 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     CAPABILITY_BODY_EXTENSION,
     DRAFT_BODY_EXTENSION,
     DRAFT_INTENT_EXTENSION,
+    SCENARIO_BODY_EXTENSION,
+    SCENARIO_INTENT_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -144,6 +156,9 @@ impl EntryClass {
     /// A `DraftSet`'s lifecycle (plan §15.2): Open, Plan, Promote, Discard.
     /// Book-scoped, undated; nothing in a draft is a trunk entry.
     pub const DRAFT_CONTROL: Self = Self(25);
+    /// A `Scenario`'s lifecycle (plan §15.2, bead fa-k07b): Open, Plan,
+    /// Discard. Book-scoped, undated; a scenario never posts to trunk.
+    pub const SCENARIO_CONTROL: Self = Self(26);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -172,6 +187,7 @@ impl EntryClass {
         (23, "ImportControl", true),
         (24, "HoldControl", true),
         (25, "DraftControl", true),
+        (26, "ScenarioControl", true),
     ];
 
     #[must_use]
@@ -242,6 +258,7 @@ impl ControlKind {
     pub const MIGRATION_RUN: Self = Self(9);
     pub const CAPABILITY_ISSUANCE: Self = Self(10);
     pub const DRAFT_TRANSITION: Self = Self(11);
+    pub const SCENARIO_TRANSITION: Self = Self(12);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -287,6 +304,11 @@ impl ControlKind {
             Self::DRAFT_TRANSITION,
             "draft_transition",
             EntryClass::DRAFT_CONTROL,
+        ),
+        (
+            Self::SCENARIO_TRANSITION,
+            "scenario_transition",
+            EntryClass::SCENARIO_CONTROL,
         ),
     ];
 
@@ -2202,9 +2224,10 @@ mod tests {
                 }
             );
         }
-        // Unregistered ids (10 and 11 are now capability_issuance and
-        // draft_transition; the probe stays past the registered range).
-        for id in [0, 12, 13, u16::MAX] {
+        // Unregistered ids (10, 11 and 12 are now capability_issuance,
+        // draft_transition and scenario_transition; the probe stays past the
+        // registered range).
+        for id in [0, 13, 14, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"

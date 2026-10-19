@@ -328,3 +328,13 @@ class = "DraftControl"
 requirement = "control_record"
 min_documents = 0
 kinds = "any"
+
+# A scenario's records are its counterfactual intent log (fa-k07b). Its
+# assumption documents are the Open record's proof refs, and each intent
+# carries its own evidence, which every materialization re-checks against the
+# intent class's minimum in the scratch replay.
+[[minimum]]
+class = "ScenarioControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"

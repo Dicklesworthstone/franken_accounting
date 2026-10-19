@@ -43,6 +43,7 @@ pub mod rea;
 pub mod redaction;
 pub mod refusal;
 pub mod rows;
+pub mod scenario;
 pub mod schedule;
 pub mod scratch;
 pub mod sweep;
@@ -130,6 +131,11 @@ pub use redaction::{
 };
 pub use refusal::{KernelError, Refusal, exit};
 pub use rows::{AccountRow, PeriodRow};
+pub use scenario::{
+    ScenarioBody, ScenarioClosure, ScenarioFork, ScenarioRecorded, ScenarioRequest, ScenarioState,
+    ScenarioView, discard_scenario, list_scenarios, open_scenario, plan_into_scenario,
+    read_scenario,
+};
 pub use schedule::{
     DueReversal, ReversalBatch, ReversalStatus, Schedule, ScheduleVerification, due_reversals,
     sweep_reversals_batch, verify_schedules, with_auto_reverse,

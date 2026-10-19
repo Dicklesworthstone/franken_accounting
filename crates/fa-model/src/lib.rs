@@ -45,7 +45,8 @@ pub use ids::{
     PARTY_DIMENSION, PARTY_DIMENSION_CODE, PeriodRef, TypedRef, account_vid, dimension_value_vid,
     dimension_vid, domain_digest, draft_vid, entity_value_vid, entry_vid, event_vid,
     external_id_vid, instrument_vid, intent_outcome_vid, legal_entity_vid, migration_entry_vid,
-    migration_run_vid, party_value_vid, party_vid, period_vid, principal_vid, unit_vid,
+    migration_run_vid, party_value_vid, party_vid, period_vid, principal_vid, scenario_vid,
+    unit_vid,
 };
 pub use mirrors::{MirrorError, entry_mirrors, leg_mirrors};
 pub use rea::{

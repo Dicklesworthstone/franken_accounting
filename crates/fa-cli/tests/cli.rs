@@ -4851,6 +4851,23 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         .0,
         0
     );
+    let s1 = write(&dir, "scenario1.json", &draft_intent("scenario-rent-1"));
+    assert_eq!(run(true, &["scenario", "fork", "what-if"]).0, 0);
+    assert_eq!(
+        run(true, &["scenario", "run", "what-if", "--intent", &s1]).0,
+        0
+    );
+    assert_eq!(run(true, &["scenario", "list"]).0, 0);
+    assert_eq!(run(true, &["scenario", "show", "what-if"]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &["scenario", "diff", "what-if", "--period", "FY2026-P03"]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["scenario", "discard", "what-if"]).0, 0);
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(run(true, &["procedure", "list"]).0, 0);
@@ -11872,6 +11889,334 @@ fn receipt_and_payment_settle_open_items_and_match_the_bank() -> std::io::Result
     let mut expected = vec![receipt, payment];
     expected.sort();
     assert_eq!(proposed, expected, "{out}");
+    Ok(())
+}
+
+/// fa-k07b: a but-for scenario forks at a trunk sequence, runs counterfactual
+/// intents only in its scratch materialization (every posting law runs
+/// there again), and diffs exactly against trunk as known at the fork.
+/// Trunk balances never move, and later trunk activity never leaks in.
+#[test]
+fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk()
+-> std::io::Result<()> {
+    let dir = tmp("scenario")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Scenario Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Hosting","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    let intent = |name: &str, key: &str, date: &str, debit: &str, credit: &str, amount: &str| {
+        write(
+            &dir,
+            name,
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","evidence":["{ev}"],"legs":[{{"side":"debit","account":"{debit}","amount":"{amount} USD"}},{{"side":"credit","account":"{credit}","amount":"{amount} USD"}}]}}"#
+            ),
+        )
+    };
+    let run = |args: &[&str]| {
+        let mut full = args.to_vec();
+        full.push("--json");
+        fa(Some(&book), &full)
+    };
+    let tb_rows = || {
+        let (code, out, err) = run(&["tb", "--period", "FY2026-P03"]);
+        assert_eq!(code, 0, "{out}\n{err}");
+        arr(&doc(&out), "rows").to_vec()
+    };
+    let hosting = intent(
+        "hosting.json",
+        "hosting-1",
+        "2026-03-02",
+        "6000",
+        "1000",
+        "300.00",
+    );
+    let (code, out, err) = run(&["post", "--intent", &hosting]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let trunk_before = tb_rows();
+
+    // Fork with an assumption document and a counterfactual start date; an
+    // exact retry is the recorded fork at the same sequence.
+    let fork = [
+        "scenario",
+        "fork",
+        "but-for",
+        "--from",
+        "2026-03-10",
+        "--evidence",
+        ev.as_str(),
+    ];
+    let (code, out, err) = run(&fork);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let forked = doc(&out);
+    let fork_at = int(&forked, "fork_at");
+    assert!(fork_at.is_some(), "{out}");
+    assert_eq!(text(&forked, "from"), "2026-03-10");
+    assert_eq!(arr(&forked, "assumptions"), [Json::Str(ev.clone())]);
+    assert_eq!(forked.get("already_recorded"), Some(&Json::Bool(false)));
+    let (code, out, _) = run(&fork);
+    assert_eq!(code, 0, "{out}");
+    let again = doc(&out);
+    assert_eq!(again.get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(int(&again, "fork_at"), fork_at);
+
+    // The counterfactual sale runs in the scenario, rehearsed there first.
+    let sale = intent(
+        "sale.json",
+        "but-for-sale",
+        "2026-03-15",
+        "1000",
+        "4000",
+        "500.00",
+    );
+    let (code, out, err) = run(&["scenario", "run", "but-for", "--intent", &sale]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let ran = doc(&out);
+    assert_eq!(int(&ran, "ordinal"), Some(1));
+    assert_eq!(ran.get("rehearsed"), Some(&Json::Bool(true)));
+    let (code, out, _) = run(&["scenario", "run", "but-for", "--intent", &sale]);
+    assert_eq!(code, 0, "{out}");
+    let retried = doc(&out);
+    assert_eq!(retried.get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(retried.get("rehearsed"), Some(&Json::Bool(false)));
+    assert_eq!(text(&retried, "entry"), text(&ran, "entry"));
+    // Every posting verb reaches a scenario the same way: --scenario.
+    let cost = intent(
+        "cost.json",
+        "but-for-cost",
+        "2026-03-20",
+        "6000",
+        "1000",
+        "120.00",
+    );
+    let (code, out, err) = run(&["post", "--intent", &cost, "--scenario", "but-for"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(int(&doc(&out), "ordinal"), Some(2));
+    assert_eq!(tb_rows(), trunk_before, "a scenario never posts to trunk");
+    // Trunk moves on after the fork; the scenario is fixed at its fork.
+    let later = intent(
+        "later.json",
+        "hosting-2",
+        "2026-03-25",
+        "6000",
+        "1000",
+        "50.00",
+    );
+    assert_eq!(run(&["post", "--intent", &later]).0, 0);
+
+    // The diff is exactly the counterfactual, against trunk at the fork.
+    let (code, out, err) = run(&["scenario", "diff", "but-for", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let diff = doc(&out);
+    let rows: Vec<(&str, &str)> = arr(&diff, "rows")
+        .iter()
+        .map(|r| (text(r, "code"), text(r, "delta")))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("1000", "380.00 USD"),
+            ("4000", "-500.00 USD"),
+            ("6000", "120.00 USD")
+        ],
+        "{out}"
+    );
+    assert_eq!(int(&diff, "fork_at"), fork_at);
+    assert_eq!(int(&diff, "intents"), Some(2));
+    let hosting_row = &arr(&diff, "rows")[2];
+    assert_eq!(
+        text(hosting_row, "trunk_debits"),
+        "300.00 USD",
+        "trunk as known at the fork excludes the later bill"
+    );
+    assert_eq!(text(hosting_row, "scenario_debits"), "420.00 USD");
+    let (code, repeat, _) = run(&["scenario", "diff", "but-for", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{repeat}");
+    assert_eq!(doc(&repeat), diff, "a diff is deterministic");
+
+    // Reads select the scenario with --branch: the same command, on its
+    // replay, with the branch in the envelope's coordinate.
+    let branch = ["--branch", "scenario:but-for"];
+    let (code, out, err) = run(&[&["tb", "--period", "FY2026-P03"][..], &branch].concat());
+    assert_eq!(code, 0, "{out}\n{err}");
+    let line = json::parse(out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+    assert_eq!(
+        line.get("coordinate")
+            .and_then(|c| c.get("branch"))
+            .and_then(Json::as_str),
+        Some("scenario:but-for"),
+        "{out}"
+    );
+    let scenario_rows = arr(&doc(&out), "rows").to_vec();
+    let revenue = scenario_rows.iter().find(|r| text(r, "code") == "4000");
+    assert_eq!(
+        revenue.map(|r| text(r, "credits")),
+        Some("500.00 USD"),
+        "{out}"
+    );
+    let (_, trunk_out, _) = run(&["tb", "--period", "FY2026-P03"]);
+    let trunk_line =
+        json::parse(trunk_out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+    assert_eq!(
+        trunk_line
+            .get("coordinate")
+            .and_then(|c| c.get("branch"))
+            .and_then(Json::as_str),
+        Some("trunk")
+    );
+    let trunk_rows = arr(&doc(&trunk_out), "rows").to_vec();
+    assert!(
+        trunk_rows
+            .iter()
+            .filter(|r| text(r, "code") == "4000")
+            .all(|r| text(r, "credits") == "0.00 USD"),
+        "trunk never sees the scenario's revenue: {trunk_out}"
+    );
+    let (code, out, err) = run(&[
+        &["statement", "income-statement", "--for", "FY2026-P03"][..],
+        &branch,
+    ]
+    .concat());
+    assert_eq!(code, 0, "{out}\n{err}");
+    for refused in [
+        &[
+            "tb",
+            "--period",
+            "FY2026-P03",
+            "--branch",
+            "scenario:but-for",
+            "--certify",
+        ][..],
+        &[
+            "tb",
+            "--period",
+            "FY2026-P03",
+            "--branch",
+            "scenario:but-for",
+            "--as-known-at",
+            "HEAD",
+        ],
+        &["tb", "--period", "FY2026-P03", "--branch", "draft:close-03"],
+        &[
+            "post",
+            "--intent",
+            later.as_str(),
+            "--branch",
+            "scenario:but-for",
+        ],
+    ] {
+        let (code, out, _) = run(refused);
+        assert_eq!(code, 2, "{refused:?}: {out}");
+    }
+    let (code, out, _) = run(&["tb", "--period", "FY2026-P03", "--branch", "scenario:nope"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-162")),
+        "{out}"
+    );
+
+    // Planted negatives: none of them records anything.
+    let early = intent(
+        "early.json",
+        "too-early",
+        "2026-03-05",
+        "1000",
+        "4000",
+        "1.00",
+    );
+    let (code, out, _) = run(&["scenario", "run", "but-for", "--intent", &early]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-164")),
+        "{out}"
+    );
+    let april = intent("april.json", "april", "2026-04-10", "1000", "4000", "1.00");
+    let (code, out, _) = run(&["scenario", "run", "but-for", "--intent", &april]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (7, Some("FA-REF-010")),
+        "the scenario's replay refuses a post to a Future period: {out}"
+    );
+    assert!(out.contains("intent #3"), "{out}");
+    let (code, out, _) = run(&["scenario", "run", "nope", "--intent", &sale]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-162")),
+        "{out}"
+    );
+    let (code, out, _) = run(&[
+        "post",
+        "--intent",
+        &sale,
+        "--scenario",
+        "but-for",
+        "--draft",
+        "close-03",
+    ]);
+    assert_eq!(
+        code, 2,
+        "a draft and a scenario are different intent logs: {out}"
+    );
+    let (code, out, _) = run(&["scenario", "fork", "beyond", "--at", "999999"]);
+    assert_eq!(code, 2, "a fork beyond the head: {out}");
+    let unheld = "0".repeat(64);
+    let (code, out, _) = run(&["scenario", "fork", "unsupported", "--evidence", &unheld]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-081")),
+        "{out}"
+    );
+    let (code, out, _) = run(&["scenario", "show", "but-for"]);
+    assert_eq!(code, 0, "{out}");
+    let shown = doc(&out);
+    let intents = arr(&shown, "intents");
+    assert_eq!(
+        intents.len(),
+        2,
+        "refused intents never enter the scenario: {out}"
+    );
+    assert_eq!(text(&intents[0], "entry"), text(&ran, "entry"));
+
+    // Discard closes it; its history stays and its diff stays reproducible.
+    let (code, out, _) = run(&["scenario", "discard", "but-for", "--reason", "superseded"]);
+    assert_eq!(code, 0, "{out}");
+    let other = intent(
+        "other.json",
+        "after-discard",
+        "2026-03-21",
+        "6000",
+        "1000",
+        "1.00",
+    );
+    let (code, out, _) = run(&["scenario", "run", "but-for", "--intent", &other]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-163")),
+        "{out}"
+    );
+    let (code, out, _) = run(&["scenario", "list"]);
+    assert_eq!(code, 0, "{out}");
+    let listed = doc(&out);
+    let all = arr(&listed, "scenarios");
+    assert_eq!(all.len(), 1, "{out}");
+    assert_eq!(text(&all[0], "state"), "discarded");
+    assert_eq!(int(&all[0], "intents"), Some(2));
+    let (code, out, _) = run(&["scenario", "diff", "but-for", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(arr(&doc(&out), "rows"), arr(&diff, "rows"));
     Ok(())
 }
 

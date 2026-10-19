@@ -500,3 +500,44 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §15.2 (promotion replays the intents in one batch with full revalidation); §14.4 (agent work reaches trunk only through a Human's promotion)"
+
+# ---- Scenarios (book-scoped; fa-k07b) -----------------------------------------
+# A scenario (plan §15.2) is a counterfactual intent log over a fixed trunk
+# prefix: its records never post to trunk and it is never promoted, so the
+# author of its intents needs only `post`, as for a draft. Its intents post
+# only into scratch replays (the materialization re-runs every posting law).
+[[rule]]
+name = "scenario-open"
+class = "ScenarioControl"
+transition = "Open"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §15.2 (a scenario is a deterministic replay of the trunk journal plus scenario intents); Appendix B ForkScenario"
+
+[[rule]]
+name = "scenario-plan"
+class = "ScenarioControl"
+transition = "Plan"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §15.2 (scenario intents); §15.6.5 (counterfactual intents of a but-for scenario)"
+
+[[rule]]
+name = "scenario-discard"
+class = "ScenarioControl"
+transition = "Discard"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §15.2 (a discarded scenario keeps its history; nothing is deleted)"
