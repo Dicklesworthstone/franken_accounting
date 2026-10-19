@@ -493,12 +493,10 @@ pub async fn replay_batches<W: asupersync::fs::Vfs + Clone>(
         if writes.is_empty() {
             continue;
         }
-        // A divergence is not an unsupported history but one that does not
-        // reproduce the book: a verification failure (exit 8).
         let diverged = || {
             Refusal::new(
                 code::REPLAY_UNSUPPORTED,
-                exit::VERIFICATION,
+                exit::FOUNDATION,
                 format!(
                     "replaying source commit {} diverged: a property's prior value differs in the scratch book",
                     batch.commit_seq().0

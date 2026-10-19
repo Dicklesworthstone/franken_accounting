@@ -4050,7 +4050,7 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
     );
     assert_eq!(code, 3, "{out}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-072"), "{out}");
-    assert!(out.contains("20000"), "{out}");
+    assert!(out.contains("but only 200.00 USD is open"), "{out}");
     let rev_inv = write(
         &dir,
         "rev-inv.json",
@@ -11664,7 +11664,17 @@ fn legal_entities_and_external_id_bindings_are_recorded_from_the_cli() -> std::i
     assert!(!out.contains("5299001ABCDEF"), "never echoed: {out}");
     let (code, out, err) = run(&["party", "bind", &acme, "--external-id", "lei:5299001ABCDEF"]);
     assert_eq!(code, 0, "{out}\n{err}");
-    assert_eq!(field(&out, "target"), Some(acme.as_str()), "{out}");
+    // `target` names the binding's external-id vertex; the vertex id bound
+    // the legal entity, not the like-coded party.
+    assert_eq!(field(&out, "code"), Some(acme.as_str()), "{out}");
+    let (code, out, _) = run(&["entity", "list"]);
+    assert_eq!(code, 0, "{out}");
+    let listed = doc(&out);
+    let bound = arr(&listed, "entities")
+        .iter()
+        .find(|e| text(e, "vid") == acme)
+        .expect("the bound entity is listed");
+    assert_eq!(bound.get("external_ids"), Some(&Json::Int(1)), "{out}");
     Ok(())
 }
 

@@ -1588,17 +1588,15 @@ impl Oracle {
     }
 
     /// Plan `intent` into the open draft `name` as `planner`: only its owner
-    /// plans; one intent per key (the identical one is its record); and the
-    /// intent must post on a copy of this book as it stands, which is then
-    /// thrown away (the rehearsal writes nothing).
+    /// plans; one intent per key (the identical one is its record, even
+    /// after the draft is promoted or discarded: FA-INV-09); and the intent
+    /// must post on a copy of this book as it stands, which is then thrown
+    /// away (the rehearsal writes nothing).
     pub fn plan_into_draft(&mut self, name: &str, planner: &str, intent: &Intent) -> DraftVerdict {
         let refused = |code| DraftVerdict::Refused { member: None, code };
         let Some(d) = self.drafts.get(name) else {
             return refused(code::DRAFT_UNKNOWN);
         };
-        if d.state != DraftState::Open {
-            return refused(code::DRAFT_NOT_OPEN);
-        }
         if d.owner != planner {
             return refused(code::CAPABILITY);
         }
@@ -1608,6 +1606,9 @@ impl Oracle {
             } else {
                 refused(code::IDEMPOTENCY_CONFLICT)
             };
+        }
+        if d.state != DraftState::Open {
+            return refused(code::DRAFT_NOT_OPEN);
         }
         let mut rehearsal = self.clone();
         match rehearsal.post(intent) {

@@ -2313,7 +2313,11 @@ fn applications_settle_open_items_within_the_open_amount_and_reversal_undoes_the
         ))
         .unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-072", exit::REFUSAL));
-    assert!(r.message.contains("20000"), "{}", r.message);
+    assert!(
+        r.message.contains("but only 200.00 USD is open"),
+        "{}",
+        r.message
+    );
     assert_eq!(h.applied_to(invoice.vid, 0), 30_000);
     let again = h
         .post(h.request(

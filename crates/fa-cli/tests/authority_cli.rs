@@ -126,10 +126,17 @@ fn an_agent_launch_rehearses_typed_documents_but_never_posts_them_to_trunk() {
 
 /// A bank-detail change is the business-email-compromise vector (plan
 /// §14.4): no launch-bound session changes a party's identifiers, whatever
-/// it holds, while the other REA changes stay admitted under schema_change.
+/// it holds. No launch ceiling includes schema_change today, so the other
+/// REA changes are refused by the op check; identifiers has no launch
+/// mapping at all, so a wider future ceiling cannot reach it.
 #[test]
 fn no_launch_session_changes_a_partys_bank_details() {
-    let holder = authority(LaunchProfile::Preparer, &["read", "schema_change"]);
+    let ceiling: Vec<&str> = LaunchProfile::Preparer
+        .ceiling()
+        .iter()
+        .map(|op| op.name())
+        .collect();
+    let holder = authority(LaunchProfile::Preparer, &ceiling);
     refused_before_open(
         &holder,
         &[
@@ -149,14 +156,26 @@ fn no_launch_session_changes_a_partys_bank_details() {
         let argv: Vec<String> = argv.iter().map(|a| (*a).to_string()).collect();
         fa_cli::args::parse(&argv, &reg.value_flags(), &reg.switches()).expect("parses")
     };
-    assert!(
-        fa_cli::cli::bound_command_admissible(
-            reg,
+    let identifiers = parse(&[
+        "party",
+        "identifiers",
+        "V-17",
+        "--identifier",
+        "bank_account=000123",
+        "--key",
+        "chg-1",
+    ]);
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("party", &identifiers),
+        None,
+        "no grant reaches a bank-detail change"
+    );
+    assert_eq!(
+        fa_cli::cli::bound_command_ops(
             "party",
-            &parse(&["party", "bind", "V-17", "--external-id", "qbo:55"]),
-            &holder
-        )
-        .is_ok(),
+            &parse(&["party", "bind", "V-17", "--external-id", "qbo:55"])
+        ),
+        Some(&[fa_policy::Op::SchemaChange][..]),
         "binding another system's id stays a schema_change"
     );
 }
