@@ -432,19 +432,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         ))
     }
 
-    /// Compare previously retained statements without replacing their frontiers
-    /// or definitions with HEAD. Both source claims are replayed in full first.
-    pub fn compare_statement_certificates(
+    /// Replay both retained sources in full and bridge them. Neither frontier
+    /// nor definition is replaced with HEAD. The caller has admitted authority.
+    fn retained_statement_diff(
         &self,
         cx: &PurposeContexts,
-        principal: VId,
-        capability: &Capability,
         before: &ReportCertificate,
         after: &ReportCertificate,
-    ) -> Outcome<CertifiedStatementDiff> {
-        if let Err(r) = authorize(self, cx, principal, capability, true)? {
-            return Ok(Err(r));
-        }
+    ) -> Outcome<StatementDiff> {
         if let Err(r) = sources(before, after) {
             return Ok(Err(r));
         }
@@ -461,6 +456,43 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(r) => return Ok(Err(r)),
         };
         cx.query().checkpoint().map_err(BookError::Context)?;
+        Ok(Ok(report))
+    }
+
+    /// Read the bridge between previously retained statements under current
+    /// read authority. Both source claims are replayed in full first; nothing
+    /// is certified or written.
+    pub fn diff_statement_certificates(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        before: &ReportCertificate,
+        after: &ReportCertificate,
+    ) -> Outcome<StatementDiff> {
+        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+            return Ok(Err(r));
+        }
+        self.retained_statement_diff(cx, before, after)
+    }
+
+    /// Compare previously retained statements without replacing their frontiers
+    /// or definitions with HEAD. Both source claims are replayed in full first.
+    pub fn compare_statement_certificates(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        before: &ReportCertificate,
+        after: &ReportCertificate,
+    ) -> Outcome<CertifiedStatementDiff> {
+        if let Err(r) = authorize(self, cx, principal, capability, true)? {
+            return Ok(Err(r));
+        }
+        let report = match self.retained_statement_diff(cx, before, after)? {
+            Ok(d) => d,
+            Err(r) => return Ok(Err(r)),
+        };
         Ok(package(
             report,
             before.clone(),
