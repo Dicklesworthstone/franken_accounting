@@ -1190,3 +1190,48 @@ fn a_valid_alternative_predecessor_cannot_fork_an_already_linked_statement() {
     );
     assert_eq!(head(&f.book), before);
 }
+
+#[test]
+fn an_unlinked_import_recorded_before_its_statement_was_linked_retries_to_its_receipt() {
+    // Import unlinked first and link later (the continuity refusal's fix
+    // offers exactly that). An exact repeat of the original unlinked import
+    // is still the recorded import, not a competing choice: it returns the
+    // original receipt and publishes nothing. A new unlinked import of a
+    // linked statement stays refused (the fork test above).
+    let f = Fixture::new();
+    let first = f.import(
+        "retry-first.csv",
+        "csv",
+        &continuity_csv(30, "BANK-RETRY", "2026-03-31", "0.00", "25.00", "FIRST"),
+    );
+    let raw = continuity_csv(31, "BANK-RETRY", "2026-04-30", "25.00", "50.00", "NEXT");
+    let unlinked = f.import("retry-next.csv", "csv", &raw);
+    assert_eq!(text(data(&unlinked), "continuity"), "unlinked");
+    let linked = linked_import(
+        &f,
+        "retry-next-linked.csv",
+        &raw,
+        text(data(&first), "manifest_oid"),
+    );
+    assert_eq!(text(data(&linked), "continuity"), "verified_predecessor");
+    assert_ne!(
+        text(data(&linked), "manifest_oid"),
+        text(data(&unlinked), "manifest_oid")
+    );
+    let after = head(&f.book);
+    let repeated = f.import("retry-next-again.csv", "csv", &raw);
+    assert_eq!(
+        data(&repeated).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        text(data(&repeated), "manifest_oid"),
+        text(data(&unlinked), "manifest_oid")
+    );
+    assert_eq!(
+        text(data(&repeated), "receipt_hash"),
+        text(data(&unlinked), "receipt_hash")
+    );
+    assert_eq!(text(data(&repeated), "continuity"), "unlinked");
+    assert_eq!(head(&f.book), after);
+}
