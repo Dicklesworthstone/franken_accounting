@@ -784,6 +784,77 @@ fn build_golden_seeds() -> GoldenSeeds {
         .canonical_bytes()
         .expect("encode report cert");
 
+    // A scenario forked at the head with one counterfactual sale run in it,
+    // and its certified diff (fa-k07b), before any checkpoint, proof or
+    // bundle exists for its materialization to replay.
+    let scenario_cap = Capability::embedded(who, &["post"]).expect("post cap");
+    book.open_scenario(
+        scenario_cap.clone(),
+        "golden",
+        fa_journal::ScenarioFork {
+            at: None,
+            from: None,
+            assumptions: Vec::new(),
+        },
+        date,
+        "Golden counterfactual",
+    )
+    .expect("open scenario")
+    .expect("scenario admitted");
+    let legs3 = vec![
+        LegPayload::simple(Side::Debit, cash, Amount::new(usd, 2_500)),
+        LegPayload::simple(Side::Credit, rev, Amount::new(usd, 2_500)),
+    ];
+    let proposal3 = EntryPayload {
+        schema_minor: 0,
+        book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::ORIGINAL,
+        effective_date: date,
+        document_date: None,
+        description: book
+            .seal_text("Golden counterfactual sale")
+            .expect("seal text"),
+        effective_period: None,
+        unit_totals: EntryPayload::fold_unit_totals(&legs3).expect("unit totals"),
+        legs: legs3,
+        control: None,
+        base_totals: None,
+        idempotency_key: b"golden-scenario-1".to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([3; 32]),
+            intent_kind: 1,
+        },
+        principal_ref: who,
+        session_ref: None,
+        evidence: vec![source_doc.evidence_ref(1)],
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    };
+    book.run_in_scenario(
+        scenario_cap,
+        "golden",
+        PostIntent::new(proposal3, Vec::new()).expect("valid PostIntent"),
+    )
+    .expect("run in scenario")
+    .expect("scenario run admitted");
+    let scenario_diff_cert_bytes = book
+        .certify_scenario_diff(
+            who,
+            &Capability::embedded(who, &["read", "produce"]).expect("produce cap"),
+            "golden",
+            &["FY2026-P03".to_string()],
+            false,
+        )
+        .expect("certify scenario diff")
+        .expect("scenario diff admitted")
+        .certificate
+        .canonical_bytes()
+        .expect("encode scenario diff certificate");
+
     let witness_cap = Capability::embedded(who, &["witness"]).expect("witness cap");
     let checkpointed = book
         .checkpoint(who, &witness_cap)
@@ -873,77 +944,6 @@ fn build_golden_seeds() -> GoldenSeeds {
         .expect("bundle produced");
     let bundle_bytes = produced_bundle.bundle.bytes;
     let receipt_bytes = produced_bundle.receipt;
-
-    // A scenario forked at the head with one counterfactual sale run in it,
-    // and its certified diff (fa-k07b). Built last, so every seed above
-    // keeps its bytes.
-    let scenario_cap = Capability::embedded(who, &["post"]).expect("post cap");
-    book.open_scenario(
-        scenario_cap.clone(),
-        "golden",
-        fa_journal::ScenarioFork {
-            at: None,
-            from: None,
-            assumptions: Vec::new(),
-        },
-        date,
-        "Golden counterfactual",
-    )
-    .expect("open scenario")
-    .expect("scenario admitted");
-    let legs3 = vec![
-        LegPayload::simple(Side::Debit, cash, Amount::new(usd, 2_500)),
-        LegPayload::simple(Side::Credit, rev, Amount::new(usd, 2_500)),
-    ];
-    let proposal3 = EntryPayload {
-        schema_minor: 0,
-        book_id,
-        branch_id: Id128::TRUNK,
-        class: EntryClass::ORIGINAL,
-        effective_date: date,
-        document_date: None,
-        description: book
-            .seal_text("Golden counterfactual sale")
-            .expect("seal text"),
-        effective_period: None,
-        unit_totals: EntryPayload::fold_unit_totals(&legs3).expect("unit totals"),
-        legs: legs3,
-        control: None,
-        base_totals: None,
-        idempotency_key: b"golden-scenario-1".to_vec(),
-        origin: EntryOrigin::Intent {
-            intent_oid: Oid([3; 32]),
-            intent_kind: 1,
-        },
-        principal_ref: who,
-        session_ref: None,
-        evidence: vec![source_doc.evidence_ref(1)],
-        supersession: Vec::new(),
-        pending: None,
-        external_ids: Vec::new(),
-        extensions: Vec::new(),
-        tags: Vec::new(),
-    };
-    book.run_in_scenario(
-        scenario_cap,
-        "golden",
-        PostIntent::new(proposal3, Vec::new()).expect("valid PostIntent"),
-    )
-    .expect("run in scenario")
-    .expect("scenario run admitted");
-    let scenario_diff_cert_bytes = book
-        .certify_scenario_diff(
-            who,
-            &produce_cap,
-            "golden",
-            &["FY2026-P03".to_string()],
-            false,
-        )
-        .expect("certify scenario diff")
-        .expect("scenario diff admitted")
-        .certificate
-        .canonical_bytes()
-        .expect("encode scenario diff certificate");
 
     GoldenSeeds {
         public_key,
