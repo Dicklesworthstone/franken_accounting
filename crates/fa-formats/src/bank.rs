@@ -1238,12 +1238,29 @@ fn bank_csv_records(csv: &str) -> Result<Vec<Vec<String>>, FormatError> {
     Ok(records)
 }
 
-/// Parse a SWIFT `MT940` statement (`:25:`, `:28C:`, `:60F:`, `:61:`, `:86:`, `:62F:`)
-/// into a [`BankStatementExtract`] (plan §9.5, §15.9; bead `fa-2ek`).
-/// The bounded profile uses pipe-separated fields and ISO civil dates, with
-/// exactly one account, sequence and final opening/closing balance. Intermediate
-/// balances and multi-message envelopes require explicit conversion upstream.
+/// Parse one SWIFT MT940 statement into a bank statement extract.
+///
+/// The standard profile accepts an unwrapped :20:/:25:/:28C:/:60F:/:61:/:86:/:62F:
+/// message, comma decimals, and C/D/RC/RD entries. YY dates explicitly mean
+/// 2000-2099; an MMDD entry date must resolve uniquely within the opening/closing
+/// date interval. Without MMDD, the value date is also the booking date.
+/// Transaction :86: narratives are retained in the counterparty projection.
+/// Multipart statements, envelopes and supplementary :61: lines need explicit
+/// conversion upstream. The original pipe-separated ISO-date profile remains
+/// supported, but profiles cannot be mixed within one statement.
 pub fn parse_mt940(text: &str, units: &UnitCatalog) -> Result<BankStatementExtract, FormatError> {
+    let standard = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(":60F:"))
+        .is_some_and(|balance| !balance.contains('|'));
+    if standard {
+        parse_mt940_standard(text, units)
+    } else {
+        parse_mt940_legacy(text, units)
+    }
+}
+
+fn parse_mt940_legacy(text: &str, units: &UnitCatalog) -> Result<BankStatementExtract, FormatError> {
     const FMT: &str = "swift_mt940";
     let mut instrument_id = String::new();
     let mut seq = 1u64;
@@ -1402,6 +1419,362 @@ pub fn parse_mt940(text: &str, units: &UnitCatalog) -> Result<BankStatementExtra
     };
     extract.verify_internal_balance()?;
     Ok(extract)
+}
+
+fn mt940_required<'a>(
+    records: &mut impl Iterator<Item = (&'a str, String)>,
+    expected: &str,
+) -> Result<String, FormatError> {
+    match records.next() {
+        Some((tag, body)) if tag == expected => Ok(body),
+        _ => Err(camt_error(
+            "swift_mt940",
+            format!("MT940 requires :{expected}: in statement order"),
+        )),
+    }
+}
+
+fn mt940_text(text: &str, maximum: usize) -> bool {
+    !text.trim().is_empty()
+        && text.chars().count() <= maximum
+        && !text.chars().any(char::is_control)
+}
+
+fn parse_mt940_standard(
+    text: &str,
+    units: &UnitCatalog,
+) -> Result<BankStatementExtract, FormatError> {
+    const FMT: &str = "swift_mt940";
+    let mut records: Vec<(&str, String)> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(field) = line.strip_prefix(':') {
+            let (tag, body) = field
+                .split_once(':')
+                .ok_or_else(|| camt_error(FMT, "malformed MT940 record tag"))?;
+            records.push((tag, body.trim().to_owned()));
+        } else if let Some((tag, body)) = records.last_mut() {
+            if *tag != "86" {
+                return Err(camt_error(FMT, "unsupported MT940 continuation record"));
+            }
+            body.push('\n');
+            body.push_str(line);
+        } else {
+            return Err(camt_error(FMT, "MT940 needs an unwrapped statement body"));
+        }
+    }
+
+    let mut records = records.into_iter().peekable();
+    if !mt940_text(&mt940_required(&mut records, "20")?, 16) {
+        return Err(camt_error(FMT, "invalid MT940 message reference"));
+    }
+    if records.peek().is_some_and(|(tag, _)| *tag == "21")
+        && !mt940_text(&mt940_required(&mut records, "21")?, 16)
+    {
+        return Err(camt_error(FMT, "invalid MT940 related reference"));
+    }
+    let instrument_id = mt940_required(&mut records, "25")?;
+    if !mt940_text(&instrument_id, 35) {
+        return Err(camt_error(FMT, "invalid MT940 account identity"));
+    }
+    let sequence = mt940_required(&mut records, "28C")?;
+    let mut sequence_parts = sequence.split('/');
+    let number = sequence_parts.next().unwrap_or("");
+    let part = sequence_parts.next();
+    let valid_number = |value: &str| {
+        (1..=5).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_digit())
+    };
+    if !valid_number(number)
+        || part.is_some_and(|value| !valid_number(value) || value.parse::<u64>() != Ok(1))
+        || sequence_parts.next().is_some()
+    {
+        return Err(camt_error(
+            FMT,
+            "MT940 :28C: needs a statement number and optional first-message /1",
+        ));
+    }
+    let seq = number
+        .parse::<u64>()
+        .map_err(|_| camt_error(FMT, "invalid MT940 statement number"))?;
+    let opening = mt940_required(&mut records, "60F")?;
+    let (opening_date, currency, opening_balance) = mt940_standard_balance(&opening, units)?;
+    let mut pending = Vec::new();
+    while records.peek().is_some_and(|(tag, _)| *tag == "61") {
+        let raw = mt940_required(&mut records, "61")?;
+        let (mut line, entry_date) = mt940_standard_line(&raw, &currency, units)?;
+        if records.peek().is_some_and(|(tag, _)| *tag == "86") {
+            let description = mt940_required(&mut records, "86")?;
+            if !(1..=6).contains(&description.lines().count())
+                || description.lines().any(|part| !mt940_text(part, 65))
+            {
+                return Err(camt_error(
+                    FMT,
+                    "MT940 :86: needs at most six nonempty 65-character lines",
+                ));
+            }
+            line.counterparty = description;
+        }
+        pending.push((line, entry_date));
+    }
+    let closing = mt940_required(&mut records, "62F")?;
+    let (closing_date, closing_currency, closing_balance) =
+        mt940_standard_balance(&closing, units)?;
+    if closing_currency != currency || closing_date < opening_date {
+        return Err(FormatError::BankContinuity {
+            format: FMT,
+            detail: "MT940 balance currency or date interval is inconsistent".to_owned(),
+        });
+    }
+    // Available balances are metadata, never replacement booked balances.
+    let mut available_seen = false;
+    let mut forward_seen = false;
+    for (tag, body) in records {
+        match tag {
+            "64" if !available_seen && !forward_seen => available_seen = true,
+            "65" => forward_seen = true,
+            _ => {
+                return Err(camt_error(
+                    FMT,
+                    "unexpected MT940 record after final closing balance",
+                ));
+            }
+        }
+        let (date, balance_currency, _) = mt940_standard_balance(&body, units)?;
+        if balance_currency != currency || date < closing_date {
+            return Err(camt_error(FMT, "inconsistent MT940 available balance"));
+        }
+    }
+
+    let mut lines: Vec<ParsedBankLine> = Vec::new();
+    for (mut line, entry_date) in pending {
+        let booking_date = match entry_date {
+            Some(mmdd) => mt940_entry_date(&mmdd, opening_date, closing_date)?,
+            None => line.value_date,
+        };
+        if booking_date < opening_date || booking_date > closing_date {
+            return Err(camt_error(
+                FMT,
+                "MT940 booking date lies outside the statement interval",
+            ));
+        }
+        let ordinal = u32::try_from(lines.len())
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or_else(|| FormatError::Overflow {
+                format: FMT,
+                detail: "MT940 line ordinal overflow".to_owned(),
+            })?;
+        line.line_ordinal = ordinal;
+        line.booking_date = booking_date;
+        line.line_digest = compute_bank_line_digest(
+            &instrument_id,
+            seq,
+            ordinal,
+            booking_date,
+            line.side,
+            line.amount,
+            &line.reference,
+        );
+        lines.push(line);
+    }
+    let extract = BankStatementExtract {
+        format_name: FMT,
+        instrument_account_id: instrument_id,
+        sequence_number: seq,
+        currency,
+        statement_date: closing_date,
+        opening_balance,
+        closing_balance,
+        lines,
+    };
+    extract.verify_internal_balance()?;
+    Ok(extract)
+}
+
+fn mt940_date(raw: &str) -> Result<DateDay, FormatError> {
+    const FMT: &str = "swift_mt940";
+    if raw.len() != 6 || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(camt_error(FMT, "MT940 requires a six-digit YYMMDD date"));
+    }
+    parse_date_iso(FMT, &format!("20{}-{}-{}", &raw[..2], &raw[2..4], &raw[4..]))
+}
+
+fn mt940_entry_date(
+    mmdd: &str,
+    opening: DateDay,
+    closing: DateDay,
+) -> Result<DateDay, FormatError> {
+    const FMT: &str = "swift_mt940";
+    if mmdd.len() != 4 || !mmdd.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(camt_error(FMT, "invalid MT940 MMDD entry date"));
+    }
+    let mut found = None;
+    for year in opening.year()..=closing.year() {
+        let candidate = parse_date_iso(FMT, &format!("{year:04}-{}-{}", &mmdd[..2], &mmdd[2..]));
+        let Ok(date) = candidate else {
+            continue;
+        };
+        if date < opening || date > closing {
+            continue;
+        }
+        if found.is_some() {
+            return Err(camt_error(FMT, "ambiguous MT940 entry-date year"));
+        }
+        found = Some(date);
+    }
+    found.ok_or_else(|| camt_error(FMT, "MT940 entry date lies outside the statement interval"))
+}
+
+fn mt940_amount(raw: &str, scale: u8) -> Result<i128, FormatError> {
+    const FMT: &str = "swift_mt940";
+    let (whole, fraction) = raw
+        .split_once(',')
+        .ok_or_else(|| camt_error(FMT, "MT940 amount requires a decimal comma"))?;
+    if raw.len() > 15
+        || whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(camt_error(FMT, "invalid unsigned MT940 15d amount"));
+    }
+    // SWIFT permits an empty fractional part after the mandatory comma.
+    let decimal = if fraction.is_empty() {
+        whole.to_owned()
+    } else {
+        format!("{whole}.{fraction}")
+    };
+    parse_exact_decimal(FMT, &decimal, scale)
+}
+
+fn mt940_standard_balance(
+    raw: &str,
+    units: &UnitCatalog,
+) -> Result<(DateDay, String, i128), FormatError> {
+    const FMT: &str = "swift_mt940";
+    if !raw.is_ascii() || raw.len() < 12 {
+        return Err(camt_error(FMT, "invalid MT940 balance record"));
+    }
+    let date = mt940_date(&raw[1..7])?;
+    let currency = &raw[7..10];
+    if !currency.bytes().all(|b| b.is_ascii_uppercase()) {
+        return Err(camt_error(FMT, "invalid MT940 balance currency"));
+    }
+    let (_, scale) = units
+        .lookup_code(currency)
+        .ok_or_else(|| FormatError::UnknownUnit {
+            format: FMT,
+            unit: currency.to_owned(),
+        })?;
+    let magnitude = mt940_amount(&raw[10..], scale)?;
+    let signed = match raw.as_bytes()[0] {
+        b'C' => magnitude,
+        b'D' => negate_bank_amount(FMT, magnitude)?,
+        _ => return Err(camt_error(FMT, "invalid MT940 balance C/D indicator")),
+    };
+    Ok((date, currency.to_owned(), signed))
+}
+
+fn mt940_standard_line(
+    raw: &str,
+    currency: &str,
+    units: &UnitCatalog,
+) -> Result<(ParsedBankLine, Option<String>), FormatError> {
+    const FMT: &str = "swift_mt940";
+    if !raw.is_ascii() || raw.len() < 6 {
+        return Err(camt_error(FMT, "invalid MT940 transaction record"));
+    }
+    let value_date = mt940_date(&raw[..6])?;
+    let mut rest = &raw[6..];
+    let entry_date = if rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        if rest.len() < 4 || !rest[..4].bytes().all(|b| b.is_ascii_digit()) {
+            return Err(camt_error(FMT, "invalid MT940 MMDD entry date"));
+        }
+        let date = rest[..4].to_owned();
+        rest = &rest[4..];
+        Some(date)
+    } else {
+        None
+    };
+    let (side, tail) = if let Some(tail) = rest.strip_prefix("RC") {
+        (Side::Debit, tail)
+    } else if let Some(tail) = rest.strip_prefix("RD") {
+        (Side::Credit, tail)
+    } else if let Some(tail) = rest.strip_prefix('C') {
+        (Side::Credit, tail)
+    } else if let Some(tail) = rest.strip_prefix('D') {
+        (Side::Debit, tail)
+    } else {
+        return Err(camt_error(
+            FMT,
+            "invalid MT940 transaction C/D/RC/RD indicator",
+        ));
+    };
+    rest = tail;
+    if rest.as_bytes().first().is_some_and(u8::is_ascii_uppercase) {
+        if rest.as_bytes().first() != currency.as_bytes().get(2) {
+            return Err(camt_error(
+                FMT,
+                "MT940 funds code differs from the account currency",
+            ));
+        }
+        rest = &rest[1..];
+    }
+    let amount_end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != ',')
+        .unwrap_or(rest.len());
+    let (unit, scale) = units
+        .lookup_code(currency)
+        .ok_or_else(|| FormatError::UnknownUnit {
+            format: FMT,
+            unit: currency.to_owned(),
+        })?;
+    let magnitude = mt940_amount(&rest[..amount_end], scale)?;
+    if magnitude == 0 {
+        return Err(camt_error(
+            FMT,
+            "MT940 transaction magnitude must be positive",
+        ));
+    }
+    rest = &rest[amount_end..];
+    if rest.len() < 5
+        || !matches!(rest.as_bytes()[0], b'N' | b'F' | b'S')
+        || !rest[1..4].bytes().all(|b| b.is_ascii_alphanumeric())
+        || (rest.starts_with('S') && !rest[1..4].bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(camt_error(
+            FMT,
+            "invalid MT940 transaction type or missing reference",
+        ));
+    }
+    let reference = &rest[4..];
+    let (customer, bank) = match reference.split_once("//") {
+        Some((customer, bank)) => (customer, Some(bank)),
+        None => (reference, None),
+    };
+    if !mt940_text(customer, 16)
+        || bank.is_some_and(|value| !mt940_text(value, 16) || value.contains("//"))
+    {
+        return Err(camt_error(
+            FMT,
+            "invalid or ambiguous MT940 customer/bank reference",
+        ));
+    }
+    Ok((
+        ParsedBankLine {
+            line_ordinal: 0,
+            booking_date: value_date,
+            value_date,
+            side,
+            amount: Amount::new(unit, magnitude),
+            counterparty: String::new(),
+            reference: reference.to_owned(),
+            line_digest: [0; 32],
+        },
+        entry_date,
+    ))
 }
 
 fn parse_mt940_balance(
@@ -1889,5 +2262,182 @@ sequence_number,instrument_id,currency,statement_date,opening_balance,closing_ba
         let stmt_052 = parse_camt052(camt052, &units).unwrap();
         assert_eq!(stmt_052.lines.len(), 1);
         assert_eq!(stmt_052.closing_balance, 142_500);
+    }
+
+    const STANDARD_MT940: &str = "\
+:20:REAL-STMT-1
+:21:RELATED
+:25:ACCT-001
+:28C:00001/00001
+:60F:C251231USD1000,
+:61:2601020101CD500,25NTRFINV-100//BANK-001
+:86:Acme Customer
+Invoice 100
+:61:2601050105D100,20FCHGNONREF
+:86:Bank fee
+:61:260106RCD25,05NTRFRETURN-1
+:61:260107RD10,NTRFRETURN-2
+:62F:C260131USD1385,
+:64:C260131USD1300,
+:65:C260202USD1400,
+";
+
+    #[test]
+    fn mt940_standard_records_round_trip_through_bank_csv() {
+        let units = UnitCatalog::embedded().unwrap();
+        let statement = parse_mt940(STANDARD_MT940, &units).unwrap();
+        assert_eq!(statement.instrument_account_id, "ACCT-001");
+        assert_eq!(statement.sequence_number, 1);
+        assert_eq!(statement.currency, "USD");
+        assert_eq!(statement.statement_date.render(), "2026-01-31");
+        assert_eq!(statement.opening_balance, 100_000);
+        assert_eq!(statement.closing_balance, 138_500);
+        assert_eq!(statement.lines.len(), 4);
+        assert_eq!(statement.lines[0].booking_date.render(), "2026-01-01");
+        assert_eq!(statement.lines[0].value_date.render(), "2026-01-02");
+        assert_eq!(statement.lines[0].reference, "INV-100//BANK-001");
+        assert_eq!(statement.lines[0].counterparty, "Acme Customer\nInvoice 100");
+        assert_eq!(
+            statement
+                .lines
+                .iter()
+                .map(|line| (line.side, line.amount.mantissa))
+                .collect::<Vec<_>>(),
+            vec![
+                (Side::Credit, 50_025),
+                (Side::Debit, 10_020),
+                (Side::Debit, 2_505),
+                (Side::Credit, 1_000),
+            ]
+        );
+        assert_eq!(
+            parse_mt940(&STANDARD_MT940.replace('\n', "\r\n"), &units).unwrap(),
+            statement
+        );
+
+        // Exercise every projected field through the independent CSV reader,
+        // including quoted multiline narrative and exact integer amounts.
+        let decimal = |mantissa: i128| format!("{}.{:02}", mantissa / 100, mantissa % 100);
+        let mut csv = format!("{CSV_HEADER}\n");
+        for line in &statement.lines {
+            let side = if line.side == Side::Credit {
+                "CRDT"
+            } else {
+                "DBIT"
+            };
+            csv.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{},{},\"{}\",\"{}\"\n",
+                statement.sequence_number,
+                statement.instrument_account_id,
+                statement.currency,
+                statement.statement_date.render(),
+                decimal(statement.opening_balance),
+                decimal(statement.closing_balance),
+                line.booking_date.render(),
+                line.value_date.render(),
+                side,
+                decimal(line.amount.mantissa),
+                line.counterparty.replace('"', "\"\""),
+                line.reference.replace('"', "\"\""),
+            ));
+        }
+        let mut round_trip = parse_bank_csv(&csv, &units).unwrap();
+        round_trip.format_name = statement.format_name;
+        assert_eq!(round_trip, statement);
+
+        let year_boundary = STANDARD_MT940.replace("2601020101", "2512310101");
+        let rolled = parse_mt940(&year_boundary, &units).unwrap();
+        assert_eq!(rolled.lines[0].booking_date.render(), "2026-01-01");
+        assert_eq!(rolled.lines[0].value_date.render(), "2025-12-31");
+    }
+
+    #[test]
+    fn mt940_standard_supports_overdrafts_integer_units_and_empty_statements() {
+        let units = UnitCatalog::embedded().unwrap();
+        let source = "\
+:20:JPY-STMT
+:25:JPY-ACCOUNT
+:28C:1
+:60F:D260101JPY100,
+:61:260102CY25,S103REF
+:62F:D260131JPY75,
+";
+        let statement = parse_mt940(source, &units).unwrap();
+        assert_eq!(statement.opening_balance, -100);
+        assert_eq!(statement.closing_balance, -75);
+        assert_eq!(statement.lines[0].amount.mantissa, 25);
+        assert_eq!(statement.lines[0].side, Side::Credit);
+        let empty = source
+            .replace(":61:260102CY25,S103REF\n", "")
+            .replace("JPY75,", "JPY100,");
+        assert!(parse_mt940(&empty, &units).unwrap().lines.is_empty());
+        assert!(parse_mt940(&source.replace("25,", "25,0"), &units).is_err());
+        assert!(mt940_amount("2,", 38).is_err());
+        assert!(mt940_amount("0,", 39).is_err());
+    }
+
+    #[test]
+    fn mt940_standard_refuses_malformed_ambiguous_and_partial_statements() {
+        let units = UnitCatalog::embedded().unwrap();
+        let invalid = [
+            STANDARD_MT940.replace("2601020101", "2602300101"),
+            STANDARD_MT940.replace("2601020101", "2601020230"),
+            STANDARD_MT940.replace("2601020101", "260102010"),
+            STANDARD_MT940.replace("CD500,25", "CX500,25"),
+            STANDARD_MT940.replace("CD500,25", "CD-500,25"),
+            STANDARD_MT940.replace("CD500,25", "CD+500,25"),
+            STANDARD_MT940.replace("CD500,25", "CD0,"),
+            STANDARD_MT940.replace("CD500,25", "CD500,250"),
+            STANDARD_MT940.replace("CD500,25", "CD5e2"),
+            STANDARD_MT940.replace("CD500,25", "CD500.25"),
+            STANDARD_MT940.replace("CD500,25", "CD,25"),
+            STANDARD_MT940.replace("CD500,25", "CD5,00,25"),
+            STANDARD_MT940.replace("CD500,25", "CD170141183460469231731687303715884105728,"),
+            STANDARD_MT940.replace("NTRFINV-100", "QTRFINV-100"),
+            STANDARD_MT940.replace("NTRFINV-100", "STRFINV-100"),
+            STANDARD_MT940.replace("INV-100//BANK-001", ""),
+            STANDARD_MT940.replace("INV-100//BANK-001", "REFERENCE-IS-TOO-LONG"),
+            STANDARD_MT940.replace("INV-100//BANK-001", "INV-100//BANK-001//EXTRA"),
+            STANDARD_MT940.replace("INV-100//BANK-001", "INV-100//"),
+            STANDARD_MT940.replace("C260131USD1385,", "C260131EUR1385,"),
+            STANDARD_MT940.replace("C260131USD1385,", "C260131USD1386,"),
+            STANDARD_MT940.replace("C251231USD1000,", "C270101USD1000,"),
+            STANDARD_MT940.replace("C251231USD1000,", "C250101USD1000,"),
+            STANDARD_MT940.replace("C251231USD1000,", "C251231ZZZ1000,"),
+            STANDARD_MT940.replace(":20:REAL-STMT-1\n", ""),
+            STANDARD_MT940.replace(":28C:00001/00001", ":28C:1/2"),
+            STANDARD_MT940.replace(":28C:00001/00001", ":28C:1/1/1"),
+            STANDARD_MT940.replace(":28C:00001/00001", ":28C:18446744073709551616"),
+            STANDARD_MT940.replace(":60F:", ":60M:"),
+            STANDARD_MT940.replace(":62F:", ":62M:"),
+            STANDARD_MT940.replace(":62F:C260131USD1385,\n", ""),
+            STANDARD_MT940.replace(":61:260102", ":86:ORPHAN\n:61:260102"),
+            STANDARD_MT940.replace(":61:260102", ":99:UNKNOWN\n:61:260102"),
+            STANDARD_MT940.replace(":61:260102", ":61BROKEN\n:61:260102"),
+            STANDARD_MT940.replace("Invoice 100", "1\n2\n3\n4\n5\n6"),
+            STANDARD_MT940.replace("Invoice 100", &"x".repeat(66)),
+            STANDARD_MT940.replace(":62F:C260131USD1385,", ":62F:C|2026-01-31|USD|1385.00"),
+            format!("{STANDARD_MT940}:61:260131C1,NTRFLATE\n"),
+            format!("{STANDARD_MT940}:25:OTHER\n"),
+            format!("{STANDARD_MT940}{STANDARD_MT940}"),
+        ];
+        for (index, source) in invalid.into_iter().enumerate() {
+            assert!(
+                parse_mt940(&source, &units).is_err(),
+                "accepted malformed MT940 case {index}: {source}"
+            );
+        }
+
+        // An equal-and-opposite pair must not disappear just because the
+        // statement's booked closing balance is unchanged.
+        let balanced_pair = STANDARD_MT940.replace(
+            ":62F:",
+            ":61:260131C1,NTRFPAIR\n:61:260131D1,NTRFPAIR\n:62F:",
+        );
+        let statement = parse_mt940(&balanced_pair, &units).unwrap();
+        assert_eq!(statement.lines.len(), 6);
+        assert_eq!(statement.lines[4].line_ordinal, 5);
+        assert_eq!(statement.lines[5].line_ordinal, 6);
+        assert_ne!(statement.lines[4].line_digest, statement.lines[5].line_digest);
     }
 }
