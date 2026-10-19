@@ -256,7 +256,7 @@ fn import_is_atomic_keeps_source_and_line_closure_and_is_content_idempotent() {
         after,
         "another authorized uploader does not duplicate an import"
     );
-    ok(&f.book, &["verify", "registers"]);
+    ok(&f.book, &["verify", "registers", "--fiscal-year", "2026"]);
 }
 
 #[test]
@@ -637,10 +637,7 @@ fn real_camt_date_choices_and_currency_attributes_import_and_match() {
 #[test]
 fn an_ambiguous_candidate_set_cannot_emit_an_undecodable_decision_card() {
     let f = Fixture::new();
-    let mut legs = Vec::new();
-    for _ in 0..43 {
-        legs.push(r#"{"side":"debit","account":"1000","amount":"1.00 USD"}"#);
-    }
+    let mut legs = vec![r#"{"side":"debit","account":"1000","amount":"1.00 USD"}"#; 43];
     legs.push(r#"{"side":"credit","account":"4000","amount":"43.00 USD"}"#);
     let intent = f.file(
         "many-candidates.json",

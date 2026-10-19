@@ -25,7 +25,7 @@ fn a_complete_run_includes_open_reviewed_and_dismissed_occurrences_in_source_ord
     assert_eq!(full.histories[0].status(), FindingReviewStatus::Reviewed);
     assert_eq!(full.histories[1].status(), FindingReviewStatus::Dismissed { reason: DismissalReason::Explained, principal: REVIEWER });
     assert_eq!(full.histories[2].status(), FindingReviewStatus::Open);
-    assert_eq!(full.histories[0].reviews, [first.clone()]);
+    assert_eq!(full.histories[0].reviews, std::slice::from_ref(&first));
     assert_eq!(full.histories[1].reviews, [second]);
     assert!(full.histories[2].reviews.is_empty());
     for (i, &id) in recorded.finding_ids.iter().enumerate() {

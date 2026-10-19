@@ -43,7 +43,7 @@ fn selected_run_decisions_publish_together_in_source_order_and_replay_as_a_workp
         &cx, PRINCIPAL, &cap(&["read"]), &run.certificate_digest, None,
     )).unwrap().unwrap();
     for (history, decision) in view.histories.iter().zip(&decisions) {
-        assert_eq!(history.reviews, [decision.clone()]);
+        assert_eq!(history.reviews, std::slice::from_ref(decision));
     }
     let old = f.runtime.block_on(f.book.finding_run_review_history(
         &cx, PRINCIPAL, &cap(&["read"]), &run.certificate_digest, Some(before),

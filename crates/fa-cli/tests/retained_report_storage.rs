@@ -364,6 +364,12 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
     const ADDITIONAL_ACCOUNTS: u16 = 128;
     let f = Fixture::with_additional_cash_accounts(ADDITIONAL_ACCOUNTS);
     let at = f.source_head.0.to_string();
+    // The roll-forward covers the same 129 cash accounts, so its retained
+    // artifact is large enough to exercise fragments too.
+    let cash_accounts = std::iter::once("1000".to_string())
+        .chain((0..ADDITIONAL_ACCOUNTS).map(|index| (2000 + u32::from(index)).to_string()))
+        .collect::<Vec<_>>()
+        .join(",");
     let cases = [
         (
             "summary",
@@ -377,7 +383,7 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
                 "gl",
                 "roll-forward",
                 "--account",
-                "1000",
+                cash_accounts.as_str(),
                 "--from",
                 "2026-01-01",
                 "--to",
