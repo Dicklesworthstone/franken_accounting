@@ -10291,6 +10291,24 @@ pub(crate) fn render_open_items(
 // gl (detail | roll-forward | aging | cash-flow)
 // ---------------------------------------------------------------------------
 
+/// Called after current read admission. Existing GL certificate formats bind
+/// a sequence, so an instant request must not silently lose its TimeEvidence.
+fn gl_known_at(args: &Args, book: &Book, out: &Out) -> Result<Option<CommitSeq>, Fail> {
+    let (known_at, requested_utc_ns) = known_at_flag(args, book, out)?;
+    if let (Some(sequence), Some(_)) = (known_at, requested_utc_ns)
+        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
+    {
+        return Err(usage(
+            "GL certificates bind a recorded sequence; instant-resolution evidence is not part of this certificate format",
+            format!(
+                "use --as-known-at {} to certify this resolved GL report",
+                sequence.0
+            ),
+        ));
+    }
+    Ok(known_at)
+}
+
 fn parse_gl_scope(
     args: &Args,
     book: &Book,
@@ -10348,7 +10366,7 @@ fn parse_gl_scope(
         )
     })?;
     let label = args.flag("--label").unwrap_or(default_label).to_string();
-    let (known_at, _) = known_at_flag(args, book, out)?;
+    let known_at = gl_known_at(args, book, out)?;
     out.effective(format!("between:{from}..{to}"));
     Ok(RollForwardRequest {
         accounts,
@@ -11237,7 +11255,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             };
             let account_code = args.flag("--account");
             let account = account_code.map(|code| account_vid(book.context().book_id, code));
-            let (known_at, _) = known_at_flag(args, &book, out)?;
+            let known_at = gl_known_at(args, &book, out)?;
             out.effective(format!("as-of:{day}"));
             let units = &book.context().units;
             if args.switch("--reconcile") {

@@ -355,6 +355,102 @@ fn certification_refuses_unsupported_modes_and_existing_output_without_writes() 
 }
 
 #[test]
+fn instant_reads_keep_their_brackets_and_certification_requires_an_explicit_sequence() {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+
+    const LOWER_NS: u64 = 1_773_576_000_000_000_000;
+    const UPPER_NS: u64 = 1_773_576_010_000_000_000;
+    const INSTANT: &str = "2026-03-15T12:00:05Z";
+    let fixture = Fixture::new();
+    let keys = fa::BookKeys::load(&fixture.book.join("book.keys")).unwrap();
+    let mut book =
+        fa::Book::open_dir(&fixture.book, keys, fa::Entropy::deterministic(120)).unwrap();
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let cx = runtime.request_cx_with_budget(Budget::INFINITE);
+    let witness =
+        fa::Capability::embedded(fa_model::principal_vid("time-witness"), &["witness"]).unwrap();
+    let lower = runtime
+        .block_on(book.record_tick(&cx, LOWER_NS, true, &witness))
+        .unwrap()
+        .unwrap();
+    let upper = runtime
+        .block_on(book.record_tick(&cx, UPPER_NS, true, &witness))
+        .unwrap()
+        .unwrap();
+    let selected = lower.recorded_at.0.to_string();
+    drop(book);
+
+    for sub in ["detail", "roll-forward", "aging"] {
+        let mut base = vec!["gl", sub, "--account", "1000"];
+        if sub == "aging" {
+            base.extend(["--as-of", "2026-03-31"]);
+        } else {
+            base.extend(["--from", "2026-03-01", "--to", "2026-03-31"]);
+        }
+        let mut instant = base.clone();
+        instant.extend(["--as-known-at", INSTANT]);
+        let before = head(&fixture.book);
+        let ordinary = ok(&fixture.book, &instant);
+        assert_eq!(ordinary.len(), 1);
+        let coordinate = ordinary[0].get("coordinate").unwrap();
+        assert_eq!(
+            number(coordinate, "known_at"),
+            i128::from(lower.recorded_at.0),
+        );
+        let time = coordinate.get("time_evidence").unwrap();
+        for (name, tick) in [("lower", &lower), ("upper", &upper)] {
+            assert_eq!(
+                time.get(name).and_then(|tick| tick.get("recorded_at")),
+                Some(&Json::Int(i128::from(tick.recorded_at.0))),
+            );
+        }
+        assert_eq!(head(&fixture.book), before, "ordinary {sub} is read-only");
+
+        // A live instant query is valid, but these certificate formats cannot
+        // retain its requested instant and both resolution ticks. Refuse before
+        // publishing a sequence-only artifact or creating an external file.
+        let path = fixture.dir.join(format!("instant-{sub}.certificate"));
+        for mode in [
+            vec!["--certify"],
+            vec!["--certificate-out", path.to_str().unwrap()],
+        ] {
+            let mut args = instant.clone();
+            args.extend(mode);
+            let (exit, refused, stderr) = run(&fixture.book, &args);
+            assert_eq!(exit, 2, "args={args:?}\n{refused:?}\n{stderr}");
+            assert_eq!(refused.len(), 1);
+            assert_eq!(text(&refused[0], "event"), "error");
+            assert_eq!(data(&refused[0]).get("refusal_id"), Some(&Json::Null));
+            assert_eq!(text(data(&refused[0]), "class"), "usage");
+            assert!(text(data(&refused[0]), "message").contains("instant-resolution evidence"));
+            assert!(text(data(&refused[0]), "fix").contains(&format!("--as-known-at {selected}")));
+            let denied_coordinate = refused[0].get("coordinate").unwrap();
+            assert_eq!(
+                number(denied_coordinate, "known_at"),
+                i128::from(lower.recorded_at.0),
+            );
+            assert_eq!(denied_coordinate.get("time_evidence"), Some(time));
+            assert_eq!(head(&fixture.book), before);
+            assert!(!path.exists());
+        }
+
+        // The explicitly selected recorded prefix still certifies the same
+        // accounting values. Its selector no longer asserts an instant proof.
+        let mut sequence = base;
+        sequence.extend(["--as-known-at", &selected, "--certify"]);
+        let certified = ok(&fixture.book, &sequence);
+        assert_eq!(certified.len(), 2);
+        assert_eq!(data(&certified[0]), data(&ordinary[0]));
+        assert_eq!(text(&certified[1], "event"), "report_certificate");
+        assert_eq!(
+            number(data(&certified[1]), "known_at"),
+            i128::from(lower.recorded_at.0),
+        );
+    }
+}
+
+#[test]
 fn held_daemon_dispatcher_certifies_and_replays_without_an_external_path() {
     let fixture = Fixture::new();
     let keys = fa::BookKeys::load(&fixture.book.join("book.keys")).unwrap();
