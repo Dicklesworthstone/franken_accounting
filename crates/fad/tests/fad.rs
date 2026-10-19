@@ -1010,6 +1010,41 @@ fn fad_confinement_refuses_host_file_paths_without_files_root_and_rejects_escape
         assert!(out.contains("--files-root"), "{out}");
     }
 
+    // Every argument that reads a host file is confined, including an
+    // account, party, instrument or entity object and a correction pair's
+    // replacement intent (fa-ohe). Before, these five read any path the
+    // daemon's user could read and were refused only afterwards, if at all.
+    let outside_object = write(&outside_dir, "object.json", "{}");
+    for argv in [
+        vec![
+            "chart",
+            "open",
+            outside_object.as_str(),
+            "--opened",
+            "2026-03-01",
+        ],
+        vec!["party", "add", outside_object.as_str()],
+        vec!["instrument", "add", outside_object.as_str()],
+        vec!["entity", "add", outside_object.as_str()],
+        vec![
+            "reverse",
+            "00000000000000000000000000000001",
+            "--reason",
+            "WrongAmount",
+            "--replace-with",
+            outside_object.as_str(),
+        ],
+    ] {
+        let mut argv = argv;
+        argv.extend(["--via", "fad", "--book", b.as_str(), "--json"]);
+        let (code, out, _) = fa(&argv);
+        assert_eq!(code, 2, "must refuse {argv:?}: {out}");
+        assert!(
+            out.contains("outside the daemon --files-root"),
+            "{argv:?}: {out}"
+        );
+    }
+
     // Attempt to write `--certificate-out ../escaped.cert`.
     let (code, out, _) = fa(&[
         "tb",

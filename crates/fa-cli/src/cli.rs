@@ -1948,6 +1948,91 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
     Ok(())
 }
 
+/// What a command does with a host path one of its arguments names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostPath {
+    /// A new file the command writes; its leaf may not exist yet.
+    Output,
+    /// Content a flag reads from the file (`--intent`, `--plan`, `--policy`,
+    /// `--file`, `--replace-with`).
+    Content,
+    /// A review event read from the file.
+    Review,
+    /// An input file of `fa document import run`.
+    ImportRun,
+    /// A positional input file: a chart, account, party, instrument, entity,
+    /// statement, document or certificate.
+    Input,
+}
+
+/// Every host path a command line names, in argument order within each kind.
+/// Both containment checks (a launch-bound session's `--files` root and
+/// fad's `--files-root`) walk this one list, so a file argument cannot be
+/// confined on one route and read unconfined on the other. Stdin (`-`), a
+/// review given as inline hex and a retained `C:<oid>` are not paths and are
+/// left out; an output flag is listed whatever its value.
+fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a str, HostPath)> {
+    let mut paths = Vec::new();
+    for flag in [
+        "--plan-out",
+        "--certificate-out",
+        "--out",
+        "--output",
+        "--review-out",
+        "--receipt-out",
+    ] {
+        if let Some(value) = args.flag(flag) {
+            paths.push((flag, value, HostPath::Output));
+        }
+    }
+    for flag in ["--intent", "--plan", "--policy", "--file", "--replace-with"] {
+        for value in args.flag_all(flag) {
+            if value != "-" {
+                paths.push((flag, value, HostPath::Content));
+            }
+        }
+    }
+    for value in args.flag_all("--review") {
+        let is_hex = !value.is_empty()
+            && value.len() % 2 == 0
+            && value.bytes().all(|b| b.is_ascii_hexdigit());
+        if value != "-" && !is_hex {
+            paths.push(("--review", value, HostPath::Review));
+        }
+    }
+    let sub = args.positional.get(1).map(String::as_str);
+    if verb == "document"
+        && sub == Some("import")
+        && args.positional.get(2).map(String::as_str) == Some("run")
+    {
+        for p in args.positional.iter().skip(3) {
+            if p != "-" {
+                paths.push(("file", p.as_str(), HostPath::ImportRun));
+            }
+        }
+    }
+    let input = match (verb, sub) {
+        ("chart" | "bank", Some("import"))
+        | ("document", Some("add"))
+        | ("chart", Some("open"))
+        | ("party" | "instrument" | "entity", Some("add"))
+        | ("certificate", Some("status"))
+        | ("finding", Some("replay")) => args.positional.get(2),
+        ("replay", _) => args.positional.get(1),
+        _ => None,
+    };
+    if let Some(input) = input {
+        let digits = input.strip_prefix("C:").unwrap_or(input);
+        let retained = matches!(verb, "replay" | "certificate")
+            && digits.len() == 64
+            && digits.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if input != "-" && !retained {
+            paths.push(("file", input.as_str(), HostPath::Input));
+        }
+    }
+    paths
+}
+
 /// Bound hosts receive content through forwarded stdin unless launched with an
 /// explicit `--files <dir>` containment root. Caller paths outside `--files`
 /// never become host reads or writes; the configured book and keys are
@@ -1973,84 +2058,25 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
                 )
             })
     };
-    for flag in [
-        "--plan-out",
-        "--certificate-out",
-        "--out",
-        "--output",
-        "--review-out",
-        "--receipt-out",
-    ] {
-        if let Some(value) = args.flag(flag) {
-            check_path(
-                flag,
-                value,
-                true,
-                "use --dry-run for inline plan bytes, --review-only for inline review bytes, or --certify for a retained certificate; MCP accepts no output paths (fa-yha)",
-            )?;
-        }
-    }
-    for flag in ["--intent", "--plan", "--policy", "--file"] {
-        for value in args.flag_all(flag) {
-            if value != "-" {
-                check_path(
-                    flag,
-                    value,
-                    false,
-                    "forward the complete content on stdin with -; MCP takes the inline intent, plan, or policy property, never a file path (fa-yha)",
-                )?;
+    for (argument, value, kind) in host_path_arguments(&verb.name, args) {
+        let fix = match kind {
+            HostPath::Output => {
+                "use --dry-run for inline plan bytes, --review-only for inline review bytes, or --certify for a retained certificate; MCP accepts no output paths (fa-yha)"
             }
-        }
-    }
-    for value in args.flag_all("--review") {
-        let is_hex = !value.is_empty()
-            && value.len() % 2 == 0
-            && value.bytes().all(|b| b.is_ascii_hexdigit());
-        if value != "-" && !is_hex {
-            check_path(
-                "--review",
-                value,
-                false,
-                "pass the review event's complete bytes hex string in review, or forward it on stdin with -; MCP accepts no host file paths (fa-yha)",
-            )?;
-        }
-    }
-    let sub = args.positional.get(1).map(String::as_str);
-    if verb.name == "document"
-        && sub == Some("import")
-        && args.positional.get(2).map(String::as_str) == Some("run")
-    {
-        for p in args.positional.iter().skip(3) {
-            if p != "-" {
-                check_path(
-                    "file",
-                    p,
-                    false,
-                    "forward the complete input on stdin with -; MCP accepts no host file paths (fa-yha)",
-                )?;
+            HostPath::Content => {
+                "forward the complete content on stdin with -; MCP takes the inline intent, plan, or policy property, never a file path (fa-yha)"
             }
-        }
-    }
-    let input = match (verb.name.as_str(), sub) {
-        ("chart" | "bank", Some("import")) | ("document", Some("add")) => args.positional.get(2),
-        ("replay", _) => args.positional.get(1),
-        ("certificate", Some("status")) => args.positional.get(2),
-        ("finding", Some("replay")) => args.positional.get(2),
-        _ => None,
-    };
-    if let Some(input) = input {
-        let digits = input.strip_prefix("C:").unwrap_or(input);
-        let retained = matches!(verb.name.as_str(), "replay" | "certificate")
-            && digits.len() == 64
-            && digits.bytes().all(|byte| byte.is_ascii_hexdigit());
-        if input != "-" && !retained {
-            check_path(
-                "file",
-                input,
-                false,
-                "forward the complete input on stdin with -; report replay also accepts a retained C:<oid>. MCP uses inline chart, text, or certificate properties (fa-yha)",
-            )?;
-        }
+            HostPath::Review => {
+                "pass the review event's complete bytes hex string in review, or forward it on stdin with -; MCP accepts no host file paths (fa-yha)"
+            }
+            HostPath::ImportRun => {
+                "forward the complete input on stdin with -; MCP accepts no host file paths (fa-yha)"
+            }
+            HostPath::Input => {
+                "forward the complete input on stdin with -; report replay also accepts a retained C:<oid>. MCP uses inline chart, text, or certificate properties (fa-yha)"
+            }
+        };
+        check_path(argument, value, kind == HostPath::Output, fix)?;
     }
     Ok(())
 }
@@ -2105,87 +2131,25 @@ fn admit_daemon_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fai
             )
         })
     };
-    for flag in [
-        "--plan-out",
-        "--certificate-out",
-        "--out",
-        "--output",
-        "--review-out",
-        "--receipt-out",
-    ] {
-        if let Some(value) = args.flag(flag)
-            && !value.is_empty()
-            && value != "-"
-        {
-            check_path(
-                flag,
-                value,
-                true,
-                "omit the output path to receive inline bytes on stdout, or run with --via direct",
-            )?;
+    for (argument, value, kind) in host_path_arguments(&verb.name, args) {
+        // An empty output value or `-` asks for the bytes inline on stdout.
+        if kind == HostPath::Output && (value.is_empty() || value == "-") {
+            continue;
         }
-    }
-    for flag in ["--intent", "--plan", "--policy", "--file"] {
-        for value in args.flag_all(flag) {
-            if value != "-" {
-                check_path(
-                    flag,
-                    value,
-                    false,
-                    "forward the complete content on stdin with -",
-                )?;
+        let fix = match kind {
+            HostPath::Output => {
+                "omit the output path to receive inline bytes on stdout, or run with --via direct"
             }
-        }
-    }
-    for value in args.flag_all("--review") {
-        let is_hex = !value.is_empty()
-            && value.len() % 2 == 0
-            && value.bytes().all(|b| b.is_ascii_hexdigit());
-        if value != "-" && !is_hex {
-            check_path(
-                "--review",
-                value,
-                false,
-                "pass the review event's complete bytes hex string in --review, or forward it on stdin with -",
-            )?;
-        }
-    }
-    let sub = args.positional.get(1).map(String::as_str);
-    if verb.name == "document"
-        && sub == Some("import")
-        && args.positional.get(2).map(String::as_str) == Some("run")
-    {
-        for p in args.positional.iter().skip(3) {
-            if p != "-" {
-                check_path(
-                    "file",
-                    p,
-                    false,
-                    "forward the complete input on stdin with -",
-                )?;
+            HostPath::Content => "forward the complete content on stdin with -",
+            HostPath::Review => {
+                "pass the review event's complete bytes hex string in --review, or forward it on stdin with -"
             }
-        }
-    }
-    let input = match (verb.name.as_str(), sub) {
-        ("chart" | "bank", Some("import")) | ("document", Some("add")) => args.positional.get(2),
-        ("replay", _) => args.positional.get(1),
-        ("certificate", Some("status")) => args.positional.get(2),
-        ("finding", Some("replay")) => args.positional.get(2),
-        _ => None,
-    };
-    if let Some(input) = input {
-        let digits = input.strip_prefix("C:").unwrap_or(input);
-        let retained = matches!(verb.name.as_str(), "replay" | "certificate")
-            && digits.len() == 64
-            && digits.bytes().all(|byte| byte.is_ascii_hexdigit());
-        if input != "-" && !retained {
-            check_path(
-                "file",
-                input,
-                false,
-                "forward the complete input on stdin with -; report replay also accepts a retained C:<oid>",
-            )?;
-        }
+            HostPath::ImportRun => "forward the complete input on stdin with -",
+            HostPath::Input => {
+                "forward the complete input on stdin with -; report replay also accepts a retained C:<oid>"
+            }
+        };
+        check_path(argument, value, kind == HostPath::Output, fix)?;
     }
     Ok(())
 }
