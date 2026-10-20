@@ -814,7 +814,9 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
     );
     assert!(!error, "{output}");
     let replayed: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
-    let receipt = replayed.as_array().unwrap().last().unwrap();
+    // A portfolio replays to its report_replayed receipt alone (one event).
+    assert!(replayed.is_object(), "{output}");
+    let receipt = &replayed;
     assert_eq!(receipt["family"], json!("aging-portfolio"), "{output}");
     assert_eq!(receipt["output_digest"], certified[1]["output_digest"]);
     // MCP accepts no host paths, so the recipient-bound workpaper comes back
