@@ -1093,7 +1093,7 @@ fields = ["class:string", "exit:int", "refusal_id:string?", "message:string", "c
 [[event]]
 name = "capabilities"
 doc = "What this build can do."
-fields = ["version:string", "verbs:[string]", "aliases:[alias]", "exit_codes:[exit_code]", "entry_classes:[string]", "robot_mode:robot_mode", "stdout:string", "stderr:string", "tui:bool", "capability:capability_model", "dangerous:[dangerous_op]", "invariants:invariant_clauses", "slo_manifests:[string]"]
+fields = ["version:string", "verbs:[string]", "aliases:[alias]", "exit_codes:[exit_code]", "entry_classes:[string]", "robot_mode:robot_mode", "stdout:string", "stderr:string", "tui:bool", "capability:capability_model", "dangerous:[dangerous_op]", "invariants:invariant_clauses", "slo_manifests:[string]", "procedures:[procedure_claim]"]
 
 [[event]]
 name = "robot_docs"
@@ -1910,6 +1910,11 @@ fields = ["item_id:string", "entry:hex", "ordinal:int", "side:string", "open:amo
 name = "procedure_row"
 doc = "One procedures.toml row."
 fields = ["id:string", "version:int", "claim:string", "evidence:string", "tie_break:string", "complexity:string", "calibration:string", "summary:string", "inputs:[procedure_input_decl]", "parameters:[procedure_parameter_decl]"]
+
+[[shape]]
+name = "procedure_claim"
+doc = "`fa capabilities`: one registered Lantern procedure and the claim class of its output (doctrine 12: a score or threshold test is `statistical`, never an invariant); `fa procedure list` has the full row."
+fields = ["id:string", "version:int", "claim:string", "summary:string"]
 
 [[shape]]
 name = "procedure_input_decl"

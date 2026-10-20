@@ -2635,6 +2635,25 @@ fn capabilities_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "slo_manifests",
             Json::Arr(slo.activated_manifest_ids().iter().map(s).collect()),
         ),
+        // Every registered Lantern procedure with the claim class of its
+        // output (doctrine 12, fa-vpk); `fa procedure list` has the full rows.
+        (
+            "procedures",
+            Json::Arr(
+                fa_lantern::catalog::registered()
+                    .map_err(|e| Fail::Internal(format!("procedure registry: {e}")))?
+                    .iter()
+                    .map(|row| {
+                        obj(vec![
+                            ("id", s(&row.id)),
+                            ("version", Json::Int(i128::from(row.version))),
+                            ("claim", s(row.claim.name())),
+                            ("summary", s(&row.summary)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
     ];
 
     if out.json {
