@@ -257,3 +257,14 @@ in `registries/threat_model.toml` and `docs/THREAT_AND_TRUST_MODEL.md`:
   has no measured `[baseline]` is refused
   (`activated_slo_row_without_measured_baseline_is_refused`). Real
   measurement is `fa-ykbp`.
+- **Formal evidence was asserted, not checked (`fa-2lsv`).** `FA-INV-06.proofs`
+  was live at evidence class `proof` on a text search for `sorry`; no Lean
+  file is compiled anywhere in the gate. Its negative test exercised a
+  `verify_olean_and_fln_gate` that returned `Pass { declarations_checked:
+  23 }` for any bytes starting with `olean`, and `Pass` whenever two paths
+  existed, without running either tool. The theorems themselves are thin
+  (`largestRemainder_conserves_total` proves `baseSum + (total - baseSum) =
+  total`; `RoundingLaws.lean` proves no law meets its bound). The fake
+  verifier is removed, the clause is dormant until `fa-09q8` compiles real
+  proofs, and the TLA+ test is renamed to say what it checks (a spec
+  declaration and a Rust model of one spec; TLC is `fa-dj6j`).

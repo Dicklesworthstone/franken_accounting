@@ -1,22 +1,19 @@
-//! Formal anchors verification suite (`fa-8x9`, `fa-uqq`, `fa-6dw`, plan §16.7):
-//! 1. Generates `formal/lean/FrankenAccounting/RoundingLaws.lean` from `registries/rounding_laws.toml`
-//!    and diffs it byte-for-byte against the checked-in Lean module; planted weakening of the
-//!    half-ULP bound to 1 ULP fails the diff.
-//! 2. Verifies every Lean 4 anchor module in `formal/lean/FrankenAccounting/` has zero `sorry` or
-//!    `admit` holes and cross-checks its theorems against concrete Rust vectors (`Amount` group laws,
-//!    all 9 `RoundingLaw` variants, `largest_remainder` allocation conservation, reversal balance
-//!    preservation, period state machine, bitemporal monotonicity, and escrow conservation).
-//! 3. Exhaustively explores the state spaces of the TLA+ bounded models in `formal/tla/`
-//!    (`CloseDagUnderCrashes`, `TwoPhaseWithExpiry`, `DraftPromotionMovingTrunk`,
-//!    `RestatementLifecycle`, `MergeTrain`) and verifies that the planted negative model
-//!    `TwoPhaseMissingIdentityGuard` produces the expected double-release counterexample.
-//! 4. Exercises the `fa-uqq` independent `.olean` / `fln check-olean` gate verifier: absent
-//!    toolchains report `UNRUN` (never `PASS`), and a planted corrupt `.olean` reports `FAIL`.
+//! Formal-anchor hygiene checks (`fa-8x9`, plan §16.7). What they check:
+//! 1. `formal/lean/FrankenAccounting/RoundingLaws.lean` equals the text generated from
+//!    `registries/rounding_laws.toml`; a planted weakening of the half-ULP bound fails the diff.
+//! 2. The Lean sources contain no `sorry`/`admit` text, and the Rust implementations satisfy
+//!    concrete vectors for the properties the Lean files state.
+//! 3. Each TLA+ spec in `formal/tla/` declares a specification, and an in-test Rust model of
+//!    the two-phase hold explores its reachable states and catches a missing identity guard.
+//!
+//! What they do not check (fa-2lsv): no Lean file is compiled or proof-checked here (that is
+//! fa-09q8), and TLC never runs (fa-dj6j). A text search for `sorry` is not a proof, so
+//! FA-INV-06.proofs is dormant until a real Lean build backs it. An earlier `.olean` "gate
+//! verifier" in this file returned a hard-coded pass without running any tool; it was removed.
 
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeSet, VecDeque};
-use std::path::Path;
 
 use fa_money::{Amount, RoundingLaw, UnitId, largest_remainder};
 use fa_registry::Registries;
@@ -281,7 +278,7 @@ fn explore_two_phase_model(enforce_identity_guard_on_sweep: bool) -> Result<usiz
 }
 
 #[test]
-fn tla_bounded_models_pass_exhaustive_state_exploration_and_catch_planted_identity_guard_removal() {
+fn tla_specs_declare_a_spec_and_the_rust_two_phase_model_catches_a_missing_identity_guard() {
     for (name, spec) in [
         ("CloseDagUnderCrashes.tla", CLOSE_DAG_TLA),
         ("TwoPhaseWithExpiry.tla", TWO_PHASE_TLA),
@@ -308,85 +305,4 @@ fn tla_bounded_models_pass_exhaustive_state_exploration_and_catch_planted_identi
     let counterexample = explore_two_phase_model(false)
         .expect_err("removing identity-uniqueness guard must report double-release counterexample");
     assert!(counterexample.contains("SingleResolutionPerHold violated"));
-}
-
-/// Gate verdict for the `fa-uqq` independent Lean `.olean` re-check (`fln check-olean`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum FormalGateVerdict {
-    Pass { declarations_checked: usize },
-    Unrun { reason: String },
-    Fail { reason: String },
-}
-
-const OLEAN_MAGIC: &[u8; 5] = b"olean";
-
-fn verify_olean_and_fln_gate(
-    olean_bytes: Option<&[u8]>,
-    lean_bin: Option<&Path>,
-    fln_bin: Option<&Path>,
-) -> FormalGateVerdict {
-    if let Some(bytes) = olean_bytes {
-        if !bytes.starts_with(OLEAN_MAGIC) {
-            return FormalGateVerdict::Fail {
-                reason: "invalid .olean header magic (expected `olean`)".into(),
-            };
-        }
-        let body = String::from_utf8_lossy(bytes);
-        if body.contains("sorryAx") || body.contains("REJECTED_DECLARATION") {
-            return FormalGateVerdict::Fail {
-                reason: "fln check-olean rejected declaration or found sorryAx".into(),
-            };
-        }
-        return FormalGateVerdict::Pass {
-            declarations_checked: 23,
-        };
-    }
-
-    let lean_exists = lean_bin.is_some_and(Path::exists);
-    let fln_exists = fln_bin.is_some_and(Path::exists);
-    if !lean_exists || !fln_exists {
-        return FormalGateVerdict::Unrun {
-            reason: format!(
-                "formal toolchain absent (lean_present={lean_exists}, fln_present={fln_exists}); emitting UNRUN, never a fake PASS"
-            ),
-        };
-    }
-    FormalGateVerdict::Pass {
-        declarations_checked: 23,
-    }
-}
-
-#[test]
-fn fln_check_olean_gate_verifier_reports_unrun_when_absent_and_fails_on_planted_corrupt_olean() {
-    // 1. Both tools absent => UNRUN, never PASS (fa-uqq acceptance)
-    let verdict_absent = verify_olean_and_fln_gate(
-        None,
-        Some(Path::new("/nonexistent/lean")),
-        Some(Path::new("/nonexistent/fln")),
-    );
-    assert!(
-        matches!(verdict_absent, FormalGateVerdict::Unrun { .. }),
-        "absent toolchains must report UNRUN, got {verdict_absent:?}"
-    );
-
-    // 2. Planted bad .olean (bad magic) => FAIL (fa-uqq acceptance)
-    let bad_magic = verify_olean_and_fln_gate(Some(b"not_an_olean_file"), None, None);
-    assert!(matches!(bad_magic, FormalGateVerdict::Fail { .. }));
-
-    // 3. Planted rejected declaration / sorryAx in .olean => FAIL (fa-uqq acceptance)
-    let planted_sorry = verify_olean_and_fln_gate(Some(b"olean\x01sorryAx"), None, None);
-    assert!(matches!(planted_sorry, FormalGateVerdict::Fail { .. }));
-
-    // 4. Valid .olean header with closed declarations => PASS
-    let valid_olean = verify_olean_and_fln_gate(
-        Some(b"olean\x01FrankenAccounting.Amount.add_assoc"),
-        None,
-        None,
-    );
-    assert_eq!(
-        valid_olean,
-        FormalGateVerdict::Pass {
-            declarations_checked: 23
-        }
-    );
 }

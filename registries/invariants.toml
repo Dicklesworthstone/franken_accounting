@@ -595,14 +595,11 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-06"
 id = "proofs"
-status = "live"
+status = "dormant"
 statement = "Lean lanes for rounding bounds and allocation conservation."
 evidence_class = "proof"
-checker_strength = "proof"
 first_gate = "G3"
-owner = "fa-8x9"
-checkers = ["fa-money::tests/formal_anchors.rs::lean_formal_anchors_have_zero_sorry_and_match_concrete_rust_vectors", "fa-money::tests/formal_anchors.rs::rounding_laws_toml_generates_lean_definitions_and_catches_planted_weakened_bound"]
-negatives = ["fa-money::tests/formal_anchors.rs::fln_check_olean_gate_verifier_reports_unrun_when_absent_and_fails_on_planted_corrupt_olean"]
+activating = ["fa-09q8"]
 waiver = "forbidden"
 
 [[clause]]
