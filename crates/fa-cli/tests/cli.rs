@@ -8837,7 +8837,39 @@ fn projection_verification_case(plant: &str) -> std::io::Result<()> {
         assert_eq!(head(), damaged_at, "a failed repair published nothing");
         assert_eq!(fa(Some(&book), &verify).0, 8);
     } else {
-        let repaired = ok(&publish);
+        // Publishing binds to the preview: a basis the head no longer is
+        // is refused as invalidated (exit 6) and writes nothing; a dry run
+        // that also says --yes is a usage error.
+        let stale = (damaged_at.0 - 1).to_string();
+        let (code, out, err) = fa(
+            Some(&book),
+            &[
+                "recover",
+                "projections",
+                "--yes",
+                "--basis",
+                &stale,
+                "--json",
+            ],
+        );
+        assert_eq!(code, 6, "{out}\n{err}");
+        assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-034", "{out}");
+        assert_eq!(head(), damaged_at, "a stale basis published nothing");
+        let (code, out, err) = fa(
+            Some(&book),
+            &["recover", "projections", "--dry-run", "--yes", "--json"],
+        );
+        assert_eq!(code, 2, "{out}\n{err}");
+        assert_eq!(head(), damaged_at);
+        let basis = damaged_at.0.to_string();
+        let repaired = ok(&[
+            "recover",
+            "projections",
+            "--yes",
+            "--basis",
+            &basis,
+            "--json",
+        ]);
         assert_eq!(field(&repaired, "event"), Some("projections_rebuilt"));
         let data = doc(&repaired);
         assert_eq!(data.get("dry_run"), Some(&Json::Bool(false)), "{repaired}");

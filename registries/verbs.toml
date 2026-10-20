@@ -612,11 +612,11 @@ name = "recover"
 summary = "Explicitly rebuild derived state from the journal: leg mirrors and projection edges, each derived from immutable entry payloads after every source entry is checked against its native creation history. Preview with --dry-run; publishing needs --yes."
 writes = true
 subcommands = ["projections"]
-flags = []
+flags = ["--basis"]
 switches = ["--dry-run"]
 events = ["projections_rebuilt"]
-exits = [0, 2, 4, 5, 7, 8]
-usage = ["recover projections --dry-run   (the exact mirror and edge changes a repair would publish at this head; writes nothing)", "recover projections --yes   (one commit, then projections and open items are rechecked; a clean book publishes nothing; needs read, verify and schema_change, never on trunk from an Agent profile; host-only over MCP)"]
+exits = [0, 2, 4, 5, 6, 7, 8]
+usage = ["recover projections --dry-run   (the exact mirror and edge changes a repair would publish at this head; writes nothing)", "recover projections --yes [--basis <seq>]   (one commit, then projections and open items are rechecked; with the dry run's --basis it publishes exactly that previewed repair and exits 6 if the head moved; a clean book publishes nothing; needs read, verify and schema_change, never on trunk from an Agent profile; host-only over MCP)"]
 example = "fa recover projections --dry-run --book ./books/myco --json"
 
 [[verb]]
@@ -873,7 +873,7 @@ safe = "`fa verify registers --period <code> --json` checks the existing cells a
 verb = "recover"
 subcommand = "projections"
 condition = "always"
-safe = "`fa verify projections --json` reports the drift without writing, and `fa recover projections --dry-run --json` previews every mirror and edge the repair would publish; retain both before repairing"
+safe = "`fa verify projections --json` reports the drift without writing, and `fa recover projections --dry-run --json` previews every mirror and edge the repair would publish; retain both, then publish exactly that repair with `--yes --basis <its basis>`"
 
 [[dangerous]]
 verb = "draft"

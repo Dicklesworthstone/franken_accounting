@@ -16261,6 +16261,29 @@ fn recover_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ));
             }
             let dry_run = args.switch("--dry-run");
+            if args.flag_all("--basis").len() > 1 {
+                return Err(usage(
+                    "--basis may be supplied only once",
+                    "fa recover projections --yes --basis <the dry run's basis> --json",
+                ));
+            }
+            let basis = args
+                .flag("--basis")
+                .map(|text| {
+                    text.parse::<u64>().map(CommitSeq).map_err(|_| {
+                        usage(
+                            "--basis is the recorded sequence a dry run previewed",
+                            "fa recover projections --yes --basis <the dry run's basis> --json",
+                        )
+                    })
+                })
+                .transpose()?;
+            if dry_run && (args.switch("--yes") || basis.is_some()) {
+                return Err(usage(
+                    "--dry-run previews and writes nothing; --yes and --basis publish",
+                    "fa recover projections --dry-run --json, then fa recover projections --yes --basis <its basis> --json",
+                ));
+            }
             let principal = ctx.principal(args);
             let capability = ctx.capability(args, &["read", "verify", "schema_change"])?;
             let mut book = ctx.books.open_admitted(args, |book| {
@@ -16271,16 +16294,61 @@ fn recover_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "rebuilding leg projections",
                 )
             })?;
+            let before = book.head()?;
             let outcome = if dry_run {
                 book.prepare_projection_rebuild(principal, &capability)
                     .map(|prepared| prepared.map(|p| p.preview().clone()))
+            } else if let Some(basis) = basis {
+                // The publication is the previewed repair: prepared again
+                // at the head, refused unless that head is the preview's.
+                match book.prepare_projection_rebuild(principal, &capability) {
+                    Ok(Ok(prepared)) if prepared.preview().basis != basis => {
+                        return Err(Refusal::new(
+                            fa_journal::refusal::code::PLAN_INVALIDATED,
+                            exit::CONFLICT,
+                            format!(
+                                "the head moved from the previewed basis {} to {}; this is not the repair that was previewed",
+                                basis.0,
+                                prepared.preview().basis.0
+                            ),
+                            "plan §4.2, FA-INV-16 (a recovery publishes the repair it previewed)",
+                            "preview again with fa recover projections --dry-run --json, retain it, and publish with --yes --basis <its basis>",
+                        )
+                        .into());
+                    }
+                    Ok(Ok(prepared)) => {
+                        book.publish_projection_rebuild(principal, &capability, prepared)
+                    }
+                    Ok(Err(refusal)) => Ok(Err(refusal)),
+                    Err(error) => Err(error),
+                }
             } else {
                 book.rebuild_projections(principal, &capability)
             };
             let report = match outcome {
                 Ok(report) => report?,
-                // Orphans, occupied identities, incompatible endpoints, and a
-                // publication that does not verify: nothing is repaired around them.
+                // The repair was published, but the independent checks still
+                // find drift: report the commit, never "nothing was repaired".
+                Err(BookError::Kernel(fa_journal::KernelError::Corrupt(problem)))
+                    if book.head()? != before =>
+                {
+                    let published = book.head()?;
+                    return Err(Fail::Verification {
+                        message: format!(
+                            "the repair was published at sequence {}, but projections or open items still do not verify: {problem}",
+                            published.0
+                        ),
+                        detail: obj(vec![
+                            ("problem", s(&problem)),
+                            ("basis", Json::Int(i128::from(before.0))),
+                            ("recorded_at", Json::Int(i128::from(published.0))),
+                        ]),
+                        cite: Some("FA-INV-16 (leg projections equal entry payloads)".into()),
+                        fix: Some("do not post; retain fa verify projections --json and fa verify open-items --json at this head and preserve the book for inspection".into()),
+                    });
+                }
+                // Orphans, occupied identities, incompatible endpoints: nothing
+                // is repaired around them, and nothing was published.
                 Err(BookError::Kernel(fa_journal::KernelError::Corrupt(problem))) => {
                     return Err(Fail::Verification {
                         message: format!("leg projections cannot be recovered from the journal: {problem}"),
@@ -16333,7 +16401,10 @@ fn recover_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     if report.wrote {
                         format!(" (recorded at {})", report.published_at.0)
                     } else if dry_run && changes > 0 {
-                        "; publishing with --yes rechecks authority and this exact head".to_string()
+                        format!(
+                            "; publish exactly this repair with fa recover projections --yes --basis {}",
+                            report.basis.0
+                        )
                     } else {
                         "; projections already equal the journal".to_string()
                     }
