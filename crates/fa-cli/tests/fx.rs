@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -479,6 +480,200 @@ fn conversion_residual_stays_in_the_converted_leg_and_reversal_preserves_it() {
     let before = head(&f.book);
     assert_eq!(run(&f.book, &["post", "--intent", &rewrite], None).0, 2);
     assert_eq!(head(&f.book), before);
+}
+
+fn assert_inherited_reversal(target: &Entry, reversal: &Entry) {
+    assert_eq!(reversal.proposal.class, fa_model::EntryClass::REVERSAL);
+    assert_eq!(reversal.proposal.legs.len(), target.proposal.legs.len());
+    assert_eq!(reversal.proposal.base_totals, target.proposal.base_totals);
+    assert_eq!(reversal.proposal.supersession.len(), 1);
+    assert_eq!(
+        reversal.proposal.supersession[0].target.entry_digest,
+        target.entry_digest
+    );
+    assert_eq!(
+        reversal.proposal.supersession[0].kind,
+        fa_model::SupersessionKind::Reverses
+    );
+    let rate_evidence = |entry: &Entry| {
+        entry
+            .proposal
+            .evidence
+            .iter()
+            .filter(|evidence| evidence.role == fa_journal::fx::RATE_EVIDENCE_ROLE)
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rate_evidence(target).len(), 1);
+    assert_eq!(rate_evidence(reversal), rate_evidence(target));
+    for (original, reversed) in target.proposal.legs.iter().zip(&reversal.proposal.legs) {
+        let mut expected = original.clone();
+        expected.side = match original.side {
+            fa_money::Side::Debit => fa_money::Side::Credit,
+            fa_money::Side::Credit => fa_money::Side::Debit,
+        };
+        assert_eq!(
+            reversed, &expected,
+            "only the side changes, including the residual leg's valuation"
+        );
+    }
+}
+
+fn functional_nets(report: &Json) -> BTreeMap<&str, &str> {
+    rows(data(report), "rows")
+        .iter()
+        .map(|row| (text(row, "account"), text(row, "net")))
+        .collect()
+}
+
+#[test]
+fn later_date_and_period_reversals_preserve_original_fx_basis_and_residual_through_the_cli() {
+    for (law, purpose, rate_date) in [
+        ("SpotClose", "spot_close", "2026-03-05"),
+        ("PeriodAverage", "period_average", "2026-03-31"),
+    ] {
+        for (reverse_date, reverse_period) in
+            [("2026-03-06", "FY2026-P03"), ("2026-04-06", "FY2026-P04")]
+        {
+            let f = Fixture::new();
+            ok(&f.book, &["period", "open", "FY2026-P04"]);
+            let rate = f.rate("recognition-rate", purpose, rate_date, "1", "2", "HalfEven");
+            let oid = text(data(&rate), "oid");
+            let source = f.file("valued-source.json", &format!(r#"{{"effective_date":"2026-03-05","idempotency_key":"valued-source","legs":[{{"side":"debit","account":"1000","amount":"0.03 EUR"}},{{"side":"debit","account":"1200","amount":"0.03 EUR"}},{{"side":"credit","account":"4000","amount":"0.06 EUR"}}],"fx":{{"law":"{law}","rates":["D:{oid}"]}}}}"#));
+            let posted = f.post(&source);
+            let vid = text(data(&posted), "vid");
+            let original = f.entry(vid);
+            let base = original.proposal.base_totals.as_ref().unwrap();
+            assert_eq!((base.debits, base.credits), (4, 4));
+            assert_eq!(base.residual.unwrap().leg_ordinal, 2);
+            assert_eq!(base.residual.unwrap().amount.mantissa, 1);
+            assert_eq!(
+                original
+                    .proposal
+                    .legs
+                    .iter()
+                    .map(|leg| leg.base_amount.unwrap().mantissa)
+                    .collect::<Vec<_>>(),
+                vec![2, 2, 4]
+            );
+            let source_prefix = integer(data(&posted), "recorded_at").to_string();
+            // A different later quote cannot change the cost being reversed.
+            f.rate(
+                "later-market",
+                "spot_close",
+                reverse_date,
+                "9",
+                "1",
+                "HalfEven",
+            );
+            let reverse_args = [
+                "reverse",
+                vid,
+                "--reason",
+                "WrongAccount",
+                "--effective",
+                reverse_date,
+            ];
+            let reversed = ok(&f.book, &reverse_args);
+            assert_eq!(text(&reversed, "event"), "reversed");
+            assert_eq!(text(data(&reversed), "period"), reverse_period);
+            let reverse_vid = text(data(&reversed), "vid");
+            let reversal = f.entry(reverse_vid);
+            assert_eq!(reversal.proposal.effective_date.render(), reverse_date);
+            assert_inherited_reversal(&original, &reversal);
+
+            let zero = ok(&f.book, &["tb", "--functional", "--as-of", reverse_date]);
+            assert_eq!(integer(data(&zero), "entries"), 2);
+            assert_eq!(
+                functional_nets(&zero),
+                BTreeMap::from([
+                    ("1000", "0.00 USD"),
+                    ("1200", "0.00 USD"),
+                    ("4000", "0.00 USD")
+                ]),
+                "{law}, reversal {reverse_date}"
+            );
+            for side in ["debits", "credits"] {
+                assert_eq!(text(data(&zero).get("totals").unwrap(), side), "0.08 USD");
+            }
+            let historical = ok(
+                &f.book,
+                &[
+                    "tb",
+                    "--functional",
+                    "--as-of",
+                    reverse_date,
+                    "--as-known-at",
+                    &source_prefix,
+                ],
+            );
+            assert_eq!(integer(data(&historical), "entries"), 1);
+            assert_eq!(
+                functional_nets(&historical),
+                BTreeMap::from([
+                    ("1000", "0.02 USD"),
+                    ("1200", "0.02 USD"),
+                    ("4000", "-0.04 USD")
+                ]),
+            );
+            if reverse_period == "FY2026-P04" {
+                // Period activity keeps the correction in April while stock
+                // nets it against the March source across the period boundary.
+                let march = f.activity();
+                assert_eq!(functional_nets(&march), functional_nets(&historical));
+                let april = ok(
+                    &f.book,
+                    &["tb", "--functional", "--activity", "--period", "FY2026-P04"],
+                );
+                assert_eq!(
+                    functional_nets(&april),
+                    BTreeMap::from([
+                        ("1000", "-0.02 USD"),
+                        ("1200", "-0.02 USD"),
+                        ("4000", "0.04 USD")
+                    ]),
+                );
+            }
+
+            // A reversal of the reversal inherits the original March basis,
+            // even though its immediate target has a later effective date.
+            let restored = ok(
+                &f.book,
+                &[
+                    "reverse",
+                    reverse_vid,
+                    "--reason",
+                    "WrongAccount",
+                    "--effective",
+                    "2026-04-08",
+                ],
+            );
+            let reinstated = f.entry(text(data(&restored), "vid"));
+            assert_inherited_reversal(&reversal, &reinstated);
+            assert_eq!(reinstated.proposal.legs, original.proposal.legs);
+            assert_eq!(
+                reinstated.proposal.base_totals,
+                original.proposal.base_totals
+            );
+            let stock = ok(&f.book, &["tb", "--functional", "--as-of", "2026-04-08"]);
+            assert_eq!(integer(data(&stock), "entries"), 3);
+            assert_eq!(functional_nets(&stock), functional_nets(&historical));
+            for side in ["debits", "credits"] {
+                assert_eq!(text(data(&stock).get("totals").unwrap(), side), "0.12 USD");
+            }
+            let before_retry = head(&f.book);
+            let retry = ok(&f.book, &reverse_args);
+            assert_eq!(text(&retry, "event"), "recorded");
+            assert_eq!(text(data(&retry), "vid"), reverse_vid);
+            assert_eq!(
+                integer(data(&retry), "recorded_at"),
+                integer(data(&reversed), "recorded_at")
+            );
+            assert_eq!(head(&f.book), before_retry);
+            assert_eq!(f.entry(vid), original);
+            assert_eq!(f.entry(reverse_vid), reversal);
+        }
+    }
 }
 
 #[test]

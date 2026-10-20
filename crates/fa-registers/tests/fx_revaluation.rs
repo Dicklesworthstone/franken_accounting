@@ -23,8 +23,8 @@ use fa_journal::{
 };
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    AccountType, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, LegPayload,
-    Oid, PeriodRef, SealKey, Supersession, SupersessionKind, SymbolTable, account_vid,
+    AccountType, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, EvidenceRef, Id128,
+    LegPayload, Oid, PeriodRef, SealKey, Supersession, SupersessionKind, SymbolTable, account_vid,
     entry_mirrors, entry_vid, leg_mirrors, period_vid, unit_vid,
 };
 use fa_money::rate::{ArithmeticBudget, BudgetLimits};
@@ -295,6 +295,38 @@ impl Fixture {
 
     fn post(&mut self, proposal: EntryPayload) -> Posted {
         self.try_post(proposal).unwrap().unwrap()
+    }
+
+    fn reversal(
+        &self,
+        target: EntryRef,
+        original: &EntryPayload,
+        date: DateDay,
+        period: &str,
+        key: &str,
+    ) -> EntryPayload {
+        let mut reversal = original.clone();
+        reversal.class = EntryClass::REVERSAL;
+        reversal.effective_date = date;
+        reversal.effective_period = Some(PeriodRef {
+            calendar: self.book.calendar.id.clone(),
+            code: period.into(),
+        });
+        reversal.idempotency_key = key.as_bytes().to_vec();
+        reversal.supersession = vec![Supersession {
+            target,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
+        for leg in &mut reversal.legs {
+            leg.side = if leg.side == Side::Debit {
+                Side::Credit
+            } else {
+                Side::Debit
+            };
+        }
+        reversal.unit_totals = EntryPayload::fold_unit_totals(&reversal.legs).unwrap();
+        reversal
     }
 
     fn rate(
@@ -1145,4 +1177,286 @@ fn foreign_reversal_preserves_committed_valuation_provenance_and_rounding() {
         assert_eq!(retry.entry_ref(), reversal.entry_ref());
         assert_eq!(f.head(), before);
     }
+}
+
+#[test]
+fn later_foreign_reversals_retain_the_original_valuation_day_and_period_through_ancestry() {
+    fn value(
+        f: &Fixture,
+        mut proposal: EntryPayload,
+        law: FxLawId,
+        rate: &FxRateDocument,
+    ) -> EntryPayload {
+        proposal.base_totals = None;
+        for leg in &mut proposal.legs {
+            leg.base_amount = None;
+        }
+        proposal
+            .evidence
+            .retain(|evidence| evidence.role != fa_journal::fx::RATE_EVIDENCE_ROLE);
+        let arithmetic = f.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget =
+            ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(1_000_000, 0), 4096);
+        value_proposal(
+            &mut budget,
+            proposal,
+            &fa_journal::genesis::read_book_spec(&f.db).unwrap().unwrap(),
+            &f.book.units,
+            law,
+            std::slice::from_ref(rate),
+        )
+        .unwrap()
+    }
+
+    for (law, reversal_month, with_residual) in [
+        (FxLawId::SpotClose, 1, false),
+        (FxLawId::SpotClose, 2, true),
+        (FxLawId::PeriodAverage, 2, false),
+        (FxLawId::PeriodAverage, 2, true),
+    ] {
+        let mut f = Fixture::new();
+        let original_quote_day = if law == FxLawId::SpotClose {
+            day(1, 5)
+        } else {
+            day(1, 31)
+        };
+        let numerator = if with_residual { 5 } else { 11 };
+        let original_rate = f.rate(
+            original_quote_day,
+            numerator,
+            law.required_purpose(),
+            RoundingLaw::HalfEven,
+            "Retained original-period quote",
+        );
+        let legs = if with_residual {
+            vec![
+                LegPayload::simple(Side::Debit, f.account("1200"), Amount::new(f.eur, 3)),
+                LegPayload::simple(Side::Debit, f.account("2200"), Amount::new(f.eur, 3)),
+                LegPayload::simple(Side::Credit, f.account("4000"), Amount::new(f.eur, 6)),
+            ]
+        } else {
+            vec![
+                LegPayload::simple(Side::Debit, f.account("1200"), Amount::new(f.eur, 10_000)),
+                LegPayload::simple(Side::Credit, f.account("4000"), Amount::new(f.eur, 10_000)),
+            ]
+        };
+        let original = value(
+            &f,
+            f.proposal("original-period-valuation", day(1, 5), legs),
+            law,
+            &original_rate,
+        );
+        assert_eq!(
+            original.base_totals.as_ref().unwrap().residual.is_some(),
+            with_residual
+        );
+        let source = f.post(original.clone());
+        let retained_source = read_entry(&f.db, source.entry_ref().vid).unwrap().unwrap();
+        let source_net = original.legs[0].base_amount.unwrap().mantissa;
+        let reversal_period = format!("FY2026-P{reversal_month:02}");
+        let reversal_date = day(reversal_month, 20);
+        let close_date = day(reversal_month, if reversal_month == 1 { 31 } else { 28 });
+        let exact = f.reversal(
+            source.entry_ref(),
+            &original,
+            reversal_date,
+            &reversal_period,
+            "later-period-reversal",
+        );
+
+        // A newly valued Original still needs its own date/period's quote;
+        // only a verified reversal inherits its ancestor's valuation context.
+        let mut wrong_context = original.clone();
+        wrong_context.effective_date = day(2, 20);
+        wrong_context.effective_period = Some(PeriodRef {
+            calendar: f.book.calendar.id.clone(),
+            code: "FY2026-P02".into(),
+        });
+        wrong_context.idempotency_key = b"fresh-post-cannot-inherit-date".to_vec();
+        let before = f.head();
+        assert_eq!(
+            f.try_post(wrong_context).unwrap().unwrap_err().code,
+            code::STRUCTURE
+        );
+        assert_eq!(f.head(), before);
+
+        // These are valid fresh valuations for the reversal date. Neither
+        // equal numeric carrying under new provenance nor changed carrying
+        // may replace the exact original quote and amounts on a reversal.
+        for quoted_numerator in [numerator, 12] {
+            let alternate = f.rate(
+                if law == FxLawId::SpotClose {
+                    reversal_date
+                } else {
+                    close_date
+                },
+                quoted_numerator,
+                law.required_purpose(),
+                RoundingLaw::HalfEven,
+                "New reversal-period quote must not replace retained valuation",
+            );
+            let forged = value(&f, exact.clone(), law, &alternate);
+            assert_ne!(forged.base_totals, original.base_totals);
+            let before = f.head();
+            assert_eq!(
+                f.try_post(forged).unwrap().unwrap_err().code,
+                code::REVERSAL_SHAPE
+            );
+            assert_eq!(f.head(), before);
+        }
+        if with_residual {
+            let mut changed_residual = exact.clone();
+            changed_residual
+                .base_totals
+                .as_mut()
+                .unwrap()
+                .residual
+                .as_mut()
+                .unwrap()
+                .amount
+                .mantissa += 1;
+            changed_residual.validate().unwrap();
+            let before = f.head();
+            assert_eq!(
+                f.try_post(changed_residual).unwrap().unwrap_err().code,
+                code::REVERSAL_SHAPE
+            );
+            assert_eq!(f.head(), before);
+        }
+
+        let reversed = f.post(exact.clone());
+        let reversal_entry = read_entry(&f.db, reversed.entry_ref().vid)
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(reversal_entry.proposal.effective_date, reversal_date);
+        assert_eq!(reversal_entry.proposal.base_totals, original.base_totals);
+        assert_eq!(reversal_entry.proposal.evidence, original.evidence);
+        assert_eq!(f.net("1200", close_date, None), 0);
+        assert_eq!(f.net("1200", day(1, 5), None), source_net);
+        let close = f.rate(
+            close_date,
+            12,
+            FxRatePurpose::PeriodClose,
+            RoundingLaw::HalfEven,
+            "Closing quote after the exact later reversal",
+        );
+        let no_exposure = f.plan(&f.selection(&reversal_period, "1200", &close));
+        assert_eq!(no_exposure.source_native_net().mantissa, 0);
+        assert_eq!(no_exposure.source_base_net().mantissa, 0);
+        assert!(no_exposure.is_noop());
+
+        let restore = f.reversal(
+            reversed.entry_ref(),
+            &reversal_entry.proposal,
+            day(3, 20),
+            "FY2026-P03",
+            "march-reversal-of-reversal",
+        );
+        if reversal_month == 2 {
+            let mut earlier = restore.clone();
+            earlier.effective_date = day(1, 20);
+            earlier.effective_period.as_mut().unwrap().code = "FY2026-P01".into();
+            let before = f.head();
+            assert_eq!(
+                f.try_post(earlier).unwrap().unwrap_err().code,
+                code::REVERSAL_PERIOD
+            );
+            assert_eq!(f.head(), before);
+        }
+        let restored = f.post(restore.clone());
+        let restored_entry = read_entry(&f.db, restored.entry_ref().vid)
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(restored_entry.proposal.effective_date, day(3, 20));
+        assert_eq!(restored_entry.proposal.base_totals, original.base_totals);
+        assert_eq!(restored_entry.proposal.evidence, original.evidence);
+        assert_eq!(restored_entry.proposal.legs, original.legs);
+        assert_eq!(f.net("1200", day(3, 31), None), source_net);
+        assert_eq!(f.net("1200", close_date, None), 0);
+        assert_eq!(f.net("1200", day(3, 31), Some(reversed.recorded_at())), 0);
+        assert_eq!(
+            read_entry(&f.db, source.entry_ref().vid).unwrap().unwrap(),
+            retained_source
+        );
+        let before = f.head();
+        for (proposal, prior) in [(exact, reversed), (restore, restored)] {
+            let retry = f.post(proposal);
+            assert!(matches!(retry, Posted::AlreadyRecorded { .. }));
+            assert_eq!(retry.entry_ref(), prior.entry_ref());
+            assert_eq!(retry.recorded_at(), prior.recorded_at());
+            assert_eq!(f.head(), before);
+        }
+    }
+}
+
+#[test]
+fn prepared_later_reversal_witnesses_the_original_valuation_ancestor() {
+    let mut f = Fixture::new();
+    let source = f.foreign(
+        "ancestor-source",
+        day(1, 5),
+        "1200",
+        Side::Debit,
+        10_000,
+        11,
+    );
+    let original = read_entry(&f.db, source.entry_ref().vid)
+        .unwrap()
+        .unwrap()
+        .0;
+    let first = f.reversal(
+        source.entry_ref(),
+        &original.proposal,
+        day(2, 20),
+        "FY2026-P02",
+        "february-reversal",
+    );
+    let reversed = f.post(first);
+    let first = read_entry(&f.db, reversed.entry_ref().vid)
+        .unwrap()
+        .unwrap()
+        .0;
+    let second = f.reversal(
+        reversed.entry_ref(),
+        &first.proposal,
+        day(3, 20),
+        "FY2026-P03",
+        "march-restoration",
+    );
+    let cx = f.cx();
+    let PostPreparation::Ready(prepared) = prepare_post(&mut f.db, &cx, &f.book, request(second))
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("the reversal-of-reversal is fresh");
+    };
+    // Change the original ancestor, not the immediate reversal target. A
+    // prepared post must retain the original valuation as a native witness.
+    let mut damage = WriteBatch::new(relation::HAS_LEG);
+    damage.set_vertex_property(
+        source.entry_ref().vid,
+        property::FA_DIGEST,
+        Some(CanonicalScalar::bytes(vec![0xff; 32]).unwrap()),
+    );
+    f.runtime
+        .block_on(f.db.write(&cx.commit(), damage))
+        .unwrap();
+    let before = f.head();
+    let refused = f
+        .runtime
+        .block_on(prepared.commit(&mut f.db, &cx))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, code::CONFLICT);
+    assert_eq!(f.head(), before);
+    assert!(
+        read_entry(
+            &f.db,
+            fa_journal::rows::reversal_vid(reversed.entry_ref().vid)
+        )
+        .unwrap()
+        .is_none()
+    );
 }

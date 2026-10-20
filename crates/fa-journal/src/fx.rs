@@ -919,10 +919,17 @@ pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
     leg_entities: &[Option<String>],
     proposal: &EntryPayload,
     claim: &FxClaim,
+    inherited_origin: Option<(&EntryPayload, &PeriodDef)>,
 ) -> Outcome<()> {
     // Only fresh postings reach this transaction check: prepare_post returns
     // exact recorded outcomes first. Keep current law admission here, outside
     // pure valuation and historical folds, so immutable history is unchanged.
+    // A Reversal's context is supplied only by post.rs after it has witnessed
+    // and verified every exact side-swap back to the original valued entry.
+    // Replay that original calculation, including its date, period, sides and
+    // residual assignment. The current reversal was separately balanced and
+    // must preserve those exact base amounts, law and Rate commitments.
+    let (valuation, valuation_period) = inherited_origin.unwrap_or((proposal, period));
     let (rounding_law, average_as_of) =
         if matches!(claim.law, FxLawId::SpotClose | FxLawId::PeriodAverage) {
             let classes = fa_registry::EntryClasses::embedded()
@@ -951,7 +958,7 @@ pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
             (
                 Some(law.rounding_law.clone()),
                 if claim.law == FxLawId::PeriodAverage {
-                    Some(period.end.pred()?)
+                    Some(valuation_period.end.pred()?)
                 } else {
                     None
                 },
@@ -1051,7 +1058,7 @@ pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
                 "PeriodAverage rate document {} as_of {} must equal posting period {}'s last included day {}",
                 crate::evidence::hex(&oid.0),
                 decoded.as_of.render(),
-                period.code,
+                valuation_period.code,
                 expected.render(),
             ))));
         }
@@ -1065,10 +1072,10 @@ pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
         FxLawId::SpotClose | FxLawId::PeriodAverage => {
             let computed = match compute_entity_valuations(
                 &mut budget,
-                &proposal.legs,
+                &valuation.legs,
                 leg_entities,
                 spec.base_unit,
-                proposal.effective_date,
+                valuation.effective_date,
                 units,
                 claim.law,
                 &rate_docs,
