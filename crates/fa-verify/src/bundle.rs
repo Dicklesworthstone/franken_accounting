@@ -912,14 +912,13 @@ pub fn verify_bundle(
     // A legacy balance proof may omit out-of-scope payloads. Only an exact,
     // authenticated FULL prefix plus every successfully rebuilt record can
     // supply that missing derivation premise. Filter/index assertions cannot.
+    // A prefix scope exists only once `complete_prefix` has checked every
+    // one of the checkpoint's leaves, in order, against its root; it keeps
+    // the entry leaves, since evidence records carry no entry to fold.
     let mut full_prefix_payloads = matches!(&p.manifest.scope, BundleScope::Prefix)
         && matches!(&entry_set, Grade::Pass)
-        && signed
-            .as_ref()
-            .zip(scoped.as_ref())
-            .is_some_and(|(signed, scope)| {
-                u64::try_from(scope.len()).ok() == Some(signed.checkpoint.leaf_count)
-            });
+        && signed.is_some()
+        && scoped.is_some();
     checks.push(check(
         "entries",
         scope_label,

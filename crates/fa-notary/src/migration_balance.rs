@@ -627,4 +627,34 @@ impl Journal {
             self, &records, &needed, account, unit, through, &chosen, false,
         )
     }
+
+    /// The payload-complete v3 proof over this journal (see
+    /// [`Self::balance_proof_complete`]), with the needed run bodies taken
+    /// from `bodies` (see [`bundle_run_bodies`]). A missing body is refused,
+    /// never skipped. The caller must have admitted whole-book disclosure.
+    pub fn balance_proof_complete_auto(
+        &self,
+        account: VId,
+        unit: u32,
+        through: Option<i32>,
+        bodies: &BTreeMap<VId, RunBody>,
+    ) -> Outcome<Vec<u8>> {
+        let (records, needed) = match select(self, account, unit, through, true)? {
+            Ok(selection) => selection,
+            Err(r) => return Ok(Err(r)),
+        };
+        let mut chosen = Vec::with_capacity(needed.len());
+        for run in &needed {
+            let Some(body) = bodies.get(run) else {
+                return Ok(Err(refusal(format!(
+                    "migration run {:032x}'s body was not supplied for this balance",
+                    run.0
+                ))));
+            };
+            chosen.push(body.clone());
+        }
+        encode(
+            self, &records, &needed, account, unit, through, &chosen, true,
+        )
+    }
 }

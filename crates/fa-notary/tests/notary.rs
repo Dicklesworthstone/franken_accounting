@@ -3412,11 +3412,12 @@ fn planted_bundle_defects_fail_the_predicate_they_break() {
     };
     let m = &base.manifest;
 
-    // 1. An omitted entry.
+    // 1. An omitted entry. The balance rested on every prefix payload, so
+    // it fails too: an omitted payload voids its completeness premise.
     let mut omitted = cut.clone();
     omitted.entries.remove(omitted.position(rent_20));
     let failed = check(omitted, m);
-    assert_eq!(names(&failed), ["entries"], "{failed:#?}");
+    assert_eq!(names(&failed), ["entries", "recomputation"], "{failed:#?}");
     assert!(
         failed[0]
             .2
@@ -3463,7 +3464,7 @@ fn planted_bundle_defects_fail_the_predicate_they_break() {
     let failed = check(swapped, m);
     assert_eq!(
         names(&failed),
-        ["record", "closure", "record", "closure"],
+        ["record", "closure", "record", "closure", "recomputation"],
         "{failed:#?}"
     );
     assert!(failed[1].2.starts_with("unrun:"));

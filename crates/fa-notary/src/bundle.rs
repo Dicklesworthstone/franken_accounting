@@ -571,9 +571,13 @@ pub fn assemble(
 }
 
 /// [`assemble`], with the migration run bodies its balances need (read with
-/// [`crate::migration_balance::bundle_run_bodies`]): a balance whose cell
-/// selects migration candidates is proved in the migration-aware v2 format,
-/// any other in v1, and a needed body that is absent is refused.
+/// [`crate::migration_balance::bundle_run_bodies`]); a needed body that is
+/// absent is refused. In a prefix bundle a balance whose cell selects
+/// migration candidates is proved in the migration-aware v2 format, any
+/// other in v1: the bundle itself carries every payload those proofs'
+/// selection rests on. An account or entries bundle cannot, so its balances
+/// are payload-complete v3, carrying every prefix record; the facade admits
+/// whole-book read before assembling any bundle.
 pub fn assemble_with_runs(
     journal: &Journal,
     checkpoint: &StoredCheckpoint,
@@ -610,9 +614,20 @@ pub fn assemble_with_runs(
         };
         entries.push((*i as u64, proposal_len, &leaf.payload, stubs));
     }
+    let complete = !matches!(request.scope, BundleScope::Prefix);
     let mut balances = Vec::with_capacity(request.balances.len());
     for b in &request.balances {
-        match journal.balance_proof_auto(b.account, b.unit, b.effective_through, run_bodies)? {
+        let proof = if complete {
+            journal.balance_proof_complete_auto(
+                b.account,
+                b.unit,
+                b.effective_through,
+                run_bodies,
+            )?
+        } else {
+            journal.balance_proof_auto(b.account, b.unit, b.effective_through, run_bodies)?
+        };
+        match proof {
             Ok(proof) => balances.push(proof),
             Err(refusal) => return Ok(Err(refusal)),
         }
