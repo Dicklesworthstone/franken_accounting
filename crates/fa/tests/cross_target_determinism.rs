@@ -602,6 +602,12 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // the bundle's checkpoint commits to. No bound registry and no
     // fa-notary source changed; the fold and every report-byte pin are
     // unchanged.
+    // fa-zgn then moved the three certificates and the bundle, measured
+    // together on x86_64: the EngagementControl class (29) and its control
+    // kind (16) are `entry_classes` rows every report certificate binds, and
+    // the ProposedAdjustment label (52, the only symbol added) changes the
+    // symbol-table digest the book's genesis records, which the bundle's
+    // checkpoint covers. The fold and every report-byte pin are unchanged.
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -628,7 +634,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "79e47182a7046c064595e9e9d9f157470e9d5f712f6473a19bb5f254e737bd0f",
+        "3f0487ed0bfa1155b21417f7bfba371c9a22e4a2512ab337ac708f5c81845508",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -640,7 +646,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "5a9e6540a6b7b6fc1f585986993558847ca51600d7820102b71b2a4e71fe3511",
+        "048eba60363ae85d8f0f13924fb99df1aa4b126cecda6e6040207d9aa9830069",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -652,13 +658,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "8d454a068fb8d0429282574d2b5a6d5911c0fb7319fa0a8100e33dac9e557137",
+        "7533900623b41f0216052c88556c2c1cab683434e309f4821fdadc6614e4d122",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "ca6c7d8d4e65367691d78c3c5ff637741bdfb0b2c5655da151c34ee0733da3e2",
+        "ab93128045f2c3cde7ca370f3526f1b6c59afde511c7f63598adc5ceb9800eec",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );
