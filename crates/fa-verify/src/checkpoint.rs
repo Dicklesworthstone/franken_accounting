@@ -18,7 +18,9 @@
 //! of band; no trust-anchor set exists yet) and checks every signature made
 //! by one of them with this crate's own Ed25519. At least one must be
 //! present and every one must verify; signatures by keys the caller did
-//! not name are reported, not judged.
+//! not name are reported, not judged. [`witness`] adds a separately configured
+//! publisher requirement and distinct-key witness quorum without changing this
+//! legacy any-trusted-signer interface.
 //!
 //! What a verified checkpoint establishes: the holder of a trusted key
 //! signed this body, which presumes the key was validly generated. Every
@@ -28,6 +30,8 @@
 //! [`CheckpointError::TrustedKey`] before any signature is read. It does not
 //! establish that the scope index was derived correctly or that the ledger
 //! is true (plan §13.2): [`crate::scope`] labels the premise.
+
+pub mod witness;
 
 use std::fmt;
 
