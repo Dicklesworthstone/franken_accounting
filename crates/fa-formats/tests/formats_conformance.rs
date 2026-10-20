@@ -20,7 +20,7 @@ use fa_formats::{
     verify_round_trip_identity,
     xbrl::{
         XbrlCalculationLinkbase, XbrlFact, XbrlInstance, validate_calculation_linkbase,
-        write_xbrl_instance_xml,
+        verify_format_journal_xbrl_xml, write_format_journal_xbrl_xml, write_xbrl_instance_xml,
     },
 };
 use fa_model::{AccountType, EntryClass};
@@ -535,6 +535,18 @@ fn xbrl_calculation_linkbase_validates_statements_and_catches_inconsistency() {
             computed_children_mantissa: 42_250,
         }
     );
+
+    // End-to-end FormatJournal -> XBRL instance export + vendored calculation linkbase & coordinate verification
+    let journal = sample_multi_unit_journal();
+    let exported_xbrl = write_format_journal_xbrl_xml(&journal).expect("export FormatJournal to XBRL");
+    let (verified_coord, report) =
+        verify_format_journal_xbrl_xml(&exported_xbrl).expect("verify exported XBRL instance");
+    assert_eq!(verified_coord, journal.coordinate);
+    assert_eq!(report.checks_passed, 6); // 3 checks per unit across USD and EUR
+    for line in report.log_lines() {
+        println!("{line}");
+        assert!(line.contains("delta=0 status=PASS"));
+    }
 }
 
 #[test]

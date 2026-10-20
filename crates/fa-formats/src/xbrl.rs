@@ -1,13 +1,299 @@
-//! XBRL instance emission and calculation-linkbase validation (plan §12.1,
-//! §16.3, bead `fa-npi`).
+//! XBRL instance emission, in-house taxonomy/linkbase XML parsing, statement
+//! concept mapping, and calculation-linkbase validation (plan §12.1, §12.6,
+//! §16.3, beads `fa-npi` and `fa-faim`).
 //!
 //! Validates every summation-item arc (`weight ∈ {-1, +1}`) in a statement's
 //! calculation linkbase against the reported XBRL instance facts in exact
-//! fixed-scale integer arithmetic.
+//! fixed-scale integer arithmetic. A failed calculation check is a
+//! statement-definition or concept-mapping defect and fails the gate.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{FormatError, format_exact_decimal, saft::xml_escape};
+use fa_model::AccountType;
+use fa_money::UnitId;
+use fa_time::DateDay;
+
+use crate::{
+    ExportCoordinate, FormatError, FormatJournal, UnitCatalog, format_exact_decimal, hex_decode,
+    hex_encode, parse_exact_decimal,
+    saft::{xml_escape, xml_unescape},
+};
+
+/// Vendored US-GAAP 2026 small-company taxonomy schema (`us_gaap_2026_small_company.xsd`).
+pub const EMBEDDED_US_GAAP_2026_SMALL_COMPANY_XSD: &str =
+    include_str!("../corpora/us_gaap_2026_small_company.xsd");
+
+/// Vendored US-GAAP 2026 small-company calculation linkbase (`us_gaap_2026_small_company_cal.xml`).
+pub const EMBEDDED_US_GAAP_2026_SMALL_COMPANY_CAL_XML: &str =
+    include_str!("../corpora/us_gaap_2026_small_company_cal.xml");
+
+/// XBRL 2.1 period type for a monetary taxonomy concept (`instant` or `duration`, plan §12.6, `fa-faim`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum XbrlPeriodType {
+    Instant,
+    Duration,
+}
+
+/// XBRL 2.1 natural balance attribute (`debit` or `credit`) on a monetary concept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum XbrlBalanceSide {
+    Debit,
+    Credit,
+}
+
+/// Maps one statement definition line (`line_code`) to an XBRL taxonomy concept QName (`us-gaap:...`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XbrlConceptBinding {
+    pub line_code: String,
+    pub concept: String,
+    pub period_type: XbrlPeriodType,
+    pub balance_side: Option<XbrlBalanceSide>,
+}
+
+/// Mapping from a statement definition's line codes to XBRL taxonomy concepts
+/// and calculation-linkbase role URI (plan §12.6, §16.3, bead `fa-faim`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatementXbrlMapping {
+    pub mapping_id: String,
+    pub statement_definition_name: String,
+    pub taxonomy_namespace: String,
+    pub taxonomy_schema_href: String,
+    pub role_uri: String,
+    pub bindings: Vec<XbrlConceptBinding>,
+}
+
+impl StatementXbrlMapping {
+    /// Standard US-GAAP concept mapping for FrankenAccounting's built-in type-level Balance Sheet.
+    pub fn us_gaap_type_level_balance_sheet() -> Self {
+        let b = |line_code: &str, concept: &str, side: XbrlBalanceSide| XbrlConceptBinding {
+            line_code: line_code.into(),
+            concept: concept.into(),
+            period_type: XbrlPeriodType::Instant,
+            balance_side: Some(side),
+        };
+        Self {
+            mapping_id: "fa_xbrl_us_gaap_type_level_balance_sheet_v1".into(),
+            statement_definition_name: "balance-sheet".into(),
+            taxonomy_namespace: "http://fasb.org/us-gaap/2026".into(),
+            taxonomy_schema_href: "us_gaap_2026_small_company.xsd".into(),
+            role_uri: "http://frankenaccounting.org/role/TypeLevelStatements".into(),
+            bindings: vec![
+                b("assets", "us-gaap:Assets", XbrlBalanceSide::Debit),
+                b("liabilities", "us-gaap:Liabilities", XbrlBalanceSide::Credit),
+                b(
+                    "equity",
+                    "us-gaap:StockholdersEquity",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "unclosed_earnings",
+                    "us-gaap:CurrentPeriodNetIncome",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "total_equity",
+                    "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "liabilities_and_equity",
+                    "us-gaap:LiabilitiesAndStockholdersEquity",
+                    XbrlBalanceSide::Credit,
+                ),
+            ],
+        }
+    }
+
+    /// Standard US-GAAP concept mapping for FrankenAccounting's built-in type-level Income Statement.
+    pub fn us_gaap_type_level_income_statement() -> Self {
+        let b = |line_code: &str, concept: &str, side: XbrlBalanceSide| XbrlConceptBinding {
+            line_code: line_code.into(),
+            concept: concept.into(),
+            period_type: XbrlPeriodType::Duration,
+            balance_side: Some(side),
+        };
+        Self {
+            mapping_id: "fa_xbrl_us_gaap_type_level_income_statement_v1".into(),
+            statement_definition_name: "income-statement".into(),
+            taxonomy_namespace: "http://fasb.org/us-gaap/2026".into(),
+            taxonomy_schema_href: "us_gaap_2026_small_company.xsd".into(),
+            role_uri: "http://frankenaccounting.org/role/TypeLevelStatements".into(),
+            bindings: vec![
+                b("revenue", "us-gaap:Revenues", XbrlBalanceSide::Credit),
+                b(
+                    "expense",
+                    "us-gaap:OperatingExpenses",
+                    XbrlBalanceSide::Debit,
+                ),
+                b("net_income", "us-gaap:NetIncomeLoss", XbrlBalanceSide::Credit),
+            ],
+        }
+    }
+
+    /// US-GAAP small-company classified Balance Sheet concept mapping (`StatementOfFinancialPositionClassified`).
+    pub fn us_gaap_small_company_balance_sheet() -> Self {
+        let b = |line_code: &str, concept: &str, side: XbrlBalanceSide| XbrlConceptBinding {
+            line_code: line_code.into(),
+            concept: concept.into(),
+            period_type: XbrlPeriodType::Instant,
+            balance_side: Some(side),
+        };
+        Self {
+            mapping_id: "fa_xbrl_us_gaap_small_company_balance_sheet_v1".into(),
+            statement_definition_name: "us_gaap_small_company_balance_sheet".into(),
+            taxonomy_namespace: "http://fasb.org/us-gaap/2026".into(),
+            taxonomy_schema_href: "us_gaap_2026_small_company.xsd".into(),
+            role_uri: "http://fasb.org/us-gaap/role/statement/StatementOfFinancialPositionClassified"
+                .into(),
+            bindings: vec![
+                b(
+                    "cash",
+                    "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "accounts_receivable",
+                    "us-gaap:AccountsReceivableNetCurrent",
+                    XbrlBalanceSide::Debit,
+                ),
+                b("inventory", "us-gaap:InventoryNet", XbrlBalanceSide::Debit),
+                b(
+                    "current_assets",
+                    "us-gaap:AssetsCurrent",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "ppe_net",
+                    "us-gaap:PropertyPlantAndEquipmentNet",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "noncurrent_assets",
+                    "us-gaap:AssetsNoncurrent",
+                    XbrlBalanceSide::Debit,
+                ),
+                b("total_assets", "us-gaap:Assets", XbrlBalanceSide::Debit),
+                b(
+                    "accounts_payable",
+                    "us-gaap:AccountsPayableCurrent",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "accrued_liabilities",
+                    "us-gaap:AccruedLiabilitiesCurrent",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "current_liabilities",
+                    "us-gaap:LiabilitiesCurrent",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "long_term_debt",
+                    "us-gaap:LongTermDebtNoncurrent",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "noncurrent_liabilities",
+                    "us-gaap:LiabilitiesNoncurrent",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "total_liabilities",
+                    "us-gaap:Liabilities",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "common_stock",
+                    "us-gaap:CommonStockValue",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "retained_earnings",
+                    "us-gaap:RetainedEarningsAccumulatedDeficit",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "total_equity",
+                    "us-gaap:StockholdersEquity",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "liabilities_and_equity",
+                    "us-gaap:LiabilitiesAndStockholdersEquity",
+                    XbrlBalanceSide::Credit,
+                ),
+            ],
+        }
+    }
+
+    /// US-GAAP small-company multi-step Income Statement concept mapping (`StatementOfIncome`).
+    pub fn us_gaap_small_company_income_statement() -> Self {
+        let b = |line_code: &str, concept: &str, side: XbrlBalanceSide| XbrlConceptBinding {
+            line_code: line_code.into(),
+            concept: concept.into(),
+            period_type: XbrlPeriodType::Duration,
+            balance_side: Some(side),
+        };
+        Self {
+            mapping_id: "fa_xbrl_us_gaap_small_company_income_statement_v1".into(),
+            statement_definition_name: "us_gaap_small_company_income_statement".into(),
+            taxonomy_namespace: "http://fasb.org/us-gaap/2026".into(),
+            taxonomy_schema_href: "us_gaap_2026_small_company.xsd".into(),
+            role_uri: "http://fasb.org/us-gaap/role/statement/StatementOfIncome".into(),
+            bindings: vec![
+                b("revenues", "us-gaap:Revenues", XbrlBalanceSide::Credit),
+                b(
+                    "cogs",
+                    "us-gaap:CostOfGoodsAndServicesSold",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "gross_profit",
+                    "us-gaap:GrossProfit",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "operating_expenses",
+                    "us-gaap:OperatingExpenses",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "operating_income",
+                    "us-gaap:OperatingIncomeLoss",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "income_tax_expense",
+                    "us-gaap:IncomeTaxExpenseBenefit",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "net_income",
+                    "us-gaap:NetIncomeLoss",
+                    XbrlBalanceSide::Credit,
+                ),
+            ],
+        }
+    }
+}
+
+/// One evaluated statement line (`(line_code, unit_id) -> amounts per column`) ready for XBRL mapping.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvaluatedStatementLine {
+    pub code: String,
+    pub unit_id: u32,
+    pub amounts: Vec<i128>,
+}
+
+/// Evaluated statement input for [`export_statement_lines_to_xbrl`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvaluatedStatementForXbrl {
+    pub definition_name: String,
+    pub column_labels: Vec<String>,
+    pub period_end: DateDay,
+    pub lines: Vec<EvaluatedStatementLine>,
+}
 
 /// One weighted summation arc in an XBRL calculation linkbase (`parent = Σ weight_i * child_i`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,11 +305,29 @@ pub struct XbrlCalculationArc {
     pub order: u32,
 }
 
-/// An XBRL calculation linkbase for a financial statement.
+/// An XBRL calculation linkbase for a financial statement role.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct XbrlCalculationLinkbase {
     pub role_uri: String,
     pub arcs: Vec<XbrlCalculationArc>,
+}
+
+/// One monetary concept element parsed from a vendored XBRL taxonomy schema (`.xsd`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XbrlTaxonomyConcept {
+    pub id: String,
+    pub name: String,
+    pub qname: String,
+    pub period_type: XbrlPeriodType,
+    pub balance_side: Option<XbrlBalanceSide>,
+}
+
+/// Parsed XBRL taxonomy schema (`.xsd`) holding target namespace and declared monetary concepts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XbrlTaxonomySchema {
+    pub target_namespace: String,
+    pub prefix: String,
+    pub concepts: BTreeMap<String, XbrlTaxonomyConcept>,
 }
 
 /// One reported monetary fact in an XBRL instance document.
@@ -44,10 +348,79 @@ pub struct XbrlInstance {
     pub facts: Vec<XbrlFact>,
 }
 
+/// Detailed audit log row for one parent concept calculation check (`fa-faim`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XbrlCalculationCheckRow {
+    pub role_uri: String,
+    pub context_ref: String,
+    pub unit_code: String,
+    pub concept: String,
+    pub computed_mantissa: i128,
+    pub reported_mantissa: i128,
+    pub delta_mantissa: i128,
+    pub passed: bool,
+}
+
+impl XbrlCalculationCheckRow {
+    /// Deterministic greppable log line (`concept=... computed=... reported=... delta=...`).
+    pub fn to_log_line(&self) -> String {
+        format!(
+            "xbrl_calc_check role={} context={} unit={} concept={} computed={} reported={} delta={} status={}",
+            self.role_uri,
+            self.context_ref,
+            self.unit_code,
+            self.concept,
+            self.computed_mantissa,
+            self.reported_mantissa,
+            self.delta_mantissa,
+            if self.passed { "PASS" } else { "FAIL" }
+        )
+    }
+}
+
+/// Detailed validation report produced by [`validate_calculation_linkbase_detailed`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XbrlValidationReport {
+    pub role_uri: String,
+    pub checks_passed: usize,
+    pub rows: Vec<XbrlCalculationCheckRow>,
+}
+
+impl XbrlValidationReport {
+    pub fn log_lines(&self) -> Vec<String> {
+        self.rows
+            .iter()
+            .map(XbrlCalculationCheckRow::to_log_line)
+            .collect()
+    }
+}
+
+impl XbrlTaxonomySchema {
+    /// Parse the vendored US-GAAP 2026 small-company taxonomy schema (`us_gaap_2026_small_company.xsd`).
+    pub fn embedded_us_gaap_small_company() -> Result<Self, FormatError> {
+        parse_xbrl_taxonomy_schema_xml(EMBEDDED_US_GAAP_2026_SMALL_COMPANY_XSD)
+    }
+}
+
 impl XbrlCalculationLinkbase {
+    /// Parse all calculation linkbases from the vendored US-GAAP 2026 small-company linkbase XML.
+    pub fn embedded_us_gaap_small_company() -> Result<Vec<Self>, FormatError> {
+        parse_xbrl_calculation_linkbase_xml(EMBEDDED_US_GAAP_2026_SMALL_COMPANY_CAL_XML)
+    }
+
+    /// Look up one calculation linkbase role from the vendored US-GAAP 2026 small-company linkbase XML.
+    pub fn embedded_for_role(role_uri: &str) -> Result<Self, FormatError> {
+        let all = Self::embedded_us_gaap_small_company()?;
+        all.into_iter()
+            .find(|lb| lb.role_uri == role_uri)
+            .ok_or_else(|| FormatError::Parse {
+                format: "xbrl_calculation_linkbase",
+                detail: format!("unknown calculation linkbase role URI {role_uri:?}"),
+            })
+    }
+
     /// Standard US-GAAP / IFRS Balance Sheet calculation linkbase:
-    /// - `Assets = CashAndCashEquivalents + AccountsReceivable + Inventory + PropertyPlantAndEquipment`
-    /// - `Liabilities = AccountsPayable + AccruedLiabilities + LongTermDebt`
+    /// - `Assets = CurrentAssets + NoncurrentAssets`
     /// - `LiabilitiesAndStockholdersEquity = Liabilities + StockholdersEquity`
     pub fn standard_balance_sheet() -> Self {
         Self {
@@ -83,8 +456,7 @@ impl XbrlCalculationLinkbase {
 
     /// Standard US-GAAP / IFRS Income Statement calculation linkbase:
     /// - `GrossProfit = Revenues - CostOfGoodsAndServicesSold`
-    /// - `OperatingIncomeLoss = GrossProfit - OperatingExpenses`
-    /// - `NetIncomeLoss = OperatingIncomeLoss - IncomeTaxExpenseBenefit`
+    /// - `NetIncomeLoss = GrossProfit - OperatingExpenses`
     pub fn standard_income_statement() -> Self {
         Self {
             role_uri: "http://frankenaccounting.org/role/IncomeStatement".to_owned(),
@@ -118,27 +490,302 @@ impl XbrlCalculationLinkbase {
     }
 }
 
+/// Extract an XML attribute `attr="value"` from an opening/self-closing XML tag string.
+fn extract_xml_attr<'a>(tag: &'a str, attr: &str) -> Option<&'a str> {
+    let mut search_from = 0usize;
+    while let Some(rel) = tag[search_from..].find(attr) {
+        let pos = search_from + rel;
+        let prev_ok = pos == 0
+            || tag.as_bytes()[pos - 1].is_ascii_whitespace()
+            || tag.as_bytes()[pos - 1] == b'<';
+        let after_name = pos + attr.len();
+        if prev_ok && tag[after_name..].starts_with("=\"") {
+            let val_start = after_name + 2;
+            let val_end = tag[val_start..].find('"')? + val_start;
+            return Some(&tag[val_start..val_end]);
+        }
+        search_from = after_name;
+    }
+    None
+}
+
+/// Iterate over `<...>` XML tags (excluding `<?...?>` processing instructions and `<!--...-->` comments).
+fn iter_xml_tags(xml: &str) -> Result<Vec<&str>, FormatError> {
+    let mut tags = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find('<') {
+        rest = &rest[start..];
+        if rest.starts_with("<!--") {
+            let end = rest.find("-->").ok_or_else(|| FormatError::Parse {
+                format: "xbrl_xml",
+                detail: "unclosed XML comment".into(),
+            })?;
+            rest = &rest[end + 3..];
+            continue;
+        }
+        if rest.starts_with("<?") {
+            let end = rest.find("?>").ok_or_else(|| FormatError::Parse {
+                format: "xbrl_xml",
+                detail: "unclosed XML processing instruction".into(),
+            })?;
+            rest = &rest[end + 2..];
+            continue;
+        }
+        let end = rest.find('>').ok_or_else(|| FormatError::Parse {
+            format: "xbrl_xml",
+            detail: "unclosed XML tag".into(),
+        })?;
+        tags.push(&rest[..=end]);
+        rest = &rest[end + 1..];
+    }
+    Ok(tags)
+}
+
+/// In-house parser for a vendored XBRL 2.1 taxonomy schema (`.xsd`, plan §12.6, `fa-faim`).
+pub fn parse_xbrl_taxonomy_schema_xml(xsd: &str) -> Result<XbrlTaxonomySchema, FormatError> {
+    let tags = iter_xml_tags(xsd)?;
+    let mut target_namespace = String::new();
+    let mut prefix = "us-gaap".to_owned();
+    let mut concepts = BTreeMap::new();
+
+    for tag in tags {
+        if tag.starts_with("<xs:schema") {
+            if let Some(ns) = extract_xml_attr(tag, "targetNamespace") {
+                target_namespace = xml_unescape(ns);
+            }
+        } else if tag.starts_with("<xs:element") {
+            let id = extract_xml_attr(tag, "id")
+                .ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_taxonomy_xsd",
+                    detail: format!("xs:element missing id attribute: {tag}"),
+                })?
+                .to_owned();
+            let name = extract_xml_attr(tag, "name")
+                .ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_taxonomy_xsd",
+                    detail: format!("xs:element missing name attribute: {tag}"),
+                })?
+                .to_owned();
+            let period_type = match extract_xml_attr(tag, "xbrli:periodType") {
+                Some("instant") => XbrlPeriodType::Instant,
+                Some("duration") => XbrlPeriodType::Duration,
+                other => {
+                    return Err(FormatError::Parse {
+                        format: "xbrl_taxonomy_xsd",
+                        detail: format!(
+                            "xs:element {id} has unsupported xbrli:periodType {other:?}"
+                        ),
+                    });
+                }
+            };
+            let balance_side = match extract_xml_attr(tag, "xbrli:balance") {
+                Some("debit") => Some(XbrlBalanceSide::Debit),
+                Some("credit") => Some(XbrlBalanceSide::Credit),
+                None => None,
+                Some(other) => {
+                    return Err(FormatError::Parse {
+                        format: "xbrl_taxonomy_xsd",
+                        detail: format!("xs:element {id} has invalid xbrli:balance {other:?}"),
+                    });
+                }
+            };
+            if let Some((pfx, _)) = id.split_once('_') {
+                prefix = pfx.to_owned();
+            }
+            let qname = format!("{prefix}:{name}");
+            let concept = XbrlTaxonomyConcept {
+                id,
+                name,
+                qname: qname.clone(),
+                period_type,
+                balance_side,
+            };
+            if concepts.insert(qname.clone(), concept).is_some() {
+                return Err(FormatError::Parse {
+                    format: "xbrl_taxonomy_xsd",
+                    detail: format!("duplicate concept {qname} in taxonomy schema"),
+                });
+            }
+        }
+    }
+
+    if target_namespace.is_empty() || concepts.is_empty() {
+        return Err(FormatError::Parse {
+            format: "xbrl_taxonomy_xsd",
+            detail: "taxonomy schema missing targetNamespace or concepts".into(),
+        });
+    }
+
+    Ok(XbrlTaxonomySchema {
+        target_namespace,
+        prefix,
+        concepts,
+    })
+}
+
+/// In-house parser for a vendored XBRL 2.1 calculation linkbase (`_cal.xml`, plan §12.6, `fa-faim`).
+pub fn parse_xbrl_calculation_linkbase_xml(
+    xml: &str,
+) -> Result<Vec<XbrlCalculationLinkbase>, FormatError> {
+    let tags = iter_xml_tags(xml)?;
+    let mut linkbases = Vec::new();
+    let mut current_role: Option<String> = None;
+    let mut locators: BTreeMap<String, String> = BTreeMap::new();
+    let mut arcs: Vec<XbrlCalculationArc> = Vec::new();
+
+    for tag in tags {
+        if tag.starts_with("<link:calculationLink") {
+            let role = extract_xml_attr(tag, "xlink:role").ok_or_else(|| FormatError::Parse {
+                format: "xbrl_calculation_linkbase",
+                detail: "link:calculationLink missing xlink:role".into(),
+            })?;
+            current_role = Some(xml_unescape(role));
+            locators.clear();
+            arcs.clear();
+        } else if tag.starts_with("</link:calculationLink") {
+            let role_uri = current_role.take().ok_or_else(|| FormatError::Parse {
+                format: "xbrl_calculation_linkbase",
+                detail: "unexpected </link:calculationLink>".into(),
+            })?;
+            arcs.sort_by(|a, b| {
+                (&a.parent_concept, a.order, &a.child_concept).cmp(&(
+                    &b.parent_concept,
+                    b.order,
+                    &b.child_concept,
+                ))
+            });
+            linkbases.push(XbrlCalculationLinkbase {
+                role_uri,
+                arcs: std::mem::take(&mut arcs),
+            });
+        } else if tag.starts_with("<link:loc") && current_role.is_some() {
+            let href = extract_xml_attr(tag, "xlink:href").ok_or_else(|| FormatError::Parse {
+                format: "xbrl_calculation_linkbase",
+                detail: format!("link:loc missing xlink:href: {tag}"),
+            })?;
+            let label =
+                extract_xml_attr(tag, "xlink:label").ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_calculation_linkbase",
+                    detail: format!("link:loc missing xlink:label: {tag}"),
+                })?;
+            let (_, fragment) = href.split_once('#').ok_or_else(|| FormatError::Parse {
+                format: "xbrl_calculation_linkbase",
+                detail: format!("link:loc xlink:href {href:?} missing #fragment"),
+            })?;
+            let qname = if let Some((pfx, name)) = fragment.split_once('_') {
+                format!("{pfx}:{name}")
+            } else {
+                fragment.to_owned()
+            };
+            locators.insert(label.to_owned(), qname);
+        } else if tag.starts_with("<link:calculationArc") && current_role.is_some() {
+            let from_label =
+                extract_xml_attr(tag, "xlink:from").ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_calculation_linkbase",
+                    detail: format!("link:calculationArc missing xlink:from: {tag}"),
+                })?;
+            let to_label = extract_xml_attr(tag, "xlink:to").ok_or_else(|| FormatError::Parse {
+                format: "xbrl_calculation_linkbase",
+                detail: format!("link:calculationArc missing xlink:to: {tag}"),
+            })?;
+            let weight_str =
+                extract_xml_attr(tag, "weight").ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_calculation_linkbase",
+                    detail: format!("link:calculationArc missing weight: {tag}"),
+                })?;
+            let order_str = extract_xml_attr(tag, "order").unwrap_or("1");
+            let weight: i8 = match weight_str.trim() {
+                "1" | "+1" | "1.0" => 1,
+                "-1" | "-1.0" => -1,
+                other => {
+                    return Err(FormatError::Parse {
+                        format: "xbrl_calculation_linkbase",
+                        detail: format!("invalid calculationArc weight {other:?}"),
+                    });
+                }
+            };
+            let order: u32 = order_str.trim().parse().map_err(|_| FormatError::Parse {
+                format: "xbrl_calculation_linkbase",
+                detail: format!("invalid calculationArc order {order_str:?}"),
+            })?;
+            let parent_concept = locators
+                .get(from_label)
+                .ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_calculation_linkbase",
+                    detail: format!("unknown calculationArc xlink:from locator {from_label:?}"),
+                })?
+                .clone();
+            let child_concept = locators
+                .get(to_label)
+                .ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_calculation_linkbase",
+                    detail: format!("unknown calculationArc xlink:to locator {to_label:?}"),
+                })?
+                .clone();
+            arcs.push(XbrlCalculationArc {
+                parent_concept,
+                child_concept,
+                weight,
+                order,
+            });
+        }
+    }
+
+    if linkbases.is_empty() {
+        return Err(FormatError::Parse {
+            format: "xbrl_calculation_linkbase",
+            detail: "no <link:calculationLink> found in calculation linkbase XML".into(),
+        });
+    }
+
+    Ok(linkbases)
+}
+
 /// Emit an XBRL 2.1 instance XML document for the given [`XbrlInstance`].
 pub fn write_xbrl_instance_xml(instance: &XbrlInstance) -> String {
     let mut xml = String::new();
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     xml.push_str(
-        "<xbrli:xbrl xmlns:xbrli=\"http://www.xbrl.org/2003/instance\" xmlns:us-gaap=\"http://fasb.org/us-gaap/2026\">\n",
+        "<xbrli:xbrl xmlns:xbrli=\"http://www.xbrl.org/2003/instance\" xmlns:link=\"http://www.xbrl.org/2003/linkbase\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns:iso4217=\"http://www.xbrl.org/2003/iso4217\" xmlns:us-gaap=\"http://fasb.org/us-gaap/2026\">\n",
     );
-    xml.push_str("  <xbrli:context id=\"ctx_current\">\n");
-    xml.push_str("    <xbrli:entity>\n");
-    xml.push_str(&format!(
-        "      <xbrli:identifier scheme=\"http://frankenaccounting.org/entity\">{}</xbrli:identifier>\n",
-        xml_escape(&instance.entity_identifier)
-    ));
-    xml.push_str("    </xbrli:entity>\n");
-    xml.push_str("    <xbrli:period>\n");
-    xml.push_str(&format!(
-        "      <xbrli:instant>{}</xbrli:instant>\n",
-        xml_escape(&instance.period_end)
-    ));
-    xml.push_str("    </xbrli:period>\n");
-    xml.push_str("  </xbrli:context>\n");
+    xml.push_str(
+        "  <link:schemaRef xlink:type=\"simple\" xlink:href=\"us_gaap_2026_small_company.xsd\"/>\n",
+    );
+
+    let mut contexts: BTreeSet<&str> = BTreeSet::new();
+    let mut units: BTreeSet<&str> = BTreeSet::new();
+    for fact in &instance.facts {
+        contexts.insert(fact.context_ref.as_str());
+        units.insert(fact.unit_code.as_str());
+    }
+    if contexts.is_empty() {
+        contexts.insert("ctx_current");
+    }
+
+    for ctx_id in contexts {
+        xml.push_str(&format!("  <xbrli:context id=\"{}\">\n", xml_escape(ctx_id)));
+        xml.push_str("    <xbrli:entity>\n");
+        xml.push_str(&format!(
+            "      <xbrli:identifier scheme=\"http://frankenaccounting.org/entity\">{}</xbrli:identifier>\n",
+            xml_escape(&instance.entity_identifier)
+        ));
+        xml.push_str("    </xbrli:entity>\n");
+        xml.push_str("    <xbrli:period>\n");
+        xml.push_str(&format!(
+            "      <xbrli:instant>{}</xbrli:instant>\n",
+            xml_escape(&instance.period_end)
+        ));
+        xml.push_str("    </xbrli:period>\n");
+        xml.push_str("  </xbrli:context>\n");
+    }
+
+    for unit_code in units {
+        xml.push_str(&format!(
+            "  <xbrli:unit id=\"{}\">\n    <xbrli:measure>iso4217:{}</xbrli:measure>\n  </xbrli:unit>\n",
+            xml_escape(unit_code),
+            xml_escape(unit_code)
+        ));
+    }
 
     for fact in &instance.facts {
         let amt = format_exact_decimal(fact.mantissa, fact.scale);
@@ -156,25 +803,123 @@ pub fn write_xbrl_instance_xml(instance: &XbrlInstance) -> String {
     xml
 }
 
-/// Validate an [`XbrlInstance`] against an [`XbrlCalculationLinkbase`].
-///
-/// Every parent concept that has at least one present child fact in a given
-/// `(context_ref, unit_code)` must equal the exact weighted sum of its children
-/// (`Σ weight_i * child_i`). Any discrepancy returns
-/// `Err(FormatError::XbrlCalculationInconsistency)`.
-pub fn validate_calculation_linkbase(
+/// Read an XBRL 2.1 instance XML document emitted by [`write_xbrl_instance_xml`]
+/// back into an [`XbrlInstance`] using the in-house XML parser (zero third-party crates).
+pub fn read_xbrl_instance_xml(xml: &str) -> Result<XbrlInstance, FormatError> {
+    let mut entity_identifier = String::new();
+    let mut period_end = String::new();
+    let mut facts = Vec::new();
+
+    for raw_line in xml.lines() {
+        let line = raw_line.trim();
+        if let Some(rest) = line.strip_prefix(
+            "<xbrli:identifier scheme=\"http://frankenaccounting.org/entity\">",
+        ) {
+            if let Some(inner) = rest.strip_suffix("</xbrli:identifier>")
+                && entity_identifier.is_empty()
+            {
+                entity_identifier = xml_unescape(inner);
+            }
+        } else if let Some(rest) = line.strip_prefix("<xbrli:instant>") {
+            if let Some(inner) = rest.strip_suffix("</xbrli:instant>")
+                && period_end.is_empty()
+            {
+                period_end = xml_unescape(inner);
+            }
+        } else if line.starts_with("<us-gaap:") {
+            let open_end = line.find('>').ok_or_else(|| FormatError::Parse {
+                format: "xbrl_gl_instance_v1",
+                detail: format!("malformed fact line: {line}"),
+            })?;
+            let open_tag = &line[..=open_end];
+            let concept_end = open_tag[1..]
+                .find(|c: char| c.is_ascii_whitespace() || c == '>')
+                .ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_gl_instance_v1",
+                    detail: format!("malformed fact tag: {open_tag}"),
+                })?
+                + 1;
+            let concept = open_tag[1..concept_end].to_owned();
+            let close_tag = format!("</{concept}>");
+            let value_str = line[open_end + 1..]
+                .strip_suffix(&close_tag)
+                .ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_gl_instance_v1",
+                    detail: format!("mismatched closing tag on fact line: {line}"),
+                })?;
+            let context_ref = xml_unescape(
+                extract_xml_attr(open_tag, "contextRef").ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_gl_instance_v1",
+                    detail: format!("fact {concept} missing contextRef"),
+                })?,
+            );
+            let unit_code = xml_unescape(
+                extract_xml_attr(open_tag, "unitRef").ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_gl_instance_v1",
+                    detail: format!("fact {concept} missing unitRef"),
+                })?,
+            );
+            let decimals_str =
+                extract_xml_attr(open_tag, "decimals").ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_gl_instance_v1",
+                    detail: format!("fact {concept} missing decimals"),
+                })?;
+            let scale: u8 = decimals_str.parse().map_err(|_| FormatError::Parse {
+                format: "xbrl_gl_instance_v1",
+                detail: format!("fact {concept} invalid decimals {decimals_str:?}"),
+            })?;
+            let mantissa = parse_exact_decimal("xbrl_gl_instance_v1", value_str.trim(), scale)?;
+            facts.push(XbrlFact {
+                concept,
+                context_ref,
+                unit_code,
+                scale,
+                mantissa,
+            });
+        }
+    }
+
+    if entity_identifier.is_empty() || period_end.is_empty() {
+        return Err(FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: "XBRL instance missing entity identifier or period instant".into(),
+        });
+    }
+
+    Ok(XbrlInstance {
+        entity_identifier,
+        period_end,
+        facts,
+    })
+}
+
+/// Validate an [`XbrlInstance`] against an [`XbrlCalculationLinkbase`] and optional
+/// [`XbrlTaxonomySchema`], returning a structured [`XbrlValidationReport`] logging
+/// `concept`, `computed`, `reported`, and `delta` for every parent summation check.
+pub fn validate_calculation_linkbase_detailed(
     instance: &XbrlInstance,
     linkbase: &XbrlCalculationLinkbase,
-) -> Result<usize, FormatError> {
+    schema: Option<&XbrlTaxonomySchema>,
+) -> Result<XbrlValidationReport, FormatError> {
     let mut fact_map: BTreeMap<(String, String, String), i128> = BTreeMap::new();
-    let mut contexts_and_units: std::collections::BTreeSet<(String, String)> =
-        std::collections::BTreeSet::new();
+    let mut contexts_and_units: BTreeSet<(String, String)> = BTreeSet::new();
 
     for fact in &instance.facts {
         if fact.weight_check_invalid() {
             return Err(FormatError::Parse {
                 format: "xbrl_gl_instance_v1",
                 detail: format!("empty concept or unit on fact {:?}", fact.concept),
+            });
+        }
+        if let Some(tax) = schema
+            && !tax.concepts.contains_key(&fact.concept)
+        {
+            return Err(FormatError::Parse {
+                format: "xbrl_gl_instance_v1",
+                detail: format!(
+                    "fact concept {:?} is not declared in taxonomy {}",
+                    fact.concept, tax.target_namespace
+                ),
             });
         }
         fact_map.insert(
@@ -199,13 +944,28 @@ pub fn validate_calculation_linkbase(
                 ),
             });
         }
+        if let Some(tax) = schema {
+            for c in [&arc.parent_concept, &arc.child_concept] {
+                if !tax.concepts.contains_key(c) {
+                    return Err(FormatError::Parse {
+                        format: "xbrl_calculation_linkbase",
+                        detail: format!(
+                            "calculation arc concept {c:?} is not declared in taxonomy {}",
+                            tax.target_namespace
+                        ),
+                    });
+                }
+            }
+        }
         parents
             .entry(arc.parent_concept.as_str())
             .or_default()
             .push(arc);
     }
 
-    let mut checks_passed = 0usize;
+    let mut rows = Vec::new();
+    let mut first_failure: Option<FormatError> = None;
+
     for (ctx, unit) in &contexts_and_units {
         for (parent_concept, arcs) in &parents {
             let Some(&reported_parent) =
@@ -233,23 +993,574 @@ pub fn validate_calculation_linkbase(
                 }
             }
             if any_child_present {
-                if reported_parent != sum {
-                    return Err(FormatError::XbrlCalculationInconsistency {
+                let delta = reported_parent
+                    .checked_sub(sum)
+                    .ok_or_else(|| FormatError::Overflow {
+                        format: "xbrl_gl_instance_v1",
+                        detail: "calculation delta subtraction overflow".to_owned(),
+                    })?;
+                let passed = delta == 0;
+                rows.push(XbrlCalculationCheckRow {
+                    role_uri: linkbase.role_uri.clone(),
+                    context_ref: ctx.clone(),
+                    unit_code: unit.clone(),
+                    concept: (*parent_concept).to_owned(),
+                    computed_mantissa: sum,
+                    reported_mantissa: reported_parent,
+                    delta_mantissa: delta,
+                    passed,
+                });
+                if !passed && first_failure.is_none() {
+                    first_failure = Some(FormatError::XbrlCalculationInconsistency {
                         parent_concept: (*parent_concept).to_owned(),
                         unit_code: unit.clone(),
                         reported_mantissa: reported_parent,
                         computed_children_mantissa: sum,
                     });
                 }
-                checks_passed += 1;
             }
         }
     }
-    Ok(checks_passed)
+
+    if let Some(err) = first_failure {
+        return Err(err);
+    }
+
+    Ok(XbrlValidationReport {
+        role_uri: linkbase.role_uri.clone(),
+        checks_passed: rows.len(),
+        rows,
+    })
+}
+
+/// Validate an [`XbrlInstance`] against an [`XbrlCalculationLinkbase`].
+///
+/// Every parent concept that has at least one present child fact in a given
+/// `(context_ref, unit_code)` must equal the exact weighted sum of its children
+/// (`Σ weight_i * child_i`). Any discrepancy returns
+/// `Err(FormatError::XbrlCalculationInconsistency)`.
+pub fn validate_calculation_linkbase(
+    instance: &XbrlInstance,
+    linkbase: &XbrlCalculationLinkbase,
+) -> Result<usize, FormatError> {
+    let report = validate_calculation_linkbase_detailed(instance, linkbase, None)?;
+    Ok(report.checks_passed)
+}
+
+/// Export evaluated statement lines ([`EvaluatedStatementForXbrl`]) to an [`XbrlInstance`]
+/// using a [`StatementXbrlMapping`], validating every mapped concept against the
+/// [`XbrlTaxonomySchema`] and [`XbrlCalculationLinkbase`] before returning (`fa-faim`).
+pub fn export_statement_lines_to_xbrl(
+    statement: &EvaluatedStatementForXbrl,
+    mapping: &StatementXbrlMapping,
+    entity_identifier: &str,
+    unit_catalog: &UnitCatalog,
+    schema: &XbrlTaxonomySchema,
+    linkbase: &XbrlCalculationLinkbase,
+) -> Result<(XbrlInstance, XbrlValidationReport), FormatError> {
+    if statement.definition_name != mapping.statement_definition_name {
+        return Err(FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: format!(
+                "statement definition {:?} does not match XBRL mapping target {:?}",
+                statement.definition_name, mapping.statement_definition_name
+            ),
+        });
+    }
+    if mapping.role_uri != linkbase.role_uri {
+        return Err(FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: format!(
+                "XBRL mapping role URI {:?} does not match calculation linkbase role URI {:?}",
+                mapping.role_uri, linkbase.role_uri
+            ),
+        });
+    }
+    if statement.column_labels.is_empty() {
+        return Err(FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: "statement has no columns to export".into(),
+        });
+    }
+
+    let mut binding_by_line: BTreeMap<&str, _> = BTreeMap::new();
+    let mut used_concepts: BTreeSet<&str> = BTreeSet::new();
+    for b in &mapping.bindings {
+        let tax_concept = schema.concepts.get(&b.concept).ok_or_else(|| {
+            FormatError::Parse {
+                format: "xbrl_gl_instance_v1",
+                detail: format!(
+                    "line `{}` maps to unknown taxonomy concept `{}`",
+                    b.line_code, b.concept
+                ),
+            }
+        })?;
+        if tax_concept.period_type != b.period_type {
+            return Err(FormatError::Parse {
+                format: "xbrl_gl_instance_v1",
+                detail: format!(
+                    "line `{}` concept `{}` period_type {:?} mismatches taxonomy {:?}",
+                    b.line_code, b.concept, b.period_type, tax_concept.period_type
+                ),
+            });
+        }
+        if b.balance_side != tax_concept.balance_side {
+            return Err(FormatError::Parse {
+                format: "xbrl_gl_instance_v1",
+                detail: format!(
+                    "line `{}` concept `{}` balance_side {:?} mismatches taxonomy {:?}",
+                    b.line_code, b.concept, b.balance_side, tax_concept.balance_side
+                ),
+            });
+        }
+        if !used_concepts.insert(b.concept.as_str()) {
+            return Err(FormatError::Parse {
+                format: "xbrl_gl_instance_v1",
+                detail: format!(
+                    "duplicate taxonomy concept `{}` in statement mapping `{}`",
+                    b.concept, mapping.mapping_id
+                ),
+            });
+        }
+        if binding_by_line.insert(b.line_code.as_str(), b).is_some() {
+            return Err(FormatError::Parse {
+                format: "xbrl_gl_instance_v1",
+                detail: format!(
+                    "duplicate line_code `{}` in statement mapping `{}`",
+                    b.line_code, mapping.mapping_id
+                ),
+            });
+        }
+    }
+
+    let mut facts = Vec::new();
+    for (col_idx, col_label) in statement.column_labels.iter().enumerate() {
+        let context_ref = if col_idx == 0 {
+            "ctx_current".to_owned()
+        } else {
+            format!("ctx_col_{col_idx}_{col_label}")
+        };
+        for line in &statement.lines {
+            let Some(binding) = binding_by_line.get(line.code.as_str()) else {
+                continue;
+            };
+            let (unit_code, scale) =
+                unit_catalog
+                    .lookup_id(UnitId(line.unit_id))
+                    .ok_or_else(|| FormatError::UnknownUnit {
+                        format: "xbrl_gl_instance_v1",
+                        unit: line.unit_id.to_string(),
+                    })?;
+            facts.push(XbrlFact {
+                concept: binding.concept.clone(),
+                context_ref: context_ref.clone(),
+                unit_code: unit_code.to_owned(),
+                scale,
+                mantissa: line.amounts[col_idx],
+            });
+        }
+    }
+
+    let period_end = statement.period_end.render();
+    let instance = XbrlInstance {
+        entity_identifier: entity_identifier.to_owned(),
+        period_end,
+        facts,
+    };
+
+    let report = validate_calculation_linkbase_detailed(&instance, linkbase, Some(schema))?;
+    Ok((instance, report))
+}
+
+/// Fold a [`FormatJournal`] at its coordinate into the certified type-level Balance Sheet
+/// and Income Statement lines, map every line to the vendored US-GAAP taxonomy, validate
+/// the calculation linkbase, and emit a deterministic XBRL 2.1 instance XML document
+/// carrying the [`ExportCoordinate`] certificate (`fa export xbrl`, bead `fa-faim`).
+pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, FormatError> {
+    let unit_catalog = UnitCatalog::embedded()?;
+    let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company()?;
+    let linkbase = XbrlCalculationLinkbase::embedded_for_role(
+        "http://frankenaccounting.org/role/TypeLevelStatements",
+    )?;
+
+    let mut acct_type_by_code: BTreeMap<&str, AccountType> = BTreeMap::new();
+    for acc in &journal.accounts {
+        acct_type_by_code.insert(acc.code.as_str(), acc.account_type);
+    }
+
+    let balances = journal.fold_balances()?;
+    let mut units_seen: BTreeSet<u32> = BTreeSet::new();
+    if let Some((base_uid, _)) = unit_catalog.lookup_code(&journal.coordinate.base_unit_code) {
+        units_seen.insert(base_uid.0);
+    }
+
+    // Per unit, fold signed (Dr - Cr) balances by AccountType:
+    // Asset: Dr - Cr; Liability: Cr - Dr; Equity: Cr - Dr; Revenue: Cr - Dr; Expense: Dr - Cr.
+    let mut type_sums: BTreeMap<(u32, u8), i128> = BTreeMap::new();
+    for ((code, unit_code), &dr_minus_cr) in &balances {
+        let (uid, _) =
+            unit_catalog
+                .lookup_code(unit_code)
+                .ok_or_else(|| FormatError::UnknownUnit {
+                    format: "xbrl_gl_instance_v1",
+                    unit: unit_code.clone(),
+                })?;
+        units_seen.insert(uid.0);
+        let acct_ty =
+            acct_type_by_code
+                .get(code.as_str())
+                .copied()
+                .ok_or_else(|| FormatError::UnknownAccount {
+                    format: "xbrl_gl_instance_v1",
+                    account_code: code.clone(),
+                })?;
+        let natural = match acct_ty {
+            AccountType::ASSET | AccountType::EXPENSE => dr_minus_cr,
+            AccountType::LIABILITY | AccountType::EQUITY | AccountType::REVENUE => {
+                dr_minus_cr.checked_neg().ok_or_else(|| FormatError::Overflow {
+                    format: "xbrl_gl_instance_v1",
+                    detail: "negation overflow in natural balance".into(),
+                })?
+            }
+            _ => continue,
+        };
+        let cell = type_sums.entry((uid.0, acct_ty.0)).or_insert(0);
+        *cell = cell
+            .checked_add(natural)
+            .ok_or_else(|| FormatError::Overflow {
+                format: "xbrl_gl_instance_v1",
+                detail: "account type summation overflow".into(),
+            })?;
+    }
+
+    let mut bs_lines = Vec::new();
+    let mut is_lines = Vec::new();
+    for uid in units_seen {
+        let assets = *type_sums.get(&(uid, AccountType::ASSET.0)).unwrap_or(&0);
+        let liabilities = *type_sums.get(&(uid, AccountType::LIABILITY.0)).unwrap_or(&0);
+        let equity = *type_sums.get(&(uid, AccountType::EQUITY.0)).unwrap_or(&0);
+        let revenue = *type_sums.get(&(uid, AccountType::REVENUE.0)).unwrap_or(&0);
+        let expense = *type_sums.get(&(uid, AccountType::EXPENSE.0)).unwrap_or(&0);
+        let unclosed_earnings = revenue
+            .checked_sub(expense)
+            .ok_or_else(|| FormatError::Overflow {
+                format: "xbrl_gl_instance_v1",
+                detail: "unclosed earnings overflow".into(),
+            })?;
+        let total_equity = equity
+            .checked_add(unclosed_earnings)
+            .ok_or_else(|| FormatError::Overflow {
+                format: "xbrl_gl_instance_v1",
+                detail: "total equity overflow".into(),
+            })?;
+        let liabilities_and_equity =
+            liabilities
+                .checked_add(total_equity)
+                .ok_or_else(|| FormatError::Overflow {
+                    format: "xbrl_gl_instance_v1",
+                    detail: "liabilities and equity overflow".into(),
+                })?;
+
+        for (code, val) in [
+            ("assets", assets),
+            ("liabilities", liabilities),
+            ("equity", equity),
+            ("unclosed_earnings", unclosed_earnings),
+            ("total_equity", total_equity),
+            ("liabilities_and_equity", liabilities_and_equity),
+        ] {
+            bs_lines.push(EvaluatedStatementLine {
+                code: code.into(),
+                unit_id: uid,
+                amounts: vec![val],
+            });
+        }
+
+        for (code, val) in [
+            ("revenue", revenue),
+            ("expense", expense),
+            ("net_income", unclosed_earnings),
+        ] {
+            is_lines.push(EvaluatedStatementLine {
+                code: code.into(),
+                unit_id: uid,
+                amounts: vec![val],
+            });
+        }
+    }
+
+    let bs_stmt = EvaluatedStatementForXbrl {
+        definition_name: "balance-sheet".into(),
+        column_labels: vec!["current".into()],
+        period_end: journal.coordinate.effective_through,
+        lines: bs_lines,
+    };
+    let is_stmt = EvaluatedStatementForXbrl {
+        definition_name: "income-statement".into(),
+        column_labels: vec!["current".into()],
+        period_end: journal.coordinate.effective_through,
+        lines: is_lines,
+    };
+
+    let (bs_inst, _) = export_statement_lines_to_xbrl(
+        &bs_stmt,
+        &StatementXbrlMapping::us_gaap_type_level_balance_sheet(),
+        &journal.coordinate.book_name,
+        &unit_catalog,
+        &schema,
+        &linkbase,
+    )?;
+    let (is_inst, _) = export_statement_lines_to_xbrl(
+        &is_stmt,
+        &StatementXbrlMapping::us_gaap_type_level_income_statement(),
+        &journal.coordinate.book_name,
+        &unit_catalog,
+        &schema,
+        &linkbase,
+    )?;
+
+    let mut combined_facts = bs_inst.facts;
+    combined_facts.extend(is_inst.facts);
+    let combined = XbrlInstance {
+        entity_identifier: journal.coordinate.book_name.clone(),
+        period_end: journal.coordinate.effective_through.render(),
+        facts: combined_facts,
+    };
+
+    let _ = validate_calculation_linkbase_detailed(&combined, &linkbase, Some(&schema))?;
+
+    let mut xml = write_xbrl_instance_xml(&combined);
+    let cert_comment = format!(
+        "<!-- fa:xbrl-coordinate book_name=\"{}\" base_unit=\"{}\" base_unit_scale=\"{}\" effective_through=\"{}\" known_at_seq=\"{}\" entry_count=\"{}\" content_digest=\"{}\" certificate_digest=\"{}\" -->\n",
+        xml_escape(&journal.coordinate.book_name),
+        xml_escape(&journal.coordinate.base_unit_code),
+        journal.coordinate.base_unit_scale,
+        journal.coordinate.effective_through.render(),
+        journal.coordinate.known_at_seq,
+        journal.coordinate.entry_count,
+        hex_encode(&journal.coordinate.content_digest),
+        hex_encode(&journal.coordinate.certificate_digest),
+    );
+    if let Some(pos) = xml.find('\n') {
+        xml.insert_str(pos + 1, &cert_comment);
+    }
+    Ok(xml)
+}
+
+/// Extract and verify the [`ExportCoordinate`] embedded in an XBRL instance XML document
+/// produced by [`write_format_journal_xbrl_xml`].
+pub fn verify_format_journal_xbrl_xml(
+    xml: &str,
+) -> Result<(ExportCoordinate, XbrlValidationReport), FormatError> {
+    let instance = read_xbrl_instance_xml(xml)?;
+    let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company()?;
+    let linkbase = XbrlCalculationLinkbase::embedded_for_role(
+        "http://frankenaccounting.org/role/TypeLevelStatements",
+    )?;
+    let report = validate_calculation_linkbase_detailed(&instance, &linkbase, Some(&schema))?;
+
+    let comment_line = xml
+        .lines()
+        .find(|l| l.trim().starts_with("<!-- fa:xbrl-coordinate "))
+        .ok_or_else(|| FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: "missing fa:xbrl-coordinate certificate comment".into(),
+        })?;
+    let attr = |name: &str| -> Result<String, FormatError> {
+        extract_xml_attr(comment_line, name)
+            .map(xml_unescape)
+            .ok_or_else(|| FormatError::Parse {
+                format: "xbrl_gl_instance_v1",
+                detail: format!("fa:xbrl-coordinate missing attribute {name}"),
+            })
+    };
+    let book_name = attr("book_name")?;
+    let base_unit_code = attr("base_unit")?;
+    let base_unit_scale: u8 = attr("base_unit_scale")?.parse().map_err(|_| FormatError::Parse {
+        format: "xbrl_gl_instance_v1",
+        detail: "invalid base_unit_scale".into(),
+    })?;
+    let effective_through =
+        DateDay::parse(&attr("effective_through")?).map_err(|e| FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: format!("invalid effective_through: {e}"),
+        })?;
+    let known_at_seq: u64 = attr("known_at_seq")?.parse().map_err(|_| FormatError::Parse {
+        format: "xbrl_gl_instance_v1",
+        detail: "invalid known_at_seq".into(),
+    })?;
+    let entry_count: u64 = attr("entry_count")?.parse().map_err(|_| FormatError::Parse {
+        format: "xbrl_gl_instance_v1",
+        detail: "invalid entry_count".into(),
+    })?;
+    let content_digest = hex_decode("xbrl_gl_instance_v1", &attr("content_digest")?)?;
+    let certificate_digest = hex_decode("xbrl_gl_instance_v1", &attr("certificate_digest")?)?;
+
+    let coordinate = ExportCoordinate {
+        book_name,
+        base_unit_code,
+        base_unit_scale,
+        effective_through,
+        known_at_seq,
+        entry_count,
+        content_digest,
+        certificate_digest,
+    };
+    coordinate.verify(&content_digest)?;
+    Ok((coordinate, report))
 }
 
 impl XbrlFact {
     fn weight_check_invalid(&self) -> bool {
         self.concept.trim().is_empty() || self.unit_code.trim().is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn us_gaap_small_company_fixture_validates_against_vendored_taxonomy_and_planted_mapping_error_fails()
+     {
+        let unit_catalog = UnitCatalog::embedded().unwrap();
+        let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company().unwrap();
+        let bs_linkbase = XbrlCalculationLinkbase::embedded_for_role(
+            "http://fasb.org/us-gaap/role/statement/StatementOfFinancialPositionClassified",
+        )
+        .unwrap();
+        let is_linkbase = XbrlCalculationLinkbase::embedded_for_role(
+            "http://fasb.org/us-gaap/role/statement/StatementOfIncome",
+        )
+        .unwrap();
+
+        // US-GAAP small-company classified Balance Sheet & multi-step Income Statement fixture:
+        // Assets: Cash 45_000, AR 22_000, Inv 18_000 => CurrentAssets = 85_000
+        //         PPE 65_000 => NoncurrentAssets = 65_000 => TotalAssets = 150_000
+        // Liabilities: AP 14_000, Accrued 6_000 => CurrentLiabilities = 20_000
+        //              Term Loan 40_000 => NoncurrentLiabilities = 40_000 => TotalLiabilities = 60_000
+        // Equity: Common Stock 50_000, Retained Earnings (incl. NI) 40_000 => TotalEquity = 90_000
+        //         L+E = 150_000
+        let bs_stmt = EvaluatedStatementForXbrl {
+            definition_name: "us_gaap_small_company_balance_sheet".into(),
+            column_labels: vec!["FY2026".into()],
+            period_end: DateDay(20_543),
+            lines: vec![
+                ("cash", 45_000),
+                ("accounts_receivable", 22_000),
+                ("inventory", 18_000),
+                ("current_assets", 85_000),
+                ("ppe_net", 65_000),
+                ("noncurrent_assets", 65_000),
+                ("total_assets", 150_000),
+                ("accounts_payable", 14_000),
+                ("accrued_liabilities", 6_000),
+                ("current_liabilities", 20_000),
+                ("long_term_debt", 40_000),
+                ("noncurrent_liabilities", 40_000),
+                ("total_liabilities", 60_000),
+                ("common_stock", 50_000),
+                ("retained_earnings", 40_000),
+                ("total_equity", 90_000),
+                ("liabilities_and_equity", 150_000),
+            ]
+            .into_iter()
+            .map(|(code, amt)| EvaluatedStatementLine {
+                code: code.into(),
+                unit_id: 1,
+                amounts: vec![amt],
+            })
+            .collect(),
+        };
+
+        // Income Statement: Revenues 100_000, COGS 45_000 => GrossProfit = 55_000
+        //                   OpEx 22_000 => OperatingIncome = 33_000
+        //                   Tax 8_000 => NetIncome = 25_000
+        let is_stmt = EvaluatedStatementForXbrl {
+            definition_name: "us_gaap_small_company_income_statement".into(),
+            column_labels: vec!["FY2026".into()],
+            period_end: DateDay(20_543),
+            lines: vec![
+                ("revenues", 100_000),
+                ("cogs", 45_000),
+                ("gross_profit", 55_000),
+                ("operating_expenses", 22_000),
+                ("operating_income", 33_000),
+                ("income_tax_expense", 8_000),
+                ("net_income", 25_000),
+            ]
+            .into_iter()
+            .map(|(code, amt)| EvaluatedStatementLine {
+                code: code.into(),
+                unit_id: 1,
+                amounts: vec![amt],
+            })
+            .collect(),
+        };
+
+        let bs_mapping = StatementXbrlMapping::us_gaap_small_company_balance_sheet();
+        let is_mapping = StatementXbrlMapping::us_gaap_small_company_income_statement();
+
+        let (bs_instance, bs_report) = export_statement_lines_to_xbrl(
+            &bs_stmt,
+            &bs_mapping,
+            "ACME-SMALL-CO",
+            &unit_catalog,
+            &schema,
+            &bs_linkbase,
+        )
+        .unwrap();
+        assert_eq!(bs_report.checks_passed, 8);
+        for line in bs_report.log_lines() {
+            println!("{line}");
+            assert!(line.contains("delta=0 status=PASS"));
+        }
+
+        let (is_instance, is_report) = export_statement_lines_to_xbrl(
+            &is_stmt,
+            &is_mapping,
+            "ACME-SMALL-CO",
+            &unit_catalog,
+            &schema,
+            &is_linkbase,
+        )
+        .unwrap();
+        assert_eq!(is_report.checks_passed, 3);
+        for line in is_report.log_lines() {
+            println!("{line}");
+            assert!(line.contains("delta=0 status=PASS"));
+        }
+
+        // Write and round-trip parse the XBRL 2.1 instance XML.
+        let xml = write_xbrl_instance_xml(&bs_instance);
+        let parsed = read_xbrl_instance_xml(&xml).unwrap();
+        assert_eq!(parsed, bs_instance);
+        let is_xml = write_xbrl_instance_xml(&is_instance);
+        assert_eq!(read_xbrl_instance_xml(&is_xml).unwrap(), is_instance);
+
+        // Planted mapping error: swap `gross_profit` and `operating_income` concept bindings in the IS mapping.
+        // The calculation linkbase evaluator must detect the discrepancy (`GrossProfit != Revenues - COGS`) and fail!
+        let mut defective_mapping = is_mapping;
+        defective_mapping.bindings[2].concept = "us-gaap:OperatingIncomeLoss".into();
+        defective_mapping.bindings[4].concept = "us-gaap:GrossProfit".into();
+        let err = export_statement_lines_to_xbrl(
+            &is_stmt,
+            &defective_mapping,
+            "ACME-SMALL-CO",
+            &unit_catalog,
+            &schema,
+            &is_linkbase,
+        )
+        .unwrap_err();
+        println!("xbrl_calc_check planted_mapping_error_caught={err}");
+        assert!(matches!(
+            err,
+            FormatError::XbrlCalculationInconsistency {
+                ref parent_concept,
+                reported_mantissa: 33_000,
+                computed_children_mantissa: 55_000,
+                ..
+            } if parent_concept == "us-gaap:GrossProfit"
+        ));
     }
 }

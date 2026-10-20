@@ -1179,6 +1179,647 @@ pub fn apply_presentation_rounding(
     })
 }
 
+pub const STATEMENT_XBRL_MAPPING_FORMAT: &[u8] = b"fa:statement-xbrl-mapping:v1";
+
+/// XBRL 2.1 period type for a monetary taxonomy concept (`instant` or `duration`, plan §12.6, `fa-faim`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum XbrlPeriodType {
+    Instant,
+    Duration,
+}
+
+impl XbrlPeriodType {
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::Instant => 1,
+            Self::Duration => 2,
+        }
+    }
+
+    pub fn from_tag(tag: u8, r: &Reader<'_>) -> Result<Self, DecodeError> {
+        match tag {
+            1 => Ok(Self::Instant),
+            2 => Ok(Self::Duration),
+            _ => Err(r.bad_tag("xbrl_period_type", tag)),
+        }
+    }
+}
+
+/// XBRL 2.1 natural balance attribute (`debit` or `credit`) on a monetary concept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum XbrlBalanceSide {
+    Debit,
+    Credit,
+}
+
+impl XbrlBalanceSide {
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::Debit => 1,
+            Self::Credit => 2,
+        }
+    }
+
+    pub fn from_tag(tag: u8, r: &Reader<'_>) -> Result<Self, DecodeError> {
+        match tag {
+            1 => Ok(Self::Debit),
+            2 => Ok(Self::Credit),
+            _ => Err(r.bad_tag("xbrl_balance_side", tag)),
+        }
+    }
+}
+
+/// Maps one statement definition line (`line_code`) to an XBRL taxonomy concept QName (`us-gaap:...`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XbrlConceptBinding {
+    pub line_code: String,
+    pub concept: String,
+    pub period_type: XbrlPeriodType,
+    pub balance_side: Option<XbrlBalanceSide>,
+}
+
+/// Content-addressed mapping from a statement definition's line codes to XBRL taxonomy concepts
+/// and calculation-linkbase role URI (plan §12.6, §16.3, bead `fa-faim`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatementXbrlMapping {
+    pub mapping_id: String,
+    pub statement_definition_name: String,
+    pub taxonomy_namespace: String,
+    pub taxonomy_schema_href: String,
+    pub role_uri: String,
+    pub bindings: Vec<XbrlConceptBinding>,
+}
+
+impl StatementXbrlMapping {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(STATEMENT_XBRL_MAPPING_FORMAT)
+            .str(&self.mapping_id)
+            .str(&self.statement_definition_name)
+            .str(&self.taxonomy_namespace)
+            .str(&self.taxonomy_schema_href)
+            .str(&self.role_uri)
+            .list(&self.bindings, |w, b| {
+                w.str(&b.line_code)
+                    .str(&b.concept)
+                    .u8(b.period_type.tag())
+                    .opt(b.balance_side.as_ref(), |w, side| {
+                        w.u8(side.tag());
+                    });
+            });
+        w.finish()
+    }
+
+    pub fn digest(&self) -> Result<Oid, EncodeError> {
+        Ok(Oid(domain_digest(
+            STATEMENT_XBRL_MAPPING_FORMAT,
+            &[&self.canonical_bytes()?],
+        )))
+    }
+
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, StatementError> {
+        let mut r = Reader::new(bytes);
+        let magic = r.fixed::<{ STATEMENT_XBRL_MAPPING_FORMAT.len() }>("xbrl_mapping.magic")?;
+        if magic != STATEMENT_XBRL_MAPPING_FORMAT {
+            return Err(StatementError::Definition(
+                "unknown statement XBRL mapping header".into(),
+            ));
+        }
+        let mapping_id = r.str(256, "mapping_id")?.to_string();
+        let statement_definition_name = r.str(256, "statement_definition_name")?.to_string();
+        let taxonomy_namespace = r.str(256, "taxonomy_namespace")?.to_string();
+        let taxonomy_schema_href = r.str(256, "taxonomy_schema_href")?.to_string();
+        let role_uri = r.str(256, "role_uri")?.to_string();
+        let bindings = r.list(MAX_CUSTOM_LINES, "bindings", |r| {
+            let line_code = r.str(64, "line_code")?.to_string();
+            let concept = r.str(256, "concept")?.to_string();
+            let period_type_tag = r.u8("period_type")?;
+            let period_type = XbrlPeriodType::from_tag(period_type_tag, r)?;
+            let balance_side = r.opt("balance_side", |r| {
+                let tag = r.u8("balance_side.tag")?;
+                XbrlBalanceSide::from_tag(tag, r)
+            })?;
+            Ok(XbrlConceptBinding {
+                line_code,
+                concept,
+                period_type,
+                balance_side,
+            })
+        })?;
+        r.finish()?;
+        Ok(Self {
+            mapping_id,
+            statement_definition_name,
+            taxonomy_namespace,
+            taxonomy_schema_href,
+            role_uri,
+            bindings,
+        })
+    }
+
+    /// Standard US-GAAP concept mapping for FrankenAccounting's built-in type-level Balance Sheet.
+    pub fn us_gaap_type_level_balance_sheet() -> Self {
+        let b = |line_code: &str, concept: &str, side: XbrlBalanceSide| XbrlConceptBinding {
+            line_code: line_code.into(),
+            concept: concept.into(),
+            period_type: XbrlPeriodType::Instant,
+            balance_side: Some(side),
+        };
+        Self {
+            mapping_id: "fa_xbrl_us_gaap_type_level_balance_sheet_v1".into(),
+            statement_definition_name: "balance-sheet".into(),
+            taxonomy_namespace: "http://fasb.org/us-gaap/2026".into(),
+            taxonomy_schema_href: "us_gaap_2026_small_company.xsd".into(),
+            role_uri: "http://frankenaccounting.org/role/TypeLevelStatements".into(),
+            bindings: vec![
+                b("assets", "us-gaap:Assets", XbrlBalanceSide::Debit),
+                b("liabilities", "us-gaap:Liabilities", XbrlBalanceSide::Credit),
+                b(
+                    "equity",
+                    "us-gaap:StockholdersEquity",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "unclosed_earnings",
+                    "us-gaap:CurrentPeriodNetIncome",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "total_equity",
+                    "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "liabilities_and_equity",
+                    "us-gaap:LiabilitiesAndStockholdersEquity",
+                    XbrlBalanceSide::Credit,
+                ),
+            ],
+        }
+    }
+
+    /// Standard US-GAAP concept mapping for FrankenAccounting's built-in type-level Income Statement.
+    pub fn us_gaap_type_level_income_statement() -> Self {
+        let b = |line_code: &str, concept: &str, side: XbrlBalanceSide| XbrlConceptBinding {
+            line_code: line_code.into(),
+            concept: concept.into(),
+            period_type: XbrlPeriodType::Duration,
+            balance_side: Some(side),
+        };
+        Self {
+            mapping_id: "fa_xbrl_us_gaap_type_level_income_statement_v1".into(),
+            statement_definition_name: "income-statement".into(),
+            taxonomy_namespace: "http://fasb.org/us-gaap/2026".into(),
+            taxonomy_schema_href: "us_gaap_2026_small_company.xsd".into(),
+            role_uri: "http://frankenaccounting.org/role/TypeLevelStatements".into(),
+            bindings: vec![
+                b("revenue", "us-gaap:Revenues", XbrlBalanceSide::Credit),
+                b(
+                    "expense",
+                    "us-gaap:OperatingExpenses",
+                    XbrlBalanceSide::Debit,
+                ),
+                b("net_income", "us-gaap:NetIncomeLoss", XbrlBalanceSide::Credit),
+            ],
+        }
+    }
+
+    /// US-GAAP small-company classified Balance Sheet concept mapping (`StatementOfFinancialPositionClassified`).
+    pub fn us_gaap_small_company_balance_sheet() -> Self {
+        let b = |line_code: &str, concept: &str, side: XbrlBalanceSide| XbrlConceptBinding {
+            line_code: line_code.into(),
+            concept: concept.into(),
+            period_type: XbrlPeriodType::Instant,
+            balance_side: Some(side),
+        };
+        Self {
+            mapping_id: "fa_xbrl_us_gaap_small_company_balance_sheet_v1".into(),
+            statement_definition_name: "us_gaap_small_company_balance_sheet".into(),
+            taxonomy_namespace: "http://fasb.org/us-gaap/2026".into(),
+            taxonomy_schema_href: "us_gaap_2026_small_company.xsd".into(),
+            role_uri: "http://fasb.org/us-gaap/role/statement/StatementOfFinancialPositionClassified"
+                .into(),
+            bindings: vec![
+                b(
+                    "cash",
+                    "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "accounts_receivable",
+                    "us-gaap:AccountsReceivableNetCurrent",
+                    XbrlBalanceSide::Debit,
+                ),
+                b("inventory", "us-gaap:InventoryNet", XbrlBalanceSide::Debit),
+                b(
+                    "current_assets",
+                    "us-gaap:AssetsCurrent",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "ppe_net",
+                    "us-gaap:PropertyPlantAndEquipmentNet",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "noncurrent_assets",
+                    "us-gaap:AssetsNoncurrent",
+                    XbrlBalanceSide::Debit,
+                ),
+                b("total_assets", "us-gaap:Assets", XbrlBalanceSide::Debit),
+                b(
+                    "accounts_payable",
+                    "us-gaap:AccountsPayableCurrent",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "accrued_liabilities",
+                    "us-gaap:AccruedLiabilitiesCurrent",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "current_liabilities",
+                    "us-gaap:LiabilitiesCurrent",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "long_term_debt",
+                    "us-gaap:LongTermDebtNoncurrent",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "noncurrent_liabilities",
+                    "us-gaap:LiabilitiesNoncurrent",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "total_liabilities",
+                    "us-gaap:Liabilities",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "common_stock",
+                    "us-gaap:CommonStockValue",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "retained_earnings",
+                    "us-gaap:RetainedEarningsAccumulatedDeficit",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "total_equity",
+                    "us-gaap:StockholdersEquity",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "liabilities_and_equity",
+                    "us-gaap:LiabilitiesAndStockholdersEquity",
+                    XbrlBalanceSide::Credit,
+                ),
+            ],
+        }
+    }
+
+    /// US-GAAP small-company multi-step Income Statement concept mapping (`StatementOfIncome`).
+    pub fn us_gaap_small_company_income_statement() -> Self {
+        let b = |line_code: &str, concept: &str, side: XbrlBalanceSide| XbrlConceptBinding {
+            line_code: line_code.into(),
+            concept: concept.into(),
+            period_type: XbrlPeriodType::Duration,
+            balance_side: Some(side),
+        };
+        Self {
+            mapping_id: "fa_xbrl_us_gaap_small_company_income_statement_v1".into(),
+            statement_definition_name: "us_gaap_small_company_income_statement"
+                .into(),
+            taxonomy_namespace: "http://fasb.org/us-gaap/2026".into(),
+            taxonomy_schema_href: "us_gaap_2026_small_company.xsd".into(),
+            role_uri: "http://fasb.org/us-gaap/role/statement/StatementOfIncome".into(),
+            bindings: vec![
+                b("revenues", "us-gaap:Revenues", XbrlBalanceSide::Credit),
+                b(
+                    "cogs",
+                    "us-gaap:CostOfGoodsAndServicesSold",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "gross_profit",
+                    "us-gaap:GrossProfit",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "operating_expenses",
+                    "us-gaap:OperatingExpenses",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "operating_income",
+                    "us-gaap:OperatingIncomeLoss",
+                    XbrlBalanceSide::Credit,
+                ),
+                b(
+                    "income_tax_expense",
+                    "us-gaap:IncomeTaxExpenseBenefit",
+                    XbrlBalanceSide::Debit,
+                ),
+                b(
+                    "net_income",
+                    "us-gaap:NetIncomeLoss",
+                    XbrlBalanceSide::Credit,
+                ),
+            ],
+        }
+    }
+}
+
+impl CustomStatementDefinition {
+    /// Standard US-GAAP small-company classified Balance Sheet definition (`fa-faim`):
+    /// - `1000..1099`: Cash and Cash Equivalents (`cash`)
+    /// - `1100..1199`: Accounts Receivable, Net (`accounts_receivable`)
+    /// - `1200..1299`: Inventory, Net (`inventory`)
+    /// - `1300..1999`: Property, Plant and Equipment, Net (`ppe_net`, via difference `Asset \ (10..12)`)
+    /// - `2000..2099`: Accounts Payable (`accounts_payable`)
+    /// - `2100..2199`: Accrued Liabilities (`accrued_liabilities`)
+    /// - `2200..2999`: Long-Term Debt (`long_term_debt`, via difference `Liability \ (20..21)`)
+    /// - `3000..3099`: Common Stock (`common_stock`)
+    /// - Remaining Equity + Revenue + Expense: Retained Earnings & Current Period Earnings (`retained_earnings`)
+    pub fn us_gaap_small_company_balance_sheet() -> Self {
+        let cash_expr = AccountSetExpr::AccountCodePrefixes(vec!["10".into()]);
+        let ar_expr = AccountSetExpr::AccountCodePrefixes(vec!["11".into()]);
+        let inv_expr = AccountSetExpr::AccountCodePrefixes(vec!["12".into()]);
+        let cur_asset_expr = AccountSetExpr::Union(vec![
+            cash_expr.clone(),
+            ar_expr.clone(),
+            inv_expr.clone(),
+        ]);
+        let ppe_expr = AccountSetExpr::Difference {
+            include: Box::new(AccountSetExpr::AccountTypes(vec![1])),
+            exclude: Box::new(cur_asset_expr),
+        };
+
+        let ap_expr = AccountSetExpr::AccountCodePrefixes(vec!["20".into()]);
+        let acc_expr = AccountSetExpr::AccountCodePrefixes(vec!["21".into()]);
+        let cur_liab_expr = AccountSetExpr::Union(vec![ap_expr.clone(), acc_expr.clone()]);
+        let ltd_expr = AccountSetExpr::Difference {
+            include: Box::new(AccountSetExpr::AccountTypes(vec![2])),
+            exclude: Box::new(cur_liab_expr),
+        };
+
+        let cs_expr = AccountSetExpr::AccountCodePrefixes(vec!["30".into()]);
+        let re_expr = AccountSetExpr::Union(vec![
+            AccountSetExpr::Difference {
+                include: Box::new(AccountSetExpr::AccountTypes(vec![3])),
+                exclude: Box::new(cs_expr.clone()),
+            },
+            AccountSetExpr::AccountTypes(vec![4, 5]),
+        ]);
+
+        Self {
+            name: "us_gaap_small_company_balance_sheet".into(),
+            title: "US-GAAP Small-Company Classified Balance Sheet".into(),
+            version: 1,
+            kind: StatementKind::BalanceSheet,
+            lines: vec![
+                CustomLineDefinition {
+                    code: "cash".into(),
+                    label: "Cash and Cash Equivalents".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: cash_expr,
+                        sign: Sign::Debit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "accounts_receivable".into(),
+                    label: "Accounts Receivable, Net".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: ar_expr,
+                        sign: Sign::Debit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "inventory".into(),
+                    label: "Inventory, Net".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: inv_expr,
+                        sign: Sign::Debit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "current_assets".into(),
+                    label: "Total Current Assets".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec![
+                            "accounts_receivable".into(),
+                            "cash".into(),
+                            "inventory".into(),
+                        ],
+                        subtract: vec![],
+                    },
+                },
+                CustomLineDefinition {
+                    code: "ppe_net".into(),
+                    label: "Property, Plant and Equipment, Net".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: ppe_expr,
+                        sign: Sign::Debit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "noncurrent_assets".into(),
+                    label: "Total Noncurrent Assets".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec!["ppe_net".into()],
+                        subtract: vec![],
+                    },
+                },
+                CustomLineDefinition {
+                    code: "total_assets".into(),
+                    label: "Total Assets".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec!["current_assets".into(), "noncurrent_assets".into()],
+                        subtract: vec![],
+                    },
+                },
+                CustomLineDefinition {
+                    code: "accounts_payable".into(),
+                    label: "Accounts Payable".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: ap_expr,
+                        sign: Sign::Credit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "accrued_liabilities".into(),
+                    label: "Accrued Liabilities".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: acc_expr,
+                        sign: Sign::Credit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "current_liabilities".into(),
+                    label: "Total Current Liabilities".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec!["accounts_payable".into(), "accrued_liabilities".into()],
+                        subtract: vec![],
+                    },
+                },
+                CustomLineDefinition {
+                    code: "long_term_debt".into(),
+                    label: "Long-Term Debt".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: ltd_expr,
+                        sign: Sign::Credit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "noncurrent_liabilities".into(),
+                    label: "Total Noncurrent Liabilities".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec!["long_term_debt".into()],
+                        subtract: vec![],
+                    },
+                },
+                CustomLineDefinition {
+                    code: "total_liabilities".into(),
+                    label: "Total Liabilities".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec![
+                            "current_liabilities".into(),
+                            "noncurrent_liabilities".into(),
+                        ],
+                        subtract: vec![],
+                    },
+                },
+                CustomLineDefinition {
+                    code: "common_stock".into(),
+                    label: "Common Stock".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: cs_expr,
+                        sign: Sign::Credit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "retained_earnings".into(),
+                    label: "Retained Earnings".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: re_expr,
+                        sign: Sign::Credit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "total_equity".into(),
+                    label: "Total Stockholders' Equity".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec!["common_stock".into(), "retained_earnings".into()],
+                        subtract: vec![],
+                    },
+                },
+                CustomLineDefinition {
+                    code: "liabilities_and_equity".into(),
+                    label: "Total Liabilities and Stockholders' Equity".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec!["total_equity".into(), "total_liabilities".into()],
+                        subtract: vec![],
+                    },
+                },
+                CustomLineDefinition {
+                    code: "accounting_identity_residual".into(),
+                    label: "Accounting Identity Residual".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec!["total_assets".into()],
+                        subtract: vec!["liabilities_and_equity".into()],
+                    },
+                },
+            ],
+            check_lines: vec!["accounting_identity_residual".into()],
+        }
+    }
+
+    /// Standard US-GAAP small-company multi-step Income Statement definition (`fa-faim`):
+    /// - Type `4` (`Revenue`): Revenues (`revenues`)
+    /// - Prefix `50`: Cost of Goods and Services Sold (`cogs`)
+    /// - Prefix `69`: Income Tax Expense (`income_tax_expense`)
+    /// - Remaining Type `5` (`Expense \ (50 union 69)`): Operating Expenses (`operating_expenses`)
+    pub fn us_gaap_small_company_income_statement() -> Self {
+        let cogs_expr = AccountSetExpr::AccountCodePrefixes(vec!["50".into()]);
+        let tax_expr = AccountSetExpr::AccountCodePrefixes(vec!["69".into()]);
+        let opex_expr = AccountSetExpr::Difference {
+            include: Box::new(AccountSetExpr::AccountTypes(vec![5])),
+            exclude: Box::new(AccountSetExpr::Union(vec![
+                cogs_expr.clone(),
+                tax_expr.clone(),
+            ])),
+        };
+        Self {
+            name: "us_gaap_small_company_income_statement".into(),
+            title: "US-GAAP Small-Company Multi-Step Income Statement".into(),
+            version: 1,
+            kind: StatementKind::IncomeStatement,
+            lines: vec![
+                CustomLineDefinition {
+                    code: "revenues".into(),
+                    label: "Revenues".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: AccountSetExpr::AccountTypes(vec![4]),
+                        sign: Sign::Credit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "cogs".into(),
+                    label: "Cost of Goods and Services Sold".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: cogs_expr,
+                        sign: Sign::Debit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "gross_profit".into(),
+                    label: "Gross Profit".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec!["revenues".into()],
+                        subtract: vec!["cogs".into()],
+                    },
+                },
+                CustomLineDefinition {
+                    code: "operating_expenses".into(),
+                    label: "Operating Expenses".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: opex_expr,
+                        sign: Sign::Debit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "operating_income".into(),
+                    label: "Operating Income (Loss)".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec!["gross_profit".into()],
+                        subtract: vec!["operating_expenses".into()],
+                    },
+                },
+                CustomLineDefinition {
+                    code: "income_tax_expense".into(),
+                    label: "Income Tax Expense (Benefit)".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: tax_expr,
+                        sign: Sign::Debit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "net_income".into(),
+                    label: "Net Income (Loss)".into(),
+                    source: CustomLineSource::Formula {
+                        add: vec!["operating_income".into()],
+                        subtract: vec!["income_tax_expense".into()],
+                    },
+                },
+            ],
+            check_lines: vec![],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1453,5 +2094,32 @@ mod tests {
             )]
         );
         assert_eq!(lint.unknown_referenced_codes, vec!["3999".to_string()]);
+    }
+
+    #[test]
+    fn us_gaap_small_company_definitions_and_xbrl_mappings_round_trip() {
+        for def in [
+            CustomStatementDefinition::us_gaap_small_company_balance_sheet(),
+            CustomStatementDefinition::us_gaap_small_company_income_statement(),
+        ] {
+            def.validate().unwrap();
+            let bytes = def.canonical_bytes().unwrap();
+            assert_eq!(
+                CustomStatementDefinition::decode(&bytes).unwrap(),
+                def
+            );
+        }
+        for mapping in [
+            StatementXbrlMapping::us_gaap_type_level_balance_sheet(),
+            StatementXbrlMapping::us_gaap_type_level_income_statement(),
+            StatementXbrlMapping::us_gaap_small_company_balance_sheet(),
+            StatementXbrlMapping::us_gaap_small_company_income_statement(),
+        ] {
+            let bytes = mapping.canonical_bytes().unwrap();
+            assert_eq!(
+                StatementXbrlMapping::decode_canonical(&bytes).unwrap(),
+                mapping
+            );
+        }
     }
 }

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Vendored US-GAAP 2026 Small-Company Financial Statement Taxonomy Schema (plan §12.6, §16.3, bead fa-faim) -->
+<xs:schema
+  xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  xmlns:xbrli="http://www.xbrl.org/2003/instance"
+  xmlns:link="http://www.xbrl.org/2003/linkbase"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+  xmlns:us-gaap="http://fasb.org/us-gaap/2026"
+  targetNamespace="http://fasb.org/us-gaap/2026"
+  elementFormDefault="qualified">
+
+  <xs:annotation>
+    <xs:appinfo>
+      <link:linkbaseRef
+        xlink:type="simple"
+        xlink:href="us_gaap_2026_small_company_cal.xml"
+        xlink:role="http://www.xbrl.org/2003/role/calculationLinkbaseRef"
+        xlink:arcrole="http://www.w3.org/1999/xlink/properties/linkbase"/>
+    </xs:appinfo>
+  </xs:annotation>
+
+  <!-- Balance Sheet: Current Assets -->
+  <xs:element id="us-gaap_CashAndCashEquivalentsAtCarryingValue" name="CashAndCashEquivalentsAtCarryingValue" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_AccountsReceivableNetCurrent" name="AccountsReceivableNetCurrent" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_InventoryNet" name="InventoryNet" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_AssetsCurrent" name="AssetsCurrent" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_CurrentAssets" name="CurrentAssets" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="instant" nillable="true"/>
+
+  <!-- Balance Sheet: Noncurrent Assets & Total Assets -->
+  <xs:element id="us-gaap_PropertyPlantAndEquipmentNet" name="PropertyPlantAndEquipmentNet" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_AssetsNoncurrent" name="AssetsNoncurrent" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_NoncurrentAssets" name="NoncurrentAssets" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_Assets" name="Assets" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="instant" nillable="true"/>
+
+  <!-- Balance Sheet: Liabilities -->
+  <xs:element id="us-gaap_AccountsPayableCurrent" name="AccountsPayableCurrent" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_AccruedLiabilitiesCurrent" name="AccruedLiabilitiesCurrent" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_LiabilitiesCurrent" name="LiabilitiesCurrent" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_LongTermDebtNoncurrent" name="LongTermDebtNoncurrent" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_LiabilitiesNoncurrent" name="LiabilitiesNoncurrent" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_Liabilities" name="Liabilities" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+
+  <!-- Balance Sheet: Stockholders' Equity & Total L+E -->
+  <xs:element id="us-gaap_CommonStockValue" name="CommonStockValue" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_RetainedEarningsAccumulatedDeficit" name="RetainedEarningsAccumulatedDeficit" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_CurrentPeriodNetIncome" name="CurrentPeriodNetIncome" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_StockholdersEquity" name="StockholdersEquity" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest" name="StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+  <xs:element id="us-gaap_LiabilitiesAndStockholdersEquity" name="LiabilitiesAndStockholdersEquity" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
+
+  <!-- Income Statement: Revenues, Costs, Expenses, Net Income -->
+  <xs:element id="us-gaap_Revenues" name="Revenues" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="duration" nillable="true"/>
+  <xs:element id="us-gaap_CostOfGoodsAndServicesSold" name="CostOfGoodsAndServicesSold" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="duration" nillable="true"/>
+  <xs:element id="us-gaap_GrossProfit" name="GrossProfit" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="duration" nillable="true"/>
+  <xs:element id="us-gaap_OperatingExpenses" name="OperatingExpenses" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="duration" nillable="true"/>
+  <xs:element id="us-gaap_OperatingIncomeLoss" name="OperatingIncomeLoss" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="duration" nillable="true"/>
+  <xs:element id="us-gaap_IncomeTaxExpenseBenefit" name="IncomeTaxExpenseBenefit" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="duration" nillable="true"/>
+  <xs:element id="us-gaap_NetIncomeLoss" name="NetIncomeLoss" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="duration" nillable="true"/>
+</xs:schema>
