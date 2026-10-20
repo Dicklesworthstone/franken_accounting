@@ -246,7 +246,7 @@ pub async fn publish_outcome_rebuild<V: Vfs + Clone>(
         ..
     } = prepared;
     let wrote = txn.is_some();
-    let recorded_at = if let Some(txn) = txn {
+    let recorded_at = if let Some(mut txn) = txn {
         match txn.commit(db, &ctx.commit()).await {
             Ok(seq) => seq,
             Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { .. })) => {
