@@ -4126,9 +4126,25 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         assert_eq!(code, 7, "{args:?}\n{out}\n{err}");
         assert!(out.contains("FA-REF-011") && out.contains(caveat), "{out}");
     }
-    let argv = evaluate(&audited);
-    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let (code, out, err) = scoped(&march, &argv);
+    // A token's host paths are confined to its launch directory (fa-yha),
+    // so the evaluation runs there and names its audited file relative to
+    // it: the refusal is the scope's, not the path's.
+    let argv = evaluate("audited.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .current_dir(&dir)
+        .arg("--book")
+        .arg(&book)
+        .args(["--token", march.as_str(), "sample"])
+        .args(&argv)
+        .arg("--json")
+        .env_remove("FA_BOOK")
+        .output()
+        .expect("run fa");
+    let (code, err) = (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    );
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
     assert_eq!(code, 7, "{out}\n{err}");
     assert!(
         out.contains("FA-REF-011") && out.contains("`periods`"),
