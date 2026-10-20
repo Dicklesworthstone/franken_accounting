@@ -50,10 +50,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             let base = unit(spec.base_unit)?;
             let mut codes: BTreeMap<VId, String> = BTreeMap::new();
             let mut accounts = Vec::new();
-            for row in fa_journal::genesis::list_accounts(db)? {
-                if row.created_at > seq {
-                    continue;
-                }
+            // A historical export must not load or decode today's chart
+            // before discarding accounts created beyond its admitted pin.
+            let chart = fa_journal::chart::read_at(db, book, seq)?;
+            let mut historical_accounts: Vec<_> = chart.accounts().values().cloned().collect();
+            historical_accounts.sort_by(|left, right| left.code.cmp(&right.code));
+            for row in historical_accounts {
                 codes.insert(row.vid, row.code.clone());
                 accounts.push(FormatAccount {
                     code: row.code,

@@ -45,6 +45,89 @@ fn selection_refusal(message: impl Into<String>) -> Refusal {
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Replay the original source closure of every active claim that affects
+    /// this statement or its cash search. A claim from another interpretation
+    /// remains occupied; it is verified against its own retained manifest.
+    /// Released generations do not require source bytes to make a cash leg
+    /// available again, while historical reads still verify claims active at
+    /// their selected prefix.
+    pub(super) async fn verify_bank_match_claim_sources(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        selected_import: (Oid, &BankImportManifest),
+        candidates: &[BankMatchCandidate],
+        claims: &[BankMatchRecorded],
+        seq: CommitSeq,
+    ) -> Outcome<()> {
+        if let Err(refusal) = self.authorize_bank(cx, capability)? {
+            return Ok(Err(refusal));
+        }
+        let (manifest_oid, manifest) = selected_import;
+        let context = self.context().clone();
+        let candidate_legs: BTreeSet<_> = candidates
+            .iter()
+            .map(|candidate| (candidate.candidate.entry_ref.vid, candidate.leg_ordinal))
+            .collect();
+        // The selected import and its predecessor chain were already fully
+        // replayed by match_bank_statement_for before collecting candidates.
+        let mut manifests = BTreeMap::from([(manifest_oid, manifest.clone())]);
+        for claim in claims {
+            let confirmation = &claim.confirmation;
+            if confirmation.statement_oid != manifest.statement_oid
+                && !candidate_legs.contains(&(confirmation.entry_ref.vid, confirmation.leg_ordinal))
+            {
+                continue;
+            }
+            if let std::collections::btree_map::Entry::Vacant(slot) =
+                manifests.entry(confirmation.manifest_oid)
+            {
+                let verified = match self
+                    .load_bank_import(cx, capability, confirmation.manifest_oid, seq)
+                    .await?
+                {
+                    Ok(verified) => verified,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
+                if let Err(refusal) = self
+                    .verify_bank_predecessors(cx, capability, &verified, seq)
+                    .await?
+                {
+                    return Ok(Err(refusal));
+                }
+                slot.insert(verified.manifest);
+            }
+            let original = manifests.get(&confirmation.manifest_oid).ok_or_else(|| {
+                corrupt("an active bank claim's original manifest was not loaded")
+            })?;
+            let recorded = match native::read_bank_match(
+                &mut self.db,
+                cx,
+                &context,
+                capability,
+                claim.match_vid,
+                Some(seq),
+                Some(original),
+            )
+            .await?
+            {
+                Ok(Some(recorded)) => recorded,
+                Ok(None) => {
+                    return Ok(Err(closure_drift(
+                        "an active bank claim disappeared during complete source verification",
+                    )));
+                }
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if &recorded != claim {
+                return Ok(Err(closure_drift(
+                    "an active bank claim changed during complete source verification",
+                )));
+            }
+        }
+        self.authorize_bank(cx, capability)
+    }
+
     /// Reopen the retained source, reconstruct the complete pinned proposal,
     /// and publish one native line-to-leg confirmation under current authority.
     /// Exact retries return the original fact even after later journal activity.

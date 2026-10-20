@@ -444,6 +444,168 @@ fn cash_claims_are_global_and_reuse_requires_a_review_after_the_release() {
 }
 
 #[test]
+fn matching_replays_other_statements_external_sources_until_their_claims_are_released() {
+    use fa_journal::evidence::{Storage, document_record};
+
+    let mut h = Harness::with_cash(174);
+    let entry = h.post_cash_legs(b"external-source-cash", &[(5000, "SHARED")]);
+    let mut source = format!(
+        "{HEADER}1,BANK-EXTERNAL,USD,2026-03-31,0.00,449.00,2026-03-31,2026-03-31,CRDT,50.00,Customer,SHARED\n"
+    );
+    for ordinal in 2..=400 {
+        use std::fmt::Write as _;
+        writeln!(
+            source,
+            "1,BANK-EXTERNAL,USD,2026-03-31,0.00,449.00,2026-03-31,2026-03-31,CRDT,1.00,Customer,OTHER-{ordinal}"
+        )
+        .unwrap();
+    }
+    let first_import = import_selected(&mut h, &source, None).unwrap().unwrap();
+    let other_source = format!(
+        "{HEADER}2,BANK-EXTERNAL,USD,2026-03-31,0.00,50.00,2026-03-31,2026-03-31,CRDT,50.00,Customer,SHARED\n"
+    );
+    let second_import = import_selected(&mut h, &other_source, None)
+        .unwrap()
+        .unwrap();
+    let first_report = h.report(first_import.manifest_oid, None);
+    let first = h.confirm(selection(&first_report, 0));
+    let active_at = h.head();
+    h = h.reopened();
+    assert!(h.book.db.delta_since(CommitSeq(0)).is_err());
+    let second = h.report(second_import.manifest_oid, Some(active_at));
+    assert!(h.book.db.delta_since(CommitSeq(0)).is_ok());
+    assert_eq!(second.consumed_cash_legs, vec![(entry.vid, 0)]);
+    assert!(second.confirmed_matches.is_empty());
+    assert_eq!(second.proposals[0].matched_entry_ordinal, None);
+    assert_eq!(second.book_closing_balance, 5000);
+
+    let originals = [
+        (
+            first_import.manifest_oid,
+            first_import.manifest.canonical_bytes().unwrap(),
+        ),
+        (first_import.manifest.statement_oid, source.into_bytes()),
+    ];
+    let cx = h.cx();
+    for (oid, bytes) in &originals {
+        let record = document_record(&h.book.db, oid).unwrap().unwrap();
+        let Storage::External { locator, .. } = record.storage else {
+            panic!("this regression requires a real external manifest and original statement");
+        };
+        let mut damaged = bytes.clone();
+        damaged[0] ^= 1;
+        h.runtime
+            .block_on(h.book.blobs.put(&cx.commit(), &locator, &damaged))
+            .unwrap();
+        let refusal = h
+            .runtime
+            .block_on(h.book.match_bank_statement(
+                &cx,
+                &privileged_cap(PRINCIPAL),
+                BankMatchRequest {
+                    manifest_oid: second_import.manifest_oid,
+                    known_at: Some(active_at),
+                    date_window_days: 3,
+                },
+            ))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, code::DOCUMENT_DRIFT);
+        assert_eq!(h.history(None).active, vec![first.clone()]);
+        assert_eq!(h.head(), active_at);
+        h.runtime
+            .block_on(h.book.blobs.put(&cx.commit(), &locator, bytes))
+            .unwrap();
+        let restored = h.report(second_import.manifest_oid, Some(active_at));
+        assert_eq!(restored.proposals[0].matched_entry_ordinal, None);
+        assert_eq!(restored.consumed_cash_legs, vec![(entry.vid, 0)]);
+    }
+
+    let record = document_record(&h.book.db, &first_import.manifest.statement_oid)
+        .unwrap()
+        .unwrap();
+    let Storage::External { locator, .. } = record.storage else {
+        panic!("the original statement must remain external");
+    };
+    let mut damaged = originals[1].1.clone();
+    damaged[0] ^= 1;
+    h.runtime
+        .block_on(h.book.blobs.put(&cx.commit(), &locator, &damaged))
+        .unwrap();
+    let release = h.unmatch(&first);
+    let current = h.report(second_import.manifest_oid, None);
+    assert_eq!(current.proposals[0].matched_entry_ordinal, Some(0));
+    assert!(current.consumed_cash_legs.is_empty());
+    assert_eq!(current.book_closing_balance, second.book_closing_balance);
+    assert_eq!(h.head(), release.recorded_at);
+    assert_eq!(
+        h.runtime
+            .block_on(h.book.match_bank_statement(
+                &cx,
+                &privileged_cap(PRINCIPAL),
+                BankMatchRequest {
+                    manifest_oid: second_import.manifest_oid,
+                    known_at: Some(active_at),
+                    date_window_days: 3,
+                },
+            ))
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::DOCUMENT_DRIFT,
+        "a later release cannot waive source verification for an earlier active claim"
+    );
+    h.runtime
+        .block_on(h.book.blobs.put(&cx.commit(), &locator, &originals[1].1))
+        .unwrap();
+    let historical = h.report(second_import.manifest_oid, Some(active_at));
+    assert_eq!(historical.consumed_cash_legs, vec![(entry.vid, 0)]);
+    assert_eq!(historical.proposals[0].matched_entry_ordinal, None);
+    assert_eq!(h.head(), release.recorded_at);
+}
+
+#[test]
+fn matching_checks_unclaimed_entry_history_before_folding_cash() {
+    let mut h = Harness::with_cash(175);
+    let entry = h.post_cash_legs(b"unclaimed-cash", &[(5000, "UNCLAIMED")]);
+    let source = format!(
+        "{HEADER}1,BANK-HISTORY,USD,2026-03-31,0.00,50.00,2026-03-31,2026-03-31,CRDT,50.00,Customer,UNCLAIMED\n"
+    );
+    let imported = import_selected(&mut h, &source, None).unwrap().unwrap();
+    let original = h.report(imported.manifest_oid, None);
+    assert_eq!(original.book_closing_balance, 5000);
+    assert_eq!(original.proposals[0].matched_entry_ordinal, Some(0));
+    assert!(original.consumed_cash_legs.is_empty());
+    let cx = h.cx();
+    let mut hidden = fgdb::WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
+    hidden.set_vertex_label(entry.vid, fa_model::symbols::label::ENTRY, false);
+    h.runtime
+        .block_on(h.book.db.write(&cx.commit(), hidden))
+        .unwrap();
+    let damaged_at = h.head();
+    assert!(matches!(
+        h.runtime.block_on(h.book.match_bank_statement(
+            &cx,
+            &privileged_cap(PRINCIPAL),
+            BankMatchRequest {
+                manifest_oid: imported.manifest_oid,
+                known_at: None,
+                date_window_days: 3,
+            },
+        )),
+        Err(BookError::Kernel(KernelError::Corrupt(_)))
+    ));
+    let historical = h.report(imported.manifest_oid, Some(original.known_at));
+    assert_eq!(
+        historical.book_closing_balance,
+        original.book_closing_balance
+    );
+    assert_eq!(historical.proposals, original.proposals);
+    assert_eq!(historical.candidates, original.candidates);
+    assert_eq!(h.head(), damaged_at);
+}
+
+#[test]
 fn metadata_history_hydrates_only_after_current_authority_and_explicit_prefix_admission() {
     let mut h = Harness::with_cash(173);
     h.post_cash_legs(b"history-cash", &[(5000, "HISTORY")]);

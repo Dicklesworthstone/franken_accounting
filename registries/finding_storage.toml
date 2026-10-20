@@ -22,6 +22,10 @@ max_citations = 65536
 # DERIVED_FROM: run -> certificate, finding -> run. CITES: finding -> unique
 # target VIds. Exact citation order and multiplicity remain in the certificate;
 # CITES is only a distinct-target membership projection, not a tracing schedule.
+# Citation codecs remain additive: existing tags 1..7 keep their original
+# canonical bytes; tag 8 is Attestation(VId). Its graph target is the native
+# Attestation vertex, with a distinct attestation kind in JSONL and Markdown.
+# Existing workpaper v1 bytes stay unchanged for findings without tag 8.
 # This version records Open observations only. It does not encode human reviews,
 # escalation decisions, accusations, or an offline outsider completeness proof.
 

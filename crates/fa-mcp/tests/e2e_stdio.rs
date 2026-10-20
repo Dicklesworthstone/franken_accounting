@@ -2989,6 +2989,53 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
     assert_eq!(confirmed["line_generation"], json!(0));
     assert_eq!(confirmed["leg_generation"], json!(0));
     let target = json!({"vid": confirmed["match_vid"], "digest": confirmed["match_digest"]});
+    // The Human host closes the reviewed statement. The agent receives only
+    // the independent metadata reader, never implicit source privilege or a
+    // statement-close write tool.
+    let reviewed = confirmed["recorded_at"].as_u64().unwrap().to_string();
+    let closed = cli_data(&[
+        "bank",
+        "reconcile",
+        "--import",
+        manifest,
+        "--source-known-at",
+        &reviewed,
+        "--grant",
+        "privileged",
+        "--as",
+        "bank-reviewer",
+        "--yes",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let closed: JsonValue = fastmcp_rust::serde_json::from_str(&closed).unwrap();
+    assert_eq!(closed["reconciliation"]["cash_balance"], json!("50.00 USD"));
+    assert_eq!(closed["reconciliation"]["already_recorded"], json!(false));
+    let reconciliation_args = [
+        "bank",
+        "reconciliation",
+        "--import",
+        manifest,
+        "--book",
+        &b,
+        "--json",
+    ];
+    let active_reconciliation = cli_data(&reconciliation_args);
+    let active_reconciliation_data: JsonValue =
+        fastmcp_rust::serde_json::from_str(&active_reconciliation).unwrap();
+    assert_eq!(active_reconciliation_data["reconciliation_count"], json!(1));
+    assert_eq!(active_reconciliation_data["drifted_count"], json!(0));
+    assert_eq!(
+        active_reconciliation_data["reconciled_through"],
+        json!("2026-03-31")
+    );
+    let mut before_reconciliation_args = reconciliation_args.to_vec();
+    before_reconciliation_args.extend(["--as-known-at", before_pin.as_str()]);
+    let before_reconciliation = cli_data(&before_reconciliation_args);
+    let before_reconciliation_data: JsonValue =
+        fastmcp_rust::serde_json::from_str(&before_reconciliation).unwrap();
+    assert_eq!(before_reconciliation_data["reconciliation_count"], json!(0));
     let active = cli_data(&history_args);
     let active_data: JsonValue = fastmcp_rust::serde_json::from_str(&active).unwrap();
     assert_eq!(active_data["scope"], json!("match_history"));
@@ -3031,6 +3078,26 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         assert_eq!(envelope["authority"]["profile"], json!("agent"));
         assert_eq!(envelope["coordinate"]["known_at"], data["known_at"]);
     };
+    let inspect_reconciliation = |mcp: &mut Mcp, arguments: JsonValue, expected: &str| {
+        let (error, output, metadata) = call_tool(mcp, "fa_bank_reconciliation", arguments);
+        assert!(!error, "{output}");
+        assert_eq!(output, expected, "CLI/MCP metadata parity");
+        assert!(
+            !output.contains(reference),
+            "source reference disclosed: {output}"
+        );
+        assert!(
+            !output.contains(counterparty),
+            "source counterparty disclosed: {output}"
+        );
+        let envelope: JsonValue =
+            fastmcp_rust::serde_json::from_str(metadata["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        let data: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+        assert_eq!(envelope["events"], json!(["bank_reconciliation_status"]));
+        assert_eq!(envelope["authority"]["profile"], json!("agent"));
+        assert_eq!(envelope["coordinate"]["known_at"], data["known_at"]);
+    };
     let launch = [
         "--cluster",
         "fa.bank",
@@ -3050,6 +3117,16 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         &mut mcp,
         json!({"account": "1000", "import": manifest, "as_known_at": before_pin}),
         &before,
+    );
+    inspect_reconciliation(
+        &mut mcp,
+        json!({"import": manifest}),
+        &active_reconciliation,
+    );
+    inspect_reconciliation(
+        &mut mcp,
+        json!({"import": manifest, "as_known_at": before_pin}),
+        &before_reconciliation,
     );
 
     // Existing source-bearing tools remain present and keep their original
@@ -3098,6 +3175,18 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
             json!("forbidden_argument")
         );
     }
+    for forbidden in [
+        json!({"import": manifest, "grant": ["privileged"]}),
+        json!({"import": manifest, "yes": true}),
+        json!({"import": manifest, "principal": "bank-reviewer"}),
+    ] {
+        let (error, output, _) = call_tool(&mut mcp, "fa_bank_reconciliation", forbidden);
+        assert!(error, "{output}");
+        assert_eq!(
+            structured_error(&output)["type"],
+            json!("forbidden_argument")
+        );
+    }
     assert_eq!(mcp.finish(), 0);
     assert_eq!(
         cli_data(&history_args),
@@ -3137,6 +3226,20 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         released["unmatch_vid"]
     );
     assert_eq!(after_data["unmatches"][0]["target"], target);
+    let after_reconciliation = cli_data(&reconciliation_args);
+    let after_reconciliation_data: JsonValue =
+        fastmcp_rust::serde_json::from_str(&after_reconciliation).unwrap();
+    assert_eq!(after_reconciliation_data["reconciliation_count"], json!(1));
+    assert_eq!(after_reconciliation_data["drifted_count"], json!(1));
+    assert_eq!(
+        after_reconciliation_data["reconciled_through"],
+        json!("2026-03-31")
+    );
+    let state = &after_reconciliation_data["reconciliations"][0];
+    assert_eq!(state["historical_claim_verified"], json!(true));
+    assert_eq!(state["match_drift"], json!(true));
+    assert_eq!(state["cash_drift"], json!(false));
+    assert_eq!(state["balance_drift"], json!(false));
     let mut mcp = Mcp::start_with(&book, &launch);
     mcp.discover();
     inspect(
@@ -3148,6 +3251,12 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         &mut mcp,
         json!({"account": "1000", "import": manifest, "as_known_at": active_pin}),
         &active,
+    );
+    inspect_reconciliation(&mut mcp, json!({"import": manifest}), &after_reconciliation);
+    inspect_reconciliation(
+        &mut mcp,
+        json!({"import": manifest, "as_known_at": active_pin}),
+        &active_reconciliation,
     );
     assert_eq!(mcp.finish(), 0);
 
@@ -3167,6 +3276,16 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         assert_eq!(refused["exit"], json!(7));
         assert!(output.contains("reconcile"), "{output}");
     }
+    let (error, output, _) = call_tool(
+        &mut reader,
+        "fa_bank_reconciliation",
+        json!({"import": manifest}),
+    );
+    assert!(error, "{output}");
+    let refused = structured_error(&output);
+    assert_eq!(refused["refusal_id"], json!("FA-REF-011"));
+    assert_eq!(refused["exit"], json!(7));
+    assert!(output.contains("reconcile"), "{output}");
     assert_eq!(reader.finish(), 0);
     assert_eq!(
         cli_data(&history_args),
@@ -3244,7 +3363,10 @@ fn agent_upload_is_self_sourced_and_forged_human_grade_is_refused() {
             "grade": "HumanUpload"
         }),
     );
-    assert!(err, "forged HumanUpload grade must be refused: {forged_out}");
+    assert!(
+        err,
+        "forged HumanUpload grade must be refused: {forged_out}"
+    );
     let refused = structured_error(&forged_out);
     assert_eq!(refused["refusal_id"], json!("FA-REF-011"));
 
@@ -3330,12 +3452,7 @@ fn agent_upload_is_self_sourced_and_forged_human_grade_is_refused() {
     // and require an independent Human `Reviewed` attestation before posting.
     let mut mcp_prep = Mcp::start_with(
         &book,
-        &[
-            "--profile",
-            "preparer",
-            "--principal",
-            "mcp-preparer",
-        ],
+        &["--profile", "preparer", "--principal", "mcp-preparer"],
     );
     mcp_prep.discover();
     let (err, prep_upload_out, _) = call_tool(
@@ -3389,3 +3506,205 @@ fn agent_upload_is_self_sourced_and_forged_human_grade_is_refused() {
     assert_eq!(mcp_prep.finish(), 0);
 }
 
+#[test]
+fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() {
+    let dir = tmp("fx-evidence-and-activity");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--name",
+        "FX transport",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1200","name":"EUR Receivable","type":"Asset","unit":"EUR"},{"code":"4000","name":"EUR Revenue","type":"Revenue","unit":"EUR"}]}"#,
+    )
+    .unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        chart.to_str().unwrap(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let invoice = source_document(&dir, &b);
+    let mut rate = json!({
+        "base_unit": "USD",
+        "quote_unit": "EUR",
+        "rate_num": "22",
+        "rate_den": "20",
+        "rounding": "HalfEven",
+        "as_of": "2026-03-05",
+        "retrieved_at_ns": 1772712000000000000_u64,
+        "purpose": "spot_close",
+        "source": "Human uploaded fixture quote"
+    });
+    let source = dir.join("rate.json");
+    std::fs::write(&source, rate.to_string()).unwrap();
+    let retained = cli_data(&[
+        "fx",
+        "rate",
+        "add",
+        "--from-json",
+        source.to_str().unwrap(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let retained: JsonValue = fastmcp_rust::serde_json::from_str(&retained).unwrap();
+    assert_eq!(retained["grade"], json!("HumanUpload"));
+    let intent = dir.join("foreign-invoice.json");
+    std::fs::write(
+        &intent,
+        json!({
+            "idempotency_key": "mcp-functional-invoice",
+            "effective_date": "2026-03-05",
+            "legs": [
+                {"side": "debit", "account": "1200", "amount": "100.00 EUR"},
+                {"side": "credit", "account": "4000", "amount": "100.00 EUR"}
+            ],
+            "fx": {
+                "law": "SpotClose",
+                "rates": [format!("D:{}", retained["oid"].as_str().unwrap())]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    cli_data(&[
+        "post",
+        "--intent",
+        intent.to_str().unwrap(),
+        "--evidence",
+        &invoice,
+        "--book",
+        &b,
+        "--json",
+    ]);
+
+    let mut mcp = Mcp::start_with(
+        &book,
+        &["--cluster", "fa.fx", "--principal", "fx-agent-uploader"],
+    );
+    mcp.discover();
+    rate["source"] = json!("MCP session supplied quote, without provider attestation");
+    let (error, uploaded, _) = call_tool(
+        &mut mcp,
+        "fa_fx_rate",
+        json!({"action": "add", "rate": rate}),
+    );
+    assert!(!error, "inline authenticated rate upload: {uploaded}");
+    let uploaded: JsonValue = fastmcp_rust::serde_json::from_str(&uploaded).unwrap();
+    assert_eq!(uploaded["grade"], json!("AgentUpload"));
+    assert_eq!(uploaded["kind"], json!("Rate"));
+    assert_eq!(uploaded["rate_num"], json!("11"));
+    assert_eq!(uploaded["rate_den"], json!("10"));
+    assert_eq!(uploaded["already_recorded"], json!(false));
+    assert_ne!(uploaded["oid"], retained["oid"]);
+    let before = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let (error, repeated, _) = call_tool(
+        &mut mcp,
+        "fa_fx_rate",
+        json!({"action": "add", "rate": rate}),
+    );
+    assert!(!error, "exact upload retry: {repeated}");
+    let repeated: JsonValue = fastmcp_rust::serde_json::from_str(&repeated).unwrap();
+    for key in ["oid", "doc_commit", "recorded_at", "grade"] {
+        assert_eq!(repeated[key], uploaded[key], "{key}");
+    }
+    assert_eq!(repeated["already_recorded"], json!(true));
+
+    let expected = cli_data(&[
+        "tb",
+        "--functional",
+        "--activity",
+        "--period",
+        "FY2026-P03",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_trial_balance",
+        json!({"functional": true, "activity": true, "period": "FY2026-P03"}),
+    );
+    assert!(!error, "functional activity through MCP: {output}");
+    assert_eq!(output, expected, "MCP and CLI functional data must agree");
+    let activity: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(activity["scope"], json!("period_activity"));
+    assert_eq!(activity["base_unit"], json!("USD"));
+    assert_eq!(activity["entries"], json!(1));
+    assert_eq!(activity["totals"]["debits"], json!("110.00 USD"));
+    assert_eq!(activity["totals"]["credits"], json!("110.00 USD"));
+    assert_eq!(activity["balanced"], json!(true));
+    assert_eq!(mcp.finish(), 0);
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before,
+        "exact retry and functional reads must not publish"
+    );
+}
+
+#[test]
+fn fx_rate_transport_refuses_missing_authority_and_host_paths_before_io() {
+    let dir = tmp("fx-transport-admission");
+    let book = dir.join("book-that-does-not-exist");
+    let rate = json!({
+        "base_unit": "USD",
+        "quote_unit": "EUR",
+        "rate_num": "11",
+        "rate_den": "10",
+        "rounding": "HalfEven",
+        "as_of": "2026-03-05",
+        "retrieved_at_ns": 1772712000000000000_u64,
+        "purpose": "spot_close",
+        "source": "Denied session input"
+    });
+    let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.fx", "--grant", "read"]);
+    mcp.discover();
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_fx_rate",
+        json!({"action": "add", "rate": rate}),
+    );
+    assert!(error, "read-only session must not upload rates: {output}");
+    let refused = structured_error(&output);
+    assert_eq!(refused["refusal_id"], json!("FA-REF-011"));
+    assert_eq!(refused["exit"], json!(7));
+    assert_eq!(refused["authority"]["ops"], json!(["read"]));
+    for value in [
+        json!(dir.join("private-rate.json").display().to_string()),
+        JsonValue::Null,
+    ] {
+        let (error, output, _) = call_tool(
+            &mut mcp,
+            "fa_fx_rate",
+            json!({"action": "add", "from_json_file": value}),
+        );
+        assert!(error, "host rate path must be refused: {output}");
+        let refused = structured_error(&output);
+        assert_eq!(refused["type"], json!("forbidden_path"));
+        assert_eq!(refused["data"]["argument"], json!("from_json_file"));
+        assert_eq!(refused["authority"]["ops"], json!(["read"]));
+    }
+    assert_eq!(mcp.finish(), 0);
+    assert!(!book.exists(), "denied calls must not create a book");
+}

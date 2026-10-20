@@ -604,8 +604,12 @@ fn step(command: impl Into<String>, why: impl Into<String>) -> NextStep {
 /// Read the book once: periods, accounts, pending cells, derived-state
 /// health, the daemon, and the next steps that state calls for.
 fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
+    let capability = ctx.capability(args, &["read"])?;
     let held = ctx.books.is_held();
     let (dir, _) = ctx.books.locate(args)?;
+    let book = ctx.books.open_admitted(args, |book| {
+        crate::cli::admit_whole_book_read(book, &capability, &[], "surveying the book")
+    })?;
     let daemon = if held {
         "serving".to_string()
     } else {
@@ -618,7 +622,6 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
             Some(h) => format!("held: {h}"),
         }
     };
-    let book = ctx.books.open(args)?;
     let periods = book.periods()?;
     let mut by_state: Vec<(String, i128)> = Vec::new();
     for p in &periods {

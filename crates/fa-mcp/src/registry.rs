@@ -2657,6 +2657,52 @@ mod tests {
     }
 
     #[test]
+    fn bank_drift_procedure_preserves_launch_reconciliation_authority() {
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_by_wire("fa_forensics_procedure")
+            .expect("procedure tool");
+        for (id, expected) in [
+            ("jet.round_amounts", vec!["read"]),
+            ("recon.bank_statement_drift", vec!["read", "reconcile"]),
+        ] {
+            let invocation = tool
+                .invocation(&mcp, reg, &json!({"action": "run", "id": id}))
+                .expect("registered procedure invocation");
+            let parsed = args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+                .expect("registered procedure arguments");
+            assert_eq!(
+                fa_cli::cli::bound_command_ops("procedure", &parsed)
+                    .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+                Some(expected)
+            );
+        }
+        let parsed = args::parse(
+            &[
+                "finding".to_string(),
+                "record".to_string(),
+                "recon.bank_statement_drift".to_string(),
+            ],
+            &reg.value_flags(),
+            &reg.switches(),
+        )
+        .unwrap();
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("finding", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read", "reconcile", "produce"])
+        );
+        assert!(
+            tool.invocation(
+                &mcp,
+                reg,
+                &json!({"action": "run", "id": "recon.bank_statement_drift", "grant": ["reconcile"]}),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn gl_certification_schema_routes_inline_and_requires_produce() {
         let (mcp, reg) = embedded();
         let tool = mcp.tool_by_wire("fa_proof_gl").expect("GL tool");
@@ -3146,6 +3192,56 @@ mod tests {
                     })
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn bank_reconciliation_metadata_tool_preserves_scope_without_exposing_the_close_write() {
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_by_wire("fa_bank_reconciliation")
+            .expect("bank reconciliation metadata");
+        assert!(
+            mcp.tool_by_wire("fa_bank_reconcile").is_none(),
+            "statement closing remains a host operation"
+        );
+        let selection = json!({"import": "ab".repeat(32), "as_known_at": "17"});
+        let invocation = tool
+            .invocation(&mcp, reg, &selection)
+            .expect("historical reconciliation metadata");
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.positional, vec!["bank", "reconciliation"]);
+        assert_eq!(parsed.flag("--import"), Some("ab".repeat(32).as_str()));
+        assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("bank", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read", "reconcile"])
+        );
+        assert!(invocation.stdin.is_none());
+        for authority in [
+            "grant",
+            "as",
+            "principal",
+            "profile",
+            "token",
+            "book",
+            "yes",
+            "file",
+            "source_known_at",
+        ] {
+            let mut injected = selection.clone();
+            injected[authority] = json!("caller-controlled");
+            assert!(
+                tool.invocation(&mcp, reg, &injected).is_err(),
+                "{authority}"
+            );
+        }
+        assert!(
+            tool.invocation(&mcp, reg, &json!({"as_known_at": "17"}))
+                .is_err(),
+            "the retained manifest is required"
         );
     }
 

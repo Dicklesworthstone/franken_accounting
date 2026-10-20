@@ -821,10 +821,13 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     // Rehearse (plan §15.3): every posting law at the head; nothing staged.
-    let plan = match crate::plan::plan_post(db, ctx, book, req.capability.clone(), intent)? {
-        Err(refusal) => return Ok(Err(refusal)),
-        Ok(plan) => plan,
-    };
+    let plan =
+        match crate::plan::plan_post_with_history(db, ctx, book, req.capability.clone(), intent)
+            .await?
+        {
+            Err(refusal) => return Ok(Err(refusal)),
+            Ok(plan) => plan,
+        };
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
@@ -981,6 +984,11 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
             format!("draft `{name}` has no planned intent to promote"),
             "plan intents into it with `fa draft plan <name> --intent <file>`, or discard it",
         )));
+    }
+    // The promoter was admitted before any read. Load the immutable close
+    // history before replaying the members through the native posting laws.
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
     }
     let members: Vec<PostIntent> = view.intents.iter().map(|i| i.intent.clone()).collect();
     let capabilities: Vec<Capability> = view.intents.iter().map(|i| i.capability.clone()).collect();

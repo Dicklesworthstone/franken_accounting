@@ -44,6 +44,9 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CommitSeq, VId};
 
+#[path = "lantern/bank_reconciliation.rs"]
+mod bank_reconciliation_tests;
+
 const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
 
@@ -1617,7 +1620,7 @@ fn tracing_follows_recorded_same_day_order_and_repays_an_overdraft_first() {
 fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
     let (h, _) = posted_corpus();
     let rows = fa_lantern::catalog::registered().unwrap();
-    assert_eq!(rows.len(), 59, "every registry row is listed");
+    assert_eq!(rows.len(), 60, "every registry row is listed");
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -1634,8 +1637,13 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
             .expect("registered rows build");
         assert_eq!(built.id(), row.id, "{}", row.id);
         assert_eq!(built.version(), row.version, "{}", row.id);
-        let r = run(&h.db, &h.book, None, Some(day(2026, 4, 30)), built.as_ref())
-            .expect("every catalog procedure runs");
+        let r = if row.id == fa_lantern::bank_reconciliation::BankStatementDrift::ID {
+            let snapshot = bank_reconciliation_tests::snapshot(&h, None, Some(day(2026, 4, 30)));
+            run_over(&snapshot, &h.book, built.as_ref())
+        } else {
+            run(&h.db, &h.book, None, Some(day(2026, 4, 30)), built.as_ref())
+        }
+        .expect("every catalog procedure runs with its complete admitted input closure");
         h.assert_cites_resolve(&r);
         println!("catalog procedure={} findings={}", row.id, r.findings.len());
     }

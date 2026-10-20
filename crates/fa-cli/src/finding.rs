@@ -444,6 +444,10 @@ fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .transpose()?;
     let who = ctx.principal(args);
     let cap = capability(ctx, args, &["read", "produce"])?;
+    if request_id.is_some_and(|id| id == "recon.bank_statement_drift") {
+        fa_policy::require(&cap, Op::Reconcile, "recording bank statement drift")
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
     let mut book = ctx
         .books
         .open_admitted(args, |book| admit_book(book, who, &cap))?;
@@ -465,7 +469,11 @@ fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             known_at: at,
             effective_through: effective,
         };
-        let certified = book.certify_procedure(who, &cap, &request)??;
+        let certified = if request.procedure == "recon.bank_statement_drift" {
+            book.certify_procedure_with_history(who, &cap, &request)??
+        } else {
+            book.certify_procedure(who, &cap, &request)??
+        };
         let bytes = certified.certificate.canonical_bytes()?;
         let digest = *certified.certificate.digest();
         book.retain_report_artifact(who, &cap, &bytes, Some(&digest))??;
@@ -1089,7 +1097,7 @@ fn export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             bytes,
         )
     } else {
-        let paper = book.finding_workpaper(who, &cap, &digest)??;
+        let paper = book.finding_workpaper_with_history(who, &cap, &digest)??;
         let bytes = match format {
             "canonical" => paper.canonical_bytes()?,
             "jsonl" => paper.jsonl().as_bytes().to_vec(),
@@ -1282,7 +1290,7 @@ fn replay(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             history.checked_through,
         )
     } else {
-        let run = book.replay_finding_workpaper(who, &cap, &bytes)??;
+        let run = book.replay_finding_workpaper_with_history(who, &cap, &bytes)??;
         let paper = FindingWorkpaper::decode(&bytes)?;
         (
             paper.id().to_string(),

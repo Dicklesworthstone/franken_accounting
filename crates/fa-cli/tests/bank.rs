@@ -34,6 +34,49 @@ fn rows<'a>(value: &'a Json, key: &str) -> &'a [Json] {
     }
 }
 
+fn assert_progress(
+    output: &Json,
+    expected: [(&str, &str); 6],
+    remaining_count: i128,
+    all_statement_lines_confirmed: bool,
+    closing_balances_equal: bool,
+) {
+    let report = data(output);
+    let progress = report.get("progress").expect("reconciliation progress");
+    for (name, (inflow, outflow)) in [
+        "confirmed",
+        "occupied",
+        "remaining",
+        "proposed",
+        "unmatched",
+        "outstanding",
+    ]
+    .into_iter()
+    .zip(expected)
+    {
+        let flow = progress.get(name).expect(name);
+        assert_eq!(
+            text(flow, "inflow"),
+            format!("{inflow} USD"),
+            "{name} inflow"
+        );
+        assert_eq!(
+            text(flow, "outflow"),
+            format!("{outflow} USD"),
+            "{name} outflow"
+        );
+    }
+    assert_eq!(integer(report, "remaining_count"), remaining_count);
+    assert_eq!(
+        progress.get("all_statement_lines_confirmed"),
+        Some(&Json::Bool(all_statement_lines_confirmed))
+    );
+    assert_eq!(
+        progress.get("closing_balances_equal"),
+        Some(&Json::Bool(closing_balances_equal))
+    );
+}
+
 fn run(book: &Path, args: &[&str]) -> (i32, Json) {
     let output = Command::new(env!("CARGO_BIN_EXE_fa"))
         .arg("--book")
@@ -91,6 +134,12 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_chart(
+            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expenses","type":"Expense","unit":"USD"}]}"#,
+        )
+    }
+
+    fn with_chart(chart_json: &str) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = loop {
             let dir = std::env::temp_dir().join(format!(
@@ -107,7 +156,7 @@ impl Fixture {
         let book = dir.join("book");
         ok(&book, &["book", "create", "--name", "Bank intake"]);
         let chart = dir.join("chart.json");
-        std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expenses","type":"Expense","unit":"USD"}]}"#).unwrap();
+        std::fs::write(&chart, chart_json).unwrap();
         ok(&book, &["chart", "import", chart.to_str().unwrap()]);
         ok(&book, &["period", "create", "--fiscal-year", "2026"]);
         ok(&book, &["period", "open", "FY2026-P03"]);
@@ -211,6 +260,890 @@ fn confirmation_args(matched: &Json, index: usize, confirmer: &str) -> Vec<Strin
 
 fn confirm_selection(book: &Path, args: &[String]) -> Json {
     ok_privileged(book, &args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+fn reconciliation_args(manifest: &str, reviewed: i128) -> Vec<String> {
+    vec![
+        "bank".into(),
+        "reconcile".into(),
+        "--import".into(),
+        manifest.into(),
+        "--source-known-at".into(),
+        reviewed.to_string(),
+        "--as".into(),
+        "statement-reviewer".into(),
+        "--yes".into(),
+    ]
+}
+
+fn reconcile_selection(book: &Path, args: &[String]) -> Json {
+    ok_privileged(book, &args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+fn reconciliation_state(status: &Json) -> &Json {
+    let states = rows(data(status), "reconciliations");
+    assert_eq!(states.len(), 1, "one immutable statement close: {status:?}");
+    &states[0]
+}
+
+#[test]
+fn exact_bank_reconciliation_carries_opening_cash_and_survives_reopen_retry_and_drift() {
+    let f = Fixture::new();
+    ok(&f.book, &["period", "open", "FY2026-P02"]);
+    f.post("opening-cash", "2026-02-28", "debit", "500.00", "OPENING");
+    f.post(
+        "statement-sale",
+        "2026-03-10",
+        "debit",
+        "100.00",
+        "MIDMONTH",
+    );
+    // Already recorded activity after the statement date must be excluded
+    // even though it belongs to the same accounting period.
+    f.post("after-statement", "2026-03-25", "debit", "25.00", "LATER");
+    let imported = f.import("midmonth.csv", "csv", &format!(
+        "{CSV_HEADER}1,BANK-MIDMONTH,USD,2026-03-15,500.00,600.00,2026-03-10,2026-03-10,CRDT,100.00,Private customer,MIDMONTH\n"
+    ));
+    let manifest = text(data(&imported), "manifest_oid");
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    let confirmed = confirm_selection(&f.book, &confirmation_args(&matched, 0, "cash-reviewer"));
+    let reviewed = head(&f.book);
+    let args = reconciliation_args(manifest, reviewed);
+    let argv: Vec<_> = args.iter().map(String::as_str).collect();
+    let before_tb = ok(&f.book, &["tb", "--as-of", "2026-03-15"]);
+
+    let without_yes: Vec<_> = argv.iter().copied().filter(|arg| *arg != "--yes").collect();
+    let (exit, refused) = run_privileged(&f.book, &without_yes);
+    assert_eq!(exit, 7, "{refused:?}");
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-007");
+    assert_eq!(head(&f.book), reviewed);
+    for selector in [None, Some("HEAD"), Some("2026-03-15T00:00:00Z")] {
+        let mut invalid = vec!["bank", "reconcile", "--import", manifest, "--yes"];
+        if let Some(selector) = selector {
+            invalid.extend(["--source-known-at", selector]);
+        }
+        let (exit, refused) = run_privileged(&f.book, &invalid);
+        assert_eq!(exit, 2, "{selector:?}: {refused:?}");
+        assert_eq!(head(&f.book), reviewed);
+    }
+    let (exit, refused) = run(&f.book, &argv);
+    assert_eq!(
+        exit, 3,
+        "governed source is not implicitly disclosed: {refused:?}"
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-142");
+    assert_eq!(head(&f.book), reviewed);
+
+    let closed = reconcile_selection(&f.book, &args);
+    assert_eq!(text(&closed, "event"), "bank_reconciled");
+    let original = data(&closed).get("reconciliation").unwrap();
+    assert_eq!(text(original, "scope"), "exact_statement_close");
+    assert_eq!(text(original, "statement_date"), "2026-03-15");
+    assert_eq!(text(original, "cash_balance"), "600.00 USD");
+    assert_eq!(integer(original, "evaluated_known_at"), reviewed);
+    assert_eq!(integer(original, "recorded_at"), reviewed + 1);
+    assert_eq!(original.get("already_recorded"), Some(&Json::Bool(false)));
+    assert_eq!(rows(original, "matches").len(), 1);
+    assert_eq!(
+        rows(original, "matches")[0].get("vid"),
+        data(&confirmed).get("match_vid")
+    );
+    let closed_at = head(&f.book);
+    let after_tb = ok(&f.book, &["tb", "--as-of", "2026-03-15"]);
+    assert_eq!(data(&after_tb).get("rows"), data(&before_tb).get("rows"));
+
+    // Every command opens a fresh process. This metadata read requires no
+    // privileged source access and must independently verify the old claim.
+    let status = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    assert_eq!(text(&status, "event"), "bank_reconciliation_status");
+    assert_eq!(text(data(&status), "reconciled_through"), "2026-03-15");
+    assert_eq!(integer(data(&status), "drifted_count"), 0);
+    let clean = reconciliation_state(&status);
+    for (field, expected) in [
+        ("historical_claim_verified", true),
+        ("balance_drift", false),
+        ("cash_drift", false),
+        ("match_drift", false),
+    ] {
+        assert_eq!(
+            clean.get(field),
+            Some(&Json::Bool(expected)),
+            "{field}: {status:?}"
+        );
+    }
+    assert!(rows(clean, "changed_entries").is_empty());
+    assert!(rows(clean, "citing_entries").is_empty());
+    assert!(!status.render().contains("Private customer"));
+    let retry = reconcile_selection(&f.book, &args);
+    let retry = data(&retry).get("reconciliation").unwrap();
+    assert_eq!(retry.get("already_recorded"), Some(&Json::Bool(true)));
+    for field in [
+        "attestation_vid",
+        "attestation_digest",
+        "recorded_at",
+        "cash_fold_digest",
+        "matches",
+    ] {
+        assert_eq!(
+            retry.get(field),
+            original.get(field),
+            "retry preserves {field}"
+        );
+    }
+    assert_eq!(head(&f.book), closed_at);
+
+    // Unprotected later dates remain ordinary postings and do not create
+    // drift in the statement's earlier cash prefix.
+    f.post("future-cash", "2026-03-20", "debit", "7.00", "FUTURE");
+    let future = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    assert_eq!(integer(data(&future), "drifted_count"), 0);
+
+    let late = f.file("late-cash.json", r#"{"effective_date":"2026-03-12","idempotency_key":"late-cash","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#);
+    let before = head(&f.book);
+    let (exit, refused) = run(
+        &f.book,
+        &["post", "--intent", &late, "--evidence", &f.evidence],
+    );
+    assert_eq!(exit, 7, "{refused:?}");
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+    assert!(text(data(&refused), "message").contains("reconcile"));
+    assert_eq!(head(&f.book), before);
+    let posted = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &late,
+            "--evidence",
+            &f.evidence,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let drifted = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    let state = reconciliation_state(&drifted);
+    assert_eq!(text(state, "cash_balance"), "601.00 USD");
+    assert_eq!(
+        state.get("historical_claim_verified"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(state.get("balance_drift"), Some(&Json::Bool(true)));
+    assert_eq!(state.get("cash_drift"), Some(&Json::Bool(true)));
+    assert_eq!(state.get("match_drift"), Some(&Json::Bool(false)));
+    assert_eq!(
+        rows(state, "changed_entries")[0].get("vid"),
+        data(&posted).get("vid")
+    );
+    assert_eq!(
+        rows(state, "citing_entries")[0].get("vid"),
+        data(&posted).get("vid")
+    );
+
+    // Returning to the same amount does not erase changed contributions.
+    let offset = f.file("late-offset.json", r#"{"effective_date":"2026-03-12","idempotency_key":"late-offset","legs":[{"side":"credit","account":"1000","amount":"1.00 USD"},{"side":"debit","account":"6000","amount":"1.00 USD"}]}"#);
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &offset,
+            "--evidence",
+            &f.evidence,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let offset_status = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    let state = reconciliation_state(&offset_status);
+    assert_eq!(text(state, "cash_balance"), "600.00 USD");
+    assert_eq!(state.get("balance_drift"), Some(&Json::Bool(false)));
+    assert_eq!(state.get("cash_drift"), Some(&Json::Bool(true)));
+    assert_eq!(rows(state, "changed_entries").len(), 2);
+    assert_eq!(rows(state, "citing_entries").len(), 2);
+
+    let mut release = unmatch_args(&confirmed);
+    release.push("--yes".into());
+    ok(
+        &f.book,
+        &release.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let released = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    assert_eq!(
+        reconciliation_state(&released).get("match_drift"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(text(data(&released), "reconciled_through"), "2026-03-15");
+    let historical = ok(
+        &f.book,
+        &[
+            "bank",
+            "reconciliation",
+            "--import",
+            manifest,
+            "--as-known-at",
+            &closed_at.to_string(),
+        ],
+    );
+    assert_eq!(data(&historical), data(&status));
+    assert_eq!(
+        integer(historical.get("coordinate").unwrap(), "known_at"),
+        closed_at
+    );
+    let before = head(&f.book);
+    let retry = reconcile_selection(&f.book, &args);
+    assert_eq!(
+        data(&retry)
+            .get("reconciliation")
+            .unwrap()
+            .get("attestation_digest"),
+        original.get("attestation_digest")
+    );
+    assert_eq!(
+        head(&f.book),
+        before,
+        "retry never reactivates released matches or rewrites the close"
+    );
+}
+
+#[test]
+fn bank_drift_becomes_typed_recorded_findings_with_replayable_original_workpapers() {
+    const PROCEDURE: &str = "recon.bank_statement_drift";
+    let f = Fixture::new();
+    let before = head(&f.book);
+    let (exit, refused) = run(&f.book, &["finding", "record", PROCEDURE]);
+    assert_eq!(
+        exit, 7,
+        "missing reconcile refuses even an empty bank population: {refused:?}"
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+    assert_eq!(head(&f.book), before);
+
+    f.post(
+        "finding-source-cash",
+        "2026-03-10",
+        "debit",
+        "100.00",
+        "SOURCE",
+    );
+    let imported = f.import("finding-statement.csv", "csv", &format!(
+        "{CSV_HEADER}1,BANK-FINDING,USD,2026-03-15,0.00,100.00,2026-03-10,2026-03-10,CRDT,100.00,Private bank customer,SOURCE\n"
+    ));
+    let manifest = text(data(&imported), "manifest_oid");
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    let confirmed = confirm_selection(
+        &f.book,
+        &confirmation_args(&matched, 0, "finding-cash-reviewer"),
+    );
+    let closed = reconcile_selection(&f.book, &reconciliation_args(manifest, head(&f.book)));
+    let close = data(&closed).get("reconciliation").unwrap();
+    let attestation = text(close, "attestation_vid");
+    let closed_at = head(&f.book).to_string();
+    let clean = ok(
+        &f.book,
+        &[
+            "finding",
+            "record",
+            PROCEDURE,
+            "--known-at",
+            &closed_at,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    assert_eq!(integer(data(&clean), "finding_count"), 0);
+    assert_eq!(
+        integer(data(&clean), "source_known_at").to_string(),
+        closed_at
+    );
+
+    let late = f.file("finding-late.json", r#"{"effective_date":"2026-03-12","idempotency_key":"finding-late","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#);
+    let posted = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &late,
+            "--evidence",
+            &f.evidence,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let late_entry = text(data(&posted), "vid");
+    let late_at = head(&f.book).to_string();
+    let balance_run = ok(
+        &f.book,
+        &[
+            "finding",
+            "record",
+            PROCEDURE,
+            "--known-at",
+            &late_at,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    assert_eq!(text(&balance_run, "event"), "findings_recorded");
+    assert_eq!(integer(data(&balance_run), "finding_count"), 1);
+    let certificate = text(data(&balance_run), "certificate");
+    let published_at = integer(data(&balance_run), "recorded_at");
+
+    let (exit, refused) = run(&f.book, &["finding", "list", "--certificate", certificate]);
+    assert_eq!(
+        exit, 7,
+        "saved certificate grants no bank observation authority: {refused:?}"
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+    let listed = ok(
+        &f.book,
+        &[
+            "finding",
+            "list",
+            "--certificate",
+            certificate,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let findings = rows(data(&listed), "findings");
+    assert_eq!(findings.len(), 1);
+    let finding_id = text(&findings[0], "finding_vid");
+    let original_finding = findings[0].get("finding").unwrap();
+    let statistic = original_finding.get("statistic").unwrap();
+    assert_eq!(text(statistic, "name"), "bank_statement_balance_drift");
+    assert_eq!(integer(statistic, "value"), 100);
+    assert_eq!(integer(statistic, "scale"), 2);
+    let citations = rows(original_finding, "cites");
+    assert!(
+        citations.iter().any(|cite| {
+            text(cite, "kind") == "attestation"
+                && cite.get("attestation") == Some(&Json::Str(attestation.into()))
+                && cite.get("entry") == Some(&Json::Null)
+        }),
+        "the native close is a typed attestation, never a fabricated Entry"
+    );
+    assert!(citations.iter().any(|cite| {
+        text(cite, "kind") == "entry" && cite.get("entry") == Some(&Json::Str(late_entry.into()))
+    }));
+    let selected = ok(
+        &f.book,
+        &["finding", "show", finding_id, "--grant", "reconcile"],
+    );
+    assert_eq!(
+        data(&selected).get("row").unwrap().get("finding"),
+        Some(original_finding)
+    );
+    assert!(!listed.render().contains("Private bank customer"));
+
+    // An unrecorded observation is a read: a bound investigator needs
+    // Reconcile, but neither Produce nor a monetary posting capability.
+    let observer = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "bank-drift-observer",
+        LaunchProfile::Human,
+        &["read", "reconcile"],
+    )
+    .unwrap();
+    let args = [
+        "procedure",
+        "run",
+        PROCEDURE,
+        "--known-at",
+        &late_at,
+        "--json",
+    ]
+    .map(str::to_string);
+    let (exit, output) = fa_with_authority(
+        &args,
+        Files {
+            cwd: Some(f.dir.clone()),
+            stdin: Stdin::Missing,
+        },
+        &observer,
+        true,
+    );
+    assert_eq!(
+        exit, 0,
+        "an unrecorded observation requires no Produce: {output:?}"
+    );
+    let observed = json::parse(output.stdout.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        rows(data(&observed), "findings"),
+        std::slice::from_ref(original_finding)
+    );
+
+    let review = ok(
+        &f.book,
+        &[
+            "finding",
+            "review",
+            finding_id,
+            "--action",
+            "acknowledge",
+            "--note",
+            "The retained close predates this admitted cash correction.",
+            "--as",
+            "bank-drift-reviewer",
+            "--grant",
+            "reconcile",
+            "--yes",
+        ],
+    );
+    assert_eq!(
+        text(data(&review).get("review").unwrap(), "action"),
+        "acknowledge"
+    );
+    let reviewed_at = head(&f.book).to_string();
+    let selected = ok(
+        &f.book,
+        &["finding", "show", finding_id, "--grant", "reconcile"],
+    );
+    let row = data(&selected).get("row").unwrap();
+    assert_eq!(text(row, "status"), "Reviewed");
+    assert_eq!(row.get("finding"), Some(original_finding));
+
+    let reviewed_path = f.dir.join("bank-drift-review.fawp");
+    ok(
+        &f.book,
+        &[
+            "finding",
+            "export",
+            "--certificate",
+            certificate,
+            "--grant",
+            "reconcile",
+            "--include-reviews",
+            "--known-at",
+            &reviewed_at,
+            "--export-format",
+            "canonical",
+            "--out",
+            reviewed_path.to_str().unwrap(),
+        ],
+    );
+
+    let packet_path = f.dir.join("bank-drift.fawp");
+    let exported = ok(
+        &f.book,
+        &[
+            "finding",
+            "export",
+            "--certificate",
+            certificate,
+            "--grant",
+            "reconcile",
+            "--export-format",
+            "canonical",
+            "--out",
+            packet_path.to_str().unwrap(),
+        ],
+    );
+    let packet_bytes = std::fs::read(&packet_path).unwrap();
+    let packet = fa::findings::FindingWorkpaper::decode(&packet_bytes).unwrap();
+    assert_eq!(packet.id(), text(data(&exported), "workpaper"));
+    assert_eq!(i128::from(packet.recorded_at().0), published_at);
+    assert!(
+        packet
+            .markdown()
+            .contains(&format!("Attestation {attestation}"))
+    );
+    assert!(packet.jsonl().contains(&format!(
+        "\"kind\":\"attestation\",\"vid\":\"{attestation}\""
+    )));
+    assert!(!packet.markdown().contains("Private bank customer"));
+    let source = fa::ProcedureCertificate::decode(packet.certificate_bytes()).unwrap();
+    assert_eq!(source.known_at().0.to_string(), late_at);
+    assert_eq!(source.report().findings.len(), 1);
+    let native_attestation = fgdb_types::VId(u128::from_str_radix(attestation, 16).unwrap());
+    assert!(
+        source.report().findings[0]
+            .cites
+            .contains(&fa_lantern::Cite::Attestation(native_attestation))
+    );
+    let artifact_path = f.dir.join("bank-drift-procedure.fac");
+    std::fs::write(&artifact_path, packet.certificate_bytes()).unwrap();
+
+    // Returning the cash amount to its original value does not erase the
+    // changed contribution set. Releasing a match is a separate exact drift.
+    let offset = f.file("finding-offset.json", r#"{"effective_date":"2026-03-12","idempotency_key":"finding-offset","legs":[{"side":"credit","account":"1000","amount":"1.00 USD"},{"side":"debit","account":"6000","amount":"1.00 USD"}]}"#);
+    let offset_posted = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &offset,
+            "--evidence",
+            &f.evidence,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let mut release = unmatch_args(&confirmed);
+    release.push("--yes".into());
+    ok(
+        &f.book,
+        &release.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let changed_at = head(&f.book).to_string();
+    let changed = ok(
+        &f.book,
+        &[
+            "finding",
+            "record",
+            PROCEDURE,
+            "--known-at",
+            &changed_at,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    assert_eq!(integer(data(&changed), "finding_count"), 2);
+    let changed_certificate = text(data(&changed), "certificate");
+    let changes = ok(
+        &f.book,
+        &[
+            "finding",
+            "list",
+            "--certificate",
+            changed_certificate,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let changes = rows(data(&changes), "findings");
+    let changed_value = |name: &str| {
+        changes
+            .iter()
+            .map(|row| row.get("finding").unwrap())
+            .find(|finding| text(finding.get("statistic").unwrap(), "name") == name)
+            .expect(name)
+    };
+    let contribution = changed_value("bank_statement_contribution_drift");
+    assert_eq!(integer(contribution.get("statistic").unwrap(), "value"), 2);
+    for entry in [late_entry, text(data(&offset_posted), "vid")] {
+        assert!(rows(contribution, "cites").iter().any(|cite| {
+            text(cite, "kind") == "entry" && cite.get("entry") == Some(&Json::Str(entry.into()))
+        }));
+    }
+    let match_drift = changed_value("bank_statement_match_drift");
+    assert_eq!(integer(match_drift.get("statistic").unwrap(), "value"), 1);
+    for finding in [contribution, match_drift] {
+        assert!(rows(finding, "cites").iter().any(|cite| {
+            text(cite, "kind") == "attestation"
+                && cite.get("attestation") == Some(&Json::Str(attestation.into()))
+        }));
+    }
+    assert!(changes.iter().all(|row| {
+        text(
+            row.get("finding").unwrap().get("statistic").unwrap(),
+            "name",
+        ) != "bank_statement_balance_drift"
+    }));
+    let net_packet_path = f.dir.join("bank-net-zero-drift.fawp");
+    ok(
+        &f.book,
+        &[
+            "finding",
+            "export",
+            "--certificate",
+            changed_certificate,
+            "--grant",
+            "reconcile",
+            "--export-format",
+            "canonical",
+            "--out",
+            net_packet_path.to_str().unwrap(),
+        ],
+    );
+
+    // A further lawful cash change cannot rewrite either original observation.
+    let later = f.file("finding-later.json", r#"{"effective_date":"2026-03-14","idempotency_key":"finding-later","legs":[{"side":"debit","account":"1000","amount":"2.00 USD"},{"side":"credit","account":"4000","amount":"2.00 USD"}]}"#);
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &later,
+            "--evidence",
+            &f.evidence,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let frontier = head(&f.book);
+    let (exit, refused) = run(&f.book, &["finding", "runs"]);
+    assert_eq!(
+        exit, 7,
+        "inventory returns no partial bank page: {refused:?}"
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+    let inventory = ok(&f.book, &["finding", "runs", "--grant", "reconcile"]);
+    assert_eq!(integer(data(&inventory), "total_recorded_runs"), 3);
+    assert_eq!(integer(data(&inventory), "page_count"), 3);
+    assert!(
+        rows(data(&inventory), "runs")
+            .iter()
+            .all(|run| text(run, "procedure") == PROCEDURE)
+    );
+    let (exit, refused) = run(
+        &f.book,
+        &["finding", "replay", packet_path.to_str().unwrap()],
+    );
+    assert_eq!(
+        exit, 7,
+        "portable bytes do not confer bank authority: {refused:?}"
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+    for (path, expected_count, expected_at) in [
+        (&packet_path, 1, late_at.as_str()),
+        (&net_packet_path, 2, changed_at.as_str()),
+    ] {
+        let replayed = ok(
+            &f.book,
+            &[
+                "finding",
+                "replay",
+                path.to_str().unwrap(),
+                "--grant",
+                "reconcile",
+            ],
+        );
+        assert_eq!(text(&replayed, "event"), "finding_replayed");
+        assert_eq!(integer(data(&replayed), "finding_count"), expected_count);
+        assert_eq!(
+            integer(data(&replayed), "source_known_at").to_string(),
+            expected_at
+        );
+    }
+    let reviewed = ok(
+        &f.book,
+        &[
+            "finding",
+            "replay",
+            reviewed_path.to_str().unwrap(),
+            "--grant",
+            "reconcile",
+            "--certificate",
+            certificate,
+            "--known-at",
+            &reviewed_at,
+        ],
+    );
+    assert_eq!(integer(data(&reviewed), "finding_count"), 1);
+    assert_eq!(
+        integer(data(&reviewed), "source_known_at").to_string(),
+        late_at
+    );
+    assert_eq!(
+        integer(data(&reviewed), "review_known_at").to_string(),
+        reviewed_at
+    );
+    assert_eq!(
+        data(&reviewed).get("includes_reviews"),
+        Some(&Json::Bool(true))
+    );
+    let analytic = ok(
+        &f.book,
+        &[
+            "replay",
+            artifact_path.to_str().unwrap(),
+            "--grant",
+            "reconcile",
+        ],
+    );
+    assert_eq!(text(&analytic, "event"), "procedure_run");
+    assert_eq!(integer(data(&analytic), "known_at").to_string(), late_at);
+    assert_eq!(
+        rows(data(&analytic), "findings"),
+        std::slice::from_ref(original_finding)
+    );
+    let retry = ok(
+        &f.book,
+        &[
+            "finding",
+            "record",
+            "--certificate",
+            certificate,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    assert_eq!(
+        data(&retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(integer(data(&retry), "recorded_at"), published_at);
+    let second_path = f.dir.join("bank-drift-again.fawp");
+    ok(
+        &f.book,
+        &[
+            "finding",
+            "export",
+            "--certificate",
+            certificate,
+            "--grant",
+            "reconcile",
+            "--export-format",
+            "canonical",
+            "--out",
+            second_path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(std::fs::read(second_path).unwrap(), packet_bytes);
+    assert_eq!(
+        head(&f.book),
+        frontier,
+        "read, replay, export and exact retry publish no new history"
+    );
+}
+
+#[test]
+fn bank_drift_admission_precedes_open_and_read_only_procedures_keep_their_authority() {
+    const PROCEDURE: &str = "recon.bank_statement_drift";
+    let f = Fixture::new();
+    let missing = f.dir.join("bank-procedure-no-book");
+    let producer_without_reconcile = LaunchAuthority::new(
+        missing.clone(),
+        None,
+        "bank-drift-denied",
+        LaunchProfile::Human,
+        &["read", "produce"],
+    )
+    .unwrap();
+    for args in [
+        ["procedure", "run", PROCEDURE, "--json"],
+        ["finding", "record", PROCEDURE, "--json"],
+    ] {
+        let (exit, output) = fa_with_authority(
+            &args.map(str::to_string),
+            Files {
+                cwd: Some(f.dir.clone()),
+                stdin: Stdin::Missing,
+            },
+            &producer_without_reconcile,
+            true,
+        );
+        assert_eq!(
+            exit, 7,
+            "missing Reconcile must precede a cold open: {output:?}"
+        );
+        let refused = json::parse(output.stdout.lines().last().unwrap()).unwrap();
+        assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+        assert_eq!(refused.get("book"), Some(&Json::Null));
+    }
+    assert!(!missing.exists());
+
+    let before = head(&f.book);
+    let reader = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "ordinary-procedure-reader",
+        LaunchProfile::Human,
+        &["read"],
+    )
+    .unwrap();
+    let args = ["procedure", "run", "jet.weekend", "--json"].map(str::to_string);
+    let (exit, output) = fa_with_authority(
+        &args,
+        Files {
+            cwd: Some(f.dir.clone()),
+            stdin: Stdin::Missing,
+        },
+        &reader,
+        true,
+    );
+    assert_eq!(
+        exit, 0,
+        "ordinary procedures do not gain a Reconcile requirement: {output:?}"
+    );
+    let observed = json::parse(output.stdout.lines().last().unwrap()).unwrap();
+    assert_eq!(integer(data(&observed), "finding_count"), 0);
+    assert_eq!(head(&f.book), before);
+}
+
+#[test]
+fn bank_reconciliation_refuses_unmatched_stale_unbalanced_and_postdated_closes() {
+    let f = Fixture::new();
+    f.post("unclosed-sale", "2026-03-10", "debit", "100.00", "UNCLOSED");
+    let imported = f.import("unclosed.csv", "csv", &format!(
+        "{CSV_HEADER}1,BANK-UNCLOSED,USD,2026-03-15,0.00,100.00,2026-03-10,2026-03-10,CRDT,100.00,Customer,UNCLOSED\n"
+    ));
+    let manifest = text(data(&imported), "manifest_oid");
+    let before = head(&f.book);
+    let args = reconciliation_args(manifest, before);
+    let (exit, refused) = run_privileged(
+        &f.book,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(exit, 3, "{refused:?}");
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-168");
+    assert!(text(data(&refused), "message").contains("active confirmation"));
+    assert_eq!(head(&f.book), before);
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    confirm_selection(
+        &f.book,
+        &confirmation_args(&matched, 0, "statement-confirmer"),
+    );
+    let (exit, refused) = run_privileged(
+        &f.book,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        exit, 6,
+        "a new close cannot borrow an old reviewed prefix: {refused:?}"
+    );
+    f.post(
+        "unreported-cash",
+        "2026-03-11",
+        "debit",
+        "1.00",
+        "DIFFERENCE",
+    );
+    let before = head(&f.book);
+    let args = reconciliation_args(manifest, before);
+    let (exit, refused) = run_privileged(
+        &f.book,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(exit, 3, "{refused:?}");
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-168");
+    assert!(text(data(&refused), "message").contains("cumulative posted cash"));
+    assert_eq!(head(&f.book), before);
+    let status = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    assert_eq!(integer(data(&status), "reconciliation_count"), 0);
+    assert_eq!(data(&status).get("reconciled_through"), Some(&Json::Null));
+
+    // The cumulative amount happens to tie, but the matched leg itself is
+    // effective after the close. A matching date window cannot authorize it.
+    let f = Fixture::new();
+    f.post("earlier-cash", "2026-03-01", "debit", "100.00", "EARLIER");
+    f.post(
+        "postdated-cash",
+        "2026-03-16",
+        "debit",
+        "100.00",
+        "POSTDATED",
+    );
+    let imported = f.import("postdated.csv", "csv", &format!(
+        "{CSV_HEADER}1,BANK-POSTDATED,USD,2026-03-15,0.00,100.00,2026-03-15,2026-03-15,CRDT,100.00,Customer,POSTDATED\n"
+    ));
+    let manifest = text(data(&imported), "manifest_oid");
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    confirm_selection(
+        &f.book,
+        &confirmation_args(&matched, 0, "postdate-confirmer"),
+    );
+    let before = head(&f.book);
+    let args = reconciliation_args(manifest, before);
+    let (exit, refused) = run_privileged(
+        &f.book,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(exit, 3, "{refused:?}");
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-168");
+    assert!(text(data(&refused), "message").contains("after the statement close date"));
+    assert_eq!(head(&f.book), before);
 }
 
 #[test]
@@ -678,6 +1611,20 @@ fn exact_matches_reopen_with_bound_account_and_parser_and_never_confirm_or_post_
     assert_eq!(result.get("outstanding_complete"), Some(&Json::Bool(false)));
     assert_eq!(text(result, "book_closing_balance"), "120.00 USD");
     assert_eq!(text(result, "closing_difference"), "-25.00 USD");
+    assert_progress(
+        &matched,
+        [
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("150.00", "55.00"),
+            ("150.00", "50.00"),
+            ("0.00", "5.00"),
+            ("20.00", "0.00"),
+        ],
+        3,
+        false,
+        false,
+    );
     let proposals = rows(result, "proposals");
     assert_eq!(text(&proposals[0], "direction"), "inflow");
     assert_eq!(text(&proposals[1], "direction"), "outflow");
@@ -1655,6 +2602,23 @@ fn explicit_unmatch_retains_history_retries_and_allows_a_fresh_confirmation() {
     let manifest = text(data(&imported), "manifest_oid");
     let money_before = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
     let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    let available_progress = [
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("100.00", "0.00"),
+        ("100.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+    ];
+    let confirmed_progress = [
+        ("100.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+    ];
+    assert_progress(&matched, available_progress, 1, false, true);
     let initial_proposal = &rows(data(&matched), "proposals")[0];
     let original_args = confirmation_args(&matched, 0, "release-reviewer");
     let first = confirm_selection(&f.book, &original_args);
@@ -1684,6 +2648,7 @@ fn explicit_unmatch_retains_history_retries_and_allows_a_fresh_confirmation() {
     assert_eq!(integer(data(&claimed), "confirmed_count"), 1);
     assert_eq!(integer(data(&claimed), "unmatched_count"), 0);
     assert_eq!(integer(data(&claimed), "outstanding_count"), 0);
+    assert_progress(&claimed, confirmed_progress, 0, true, true);
     let retained = &rows(data(&claimed), "proposals")[0];
     assert_eq!(text(retained, "status"), "confirmed");
     assert_eq!(retained.get("confirmation_command"), Some(&Json::Null));
@@ -1801,8 +2766,21 @@ fn explicit_unmatch_retains_history_retries_and_allows_a_fresh_confirmation() {
     );
     assert_eq!(integer(data(&historical), "active_count"), 1);
     assert_eq!(integer(data(&historical), "unmatch_count"), 0);
+    let historical_match = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            manifest,
+            "--as-known-at",
+            &first_at.to_string(),
+        ],
+    );
+    assert_progress(&historical_match, confirmed_progress, 0, true, true);
 
     let fresh = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_progress(&fresh, available_progress, 1, false, true);
     assert_eq!(integer(data(&fresh), "confirmed_count"), 0);
     assert_eq!(
         text(&rows(data(&fresh), "proposals")[0], "status"),
@@ -1822,6 +2800,20 @@ fn explicit_unmatch_retains_history_retries_and_allows_a_fresh_confirmation() {
         rows(data(&history), "active")[0].get("match_vid"),
         data(&second).get("match_vid")
     );
+    let rematched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_progress(&rematched, confirmed_progress, 0, true, true);
+    let historical_release = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            manifest,
+            "--as-known-at",
+            &released_at.to_string(),
+        ],
+    );
+    assert_progress(&historical_release, available_progress, 1, false, true);
 
     let current_head = head(&f.book);
     let retry_old_release = ok(&f.book, &release_argv);
@@ -1881,6 +2873,22 @@ fn reports_exclude_other_statements_cash_claims_until_an_explicit_release() {
     assert_eq!(row.get("confirmation_command"), Some(&Json::Null));
     assert_eq!(integer(data(&occupied), "confirmed_count"), 0);
     assert_eq!(integer(data(&occupied), "outstanding_count"), 0);
+    // A cash leg used by another statement makes this line unmatched. It
+    // does not confirm or occupy this distinct retained source identity.
+    assert_progress(
+        &occupied,
+        [
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("50.00", "0.00"),
+            ("0.00", "0.00"),
+            ("50.00", "0.00"),
+            ("0.00", "0.00"),
+        ],
+        1,
+        false,
+        true,
+    );
     let mut release_args = unmatch_args(&first);
     release_args.push("--yes".into());
     ok(
@@ -1899,6 +2907,20 @@ fn reports_exclude_other_statements_cash_claims_until_an_explicit_release() {
     assert_eq!(head(&f.book), before);
 
     let fresh = ok_privileged(&f.book, &["bank", "match", "--import", second_manifest]);
+    assert_progress(
+        &fresh,
+        [
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("50.00", "0.00"),
+            ("50.00", "0.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+        ],
+        1,
+        false,
+        true,
+    );
     assert_eq!(
         integer(
             &rows(data(&fresh), "proposals")[0],
@@ -1928,4 +2950,204 @@ fn reports_exclude_other_statements_cash_claims_until_an_explicit_release() {
     assert_eq!(integer(data(&all_history), "confirmation_count"), 2);
     assert_eq!(integer(data(&all_history), "unmatch_count"), 1);
     assert_eq!(integer(data(&all_history), "active_count"), 1);
+}
+
+#[test]
+fn equal_closing_balances_do_not_clear_offsetting_unconfirmed_flows() {
+    let f = Fixture::new();
+    f.post("offset-in", "2026-03-05", "debit", "10.00", "OFFSET-IN");
+    f.post("offset-out", "2026-03-06", "credit", "10.00", "OFFSET-OUT");
+    let source = format!(
+        "{CSV_HEADER}1,BANK-OFFSET,USD,2026-03-31,0.00,0.00,2026-03-05,2026-03-05,CRDT,10.00,Customer,OFFSET-IN\n1,BANK-OFFSET,USD,2026-03-31,0.00,0.00,2026-03-06,2026-03-06,DBIT,10.00,Vendor,OFFSET-OUT\n"
+    );
+    let imported = f.import("offset.csv", "csv", &source);
+    let manifest = text(data(&imported), "manifest_oid");
+    let money_before = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    let before_confirmation = integer(data(&matched), "known_at");
+    assert_eq!(
+        text(data(&matched), "statement_closing_balance"),
+        "0.00 USD"
+    );
+    assert_eq!(text(data(&matched), "book_closing_balance"), "0.00 USD");
+    assert_eq!(text(data(&matched), "closing_difference"), "0.00 USD");
+    assert_progress(
+        &matched,
+        [
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("10.00", "10.00"),
+            ("10.00", "10.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+        ],
+        2,
+        false,
+        true,
+    );
+
+    confirm_selection(&f.book, &confirmation_args(&matched, 0, "inflow-reviewer"));
+    let partial = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_progress(
+        &partial,
+        [
+            ("10.00", "0.00"),
+            ("0.00", "0.00"),
+            ("0.00", "10.00"),
+            ("0.00", "10.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+        ],
+        1,
+        false,
+        true,
+    );
+    confirm_selection(&f.book, &confirmation_args(&partial, 1, "outflow-reviewer"));
+    let complete = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_progress(
+        &complete,
+        [
+            ("10.00", "10.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+        ],
+        0,
+        true,
+        true,
+    );
+    let historical = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            manifest,
+            "--as-known-at",
+            &before_confirmation.to_string(),
+        ],
+    );
+    assert_eq!(
+        data(&historical).get("progress"),
+        data(&matched).get("progress")
+    );
+    assert_eq!(integer(data(&historical), "remaining_count"), 2);
+    let money_after = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    for key in ["rows", "unit_totals", "pending_unit_totals", "balanced"] {
+        assert_eq!(data(&money_after).get(key), data(&money_before).get(key));
+    }
+}
+
+#[test]
+fn the_same_statement_under_another_cash_mapping_remains_occupied_until_release() {
+    let f = Fixture::with_chart(
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1010","name":"Alternate cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expenses","type":"Expense","unit":"USD"}]}"#,
+    );
+    f.post("mapped-cash", "2026-03-05", "debit", "40.00", "MAPPED");
+    let alternate = f.file(
+        "alternate-cash.json",
+        r#"{"effective_date":"2026-03-05","idempotency_key":"alternate-cash","legs":[{"side":"debit","account":"1010","amount":"40.00 USD","memo":"MAPPED"},{"side":"credit","account":"4000","amount":"40.00 USD"}]}"#,
+    );
+    ok(
+        &f.book,
+        &["post", "--intent", &alternate, "--evidence", &f.evidence],
+    );
+    let source = format!(
+        "{CSV_HEADER}1,BANK-MAPPED,USD,2026-03-31,0.00,40.00,2026-03-05,2026-03-05,CRDT,40.00,Customer,MAPPED\n"
+    );
+    let original_import = f.import("original-mapping.csv", "csv", &source);
+    let alternate_source = f.file("alternate-mapping.csv", &source);
+    let alternate_import = ok(
+        &f.book,
+        &[
+            "bank",
+            "import",
+            &alternate_source,
+            "--bank-format",
+            "csv",
+            "--account",
+            "1010",
+        ],
+    );
+    let original_manifest = text(data(&original_import), "manifest_oid");
+    let alternate_manifest = text(data(&alternate_import), "manifest_oid");
+    assert_ne!(original_manifest, alternate_manifest);
+    assert_eq!(
+        text(data(&original_import), "statement_oid"),
+        text(data(&alternate_import), "statement_oid")
+    );
+    let money_before = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    let original = ok_privileged(&f.book, &["bank", "match", "--import", original_manifest]);
+    let alternate = ok_privileged(&f.book, &["bank", "match", "--import", alternate_manifest]);
+    let available_progress = [
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("40.00", "0.00"),
+        ("40.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+    ];
+    let occupied_progress = [
+        ("0.00", "0.00"),
+        ("40.00", "0.00"),
+        ("40.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("40.00", "0.00"),
+    ];
+    assert_progress(&alternate, available_progress, 1, false, true);
+    let original_at = integer(data(&alternate), "known_at");
+    let first = confirm_selection(
+        &f.book,
+        &confirmation_args(&original, 0, "original-reviewer"),
+    );
+    let occupied = ok_privileged(&f.book, &["bank", "match", "--import", alternate_manifest]);
+    assert_eq!(text(data(&occupied), "account"), "1010");
+    assert_eq!(integer(data(&occupied), "confirmed_count"), 0);
+    assert_eq!(integer(data(&occupied), "occupied_count"), 1);
+    assert_eq!(integer(data(&occupied), "proposed_count"), 0);
+    assert_eq!(integer(data(&occupied), "unmatched_count"), 0);
+    assert_eq!(integer(data(&occupied), "outstanding_count"), 1);
+    let row = &rows(data(&occupied), "proposals")[0];
+    assert_eq!(text(row, "status"), "occupied");
+    assert_eq!(row.get("confirmation_command"), Some(&Json::Null));
+    assert_progress(&occupied, occupied_progress, 1, false, true);
+    let historical = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            alternate_manifest,
+            "--as-known-at",
+            &original_at.to_string(),
+        ],
+    );
+    assert_progress(&historical, available_progress, 1, false, true);
+
+    let mut release_args = unmatch_args(&first);
+    release_args.push("--yes".into());
+    ok(
+        &f.book,
+        &release_args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let available = ok_privileged(&f.book, &["bank", "match", "--import", alternate_manifest]);
+    assert_progress(&available, available_progress, 1, false, true);
+    let second = confirm_selection(
+        &f.book,
+        &confirmation_args(&available, 0, "alternate-reviewer"),
+    );
+    assert_ne!(
+        data(&first).get("entry_ref"),
+        data(&second).get("entry_ref")
+    );
+    let occupied_original =
+        ok_privileged(&f.book, &["bank", "match", "--import", original_manifest]);
+    assert_progress(&occupied_original, occupied_progress, 1, false, true);
+    let money_after = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    for key in ["rows", "unit_totals", "pending_unit_totals", "balanced"] {
+        assert_eq!(data(&money_after).get(key), data(&money_before).get(key));
+    }
 }

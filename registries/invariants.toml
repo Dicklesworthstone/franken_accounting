@@ -804,8 +804,8 @@ evidence_class = "invariant"
 checker_strength = "negative_fixture"
 first_gate = "G1"
 owner = "fa-llx"
-checkers = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings", "fa::lib::book::tests::a_bank_statement_through_the_facade_reads_redacted_until_privileged"]
-negatives = ["fa-journal::tests/policy.rs::a_capability_authorizes_only_its_holder_and_refusals_precede_any_read", "fa-journal::tests/policy.rs::an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x", "fa-journal::tests/genesis.rs::a_foreign_book_or_branch_coordinate_is_refused_before_any_read", "fa-journal::lib::redaction::tests::an_agent_reads_public_documents_and_only_the_governed_redacted_view", "fa-journal::tests/genesis.rs::a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes"]
+checkers = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings", "fa::lib::book::tests::a_bank_statement_through_the_facade_reads_redacted_until_privileged", "fa::tests/read_scope_oracle.rs::the_engine_judges_every_scoped_read_as_the_literal_model_does", "fa-reference::lib::read_scope::tests::each_caveat_refuses_what_it_does_not_cover_and_admits_the_rest"]
+negatives = ["fa-journal::tests/policy.rs::a_capability_authorizes_only_its_holder_and_refusals_precede_any_read", "fa-journal::tests/policy.rs::an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x", "fa-journal::tests/genesis.rs::a_foreign_book_or_branch_coordinate_is_refused_before_any_read", "fa-journal::lib::redaction::tests::an_agent_reads_public_documents_and_only_the_governed_redacted_view", "fa-journal::tests/genesis.rs::a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes", "fa-cli::tests/read_scope.rs::scoped_tokens_read_inside_their_caveats_and_are_refused_outside_them", "fa-cli::tests/read_scope.rs::every_command_that_does_not_judge_its_reach_refuses_a_scoped_token", "fa-cli::tests/read_scope.rs::a_statement_reaches_what_its_basis_folds"]
 waiver = "forbidden"
 
 [[clause]]

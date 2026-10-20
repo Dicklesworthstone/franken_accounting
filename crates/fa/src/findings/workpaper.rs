@@ -204,6 +204,9 @@ fn cite_json(out: &mut Text, cite: &Cite) -> fmt::Result {
         Cite::Account(v) => write!(out, "{{\"kind\":\"account\",\"vid\":\"{:032x}\"}}", v.0),
         Cite::Principal(v) => write!(out, "{{\"kind\":\"principal\",\"vid\":\"{:032x}\"}}", v.0),
         Cite::Approval(v) => write!(out, "{{\"kind\":\"approval\",\"vid\":\"{:032x}\"}}", v.0),
+        Cite::Attestation(v) => {
+            write!(out, "{{\"kind\":\"attestation\",\"vid\":\"{:032x}\"}}", v.0)
+        }
         Cite::Document(oid) => write!(out, "{{\"kind\":\"document\",\"oid\":\"{}\"}}", hex(&oid.0)),
         Cite::Leg { entry, ordinal } => write!(
             out,
@@ -223,6 +226,7 @@ fn cite_markdown(out: &mut Text, cite: &Cite) -> fmt::Result {
         Cite::Account(v) => write!(out, "Account {:032x}", v.0),
         Cite::Principal(v) => write!(out, "Principal {:032x}", v.0),
         Cite::Approval(v) => write!(out, "Approval {:032x}", v.0),
+        Cite::Attestation(v) => write!(out, "Attestation {:032x}", v.0),
         Cite::Document(oid) => write!(out, "Document {}", hex(&oid.0)),
         Cite::Leg { entry, ordinal } => write!(out, "Leg {:032x}/{ordinal}", entry.0),
         Cite::Period(code) => {
@@ -390,6 +394,28 @@ fn render(run: &RecordedFindings, certificate: Vec<u8>) -> Result<FindingWorkpap
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Export after reopening under current read+produce authority and the
+    /// retained procedure's additional admission, before loading bank history.
+    pub async fn finding_workpaper_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        digest: &[u8; 32],
+    ) -> Outcome<FindingWorkpaper> {
+        if let Err(r) = authorize(self, cx, principal, capability, true)? {
+            return Ok(Err(r));
+        }
+        if let Err(r) = self
+            .prepare_retained_procedure_history(cx, principal, capability, digest)
+            .await?
+        {
+            return Ok(Err(r));
+        }
+        self.finding_workpaper(cx, principal, capability, digest)
+            .await
+    }
+
     /// Export a complete immutable observation run, after native replay and
     /// graph-integrity verification, under current whole-book read+produce scope.
     /// Does not publish a new vertex, renumber the run, or redact/truncate citations.
@@ -426,6 +452,37 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(r));
         }
         Ok(result)
+    }
+
+    /// Replay an observation package after reopening. Package framing and the
+    /// admitted retained certificate identify the procedure; bank authority is
+    /// required before its native history is loaded or its observations returned.
+    pub async fn replay_finding_workpaper_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        bytes: &[u8],
+    ) -> Outcome<RecordedFindings> {
+        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+            return Ok(Err(r));
+        }
+        let saved = match FindingWorkpaper::decode(bytes) {
+            Ok(saved) => saved,
+            Err(r) => return Ok(Err(r)),
+        };
+        let certificate = match ProcedureCertificate::decode(&saved.certificate) {
+            Ok(certificate) => certificate,
+            Err(r) => return Ok(Err(r)),
+        };
+        if let Err(r) = self
+            .prepare_retained_procedure_history(cx, principal, capability, certificate.digest())
+            .await?
+        {
+            return Ok(Err(r));
+        }
+        self.replay_finding_workpaper(cx, principal, capability, bytes)
+            .await
     }
 
     /// Recompute the complete package from the retained certificate and original

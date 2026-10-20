@@ -65,7 +65,7 @@ use crate::{Statement, code};
 
 /// Record kinds (plan §13.2, bead fa-va02): journal entries (posting and
 /// control classes), attestations (`Reviewed`, `ManualAssertion`,
-/// `RegisterEquals`), import receipts, custody transfers, and supplemental
+/// `RegisterEquals`, `Reconciled`), import receipts, custody transfers, and supplemental
 /// evidence. The tags are `fa-verify`'s.
 pub const KIND_ENTRY: u8 = 1;
 pub const KIND_ATTESTATION: u8 = 2;
@@ -970,7 +970,10 @@ impl Journal {
 
 #[cfg(test)]
 mod tests {
-    use fa_journal::attestation::{Attestation, AttestationClaim, CapabilityBinding, Subject};
+    use fa_journal::attestation::{
+        Attestation, AttestationClaim, CapabilityBinding, ReconciledClaim, Subject,
+    };
+    use fa_journal::import::{BankFormat, BankImportManifest};
     use fa_model::{EntryRef, EvidenceRef, Oid};
 
     use super::*;
@@ -1043,6 +1046,64 @@ mod tests {
         })
     }
 
+    fn reconciled() -> Record {
+        let account = VId(19);
+        let unit = fa_money::UnitId(1);
+        let closing = fa_time::DateDay::from_ymd(2026, 3, 31).expect("statement date");
+        let statement_commit = [0x71; 32];
+        let statement_oid = fa_journal::evidence::document_oid(BOOK, &statement_commit);
+        let manifest = BankImportManifest {
+            book_id: BOOK,
+            account,
+            format: BankFormat::Csv,
+            statement_oid,
+            statement_commit,
+            unit,
+            sequence_number: 1,
+            statement_date: closing,
+            opening_balance: 0,
+            closing_balance: 0,
+            line_oids: Vec::new(),
+            predecessor: None,
+        };
+        let manifest_oid = manifest.document_oid().expect("manifest identity");
+        let mut evidence_refs = vec![manifest_oid, statement_oid];
+        evidence_refs.sort();
+        let attestation = Attestation {
+            book_id: BOOK,
+            claim: AttestationClaim::Reconciled(Box::new(ReconciledClaim {
+                manifest_oid,
+                manifest,
+                predecessors: Vec::new(),
+                import_run: VId(31),
+                import_receipt_hash: [0x73; 32],
+                import_recorded_at: CommitSeq(6),
+                evaluated_known_at: CommitSeq(8),
+                cash_balance: 0,
+                cash_fold_digest: fa_model::domain_digest(
+                    b"fa:bank-reconciled-cash-fold:v1",
+                    &[
+                        &BOOK.0,
+                        &account.0.to_le_bytes(),
+                        &unit.0.to_le_bytes(),
+                        &closing.0.to_le_bytes(),
+                    ],
+                ),
+                matches: Vec::new(),
+            })),
+            subject: Subject::Document(manifest_oid),
+            principal: VId(11),
+            evidence_refs,
+        };
+        let payload = attestation
+            .canonical_bytes(&CapabilityBinding {
+                profile: fa_journal::Profile::Human,
+                capability_commitment: [6; 32],
+            })
+            .expect("native Reconciled payload");
+        Record::Attestation(StoredAttestation::decode(&payload).expect("native Reconciled decode"))
+    }
+
     /// The producer's evidence envelopes are exactly what the independent
     /// verifier rebuilds from the payload bytes alone, kind by kind, and the
     /// split the producer reports is the verifier's.
@@ -1050,6 +1111,7 @@ mod tests {
     fn every_evidence_kind_matches_the_verifier_byte_for_byte() {
         for (record, kind, class) in [
             (review(), KIND_ATTESTATION, 2),
+            (reconciled(), KIND_ATTESTATION, 3),
             (receipt(1, 7), KIND_IMPORT_RECEIPT, 3),
             (transfer(), KIND_CUSTODY_TRANSFER, 2),
             (supplement(), KIND_SUPPLEMENTAL_EVIDENCE, 1),

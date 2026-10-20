@@ -56,6 +56,15 @@ fn prepare_artifact_history(
             "report artifact belongs to another book",
         ));
     }
+    if artifact.family() == ReportArtifactFamily::Procedure {
+        let certificate = fa::ProcedureCertificate::decode(bytes)?;
+        book.prepare_procedure_history(
+            principal,
+            capability,
+            &certificate.report().procedure,
+            false,
+        )??;
+    }
     let known_at = match artifact.family() {
         ReportArtifactFamily::StatementDiff => {
             let certificate = fa::StatementDiffCertificate::decode(bytes)?;

@@ -11,6 +11,7 @@ use fa_registry::procedures::{Procedure as Row, Procedures};
 use fgdb_types::VId;
 
 use crate::aging::{InventoryAging, OpenItemsAging};
+use crate::bank_reconciliation::BankStatementDrift;
 use crate::cutoff::{
     ConfirmCoverage, DamagesButFor, DistributionProRata, DistributionRisingTide,
     ExpenseCapitalization, LookbackFraudulentTransfer, LookbackPreferences, PartyMasterChanges,
@@ -79,6 +80,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         ReconIntercompany::ID => Box::new(ReconIntercompany::with(params)),
         ReconLapping::ID => Box::new(ReconLapping::with(params)),
         ReconBookToBook::ID => Box::new(ReconBookToBook::with(params)),
+        BankStatementDrift::ID => Box::new(BankStatementDrift::with(params)),
         UnrecordedLiabilities::ID => Box::new(UnrecordedLiabilities::with(params)),
         SubsequentEvents::ID => Box::new(SubsequentEvents::with(params)),
         PartyMasterChanges::ID => Box::new(PartyMasterChanges::with(params)),

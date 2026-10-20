@@ -43,7 +43,7 @@
 //! The legacy system's own timestamps ride `EntryOrigin::Migration` as
 //! provenance and are never read as recorded time (doctrine 6).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
@@ -1368,6 +1368,14 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = admit_control(db, book, &req, transition)? {
         return Ok(Err(r));
     }
+    if let Err(refusal) = crate::policy::capability_admitted(db, book, &req.capability)? {
+        return Ok(Err(refusal));
+    }
+    if control_kind == kind::FINALIZE
+        && let Err(refusal) = crate::scratch::ensure_history(db, ctx).await?
+    {
+        return Ok(Err(refusal));
+    }
     let proposal_digest = proposal.proposal_digest()?;
     // The aggregate basis (plan §5.10): the head this exclusive handle sees;
     // nothing can publish between this fold and the commit below.
@@ -1430,6 +1438,54 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    // Finalize makes previously invisible chunks count. Checking only the
+    // chunk's original posting would let a later statement close be bypassed.
+    // Summarized legacy detail remains invisible under the same migration
+    // predicate as ordinary folds and cannot establish a spurious touch.
+    let mut activated_accounts: BTreeMap<(VId, UnitId), DateDay> = BTreeMap::new();
+    if control_kind == kind::FINALIZE {
+        for chunk in &tie.chunks {
+            ctx.query()
+                .checkpoint()
+                .map_err(WriteTxnError::Interrupted)?;
+            let row = txn.vertex(db, chunk.vid)?.ok_or_else(|| {
+                KernelError::Corrupt("a migration activation lost a counted chunk".into())
+            })?;
+            let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "activation chunk")?)?;
+            if entry.proposal_digest != chunk.proposal_digest
+                || !matches!(entry.proposal.origin, EntryOrigin::Migration { run_ref, .. } if run_ref == run_vid)
+            {
+                txn.abort();
+                return Err(KernelError::Corrupt(
+                    "a migration activation chunk differs from its admitted tie-out".into(),
+                ));
+            }
+            let effective = entry.proposal.effective_date;
+            if counts_from(&run.body).is_some_and(|from| effective < from) {
+                continue;
+            }
+            for leg in &entry.proposal.legs {
+                activated_accounts
+                    .entry((leg.account_ref, leg.amount.unit))
+                    .and_modify(|first| *first = (*first).min(effective))
+                    .or_insert(effective);
+            }
+        }
+    }
+    let reconciliation = match crate::post::reconciliation_citations_for_accounts(
+        &txn,
+        db,
+        ctx,
+        book,
+        &req.capability,
+        &activated_accounts,
+    )? {
+        Ok(citations) => citations,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
     let to = if control_kind == kind::FINALIZE {
         RunState::Finalized
     } else {
@@ -1451,7 +1507,28 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         run_vid,
         vec![],
     );
-    txn.write(db, in_run)?;
+    let mut batches = vec![in_run];
+    let mut affected = WriteBatch::new(relation::CITES);
+    for account in activated_accounts
+        .keys()
+        .map(|(account, _)| *account)
+        .collect::<BTreeSet<_>>()
+    {
+        // Every activation touches each affected account's endpoint even
+        // when no close exists yet. A concurrently prepared close therefore
+        // observes the same native conflict as an ordinary monetary posting.
+        affected.add_edge(
+            edge_id(relation::CITES, evid, account),
+            evid,
+            account,
+            vec![],
+        );
+    }
+    if !affected.is_empty() {
+        batches.push(affected);
+    }
+    batches.extend(crate::post::reconciliation_edges(evid, &reconciliation));
+    txn.write_ordered(db, batches)?;
     if db.frontier()? != basis {
         return Err(KernelError::Corrupt(
             "the head moved under an exclusive handle between the run's fold and its commit".into(),

@@ -7,7 +7,7 @@ schema_version = 1
 name = "Attestation"
 owner = "fa-journal::attestation"
 major = 1
-minor = 0
+minor = 1
 signed_digest_domain = "fa:attestation:v1"
 externally_verifiable = false
 
@@ -20,3 +20,10 @@ appendix_a = "signature: { scheme: u16 (Ed25519), key_id, bytes }"
 code_type = "SCHEME_CAPABILITY = 0 trailer (crates/fa-journal/src/attestation.rs:78)"
 rationale = "Interim capability-bound authentication trailer until principal Ed25519 keys land in fa-kae."
 tracking_bead = "fa-kae"
+
+[[decision]]
+field = "claim.Reconciled"
+appendix_a = "3:Reconciled; plan §5.7 / §9.4 exact statement close"
+code_type = "fa-journal::attestation::ReconciledClaim; native Attestation storage"
+rationale = "The reserved claim tag now binds the retained canonical bank manifest and complete predecessor manifests, actual ImportRun receipt coordinate, evaluated native prefix, cumulative posted cash through the statement date, contribution digest, and exact sorted active confirmation references. Read, Reconcile, Privileged and Human admission precede observation. New closes use the reviewed current prefix, all statement lines must be confirmed under the exact interpretation with cash legs effective through the close, and the cumulative balance must equal the statement close. Pending and unpublished/excluded migration entries do not contribute. No adjusted outstanding-items reconciliation is claimed. Native creation history rejects mutation, retirement, relabeling and restore-after-rewrite of the attestation and its strong edges. ATTESTS to the cash account is the posting transaction's phantom-protection anchor; CITES retains source/import/match evidence. A later monetary or match correction produces live drift without changing the original historical claim. The unchanged capability trailer does not claim external signature verification."
+tracking_bead = "fa-2ek"

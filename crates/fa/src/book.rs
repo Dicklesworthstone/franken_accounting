@@ -1536,6 +1536,55 @@ impl Book {
         )))
     }
 
+    /// Upload canonical Rate evidence under the authenticated holder's
+    /// existing upload policy. Source and retrieval metadata are assertions
+    /// by that uploader; the rate receives no implied provider provenance.
+    pub fn upload_fx_rate(
+        &mut self,
+        capability: &fa_journal::Capability,
+        rate: &crate::FxRateDocument,
+    ) -> Outcome<fa_journal::DocumentAdded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.upload_fx_rate(
+            &purposes, capability, rate,
+        )))
+    }
+
+    /// Value a proposal from retained Rate evidence without publishing.
+    /// The ordinary post/plan path independently verifies these base amounts.
+    pub fn value_fx_proposal(
+        &mut self,
+        capability: &fa_journal::Capability,
+        proposal: fa_model::EntryPayload,
+        law: crate::FxLawId,
+        rate_oids: &[fa_model::Oid],
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.value_fx_proposal(
+            &purposes, capability, proposal, law, rate_oids, &mut budget,
+        )))
+    }
+
+    /// Exact functional-currency period activity at a retained journal prefix.
+    /// Pending holds stay separate. This is not cumulative stock or a certificate.
+    pub fn functional_period_activity(
+        &mut self,
+        capability: &fa_journal::Capability,
+        period_code: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<fa_registers::FunctionalFold> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_period_activity(
+            &purposes, capability, period_code, known_at,
+        )))
+    }
+
     /// Record an import run (plan §9.3): the batch's documents and their
     /// receipts, and the run's `ImportControl` receipt, in one commit.
     /// `description` is sealed under the book key with fresh entropy.
@@ -1607,6 +1656,34 @@ impl Book {
     ) -> Outcome<crate::bank::BankConfirmationStatus> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.bank_confirmation_status(
+            &purposes, capability, request,
+        )))
+    }
+
+    /// Attest a retained statement's exact cumulative cash closing at the
+    /// explicitly reviewed prefix. The native commit establishes the account's
+    /// reconciliation cutoff without posting or modifying any amount.
+    pub fn reconcile_bank_statement(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankReconciliationRequest,
+    ) -> Outcome<crate::bank::BankReconciliationRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.reconcile_bank_statement(
+            &purposes, capability, request,
+        )))
+    }
+
+    /// Reverify each original closing claim and compare its cash contribution
+    /// and active match sets with one selected prefix under current authority.
+    /// No governed statement or counterparty text is disclosed.
+    pub fn bank_reconciliation_status(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankStatusRequest,
+    ) -> Outcome<crate::bank::BankReconciliationStatus> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.bank_reconciliation_status(
             &purposes, capability, request,
         )))
     }
@@ -2259,6 +2336,20 @@ impl Book {
         )))
     }
 
+    /// Replay a retained artifact from a cold book under current authority.
+    pub fn replay_retained_report_artifact_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        digest: &[u8; 32],
+        expected: crate::ReportArtifactExpectation<'_>,
+    ) -> Outcome<crate::ReplayedReportArtifact> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.replay_retained_report_artifact_with_history(
+            &purposes, principal, capability, digest, expected
+        )))
+    }
+
     /// Materialize a period's registers from a fresh fold.
     pub fn materialize_registers(
         &mut self,
@@ -2801,6 +2892,22 @@ impl Book {
         ))
     }
 
+    /// Load native history only after the artifact's current scope is admitted,
+    /// then replay its original coordinate and independently expected scope.
+    pub fn replay_report_artifact_for_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+        expected_digest: Option<&[u8; 32]>,
+        expected: crate::ReportArtifactExpectation<'_>,
+    ) -> Outcome<crate::ReplayedReportArtifact> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.replay_report_artifact_for_with_history(
+            &purposes, principal, capability, bytes, expected_digest, expected
+        )))
+    }
+
     /// Fold a summary trial balance by chart roots under current whole-book read authority.
     pub fn summary_trial_balance(
         &self,
@@ -3193,6 +3300,48 @@ impl Book {
         with_store!(&self.store, core => core.run_procedure(&self.purposes(), procedure, known_at, effective_through))
     }
 
+    /// Admit explicit current procedure scope before loading its native history.
+    pub fn prepare_procedure_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        procedure: &str,
+        produce: bool,
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_procedure_history(
+            &purposes, principal, capability, procedure, produce
+        )))
+    }
+
+    /// Discover a retained procedure's identity under Read and admit its
+    /// additional scope before hydrating the native inputs needed for replay.
+    pub fn prepare_retained_procedure_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_retained_procedure_history(
+            &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Execute with current Read and procedure-specific authority, hydrating
+    /// retained native history as needed. Does not require Produce or publish.
+    pub fn run_procedure_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::ProcedureRequest,
+    ) -> Outcome<fa_lantern::ProcedureRun> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.run_procedure_with_history(
+            &purposes, principal, capability, request
+        )))
+    }
+
     /// Certify a registered procedure under current read and produce authority.
     /// The complete source closure is retained only when explicitly published.
     pub fn certify_procedure(
@@ -3204,6 +3353,33 @@ impl Book {
         with_store!(&self.store, core => core.certify_procedure(
             &self.purposes(), principal, capability, request
         ))
+    }
+
+    /// Certify a procedure from a cold book after Read, Produce and any bank
+    /// Reconcile scope are all admitted. Retains no artifact until requested.
+    pub fn certify_procedure_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::ProcedureRequest,
+    ) -> Outcome<crate::CertifiedProcedure> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_procedure_with_history(
+            &purposes, principal, capability, request
+        )))
+    }
+
+    /// Replay an original procedure after admitted native history hydration.
+    pub fn replay_procedure_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::ProcedureCertificate,
+    ) -> Outcome<fa_lantern::ProcedureRun> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.replay_procedure_with_history(
+            &purposes, principal, capability, certificate
+        )))
     }
 
     /// Publish every occurrence in a retained procedure run atomically.
@@ -3230,6 +3406,32 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&self.store, core => self.runtime.block_on(core.read_findings(
             &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Read and replay a recorded run from a cold book with admitted history.
+    pub fn read_findings_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+    ) -> Outcome<crate::findings::RecordedFindings> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.read_findings_with_history(
+            &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Resolve an immutable finding with the retained run's admitted history.
+    pub fn finding_by_vid_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        finding: VId,
+    ) -> Outcome<crate::findings::RecordedFinding> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.finding_by_vid_with_history(
+            &purposes, principal, capability, finding
         )))
     }
 
@@ -3329,6 +3531,32 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&self.store, core => self.runtime.block_on(core.finding_workpaper(
             &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Produce a verified source workpaper after admitted native hydration.
+    pub fn finding_workpaper_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+    ) -> Outcome<crate::findings::FindingWorkpaper> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.finding_workpaper_with_history(
+            &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Recompute a saved finding workpaper from a cold book's native history.
+    pub fn replay_finding_workpaper_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+    ) -> Outcome<crate::findings::RecordedFindings> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.replay_finding_workpaper_with_history(
+            &purposes, principal, capability, bytes
         )))
     }
 
@@ -3829,8 +4057,10 @@ impl ReadScope<'_> {
     /// period through its latest selected one (a `periods` caveat refuses
     /// it; an `effective` caveat admits it only through that period's last
     /// day); period activity and an explanation reach exactly their
-    /// periods; open items reach the whole book. A statement is admitted by
-    /// its own family, so here it reaches the whole book.
+    /// periods; open items reach the whole book. A statement's columns,
+    /// current and comparative, reach what their basis folds: a stock basis
+    /// is a balance through the latest of them, an activity basis exactly
+    /// their periods.
     pub fn admit_report(
         &self,
         selection: &crate::ReportSelection,
@@ -3855,9 +4085,17 @@ impl ReadScope<'_> {
             ReportSelection::ExplainBalance { period, .. } => {
                 self.authority.periods(book, seq, &[period.as_str()])
             }
-            ReportSelection::OpenItems { .. } | ReportSelection::Statement(_) => {
-                self.authority.whole_book(seq)
+            ReportSelection::Statement(statement) => {
+                let mut reached = codes(&statement.periods);
+                reached.extend(codes(&statement.comparative));
+                match statement.definition.basis() {
+                    fa_statements::Basis::Stock => {
+                        self.authority.stock_through(book, seq, &reached)
+                    }
+                    fa_statements::Basis::Activity => self.authority.periods(book, seq, &reached),
+                }
             }
+            ReportSelection::OpenItems { .. } => self.authority.whole_book(seq),
         };
         Ok(admitted.map(|()| seq))
     }
@@ -3877,6 +4115,27 @@ impl ReadScope<'_> {
             .authority
             .periods(self.book.context(), seq, codes)
             .map(|()| seq))
+    }
+
+    /// One period's metadata at an admitted frontier. The selected period
+    /// is judged before its point read; no current or unrelated period rows
+    /// are loaded while resolving a historical report's effective boundary.
+    pub fn period_at(&self, code: &str, known_at: Option<CommitSeq>) -> Outcome<Option<PeriodRow>> {
+        let seq = match self.admit_periods(&[code], known_at)? {
+            Ok(seq) => seq,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let purposes = self.book.purposes();
+        with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
+            let row = db
+                .vertex_at(fa_model::period_vid(&book.calendar.id, code), seq)
+                .map_err(KernelError::from)?;
+            let period = row
+                .filter(|row| row.labels.contains(&fa_model::symbols::label::PERIOD))
+                .map(|row| PeriodRow::decode(&row))
+                .transpose()?;
+            Ok(Ok(period))
+        }))
     }
 
     /// Admit a read of the whole book at its recorded frontier: an entry,

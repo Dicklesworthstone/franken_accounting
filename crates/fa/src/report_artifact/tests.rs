@@ -506,6 +506,82 @@ fn statement_bridges_retain_and_replay_both_endpoints_and_the_complete_trace() {
 }
 
 #[test]
+fn cold_bridge_replay_hydrates_the_earliest_source_when_its_terminal_source_is_head() {
+    let mut h = Harness::new(106);
+    let before = h.head();
+    h.post(b"cold-bridge-correction", 17);
+    let after = h.head();
+    let request = crate::StatementDiffRequest {
+        selection: crate::StatementSelection {
+            definition: crate::StatementDefinition::embedded("balance-sheet").unwrap(),
+            periods: vec!["FY2026-P01".into()],
+            comparative: Vec::new(),
+        },
+        before,
+        after: Some(after),
+    };
+    let cx = h.cx();
+    let authority = cap(&["read", "produce"]);
+    let diff = h
+        .book
+        .certify_statement_diff(&cx, PRINCIPAL, &authority, &request)
+        .unwrap()
+        .unwrap();
+    let trace = h
+        .book
+        .certify_statement_trace(
+            &cx,
+            PRINCIPAL,
+            &authority,
+            &crate::StatementTraceRequest {
+                comparison: request,
+                max_publications: 16,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    for artifact in [
+        ReportArtifact::try_from(&diff.certificate).unwrap(),
+        ReportArtifact::try_from(&trace.certificate).unwrap(),
+    ] {
+        let bytes = artifact.canonical_bytes().unwrap();
+        drop(h.book);
+        h.book = h
+            .runtime
+            .block_on(AsyncBook::open_with_vfs(
+                &cx,
+                h.vfs.clone(),
+                Path::new("artifact-book"),
+                BookKeys::for_development(h.seed),
+                Entropy::deterministic(1006),
+            ))
+            .unwrap();
+        assert_eq!(h.head(), after);
+        assert_eq!(artifact.known_at(), after);
+        assert!(
+            h.book.db.delta_since(CommitSeq(0)).is_err(),
+            "the regression must exercise a checkpoint-opened history window"
+        );
+        let replayed = h
+            .runtime
+            .block_on(h.book.replay_report_artifact_for_with_history(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read"]),
+                &bytes,
+                Some(artifact.digest()),
+                ReportArtifactExpectation::AsSupplied,
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed.output, artifact.output());
+        assert_eq!(replayed.known_at, after);
+        assert_eq!(h.head(), after, "history hydration never publishes");
+        assert!(h.book.db.delta_since(CommitSeq(0)).is_ok());
+    }
+}
+
+#[test]
 fn portfolio_dispatch_binds_the_full_independent_account_coverage() {
     use crate::aging::portfolio::{AgingAccountScope, AgingPortfolioRequest};
     let mut h = Harness::new(76);

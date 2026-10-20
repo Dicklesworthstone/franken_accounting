@@ -33,6 +33,9 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
+#[path = "bank_matches/reconciliation.rs"]
+mod reconciliation_tests;
+
 const OWNER: VId = VId(7);
 const CONFIRMER: VId = VId(8);
 const LINE_DOMAIN: &[u8] = b"fa:bank-line-doc:v1";
@@ -60,6 +63,19 @@ impl Harness {
         Self::with_opening_date(None)
     }
     fn with_opening_date(opening_date: Option<DateDay>) -> Self {
+        Self::with_time_policy(opening_date, None)
+    }
+    fn with_time_policy(
+        opening_date: Option<DateDay>,
+        time_zone_policy: Option<TimeZonePolicy>,
+    ) -> Self {
+        Self::with_currency_policy(opening_date, time_zone_policy, false)
+    }
+    fn with_currency_policy(
+        opening_date: Option<DateDay>,
+        time_zone_policy: Option<TimeZonePolicy>,
+        multiple_currencies: bool,
+    ) -> Self {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
         let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -85,7 +101,7 @@ impl Harness {
             name: "Native bank confirmations".into(),
             base_unit: usd,
             calendar,
-            time_zone_policy: None,
+            time_zone_policy,
             entities: Vec::new(),
             opening_date,
         };
@@ -100,7 +116,11 @@ impl Harness {
                 account_type: 1,
                 normal_balance: 0,
                 is_leaf: true,
-                unit_policy: UnitPolicy::Single(usd),
+                unit_policy: if multiple_currencies {
+                    UnitPolicy::Any
+                } else {
+                    UnitPolicy::Single(usd)
+                },
                 parent_code: None,
                 limit: None,
             },
@@ -110,7 +130,11 @@ impl Harness {
                 account_type: 4,
                 normal_balance: 1,
                 is_leaf: true,
-                unit_policy: UnitPolicy::Single(usd),
+                unit_policy: if multiple_currencies {
+                    UnitPolicy::Any
+                } else {
+                    UnitPolicy::Single(usd)
+                },
                 parent_code: None,
                 limit: None,
             },
@@ -1978,3 +2002,6 @@ fn published_v1_zero_generation_graphs_remain_readable_correctable_and_reconfirm
         vec![new]
     );
 }
+
+#[path = "bank_matches/reconciliation_guard.rs"]
+mod reconciliation_guard;

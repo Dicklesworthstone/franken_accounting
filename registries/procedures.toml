@@ -1195,6 +1195,16 @@ calibration = "planted"
 summary = "Exact reconciliation between Instrument vertices that mirror GL accounts (and RegisterEquals attestations) and the journal fold at the snapshot coordinate: any divergence between a mirrored instrument/attested register cell and the posted account balance is an invariant violation."
 
 [[procedure]]
+id = "recon.bank_statement_drift"
+version = 1
+claim = "invariant"
+evidence = "FA-EVID-L60"
+tie_break = "account_vid"
+complexity = "O((reconciliations + references) log (reconciliations + references))"
+calibration = "planted"
+summary = "Exact drift of native Reconciled statement closes at one recorded prefix: changed cumulative cash, net-zero cash contribution changes, and changed active confirmation references are separate observations. Every original claim remains fixed at its evaluated prefix. An effective cutoff selects statement closing dates and never changes their cash cutoff. Requires complete native reconciliation states after admitted retained-history verification; the stated complexity covers the pure finding adapter, while native source verification retains its full-history cost. Every observation cites its original attestation, account and retained source documents; cash observations include every changed or durably citing Entry. More than 4096 citations in one observation, 100000 observations, or 16 MiB of finding bytes refuses the complete run."
+
+[[procedure]]
 id = "completeness.unrecorded_liabilities"
 version = 1
 claim = "statistical"

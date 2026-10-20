@@ -154,7 +154,7 @@ subcommands = ["new", "plan", "list", "show", "promote", "discard"]
 flags = ["--intent", "--evidence", "--event", "--date", "--description", "--reason", "--grant"]
 switches = []
 events = ["draft_opened", "draft_planned", "drafts", "draft_detail", "draft_promoted", "draft_discarded"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["draft new <name> [--description <text>] [--as <principal>]   (opens an intent log owned by --as; nothing in it is a trunk entry)", "draft plan <name> --intent <file.json|-> [--evidence <oid>]...   (rehearses the intent under every posting law and journals it into the draft; also: the same post, reverse, reserve or resolve command with --draft <name>)", "draft list", "draft show <name>   (the planned intents in promotion order, and the entries a promotion created)", "draft promote <name> --as <approver> [--grant approve] --yes   (a principal holding approve who is not the draft's owner: every planned intent posts in one batch, admitted again against current trunk; any refusal promotes nothing)", "draft discard <name> [--reason <text>]   (the owner, or a principal holding approve, closes the draft; nothing is deleted)"]
 example = "fa draft new close-03 --as agent-7 --book ./books/myco --json"
 
@@ -166,19 +166,19 @@ subcommands = ["fork", "run", "list", "show", "diff", "discard"]
 flags = ["--at", "--from", "--evidence", "--event", "--intent", "--period", "--date", "--description", "--reason", "--grant", "--certificate-out"]
 switches = ["--activity", "--certify"]
 events = ["scenario_forked", "scenario_run", "scenarios", "scenario_detail", "scenario_diff", "scenario_discarded", "report_certificate"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["scenario fork <name> [--at HEAD|<seq>] [--from YYYY-MM-DD] [--evidence <assumption-document-oid>]... [--description <text>] [--date YYYY-MM-DD]   (forks at a trunk sequence, HEAD by default; --from is where the counterfactual starts: every intent run in the scenario is effective on or after it; trunk history is never filtered)", "scenario run <name> --intent <file.json|-> [--evidence <oid>]...   (rehearses the intent on the scenario's materialization and journals it into the scenario; the planner's authority over the intent (its ops, ceilings and scope caveats) is admitted on trunk first, as for a dry run, and nothing is rehearsed for a refused intent; an identical retry returns its record even after a discard; also: fa post, invoice, bill, receipt or payment with --scenario <name>)", "scenario list", "scenario show <name>   (its fork, assumptions and intents in run order)", "scenario diff <name> --period <code>... [--activity] [--certify | --certificate-out <new-file>]   (per account and unit, exact: trunk as known at the fork sequence against the scenario's materialization; only changed rows, posted and pending columns apart; stock balances, or period movement with --activity. --certify retains a replayable certificate (read and produce): a native trial-balance certificate of trunk at the fork, plus the scenario body and exactly the intents it holds now; fa replay C:<oid> re-materializes those intents and reproduces the diff byte for byte, even after later intents run)", "scenario discard <name> [--reason <text>] [--date YYYY-MM-DD]   (the owner, or a principal holding approve, closes it; nothing is deleted)", "A scenario is materialized on every run and diff (plan §15.2 interim posture until substrate branches): the trunk prefix's accounting objects are replayed into a scratch book and every intent is posted again under every posting law. The diff binds the scenario body, its intent records, the fork sequence and the replay's SeqMap digest; --certify retains it as a replayable certificate. Reads select a scenario with --branch scenario:<name> (tb, statement, explain, open-items, gl), uncertified. Every check is on trunk and the replay is fixed at the fork: a document, period reopening or authority issued on trunk after the fork reaches only a scenario forked after it. The replay posts each intent under a Human embedded capability of its planner, so an Agent preparer's extra Human approver (a trunk SoD rule) is not re-applied there."]
 example = "fa scenario fork but-for-breach --from 2025-07-01 --book ./books/myco --json"
 
 [[verb]]
 name = "post"
-summary = "Post one entry intent under the accounting laws (balance, period law, idempotency)."
+summary = "Post an entry intent under balance, period and idempotency laws, with optional functional-currency valuation from retained Rate evidence (fa fx rate add)."
 writes = true
 subcommands = []
 flags = ["--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "batch_posted", "draft_planned", "scenario_run"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["A leg may name its legal entity (\"entity\": code; in a multi-entity book every leg names one) and its counterparty (\"party\": code from fa party list); the kernel refuses an undeclared entity or an unknown party.", "post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--event <code|vid>] [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target.", "A PostBatch intent {\"idempotency_key\": K, \"intents\": [<entry intent>, ...]} commits every member atomically, in order, in one transaction: all or none, each member seeing the earlier members' effects (an application may settle an invoice earlier in the same batch by its derived vid). Members are Original, Adjusting, Reversal, Pending or Resolution entries of one principal with distinct keys. The batch key names its IntentOutcome: an identical retry returns the recorded outcome; the same key with different members is refused (exit 6). Batch plans, --plan-out and per-batch flags are not available; a member refusal names its index and nothing is posted.", "post --intent <file.json|-> --draft <name>   (plan §15.2: rehearses the intent under every posting law and journals it into the open draft; nothing reaches trunk until a principal holding approve who is not the draft's owner runs fa draft promote <name>)", "post --intent <file.json|-> --scenario <name>   (fa-k07b: rehearses the intent on the scenario's materialization under every posting law and journals it into the open scenario; trunk never moves; fa scenario diff shows the effect)"]
 example = "fa post --intent entry.json --book ./books/myco --json"
 
@@ -254,7 +254,7 @@ subcommands = []
 flags = ["--reason", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out", "--draft", "--replace-with"]
 switches = ["--dry-run"]
 events = ["reversed", "recorded", "plan", "draft_planned", "corrected", "replacement_plan"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["reverse <vid|E:vid> --reason <name|code> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--grant <op>]... [--evidence <oid>]... [--dry-run [--plan-out <new-file>]]", "The default effective date and period are the target's; --effective never chooses an open period automatically. The default key is reverse:<target vid>. Repeating the same request returns the original outcome; changing a committed reversal is refused.", "--dry-run rehearses the exact derived reversal without publishing it; commit its reviewed sealed plan with fa commit --plan <file|-> at the same book snapshot.", "Reasons are registered in reason_codes.toml (scope supersession): WrongAccount, WrongPeriod, WrongAmount, Duplicate, and the other listed codes. Other requires --description. A reason records the preparer's statement, not its truth.", "reverse <vid> --reason <name> --replace-with <file.json|-> [--dry-run [--plan-out <new-file>]]   (plan §8.2: the exact reversal and the corrected Replacement commit as one pair, both or neither. The replacement intent is an entry intent without class, reverses or reason; its effective_date, period and idempotency_key default to the target's date and period and replace:<vid>. The dry-run returns one sealed plan containing both members; fa commit --plan <file|-> revalidates and publishes both atomically. Agent-profile plans are rehearsal only. Correction drafts remain unsupported; a Replacement posted alone is FA-REF-160.)"]
 example = "fa reverse <vid> --reason WrongAccount --book ./books/myco --json"
 
@@ -266,7 +266,7 @@ subcommands = []
 flags = ["--intent", "--grant", "--evidence", "--balancing", "--plan-out", "--timeout-ns", "--draft"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["reserve --intent <hold.json> [--timeout-ns N] [--dry-run [--plan-out <new-file>]] (a Pending: amounts reserved, nothing posted)", "timeout_ns in the intent or --timeout-ns supplies one unsigned nanosecond duration from the latest committed TimeEvidence. Missing anchors and overflow refuse. Start fad serve --bootstrap-system to record clock observations and expire due holds.", "--dry-run runs the reservation laws without acquiring the hold; fa commit --plan <file|-> acquires exactly the reviewed hold if the book has not advanced. --balancing is not supported with --dry-run."]
 example = "fa reserve --intent hold.json --book ./books/myco --json"
 
@@ -278,7 +278,7 @@ subcommands = []
 flags = ["--intent", "--grant", "--evidence", "--plan-out", "--draft"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["resolve --intent <res.json> [--dry-run [--plan-out <new-file>]] (resolves <hold vid>; disposition posts (legs drawn from the hold) | voids)", "A direct void requires --yes. --dry-run releases nothing and needs no confirmation; fa commit --plan <file|-> explicitly confirms the authenticated exact plan and rechecks the hold at the same snapshot."]
 example = "fa resolve --intent res.json --book ./books/myco --json"
 
@@ -344,14 +344,23 @@ example = "fa migrate show go-live-2026 --book ./books/myco --json"
 
 [[verb]]
 name = "tb"
-summary = "Trial balance: leaf or summary stock/activity at a known-at frontier; opt-in certification retains the complete report's immutable certificate in the book."
+summary = "Trial balance: native leaf or summary stock/activity, or exact functional-currency period activity, at a known-at frontier. Native reports support retained certification."
 writes = true
 subcommands = []
 flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--certificate-out", "--branch"]
-switches = ["--activity", "--summary", "--certify", "--as-originally-reported"]
-events = ["trial_balance", "summary_trial_balance", "report_certificate"]
+switches = ["--activity", "--summary", "--certify", "--as-originally-reported", "--functional"]
+events = ["trial_balance", "summary_trial_balance", "report_certificate", "functional_trial_balance"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "tb --period <code> --as-originally-reported [--activity] [--certify]   (plan §7.4: one period as first reported, at the known-at of its first Lock transition (a StatementIssuance takes precedence once issuances are journaled); never its first Close, never HEAD. A period with neither is refused with FA-REF-161. Cannot be combined with --as-known-at.)", "tb --as-of YYYY-MM-DD [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed. --summary --certify binds the selected roots and exact group membership as well as the leaf source; it requires read and produce, and a sequence selector (HEAD or <seq>).", "Stock balances include opening history; --activity is selected-period movement. --summary folds disjoint leaf subtrees under each root account (all roots by default, or --root <code>...). Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Native certificates preserve the original instant resolution; the summary certificate format currently binds sequences only. Replay scope is fa-fold-over-prefix; no witness signature or physical timestamp claim.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector."]
+usage = [
+  "tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]",
+  "tb --functional --activity --period <one code> [--as-known-at HEAD|<seq>|<RFC3339>]   (exact functional-currency movement from immutable committed valuations, with posted and pending columns separate; requires current whole-book read authority; refuses unvalued foreign legs)",
+  "Functional activity requires --activity and exactly one period. It does not provide cumulative stock, summary, fiscal-year, as-of, scenario, original-report or certificate selections. Use retained Rate evidence in intent.fx when posting foreign-currency entries; fa fx --help describes source intake and the admitted valuation laws.",
+  "tb --period <code> --as-originally-reported [--activity] [--certify]   (plan §7.4: one period as first reported, at the known-at of its first Lock transition (a StatementIssuance takes precedence once issuances are journaled); never its first Close, never HEAD. A period with neither is refused with FA-REF-161. Cannot be combined with --as-known-at.)",
+  "tb --as-of YYYY-MM-DD [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]",
+  "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed. --summary --certify binds the selected roots and exact group membership as well as the leaf source; it requires read and produce, and a sequence selector (HEAD or <seq>).",
+  "Stock balances include opening history; --activity is selected-period movement. --summary folds disjoint leaf subtrees under each root account (all roots by default, or --root <code>...). Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Native certificates preserve the original instant resolution; the summary certificate format currently binds sequences only. Replay scope is fa-fold-over-prefix; no witness signature or physical timestamp claim.",
+  "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.",
+]
 example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -434,8 +443,8 @@ subcommands = ["list", "run"]
 flags = ["--known-at", "--effective-through", "--param", "--account", "--source"]
 switches = []
 events = ["procedure_list", "procedure_run"]
-exits = [0, 2, 3, 4, 5]
-usage = ["procedure list", "procedure run <procedure id> [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--param <name>=<integer>]... [--account <code>] [--source <entry vid>]", "Parameters default to procedures.toml's pinned values; --param overrides one registered parameter. aging.* and trace.* need --effective-through; trace.* also need --account (the commingled account) and --source (the deposit entry)."]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["procedure list", "procedure run <procedure id> [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--param <name>=<integer>]... [--account <code>] [--source <entry vid>]", "Parameters default to procedures.toml's pinned values; --param overrides one registered parameter. aging.* and trace.* need --effective-through; trace.* also need --account (the commingled account) and --source (the deposit entry).", "recon.bank_statement_drift needs current whole-book read and reconcile authority; supply --grant reconcile on the embedded owner route. An unrecorded run needs no produce grant. It evaluates every retained exact statement close at --known-at; --effective-through selects statement close dates without changing their immutable cash cutoff. Use finding record recon.bank_statement_drift to certify and retain the complete observations."]
 example = "fa procedure run jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
@@ -556,19 +565,52 @@ flags = ["--certificate", "--param", "--account", "--source", "--effective-throu
 switches = ["--include-reviews"]
 events = ["findings_recorded", "finding_runs", "finding_list", "finding_shown", "finding_reviewed", "finding_exported", "finding_replayed"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["finding record <procedure-id> [--param <name=integer>]... [--account <code>] [--source E:<vid>] [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD]", "finding record --certificate C:<digest>   (the exact idempotent retry; a new run at HEAD may select a later source prefix)", "finding runs [--page-size 1..32] [--cursor <192-hex>] [--known-at HEAD|<seq>]   (discover recorded runs; default page size 16)", "finding list --certificate C:<digest> [--known-at HEAD|<seq>]   (every finding in this certified run, not a global inventory)", "finding show F:<vid> [--known-at HEAD|<seq>]", "finding review F:<vid> --action acknowledge|dismiss|reopen --note <text> [--previous R:<latest-review>] [--dismissal-reason explained|duplicate|data-quality|outside-scope|other] [--evidence D:<oid>]...", "finding review --certificate C:<run> --file <reviews.json|->   (an explicit selection from ONE run reviewed in one transaction: a JSON array of {finding, action, note, previous?, dismissal_reason?, evidence?: [D:<oid>]}, each validated as a single review; any refused decision refuses the whole set, and one finding_reviewed event is emitted per decision in certified order)", "finding export --certificate C:<digest> [--export-format md|jsonl|canonical] [--include-reviews [--known-at HEAD|<seq>]] [--out <new-file>]", "finding replay <canonical-workpaper|-> [--certificate C:<expected-digest> --known-at <exact-seq>]", "Recording and exporting require read and produce; discovering runs, listing, showing and replaying require read. Review requires a Human with read and approve who is independent of the run producer. Dismissal also requires a registered reason and retained evidence. Supply the current --previous after the first decision; stale decisions refuse instead of overwriting history.", "Run discovery has scope recorded-runs: total_recorded_runs counts the structurally checked inventory at known_at; only summaries in the returned page also undergo full certificate and computation replay. It establishes neither current review status nor complete detector coverage. Pass next_cursor unchanged to continue the same book and inventory: omitted known_at or HEAD inherits the cursor cutoff; an explicit sequence must equal it. Current authority is always rechecked, and checked_through names the current validation frontier.", "The original numbered workpaper remains unchanged when later reviews are appended. --include-reviews adds a separate review appendix with its own fixed cutoff. Canonical exports replay against retained native evidence; Markdown and JSONL are presentations. Recipient-bound replay requires both the independently expected certificate and exact review cutoff; replay without them states its as-supplied historical scope. Complete responses refuse if they exceed transport limits, never truncate."]
+usage = ["finding record <procedure-id> [--param <name=integer>]... [--account <code>] [--source E:<vid>] [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD]", "finding record --certificate C:<digest>   (the exact idempotent retry; a new run at HEAD may select a later source prefix)", "finding runs [--page-size 1..32] [--cursor <192-hex>] [--known-at HEAD|<seq>]   (discover recorded runs; default page size 16)", "finding list --certificate C:<digest> [--known-at HEAD|<seq>]   (every finding in this certified run, not a global inventory)", "finding show F:<vid> [--known-at HEAD|<seq>]", "finding review F:<vid> --action acknowledge|dismiss|reopen --note <text> [--previous R:<latest-review>] [--dismissal-reason explained|duplicate|data-quality|outside-scope|other] [--evidence D:<oid>]...", "finding review --certificate C:<run> --file <reviews.json|->   (an explicit selection from ONE run reviewed in one transaction: a JSON array of {finding, action, note, previous?, dismissal_reason?, evidence?: [D:<oid>]}, each validated as a single review; any refused decision refuses the whole set, and one finding_reviewed event is emitted per decision in certified order)", "finding export --certificate C:<digest> [--export-format md|jsonl|canonical] [--include-reviews [--known-at HEAD|<seq>]] [--out <new-file>]", "finding replay <canonical-workpaper|-> [--certificate C:<expected-digest> --known-at <exact-seq>]", "Recording and exporting require read and produce; discovering runs, listing, showing and replaying require read. Review requires a Human with read and approve who is independent of the run producer. Dismissal also requires a registered reason and retained evidence. Supply the current --previous after the first decision; stale decisions refuse instead of overwriting history.", "Run discovery has scope recorded-runs: total_recorded_runs counts the structurally checked inventory at known_at; only summaries in the returned page also undergo full certificate and computation replay. It establishes neither current review status nor complete detector coverage. Pass next_cursor unchanged to continue the same book and inventory: omitted known_at or HEAD inherits the cursor cutoff; an explicit sequence must equal it. Current authority is always rechecked, and checked_through names the current validation frontier.", "The original numbered workpaper remains unchanged when later reviews are appended. --include-reviews adds a separate review appendix with its own fixed cutoff. Canonical exports replay against retained native evidence; Markdown and JSONL are presentations. Recipient-bound replay requires both the independently expected certificate and exact review cutoff; replay without them states its as-supplied historical scope. Complete responses refuse if they exceed transport limits, never truncate.", "Bank statement drift observations additionally require current reconcile authority when recording, reading, reviewing, exporting or replaying their retained run. A saved certificate or workpaper never grants that authority; ordinary procedure runs keep their existing operation requirements."]
 example = "fa finding record jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
-name = "bank"
-summary = "Retain bank statements, propose available cash-leg matches, confirm reviewed selections, release exact decisions and inspect immutable match history."
+name = "fx"
+summary = "Retain exact typed Rate evidence for functional-currency posting; no uploaded rate claims provider authentication."
 writes = true
-subcommands = ["import", "match", "confirm", "unmatch", "history", "status"]
+subcommands = ["rate"]
+flags = ["--from-json", "--grant"]
+switches = []
+events = ["fx_rate_added"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["fx rate add --from-json <rate.json|->", "Rate JSON fields: base_unit (functional currency code), quote_unit (foreign currency code), rate_num and rate_den (positive exact decimal integer strings, at most u128), rounding (registered law name), as_of (YYYY-MM-DD), retrieved_at_ns (nonnegative u64 integer), purpose (spot_close | period_average | period_close | settlement), and source (uploader's source description). The ratio states functional-currency units per one foreign-currency unit. Unknown and repeated fields, floats, zero denominators and unknown units refuse.", "The existing authenticated intake path derives HumanUpload or AgentUpload. Source and retrieval metadata are uploaded assertions, never a verified provider transcript or trusted clock. A retry preserves the original uploader's evidence grade and receipt. Admission precedes host-file or stdin consumption. MCP uses the on-demand fa.fx cluster with action add and inline rate JSON; host paths are refused.", "For a valued posting, fa post --intent <entry.json|-> accepts fx: {law: SpotClose | PeriodAverage, rates: [D:<retained-Rate-oid>, ...]}. JSON string values must be quoted. The facade reads complete governed Rate documents and computes base amounts; the posting kernel independently recomputes them inside its transaction. Caller-supplied base_amount and base_totals refuse. Current read and post authority are required; a bound capability is never widened.", "SpotClose uses spot_close evidence as of the entry's effective date. PeriodAverage uses period_average evidence as of the last included day of the actual posting period. Both live laws require HalfEven rounding. A Reversal inherits its target's exact valuation and retained Rate evidence and cannot supply a new fx selection; an explicit later SpotClose reversal date must satisfy native rate-date law.", "Read the resulting functional activity with fa tb --functional --activity --period <one code> [--as-known-at HEAD|<seq>|<RFC3339>]. Posted and pending columns stay separate; foreign legs lacking committed base valuations refuse. This view is one period's activity, not cumulative stock, revaluation or a certificate. It rejects summary, fiscal-year, as-of, scenario, original-report and certification options. Current whole-book read authority is checked even for historical prefixes."]
+example = "fa fx rate add --from-json rate.json --book ./books/myco --json"
+
+[[verb]]
+name = "bank"
+summary = "Retain bank statements, confirm and correct exact matches, attest statement closes, and inspect historical reconciliation and later drift."
+writes = true
+subcommands = ["import", "match", "confirm", "unmatch", "history", "status", "reconcile", "reconciliation"]
 flags = ["--previous-import", "--bank-format", "--account", "--import", "--date-window", "--as-known-at", "--grant", "--line-ordinal", "--proposal-digest", "--source-known-at", "--proposer", "--match", "--digest"]
 switches = []
-events = ["bank_imported", "bank_matches_proposed", "bank_match_confirmed", "bank_match_unmatched", "bank_match_history", "bank_confirmation_status"]
+events = ["bank_imported", "bank_matches_proposed", "bank_match_confirmed", "bank_match_unmatched", "bank_match_history", "bank_confirmation_status", "bank_reconciled", "bank_reconciliation_status"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code> [--previous-import <manifest_oid> --grant privileged]", "bank match --import <manifest_oid> [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>]", "bank confirm --import <manifest_oid> --line-ordinal <ordinal> --proposal-digest <hex64> --source-known-at <exact-seq> --proposer <hex32> [--date-window <days>] --grant privileged", "bank status --import <manifest_oid> --grant privileged [--as-known-at HEAD|<seq>|<RFC3339>]", "bank unmatch --match <hex32> --digest <hex64> --yes", "bank history [--account <code>] [--import <manifest_oid>] [--as-known-at HEAD|<seq>]", "Import requires read, post and reconcile and one debit-normal Asset leaf in the statement currency. Original bytes, canonical lines and the parser/account manifest are retained atomically with the native import receipt; an exact repeat returns the existing receipt.", "Match requires read and reconcile. It reopens and verifies the retained source closure, then proposes exact amount, date and reference matches against cash-leg memos; the default date window is 3 days. Complete decision cards and stable leg identities explain every proposal. Active native claims remove occupied lines and cash legs before eligibility is computed; candidate ordinals remain stable. eligible_candidate_count and competing_bank_lines expose ties before greedy proposal consumption. Existing confirmations retain their original card, proposer and exact reference with status=confirmed; lines claimed under another retained interpretation have status=occupied. Available ambiguous proposals and unmatched lines competing for one cash leg require review. This read creates no monetary entry or match confirmation.", "Matching replays the complete original BankStatement and requires authority to disclose its full source; a redacted view is insufficient. An embedded-owner operator explicitly opts in with fa bank match --import <manifest_oid> --grant privileged. Reading the original source similarly uses fa document read <statement_oid> --grant privileged. Current MCP launch templates cannot hold privileged: fa_bank_match refuses governed BankStatement sources, so an independently authorized operator must perform those matches.", "The response names its inclusive candidate window. Outstanding means available cash legs in that window left unmatched by proposals, excluding active native claims across statements; it is never a complete reconciliation inventory; an empty statement has no candidate window. The closing difference separately compares the statement balance with the journal's closing balance. Wire formats accept the bounded profiles documented by fa-formats and refuse ambiguous sources; unlinked imports remain explicitly unlinked.", "An explicit previous import replays its complete retained chain before publication. The bank/instrument identity, mapped cash account, currency, checked next sequence, opening-to-prior-closing balance and statement date order must agree. Cross-uploader exact repeats return the original receipt; a competing predecessor for the same statement/account refuses atomically. The bounded chain ends at an explicitly unlinked retained statement. continuity=verified_predecessor is structural evidence, never a confirmed match or reconciliation.", "An unambiguous match row includes proposer and confirmation_command. Confirmation reconstructs the complete selected proposal at source_known_at, verifies its digest and source closure, then atomically records the exact original cash-leg ordinal and an exclusive line/leg claim. Current Human read, reconcile and full-source authority are required. The recorded confirmer is distinct from the proposer preserved in the proposal bytes; those bytes are not a separate signed preparation event. An exact retry returns the original immutable receipt even under a different authorized reviewer or after release and rematching; it cannot reactivate a released generation. Conflicting or ambiguous selections refuse; no amount, fee or residual is posted.", "Status replays the retained source and inventories native confirmation births at the selected prefix. It reports original confirming principals and exact source coordinates for every recorded generation; confirmed_lines counts distinct source lines ever confirmed at that prefix and remaining_lines counts those never confirmed. Removed or edited records fail verification. Later reversals do not erase a recorded confirmation; scope remains recorded_confirmations and reconciled_through remains null. A complete live reconciliation, closing-balance attestation and posting soft lock require their own native operations.", "Unmatch requires current Human read and reconcile authority and an exact match VID plus digest. With --yes it appends an attributed release of that confirmation and its cash-leg claim; prior records and amounts remain unchanged. The two resources may then be confirmed in independent later generations that cite their releases. An exact release retry returns the original release and never affects a later generation.", "History requires current read and reconcile authority and verifies native confirmation, claim and release births without opening statement or manifest bytes, including externally stored manifests. It reports all selected decisions plus active claims at the numeric --as-known-at prefix or HEAD. Optional account and manifest filters select metadata; history establishes neither a live balance attestation nor a reconciliation lock. Revocation is checked against current authority even for older prefixes. The history tool is available to appropriately scoped MCP sessions; unmatch remains a Human host operation.", "Confirm and status also need complete governed BankStatement replay. An embedded owner must explicitly opt into --grant privileged. Current MCP launch ceilings cannot hold privileged, so the on-demand tools refuse these governed sources; per-call arguments cannot widen launch authority."]
+usage = [
+  "bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code> [--previous-import <manifest_oid> --grant privileged]",
+  "bank match --import <manifest_oid> [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>]",
+  "bank confirm --import <manifest_oid> --line-ordinal <ordinal> --proposal-digest <hex64> --source-known-at <exact-seq> --proposer <hex32> [--date-window <days>] --grant privileged",
+  "bank status --import <manifest_oid> --grant privileged [--as-known-at HEAD|<seq>|<RFC3339>]",
+  "bank unmatch --match <hex32> --digest <hex64> --yes",
+  "bank history [--account <code>] [--import <manifest_oid>] [--as-known-at HEAD|<seq>]",
+  "bank reconcile --import <manifest_oid> --source-known-at <reviewed-seq> --grant privileged --yes",
+  "bank reconciliation --import <manifest_oid> [--as-known-at HEAD|<seq>]",
+  "Import requires read, post and reconcile and one debit-normal Asset leaf in the statement currency. Original bytes, canonical lines and the parser/account manifest are retained atomically with the native import receipt; an exact repeat returns the existing receipt.",
+  "Match requires read and reconcile. It reopens and verifies the retained source closure, then proposes exact amount, date and reference matches against cash-leg memos; the default date window is 3 days. Complete decision cards and stable leg identities explain every proposal. Active native claims remove occupied lines and cash legs before eligibility is computed; candidate ordinals remain stable. eligible_candidate_count and competing_bank_lines expose ties before greedy proposal consumption. Existing confirmations retain their original card, proposer and exact reference with status=confirmed; lines claimed under another retained interpretation have status=occupied. Available ambiguous proposals and unmatched lines competing for one cash leg require review. This read creates no monetary entry or match confirmation.",
+  "Matching replays the complete original BankStatement and requires authority to disclose its full source; a redacted view is insufficient. An embedded-owner operator explicitly opts in with fa bank match --import <manifest_oid> --grant privileged. Reading the original source similarly uses fa document read <statement_oid> --grant privileged. Current MCP launch templates cannot hold privileged: fa_bank_match refuses governed BankStatement sources, so an independently authorized operator must perform those matches.",
+  "The response names its inclusive candidate window. Outstanding means available cash legs in that window left unmatched by proposals, excluding active native claims across statements; it is never a complete reconciliation inventory; an empty statement has no candidate window. The closing difference separately compares the statement balance with the journal's closing balance. Wire formats accept the bounded profiles documented by fa-formats and refuse ambiguous sources; unlinked imports remain explicitly unlinked.",
+  "An explicit previous import replays its complete retained chain before publication. The bank/instrument identity, mapped cash account, currency, checked next sequence, opening-to-prior-closing balance and statement date order must agree. Cross-uploader exact repeats return the original receipt; a competing predecessor for the same statement/account refuses atomically. The bounded chain ends at an explicitly unlinked retained statement. continuity=verified_predecessor is structural evidence, never a confirmed match or reconciliation.",
+  "An unambiguous match row includes proposer and confirmation_command. Confirmation reconstructs the complete selected proposal at source_known_at, verifies its digest and source closure, then atomically records the exact original cash-leg ordinal and an exclusive line/leg claim. Current Human read, reconcile and full-source authority are required. The recorded confirmer is distinct from the proposer preserved in the proposal bytes; those bytes are not a separate signed preparation event. An exact retry returns the original immutable receipt even under a different authorized reviewer or after release and rematching; it cannot reactivate a released generation. Conflicting or ambiguous selections refuse; no amount, fee or residual is posted.",
+  "Status replays the retained source and inventories native confirmation births at the selected prefix. confirmed_lines counts distinct source lines ever confirmed and remaining_lines counts those never confirmed. Separate reconciliations verify each original exact-close claim and compare it with the selected cash and active-match sets. reconciled_through is established only by verified closing attestations, and remains protected after drift; confirmations alone never establish it.",
+  "Unmatch requires current Human read and reconcile authority and an exact match VID plus digest. With --yes it appends an attributed release of that confirmation and its cash-leg claim; prior records and amounts remain unchanged. The two resources may then be confirmed in independent later generations that cite their releases. An exact release retry returns the original release and never affects a later generation.",
+  "History requires current read and reconcile authority and verifies native confirmation, claim and release births without opening statement or manifest bytes, including externally stored manifests. It reports all selected decisions plus active claims at the numeric --as-known-at prefix or HEAD. Optional account and manifest filters select metadata; history establishes neither a live balance attestation nor a reconciliation lock. Revocation is checked against current authority even for older prefixes. The history tool is available to appropriately scoped MCP sessions; unmatch remains a Human host operation.",
+  "Confirm and status also need complete governed BankStatement replay. An embedded owner must explicitly opt into --grant privileged. Current MCP launch ceilings cannot hold privileged, so the on-demand tools refuse these governed sources; per-call arguments cannot widen launch authority.",
+  "Reconcile requires a current Human with read, reconcile and full-source authority, --yes, and the exact reviewed numeric source_known_at. It verifies the retained source and predecessor chain; every statement line must have an active exact confirmation to a leg effective by statement_date. Cumulative posted cash from inception through statement_date must equal the statement closing. It records a capability-bound Reconciled attestation without posting money; this exact-close profile refuses unmatched lines, later-effective matches and unequal balances, and does not claim adjusted outstanding-item reconciliation or complete lifetime source coverage.",
+  "An attested statement close protects its cash account through the statement date, including empty statements and quiet statement tails. Backdated native postings and migration activations require reconcile authority and retain attestation citations. A subsequent cash change, even net-zero, or match correction does not rewrite the original claim. The metadata reconciliation command verifies original historical claims and shows contribution, amount and match drift at a selected prefix; it is available to authorized MCP sessions without privileged document access. An exact same-principal retry at the original evaluated prefix returns the original attestation.",
+]
 example = "fa bank import statement.xml --bank-format camt053 --account 1000 --book ./books/myco --json"
 
 [[verb]]
@@ -651,8 +693,8 @@ subcommands = []
 flags = []
 switches = []
 events = ["book_triage"]
-exits = [0, 2, 4, 5]
-usage = ["triage   (next_actions: what to run next, computed from the book's state)"]
+exits = [0, 2, 4, 5, 7]
+usage = ["triage   (next_actions: what to run next, computed from the book's state)", "Requires current read authority over the whole book at its head; scoped tokens are refused before the survey."]
 example = "fa triage --book ./books/myco --json"
 
 [[verb]]
@@ -663,8 +705,8 @@ subcommands = []
 flags = []
 switches = []
 events = ["next_step"]
-exits = [0, 2, 4, 5]
-usage = ["next   (command and why; null when there is nothing to do)"]
+exits = [0, 2, 4, 5, 7]
+usage = ["next   (command and why; null when there is nothing to do)", "Requires the same current whole-book read authority as triage."]
 example = "fa next --book ./books/myco --json"
 
 
@@ -783,6 +825,12 @@ verb = "bank"
 subcommand = "unmatch"
 condition = "always"
 safe = "inspect bank history and select the exact match VID and digest before releasing its line and cash-leg claim"
+
+[[dangerous]]
+verb = "bank"
+subcommand = "reconcile"
+condition = "always"
+safe = "review bank status and the statement closing balance at the exact --source-known-at prefix before attesting the close and protecting its cash dates"
 
 [[dangerous]]
 verb = "close"
@@ -1009,6 +1057,12 @@ doc = "A complete canonical workpaper replayed against retained native observati
 fields = ["certificate:hex", "workpaper:string", "workpaper_digest:hex", "recorded_at:seq", "source_known_at:seq", "review_known_at:seq?", "includes_reviews:bool", "finding_count:int", "checked_through:seq", "scope:string"]
 
 [[event]]
+name = "fx_rate_added"
+book = true
+doc = "One canonical typed Rate document retained through authenticated upload. The exact rational is functional-currency units per foreign-currency unit. Its source and retrieved_at_ns are uploader assertions, with no implied provider or clock authentication. Exact retries preserve the original grade, commitment and receipt."
+fields = ["oid:hex", "doc_commit:hex", "kind:string", "grade:string", "size:int", "recorded_at:seq", "already_recorded:bool", "base_unit:string", "quote_unit:string", "rate_num:string", "rate_den:string", "rounding:string", "as_of:date", "retrieved_at_ns:int", "purpose:string"]
+
+[[event]]
 name = "bank_imported"
 book = true
 doc = "A bank statement retained with its complete canonical line documents and a parser/account manifest, under one native import receipt. Repeating the same source, parser and account returns the existing receipt without publication. continuity is unlinked or verified_predecessor; verified_predecessors counts replayed links ending at an unlinked root. predecessor binds the immediately preceding retained receipt and statement. This is not match confirmation."
@@ -1017,8 +1071,8 @@ fields = ["manifest_oid:hex","statement_oid:hex","statement_commit:hex","bank_fo
 [[event]]
 name = "bank_matches_proposed"
 book = true
-doc = "Bank-line proposals and retained active confirmations after source-closure verification at one known-at prefix. confirmed_count counts this manifest interpretation; occupied_count counts lines claimed under another interpretation. Native active claims exclude occupied resources before eligibility, without changing candidate ordinals. Outstanding rows are remaining available cash-leg candidates inside the inclusive window, not a complete reconciliation inventory. Empty statements have null window bounds. Closing balances are exact journal/statement amounts; this read publishes no confirmation or monetary entry. continuity and predecessor describe structural source links only."
-fields = ["manifest_oid:hex","statement_oid:hex","account:string","account_ref:hex","unit:string","known_at:seq","statement_date:date","date_window:int","candidate_from:string?","candidate_through:string?","outstanding_scope:string","outstanding_complete:bool","decision_epoch:hex","method:string","confirmed:bool","line_count:int","proposed_count:int","confirmed_count:int","occupied_count:int","ambiguous_count:int","unmatched_count:int","outstanding_count:int","statement_closing_balance:amount","book_closing_balance:amount","closing_difference:amount","proposals:[bank_match_proposal]","outstanding:[bank_outstanding_leg]","continuity:string","verified_predecessors:int","predecessor:bank_import_predecessor?"]
+doc = "Bank-line proposals and retained active confirmations after complete relevant source-closure verification at one known-at prefix. confirmed_count counts this manifest interpretation; occupied_count counts lines claimed under another interpretation; remaining_count counts every source line not confirmed under this manifest, including occupied lines. progress retains exact gross inflow and outflow in each category; remaining equals occupied plus proposed plus unmatched separately by direction. Native active claims exclude occupied resources before eligibility, without changing candidate ordinals. Outstanding rows and amounts cover remaining available cash-leg candidates inside the inclusive window, not a complete reconciliation inventory. Empty statements have null window bounds. Confirmation completeness and closing-balance equality are independent observations, neither an attestation nor a reconciled-through posting lock. This read publishes no confirmation or monetary entry. continuity and predecessor describe structural source links only."
+fields = ["manifest_oid:hex","statement_oid:hex","account:string","account_ref:hex","unit:string","known_at:seq","statement_date:date","date_window:int","candidate_from:string?","candidate_through:string?","outstanding_scope:string","outstanding_complete:bool","decision_epoch:hex","method:string","confirmed:bool","line_count:int","proposed_count:int","confirmed_count:int","remaining_count:int","occupied_count:int","ambiguous_count:int","unmatched_count:int","outstanding_count:int","statement_closing_balance:amount","book_closing_balance:amount","closing_difference:amount","progress:bank_reconciliation_progress","proposals:[bank_match_proposal]","outstanding:[bank_outstanding_leg]","continuity:string","verified_predecessors:int","predecessor:bank_import_predecessor?"]
 
 [[event]]
 name = "bank_match_confirmed"
@@ -1041,8 +1095,20 @@ fields = ["known_at:seq", "scope:string", "account:string?", "account_ref:hex?",
 [[event]]
 name = "bank_confirmation_status"
 book = true
-doc = "The complete immutable confirmation inventory for one retained bank statement at known_at, admitted under current full-source authority. Native creation history detects removed or rewritten confirmations and occupied-leg claims. confirmed_lines counts distinct source lines with any recorded generation at this prefix; remaining_lines counts those never confirmed. Releases and later reversals do not erase historical confirmation facts. scope is recorded_confirmations and reconciled_through is null: this is not a live reconciliation register or a closing-balance attestation."
-fields = ["manifest_oid:hex", "statement_oid:hex", "account_ref:hex", "known_at:seq", "line_count:int", "confirmed_lines:int", "remaining_lines:int", "scope:string", "reconciled_through:date?", "confirmations:[bank_confirmation]"]
+doc = "The complete immutable confirmation inventory for one retained bank statement at known_at, admitted under current full-source authority. confirmed_lines counts distinct source lines with any recorded generation; remaining_lines counts those never confirmed. Separate reconciliations verify original exact-close claims and report cash or match drift at this selected prefix. reconciled_through comes only from those verified attestations and remains protected after drift; confirmation counts alone never establish a cutoff."
+fields = ["manifest_oid:hex", "statement_oid:hex", "account_ref:hex", "known_at:seq", "line_count:int", "confirmed_lines:int", "remaining_lines:int", "scope:string", "reconciled_through:date?", "confirmations:[bank_confirmation]", "drifted_reconciliations:int", "reconciliations:[bank_reconciliation_state]"]
+
+[[event]]
+name = "bank_reconciled"
+book = true
+doc = "An immutable capability-bound Human attestation of an exact statement close. Every retained line has an active native confirmation to a cash leg effective by the statement date, and the cumulative posted cash balance equals the statement closing. The original prefix, exact contribution digest and match references remain fixed. The account is protected through the statement date; later cash changes require reconcile authority and cite the attestation. This does not assert complete lifetime statement coverage or adjusted reconciliation with outstanding items."
+fields = ["reconciliation:bank_reconciliation"]
+
+[[event]]
+name = "bank_reconciliation_status"
+book = true
+doc = "Native statement-close metadata under current Read and Reconcile authority, without opening governed statement text. Each original claim is independently verified at its original evaluated prefix; current cash and match state are compared at known_at. cash_drift detects changed contributions even when net amounts agree, balance_drift detects an amount difference, and match_drift detects a changed exact active match set. Durable late Entry and activation-control citations are retained. A historical claim never becomes false because later facts changed."
+fields = ["manifest_oid:hex", "known_at:seq", "reconciled_through:date?", "reconciliation_count:int", "drifted_count:int", "reconciliations:[bank_reconciliation_state]"]
 
 [[event]]
 name = "fad_request"
@@ -1332,6 +1398,12 @@ name = "trial_balance"
 book = true
 doc = "Stock (through `effective_through`) or activity (the selected periods), at the `known_at` snapshot."
 fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool", "served:tb_served?"]
+
+[[event]]
+name = "functional_trial_balance"
+book = true
+doc = "Exact functional-currency activity for one posting period at one known-at prefix, folded from immutable committed base valuations. scope is period_activity; posted and outstanding pending holds are separate. Unvalued foreign legs refuse. Current authority, complete Entry history and the selected Book definition are checked before reporting. This does not recalculate entries at current rates, assert current access to their Rate source bytes, establish cumulative stock or issue a certificate."
+fields = ["scope:string", "period:string", "base_unit:string", "known_at:seq", "watermark:seq?", "entries:int", "fold_digest:hex", "rows:[functional_tb_row]", "pending_rows:[functional_tb_row]", "totals:functional_tb_totals", "pending_totals:functional_tb_totals", "balanced:bool", "pending_balanced:bool"]
 
 [[event]]
 name = "statement"
@@ -1948,8 +2020,8 @@ fields = ["name:string", "value:int", "scale:int", "population:int"]
 
 [[shape]]
 name = "cite"
-doc = "A typed citation: `kind` is entry, leg, account, period, document, principal or approval, and exactly the fields that kind carries are non-null."
-fields = ["kind:string", "entry:hex?", "ordinal:int?", "account:hex?", "period:string?", "document:hex?", "principal:hex?", "approval:hex?"]
+doc = "A typed citation: `kind` is entry, leg, account, period, document, principal, approval or attestation, and exactly the fields that kind carries are non-null. Attestation references name their native Attestation vertex; they are never presented as Entry references."
+fields = ["kind:string", "entry:hex?", "ordinal:int?", "account:hex?", "period:string?", "document:hex?", "principal:hex?", "approval:hex?", "attestation:hex?"]
 
 [[shape]]
 name = "evidence_ref"
@@ -2092,6 +2164,16 @@ fields = ["unit_id:int", "max_mantissa:int"]
 name = "tb_row"
 doc = "One account in one unit."
 fields = ["code:string", "name:string", "type:string", "debits:amount", "credits:amount", "net:amount", "debits_pending:amount", "credits_pending:amount"]
+
+[[shape]]
+name = "functional_tb_row"
+doc = "One account and optional legal entity in the book's functional currency, in either the posted or pending period-activity column. net is exact debits less credits."
+fields = ["account:string", "account_ref:hex", "entity:string?", "debits:amount", "credits:amount", "net:amount", "entry_count:int"]
+
+[[shape]]
+name = "functional_tb_totals"
+doc = "Checked exact debit, credit and net totals in the functional currency for one activity column."
+fields = ["debits:amount", "credits:amount", "net:amount"]
 
 [[shape]]
 name = "tb_served"
@@ -2334,6 +2416,16 @@ doc = "An exact immutable bank decision identified by its native VID and canonic
 fields = ["vid:hex", "digest:hex"]
 
 [[shape]]
+name = "bank_reconciliation"
+doc = "A capability-bound exact statement-close attestation, fixed to the original evaluated prefix and cumulative cash contribution digest. matches names the exact native confirmations relied on. No external principal signature or complete outstanding-item inventory is implied."
+fields = ["attestation_vid:hex", "attestation_digest:hex", "recorded_at:seq", "already_recorded:bool", "principal:hex", "manifest_oid:hex", "statement_oid:hex", "account_ref:hex", "unit_id:int", "statement_date:date", "evaluated_known_at:seq", "cash_balance:amount", "cash_fold_digest:hex", "matches:[bank_decision_ref]", "scope:string"]
+
+[[shape]]
+name = "bank_reconciliation_state"
+doc = "An independently verified historical close and its comparison with the selected status prefix. Monetary equality alone does not hide changed cash contributions or released/replaced matches. changed_entries cites subsequent effective cash contributions; citing_entries retains explicit late-posting and activation-control citations."
+fields = ["reconciliation:bank_reconciliation", "historical_claim_verified:bool", "cash_balance:amount", "cash_fold_digest:hex", "active_matches:[bank_decision_ref]", "balance_drift:bool", "cash_drift:bool", "match_drift:bool", "changed_entries:[bank_entry_ref]", "citing_entries:[bank_entry_ref]"]
+
+[[shape]]
 name = "bank_unmatch"
 doc = "An immutable release referring to one exact confirmation, retaining its original releasing principal, current authority commitment and native publication sequence."
 fields = ["unmatch_vid:hex","unmatch_digest:hex","recorded_at:seq","target:bank_decision_ref","unmatched_by:hex","unmatching_profile:string","capability_commitment:hex","security_policy_epoch:int","already_recorded:bool"]
@@ -2342,6 +2434,16 @@ fields = ["unmatch_vid:hex","unmatch_digest:hex","recorded_at:seq","target:bank_
 name = "bank_outstanding_leg"
 doc = "A cash leg in the named candidate window that is neither claimed by an active native confirmation nor consumed by a fresh proposal. This is a candidate-window observation, not a full outstanding-item inventory."
 fields = ["entry_ref:bank_entry_ref", "leg_ordinal:int", "effective_date:date", "side:string", "amount:amount"]
+
+[[shape]]
+name = "bank_cash_amounts"
+doc = "Exact gross cash movements in the statement's unit. Inflow and outflow remain separate, so offsetting unresolved items cannot cancel. Bank credits and book debits are inflows."
+fields = ["inflow:amount", "outflow:amount"]
+
+[[shape]]
+name = "bank_reconciliation_progress"
+doc = "Active progress at the selected prefix. confirmed applies to this manifest; occupied means the original source line is claimed under another interpretation. remaining includes occupied, proposed and unmatched lines. outstanding covers only available cash legs inside the declared candidate window. all_statement_lines_confirmed and closing_balances_equal are independent observations; they do not attest a balance or establish a posting lock."
+fields = ["confirmed:bank_cash_amounts", "occupied:bank_cash_amounts", "remaining:bank_cash_amounts", "proposed:bank_cash_amounts", "unmatched:bank_cash_amounts", "outstanding:bank_cash_amounts", "all_statement_lines_confirmed:bool", "closing_balances_equal:bool"]
 
 [[shape]]
 name = "untrusted_text"
@@ -2581,6 +2683,11 @@ name = "fa.evidence"
 doc = "Evidence: record a source document, content-addressed, so an entry can cite it."
 
 [[mcp.cluster]]
+name = "fa.fx"
+on_demand = true
+doc = "Foreign-currency evidence: retain typed uploaded Rate documents for source-valued posting. Rates retain the authenticated uploader's grade; no provider or clock provenance is inferred. Functional activity is read through fa_read_trial_balance."
+
+[[mcp.cluster]]
 name = "fa.rea"
 on_demand = true
 doc = "REA parties and instruments (plan §4.1, §4.5): record them, relate parties by a registered basis, and list them, so events can name participants and resources and the related-party procedures have a graph."
@@ -2603,7 +2710,7 @@ doc = "Discover recorded forensic runs with bounded cursor pages, then inspect r
 [[mcp.cluster]]
 name = "fa.bank"
 on_demand = true
-doc = "Bank source intake, exact available-leg proposals, immutable confirmations and metadata history with explicit release generations. History requires Read and Reconcile and verifies native decisions without opening bank files. Source replay for matching, confirmation and status requires full disclosure authority that current MCP launch templates cannot hold. Human host operators perform explicit releases. No match decision posts money or establishes a reconciliation lock."
+doc = "Bank source intake, exact matches and corrections, immutable decision history, and statement-close metadata with later drift. History and reconciliation require Read and Reconcile and verify native facts without opening bank files. Source replay requires full disclosure authority that current MCP launch templates cannot hold. Human host operators perform releases and attest exact closes; those closes protect the cash account through the statement date."
 
 [[mcp.cluster]]
 name = "fa.close"
@@ -2619,6 +2726,11 @@ doc = "Portable accounting proofs from recorded checkpoints (signed by the book'
 verb = "bank"
 subcommand = "unmatch"
 reason = "host-only: an independently authorized Human explicitly releases one exact confirmation with --yes; launch-bound sessions may inspect native metadata history but cannot release claims"
+
+[[mcp.excluded]]
+verb = "bank"
+subcommand = "reconcile"
+reason = "host-only: an independently authorized Human reviews the exact source prefix and uses --yes with full-source authority to attest a statement close; launch-bound sessions inspect verified closes and drift through fa_bank_reconciliation"
 
 [[mcp.excluded]]
 verb = "recover"
@@ -3135,6 +3247,21 @@ dont = ["Supply the complete canonical bytes_hex from export as workpaper; host 
 mistakes = ["Passing HEAD as an independently expected review cutoff, or supplying only one expectation.", "Treating a repaired public checksum as proof of edited findings or human decisions; native replay verifies the complete retained source and decision closure."]
 
 [[mcp.tool]]
+cluster = "fa.fx"
+name = "rate"
+verb = "fx"
+subcommands = ["rate"]
+positionals = ["action"]
+flags = ["--from-json"]
+switches = []
+stdin_property = "rate"
+stdin_kind = "object"
+stdin_via = "--from-json"
+required = ["action", "--from-json"]
+dont = ["Use action add and supply the complete typed source object inline as rate. from_json_file host paths are not accepted. The fixed launch capability must hold post; the authenticated intake derives AgentUpload for an Agent holder.", "Use exact positive decimal strings for rate_num and rate_den. Source and retrieved_at_ns are uploaded assertions; never describe them as independently verified provider or time evidence.", "After upload, post an intent naming fx.law and fx.rates with the retained D:oid. Both SpotClose and PeriodAverage require HalfEven; SpotClose needs the effective date, PeriodAverage the last included posting-period day. The posting kernel verifies admissibility and evidence grade independently."]
+mistakes = ["Supplying a raw rate or caller-computed base_amount in a posting intent instead of a retained Rate document.", "Treating an uploaded rate as a verified provider quote, or a duplicate upload as a grade promotion."]
+
+[[mcp.tool]]
 cluster = "fa.bank"
 name = "import"
 verb = "bank"
@@ -3183,7 +3310,7 @@ flags = ["--import", "--as-known-at"]
 switches = []
 required = ["--import"]
 dont = ["The inventory covers immutable recorded confirmations for one retained statement under current read, reconcile and full-source authority. It is not a live reconciliation register or complete outstanding-item inventory.", "Current MCP launch templates cannot hold privileged for complete governed BankStatement replay; use an independently authorized embedded-owner operator with explicit --grant privileged. Historical selectors do not restore expired or revoked authority."]
-mistakes = ["Treating an original confirmation as proof that its cash entry remains unreversed today.", "Interpreting remaining_lines=0 as a closing-balance assertion or reconciliation lock; reconciled_through remains null."]
+mistakes = ["Treating an original confirmation as proof that its cash entry remains unreversed today.", "Interpreting remaining_lines=0 as a closing-balance assertion or reconciliation lock; only the separate verified reconciliations establish reconciled_through."]
 
 [[mcp.tool]]
 cluster = "fa.bank"
@@ -3196,6 +3323,18 @@ switches = []
 required = []
 dont = ["The launch capability must hold read and reconcile at the selected prefix. Current revocation is checked before any metadata or retained-history hydration; a historical selector never restores authority.", "This tool reads native confirmation and release metadata without opening BankStatement or manifest bytes, including external documents. Optional account and import filters select exact recorded coordinates.", "Active means an unreleased native claim at known_at. It is not a cash-balance attestation, proof that a source entry remains unreversed, a complete outstanding-item inventory or a reconciled-through lock."]
 mistakes = ["Passing an RFC3339 instant: metadata history accepts HEAD or a numeric commit sequence only.", "Treating old confirmations as active after a release; inspect active and unmatches together."]
+
+[[mcp.tool]]
+cluster = "fa.bank"
+name = "reconciliation"
+verb = "bank"
+subcommands = ["reconciliation"]
+positionals = []
+flags = ["--import", "--as-known-at"]
+switches = []
+required = ["--import"]
+dont = ["The launch capability must hold read and reconcile at the selected prefix. Current revocation still applies to historical reads.", "This tool independently verifies original exact-close claims, then compares their cash contribution and active-match sets with the selected prefix. It reads metadata without opening BankStatement text and cannot create, erase or release an attestation.", "The protected cutoff remains after drift. An authorized Human reviews and records a new exact close on the host; per-call grants and --yes are unavailable."]
+mistakes = ["Treating an unchanged net amount as proof that the contribution set is unchanged: inspect cash_drift as well as balance_drift.", "Treating a release/rematch as the original close's active match set, or interpreting this exact-close profile as a complete adjusted reconciliation of outstanding items."]
 
 [[mcp.tool]]
 cluster = "fa.notary"
@@ -3417,7 +3556,7 @@ subcommands = []
 positionals = []
 flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--branch"]
 required = []
-dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write."]
+dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write.", "For functional currency, supply functional: true, activity: true and one period. This view folds committed base valuations and refuses unvalued foreign legs; it cannot combine with certify, summary, fiscal_year, as_of, branch or as_originally_reported. It is period movement, not cumulative stock or revaluation."]
 mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Treating a known-at instant as an exact physical commit timestamp: it is a retained TimeEvidence bucket, with its frontier and brackets in the coordinate."]
 
 [[mcp.tool]]
@@ -3621,7 +3760,7 @@ subcommands = ["list", "run"]
 selector = "action"
 positionals = ["id?"]
 required = []
-dont = ["Don't invent a procedure id or a parameter name: `action: \"list\"` returns every registered procedure with its pinned default and meaning.", "Don't treat a finding as a conclusion: it is a statistic with citations; every cited handle resolves and should be read before anything is asserted.", "Don't pass an instant to known_at: procedures run at HEAD or a recorded sequence."]
+dont = ["Don't invent a procedure id or a parameter name: `action: \"list\"` returns every registered procedure with its pinned default and meaning.", "Don't treat a finding as a conclusion: it is a statistic with citations; every cited handle resolves and should be read before anything is asserted.", "Don't pass an instant to known_at: procedures run at HEAD or a recorded sequence.", "The bank statement drift procedure requires Read and Reconcile in the launch capability. Recording its findings also requires Produce. A call cannot grant these operations to itself."]
 mistakes = ["Passing a parameter in display units (10000.00) instead of the unit's mantissa (1000000 at scale 2); the listing's `meaning` says which.", "Running aging.* or trace.* without effective_through (they are historical folds and are refused naming it).", "Running trace.* without account and source (the commingled account and the deposit entry).", "Overriding a parameter with a float; parameters are integers in the registered unit."]
 
 [[mcp.tool]]
@@ -3767,6 +3906,13 @@ fields = ["name:string", "bytes:int", "digest:hex"]
 # registries/capability_caveats.toml; an empty list reads nothing from a
 # book. fa-verbs validates every verb, subcommand, flag and op a rule names;
 # fa-cli tests/write_authority.rs pins every writing command's ops.
+#
+# Scope caveats (accounts, periods, effective, known_at, branch; plan §14.2)
+# are judged before the book is opened (doctrine 8, fa-0x0). A rule with
+# `reach = "judged"` names commands that judge them against exactly what they
+# reach (Book::read_scope, before any query). Every other command that reads
+# a book reaches all of it at the head, so a token carrying any scope caveat
+# is refused on the bound route, never answered with a filtered result.
 
 # Plans and dry runs of period transitions publish nothing.
 [[bound]]
@@ -3800,6 +3946,21 @@ when_all = ["--summary"]
 when_any = ["--certify", "--certificate-out"]
 ops = ["read", "produce"]
 
+# Bank reconciliation metadata has its own admitted scope even when reached
+# through the generic procedure and finding tools. Retained certificates are
+# identified under Read, then their native bank replay requires Reconcile.
+[[bound]]
+verbs = ["procedure"]
+subcommands = ["run"]
+args = ["recon.bank_statement_drift"]
+ops = ["read", "reconcile"]
+
+[[bound]]
+verbs = ["finding"]
+subcommands = ["record"]
+args = ["recon.bank_statement_drift"]
+ops = ["read", "reconcile", "produce"]
+
 # Data embedded in this build: nothing is read from the book.
 [[bound]]
 verbs = ["capabilities", "robot-docs", "help"]
@@ -3820,8 +3981,36 @@ verbs = ["chart", "period"]
 subcommands = ["list"]
 ops = ["read"]
 
+# Each judges what it reaches at its recorded frontier: a trial balance its
+# periods (a stock balance from inception), an explanation of a balance,
+# period or register its period, open items their day, and an entry, its
+# lineage or its evidence the whole book.
 [[bound]]
-verbs = ["tb", "statement", "open-items", "gl", "explain", "replay", "certificate", "entry", "procedure", "triage", "next", "doctor"]
+verbs = ["tb", "open-items", "explain", "entry"]
+ops = ["read"]
+reach = "judged"
+
+# A statement diff or trace compares two frontiers, and a statement from
+# saved certificates reads them: each reaches the whole book.
+[[bound]]
+verbs = ["statement"]
+subcommands = ["diff", "trace"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["statement"]
+when_any = ["--before-certificate", "--after-certificate", "--from-diff"]
+ops = ["read"]
+
+# A statement's columns reach what their basis folds: a stock basis through
+# the latest of its periods, an activity basis exactly its periods.
+[[bound]]
+verbs = ["statement"]
+ops = ["read"]
+reach = "judged"
+
+[[bound]]
+verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor"]
 ops = ["read"]
 
 [[bound]]
@@ -3875,8 +4064,21 @@ verbs = ["checkpoint"]
 ops = ["witness"]
 
 [[bound]]
-verbs = ["proof", "bundle", "export"]
+verbs = ["proof", "bundle"]
 ops = ["read", "produce"]
+
+# Exports judge their cumulative stock boundary and selected known-at prefix
+# before resolving periods, reading the journal, or writing output.
+[[bound]]
+verbs = ["export"]
+ops = ["read", "produce"]
+reach = "judged"
+
+[[bound]]
+verbs = ["fx"]
+subcommands = ["rate"]
+args = ["add"]
+ops = ["post"]
 
 [[bound]]
 verbs = ["production"]
@@ -3899,7 +4101,7 @@ ops = ["read", "post", "reconcile"]
 
 [[bound]]
 verbs = ["bank"]
-subcommands = ["match", "confirm", "status", "history"]
+subcommands = ["match", "confirm", "status", "history", "reconciliation"]
 ops = ["read", "reconcile"]
 
 [[bound]]
@@ -4011,6 +4213,7 @@ ops = ["post"]
 verbs = ["event"]
 subcommands = ["show", "list"]
 ops = ["read"]
+reach = "judged"
 
 [[bound]]
 verbs = ["migrate"]

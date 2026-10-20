@@ -34,11 +34,14 @@ use fa_journal::import::bank::{BANK_LINE_MIME as LINE_MIME, BANK_MANIFEST_MIME a
 pub use fa_journal::import::{BankFormat, BankImportManifest, BankImportPredecessor};
 
 mod confirmation;
+mod reconciliation;
 pub use confirmation::{BankConfirmationRequest, BankConfirmationStatus, BankStatusRequest};
 pub use fa_journal::bank::{
     BankDecisionRef, BankMatchConfirmation, BankMatchHistory, BankMatchLineage, BankMatchRecorded,
+    BankReconciliationRecorded, BankReconciliationState, BankReconciliationStatus,
     BankUnmatchRecorded, BankUnmatchRequest,
 };
+pub use reconciliation::BankReconciliationRequest;
 
 const PARSER_REVISION: u16 = 1;
 
@@ -83,6 +86,49 @@ pub struct BankMatchCandidate {
     pub recorded_at: CommitSeq,
 }
 
+/// Gross cash movements in the retained statement's unit. Inflows and
+/// outflows stay separate so offsetting unresolved lines cannot disappear.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BankCashAmounts {
+    pub inflow: i128,
+    pub outflow: i128,
+}
+
+impl BankCashAmounts {
+    fn add(&mut self, mantissa: i128, inflow: bool) -> Result<(), BookError> {
+        let total = if inflow {
+            &mut self.inflow
+        } else {
+            &mut self.outflow
+        };
+        *total = total
+            .checked_add(mantissa)
+            .ok_or_else(|| corrupt("cash direction total exceeds the exact integer range"))?;
+        Ok(())
+    }
+
+    fn add_line(&mut self, line: &BankStatementLine) -> Result<(), BookError> {
+        self.add(line.amount.mantissa, line.side == Side::Credit)
+    }
+}
+
+/// Active reconciliation progress at one fixed prefix. `remaining` includes
+/// occupied lines under other interpretations as well as proposed and
+/// unmatched lines. `outstanding` covers only the candidate search window.
+/// Matching every line and equal closing balances are separate observations;
+/// neither observation publishes an attestation or creates a posting lock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BankReconciliationProgress {
+    pub confirmed: BankCashAmounts,
+    pub occupied: BankCashAmounts,
+    pub remaining: BankCashAmounts,
+    pub proposed: BankCashAmounts,
+    pub unmatched: BankCashAmounts,
+    pub outstanding: BankCashAmounts,
+    pub all_statement_lines_confirmed: bool,
+    pub closing_balances_equal: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct BankMatchReport {
     pub manifest_oid: Oid,
@@ -115,7 +161,106 @@ pub struct BankMatchReport {
     pub book_closing_balance: i128,
     /// Statement closing less posted book closing, in the bound unit.
     pub closing_difference: i128,
+    pub progress: BankReconciliationProgress,
     pub verified_predecessors: usize,
+}
+
+fn reconciliation_progress(
+    lines: &[BankStatementLine],
+    proposals: &[ReconciliationMatch],
+    candidates: &[BankMatchCandidate],
+    confirmed_matches: &[BankMatchRecorded],
+    occupied_bank_lines: &BTreeSet<(Oid, u32)>,
+    consumed_cash_legs: &BTreeSet<(VId, u16)>,
+    closing_difference: i128,
+) -> Result<BankReconciliationProgress, BookError> {
+    if lines.len() != proposals.len() {
+        return Err(corrupt(
+            "reconciliation progress needs one proposal per source line",
+        ));
+    }
+    let confirmed_lines: BTreeSet<_> = confirmed_matches
+        .iter()
+        .map(|recorded| {
+            (
+                recorded.confirmation.statement_oid,
+                recorded.confirmation.line_ordinal,
+            )
+        })
+        .collect();
+    let source_lines: BTreeSet<_> = lines
+        .iter()
+        .map(|line| (line.statement_oid, line.line_ordinal))
+        .collect();
+    if confirmed_lines.len() != confirmed_matches.len()
+        || source_lines.len() != lines.len()
+        || !confirmed_lines.is_subset(&source_lines)
+        || !confirmed_lines.is_subset(occupied_bank_lines)
+    {
+        return Err(corrupt(
+            "reconciliation progress has inconsistent source-line claims",
+        ));
+    }
+    let mut progress = BankReconciliationProgress {
+        confirmed: BankCashAmounts::default(),
+        occupied: BankCashAmounts::default(),
+        remaining: BankCashAmounts::default(),
+        proposed: BankCashAmounts::default(),
+        unmatched: BankCashAmounts::default(),
+        outstanding: BankCashAmounts::default(),
+        all_statement_lines_confirmed: confirmed_lines.len() == lines.len(),
+        closing_balances_equal: closing_difference == 0,
+    };
+    let mut selected_ordinals = BTreeSet::new();
+    for (line, proposal) in lines.iter().zip(proposals) {
+        let line_oid = line.oid().map_err(|e| corrupt(e.to_string()))?;
+        if proposal.bank_line_ids.as_slice() != [line_oid] {
+            return Err(corrupt(
+                "a progress proposal does not identify its source line",
+            ));
+        }
+        let key = (line.statement_oid, line.line_ordinal);
+        if confirmed_lines.contains(&key) {
+            progress.confirmed.add_line(line)?;
+            continue;
+        }
+        progress.remaining.add_line(line)?;
+        if occupied_bank_lines.contains(&key) {
+            progress.occupied.add_line(line)?;
+        } else if let Some(ordinal) = proposal.matched_entry_ordinal {
+            let candidate = candidates
+                .get(
+                    usize::try_from(ordinal)
+                        .map_err(|_| corrupt("invalid progress candidate ordinal"))?,
+                )
+                .ok_or_else(|| corrupt("missing progress candidate"))?;
+            if candidate.candidate.entry_ordinal != ordinal
+                || consumed_cash_legs
+                    .contains(&(candidate.candidate.entry_ref.vid, candidate.leg_ordinal))
+                || !selected_ordinals.insert(ordinal)
+            {
+                return Err(corrupt(
+                    "a progress proposal reuses or misidentifies a cash leg",
+                ));
+            }
+            progress.proposed.add_line(line)?;
+        } else {
+            progress.unmatched.add_line(line)?;
+        }
+    }
+    for candidate in candidates {
+        if selected_ordinals.contains(&candidate.candidate.entry_ordinal)
+            || consumed_cash_legs
+                .contains(&(candidate.candidate.entry_ref.vid, candidate.leg_ordinal))
+        {
+            continue;
+        }
+        progress.outstanding.add(
+            candidate.candidate.amount.mantissa,
+            candidate.candidate.side == Side::Debit,
+        )?;
+    }
+    Ok(progress)
 }
 
 fn intake_error(message: impl Into<String>) -> Refusal {
@@ -897,7 +1042,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             })
             .collect();
         let mut confirmed_matches = Vec::new();
-        for recorded in active_claims {
+        for recorded in &active_claims {
             let confirmation = &recorded.confirmation;
             if confirmation.statement_oid != manifest.statement_oid
                 || confirmation.manifest_oid != request.manifest_oid
@@ -919,7 +1064,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "an active confirmation disagrees with its retained manifest's account or line document",
                 )));
             }
-            confirmed_matches.push(recorded);
+            confirmed_matches.push(recorded.clone());
         }
         let unit = manifest.unit;
         let account = match self.bank_account(cx, manifest.account, unit, seq)? {
@@ -930,7 +1075,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let candidate_from = first_day.map(|first| DateDay(first.saturating_sub(window)));
         let candidate_through =
             first_day.map(|_| DateDay(manifest.statement_date.0.saturating_add(window)));
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self.authorize_bank(cx, capability)? {
+            return Ok(Err(refusal));
+        }
         let (candidates, book_closing_balance, epoch) = self.query(cx, |db, book| {
+            fa_journal::entry_history::verify_entry_history(db, cx, book, Some(seq))?;
             let entries = fa_registers::entries_at(db, book, seq)?;
             let mut candidates = Vec::new();
             let mut balance = 0_i128;
@@ -982,6 +1134,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             let epoch = fa_journal::policy::security_policy_epoch(db)?;
             Ok((candidates, balance, epoch))
         })?;
+        if let Err(refusal) = self
+            .verify_bank_match_claim_sources(
+                cx,
+                capability,
+                (request.manifest_oid, &manifest),
+                &candidates,
+                &active_claims,
+                seq,
+            )
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
         let decision_epoch = domain_digest(
             b"fa:bank-match-policy:v1",
             &[
@@ -1078,6 +1243,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .closing_balance
             .checked_sub(book_closing_balance)
             .ok_or_else(|| corrupt("closing-balance difference exceeds the exact integer range"))?;
+        let progress = reconciliation_progress(
+            &lines,
+            &proposals,
+            &candidates,
+            &confirmed_matches,
+            &occupied_bank_lines,
+            &consumed_cash_legs,
+            closing_difference,
+        )?;
         Ok(Ok(BankMatchReport {
             manifest_oid: request.manifest_oid,
             manifest,
@@ -1097,6 +1271,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             proposals,
             book_closing_balance,
             closing_difference,
+            progress,
             verified_predecessors,
         }))
     }
@@ -1145,6 +1320,86 @@ mod tests {
         changed = expected;
         changed.format = BankFormat::Csv;
         assert_ne!(changed.canonical_bytes().unwrap(), bytes);
+    }
+
+    #[test]
+    fn progress_preserves_gross_directions_occupied_sources_and_exact_overflow() {
+        let config = MatcherConfig {
+            policy_epoch: None,
+            enforced_policy_epoch: [11; 32],
+            max_date_window_days: 3,
+            pinned_fallback_only: true,
+            advisory_learned_scores_bps: BTreeMap::new(),
+        };
+        let line = BankStatementLine {
+            statement_oid: Oid([9; 32]),
+            statement_seq: 1,
+            line_ordinal: 1,
+            booking_date: DateDay(20_000),
+            value_date: DateDay(20_000),
+            side: Side::Credit,
+            amount: fa_money::Amount::new(UnitId(1), 1000),
+            counterparty: String::new(),
+            reference: String::new(),
+        };
+        let mut debit = line.clone();
+        debit.line_ordinal = 2;
+        debit.side = Side::Debit;
+        let lines = vec![line, debit];
+        let proposals = match_bank_lines(&lines, &[], &config, VId(12)).unwrap();
+        let empty = BTreeSet::new();
+        let progress =
+            reconciliation_progress(&lines, &proposals, &[], &[], &empty, &BTreeSet::new(), 0)
+                .unwrap();
+        assert_eq!(
+            progress.remaining,
+            BankCashAmounts {
+                inflow: 1000,
+                outflow: 1000
+            }
+        );
+        assert_eq!(progress.unmatched, progress.remaining);
+        assert!(progress.closing_balances_equal);
+        assert!(!progress.all_statement_lines_confirmed);
+
+        let occupied = BTreeSet::from([(lines[0].statement_oid, lines[0].line_ordinal)]);
+        let remapped =
+            reconciliation_progress(&lines, &proposals, &[], &[], &occupied, &BTreeSet::new(), 0)
+                .unwrap();
+        assert_eq!(
+            remapped.occupied,
+            BankCashAmounts {
+                inflow: 1000,
+                outflow: 0
+            }
+        );
+        assert_eq!(
+            remapped.unmatched,
+            BankCashAmounts {
+                inflow: 0,
+                outflow: 1000
+            }
+        );
+        assert_eq!(remapped.remaining, progress.remaining);
+        assert!(!remapped.all_statement_lines_confirmed);
+
+        let mut overflowing = lines;
+        overflowing[0].amount.mantissa = i128::MAX;
+        overflowing[1].amount.mantissa = 1;
+        overflowing[1].side = Side::Credit;
+        let proposals = match_bank_lines(&overflowing, &[], &config, VId(12)).unwrap();
+        assert!(
+            reconciliation_progress(
+                &overflowing,
+                &proposals,
+                &[],
+                &[],
+                &empty,
+                &BTreeSet::new(),
+                0,
+            )
+            .is_err()
+        );
     }
 }
 

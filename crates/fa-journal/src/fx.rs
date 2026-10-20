@@ -30,7 +30,7 @@ use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 use fa_money::valuation::{LegValue, ValuationError, value_legs};
 use fa_money::{Amount, Rate, RoundingLaw, Side, UnitId, UnitRegistry};
 use fa_registry::FxLaws;
-use fa_time::DateDay;
+use fa_time::{DateDay, PeriodDef};
 use fgdb::{Database, WriteTxn};
 use fgdb_types::VId;
 
@@ -909,15 +909,56 @@ pub(crate) fn admit_structure(
 /// Verify the FX claim inside the posting transaction that witnesses the
 /// cited `Rate` documents (`FA-INV-01.base`, `FA-INV-01.base-residual`,
 /// `FA-INV-01.realized-fx`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     spec: &BookSpec,
+    period: &PeriodDef,
     units: &UnitRegistry,
     leg_entities: &[Option<String>],
     proposal: &EntryPayload,
     claim: &FxClaim,
 ) -> Outcome<()> {
+    // Only fresh postings reach this transaction check: prepare_post returns
+    // exact recorded outcomes first. Keep current law admission here, outside
+    // pure valuation and historical folds, so immutable history is unchanged.
+    let (rounding_law, average_as_of) =
+        if matches!(claim.law, FxLawId::SpotClose | FxLawId::PeriodAverage) {
+            let classes = fa_registry::EntryClasses::embedded()
+                .map_err(|error| crate::KernelError::Corrupt(error.to_string()))?;
+            let registry = FxLaws::embedded(&classes)
+                .map_err(|error| crate::KernelError::Corrupt(error.to_string()))?;
+            let Some(law) = registry.laws.iter().find(|law| {
+                law.id == claim.law.id()
+                    && law.version == claim.law.version()
+                    && law.status == "live"
+            }) else {
+                return Ok(Err(fx_structure(format!(
+                    "FX law {} version {} is not live for a new posting",
+                    claim.law.name(),
+                    claim.law.version()
+                ))));
+            };
+            let class = proposal.class.name().unwrap_or("unregistered");
+            if !law.admitted_classes.iter().any(|allowed| allowed == class) {
+                return Ok(Err(fx_structure(format!(
+                    "FX law {} version {} does not admit entry class {class} for a new posting",
+                    claim.law.name(),
+                    claim.law.version(),
+                ))));
+            }
+            (
+                Some(law.rounding_law.clone()),
+                if claim.law == FxLawId::PeriodAverage {
+                    Some(period.end.pred()?)
+                } else {
+                    None
+                },
+            )
+        } else {
+            (None, None)
+        };
     let mut rate_docs = Vec::with_capacity(claim.rate_doc_oids.len());
     for oid in &claim.rate_doc_oids {
         let vid = document_vid(oid);
@@ -991,6 +1032,27 @@ pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
                 crate::evidence::hex(&oid.0),
                 decoded.purpose.as_str(),
                 claim.law.name(),
+            ))));
+        }
+        if let Some(expected) = rounding_law.as_deref()
+            && decoded.rounding.name() != expected
+        {
+            return Ok(Err(fx_structure(format!(
+                "rate document {} uses {} rounding; FX law {} requires {expected}",
+                crate::evidence::hex(&oid.0),
+                decoded.rounding.name(),
+                claim.law.name(),
+            ))));
+        }
+        if let Some(expected) = average_as_of
+            && decoded.as_of != expected
+        {
+            return Ok(Err(fx_structure(format!(
+                "PeriodAverage rate document {} as_of {} must equal posting period {}'s last included day {}",
+                crate::evidence::hex(&oid.0),
+                decoded.as_of.render(),
+                period.code,
+                expected.render(),
             ))));
         }
         rate_docs.push(decoded);

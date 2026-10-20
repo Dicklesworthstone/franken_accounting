@@ -527,6 +527,7 @@ pub(crate) struct Mints {
     leg_edges: [WriteBatch; 3],
     in_period: WriteBatch,
     supersedes: WriteBatch,
+    reconciliation: WriteBatch,
     cells: BTreeMap<VId, CellRun>,
     accounts: BTreeMap<VId, AccountRow>,
     /// `(target, reversal)` in mint order.
@@ -546,6 +547,7 @@ impl Mints {
             ],
             in_period: WriteBatch::new(relation::IN_PERIOD),
             supersedes: WriteBatch::new(relation::SUPERSEDES),
+            reconciliation: WriteBatch::new(relation::CITES),
             cells: BTreeMap::new(),
             accounts: BTreeMap::new(),
             minted: Vec::new(),
@@ -558,7 +560,12 @@ impl Mints {
         for (cell, run) in &self.cells {
             run.before.stage(&run.after, *cell, &mut self.has_leg)?;
         }
-        let mut out = vec![self.has_leg, self.in_period, self.supersedes];
+        let mut out = vec![
+            self.has_leg,
+            self.in_period,
+            self.supersedes,
+            self.reconciliation,
+        ];
         out.extend(self.leg_edges);
         out.retain(|b| !b.is_empty());
         Ok(out)
@@ -664,7 +671,9 @@ fn judge_limits(
 pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
+    ctx: &PurposeContexts,
     book: &BookContext,
+    capability: &fa_policy::Capability,
     matrix: &Admissibility,
     mints: &mut Mints,
     schedule: &Schedule,
@@ -722,6 +731,31 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let legs = swapped(&target.proposal.legs);
+    let reconciliation = match crate::post::reconciliation_citations(
+        txn,
+        db,
+        ctx,
+        book,
+        capability,
+        schedule.reverse_on,
+        &legs,
+    )? {
+        Ok(citations) => citations,
+        Err(refusal)
+            if refusal.code == code::CAPABILITY
+                && matches!(trigger, ScheduleTrigger::Sweep { .. }) =>
+        {
+            mints.blocked.push((
+                schedule.target,
+                format!("{}: {}", refusal.code, refusal.message),
+            ));
+            return Ok(Ok(()));
+        }
+        // A period transition is one requested atomic action. Refuse Open
+        // before publishing it when its automatic effects lack authority;
+        // its exact retry must not silently lose a newly invented block reason.
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     if let Some(why) = judge_limits(
         |vid| Ok(txn.vertex(db, vid)?),
         book,
@@ -802,6 +836,9 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         schedule.target.vid,
         vec![],
     );
+    if let Some(edges) = crate::post::reconciliation_edges(rvid, &reconciliation) {
+        mints.reconciliation.extend(edges)?;
+    }
     mints.minted.push((schedule.target, entry.entry_ref(rvid)));
     Ok(Ok(()))
 }
@@ -816,15 +853,15 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
 pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
+    ctx: &PurposeContexts,
     book: &BookContext,
+    capability: &fa_policy::Capability,
     period: &str,
     transition_ref: VId,
 ) -> Outcome<Mints> {
-    // The executor is the transition itself. Until fa-llx's
-    // start-of-function capability admission lands on `transition_period`,
-    // this hook rechecks the Reversal row, SoD and the policy epoch only —
-    // not a capability (CobaltGull 3183 D1). The minted entries are the
-    // book's own (its System principal), as on the sweep path.
+    // Authorship remains the book's System principal. The transition's
+    // admitted capability must also hold Reconcile if its automatic effects
+    // reach an already-attested cash cutoff.
     let executor = Party {
         principal: system_principal(book.book_id),
         profile: fa_policy::Profile::System,
@@ -880,7 +917,9 @@ pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
         if let Err(r) = mint(
             txn,
             db,
+            ctx,
             book,
+            capability,
             &matrix,
             &mut mints,
             &s,
@@ -1036,6 +1075,9 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = admit_sweep(db, book, req, &sweep_key)? {
         return Ok(Err(r));
     }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
     let (Some(policy), Some(tick)) = (book_policy(db)?, latest_tick(db)?) else {
         return Ok(Ok(None));
     };
@@ -1112,7 +1154,9 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
         if let Err(r) = mint(
             &txn,
             db,
+            ctx,
             book,
+            &req.capability,
             &matrix,
             &mut mints,
             &s,

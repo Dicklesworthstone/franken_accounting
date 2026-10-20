@@ -28,6 +28,7 @@ pub mod lantern;
 pub mod lots;
 pub mod rea;
 pub mod reconciliation;
+pub mod read_scope;
 pub mod reports;
 pub mod sod;
 pub mod statements;

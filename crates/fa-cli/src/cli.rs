@@ -91,6 +91,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("allocate", allocate_cmd),
     ("settle", settle_cmd),
     ("document", document::document_cmd),
+    ("fx", crate::fx::fx_cmd),
     ("event", event_cmd),
     ("migrate", migrate_cmd),
     ("tb", tb_cmd),
@@ -1840,17 +1841,59 @@ fn recovery_preview_only(verb: &str, args: &Args) -> bool {
 /// not admitted on the bound route.
 #[must_use]
 pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy::Op]> {
+    bound_command_rule(verb, args).map(|(ops, _)| ops)
+}
+
+/// The deciding `[[bound]]` rule's ops, and whether the command judges the
+/// session's scope caveats against what it reaches (`reach = "judged"`).
+fn bound_command_rule(verb: &str, args: &Args) -> Option<(&'static [fa_policy::Op], bool)> {
     let reg = crate::verbs::registry().ok()?;
     let present = |flag: &str| args.switch(flag) || !args.flag_all(flag).is_empty();
     let value = |flag: &str| args.flag(flag).map(str::to_string);
-    let (index, _) = reg.bound_rule(
+    let (index, rule) = reg.bound_rule(
         verb,
         args.positional.get(1).map(String::as_str),
         args.positional.get(2).map(String::as_str),
         &present,
         &value,
     )?;
-    bound_rule_ops().get(index)?.as_deref()
+    Some((bound_rule_ops().get(index)?.as_deref()?, rule.judged))
+}
+
+/// A bound command that reads a book and does not judge its own reach
+/// reaches the whole book at the head (doctrine 8, fa-0x0), so a token
+/// carrying any scope caveat is refused before the book is opened, never
+/// answered with a filtered result.
+fn bound_scope_refusal(
+    capability: &Capability,
+    ops: &[fa_policy::Op],
+    judged: bool,
+    command: &str,
+) -> Result<(), Refusal> {
+    if judged || ops.is_empty() {
+        return Ok(());
+    }
+    fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None).map_err(|denial| {
+        let mut refusal = fa_journal::policy::refusal(&denial);
+        let judging: std::collections::BTreeSet<&str> = crate::verbs::registry()
+            .map(|reg| {
+                reg.bound
+                    .iter()
+                    .filter(|rule| rule.judged)
+                    .flat_map(|rule| rule.verbs.iter().map(String::as_str))
+                    .collect()
+            })
+            .unwrap_or_default();
+        refusal.message = format!(
+            "`{command}` reaches the whole book at its head: {}",
+            refusal.message
+        );
+        refusal.fix = format!(
+            "a scoped capability runs only the commands that judge their own reach (fa {}); ask the book's steward for a capability without scope caveats to run `{command}`",
+            judging.into_iter().collect::<Vec<_>>().join(", fa ")
+        );
+        refusal
+    })
 }
 
 /// Each `[[bound]]` rule's ops as `fa_policy::Op`s, resolved once. A rule
@@ -1906,7 +1949,7 @@ pub fn bound_command_admissible(
             }
         }
     }
-    let Some(required) = bound_command_ops(verb, args) else {
+    let Some((required, judged)) = bound_command_rule(verb, args) else {
         return Err(format!(
             "`{}` is not admitted by the launch-bound MCP command surface",
             command_name(verb, sub)
@@ -1919,6 +1962,14 @@ pub fn bound_command_admissible(
                 command_name(verb, sub)
             ));
         }
+    }
+    if let Err(refusal) = bound_scope_refusal(
+        authority.capability(),
+        required,
+        judged,
+        &command_name(verb, sub),
+    ) {
+        return Err(format!("{} ({})", refusal.message, refusal.code));
     }
     // The typed documents (fa invoice, bill, receipt, payment) post through
     // fa post's own path, so they are trunk posts like it.
@@ -1970,7 +2021,7 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
         return Ok(());
     };
     let sub = args.positional.get(1).map(String::as_str);
-    let Some(required) = bound_command_ops(&verb.name, args) else {
+    let Some((required, judged)) = bound_command_rule(&verb.name, args) else {
         return Err(Refusal::new(
             fa_journal::refusal::code::CAPABILITY,
             exit::SAFETY,
@@ -1991,6 +2042,12 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
                 Fail::Refusal(refusal)
             })?;
     }
+    bound_scope_refusal(
+        authority.capability(),
+        required,
+        judged,
+        &command_name(&verb.name, sub),
+    )?;
     Ok(())
 }
 
@@ -2037,6 +2094,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
     }
     for flag in [
         "--intent",
+        "--from-json",
         "--plan",
         "--policy",
         "--audited",
@@ -5417,9 +5475,11 @@ fn plan_document_into_draft(
         ));
     }
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["post"])?;
+    let capability = ctx.capability(args, crate::fx::posting_ops(doc))?;
     let out = &ctx.out;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::fx::admit_intent_sources(book, &capability, doc)
+    })?;
     let BuiltPost { request: req, .. } =
         build_post_request(out, &mut book, args, forced, doc, who, capability)?;
     let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
@@ -5503,12 +5563,13 @@ pub(crate) fn plan_document_into_scenario(
         ));
     }
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["post"])?;
+    let capability = ctx.capability(args, crate::fx::posting_ops(doc))?;
     let out = &ctx.out;
     // Current authority to run intents in a scenario is admitted before the
     // book, its frontier or the scenario is disclosed.
     let mut book = ctx.books.open_admitted(args, |book| {
         book.admit_scenario_plan(&capability)??;
+        crate::fx::admit_intent_sources(book, &capability, doc)?;
         Ok(())
     })?;
     let BuiltPost { request: req, .. } =
@@ -5676,6 +5737,12 @@ fn parse_legs(
     let mut legs = Vec::with_capacity(legs_doc.len());
     for (i, l) in legs_doc.iter().enumerate() {
         let what = format!("legs[{i}]");
+        if l.get("base_amount").is_some() || l.get("base_totals").is_some() {
+            return Err(usage(
+                format!("{what}: functional values must be derived from retained Rate evidence"),
+                "remove base_amount/base_totals and supply intent.fx with a named law and Rate document OIDs",
+            ));
+        }
         let side = match req_str(l, "side", &what)? {
             "debit" | "dr" | "Debit" => Side::Debit,
             "credit" | "cr" | "Credit" => Side::Credit,
@@ -5851,9 +5918,11 @@ fn correction(
         }
     }
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["post"])?;
+    let capability = ctx.capability(args, crate::fx::posting_ops(&doc))?;
     let out = &ctx.out;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::fx::admit_intent_sources(book, &capability, &doc)
+    })?;
     let Some((target, _)) = book.read_entry(vid)? else {
         return Err(usage(
             format!("reverse: no entry {:032x} in this book", vid.0),
@@ -6097,9 +6166,11 @@ fn post_batch_document(ctx: &mut Ctx<'_>, args: &Args, doc: &Json) -> Result<(),
         ));
     };
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["post"])?;
+    let capability = ctx.capability(args, crate::fx::posting_ops(doc))?;
     let out = &ctx.out;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::fx::admit_intent_sources(book, &capability, doc)
+    })?;
     let mut intents = Vec::with_capacity(members.len());
     let mut classes = Vec::with_capacity(members.len());
     for (i, member) in members.iter().enumerate() {
@@ -6232,6 +6303,7 @@ fn post_timing(
         "disposition",
         "timeout_ns",
         "reverse_on",
+        "fx",
     ];
     if let Some((field, _)) = fields
         .iter()
@@ -6323,6 +6395,19 @@ fn build_post_request(
     who: VId,
     capability: Capability,
 ) -> Result<BuiltPost, Fail> {
+    if doc.get("fx").is_some() {
+        fa_policy::admit_read(&capability, who, book.context().book_id)
+            .and_then(|()| {
+                fa_policy::require(
+                    &capability,
+                    fa_policy::Op::Post,
+                    "preparing an FX-valued posting",
+                )
+            })
+            .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        book.read_scope(who, &capability)??;
+    }
     let ctx = book.context().clone();
     let class_name = match doc.get("class") {
         None => match forced {
@@ -6383,7 +6468,15 @@ fn build_post_request(
     let mut pending = None;
     let mut control = None;
     let mut reversal_detail = None;
+    let mut reversal_base_totals = None;
+    let mut reversal_rate_evidence = Vec::new();
     let legs: Vec<LegPayload> = if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
+        if doc.get("fx").is_some() {
+            return Err(usage(
+                "a Reversal derives its exact valuation from the target; do not supply fx",
+                "remove fx; use a paired Replacement to post corrected legs with new Rate evidence",
+            ));
+        }
         // Earlier raw-post clients recorded zero when no reason was supplied.
         // Let the kernel compare that complete historical request with the
         // recorded outcome. It refuses every fresh zero-reason correction
@@ -6424,6 +6517,17 @@ fn build_post_request(
         });
         target_date = Some(target.proposal.effective_date);
         target_period = target.proposal.effective_period.clone();
+        reversal_base_totals = target.proposal.base_totals.clone();
+        if let Some(totals) = &mut reversal_base_totals {
+            std::mem::swap(&mut totals.debits, &mut totals.credits);
+            reversal_rate_evidence = target
+                .proposal
+                .evidence
+                .iter()
+                .filter(|evidence| evidence.role == fa_journal::fx::RATE_EVIDENCE_ROLE)
+                .copied()
+                .collect();
+        }
         reversal_detail = reason.map(|reason| (format!("{:032x}", vid.0), reason));
         if doc.get("legs").is_some() {
             return Err(usage(
@@ -6637,7 +6741,7 @@ fn build_post_request(
         legs,
         control,
         unit_totals,
-        base_totals: None,
+        base_totals: reversal_base_totals,
         idempotency_key: key.as_bytes().to_vec(),
         origin: EntryOrigin::Intent {
             intent_oid: Oid(fa_model::domain_digest(
@@ -6655,6 +6759,12 @@ fn build_post_request(
         extensions: Vec::new(),
         tags: Vec::new(),
     };
+    for evidence in reversal_rate_evidence {
+        if !proposal.evidence.contains(&evidence) {
+            proposal.evidence.push(evidence);
+        }
+    }
+    proposal.evidence.sort_unstable();
     if let Some(ev_arg) = event_arg {
         let rea = book.rea_snapshot(None)?;
         let stripped = ev_arg.strip_prefix("EV:").unwrap_or(ev_arg);
@@ -6694,6 +6804,7 @@ fn build_post_request(
             }
         }
     }
+    let proposal = crate::fx::value_intent(book, &capability, doc, proposal)?;
     let proposal = match reverse_on {
         Some(day) => fa_journal::with_auto_reverse(proposal, day),
         None => proposal,
@@ -6730,9 +6841,11 @@ pub(crate) fn post_document(
     }
     check_post_planning_options(args)?;
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["post"])?;
+    let capability = ctx.capability(args, crate::fx::posting_ops(&doc))?;
     let out = &ctx.out;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::fx::admit_intent_sources(book, &capability, &doc)
+    })?;
     let BuiltPost {
         request: req,
         class_name,
@@ -7053,6 +7166,12 @@ pub(crate) fn emit_post_plan(
         for grant in args.flag_all("--grant") {
             command.push_str(&format!(" --grant {}", quoted(grant)));
         }
+        if proposal.base_totals.is_some()
+            && proposal.class != EntryClass::REVERSAL
+            && !args.flag_all("--grant").contains(&"read")
+        {
+            command.push_str(" --grant 'read'");
+        }
         if proposal.class == EntryClass::CLOSING {
             // The owner close command explicitly holds these operations.
             // A restored plan never grants them; the commit caller supplies
@@ -7312,6 +7431,11 @@ fn emit_replacement_plan(
         }
         for grant in args.flag_all("--grant") {
             command.push_str(&format!(" --grant {}", quoted(grant)));
+        }
+        if plan.replacement().proposal().base_totals.is_some()
+            && !args.flag_all("--grant").contains(&"read")
+        {
+            command.push_str(" --grant 'read'");
         }
         command.push_str(" --json");
         command
@@ -9082,6 +9206,26 @@ pub(crate) fn known_at_flag(
     }
 }
 
+/// Resolve an authorized read's recorded coordinate. Resolving an instant
+/// currently reads TimeEvidence at the head, so scoped tokens must use an
+/// explicit sequence until that lookup itself has a bounded read API.
+pub(crate) fn known_at_read_flag(
+    args: &Args,
+    book: &Book,
+    out: &Out,
+    capability: &Capability,
+) -> Result<(Option<CommitSeq>, Option<u64>), Fail> {
+    if let Some(value) = args
+        .flag("--known-at")
+        .or_else(|| args.flag("--as-known-at"))
+        && value != "HEAD"
+        && !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        admit_whole_book_read(book, capability, &[], "resolving a known-at instant")?;
+    }
+    known_at_flag(args, book, out)
+}
+
 /// Whether `--as-originally-reported` (plan §7.4) selects this read. It
 /// fixes the known-at coordinate itself (the period's first StatementIssuance,
 /// else its first Lock; never HEAD, never a Close), so a known-at selector
@@ -9183,6 +9327,9 @@ fn prepare_native_certificate_history(
 }
 
 fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.switch("--functional") {
+        return crate::fx::functional_tb(ctx, args);
+    }
     let who = ctx.principal(args);
     let summary_cap = if args.switch("--summary") {
         let ops: &[&str] = if args.switch("--certify") || args.flag("--certificate-out").is_some() {
@@ -9751,16 +9898,27 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         args,
         "fa statement balance-sheet --for FY2026-P03 --as-originally-reported",
     )?;
+    let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
     let mut book = ctx.books.open_admitted(args, |book| {
-        prepare_native_certificate_history(book, &capability, None)
+        prepare_native_certificate_history(book, &capability, None)?;
+        book.read_scope(who, &capability)??;
+        Ok(())
     })?;
     let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
+    // Each column's reach is judged against the scope caveats before the
+    // period's transitions or any column is read (doctrine 8, fa-0x0), and
+    // the pinned coordinate is judged again before the fold.
+    let reach = ReportSelection::from(selection.clone());
     // Plan §7.4: the statement as it stood when its --for period was first
     // reported; a --compare column is read at that same snapshot.
     if originally {
+        book.read_scope(who, &capability)??
+            .admit_report(&reach, known_at)??;
         known_at = Some(book.originally_reported(period)??.known_at);
     }
+    book.read_scope(who, &capability)??
+        .admit_report(&reach, known_at)??;
     prepare_native_certificate_history(&mut book, &capability, known_at)?;
     let (statement, certificate) = if certify {
         let certified = match requested_utc_ns {
@@ -16568,6 +16726,7 @@ fn cite_json(c: &fa_lantern::Cite) -> Json {
         ("document", Json::Null),
         ("principal", Json::Null),
         ("approval", Json::Null),
+        ("attestation", Json::Null),
     ];
     let (kind, set): (&str, Vec<(&str, Json)>) = match c {
         C::Entry(v) => ("entry", vec![("entry", vid(v))]),
@@ -16583,6 +16742,7 @@ fn cite_json(c: &fa_lantern::Cite) -> Json {
         C::Document(oid) => ("document", vec![("document", s(hex(&oid.0)))]),
         C::Principal(v) => ("principal", vec![("principal", vid(v))]),
         C::Approval(v) => ("approval", vec![("approval", vid(v))]),
+        C::Attestation(v) => ("attestation", vec![("attestation", vid(v))]),
     };
     for (key, value) in set {
         if let Some(slot) = fields.iter_mut().find(|(name, _)| *name == key) {
@@ -16691,7 +16851,27 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     )
                 })?),
             };
-            let book = ctx.books.open(args)?;
+            let who = ctx.principal(args);
+            let bank_cap = if id == "recon.bank_statement_drift" {
+                let cap = ctx.capability(args, &["read"])?;
+                for op in [fa_policy::Op::Read, fa_policy::Op::Reconcile] {
+                    fa_policy::require(&cap, op, "observing bank statement drift")
+                        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+                }
+                fa_policy::reach(&cap, &fa_policy::Reach::whole_book(true), None)
+                    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+                Some(cap)
+            } else {
+                None
+            };
+            let mut book = if let Some(cap) = &bank_cap {
+                ctx.books.open_admitted(args, |book| {
+                    book.read_scope(who, cap)??;
+                    Ok(())
+                })?
+            } else {
+                ctx.books.open(args)?
+            };
             let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
             if requested_utc_ns.is_some() {
                 return Err(usage(
@@ -16708,8 +16888,20 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .map(|text| parse_vid(text.strip_prefix("E:").unwrap_or(text), "--source"))
                     .transpose()?,
             };
-            let built = fa_lantern::catalog::build(id, params, inputs).map_err(lantern_usage)?;
-            let run = book.run_procedure(built.as_ref(), known_at, effective_through)?;
+            let run = if let Some(cap) = &bank_cap {
+                let request = fa::ProcedureRequest {
+                    procedure: id.clone(),
+                    parameters: params,
+                    inputs,
+                    known_at,
+                    effective_through,
+                };
+                book.run_procedure_with_history(who, cap, &request)??
+            } else {
+                let built =
+                    fa_lantern::catalog::build(id, params, inputs).map_err(lantern_usage)?;
+                book.run_procedure(built.as_ref(), known_at, effective_through)?
+            };
             out.known_at(run.coordinate.known_at);
             // Human mode prints one finding per line; robot mode carries
             // them in the event alone (stdout is one JSON object a line).
@@ -17988,9 +18180,16 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa event show <code|vid> [--as-known-at HEAD|<seq>] --book <dir>",
                 ));
             }
-            let book = ctx.books.open(args)?;
-            let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
-            let rea = book.rea_snapshot(known_at)?;
+            let capability = ctx.capability(args, &["read"])?;
+            let mut selected = None;
+            let book = ctx.books.open_admitted(args, |book| {
+                let scope = book.read_scope(who, &capability)??;
+                let (known_at, _) = known_at_read_flag(args, book, &ctx.out, &capability)?;
+                let seq = scope.admit_whole_book(known_at)??;
+                selected = Some(book.rea_snapshot(Some(seq))?);
+                Ok(())
+            })?;
+            let rea = selected.ok_or_else(|| Fail::Internal("event snapshot is missing".into()))?;
             ctx.out.known_at(rea.known_at);
             let stripped = target.strip_prefix("EV:").unwrap_or(target);
             let ev_row = if stripped.len() == 32
@@ -18034,9 +18233,16 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa event list [--as-known-at HEAD|<seq>] --book <dir>",
                 ));
             }
-            let book = ctx.books.open(args)?;
-            let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
-            let rea = book.rea_snapshot(known_at)?;
+            let capability = ctx.capability(args, &["read"])?;
+            let mut selected = None;
+            ctx.books.open_admitted(args, |book| {
+                let scope = book.read_scope(who, &capability)??;
+                let (known_at, _) = known_at_read_flag(args, book, &ctx.out, &capability)?;
+                let seq = scope.admit_whole_book(known_at)??;
+                selected = Some(book.rea_snapshot(Some(seq))?);
+                Ok(())
+            })?;
+            let rea = selected.ok_or_else(|| Fail::Internal("event snapshot is missing".into()))?;
             ctx.out.known_at(rea.known_at);
             let mut rows: Vec<&fa_journal::EventRow> = rea.events.values().collect();
             rows.sort_by(|a, b| {

@@ -792,6 +792,20 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     approvals: &[ApprovalRef],
 ) -> Outcome<Transitioned> {
+    if t == PeriodTransition::Open {
+        if let Err(refusal) = admit_transition(db, book, period_code, t, principal_ref, capability)?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = policy::capability_admitted(db, book, capability)? {
+            return Ok(Err(refusal));
+        }
+        // Opening can mint due cash reversals. Their cutoff guard needs the
+        // same retained reconciliation history as the ordinary post path.
+        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+            return Ok(Err(refusal));
+        }
+    }
     match prepare_transition(
         db,
         ctx,
@@ -875,9 +889,57 @@ fn recorded_transition<V: asupersync::fs::Vfs + Clone>(
     }))
 }
 
+/// Capability and coordinate admission shared by preparation and the async
+/// history loader. This observes no period payload before scope admission.
+fn admit_transition<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+    transition: PeriodTransition,
+    principal: VId,
+    capability: &Capability,
+) -> Outcome<Option<PeriodDef>> {
+    let steward = policy::steward()?;
+    let name = transition_name(transition);
+    let op = steward.transition_op("PeriodControl", name).ok_or_else(|| {
+        KernelError::Corrupt(format!(
+            "sod_policy.toml registers no PeriodControl {name} rule; the transition is refused, never unconstrained"
+        ))
+    })?;
+    let calendar_period = policy::calendar_period(book, period_code);
+    let reached = [period_code];
+    let through = calendar_period.as_ref().map(PeriodDef::last_day);
+    if let Err(denial) = fa_policy::admit_within(
+        capability,
+        &Intent {
+            principal,
+            trunk: true,
+            op,
+            book: book.book_id,
+            legs: &[],
+        },
+        &fa_policy::Reach {
+            branch: Some(Id128::TRUNK),
+            observes: fa_policy::Observes::Head,
+            periods: Some(&reached),
+            through,
+            accounts: None,
+        },
+        None,
+    ) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
+    if let Err(denial) = fa_policy::current(capability, db.frontier()?) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
+    Ok(Ok(calendar_period))
+}
+
 /// Stage the production transition without publishing it. Its witnesses
 /// remain pinned while another prepared operation is allowed to commit;
 /// [`PreparedTransition::commit`] validates those original witnesses.
+/// Opening a period may mint scheduled reversals and therefore requires
+/// retained history from sequence zero; [`transition_period`] loads it.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
@@ -893,48 +955,12 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
     approvals: &[ApprovalRef],
 ) -> Outcome<PreparedTransition> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
-    // 0. Authorization precedes observation (doctrine 8, FA-INV-10): decided
-    //    from the capability and the request alone, before the period is read.
-    let steward = policy::steward()?;
+    let calendar_period =
+        match admit_transition(db, book, period_code, t, principal_ref, capability)? {
+            Ok(period) => period,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
     let name = transition_name(t);
-    let op = steward
-        .transition_op("PeriodControl", name)
-        .ok_or_else(|| {
-            KernelError::Corrupt(format!(
-                "sod_policy.toml registers no PeriodControl {name} rule; the transition is refused, never unconstrained"
-            ))
-        })?;
-    // A transition reaches its own period (CobaltGull 3570): the period's
-    // code under a `periods` caveat, its last day (from the calendar alone;
-    // the control is dated inside the period, fa-87r) under `effective`, and
-    // every account (a close binds the whole book), so an `accounts`,
-    // `known_at` or `branch` caveat refuses it.
-    let calendar_period = policy::calendar_period(book, period_code);
-    let reached = [period_code];
-    let through = calendar_period.as_ref().map(PeriodDef::last_day);
-    if let Err(d) = fa_policy::admit_within(
-        capability,
-        &Intent {
-            principal: principal_ref,
-            trunk: true,
-            op,
-            book: book.book_id,
-            legs: &[],
-        },
-        &fa_policy::Reach {
-            branch: Some(Id128::TRUNK),
-            observes: fa_policy::Observes::Head,
-            periods: Some(&reached[..]),
-            through,
-            accounts: None,
-        },
-        None,
-    ) {
-        return Ok(Err(policy::refusal(&d)));
-    }
-    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
-        return Ok(Err(policy::refusal(&d)));
-    }
 
     let pvid = period_vid(&book.calendar.id, period_code);
     let txn_cx = ctx.txn();
@@ -1085,7 +1111,7 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         // this transition, admitted under `close` at the head of this
         // function (fa-llx); the hook still rechecks the Reversal row, SoD
         // and epoch for each minted entry.
-        match crate::schedule::mint_on_open(&txn, db, book, period_code, evid)? {
+        match crate::schedule::mint_on_open(&txn, db, ctx, book, capability, period_code, evid)? {
             Ok(mints) => {
                 let minted = mints.minted.clone();
                 let blocked = mints.blocked.clone();
