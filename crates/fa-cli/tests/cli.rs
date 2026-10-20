@@ -3043,6 +3043,213 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
     Ok(())
 }
 
+/// `fa sample uniform|mus` (fa-kaf7, fa-vpk): a sample of one account's
+/// normal-side open items, reproducible from the declared seed at a recorded
+/// sequence; opposite-side open items are excluded and listed, never dropped.
+#[test]
+fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std::io::Result<()> {
+    let dir = tmp("sample")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Sample Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"1300","name":"Deposits","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    let post = |key: &str, debit: &str, credit: &str, amount: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-15","description":"{key}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount} USD"}},{{"side":"credit","account":"{credit}","amount":"{amount} USD"}}]}}"#
+            ),
+        );
+        let (code, out, err) = fa(
+            Some(&book),
+            &["post", "--intent", &intent, "--evidence", &ev, "--json"],
+        );
+        assert_eq!(code, 0, "{out}\n{err}");
+    };
+    for (key, amount) in [
+        ("inv-1", "100.00"),
+        ("inv-2", "250.00"),
+        ("inv-3", "50.00"),
+        ("inv-4", "700.00"),
+    ] {
+        post(key, "1200", "4000", amount);
+    }
+    // An unapplied customer receipt: a credit open item in a debit-normal
+    // account, outside the positive-value population.
+    post("receipt-1", "1000", "1200", "30.00");
+    let draw = |args: &[&str]| {
+        let mut argv = vec!["sample"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    let uniform = ["uniform", "--account", "1200", "--seed", "7", "--size", "2"];
+    let out = draw(&uniform);
+    let data = doc(&out);
+    assert_eq!(text(&data, "method"), "uniform");
+    assert_eq!(text(&data, "unit"), "USD");
+    assert_eq!(data.get("population_count"), Some(&Json::Int(4)), "{out}");
+    assert_eq!(text(&data, "population_total"), "1100.00 USD");
+    assert_eq!(data.get("selected_count"), Some(&Json::Int(2)), "{out}");
+    assert_eq!(arr(&data, "selected").len(), 2, "{out}");
+    let excluded = arr(&data, "excluded");
+    assert_eq!(excluded.len(), 1, "{out}");
+    assert_eq!(text(&excluded[0], "side"), "credit");
+    assert_eq!(text(&excluded[0], "open"), "30.00 USD");
+    // The data's known_at is the envelope coordinate's.
+    let first = field(&out, "known_at").unwrap_or_default().to_string();
+    assert_eq!(
+        data.get("known_at"),
+        Some(&Json::Int(first.parse::<i128>().unwrap_or(-1))),
+        "{out}"
+    );
+    // The same seed at the same sequence is the same sample, byte for byte;
+    // so is its replay command.
+    assert_eq!(draw(&uniform), out);
+    let replay = text(&data, "replay_command").to_string();
+    let replay: Vec<&str> = replay.split_whitespace().skip(2).collect();
+    assert_eq!(draw(&replay), out);
+    // Another seed is another sample over the same population.
+    let other = doc(&draw(&[
+        "uniform",
+        "--account",
+        "1200",
+        "--seed",
+        "8",
+        "--size",
+        "2",
+    ]));
+    assert_eq!(
+        text(&other, "population_digest"),
+        text(&data, "population_digest")
+    );
+    assert_ne!(text(&other, "sample_digest"), text(&data, "sample_digest"));
+    // A later invoice joins the population at HEAD, not at the recorded one.
+    post("inv-5", "1200", "4000", "400.00");
+    let head = doc(&draw(&uniform));
+    assert_eq!(head.get("population_count"), Some(&Json::Int(5)));
+    let mut pinned = uniform.to_vec();
+    pinned.extend(["--as-known-at", first.as_str()]);
+    assert_eq!(draw(&pinned), out);
+
+    // MUS: an item at or above the interval is examined in the top stratum.
+    let mus = doc(&draw(&[
+        "mus",
+        "--account",
+        "1200",
+        "--seed",
+        "7",
+        "--interval",
+        "300.00 USD",
+        "--as-known-at",
+        first.as_str(),
+    ]));
+    assert_eq!(text(&mus, "interval"), "300.00 USD");
+    assert_eq!(mus.get("top_stratum_count"), Some(&Json::Int(1)));
+    let top: Vec<&Json> = arr(&mus, "selected")
+        .iter()
+        .filter(|row| text(row, "basis") == "top_stratum")
+        .collect();
+    assert_eq!(top.len(), 1, "{mus:?}");
+    assert_eq!(text(top[0], "book_value"), "700.00 USD");
+    assert!(
+        arr(&mus, "selected")
+            .iter()
+            .filter(|row| text(row, "basis") == "systematic")
+            .all(|row| !text(row, "hit").is_empty()),
+        "{mus:?}"
+    );
+
+    // Usage errors (exit 2), nothing drawn.
+    for args in [
+        vec!["sample", "uniform", "--account", "1200", "--size", "2"],
+        vec![
+            "sample",
+            "uniform",
+            "--account",
+            "1200",
+            "--seed",
+            "-1",
+            "--size",
+            "2",
+        ],
+        vec![
+            "sample",
+            "uniform",
+            "--account",
+            "1200",
+            "--seed",
+            "7",
+            "--size",
+            "0",
+        ],
+        vec![
+            "sample",
+            "uniform",
+            "--account",
+            "1200",
+            "--seed",
+            "7",
+            "--size",
+            "99",
+        ],
+        vec![
+            "sample",
+            "uniform",
+            "--account",
+            "1200",
+            "--seed",
+            "7",
+            "--interval",
+            "300.00 USD",
+        ],
+        vec![
+            "sample",
+            "mus",
+            "--account",
+            "1200",
+            "--seed",
+            "7",
+            "--size",
+            "2",
+        ],
+        // No normal-side open item to sample.
+        vec![
+            "sample",
+            "uniform",
+            "--account",
+            "1300",
+            "--seed",
+            "7",
+            "--size",
+            "1",
+        ],
+        vec!["sample", "stratified", "--account", "1200", "--seed", "7"],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 2, "{argv:?}\n{out}\n{err}");
+    }
+    Ok(())
+}
+
 #[test]
 fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::io::Result<()> {
     let dir = tmp("reversal")?;
@@ -5125,6 +5332,23 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["scenario", "discard", "what-if"]).0, 0);
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &[
+                "sample",
+                "uniform",
+                "--account",
+                "6000",
+                "--seed",
+                "7",
+                "--size",
+                "1"
+            ]
+        )
+        .0,
+        0
+    );
     assert_eq!(run(true, &["procedure", "list"]).0, 0);
     assert_eq!(run(true, &["procedure", "run", "jet.round_amounts"]).0, 0);
     // Recorded findings: the Sunday rent is a jet.weekend observation; a
