@@ -9057,6 +9057,23 @@ pub(crate) fn known_at_flag(
     }
 }
 
+/// Whether `--as-originally-reported` (plan §7.4) selects this read. It
+/// fixes the known-at coordinate itself (the period's first StatementIssuance,
+/// else its first Lock; never HEAD, never a Close), so a known-at selector
+/// beside it is refused before either is resolved.
+fn as_originally_reported(args: &Args, example: &str) -> Result<bool, Fail> {
+    let originally = args.switch("--as-originally-reported");
+    if originally
+        && (!args.flag_all("--as-known-at").is_empty() || !args.flag_all("--known-at").is_empty())
+    {
+        return Err(usage(
+            "--as-originally-reported fixes the known-at coordinate itself; it cannot be combined with --as-known-at or --known-at",
+            example,
+        ));
+    }
+    Ok(originally)
+}
+
 fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
     if args.flag_all("--fiscal-year").len() > 1
         || (args.flag("--fiscal-year").is_some() && args.flag("--period").is_some())
@@ -9222,15 +9239,8 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa tb --period <code> --summary --root <code> --json",
         ));
     }
-    let originally = args.switch("--as-originally-reported");
-    if originally
-        && (!args.flag_all("--as-known-at").is_empty() || !args.flag_all("--known-at").is_empty())
-    {
-        return Err(usage(
-            "--as-originally-reported fixes the known-at coordinate itself; it cannot be combined with --as-known-at",
-            "fa tb --period FY2026-P03 --as-originally-reported",
-        ));
-    }
+    let originally =
+        as_originally_reported(args, "fa tb --period FY2026-P03 --as-originally-reported")?;
     let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
     let selection = if let Some(date) = args.flag("--as-of") {
         if args.flag("--period").is_some()
@@ -9273,6 +9283,10 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ));
             }
         };
+        // The period's scope is judged before its transitions are read; the
+        // pinned coordinate is judged again before the fold.
+        book.read_scope(who, &read_cap)??
+            .admit_report(&selection.clone().into(), known_at)??;
         known_at = Some(book.originally_reported(&period)??.known_at);
     }
     if let Some(capability) = summary_cap {
@@ -9585,9 +9599,12 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let mode = args.positional[1].as_str();
     if matches!(mode, "diff" | "trace") {
-        if args.flag("--known-at").is_some() || args.flag("--as-known-at").is_some() {
+        if args.flag("--known-at").is_some()
+            || args.flag("--as-known-at").is_some()
+            || args.switch("--as-originally-reported")
+        {
             return Err(usage(
-                "statement diff and trace select two frontiers with --before and --after; --known-at and --as-known-at do not select this workflow",
+                "statement diff and trace select two frontiers with --before and --after; --known-at, --as-known-at and --as-originally-reported do not select this workflow",
                 "fa statement diff --definition balance-sheet --for <period> --before <seq> --after <seq> --json",
             ));
         }
@@ -9705,11 +9722,20 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .collect(),
     };
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let originally = as_originally_reported(
+        args,
+        "fa statement balance-sheet --for FY2026-P03 --as-originally-reported",
+    )?;
     let capability = ctx.capability(args, &["read"])?;
     let mut book = ctx.books.open_admitted(args, |book| {
         prepare_native_certificate_history(book, &capability, None)
     })?;
-    let (known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
+    let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
+    // Plan §7.4: the statement as it stood when its --for period was first
+    // reported; a --compare column is read at that same snapshot.
+    if originally {
+        known_at = Some(book.originally_reported(period)??.known_at);
+    }
     prepare_native_certificate_history(&mut book, &capability, known_at)?;
     let (statement, certificate) = if certify {
         let certified = match requested_utc_ns {
@@ -9865,6 +9891,12 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
                 STATEMENT_CERTIFICATES_EXAMPLE,
             ));
         }
+    }
+    if args.switch("--as-originally-reported") {
+        return Err(usage(
+            "--as-originally-reported selects a frontier; certificate inputs already fix both frontiers on trunk",
+            STATEMENT_CERTIFICATES_EXAMPLE,
+        ));
     }
     if args.flag("--compare").is_some() && args.flag("--for").is_none() {
         return Err(usage(
@@ -14594,6 +14626,24 @@ fn side_name(side: Side) -> &'static str {
 /// `fa explain balance|entry|lineage|evidence|refusal|period|register ...`.
 fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let sub = args.positional.get(1).map(String::as_str);
+    // verbs.toml registers flags per verb, so the other subcommands would
+    // otherwise accept these and silently answer without them.
+    if sub.is_some_and(|sub| sub != "balance") {
+        let balance_only = ["--certify", "--as-originally-reported"]
+            .into_iter()
+            .find(|switch| args.switch(switch))
+            .or_else(|| {
+                args.flag("--certificate-out")
+                    .is_some()
+                    .then_some("--certificate-out")
+            });
+        if let Some(flag) = balance_only {
+            return Err(usage(
+                format!("{flag} applies only to `fa explain balance`"),
+                "fa explain balance <account> --period <code> [--as-originally-reported] [--certify]",
+            ));
+        }
+    }
     match sub {
         Some("balance") => explain_balance_cmd(ctx, args),
         Some("entry") => explain_entry_cmd(ctx, args),
@@ -15575,6 +15625,10 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let period = args.require("--period", "FY2026-P03")?;
+    let originally = as_originally_reported(
+        args,
+        "fa explain balance 1000 --period FY2026-P03 --as-originally-reported",
+    )?;
     let who = ctx.principal(args);
     let read_cap = ctx.capability(args, &["read"])?;
     let certify_cap = if args.switch("--certify") || args.flag("--certificate-out").is_some() {
@@ -15592,11 +15646,23 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         })?
     };
-    let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+    let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+    let account = account_vid(book.context().book_id, code);
+    if originally {
+        // The period's scope is judged before its transitions are read; the
+        // pinned coordinate is judged again below.
+        book.read_scope(who, &read_cap)??.admit_report(
+            &ReportSelection::ExplainBalance {
+                account,
+                period: period.to_string(),
+            },
+            known_at,
+        )??;
+        known_at = Some(book.originally_reported(period)??.known_at);
+    }
     if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;
     }
-    let account = account_vid(book.context().book_id, code);
     // Judged against the scope caveats before the query is constructed
     // (doctrine 8, fa-0x0): the explanation reaches its one period.
     book.read_scope(who, &read_cap)??.admit_report(

@@ -2810,15 +2810,91 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
             "--as-originally-reported",
             "--json",
         ],
+        vec![
+            "statement",
+            "balance-sheet",
+            "--for",
+            march,
+            "--as-originally-reported",
+            "--known-at",
+            "HEAD",
+            "--json",
+        ],
+        vec![
+            "statement",
+            "diff",
+            "--definition",
+            "balance-sheet",
+            "--for",
+            march,
+            "--before",
+            "1",
+            "--as-originally-reported",
+            "--json",
+        ],
+        vec![
+            "explain",
+            "balance",
+            "6000",
+            "--period",
+            march,
+            "--as-originally-reported",
+            "--as-known-at",
+            "HEAD",
+            "--json",
+        ],
+        // Balance-only switches are refused, never ignored, elsewhere.
+        vec![
+            "explain",
+            "register",
+            "6000",
+            "--period",
+            march,
+            "--as-originally-reported",
+            "--json",
+        ],
+        vec![
+            "explain",
+            "register",
+            "6000",
+            "--period",
+            march,
+            "--certify",
+            "--json",
+        ],
     ] {
         let (code, out, err) = fa(Some(&book), &args);
         assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
     }
+    let statement = [
+        "statement",
+        "income-statement",
+        "--for",
+        march,
+        "--compare",
+        "FY2026-P04",
+        "--as-originally-reported",
+        "--json",
+    ];
+    let explained = [
+        "explain",
+        "balance",
+        "6000",
+        "--period",
+        march,
+        "--as-originally-reported",
+        "--json",
+    ];
     // Open, then Closed: nothing was reported yet; never HEAD, never a Close.
     let (code, out, _) = fa(Some(&book), &originally);
     assert_eq!(code, 3, "{out}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-161"), "{out}");
     assert!(out.contains("fa period lock FY2026-P03"), "{out}");
+    for args in [&statement[..], &explained[..]] {
+        let (code, out, _) = fa(Some(&book), args);
+        assert_eq!(code, 3, "{args:?}\n{out}");
+        assert_eq!(field(&out, "refusal_id"), Some("FA-REF-161"), "{out}");
+    }
     let (code, out, _) = fa(
         Some(&book),
         &[
@@ -2913,6 +2989,56 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
             ]
         ),
         reported
+    );
+
+    // The statement and the balance explanation pin the same coordinate.
+    // The April comparative is read at that snapshot too, so April's later
+    // rent is absent as originally reported and present as currently stated.
+    let pinned = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        assert_eq!(field(&out, "known_at"), Some(locked_at.as_str()), "{out}");
+        out
+    };
+    let as_reported = pinned(&statement);
+    assert!(!as_reported.contains("7.00 USD"), "{as_reported}");
+    let mut at_lock = statement.to_vec();
+    at_lock.retain(|arg| *arg != "--as-originally-reported");
+    at_lock.splice(at_lock.len() - 1.., ["--known-at", &locked_at, "--json"]);
+    assert_eq!(pinned(&at_lock), as_reported);
+    at_lock.truncate(at_lock.len() - 3);
+    at_lock.push("--json");
+    let (code, current, _) = fa(Some(&book), &at_lock);
+    assert_eq!(code, 0, "{current}");
+    assert!(current.contains("7.00 USD"), "{current}");
+    assert_eq!(
+        pinned(&explained),
+        pinned(&[
+            "explain",
+            "balance",
+            "6000",
+            "--period",
+            march,
+            "--as-known-at",
+            &locked_at,
+            "--json",
+        ])
+    );
+    // A certified originally-reported statement replays at the pinned prefix.
+    let certificate = dir.join("originally.cert").display().to_string();
+    let mut certified = statement.to_vec();
+    certified.splice(
+        certified.len() - 1..,
+        ["--certificate-out", &certificate, "--json"],
+    );
+    pinned(&certified);
+    let (code, replayed, err) = fa(Some(&book), &["replay", &certificate, "--json"]);
+    assert_eq!(code, 0, "{replayed}\n{err}");
+    assert_eq!(field(&replayed, "event"), Some("statement"), "{replayed}");
+    assert_eq!(
+        field(&replayed, "known_at"),
+        Some(locked_at.as_str()),
+        "{replayed}"
     );
     Ok(())
 }
