@@ -1768,8 +1768,19 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
             }
         }
     }
+    // Authority before confirmation: a bound command the surface admits but
+    // this capability cannot run (a missing operation, a scope caveat) is
+    // refused for that, never asked to confirm what it could not do. A
+    // command the surface does not admit keeps the confirmation refusal,
+    // which names how to prepare it instead.
+    let admitted = ctx.authority.is_none() || bound_command_rule(&verb.name, args).is_some();
+    if admitted {
+        admit_bound_command(ctx, verb, args)?;
+    }
     gate_from_argv(out, reg, verb, args, ctx.authority.as_ref())?;
-    admit_bound_command(ctx, verb, args)?;
+    if !admitted {
+        admit_bound_command(ctx, verb, args)?;
+    }
     if !host_path_arguments(&verb.name, args).is_empty()
         && let Some(authority) = &ctx.authority
         // Without a files root, the next check rejects the request from its

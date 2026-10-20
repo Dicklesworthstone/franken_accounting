@@ -397,7 +397,9 @@ fn retained_review_plan_and_cli_post_preserve_signed_cumulative_adjustments_and_
     );
     assert_eq!(head(&f.book), before, "planning publishes nothing");
     let posted = f.commit(&plan_file);
-    assert_eq!(text(data(&posted), "class"), "Revaluation");
+    // plan_committed carries the entry identity, not its class; the class
+    // is the committed proposal's, which is the reviewed one (Revaluation).
+    assert_eq!(text(&posted, "event"), "plan_committed");
     assert_eq!(
         f.entry(text(data(&posted), "vid")).proposal,
         *intent.proposal()
@@ -533,10 +535,9 @@ fn retained_review_plan_and_cli_post_preserve_signed_cumulative_adjustments_and_
         Some(&liability_intent.canonical_bytes().unwrap()),
     );
     assert_eq!(status, 0, "{}", restored_retry.render());
-    assert_eq!(
-        data(&restored_retry).get("already_recorded"),
-        Some(&Json::Bool(true))
-    );
+    // A direct post retry reports `recorded` (fa post's retry event); only
+    // plan commits carry already_recorded.
+    assert_eq!(text(&restored_retry, "event"), "recorded");
     assert_eq!(
         text(data(&restored_retry), "vid"),
         text(data(&liability_post), "vid")
@@ -622,10 +623,11 @@ fn a_later_invoice_invalidates_saved_review_and_plan_without_publishing_stale_am
         text(data(&fresh), "review_digest"),
     );
     let posted = f.commit(&fresh_plan);
-    assert_eq!(text(data(&posted), "class"), "Revaluation");
+    assert_eq!(text(&posted, "event"), "plan_committed");
+    let committed = f.entry(text(data(&posted), "vid")).proposal;
+    assert_eq!(committed.class, EntryClass::REVALUATION);
     assert!(
-        f.entry(text(data(&posted), "vid"))
-            .proposal
+        committed
             .legs
             .iter()
             .all(|leg| leg.amount.mantissa == 1_500)

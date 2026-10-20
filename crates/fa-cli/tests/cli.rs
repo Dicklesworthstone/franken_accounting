@@ -8749,6 +8749,8 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("close", Some("year-end"), "always"),
     ("bank", Some("reconcile"), "always"),
     ("bank", Some("unmatch"), "always"),
+    // A period-end revaluation commits a reviewed adjustment (fa-3ock).
+    ("fx", Some("revalue"), "always"),
     ("post", None, "grant:post_closed"),
     ("reverse", None, "grant:post_closed"),
     // Every verb that posts to trunk is dangerous under a post_closed grant.

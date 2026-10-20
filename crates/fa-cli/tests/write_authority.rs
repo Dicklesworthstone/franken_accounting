@@ -125,6 +125,11 @@ const HOST_ONLY: &[(&str, Option<&str>, &str)] = &[
         "always dangerous: confirmed on the host",
     ),
     (
+        "bank",
+        Some("reconcile"),
+        "always dangerous: a statement close is confirmed on the host",
+    ),
+    (
         "recover",
         Some("projections"),
         "needs schema_change on trunk and --yes, outside every launch ceiling",
@@ -734,6 +739,48 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         row(
             &["bank", "history", "--account", "1000"],
             &[Op::Read, Op::Reconcile],
+            Reaches,
+        ),
+        row(
+            &["bank", "reconciliation", "--import", ZERO_DIGEST],
+            &[Op::Read, Op::Reconcile],
+            Reaches,
+        ),
+        row(
+            &["fx", "rate", "add", "--from-json", "rate.json"],
+            &[Op::Post],
+            Reaches,
+        ),
+        row(
+            &[
+                "fx",
+                "routes",
+                "set",
+                "--route",
+                "1000:1010:4010",
+                "--effective-from",
+                "2026-01-01",
+                "--key",
+                "matrix-routes",
+            ],
+            &[Op::Read, Op::SchemaChange],
+            Reaches,
+        ),
+        row(
+            &[
+                "fx",
+                "revalue",
+                "--period",
+                "FY2026-P03",
+                "--account",
+                "1000",
+                "--rate",
+                "D:0000000000000000000000000000000000000000000000000000000000000000",
+                "--key",
+                "matrix-revalue",
+                "--review-only",
+            ],
+            &[Op::Read, Op::Post],
             Reaches,
         ),
         row(
