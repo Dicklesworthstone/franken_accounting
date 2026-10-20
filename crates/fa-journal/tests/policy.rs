@@ -3219,3 +3219,44 @@ fn an_issued_holder_bound_capability_is_admitted_only_against_its_journaled_issu
     assert_eq!(r.code, "FA-REF-013");
     assert_eq!(list_issued(&h.db, &h.book).unwrap().len(), 2);
 }
+
+/// fa-0x0: an issuance never drops its issuer's caveats. Issuance is a
+/// whole-book act, so an issuer confined by a scope caveat (here a period)
+/// issues nothing at all; an issuer confined to a redaction contract issues
+/// only grants that keep it.
+#[test]
+fn an_issuance_never_drops_its_issuers_caveats() {
+    let mut h = harness();
+    let grant = |holder| {
+        Capability::new(holder, Profile::Human, &[Op::Read], PREPARER)
+            .unwrap()
+            .holder_bound(possession_digest(&[3; 32]))
+    };
+    let head = h.db.frontier().unwrap();
+
+    let scoped = human(PREPARER, &["read", "issue_capability"])
+        .for_periods(&["FY2026-P03"])
+        .unwrap();
+    let narrow = grant(BOB).for_periods(&["FY2026-P03"]).unwrap();
+    let r = h.issue(&scoped, &narrow, b"scoped-issuer").unwrap_err();
+    eprintln!("issuance: scoped issuer -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY));
+    assert!(r.message.contains("`periods`"), "{}", r.message);
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let redacted = human(PREPARER, &["read", "issue_capability"])
+        .with_redaction(1)
+        .unwrap();
+    let r = h
+        .issue(&redacted, &grant(BOB), b"drops-redaction")
+        .unwrap_err();
+    eprintln!("issuance: redaction dropped -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY));
+    assert!(r.message.contains("redaction = 1"), "{}", r.message);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    let kept = grant(BOB).with_redaction(1).unwrap();
+    let issued = h
+        .issue(&redacted, &kept, b"keeps-redaction")
+        .expect("a grant that keeps the redaction caveat");
+    assert_eq!(issued.commitment, kept.commitment().unwrap());
+}

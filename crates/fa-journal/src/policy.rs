@@ -1182,6 +1182,12 @@ impl ReadAuthority {
         self.reach(seq, None, Some(day))
     }
 
+    /// A read of the whole book at `seq` (every period and effective date,
+    /// such as open items): a `periods` or `effective` caveat refuses it.
+    pub fn whole_book(&self, seq: CommitSeq) -> Result<(), Refusal> {
+        self.reach(seq, None, None)
+    }
+
     fn reach(
         &self,
         seq: CommitSeq,
@@ -1437,7 +1443,8 @@ pub struct Issued {
 /// Grants only what the issuer holds (plan §14.2: caveats are conjunctive
 /// and attenuable only). An issued capability holds no op the issuer lacks,
 /// no unit beyond the issuer's ceilings and no larger ceiling, no book
-/// beyond the issuer's books, and expires no later than the issuer.
+/// beyond the issuer's books, keeps the issuer's redaction caveat, and
+/// expires no later than the issuer.
 fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
     let widen = |what: String| {
         Some(Refusal::new(
@@ -1445,7 +1452,7 @@ fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
             exit::SAFETY,
             format!("the issued capability would widen the issuer's authority: {what}"),
             "plan §14.2 (caveats are conjunctive and attenuable only)",
-            "issue only ops, units, ceilings, books and an expiry within the issuing capability",
+            "issue only ops, units, ceilings, books, a redaction caveat and an expiry within the issuing capability",
         ))
     };
     if let Some(op) = issued.ops().iter().find(|op| !issuer.holds(**op)) {
@@ -1510,6 +1517,16 @@ fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
             Some(own) if own.is_subset(books) => {}
             _ => return widen("it reaches a book the issuer cannot".to_string()),
         }
+    }
+    // Issuance is a whole-book act on trunk, so admission already refuses an
+    // issuer carrying an accounts, periods, effective, known-at or branch
+    // caveat. A redaction caveat does not limit reach, so it is kept here.
+    if let Some(contract) = issuer.redaction()
+        && issued.redaction() != Some(contract)
+    {
+        return widen(format!(
+            "it drops the issuer's redaction = {contract} caveat"
+        ));
     }
     if let Some(bound) = issuer.expires_at()
         && issued.expires_at().is_none_or(|at| at > bound)

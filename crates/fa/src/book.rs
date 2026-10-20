@@ -3499,6 +3499,52 @@ impl ReadScope<'_> {
         }))
     }
 
+    /// Admit a native report at its recorded frontier under the scope
+    /// caveats, before its query is constructed, and return the frontier.
+    /// Stock balances run from inception, so a trial balance reaches every
+    /// period through its latest selected one (a `periods` caveat refuses
+    /// it; an `effective` caveat admits it only through that period's last
+    /// day); period activity and an explanation reach exactly their
+    /// periods; open items reach the whole book. A statement is admitted by
+    /// its own family, so here it reaches the whole book.
+    pub fn admit_report(
+        &self,
+        selection: &crate::ReportSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<CommitSeq> {
+        use crate::{ReportSelection, TrialBalanceSelection};
+        fn codes(periods: &[String]) -> Vec<&str> {
+            periods.iter().map(String::as_str).collect()
+        }
+        let seq = self.frontier(known_at)?;
+        let book = self.book.context();
+        let admitted = match selection {
+            ReportSelection::TrialBalance(TrialBalanceSelection::Periods(periods)) => {
+                self.authority.stock_through(book, seq, &codes(periods))
+            }
+            ReportSelection::TrialBalance(TrialBalanceSelection::Activity(periods)) => {
+                self.authority.periods(book, seq, &codes(periods))
+            }
+            ReportSelection::TrialBalance(TrialBalanceSelection::AsOf(day)) => {
+                self.authority.as_of(seq, *day)
+            }
+            ReportSelection::ExplainBalance { period, .. } => {
+                self.authority.periods(book, seq, &[period.as_str()])
+            }
+            ReportSelection::OpenItems { .. } | ReportSelection::Statement(_) => {
+                self.authority.whole_book(seq)
+            }
+        };
+        Ok(admitted.map(|()| seq))
+    }
+
+    /// Admit a stock read as of civil `day` (every period that starts by
+    /// then, such as an open-items snapshot): a `periods` caveat refuses it.
+    pub fn admit_as_of(&self, day: DateDay, known_at: Option<CommitSeq>) -> Outcome<CommitSeq> {
+        let seq = self.frontier(known_at)?;
+        Ok(self.authority.as_of(seq, day).map(|()| seq))
+    }
+
     /// [`Book::explain_balance`] under the scope caveats: it reaches its one
     /// period.
     pub fn explain_balance(
@@ -3507,13 +3553,14 @@ impl ReadScope<'_> {
         period_code: &str,
         known_at: Option<CommitSeq>,
     ) -> Outcome<BalanceExplanation> {
-        let seq = self.frontier(known_at)?;
-        if let Err(r) = self
-            .authority
-            .periods(self.book.context(), seq, &[period_code])
-        {
-            return Ok(Err(r));
-        }
+        let selection = crate::ReportSelection::ExplainBalance {
+            account,
+            period: period_code.to_string(),
+        };
+        let seq = match self.admit_report(&selection, known_at)? {
+            Ok(seq) => seq,
+            Err(r) => return Ok(Err(r)),
+        };
         Ok(Ok(self.book.explain_balance(
             account,
             period_code,
@@ -3521,23 +3568,18 @@ impl ReadScope<'_> {
         )?))
     }
 
-    /// [`Book::trial_balance_at`] under the scope caveats. Stock balances
-    /// run from inception, so the read reaches every period before the
-    /// latest selected one: a `periods` caveat refuses it, and an
-    /// `effective` caveat admits it only through that period's last day.
+    /// [`Book::trial_balance_at`] under the scope caveats (see
+    /// [`Self::admit_report`]).
     pub fn trial_balance_at(
         &self,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
-        let seq = self.frontier(known_at)?;
-        let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
-        if let Err(r) = self
-            .authority
-            .stock_through(self.book.context(), seq, &codes)
-        {
-            return Ok(Err(r));
-        }
+        let selection = crate::TrialBalanceSelection::Periods(periods.to_vec());
+        let seq = match self.admit_report(&selection.into(), known_at)? {
+            Ok(seq) => seq,
+            Err(r) => return Ok(Err(r)),
+        };
         Ok(Ok(self.book.trial_balance_at(periods, Some(seq))?))
     }
 
@@ -3548,10 +3590,10 @@ impl ReadScope<'_> {
         day: DateDay,
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
-        let seq = self.frontier(known_at)?;
-        if let Err(r) = self.authority.as_of(seq, day) {
-            return Ok(Err(r));
-        }
+        let seq = match self.admit_as_of(day, known_at)? {
+            Ok(seq) => seq,
+            Err(r) => return Ok(Err(r)),
+        };
         Ok(Ok(self.book.balance_as_of(day, Some(seq))?))
     }
 
@@ -3562,11 +3604,11 @@ impl ReadScope<'_> {
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
-        let seq = self.frontier(known_at)?;
-        let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
-        if let Err(r) = self.authority.periods(self.book.context(), seq, &codes) {
-            return Ok(Err(r));
-        }
+        let selection = crate::TrialBalanceSelection::Activity(periods.to_vec());
+        let seq = match self.admit_report(&selection.into(), known_at)? {
+            Ok(seq) => seq,
+            Err(r) => return Ok(Err(r)),
+        };
         Ok(Ok(self.book.period_activity(periods, Some(seq))?))
     }
 }

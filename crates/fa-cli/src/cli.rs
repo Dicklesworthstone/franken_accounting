@@ -4734,6 +4734,42 @@ fn issued_json(i: &fa_journal::IssuedCapability) -> Json {
             cap.expires_at()
                 .map_or(Json::Null, |at| Json::Int(i128::from(at.0))),
         ),
+        (
+            "books",
+            cap.books().map_or(Json::Null, |books| {
+                Json::Arr(books.iter().map(|book| s(book.to_hex())).collect())
+            }),
+        ),
+        (
+            "accounts",
+            cap.accounts()
+                .map_or(Json::Null, |roots| Json::Arr(roots.iter().map(s).collect())),
+        ),
+        (
+            "periods",
+            cap.periods().map_or(Json::Null, |periods| {
+                Json::Arr(periods.iter().map(s).collect())
+            }),
+        ),
+        (
+            "effective_through",
+            cap.effective_bound()
+                .map_or(Json::Null, |day| s(day.render())),
+        ),
+        (
+            "known_at_most",
+            cap.known_at_pin()
+                .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+        ),
+        (
+            "branch",
+            cap.branch().map_or(Json::Null, |branch| s(branch.to_hex())),
+        ),
+        (
+            "redaction",
+            cap.redaction()
+                .map_or(Json::Null, |contract| Json::Int(i128::from(contract))),
+        ),
         ("issued_at", Json::Int(i128::from(i.issued_at.0))),
         (
             "revoked_at",
@@ -4828,7 +4864,7 @@ fn capability_issuer(ctx: &Ctx<'_>, args: &Args) -> Result<Capability, Fail> {
 /// file is written only after the issuance commits, so a refused issuance
 /// leaves no file; the secret is never journaled or printed.
 fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const FIX: &str = "fa capability issue --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--daily-total \"1000.00 USD\"]... [--expires-at <seq>] --out <new-file> (--issuer-token <file> or --as <issuer> --grant issue_capability --grant <each issued op>)";
+    const FIX: &str = "fa capability issue --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--daily-total \"1000.00 USD\"]... [--expires-at <seq>] [--period <code>]... [--effective-through YYYY-MM-DD] [--known-at-most <seq>] --out <new-file> (--issuer-token <file> or --as <issuer> --grant issue_capability --grant <each issued op>)";
     let holder = args.require("--holder", "<principal>")?.to_string();
     if holder.is_empty() || holder.len() > fa_policy::capability::MAX_TOKEN_PRINCIPAL_BYTES {
         return Err(usage("--holder is a 1..=256-byte principal name", FIX));
@@ -4928,6 +4964,42 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         })?;
         issued = issued.expiring_at(CommitSeq(seq));
+    }
+    // Read scope caveats (plan §14.2): judged before any query a holder's
+    // read or write constructs, never applied as a result filter.
+    let periods = args.flag_all("--period");
+    if !periods.is_empty() {
+        let calendar = book.periods()?;
+        if let Some(code) = periods
+            .iter()
+            .find(|code| !calendar.iter().any(|p| p.code == **code))
+        {
+            return Err(usage(
+                format!("--period `{code}` is not a period of this book"),
+                "`fa period list` lists the book's period codes",
+            ));
+        }
+        issued = issued
+            .for_periods(&periods)
+            .map_err(|e| usage(format!("--period: {e}"), FIX))?;
+    }
+    if let Some(text) = args.flag("--effective-through") {
+        let day = DateDay::parse(text).map_err(|e| {
+            usage(
+                format!("--effective-through `{text}`: {e}"),
+                "--effective-through YYYY-MM-DD (the token reaches effective dates on or before it)",
+            )
+        })?;
+        issued = issued.effective_through(day);
+    }
+    if let Some(text) = args.flag("--known-at-most") {
+        let seq = text.parse::<u64>().map_err(|_| {
+            usage(
+                format!("--known-at-most `{text}` is not a commit sequence"),
+                "--known-at-most <seq> (the token reads recorded frontiers at or before it, never the head beyond)",
+            )
+        })?;
+        issued = issued.known_at_most(CommitSeq(seq));
     }
     let mut secret = [0u8; 32];
     Entropy::production()
@@ -9058,8 +9130,11 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
-    // The capability a head read loads its register window under (fa-715),
-    // taken before the book is opened.
+    // A native trial balance, plain or certified, is read under the
+    // session's capability: admitted before the book is observed, and its
+    // selection judged against the scope caveats before any query is
+    // constructed (doctrine 8, fa-0x0); a caveat refuses, never filters. A
+    // head read also loads its register window under it (fa-715).
     let read_cap = match &certify_cap {
         Some(capability) => capability.clone(),
         None => ctx.capability(args, &["read"])?,
@@ -9095,7 +9170,10 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             prepare_native_certificate_history(book, capability, None)
         })?
     } else {
-        ctx.books.open(args)?
+        ctx.books.open_admitted(args, |book| {
+            book.read_scope(who, &read_cap)??;
+            Ok(())
+        })?
     };
     if args.positional.len() != 1 {
         return Err(usage("unexpected trial-balance argument", "fa tb --help"));
@@ -9223,6 +9301,8 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let summary = book.summary_trial_balance(who, &capability, &request)??;
         return render_summary_trial_balance(out, &book, &summary, &selection, None);
     }
+    book.read_scope(who, &read_cap)??
+        .admit_report(&selection.clone().into(), known_at)??;
     let (tb, certificate, served) = if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;
         let certified = match requested_utc_ns {
@@ -10937,10 +11017,12 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
     let certify_cap = if args.flag("--as-of").is_none()
         && (args.switch("--certify") || args.flag("--certificate-out").is_some())
     {
-        Some(ctx.capability(args, &["read"])?)
+        Some(read_cap.clone())
     } else {
         None
     };
@@ -10950,7 +11032,10 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             prepare_native_certificate_history(book, capability, None)
         })?
     } else {
-        ctx.books.open(args)?
+        ctx.books.open_admitted(args, |book| {
+            book.read_scope(who, &read_cap)??;
+            Ok(())
+        })?
     };
     if args.positional.len() != 1 {
         return Err(usage(
@@ -10987,6 +11072,11 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "--as-of YYYY-MM-DD",
             )
         })?;
+        // Judged against the scope caveats before the query is constructed
+        // (doctrine 8, fa-0x0): the snapshot reaches every period that
+        // starts by its day.
+        book.read_scope(who, &read_cap)??
+            .admit_as_of(day, known_at)??;
         let snapshot = book.open_items_as_of(account, day, known_at)?;
         out.effective(format!("as-of:{day}"));
         let chart = book.accounts()?;
@@ -11025,6 +11115,8 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;
         let selection = ReportSelection::OpenItems { account };
+        book.read_scope(who, &read_cap)??
+            .admit_report(&selection, known_at)??;
         let certified = match requested_utc_ns {
             Some(instant) => book.certify_report_at_instant(selection, instant)??,
             None => book.certify_report(selection, known_at)??,
@@ -11037,6 +11129,9 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         };
         (report, Some(certified.certificate))
     } else {
+        // Open items reach the whole book (doctrine 8, fa-0x0).
+        book.read_scope(who, &read_cap)??
+            .admit_report(&ReportSelection::OpenItems { account }, known_at)??;
         (book.open_items_report(account, known_at)?, None)
     };
     validate_open_items_report(&report, &book.context().units)?;
@@ -14944,8 +15039,10 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let period = args.require("--period", "FY2026-P03")?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
     let certify_cap = if args.switch("--certify") || args.flag("--certificate-out").is_some() {
-        Some(ctx.capability(args, &["read"])?)
+        Some(read_cap.clone())
     } else {
         None
     };
@@ -14954,13 +15051,25 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             prepare_native_certificate_history(book, capability, None)
         })?
     } else {
-        ctx.books.open(args)?
+        ctx.books.open_admitted(args, |book| {
+            book.read_scope(who, &read_cap)??;
+            Ok(())
+        })?
     };
     let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
     if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;
     }
     let account = account_vid(book.context().book_id, code);
+    // Judged against the scope caveats before the query is constructed
+    // (doctrine 8, fa-0x0): the explanation reaches its one period.
+    book.read_scope(who, &read_cap)??.admit_report(
+        &ReportSelection::ExplainBalance {
+            account,
+            period: period.to_string(),
+        },
+        known_at,
+    )??;
     let explain_error = |error| explanation_selection_error(&book, code, period, known_at, error);
     let (ex, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
     {
@@ -15500,10 +15609,21 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "use the `vid` from the posted event",
                 )
             })?;
-            let book = ctx.books.open(args)?;
+            let who = ctx.principal(args);
+            let capability = ctx.capability(args, &["read"])?;
+            let book = ctx.books.open_admitted(args, |book| {
+                book.read_scope(who, &capability)??;
+                Ok(())
+            })?;
             let units = &book.context().units;
             let seal_key = &book.context().seal_key;
-            match book.read_entry(VId(vid))? {
+            // The entry's period is known only once it is read, so a
+            // `periods` or `effective` caveat refuses the read before it,
+            // and a known-at pin refuses the head (doctrine 8, fa-0x0).
+            match book
+                .read_scope(who, &capability)??
+                .read_entry(VId(vid), None)??
+            {
                 None => {
                     // Every field is always present; absence is spelled null.
                     let mut fields = vec![("found", Json::Bool(false)), ("vid", s(vid_s))];
