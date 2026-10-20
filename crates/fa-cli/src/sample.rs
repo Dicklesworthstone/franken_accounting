@@ -140,10 +140,10 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "--confidence 90, 95 or 99 (percent)",
             )
         })?;
-        let audited = ctx
-            .files
-            .read_text(args.require("--audited", "<audited.json|->")?)?;
-        Some((confidence_bps, audited))
+        Some((
+            confidence_bps,
+            args.require("--audited", "<audited.json|->")?,
+        ))
     } else {
         None
     };
@@ -191,8 +191,21 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (report.known_at, report.items)
         }
     };
-    let row = book
-        .accounts_at(known_at, &capability)??
+    // Authority precedes input consumption: the audited values are read
+    // only once the capability's scope has admitted the sample's read.
+    let evaluation = match evaluation {
+        Some((confidence_bps, source)) => Some((confidence_bps, ctx.files.read_text(source)?)),
+        None => None,
+    };
+    // An as-of sample reads the chart within the reach its snapshot was
+    // admitted under; a whole-book sample's admission already covers it.
+    let accounts = match as_of {
+        Some(day) => book
+            .read_scope(who, &capability)??
+            .accounts_as_of(day, Some(known_at))??,
+        None => book.accounts_at(known_at, &capability)??,
+    };
+    let row = accounts
         .into_iter()
         .find(|row| row.vid == account)
         .ok_or_else(|| {

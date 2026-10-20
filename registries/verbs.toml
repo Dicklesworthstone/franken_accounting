@@ -4180,10 +4180,10 @@ ops = ["read"]
 
 # Each judges what it reaches at its recorded frontier: a trial balance its
 # periods (a stock balance from inception), an explanation of a balance,
-# period or register its period, open items their day, and an entry, its
-# lineage or its evidence the whole book.
+# period or register its period, open items (and an audit sample of them)
+# their day, and an entry, its lineage or its evidence the whole book.
 [[bound]]
-verbs = ["tb", "open-items", "explain", "entry"]
+verbs = ["tb", "open-items", "explain", "entry", "sample"]
 ops = ["read"]
 reach = "judged"
 
@@ -4223,7 +4223,7 @@ ops = ["read"]
 reach = "judged"
 
 [[bound]]
-verbs = ["gl", "replay", "certificate", "procedure", "sample", "triage", "next", "doctor"]
+verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor"]
 ops = ["read"]
 
 # A search reads every entry: the whole book.

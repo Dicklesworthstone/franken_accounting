@@ -11,8 +11,8 @@ use fa::{
     Book, BookKeys, Capability, Entropy, ReportSelection, StatementDefinition, StatementSelection,
     TrialBalanceSelection,
 };
-use fa_journal::BookSpec;
-use fa_model::{Id128, account_vid};
+use fa_journal::{AccountSpec, BookSpec, UnitPolicy};
+use fa_model::{AccountType, Id128, account_vid};
 use fa_money::UnitRegistry;
 use fa_reference::read_scope::{self, Read, Scope};
 use fa_statements::Basis;
@@ -200,4 +200,93 @@ fn the_engine_judges_every_scoped_read_as_the_literal_model_does() {
         admitted * 10 >= cases && refused * 10 >= cases,
         "{admitted} admitted, {refused} refused of {cases}"
     );
+}
+
+/// `ReadScope::accounts_as_of` judges the chart as the as-of stock read it
+/// serves (an audit sample's normal side): a token bounded to effective
+/// dates through March 31 reads it as of March 20 and is refused it as of
+/// April 15; a `periods` caveat refuses it as every as-of read; a pin
+/// refuses a later frontier.
+#[test]
+fn the_chart_as_of_a_day_is_judged_as_that_days_stock_read() {
+    let units = UnitRegistry::embedded().unwrap();
+    let mut book = Book::create_memory(
+        BookKeys::for_development(8),
+        BookSpec {
+            book_id: Id128([8; 16]),
+            name: "Chart as of".into(),
+            base_unit: units.lookup("USD").unwrap(),
+            calendar: FiscalCalendar::monthly("cal-monthly", 1, 0).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(8),
+    )
+    .unwrap();
+    let installed = book
+        .install_chart(
+            &[AccountSpec {
+                code: "1200".into(),
+                name: "Receivables".into(),
+                account_type: AccountType::ASSET.0,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: UnitPolicy::AnyCurrency,
+                parent_code: None,
+                limit: None,
+            }],
+            PRINCIPAL,
+            DateDay::parse("2026-01-01").unwrap(),
+            b"chart-as-of",
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    // A later commit, so a pin at the chart's sequence falls short of HEAD.
+    book.create_periods(
+        2026,
+        PRINCIPAL,
+        &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let head = book.head().unwrap();
+    assert!(head > installed.recorded_at);
+    let march_20 = DateDay::parse("2026-03-20").unwrap();
+    let april_15 = DateDay::parse("2026-04-15").unwrap();
+    let read = |capability: &Capability, day: DateDay, at: CommitSeq| {
+        book.read_scope(PRINCIPAL, capability)
+            .unwrap()
+            .unwrap()
+            .accounts_as_of(day, Some(at))
+            .unwrap()
+    };
+
+    let through = Capability::embedded(PRINCIPAL, &["read"])
+        .unwrap()
+        .effective_through(DateDay::parse("2026-03-31").unwrap());
+    let rows = read(&through, march_20, head).unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.code.as_str()).collect::<Vec<_>>(),
+        ["1200"]
+    );
+    assert_eq!(rows[0].normal_balance, 0);
+    let refused = read(&through, april_15, head).unwrap_err();
+    assert_eq!((refused.code, refused.exit), ("FA-REF-011", 7));
+    assert_eq!(caveat(&refused.message), "effective");
+
+    let march = Capability::embedded(PRINCIPAL, &["read"])
+        .unwrap()
+        .for_periods(&["FY2026-P03"])
+        .unwrap();
+    let refused = read(&march, march_20, head).unwrap_err();
+    assert_eq!(caveat(&refused.message), "periods");
+
+    let pinned = Capability::embedded(PRINCIPAL, &["read"])
+        .unwrap()
+        .known_at_most(installed.recorded_at);
+    assert!(read(&pinned, march_20, installed.recorded_at).is_ok());
+    let refused = read(&pinned, march_20, head).unwrap_err();
+    assert_eq!(caveat(&refused.message), "known_at");
 }

@@ -4080,7 +4080,7 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
     // confined to March, bounded to effective dates through March 31, or
     // pinned at the first sequence, the whole-book read is refused
     // (FA-REF-011, exit 7), and an evaluation is refused before its audited
-    // values are judged. Inside its caveats a token draws the owner's sample.
+    // values are read. Inside its caveats a token draws the owner's sample.
     let token = |holder: &str, scope: &[&str]| -> String {
         let path = dir.join(format!("{holder}.token")).display().to_string();
         let mut argv = vec![
@@ -4126,7 +4126,9 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         assert_eq!(code, 7, "{args:?}\n{out}\n{err}");
         assert!(out.contains("FA-REF-011") && out.contains(caveat), "{out}");
     }
-    let argv = evaluate(&audited);
+    // Audited values from stdin, which the test never supplies: the scope
+    // refusal must come before the input is consumed.
+    let argv = evaluate("-");
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     let (code, out, err) = scoped(&march, &argv);
     assert_eq!(code, 7, "{out}\n{err}");

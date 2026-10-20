@@ -4484,6 +4484,37 @@ impl ReadScope<'_> {
         }))
     }
 
+    /// The chart at an admitted frontier, judged as a stock read as of civil
+    /// `day` (the reach of [`Self::admit_as_of`]): an as-of reader inside an
+    /// `effective` caveat sees the account rows its snapshot relies on (an
+    /// audit sample's normal side) without being admitted to the whole book.
+    pub fn accounts_as_of(
+        &self,
+        day: DateDay,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<Vec<AccountRow>> {
+        let seq = match self.admit_as_of(day, known_at)? {
+            Ok(seq) => seq,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let purposes = self.book.purposes();
+        with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
+            if seq > db.frontier().map_err(KernelError::from)? {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_journal::refusal::code::STRUCTURE,
+                    fa_journal::exit::USAGE,
+                    "chart history cannot select a future recorded sequence",
+                    "plan §4.3 (journaled chart history)",
+                    "select an existing recorded sequence",
+                )));
+            }
+            let chart = fa_journal::chart::read_at(db, book, seq)?;
+            let mut accounts: Vec<_> = chart.accounts().values().cloned().collect();
+            accounts.sort_by(|left, right| left.code.cmp(&right.code));
+            Ok(Ok(accounts))
+        }))
+    }
+
     /// Admit a read of the whole book at its recorded frontier: an entry,
     /// its lineage or its evidence, whose period is known only once read.
     pub fn admit_whole_book(&self, known_at: Option<CommitSeq>) -> Outcome<CommitSeq> {
