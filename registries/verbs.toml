@@ -2896,7 +2896,7 @@ doc = "Lantern: the registered forensic and audit procedures (journal-entry test
 [[mcp.cluster]]
 name = "fa.audit"
 on_demand = true
-doc = "Audit sampling (plan §11.7): reproducible uniform and monetary-unit samples of an account's open items from a declared seed, and the Stringer evaluation of an MUS sample's audited values. Pure reads. On demand (fa-mcp --cluster fa.audit): the default surface is at its 40-tool limit."
+doc = "Audit sampling (plan §11.7): reproducible uniform and monetary-unit samples of an account's open items from a declared seed, and the Stringer evaluation of an MUS sample's audited values, and full-text search over entry descriptions and memos (fa search). Pure reads. On demand (fa-mcp --cluster fa.audit): the default surface is at its 40-tool limit."
 
 [[mcp.tool]]
 cluster = "fa.orient"
@@ -3887,7 +3887,7 @@ dont = ["Don't invent a procedure id or a parameter name: `action: \"list\"` ret
 mistakes = ["Passing a parameter in display units (10000.00) instead of the unit's mantissa (1000000 at scale 2); the listing's `meaning` says which.", "Running aging.* or trace.* without effective_through (they are historical folds and are refused naming it).", "Running trace.* without account and source (the commingled account and the deposit entry).", "Overriding a parameter with a float; parameters are integers in the registered unit."]
 
 [[mcp.tool]]
-cluster = "fa.forensics"
+cluster = "fa.audit"
 name = "search"
 verb = "search"
 subcommands = []

@@ -1404,7 +1404,7 @@ mod tests {
             ),
             (
                 "exit 1",
-                with(|s| s.replace("exits = [0, 2, 4, 5]", "exits = [0, 1]")),
+                with(|s| s.replace("exits = [0, 2, 4, 5, 7]", "exits = [0, 1, 2, 4, 5, 7]")),
             ),
             (
                 "an envelope without warnings",

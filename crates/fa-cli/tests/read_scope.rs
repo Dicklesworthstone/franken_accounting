@@ -851,17 +851,30 @@ fn every_command_that_does_not_judge_its_reach_refuses_a_scoped_token() {
             argv.extend(sub);
             argv.extend(arg);
             argv.extend(flags.iter().copied());
+            // A registered dangerous operation is refused by the bound
+            // route's confirmation gate (FA-REF-007), which runs first: it
+            // is refused before the book is opened all the same.
+            let gated_sub = if registered.is_empty() { None } else { sub };
+            let dangerous = reg.dangerous_for(verb, gated_sub).next().is_some();
             for (token, caveat) in &tokens {
                 let mut scoped = vec!["--token", token.as_str()];
                 scoped.extend(argv.iter().copied());
                 let (exit, event) = f.run(&scoped);
                 assert_eq!(exit, 7, "rule {index}: {scoped:?}\n{event:?}");
-                assert_eq!(text(data(&event), "refusal_id"), "FA-REF-011", "{event:?}");
-                let message = text(data(&event), "message");
-                assert!(
-                    message.contains("reaches the whole book") && message.contains(caveat),
-                    "rule {index}: {scoped:?}: {message}"
-                );
+                let refusal = text(data(&event), "refusal_id");
+                if dangerous && refusal == "FA-REF-007" {
+                    assert!(
+                        text(data(&event), "message").contains("confirmation"),
+                        "rule {index}: {scoped:?}: {event:?}"
+                    );
+                } else {
+                    assert_eq!(refusal, "FA-REF-011", "{event:?}");
+                    let message = text(data(&event), "message");
+                    assert!(
+                        message.contains("reaches the whole book") && message.contains(caveat),
+                        "rule {index}: {scoped:?}: {message}"
+                    );
+                }
                 assert_eq!(
                     event.get("book"),
                     Some(&Json::Null),
