@@ -44,6 +44,10 @@
 //! register fold law its claim is defined under, and a law this verifier
 //! does not implement is a typed failure of that balance
 //! ([`VerifyError::FoldLaw`]), never a recomputation under another law.
+//! A partial legacy balance proof is not sufficient for recomputation. The
+//! missing selector-derivation premise can be discharged only when this
+//! bundle independently checks EVERY payload of the same complete prefix;
+//! otherwise that balance fails, even when its supplied amounts add up.
 //!
 //! A scope admits exactly one completeness claim: `Prefix` is
 //! `SeqRangeComplete(0, leaf_count)`, `Account` is `ScopeIndexComplete`,
@@ -901,14 +905,23 @@ pub fn verify_bundle(
     ));
     let scoped = scoped.and_then(Result::ok);
 
+    let entry_set = scoped.as_ref().map_or_else(
+        || Grade::Unrun(SCOPE_UNRUN.to_string()),
+        |s| entry_set_grade(&p.entries, s),
+    );
+    // A legacy balance proof may omit out-of-scope payloads. Only an exact,
+    // authenticated FULL prefix plus every successfully rebuilt record can
+    // supply that missing derivation premise. Filter/index assertions cannot.
+    let mut full_prefix_payloads = matches!(&p.manifest.scope, BundleScope::Prefix)
+        && matches!(&entry_set, Grade::Pass)
+        && signed.as_ref().zip(scoped.as_ref()).is_some_and(|(signed, scope)| {
+            u64::try_from(scope.len()).ok() == Some(signed.checkpoint.leaf_count)
+        });
     checks.push(check(
         "entries",
         scope_label,
         "the entries are exactly the in-scope leaves".to_string(),
-        scoped.as_ref().map_or_else(
-            || Grade::Unrun(SCOPE_UNRUN.to_string()),
-            |s| entry_set_grade(&p.entries, s),
-        ),
+        entry_set,
     ));
 
     for item in &p.entries {
@@ -926,6 +939,7 @@ pub fn verify_bundle(
                 ),
             },
         };
+        full_prefix_payloads &= matches!(&record, Grade::Pass);
         let closure = if matches!(record, Grade::Pass) {
             closure_grade(item)
         } else {
@@ -963,7 +977,23 @@ pub fn verify_bundle(
                 }
                 .to_string(),
             ),
-            Some(s) => graded(&verify_balance(b.proof, &s.checkpoint)),
+            Some(s) => match verify_balance(b.proof, &s.checkpoint) {
+                Ok(balance) if balance.scope == crate::balance::SCOPE_RECOMPUTATION => Grade::Pass,
+                Ok(balance)
+                    if balance.scope == crate::balance::SCOPE_MEMBERSHIP_ONLY
+                        && full_prefix_payloads => Grade::Pass,
+                Ok(balance) => Grade::Fail(format!(
+                    "balance completeness is not independently verified (scope {}); \
+                     supply a payload-complete proof or every verified prefix entry",
+                    balance.scope,
+                )),
+                Err(error) => Grade::Fail(error.to_string()),
+            },
+        };
+        let subject = if full_prefix_payloads {
+            format!("{subject}; every prefix selector independently rebuilt from its payload")
+        } else {
+            subject
         };
         checks.push(check("recomputation", "recomputation", subject, grade));
     }
@@ -1056,3 +1086,6 @@ mod tests {
         assert!(e.contains("`fa:register-fold:v2` version 2 only"), "{e}");
     }
 }
+
+#[cfg(test)]
+mod balance_assurance;
