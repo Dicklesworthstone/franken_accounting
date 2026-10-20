@@ -18,6 +18,7 @@ pub mod bank;
 pub mod beancount;
 pub mod conformance;
 pub mod csv_gl;
+pub mod fwc;
 pub mod legacy;
 pub mod load_file;
 pub mod part370;

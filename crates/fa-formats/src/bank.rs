@@ -1823,7 +1823,7 @@ fn parse_mt940_balance(
     Ok((dt, ccy, signed))
 }
 
-fn compute_bank_line_digest(
+pub fn compute_bank_line_digest(
     instrument_id: &str,
     seq: u64,
     ordinal: u32,
