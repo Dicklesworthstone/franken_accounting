@@ -283,6 +283,16 @@ pub mod code {
     /// A case's disclosure is not a reviewed Disclosure document of this
     /// book (plan §8.3, §9.3).
     pub const CASE_DISCLOSURE: &str = "FA-REF-179";
+    /// No engagement with this id in the book.
+    pub const ENGAGEMENT_UNKNOWN: &str = "FA-REF-180";
+    /// A proposed adjustment already booked or passed is decided again.
+    pub const ADJUSTMENT_DECIDED: &str = "FA-REF-181";
+    /// The entry named as booking a proposal does not post its legs.
+    pub const BOOKED_ENTRY_DIFFERS: &str = "FA-REF-182";
+    /// A proposed adjustment dated outside the engagement's scope periods.
+    pub const ADJUSTMENT_OUT_OF_SCOPE: &str = "FA-REF-183";
+    /// No proposal with this number in the engagement.
+    pub const ADJUSTMENT_UNKNOWN: &str = "FA-REF-184";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.
