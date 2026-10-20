@@ -203,17 +203,21 @@ impl Harness {
         ))
     }
 
-    fn prepare(&self, request: SettlementGroupRequest) -> PreparedSettlementGroup {
-        self.book
-            .prepare_settlement_group(&self.cx(), request, &cap())
+    fn prepare(&mut self, request: SettlementGroupRequest) -> PreparedSettlementGroup {
+        let cx = self.cx();
+        self.runtime
+            .block_on(self.book.prepare_settlement_group(&cx, request, &cap()))
             .unwrap()
             .unwrap()
     }
 
     fn plan(&mut self, request: SettlementGroupRequest) -> SettlementGroupPostPlan {
         let cx = self.cx();
-        self.book
-            .plan_settlement_group(&cx, request, Vec::new(), &cap())
+        self.runtime
+            .block_on(
+                self.book
+                    .plan_settlement_group(&cx, request, Vec::new(), &cap()),
+            )
             .unwrap()
             .unwrap()
     }
@@ -250,8 +254,8 @@ impl Harness {
         };
         let cx = self.cx();
         let plan = self
-            .book
-            .plan_settlement(&cx, request, Vec::new(), &cap())
+            .runtime
+            .block_on(self.book.plan_settlement(&cx, request, Vec::new(), &cap()))
             .unwrap()
             .unwrap();
         self.runtime
@@ -374,8 +378,11 @@ fn mixed_native_units_and_debit_credit_applications_publish_as_one_entry() {
     );
     let cx = h.cx();
     let plan = h
-        .book
-        .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().intent().proposal(), &expected);
@@ -418,7 +425,7 @@ fn portable_group_plan_retries_after_reopen_without_spending_again() {
 
 #[test]
 fn duplicate_applying_legs_and_overlapping_even_unused_targets_are_refused() {
-    let (h, invoice, bill, base) = fixture();
+    let (mut h, invoice, bill, base) = fixture();
     let mut cases = Vec::new();
     let mut duplicate = base.clone();
     duplicate.payments.push(duplicate.payments[0].clone());
@@ -447,10 +454,11 @@ fn duplicate_applying_legs_and_overlapping_even_unused_targets_are_refused() {
     bad_ordinal.payments[0].payment_leg = u16::MAX;
     cases.push(bad_ordinal);
     let at = h.head();
+    let cx = h.cx();
     for request in cases {
         let refusal = h
-            .book
-            .prepare_settlement_group(&h.cx(), request, &cap())
+            .runtime
+            .block_on(h.book.prepare_settlement_group(&cx, request, &cap()))
             .unwrap()
             .unwrap_err();
         assert_eq!(refusal.code, fa_journal::refusal::code::STRUCTURE);
@@ -462,8 +470,9 @@ fn duplicate_applying_legs_and_overlapping_even_unused_targets_are_refused() {
 
 #[test]
 fn invalid_later_selection_returns_no_partial_payment() {
-    let (h, invoice, bill, base) = fixture();
+    let (mut h, invoice, bill, base) = fixture();
     let at = h.head();
+    let cx = h.cx();
     // Canonical order prepares the invoice first, then encounters the bad bill.
     let mut missing = base.clone();
     missing.payments[0].targets.push((VId(u128::MAX), 0));
@@ -477,8 +486,8 @@ fn invalid_later_selection_returns_no_partial_payment() {
     }];
     for request in [missing, dimensions, overwritten] {
         assert!(
-            h.book
-                .prepare_settlement_group(&h.cx(), request, &cap())
+            h.runtime
+                .block_on(h.book.prepare_settlement_group(&cx, request, &cap()))
                 .unwrap()
                 .is_err()
         );
@@ -504,8 +513,11 @@ fn complete_entry_balance_and_evidence_laws_remain_kernel_enforced() {
     ] {
         let prepared = h.prepare(request);
         let refusal = h
-            .book
-            .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap())
+            .runtime
+            .block_on(
+                h.book
+                    .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap()),
+            )
             .unwrap()
             .unwrap_err();
         assert_eq!(refusal.code, code);
@@ -535,14 +547,22 @@ fn authority_covers_the_whole_payment_and_is_rechecked_at_rehearsal() {
     ];
     for capability in capabilities {
         assert!(
-            h.book
-                .prepare_settlement_group(&cx, base.clone(), &capability)
+            h.runtime
+                .block_on(
+                    h.book
+                        .prepare_settlement_group(&cx, base.clone(), &capability)
+                )
                 .unwrap()
                 .is_err()
         );
         assert!(
-            h.book
-                .plan_prepared_settlement_group(&cx, prepared.clone(), Vec::new(), &capability)
+            h.runtime
+                .block_on(h.book.plan_prepared_settlement_group(
+                    &cx,
+                    prepared.clone(),
+                    Vec::new(),
+                    &capability
+                ))
                 .unwrap()
                 .is_err()
         );
@@ -551,12 +571,12 @@ fn authority_covers_the_whole_payment_and_is_rechecked_at_rehearsal() {
     let mut bad = base;
     bad.payments.clear();
     let denial = h
-        .book
-        .prepare_settlement_group(
+        .runtime
+        .block_on(h.book.prepare_settlement_group(
             &cx,
             bad,
             &Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
-        )
+        ))
         .unwrap()
         .unwrap_err();
     assert_eq!(

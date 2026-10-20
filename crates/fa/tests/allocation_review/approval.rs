@@ -45,8 +45,14 @@ fn approver_only_authority_records_the_proposal_digest_and_retries_idempotently(
     assert_eq!(retry.recorded_at(), approval.recorded_at());
     assert_eq!(h.head(), at);
     let plan = h
-        .book
-        .plan_allocation_review(&cx, &review, digest, vec![approval.approval()], &author())
+        .runtime
+        .block_on(h.book.plan_allocation_review(
+            &cx,
+            &review,
+            digest,
+            vec![approval.approval()],
+            &author(),
+        ))
         .unwrap()
         .unwrap();
     h.runtime
@@ -169,8 +175,11 @@ fn closed_period_requires_real_proposal_approval_and_separate_post_closed_author
     let post_closed = Capability::embedded(AUTHOR, &["post", "post_closed"]).unwrap();
     let at = h.head();
     assert!(
-        h.book
-            .plan_allocation_review(&cx, &review, digest, Vec::new(), &post_closed)
+        h.runtime
+            .block_on(
+                h.book
+                    .plan_allocation_review(&cx, &review, digest, Vec::new(), &post_closed)
+            )
             .unwrap()
             .is_err()
     );
@@ -184,8 +193,14 @@ fn closed_period_requires_real_proposal_approval_and_separate_post_closed_author
         .unwrap();
     let at = h.head();
     assert!(
-        h.book
-            .plan_allocation_review(&cx, &review, digest, vec![wrong.approval()], &post_closed)
+        h.runtime
+            .block_on(h.book.plan_allocation_review(
+                &cx,
+                &review,
+                digest,
+                vec![wrong.approval()],
+                &post_closed
+            ))
             .unwrap()
             .is_err()
     );
@@ -200,16 +215,28 @@ fn closed_period_requires_real_proposal_approval_and_separate_post_closed_author
         .unwrap();
     let at = h.head();
     assert!(
-        h.book
-            .plan_allocation_review(&cx, &review, digest, vec![right.approval()], &author())
+        h.runtime
+            .block_on(h.book.plan_allocation_review(
+                &cx,
+                &review,
+                digest,
+                vec![right.approval()],
+                &author()
+            ))
             .unwrap()
             .is_err(),
         "approval cannot grant post_closed"
     );
     assert_eq!(h.head(), at);
     let plan = h
-        .book
-        .plan_allocation_review(&cx, &review, digest, vec![right.approval()], &post_closed)
+        .runtime
+        .block_on(h.book.plan_allocation_review(
+            &cx,
+            &review,
+            digest,
+            vec![right.approval()],
+            &post_closed,
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(plan.proposal(), review.proposal());
@@ -254,8 +281,14 @@ fn an_instruction_approval_neither_imports_a_driver_nor_attests_agent_evidence()
             .unwrap();
         let at = h.head();
         let refusal = h
-            .book
-            .plan_allocation_review(&cx, &review, digest, vec![approved.approval()], &author())
+            .runtime
+            .block_on(h.book.plan_allocation_review(
+                &cx,
+                &review,
+                digest,
+                vec![approved.approval()],
+                &author(),
+            ))
             .unwrap()
             .unwrap_err();
         assert_eq!(
@@ -304,8 +337,14 @@ fn approval_after_restart_uses_original_ciphertext_and_current_authority() {
         approval.approval().approved_digest,
         review.proposal_digest().unwrap()
     );
-    let plan = book
-        .plan_allocation_review(&cx, &restored, digest, vec![approval.approval()], &author())
+    let plan = runtime
+        .block_on(book.plan_allocation_review(
+            &cx,
+            &restored,
+            digest,
+            vec![approval.approval()],
+            &author(),
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(plan.proposal(), review.proposal());

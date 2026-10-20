@@ -151,9 +151,13 @@ impl Harness {
                 .collect(),
         }
     }
-    fn prepare(&self, request: &BalanceAllocationRequest) -> PreparedBalanceAllocation {
-        self.book
-            .prepare_balance_allocation(&self.cx(), request, &post_cap())
+    fn prepare(&mut self, request: &BalanceAllocationRequest) -> PreparedBalanceAllocation {
+        let cx = self.cx();
+        self.runtime
+            .block_on(
+                self.book
+                    .prepare_balance_allocation(&cx, request, &post_cap()),
+            )
             .unwrap()
             .unwrap()
     }
@@ -240,8 +244,14 @@ impl Harness {
         approvals: Vec<ApprovalRef>,
     ) -> Result<PostPlan, Refusal> {
         let cx = self.cx();
-        self.book
-            .plan_balance_allocation(&cx, review, digest, approvals, &post_cap())
+        self.runtime
+            .block_on(self.book.plan_balance_allocation(
+                &cx,
+                review,
+                digest,
+                approvals,
+                &post_cap(),
+            ))
             .unwrap()
     }
     fn approve(
@@ -453,8 +463,11 @@ fn restored_handoff_keeps_scope_holder_expiry_operations_and_amount_ceilings() {
         post_cap().with_ceiling(h.usd, 99).unwrap(),
     ] {
         assert!(
-            h.book
-                .plan_balance_allocation(&cx, &review, digest, Vec::new(), &denied)
+            h.runtime
+                .block_on(
+                    h.book
+                        .plan_balance_allocation(&cx, &review, digest, Vec::new(), &denied)
+                )
                 .unwrap()
                 .is_err()
         );
@@ -507,15 +520,24 @@ fn closed_period_still_needs_both_permission_and_real_separate_approval() {
     assert!(h.plan(&review, digest, vec![approval.approval()]).is_err());
     let closed = Capability::embedded(PRINCIPAL, &["read", "post", "post_closed"]).unwrap();
     assert!(
-        h.book
-            .plan_balance_allocation(&cx, &review, digest, Vec::new(), &closed)
+        h.runtime
+            .block_on(
+                h.book
+                    .plan_balance_allocation(&cx, &review, digest, Vec::new(), &closed)
+            )
             .unwrap()
             .is_err()
     );
     assert_eq!(h.head(), at);
     let plan = h
-        .book
-        .plan_balance_allocation(&cx, &review, digest, vec![approval.approval()], &closed)
+        .runtime
+        .block_on(h.book.plan_balance_allocation(
+            &cx,
+            &review,
+            digest,
+            vec![approval.approval()],
+            &closed,
+        ))
         .unwrap()
         .unwrap();
     h.runtime

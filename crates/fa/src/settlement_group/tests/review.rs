@@ -22,8 +22,13 @@ fn complete_proposal_approval_refresh_reopen_and_exact_commit_retry() {
     let cx = h.cx();
     assert!(at > reviewed.known_at());
     let stale = h
-        .book
-        .plan_prepared_settlement_group(&cx, reviewed.clone(), vec![approval], &cap())
+        .runtime
+        .block_on(h.book.plan_prepared_settlement_group(
+            &cx,
+            reviewed.clone(),
+            vec![approval],
+            &cap(),
+        ))
         .unwrap()
         .unwrap_err();
     assert_eq!(stale.code, fa_journal::refusal::code::PLAN_INVALIDATED);
@@ -33,8 +38,8 @@ fn complete_proposal_approval_refresh_reopen_and_exact_commit_retry() {
     let mut h = h.reopen();
     let cx = h.cx();
     let fresh = h
-        .book
-        .refresh_settlement_group(&cx, &reviewed, &cap())
+        .runtime
+        .block_on(h.book.refresh_settlement_group(&cx, &reviewed, &cap()))
         .unwrap()
         .unwrap();
     assert_eq!(fresh.known_at(), at);
@@ -45,8 +50,11 @@ fn complete_proposal_approval_refresh_reopen_and_exact_commit_retry() {
         assert_eq!(a.allocation.unapplied, b.allocation.unapplied);
     }
     let plan = h
-        .book
-        .plan_reviewed_settlement_group(&cx, &reviewed, vec![approval], &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_reviewed_settlement_group(&cx, &reviewed, vec![approval], &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().intent().proposal(), reviewed.proposal());
@@ -57,8 +65,8 @@ fn complete_proposal_approval_refresh_reopen_and_exact_commit_retry() {
     assert_eq!(h.open(invoice, 0), 0);
     assert_eq!(h.open(bill, 1), 10);
     assert!(
-        h.book
-            .refresh_settlement_group(&cx, &reviewed, &cap())
+        h.runtime
+            .block_on(h.book.refresh_settlement_group(&cx, &reviewed, &cap()))
             .unwrap()
             .is_err()
     );
@@ -101,14 +109,17 @@ fn equal_proposal_after_a_competing_payment_is_not_equal_reviewed_observations()
     let at = h.head();
     let cx = h.cx();
     let refusal = h
-        .book
-        .refresh_settlement_group(&cx, &reviewed, &cap())
+        .runtime
+        .block_on(h.book.refresh_settlement_group(&cx, &reviewed, &cap()))
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::PLAN_INVALIDATED);
     assert!(
-        h.book
-            .plan_reviewed_settlement_group(&cx, &reviewed, Vec::new(), &cap())
+        h.runtime
+            .block_on(
+                h.book
+                    .plan_reviewed_settlement_group(&cx, &reviewed, Vec::new(), &cap())
+            )
             .unwrap()
             .is_err()
     );
@@ -122,8 +133,8 @@ fn approving_only_one_intermediate_selection_cannot_authorize_the_combined_entry
     let (mut h, invoice, _, request) = fixture();
     let cx = h.cx();
     let partial = h
-        .book
-        .prepare_settlement(
+        .runtime
+        .block_on(h.book.prepare_settlement(
             &cx,
             SettlementPostRequest {
                 proposal: request.proposal.clone(),
@@ -131,7 +142,7 @@ fn approving_only_one_intermediate_selection_cannot_authorize_the_combined_entry
                 targets: vec![(invoice.vid, 0)],
             },
             &cap(),
-        )
+        ))
         .unwrap()
         .unwrap();
     let reviewed = h.prepare(request);
@@ -142,16 +153,22 @@ fn approving_only_one_intermediate_selection_cannot_authorize_the_combined_entry
     let wrong = approve(&mut h, partial.proposal().proposal_digest().unwrap());
     let at = h.head();
     assert!(
-        h.book
-            .plan_reviewed_settlement_group(&cx, &reviewed, vec![wrong], &cap())
+        h.runtime
+            .block_on(
+                h.book
+                    .plan_reviewed_settlement_group(&cx, &reviewed, vec![wrong], &cap())
+            )
             .unwrap()
             .is_err()
     );
     assert_eq!(h.head(), at);
     let correct = approve(&mut h, reviewed.proposal().proposal_digest().unwrap());
     let plan = h
-        .book
-        .plan_reviewed_settlement_group(&cx, &reviewed, vec![correct], &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_reviewed_settlement_group(&cx, &reviewed, vec![correct], &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().intent().proposal(), reviewed.proposal());
@@ -166,8 +183,8 @@ fn refresh_accepts_unrelated_publications_but_never_old_authority() {
     let at = h.head();
     let cx = h.cx();
     let fresh = h
-        .book
-        .refresh_settlement_group(&cx, &reviewed, &cap())
+        .runtime
+        .block_on(h.book.refresh_settlement_group(&cx, &reviewed, &cap()))
         .unwrap()
         .unwrap();
     assert_eq!(fresh.proposal(), reviewed.proposal());
@@ -180,8 +197,8 @@ fn refresh_accepts_unrelated_publications_but_never_old_authority() {
         cap().for_books(&[Id128([0x77; 16])]).unwrap(),
     ] {
         assert!(
-            h.book
-                .refresh_settlement_group(&cx, &reviewed, &capability)
+            h.runtime
+                .block_on(h.book.refresh_settlement_group(&cx, &reviewed, &capability))
                 .unwrap()
                 .is_err()
         );

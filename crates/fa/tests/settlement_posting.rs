@@ -216,8 +216,11 @@ impl Harness {
 
     fn plan(&mut self, request: SettlementPostRequest) -> SettlementPostPlan {
         let cx = self.cx();
-        self.book
-            .plan_settlement(&cx, request, Vec::new(), &capability())
+        self.runtime
+            .block_on(
+                self.book
+                    .plan_settlement(&cx, request, Vec::new(), &capability()),
+            )
             .unwrap()
             .unwrap()
     }
@@ -248,9 +251,13 @@ fn fifo_preparation_binds_full_digests_and_changes_only_the_selected_settles_lis
     let older = h.invoice("older", "2026-03-10", 100);
     let request = h.receipt("receipt", 130, &[newer, older]);
     let at = h.head();
+    let cx = h.cx();
     let prepared = h
-        .book
-        .prepare_settlement(&h.cx(), request.clone(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .prepare_settlement(&cx, request.clone(), &capability()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(prepared.allocation().known_at, at);
@@ -388,14 +395,20 @@ fn reviewed_preparation_is_exact_and_an_unrelated_commit_requires_explicit_refre
     let request = h.receipt("review-payment", 60, &[invoice]);
     let cx = h.cx();
     let prepared = h
-        .book
-        .prepare_settlement(&cx, request.clone(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .prepare_settlement(&cx, request.clone(), &capability()),
+        )
         .unwrap()
         .unwrap();
     let at = h.head();
     let plan = h
-        .book
-        .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), &capability()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.allocation(), prepared.allocation());
@@ -405,8 +418,11 @@ fn reviewed_preparation_is_exact_and_an_unrelated_commit_requires_explicit_refre
     let _ = h.invoice("unrelated-review-publication", "2026-03-11", 5);
     let advanced = h.head();
     let refusal = h
-        .book
-        .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), &capability()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::PLAN_INVALIDATED);
@@ -437,8 +453,11 @@ fn reviewed_payment_is_never_silently_reallocated_after_a_competing_application(
     let request = h.receipt("reviewed-eightytotal", 80, &[invoice]);
     let cx = h.cx();
     let prepared = h
-        .book
-        .prepare_settlement(&cx, request.clone(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .prepare_settlement(&cx, request.clone(), &capability()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(prepared.allocation().allocations[0].amount, 80);
@@ -447,8 +466,11 @@ fn reviewed_payment_is_never_silently_reallocated_after_a_competing_application(
     h.commit(other);
     let head = h.head();
     let refusal = h
-        .book
-        .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::OVER_APPLICATION);
@@ -494,8 +516,11 @@ fn authority_is_required_before_target_observation_and_again_before_planning_or_
     let request = h.receipt("authority-payment", 60, &[invoice]);
     let cx = h.cx();
     let prepared = h
-        .book
-        .prepare_settlement(&cx, request.clone(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .prepare_settlement(&cx, request.clone(), &capability()),
+        )
         .unwrap()
         .unwrap();
     let plan = h.plan(request.clone());
@@ -507,15 +532,15 @@ fn authority_is_required_before_target_observation_and_again_before_planning_or_
     ];
     for cap in &denied {
         let known = h
-            .book
-            .prepare_settlement(&cx, request.clone(), cap)
+            .runtime
+            .block_on(h.book.prepare_settlement(&cx, request.clone(), cap))
             .unwrap()
             .unwrap_err();
         let mut missing = request.clone();
         missing.targets = vec![(VId(u128::MAX), 0)];
         let unknown = h
-            .book
-            .prepare_settlement(&cx, missing, cap)
+            .runtime
+            .block_on(h.book.prepare_settlement(&cx, missing, cap))
             .unwrap()
             .unwrap_err();
         assert_eq!(
@@ -523,8 +548,11 @@ fn authority_is_required_before_target_observation_and_again_before_planning_or_
             "unauthorized callers must not learn target existence"
         );
         assert!(
-            h.book
-                .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), cap)
+            h.runtime
+                .block_on(
+                    h.book
+                        .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), cap)
+                )
                 .unwrap()
                 .is_err()
         );
@@ -622,8 +650,8 @@ fn every_selected_target_and_request_boundary_is_checked_without_a_partial_payme
     let cx = h.cx();
     for (name, request) in cases {
         let refusal = h
-            .book
-            .prepare_settlement(&cx, request, &capability())
+            .runtime
+            .block_on(h.book.prepare_settlement(&cx, request, &capability()))
             .unwrap()
             .expect_err(name);
         assert_eq!(refusal.code, fa_journal::refusal::code::STRUCTURE, "{name}");
@@ -640,9 +668,10 @@ fn all_closed_targets_do_not_turn_a_new_payment_into_unrelated_unapplied_cash() 
     h.commit(paid);
     let head = h.head();
     let request = h.receipt("another-payment", 100, &[invoice]);
+    let cx = h.cx();
     let refusal = h
-        .book
-        .prepare_settlement(&h.cx(), request, &capability())
+        .runtime
+        .block_on(h.book.prepare_settlement(&cx, request, &capability()))
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::STRUCTURE);
@@ -667,8 +696,8 @@ fn production_balance_and_evidence_laws_cannot_be_bypassed_by_preparation() {
     unbalanced.proposal.unit_totals =
         EntryPayload::fold_unit_totals(&unbalanced.proposal.legs).unwrap();
     let prepared = h
-        .book
-        .prepare_settlement(&cx, unbalanced, &capability())
+        .runtime
+        .block_on(h.book.prepare_settlement(&cx, unbalanced, &capability()))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -678,8 +707,11 @@ fn production_balance_and_evidence_laws_cannot_be_bypassed_by_preparation() {
     );
     assert_eq!(prepared.proposal().legs[0].amount.mantissa, 59);
     let refusal = h
-        .book
-        .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::UNBALANCED);
@@ -687,13 +719,19 @@ fn production_balance_and_evidence_laws_cannot_be_bypassed_by_preparation() {
     let mut missing_evidence = base;
     missing_evidence.proposal.evidence.clear();
     let prepared = h
-        .book
-        .prepare_settlement(&cx, missing_evidence, &capability())
+        .runtime
+        .block_on(
+            h.book
+                .prepare_settlement(&cx, missing_evidence, &capability()),
+        )
         .unwrap()
         .unwrap();
     let refusal = h
-        .book
-        .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::EVIDENCE_MINIMUM);

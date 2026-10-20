@@ -15,8 +15,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// eligible targets, FIFO order, before/after and unapplied amounts must
     /// match. Even competing consumption which leaves enough capacity requires
     /// new review. No journal object is published and no old history is proved.
-    pub fn refresh_settlement_group_review(
-        &self,
+    pub async fn refresh_settlement_group_review(
+        &mut self,
         cx: &PurposeContexts,
         review: &SettlementGroupReview,
         capability: &Capability,
@@ -41,7 +41,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 )));
             }
         };
-        let fresh = match self.prepare_settlement_group(cx, request, capability)? {
+        let fresh = match self
+            .prepare_settlement_group(cx, request, capability)
+            .await?
+        {
             Ok(fresh) => fresh,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -75,17 +78,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// must bind review.proposal().proposal_digest(), never review.digest().
     /// Save the returned PostPlan BEFORE publication for exact uncertain retries.
     /// This never calls the convenience replanner or commits a payment.
-    pub fn plan_settlement_group_review(
+    pub async fn plan_settlement_group_review(
         &mut self,
         cx: &PurposeContexts,
         review: &SettlementGroupReview,
         approvals: Vec<ApprovalRef>,
         capability: &Capability,
     ) -> Outcome<SettlementGroupPostPlan> {
-        let fresh = match self.refresh_settlement_group_review(cx, review, capability)? {
+        let fresh = match self
+            .refresh_settlement_group_review(cx, review, capability)
+            .await?
+        {
             Ok(fresh) => fresh,
             Err(refusal) => return Ok(Err(refusal)),
         };
         self.plan_prepared_settlement_group(cx, fresh, approvals, capability)
+            .await
     }
 }

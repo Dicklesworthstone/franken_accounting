@@ -213,8 +213,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// every target, including exhausted/unused targets, from one authoritative
     /// report and shared payload cache. A failure returns no partial preparation.
     /// Permissions cover the FULL entry, not only each selected leg's amount.
-    pub fn prepare_settlement_group(
-        &self,
+    pub async fn prepare_settlement_group(
+        &mut self,
         cx: &PurposeContexts,
         request: SettlementGroupRequest,
         capability: &Capability,
@@ -237,28 +237,33 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         self.prepare_settlement_group_snapshot(cx, request, capability)
+            .await
     }
 
     /// Convenience preparation plus rehearsal. Supplied approvals must bind
     /// the complete combined proposal. Review the returned plan before commit.
-    pub fn plan_settlement_group(
+    pub async fn plan_settlement_group(
         &mut self,
         cx: &PurposeContexts,
         request: SettlementGroupRequest,
         approvals: Vec<ApprovalRef>,
         capability: &Capability,
     ) -> Outcome<SettlementGroupPostPlan> {
-        let prepared = match self.prepare_settlement_group(cx, request, capability)? {
+        let prepared = match self
+            .prepare_settlement_group(cx, request, capability)
+            .await?
+        {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
         self.plan_prepared_settlement_group(cx, prepared, approvals, capability)
+            .await
     }
 
     /// Rehearse the exact in-memory review, without silently reallocating.
     /// An intervening publication invalidates its basis. All selections share
     /// one ordinary kernel transaction, one idempotency key and one certificate.
-    pub fn plan_prepared_settlement_group(
+    pub async fn plan_prepared_settlement_group(
         &mut self,
         cx: &PurposeContexts,
         prepared: PreparedSettlementGroup,
@@ -281,7 +286,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(intent) => intent,
             Err(error) => return Ok(Err(invalid(error.to_string()))),
         };
-        let post = match self.plan(cx, intent, capability)? {
+        let post = match self.plan_with_history(cx, intent, capability).await? {
             Ok(post) => post,
             Err(refusal) => return Ok(Err(refusal)),
         };

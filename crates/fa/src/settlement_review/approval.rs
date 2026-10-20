@@ -94,6 +94,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if digest != expected_review_digest {
             return Ok(Err(changed()));
         }
+        if let Err(refusal) = self
+            .prepare_source_history(cx, capability.holder(), capability, Op::Approve, &explicit)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let book = self.context();
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
         // The exclusive mutable book handle is retained through recording.

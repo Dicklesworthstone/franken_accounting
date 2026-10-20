@@ -235,9 +235,10 @@ impl Harness {
             .unwrap();
     }
 
-    fn prepare(&self, request: &BalanceAllocationRequest) -> PreparedBalanceAllocation {
-        self.book
-            .prepare_balance_allocation(&self.cx(), request, &cap())
+    fn prepare(&mut self, request: &BalanceAllocationRequest) -> PreparedBalanceAllocation {
+        let cx = self.cx();
+        self.runtime
+            .block_on(self.book.prepare_balance_allocation(&cx, request, &cap()))
             .unwrap()
             .unwrap()
     }
@@ -253,8 +254,8 @@ impl Harness {
         review: &AllocationReview,
     ) -> Result<PostPlan, Refusal> {
         let cx = self.cx();
-        self.book
-            .plan_balance_allocation_review(
+        self.runtime
+            .block_on(self.book.plan_balance_allocation_review(
                 &cx,
                 prepared.request(),
                 prepared.source_digest(),
@@ -262,7 +263,7 @@ impl Harness {
                 review.digest().unwrap(),
                 Vec::new(),
                 &cap(),
-            )
+            ))
             .unwrap()
     }
 
@@ -374,9 +375,10 @@ fn unrelated_changes_other_units_and_other_periods_do_not_replace_the_source() {
 fn zero_sources_and_nonmatching_dimensions_never_create_an_allocation() {
     let mut h = Harness::new();
     let request = h.request();
+    let cx = h.cx();
     assert!(
-        h.book
-            .prepare_balance_allocation(&h.cx(), &request, &cap())
+        h.runtime
+            .block_on(h.book.prepare_balance_allocation(&cx, &request, &cap()))
             .unwrap()
             .is_err()
     );
@@ -385,8 +387,8 @@ fn zero_sources_and_nonmatching_dimensions_never_create_an_allocation() {
     dimensioned.dimensions = vec![(1, VId(99))];
     let at = h.head();
     assert!(
-        h.book
-            .prepare_balance_allocation(&h.cx(), &dimensioned, &cap())
+        h.runtime
+            .block_on(h.book.prepare_balance_allocation(&cx, &dimensioned, &cap()))
             .unwrap()
             .is_err()
     );
@@ -399,6 +401,7 @@ fn read_post_scope_expiry_and_derived_leg_ceilings_are_required() {
     let mut h = Harness::new();
     h.movement("initial", "source", "offset", h.usd, 100, "2026-03-10");
     let request = h.request();
+    let cx = h.cx();
     let at = h.head();
     let denied = [
         Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
@@ -409,8 +412,8 @@ fn read_post_scope_expiry_and_derived_leg_ceilings_are_required() {
     ];
     for authority in denied {
         assert!(
-            h.book
-                .prepare_balance_allocation(&h.cx(), &request, &authority)
+            h.runtime
+                .block_on(h.book.prepare_balance_allocation(&cx, &request, &authority))
                 .unwrap()
                 .is_err()
         );
@@ -418,8 +421,8 @@ fn read_post_scope_expiry_and_derived_leg_ceilings_are_required() {
     }
     let exact = cap().with_ceiling(h.usd, 100).unwrap();
     assert!(
-        h.book
-            .prepare_balance_allocation(&h.cx(), &request, &exact)
+        h.runtime
+            .block_on(h.book.prepare_balance_allocation(&cx, &request, &exact))
             .unwrap()
             .is_ok()
     );
@@ -428,12 +431,12 @@ fn read_post_scope_expiry_and_derived_leg_ceilings_are_required() {
     hidden.period = "does-not-exist".into();
     // Missing authority refuses before even trying to resolve the hidden input.
     assert!(
-        h.book
-            .prepare_balance_allocation(
-                &h.cx(),
+        h.runtime
+            .block_on(h.book.prepare_balance_allocation(
+                &cx,
                 &hidden,
                 &Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
-            )
+            ))
             .unwrap()
             .is_err()
     );
@@ -456,8 +459,8 @@ fn source_and_review_digest_substitutions_refuse_without_publication() {
         (prepared.source_digest(), wrong_review),
     ] {
         let refusal = h
-            .book
-            .plan_balance_allocation_review(
+            .runtime
+            .block_on(h.book.plan_balance_allocation_review(
                 &cx,
                 prepared.request(),
                 source,
@@ -465,7 +468,7 @@ fn source_and_review_digest_substitutions_refuse_without_publication() {
                 digest,
                 Vec::new(),
                 &cap(),
-            )
+            ))
             .unwrap()
             .unwrap_err();
         assert_eq!(refusal.code, code::PLAN_INVALIDATED);
@@ -553,8 +556,8 @@ fn independently_saved_source_and_review_can_be_revalidated_after_reopen() {
             Entropy::deterministic(187),
         ))
         .unwrap();
-    let plan = book
-        .plan_balance_allocation_review(
+    let plan = runtime
+        .block_on(book.plan_balance_allocation_review(
             &cx,
             prepared.request(),
             prepared.source_digest(),
@@ -562,7 +565,7 @@ fn independently_saved_source_and_review_can_be_revalidated_after_reopen() {
             review_digest,
             Vec::new(),
             &cap(),
-        )
+        ))
         .unwrap()
         .unwrap();
     let plan_bytes = plan.canonical_bytes().unwrap();
@@ -633,8 +636,8 @@ fn source_revalidating_approver_needs_no_post_and_can_complete_the_workflow() {
     assert_eq!(retry.approval(), approved.approval());
     assert_eq!(h.head(), at);
     let plan = h
-        .book
-        .plan_balance_allocation_review(
+        .runtime
+        .block_on(h.book.plan_balance_allocation_review(
             &cx,
             prepared.request(),
             prepared.source_digest(),
@@ -642,7 +645,7 @@ fn source_revalidating_approver_needs_no_post_and_can_complete_the_workflow() {
             digest,
             vec![approved.approval()],
             &cap(),
-        )
+        ))
         .unwrap()
         .unwrap();
     h.commit(plan).unwrap();
@@ -777,8 +780,8 @@ fn source_approval_does_not_grant_closed_period_posting_authority() {
         .unwrap();
     let at = h.head();
     assert!(
-        h.book
-            .plan_balance_allocation_review(
+        h.runtime
+            .block_on(h.book.plan_balance_allocation_review(
                 &cx,
                 prepared.request(),
                 prepared.source_digest(),
@@ -786,15 +789,15 @@ fn source_approval_does_not_grant_closed_period_posting_authority() {
                 review.digest().unwrap(),
                 vec![approval.approval()],
                 &cap(),
-            )
+            ))
             .unwrap()
             .is_err()
     );
     assert_eq!(h.head(), at);
     let closed = Capability::embedded(PRINCIPAL, &["read", "post", "post_closed"]).unwrap();
     assert!(
-        h.book
-            .plan_balance_allocation_review(
+        h.runtime
+            .block_on(h.book.plan_balance_allocation_review(
                 &cx,
                 prepared.request(),
                 prepared.source_digest(),
@@ -802,15 +805,15 @@ fn source_approval_does_not_grant_closed_period_posting_authority() {
                 review.digest().unwrap(),
                 Vec::new(),
                 &closed,
-            )
+            ))
             .unwrap()
             .is_err(),
         "period permission alone must not substitute for the approval"
     );
     assert_eq!(h.head(), at);
     let plan = h
-        .book
-        .plan_balance_allocation_review(
+        .runtime
+        .block_on(h.book.plan_balance_allocation_review(
             &cx,
             prepared.request(),
             prepared.source_digest(),
@@ -818,7 +821,7 @@ fn source_approval_does_not_grant_closed_period_posting_authority() {
             review.digest().unwrap(),
             vec![approval.approval()],
             &closed,
-        )
+        ))
         .unwrap()
         .unwrap();
     h.runtime
