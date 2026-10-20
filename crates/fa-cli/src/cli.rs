@@ -14175,7 +14175,15 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage(format!("unexpected argument `{extra}`"), example));
     }
     let vid = parse_entry_target(raw, example)?;
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &read_cap)??;
+        Ok(())
+    })?;
+    // The entry's period is known only once it is read, so a scoped token
+    // is refused before the read (doctrine 8, fa-0x0).
+    book.read_scope(who, &read_cap)??.admit_whole_book(None)??;
     let (entry, recorded_at) = book.read_entry(vid)?.ok_or_else(|| {
         usage(
             format!("no entry {:032x} in this book", vid.0),
@@ -14322,8 +14330,17 @@ fn explain_lineage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage(format!("unexpected argument `{extra}`"), example));
     }
     let vid = parse_entry_target(raw, example)?;
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &read_cap)??;
+        Ok(())
+    })?;
     let (known_at, _) = known_at_flag(args, &book, out)?;
+    // A lineage walks entries whose periods are known only once read
+    // (doctrine 8, fa-0x0).
+    book.read_scope(who, &read_cap)??
+        .admit_whole_book(known_at)??;
     let report = book.explain_entry_lineage(vid, known_at)?.ok_or_else(|| {
         usage(
             format!("no entry {:032x} in this book", vid.0),
@@ -14443,7 +14460,15 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage(format!("unexpected argument `{extra}`"), example));
     }
     let vid = parse_entry_target(raw, example)?;
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &read_cap)??;
+        Ok(())
+    })?;
+    // An entry's evidence: its period is known only once it is read
+    // (doctrine 8, fa-0x0).
+    book.read_scope(who, &read_cap)??.admit_whole_book(None)??;
     let ex = book.explain_entry_evidence(vid)?.ok_or_else(|| {
         usage(
             format!("no entry {:032x} in this book", vid.0),
@@ -14714,7 +14739,16 @@ fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let Some(extra) = args.positional.get(3) {
         return Err(usage(format!("unexpected argument `{extra}`"), example));
     }
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &read_cap)??;
+        Ok(())
+    })?;
+    // It reaches its one period, judged before the calendar or the period's
+    // history is read (doctrine 8, fa-0x0).
+    book.read_scope(who, &read_cap)??
+        .admit_periods(&[code.as_str()], None)??;
     let periods = book.periods()?;
     let Some(period) = periods.iter().find(|p| p.code == *code) else {
         let codes: Vec<&str> = periods.iter().map(|p| p.code.as_str()).collect();
@@ -14823,8 +14857,21 @@ fn explain_register_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let period = args.require("--period", "FY2026-P01")?;
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &read_cap)??;
+        Ok(())
+    })?;
     let (known_at, _) = known_at_flag(args, &book, out)?;
+    // It reaches its one period at its frontier, and verifies the stored
+    // cells as they are at the head, so a known-at pin refuses it
+    // (doctrine 8, fa-0x0).
+    {
+        let scope = book.read_scope(who, &read_cap)??;
+        scope.admit_periods(&[period], known_at)??;
+        scope.admit_periods(&[period], None)??;
+    }
     let unit_filter: Option<(u32, String)> = match args.flag("--unit") {
         None => None,
         Some(ucode) => {

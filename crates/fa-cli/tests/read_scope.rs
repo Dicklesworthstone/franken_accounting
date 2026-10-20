@@ -220,18 +220,32 @@ fn scoped_tokens_read_inside_their_caveats_and_are_refused_outside_them() {
         "--period",
         "FY2026-P03",
     ]);
+    for args in [
+        vec!["explain", "period", "FY2026-P03"],
+        vec!["explain", "register", "1000", "--period", "FY2026-P03"],
+    ] {
+        let mut scoped = vec!["--token", march.as_str()];
+        scoped.extend(args);
+        f.ok(&scoped);
+    }
     // Everything else is refused before its query, never filtered: a stock
     // balance and an as-of balance reach every earlier period, April is
     // outside the scope, open items reach the whole book, and an entry's
-    // period is unknown until it is read.
+    // period (for its display, explanation, lineage or evidence) is unknown
+    // until it is read.
     for args in [
         vec!["tb", "--period", "FY2026-P03"],
         vec!["tb", "--period", "FY2026-P04", "--activity"],
         vec!["tb", "--as-of", "2026-03-20"],
         vec!["tb", "--period", "FY2026-P04", "--activity", "--certify"],
         vec!["explain", "balance", "1000", "--period", "FY2026-P04"],
+        vec!["explain", "period", "FY2026-P04"],
+        vec!["explain", "register", "1000", "--period", "FY2026-P04"],
         vec!["open-items"],
         vec!["entry", "show", &march_vid],
+        vec!["explain", "entry", &march_vid],
+        vec!["explain", "lineage", &march_vid],
+        vec!["explain", "evidence", &march_vid],
     ] {
         let mut scoped = vec!["--token", march.as_str()];
         scoped.extend(args);
@@ -285,10 +299,40 @@ fn scoped_tokens_read_inside_their_caveats_and_are_refused_outside_them() {
         "--as-known-at",
         &pin_text,
     ]);
+    f.ok(&[
+        "--token",
+        &pinned,
+        "explain",
+        "lineage",
+        &march_vid,
+        "--as-known-at",
+        &pin_text,
+    ]);
+    // A register explanation also verifies the stored cells at the head,
+    // so a pinned token is refused it even at its pin.
+    f.out_of_scope(
+        &[
+            "--token",
+            &pinned,
+            "explain",
+            "register",
+            "1000",
+            "--period",
+            "FY2026-P03",
+            "--as-known-at",
+            &pin_text,
+        ],
+        "`known_at`",
+    );
     for args in [
         vec!["tb", "--period", "FY2026-P04"],
         vec!["entry", "show", &march_vid],
         vec!["open-items"],
+        vec!["explain", "period", "FY2026-P03"],
+        vec!["explain", "entry", &march_vid],
+        vec!["explain", "lineage", &march_vid],
+        vec!["explain", "evidence", &march_vid],
+        vec!["explain", "register", "1000", "--period", "FY2026-P03"],
     ] {
         let mut scoped = vec!["--token", pinned.as_str()];
         scoped.extend(args);

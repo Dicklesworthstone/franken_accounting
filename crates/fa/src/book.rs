@@ -3545,6 +3545,23 @@ impl ReadScope<'_> {
         Ok(self.authority.as_of(seq, day).map(|()| seq))
     }
 
+    /// Admit a read of exactly the periods `codes` (a period's history, or
+    /// one register in it) at its recorded frontier.
+    pub fn admit_periods(&self, codes: &[&str], known_at: Option<CommitSeq>) -> Outcome<CommitSeq> {
+        let seq = self.frontier(known_at)?;
+        Ok(self
+            .authority
+            .periods(self.book.context(), seq, codes)
+            .map(|()| seq))
+    }
+
+    /// Admit a read of the whole book at its recorded frontier: an entry,
+    /// its lineage or its evidence, whose period is known only once read.
+    pub fn admit_whole_book(&self, known_at: Option<CommitSeq>) -> Outcome<CommitSeq> {
+        let seq = self.frontier(known_at)?;
+        Ok(self.authority.whole_book(seq).map(|()| seq))
+    }
+
     /// [`Book::explain_balance`] under the scope caveats: it reaches its one
     /// period.
     pub fn explain_balance(
