@@ -986,26 +986,33 @@ pub struct StratumAllocation {
     pub allocated_sample_size: usize,
 }
 
-/// Stratified sample plan with Neyman optimal allocation and replayable
-/// [`DecisionCard`].
+/// Stratified sample plan with the allocation its replayable [`DecisionCard`]
+/// chose.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StratifiedSamplePlan {
     pub population_digest: [u8; 32],
     pub seed: u64,
     pub total_sample_size: usize,
+    /// `"neyman"`, or `"proportional"` when the card used its pinned
+    /// fallback (no active sampling policy epoch).
+    pub allocation: &'static str,
     pub strata: Vec<StratumAllocation>,
     pub selected: Vec<PopulationItem>,
     pub decision_card: DecisionCard,
     pub certificate: SampleCertificate,
 }
 
-/// Compute Neyman optimal stratum allocation and draw a stratified sample using
-/// `Pcg64Dxsm::new(seed)`, emitting a replayable [`DecisionCard`] with
-/// proportional allocation as the pinned deterministic fallback.
+/// Allocate a stratified sample over the population's declared strata and
+/// draw it using `Pcg64Dxsm::new(seed)`, emitting a replayable
+/// [`DecisionCard`]: Neyman allocation under an active policy epoch,
+/// otherwise the pinned deterministic fallback, proportional allocation.
+/// `basis` names how the strata were declared (for example book-value
+/// bands); the certificate binds it with the allocation used.
 pub fn sample_stratified_neyman(
     population: &SamplePopulation,
     seed: u64,
     total_sample_size: usize,
+    basis: &str,
     policy_epoch: Option<[u8; 32]>,
     enforced_policy_epoch: [u8; 32],
     _subject: VId,
@@ -1027,31 +1034,50 @@ pub fn sample_stratified_neyman(
         });
     }
 
+    // Every amount operation is checked: an overflow is refused, never
+    // saturated into a wrong sigma or allocation.
+    const OVERFLOW: LanternError = LanternError::Overflow("sample.stratified");
     let mut stratum_stats: Vec<(String, usize, i128)> = Vec::with_capacity(h_count);
     for (name, items) in &by_stratum {
         let nh = items.len();
-        let sum: i128 = items.iter().map(|i| i.book_value.mantissa).sum();
-        let mean = sum / (nh as i128);
+        let nh_i = i128::try_from(nh).map_err(|_| OVERFLOW)?;
+        let sum = items.iter().try_fold(0i128, |sum, i| {
+            sum.checked_add(i.book_value.mantissa).ok_or(OVERFLOW)
+        })?;
+        let mean = sum / nh_i;
         let mut sq_sum: u128 = 0;
         for item in items {
-            let diff = (item.book_value.mantissa - mean).unsigned_abs();
-            sq_sum = sq_sum.saturating_add(diff.saturating_mul(diff));
+            let diff = item
+                .book_value
+                .mantissa
+                .checked_sub(mean)
+                .ok_or(OVERFLOW)?
+                .unsigned_abs();
+            let square = diff.checked_mul(diff).ok_or(OVERFLOW)?;
+            sq_sum = sq_sum.checked_add(square).ok_or(OVERFLOW)?;
         }
         let variance = sq_sum / (nh as u128);
-        let sigma = (variance.isqrt() as i128).max(1);
+        // isqrt of a u128 is below 2^64, so it fits an i128.
+        let sigma = i128::try_from(variance.isqrt())
+            .map_err(|_| OVERFLOW)?
+            .max(1);
         stratum_stats.push((name.clone(), nh, sigma));
     }
 
-    let allocate_by_weights = |weights: &[i128]| -> Vec<usize> {
+    let allocate_by_weights = |weights: &[i128]| -> Result<Vec<usize>, LanternError> {
         let mut alloc = vec![1usize; h_count];
         let remaining = total_sample_size - h_count;
-        let weight_sum: i128 = weights.iter().sum();
+        let weight_sum = weights
+            .iter()
+            .try_fold(0i128, |sum, w| sum.checked_add(*w).ok_or(OVERFLOW))?;
         if remaining > 0 && weight_sum > 0 {
+            let remaining_i = i128::try_from(remaining).map_err(|_| OVERFLOW)?;
             let mut quotas: Vec<(usize, i128)> = Vec::with_capacity(h_count);
             for (i, &w) in weights.iter().enumerate() {
                 let cap = stratum_stats[i].1 - alloc[i];
-                let exact_num = (remaining as i128) * w;
-                let add = ((exact_num / weight_sum) as usize).min(cap);
+                let exact_num = remaining_i.checked_mul(w).ok_or(OVERFLOW)?;
+                let share = usize::try_from(exact_num / weight_sum).map_err(|_| OVERFLOW)?;
+                let add = share.min(cap);
                 alloc[i] += add;
                 let rem = exact_num % weight_sum;
                 quotas.push((i, rem));
@@ -1075,27 +1101,38 @@ pub fn sample_stratified_neyman(
                 }
             }
         }
-        alloc
+        Ok(alloc)
     };
 
-    let neyman_weights: Vec<i128> = stratum_stats
+    let neyman_weights = stratum_stats
         .iter()
-        .map(|(_, nh, sigma)| (*nh as i128) * *sigma)
-        .collect();
-    let prop_weights: Vec<i128> = stratum_stats.iter().map(|(_, nh, _)| *nh as i128).collect();
+        .map(|(_, nh, sigma)| {
+            i128::try_from(*nh)
+                .ok()
+                .and_then(|nh| nh.checked_mul(*sigma))
+                .ok_or(OVERFLOW)
+        })
+        .collect::<Result<Vec<i128>, LanternError>>()?;
+    let prop_weights = stratum_stats
+        .iter()
+        .map(|(_, nh, _)| i128::try_from(*nh).map_err(|_| OVERFLOW))
+        .collect::<Result<Vec<i128>, LanternError>>()?;
 
-    let neyman_alloc = allocate_by_weights(&neyman_weights);
-    let prop_alloc = allocate_by_weights(&prop_weights);
+    let neyman_alloc = allocate_by_weights(&neyman_weights)?;
+    let prop_alloc = allocate_by_weights(&prop_weights)?;
 
+    // The pinned fallback (`DecisionKind::SamplingStratification`) is
+    // proportional allocation; Neyman needs an active sampling policy epoch.
+    let h_param = i128::try_from(h_count).map_err(|_| OVERFLOW)?;
     let candidates = vec![
         DecisionCandidate {
-            action: "monetary_unit_fixed_strata".into(),
-            parameter: 4,
+            action: "proportional_allocation".into(),
+            parameter: 0,
             analytic_score: 50,
         },
         DecisionCandidate {
-            action: "neyman_optimal_strata".into(),
-            parameter: h_count as i128,
+            action: "neyman_allocation".into(),
+            parameter: h_param,
             analytic_score: 150,
         },
     ];
@@ -1151,12 +1188,33 @@ pub fn sample_stratified_neyman(
         });
     }
 
+    // The certificate binds everything the draw depended on: the declared
+    // basis, the allocation actually used, the policy epoch it was decided
+    // under, and every stratum's population and allocated size.
+    let allocation = if decision_card.used_fallback() {
+        "proportional"
+    } else {
+        "neyman"
+    };
+    let mut summary = format!(
+        "total_sample_size={total_sample_size};basis={basis};allocation={allocation};policy_epoch={}",
+        policy_epoch.map_or_else(
+            || "none".to_string(),
+            |epoch| epoch.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        )
+    );
+    for s in &strata_out {
+        summary.push_str(&format!(
+            ";stratum={}:{}:{}",
+            s.stratum, s.population_count, s.allocated_sample_size
+        ));
+    }
     let selected_ids: Vec<String> = selected.iter().map(|s| s.item_id.clone()).collect();
     let certificate = SampleCertificate::compute(
-        "stratified_neyman",
+        "stratified",
         population.population_digest,
         seed,
-        &format!("total_sample_size={total_sample_size}"),
+        &summary,
         selected_ids,
     );
 
@@ -1164,6 +1222,7 @@ pub fn sample_stratified_neyman(
         population_digest: population.population_digest,
         seed,
         total_sample_size,
+        allocation,
         strata: strata_out,
         selected,
         decision_card,
@@ -1283,12 +1342,62 @@ mod tests {
         assert_eq!(u1.selected.len(), 3);
 
         let epoch = [0x55; 32];
-        let strat = sample_stratified_neyman(&pop, 42, 4, Some(epoch), epoch, VId(99)).unwrap();
+        let strat =
+            sample_stratified_neyman(&pop, 42, 4, "fixture", Some(epoch), epoch, VId(99)).unwrap();
         assert_eq!(strat.selected.len(), 4);
         assert_eq!(
             strat.decision_card.verify_replay(epoch).unwrap(),
             strat.decision_card.digest().unwrap()
         );
+        assert_eq!(strat.allocation, "neyman");
+
+        // No active policy epoch: the card uses its pinned fallback, and the
+        // certificate binds that proportional allocation, the basis and
+        // every stratum's counts.
+        let fallback =
+            sample_stratified_neyman(&pop, 42, 4, "fixture", None, epoch, VId(99)).unwrap();
+        assert!(fallback.decision_card.used_fallback());
+        assert_eq!(fallback.allocation, "proportional");
+        let summary = &fallback.certificate.parameters_summary;
+        assert!(
+            summary.starts_with(
+                "total_sample_size=4;basis=fixture;allocation=proportional;policy_epoch=none;stratum="
+            ),
+            "{summary}"
+        );
+        let counts: usize = fallback
+            .strata
+            .iter()
+            .map(|s| s.allocated_sample_size)
+            .sum();
+        assert_eq!(counts, 4);
+        assert_ne!(
+            fallback.certificate.certificate_oid,
+            strat.certificate.certificate_oid
+        );
+    }
+
+    /// An overflowing stratum is refused, never saturated into a wrong
+    /// sigma: a constructible population (its total fits i128) whose squared
+    /// deviation from the stratum mean (about 2^125, squared) leaves u128.
+    #[test]
+    fn a_stratum_whose_arithmetic_overflows_is_refused() {
+        let usd = UnitId(1);
+        let items: Vec<PopulationItem> = [1, i128::MAX / 2]
+            .into_iter()
+            .enumerate()
+            .map(|(i, mantissa)| PopulationItem {
+                item_id: format!("big-{i}"),
+                reference_vid: VId(i as u128 + 1),
+                stratum: Some("b01".into()),
+                book_value: Amount::new(usd, mantissa),
+            })
+            .collect();
+        let pop = SamplePopulation::new("big", usd, items).unwrap();
+        assert!(matches!(
+            sample_stratified_neyman(&pop, 1, 1, "fixture", None, [0; 32], VId(1)),
+            Err(LanternError::Overflow(_))
+        ));
     }
 
     #[test]
