@@ -750,3 +750,50 @@ fn bank_history_preserves_existing_tools_and_keeps_unmatch_host_only() {
         dangerous.verb == "bank" && dangerous.subcommand.as_deref() == Some("unmatch")
     }));
 }
+
+/// Advertised setup tools that no `[[bound]]` rule names yet. They are
+/// refused on every launch, Human included; whether each gets a rule or a
+/// registered exclusion is fa-mg2j's open acceptance ("each advertised tool
+/// is usable under at least one launch profile or is a registered
+/// exclusion"). This list only shrinks.
+const UNNAMED_BY_A_BOUND_RULE: &[(&str, &str)] = &[
+    ("book", "create"),
+    ("chart", "import"),
+    ("period", "create"),
+];
+
+/// A tool no `[[bound]]` rule names is refused on every launch-bound session
+/// ("not admitted by the launch-bound MCP command surface"): it is dead.
+/// `sample` (fa-kaf7) shipped that way, after the seven dead tools of the
+/// 2026-10-14 audit. Every advertised tool's verb and subcommand is named by
+/// at least one rule; the rule's flag conditions may still narrow it.
+#[test]
+fn every_advertised_tool_is_named_by_a_bound_rule() {
+    let (mcp, reg) = embedded();
+    let mut unnamed = Vec::new();
+    for tool in &mcp.tools {
+        let subcommands: Vec<Option<&str>> = if tool.subcommands.is_empty() {
+            vec![None]
+        } else {
+            tool.subcommands.iter().map(|s| Some(s.as_str())).collect()
+        };
+        for sub in subcommands {
+            let named = reg.bound.iter().any(|rule| {
+                rule.verbs.contains(&tool.verb)
+                    && (rule.subcommands.is_empty()
+                        || sub.is_some_and(|s| rule.subcommands.iter().any(|r| r == s)))
+            });
+            if !named {
+                unnamed.push((tool.verb.clone(), sub.unwrap_or_default().to_string()));
+            }
+        }
+    }
+    let known: Vec<(String, String)> = UNNAMED_BY_A_BOUND_RULE
+        .iter()
+        .map(|(verb, sub)| ((*verb).to_string(), (*sub).to_string()))
+        .collect();
+    assert_eq!(
+        unnamed, known,
+        "advertised tools no [[bound]] rule names: give each a rule, or register an [[mcp.excluded]] row"
+    );
+}
