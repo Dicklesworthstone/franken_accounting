@@ -1924,14 +1924,15 @@ fn walk_derived_from<V: asupersync::fs::Vfs + Clone>(
     visited.insert(root_rec.oid());
     let mut queue = std::collections::VecDeque::new();
 
-    let enqueue_parents = |cur_vid: VId,
-                           cur_rec: &DocumentRecord,
-                           q: &mut std::collections::VecDeque<(Oid, bool)>| {
-        for parent_oid in content_bound_sources(cur_rec) {
-            let pvid = document_vid(&parent_oid);
-            q.push_back((parent_oid, derived_edges.contains(&(cur_vid, pvid))));
-        }
-    };
+    let enqueue_parents =
+        |cur_vid: VId,
+         cur_rec: &DocumentRecord,
+         q: &mut std::collections::VecDeque<(Oid, bool)>| {
+            for parent_oid in content_bound_sources(cur_rec) {
+                let pvid = document_vid(&parent_oid);
+                q.push_back((parent_oid, derived_edges.contains(&(cur_vid, pvid))));
+            }
+        };
 
     enqueue_parents(root_vid, root_rec, &mut queue);
 

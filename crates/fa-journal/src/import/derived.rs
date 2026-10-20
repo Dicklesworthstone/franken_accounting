@@ -90,9 +90,7 @@ pub fn encode_extraction_derivation(
     metadata: &DerivedExtractionMetadata,
 ) -> Result<Vec<u8>, Refusal> {
     if metadata.tool_name.is_empty() || metadata.tool_name.len() > MAX_TOOL_STR_BYTES {
-        return Err(invalid(
-            "extraction tool_name must be 1..=512 UTF-8 bytes",
-        ));
+        return Err(invalid("extraction tool_name must be 1..=512 UTF-8 bytes"));
     }
     if metadata.tool_version.is_empty() || metadata.tool_version.len() > MAX_TOOL_STR_BYTES {
         return Err(invalid(
@@ -156,11 +154,7 @@ pub fn decode_extraction_derivation(
     let (sources, payload) = decode_derivation(bytes)?;
     let malformed = |error: fa_model::DecodeError| invalid(error.to_string());
     let mut reader = Reader::new(payload);
-    if reader
-        .bytes(64, "extraction.domain")
-        .map_err(malformed)?
-        != EXTRACTION_DOMAIN
-    {
+    if reader.bytes(64, "extraction.domain").map_err(malformed)? != EXTRACTION_DOMAIN {
         return Err(invalid(
             "derived document payload is not a canonical fa:derived-extraction:v1 record",
         ));
