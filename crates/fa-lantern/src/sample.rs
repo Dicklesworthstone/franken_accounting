@@ -522,6 +522,71 @@ pub struct MusSamplePlan {
     pub certificate: SampleCertificate,
 }
 
+/// The AICPA expansion factor for expected misstatement at a confidence
+/// level (1 - risk of incorrect acceptance), in basis points.
+fn expansion_factor_bps(confidence_level_bps: u32) -> Result<i128, LanternError> {
+    match confidence_level_bps {
+        9_000 => Ok(15_000),
+        9_500 => Ok(16_000),
+        9_900 => Ok(19_000),
+        _ => Err(LanternError::Parameter {
+            procedure: "sample.mus".into(),
+            name: "confidence_level_bps".into(),
+            message:
+                "supported confidence_level_bps values are 9000 (90%), 9500 (95%), or 9900 (99%)"
+                    .into(),
+        }),
+    }
+}
+
+/// The MUS sampling interval planned from its named inputs (plan §11.12):
+/// `(tolerable - expected x expansion factor) / reliability factor`, where
+/// the reliability factor is the zero-misstatement Poisson factor R(0) of
+/// the Stringer evaluation at the same confidence. The interval is rounded
+/// down to the unit, so the planned sample is never smaller than the
+/// formula's. Tolerable and expected misstatement are parameters the
+/// auditor states, never judgments this function makes.
+pub fn mus_interval(
+    tolerable: Amount,
+    expected: Amount,
+    confidence_level_bps: u32,
+) -> Result<Amount, LanternError> {
+    let parameter = |name: &str, message: String| LanternError::Parameter {
+        procedure: "sample.mus".into(),
+        name: name.into(),
+        message,
+    };
+    if expected.unit != tolerable.unit {
+        return Err(parameter(
+            "expected",
+            "expected misstatement must be in the tolerable misstatement's unit".into(),
+        ));
+    }
+    if tolerable.mantissa <= 0 || expected.mantissa < 0 {
+        return Err(parameter(
+            "tolerable",
+            "tolerable misstatement must be positive and expected misstatement non-negative".into(),
+        ));
+    }
+    let expansion = expansion_factor_bps(confidence_level_bps)?;
+    let reliability = i128::try_from(poisson_upper_factor_bps(confidence_level_bps, 0)?)
+        .map_err(|_| LanternError::Overflow("mus reliability factor"))?;
+    let room = tolerable
+        .mantissa
+        .checked_mul(10_000)
+        .zip(expected.mantissa.checked_mul(expansion))
+        .and_then(|(tolerable, expected)| tolerable.checked_sub(expected))
+        .ok_or(LanternError::Overflow("mus planned interval"))?;
+    let interval = room.div_euclid(reliability);
+    if interval <= 0 {
+        return Err(parameter(
+            "expected",
+            "expected misstatement times its expansion factor leaves no tolerable misstatement to plan a sample for".into(),
+        ));
+    }
+    Ok(Amount::new(tolerable.unit, interval))
+}
+
 /// Execute a deterministic Monetary Unit Sample (`fa sample mus`) over `population`
 /// with declared `seed` and `interval`.
 pub fn sample_mus(
@@ -1380,6 +1445,50 @@ mod tests {
                 "beyond the table the factor is refused, never extrapolated"
             );
         }
+    }
+
+    /// The planned interval is (TM - EM x EF) / R(0), rounded down: the
+    /// AICPA guide's 50,000.00 tolerable, 5,000.00 expected at 95% plans
+    /// (50,000 - 8,000) / 3.00 = 14,000.00; at 90%, 42,500 / 2.31 rounds
+    /// down to 18,398.26; at 99%, 40,500 / 4.61 to 8,785.24.
+    #[test]
+    fn mus_interval_is_planned_from_tolerable_and_expected_misstatement() {
+        let usd = UnitId(1);
+        let tm = Amount::new(usd, 5_000_000);
+        let em = Amount::new(usd, 500_000);
+        for (confidence, interval) in [(9_500, 1_400_000), (9_000, 1_839_826), (9_900, 878_524)] {
+            assert_eq!(
+                mus_interval(tm, em, confidence).unwrap(),
+                Amount::new(usd, interval),
+                "{confidence}"
+            );
+        }
+        // Expecting no misstatement plans the reliability factor alone.
+        assert_eq!(
+            mus_interval(tm, Amount::new(usd, 0), 9_500).unwrap(),
+            Amount::new(usd, 1_666_666)
+        );
+        let refused = |result: Result<Amount, LanternError>, field: &str| {
+            assert!(
+                matches!(&result, Err(LanternError::Parameter { name, .. }) if name == field),
+                "{field}: {result:?}"
+            );
+        };
+        // EM x EF reaching TM leaves nothing to plan for.
+        refused(
+            mus_interval(tm, Amount::new(usd, 3_125_000), 9_500),
+            "expected",
+        );
+        refused(
+            mus_interval(tm, Amount::new(UnitId(2), 0), 9_500),
+            "expected",
+        );
+        refused(
+            mus_interval(Amount::new(usd, 0), Amount::new(usd, 0), 9_500),
+            "tolerable",
+        );
+        refused(mus_interval(tm, Amount::new(usd, -1), 9_500), "tolerable");
+        refused(mus_interval(tm, em, 8_000), "confidence_level_bps");
     }
 
     /// A sample with more misstatements than the factor table covers is
