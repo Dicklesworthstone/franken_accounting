@@ -574,7 +574,7 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     }
     padded.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in padded.chunks_exact(64) {
+    for chunk in padded.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
         for (i, word) in w.iter_mut().take(16).enumerate() {
             let j = i * 4;
@@ -794,7 +794,7 @@ fn aes256_cbc_decrypt_no_pad(
     let rks = aes256_expand_key(key);
     let mut out = Vec::with_capacity(ciphertext.len());
     let mut prev = *iv;
-    for chunk in ciphertext.chunks_exact(16) {
+    for chunk in ciphertext.as_chunks::<16>().0 {
         let mut blk = [0u8; 16];
         blk.copy_from_slice(chunk);
         let mut dec = aes256_decrypt_block(&blk, &rks);
@@ -883,7 +883,7 @@ pub(crate) fn aes256_cbc_encrypt_no_pad(
     let rks = aes256_expand_key(key);
     let mut out = Vec::with_capacity(plaintext.len());
     let mut prev = *iv;
-    for chunk in plaintext.chunks_exact(16) {
+    for chunk in plaintext.as_chunks::<16>().0 {
         let mut blk = [0u8; 16];
         for i in 0..16 {
             blk[i] = chunk[i] ^ prev[i];
@@ -943,12 +943,11 @@ fn parse_int_entry(dict: &[u8], key: &[u8]) -> Option<i32> {
         while i < dict.len() && dict[i].is_ascii_digit() {
             i += 1;
         }
-        if i > start {
-            if let Ok(s) = core::str::from_utf8(&dict[start..i])
-                && let Ok(v) = s.parse::<i32>()
-            {
-                return Some(v);
-            }
+        if i > start
+            && let Ok(s) = core::str::from_utf8(&dict[start..i])
+            && let Ok(v) = s.parse::<i32>()
+        {
+            return Some(v);
         }
         pos = after;
     }
@@ -1250,7 +1249,7 @@ fn parse_pdf_hex_string(bytes: &[u8], start_after_lt: usize) -> (String, usize) 
 fn decode_pdf_bytes_to_utf8(raw: &[u8]) -> String {
     if raw.len() >= 2 && raw[0] == 0xFE && raw[1] == 0xFF {
         let mut units = Vec::with_capacity((raw.len() - 2) / 2);
-        for chunk in raw[2..].chunks_exact(2) {
+        for chunk in raw[2..].as_chunks::<2>().0 {
             units.push(u16::from_be_bytes([chunk[0], chunk[1]]));
         }
         return String::from_utf16_lossy(&units);
