@@ -2593,6 +2593,91 @@ fn replay_workpapers_equal_the_library_export_and_never_overwrite_or_widen_famil
     assert_eq!(exit, 2, "an aging workpaper needs the recipient's request");
     assert!(!unbound.exists());
 
+    // Direct cash flow: a policy classifies every cash leg, and the export
+    // binds the request the receipt prints.
+    let ledger = f.ok(&[
+        "gl",
+        "detail",
+        "--account",
+        "1000",
+        "--unit",
+        "USD",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--as-known-at",
+        &at,
+    ]);
+    let assignments: Vec<Json> = data(&ledger, "general_ledger")
+        .get("lines")
+        .and_then(Json::as_arr)
+        .unwrap()
+        .iter()
+        .map(|line| {
+            obj(vec![
+                ("entry_digest", line.get("entry_digest").unwrap().clone()),
+                ("leg_index", line.get("leg_index").unwrap().clone()),
+                ("activity", s("operating")),
+            ])
+        })
+        .collect();
+    assert_eq!(assignments.len(), 64);
+    let policy_path = f.dir.join("workpaper-cash-policy.json");
+    let policy = obj(vec![
+        ("name", s("cash-policy")),
+        ("cash_accounts", Json::Arr(vec![s("1000")])),
+        ("assignments", Json::Arr(assignments)),
+    ]);
+    std::fs::write(&policy_path, policy.render()).unwrap();
+    let certified = f.ok(&cash_flow_args(
+        &at,
+        policy_path.to_str().unwrap(),
+        &["--certify"],
+    ));
+    let cash = data(&certified, "report_certificate");
+    let cash_locator = format!("C:{}", text(cash, "oid"));
+    let cash_expect = generated_expectation(cash);
+    let cash_path = f.dir.join("cash.jsonl");
+    let events = f.ok(&[
+        "replay",
+        &cash_locator,
+        "--expect",
+        &cash_expect,
+        "--workpaper-out",
+        cash_path.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        text(data(&events, "workpaper_exported"), "family"),
+        "cash-flow"
+    );
+    let written_cash = std::fs::read_to_string(&cash_path).unwrap();
+    assert!(written_cash.lines().count() > 1, "{written_cash}");
+    let cash_certificate = fa::CashFlowCertificate::decode(&unhex(text(cash, "bytes"))).unwrap();
+    {
+        let book = f.open();
+        let library = book
+            .cash_flow_jsonl(
+                operator,
+                &read_produce,
+                &cash_certificate,
+                cash_certificate.request(),
+                cash_certificate.definition(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(written_cash, library, "the CLI writes the library's export");
+    }
+    let unbound_cash = f.dir.join("cash-unbound.jsonl");
+    let (exit, _) = f.run(&[
+        "replay",
+        &cash_locator,
+        "--workpaper-out",
+        unbound_cash.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 8, "cash flow replays only against its request");
+    assert!(!unbound_cash.exists());
+
     // Ledger detail: a roll-forward source replayed with --view detail.
     let scope = [
         "--account",
