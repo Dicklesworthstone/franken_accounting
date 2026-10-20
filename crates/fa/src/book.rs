@@ -3108,6 +3108,22 @@ impl Book {
         ))
     }
 
+    /// Publish exactly the repair [`Book::prepare_projection_rebuild`]
+    /// previewed, in one commit, then recheck projections and open items
+    /// independently. Authority is rechecked, and the repair is refused as
+    /// stale when the head or the partition root moved since it was prepared.
+    pub fn publish_projection_rebuild(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        prepared: crate::PreparedProjectionRebuild,
+    ) -> Outcome<crate::ProjectionRebuild> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.publish_projection_rebuild(&purposes, principal, capability, prepared)
+        ))
+    }
+
     /// Rebuild every leg mirror and projection edge from the journal in one
     /// commit, then recheck projections and open items independently. A clean
     /// book is a true no-op. Read, verify and schema_change are required, and
