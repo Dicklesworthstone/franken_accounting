@@ -3290,7 +3290,9 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
             .unwrap();
     }
 
-    // 3. PeriodEndRevaluation of the 100.00 EUR receivable at period-close rate 1.15 USD/EUR (+5.00 USD).
+    // 3. The pure calculator independently yields +5.00 USD. A fresh
+    // posting cannot trust those caller-supplied exposure/carrying totals:
+    // the native planner now requires a retained route and journal basis.
     let rate_close = FxRateDocument::new(
         FxRateTerms {
             base_unit: usd,
@@ -3331,7 +3333,9 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
         &h.book.units,
     )
     .unwrap();
+    assert_eq!(reval_prop.base_totals.as_ref().unwrap().debits, 500);
     {
+        let before = h.db.frontier().unwrap();
         let ctx = h.ctx();
         let db = &mut h.db;
         let book = &h.book;
@@ -3339,16 +3343,22 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
             proposal: reval_prop.clone(),
             approvals: Vec::new(),
             plan_certificate: None,
-            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+            capability: Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
         };
-        h.runtime
+        let refusal = h
+            .runtime
             .block_on(async move { post(db, &ctx, book, req).await })
             .unwrap()
-            .unwrap();
+            .unwrap_err();
+        assert_eq!(
+            refusal.code,
+            fa_journal::refusal::code::CLASS_NOT_IMPLEMENTED
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
     }
 
-    // 4. Realized FX settlement of the 100.00 EUR receivable (now carried at 115.00 USD)
-    //    into USD cash at settlement rate 1.18 USD/EUR (118.00 USD; +3.00 USD realized gain).
+    // 4. The refused adjustment leaves the invoice carried at 110.00 USD.
+    // Settlement at 1.18 yields 118.00 USD cash and 8.00 USD realized gain.
     let rate_settle = FxRateDocument::new(
         FxRateTerms {
             base_unit: usd,
@@ -3381,7 +3391,7 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
         ar_eur,
         Side::Credit,
         Amount::new(eur, 10_000),
-        Amount::new(usd, 11_500),
+        Amount::new(usd, 11_000),
         h.cash,
         fx_conv,
         fx_realized,
@@ -3454,8 +3464,8 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
             entity: None,
         })
         .unwrap();
-    assert_eq!(conv_cell.debits, 11_500);
-    assert_eq!(conv_cell.credits, 11_500);
+    assert_eq!(conv_cell.debits, 11_000);
+    assert_eq!(conv_cell.credits, 11_000);
     assert_eq!(conv_cell.net(), Some(0));
 
     let oracle_entries = vec![
@@ -3470,12 +3480,6 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
             is_pending: false,
             is_resolved: false,
             legs: to_oracle_legs(&valued_inv),
-        },
-        OracleFunctionalEntry {
-            period: h.march.clone(),
-            is_pending: false,
-            is_resolved: false,
-            legs: to_oracle_legs(&reval_prop),
         },
         OracleFunctionalEntry {
             period: h.march.clone(),

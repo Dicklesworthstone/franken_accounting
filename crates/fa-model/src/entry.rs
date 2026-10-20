@@ -120,6 +120,9 @@ pub const PRODUCTION_BATES_EXTENSION: u16 = 14;
 /// definition_digest ‖ str definition_name ‖ u32 definition_version ‖ [32]
 /// certificate ‖ u64 certified_at ‖ u8 issued_to ‖ opt oid document`.
 pub const STATEMENT_ISSUANCE_EXTENSION: u16 = 15;
+/// Extension tag 16, the complete source and route basis for intrinsic
+/// period-end FX revaluation. New native admissions reproduce this basis.
+pub const FX_REVALUATION_EXTENSION: u16 = 16;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -138,6 +141,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     PRODUCTION_PROFILE_EXTENSION,
     PRODUCTION_BATES_EXTENSION,
     STATEMENT_ISSUANCE_EXTENSION,
+    FX_REVALUATION_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1665,6 +1669,19 @@ impl EntryPayload {
             return Err(invalid(
                 "extensions.year_end_close",
                 "requires a canonical intrinsic YearEndClose basis on a Closing PostEntry intent",
+            ));
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == FX_REVALUATION_EXTENSION)
+            && (self.class != EntryClass::REVALUATION
+                || !matches!(&self.origin, EntryOrigin::Intent { intent_kind: 1, .. })
+                || crate::revaluation::FxRevaluationBasis::decode(bytes).is_err())
+        {
+            return Err(invalid(
+                "extensions.fx_revaluation",
+                "requires a canonical source-bound FX revaluation basis on a Revaluation PostEntry intent",
             ));
         }
         for leg in &self.legs {

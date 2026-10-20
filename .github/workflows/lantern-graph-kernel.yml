@@ -115,6 +115,12 @@ on:
       - 'crates/fa-cli/src/fx.rs'
       - 'crates/fa-cli/tests/fx.rs'
       - 'crates/fa-cli/tests/fx_stock.rs'
+      - 'crates/fa-model/src/revaluation.rs'
+      - 'crates/fa-journal/src/revaluation.rs'
+      - 'crates/fa-journal/tests/fx_routes.rs'
+      - 'crates/fa-registers/tests/fx_revaluation.rs'
+      - 'crates/fa/src/fx_revaluation.rs'
+      - 'crates/fa/tests/fx_revaluation.rs'
       - 'registries/procedures.toml'
       - '.github/workflows/lantern-graph-kernel.yml'
   workflow_dispatch:
@@ -239,6 +245,15 @@ jobs:
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test fx --test fx_stock --no-fail-fast --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test fx --test fx_stock --no-fail-fast --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --test e2e_stdio inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli --jobs 2 -- --exact --nocapture
+      - name: Test source-bound FX revaluation and exact valued reversals
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-model --lib revaluation --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test fx_routes --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --test fx_revaluation --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test fx_revaluation --jobs 2
       - name: Test immutable period births and current schema authority
         if: ${{ !cancelled() }}
         shell: bash

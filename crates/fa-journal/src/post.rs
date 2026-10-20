@@ -307,6 +307,7 @@ impl PreparedPost {
         if self.planning
             || self.paired_reversal.is_some()
             || self.request.proposal.class == EntryClass::CLOSING
+            || crate::revaluation::is_source_bound(&self.request.proposal)
         {
             self.txn.abort();
             return Err(KernelError::Corrupt(
@@ -368,6 +369,14 @@ impl PreparedPost {
             if frontier != basis {
                 txn.abort();
                 return Ok(Err(crate::closing::frontier_changed(basis, frontier)));
+            }
+        }
+        if crate::revaluation::is_source_bound(&request.proposal) {
+            let frontier = db.frontier()?;
+            let basis = txn.basis();
+            if frontier != basis {
+                txn.abort();
+                return Ok(Err(crate::revaluation::frontier_changed(basis, frontier)));
             }
         }
         match txn.commit(db, &commit).await {
@@ -911,6 +920,12 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     admission: Admission,
     carried: Option<WriteTxn>,
 ) -> Outcome<PostPreparation> {
+    if crate::revaluation::is_source_bound(&req.proposal) {
+        if let Some(txn) = carried {
+            txn.abort();
+        }
+        return Ok(Err(crate::revaluation::unsupported_batch()));
+    }
     prepare_post_in(db, ctx, book, req, None, admission, carried)
 }
 
@@ -1112,6 +1127,21 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 "plan §5.10 / §7.5 (complete aggregate dependency)",
                 "review and commit the close as its own native PostPlan",
             )));
+        }
+    }
+    // A present source basis requires whole-book observation authority before
+    // reads. A missing basis is refused only after exact outcome recognition,
+    // so legacy immutable Revaluation retries retain their recorded outcome.
+    let revaluation = match crate::revaluation::admit(proposal) {
+        Ok(basis) => basis,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if revaluation.is_some() {
+        if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
+            return Ok(Err(refusal));
+        }
+        if carried.is_some() || matches!(admission, Admission::Promote(_)) {
+            return Ok(Err(crate::revaluation::unsupported_batch()));
         }
     }
     // Allocation is admitted only by recomputing its exact, evidence-bound
@@ -1661,6 +1691,18 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     {
         txn.abort();
         return Ok(Err(refusal));
+    }
+    if crate::revaluation::is_source_bound(proposal) {
+        let Some(basis) = &revaluation else {
+            txn.abort();
+            return Ok(Err(crate::revaluation::missing_basis()));
+        };
+        if let Err(refusal) =
+            crate::revaluation::validate_post(&txn, db, ctx, book, proposal, basis)?
+        {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
     }
 
     // A fresh correction names a registered reason. Outcome recognition
@@ -2735,7 +2777,13 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 ),
             )));
         }
-        let swapped = original.proposal.legs.len() == proposal.legs.len()
+        // A reversal cancels the target's committed functional carrying
+        // values as well as its native amounts. Repricing an exact native
+        // side-swap under another otherwise valid quote would leave a new
+        // functional balance. Compare the complete retained law/rate/residual
+        // claim here, after exact recorded-outcome recognition above.
+        let swapped = original.proposal.base_totals == proposal.base_totals
+            && original.proposal.legs.len() == proposal.legs.len()
             && original
                 .proposal
                 .legs
@@ -2744,6 +2792,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 .all(|(o, r)| {
                     o.account_ref == r.account_ref
                         && o.amount == r.amount
+                        && o.base_amount == r.base_amount
                         && o.dimension_set == r.dimension_set
                         && matches!(
                             (o.side, r.side),
@@ -2760,7 +2809,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     target.vid.0
                 ),
                 "plan §4.4 (a reversal is a side swap with the same mantissa, never a signed storno)",
-                "post the same accounts and amounts in the same order with debit and credit exchanged; a different correction is a Replacement",
+                "post the same accounts, native amounts and retained functional valuations in the same order with debit and credit exchanged; preserve the original FX law, Rate documents and residual; a different correction is a Replacement",
             )));
         }
         // 7c. Application effects (plan §5.7, §8.2): a target or any ancestor

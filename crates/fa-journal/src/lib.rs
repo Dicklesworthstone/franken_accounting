@@ -49,6 +49,7 @@ pub mod projections;
 pub mod rea;
 pub mod redaction;
 pub mod refusal;
+pub mod revaluation;
 pub mod rows;
 pub mod scenario;
 pub mod schedule;
@@ -153,6 +154,7 @@ pub use redaction::{
     read_document_for_with, redacted_view_vid,
 };
 pub use refusal::{KernelError, Refusal, exit};
+pub use revaluation::{FxRevaluationRequest, PreparedFxRevaluation, prepare_fx_revaluation};
 pub use rows::{AccountRow, PeriodRow};
 pub use scenario::{
     ScenarioBody, ScenarioClosure, ScenarioFork, ScenarioRecorded, ScenarioRequest, ScenarioState,

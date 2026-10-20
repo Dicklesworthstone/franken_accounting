@@ -15,7 +15,7 @@ externally_verifiable = true
 
 proposal_fields = ["schema_major:u16", "schema_minor:u16", "book_id:bytes16", "branch_id:bytes16", "class:u16", "effective_date:i32", "document_date:option<i32>", "description:erasable<string>", "effective_period:option<period_ref>", "legs:list<leg_payload>", "control:option<control_payload>", "unit_totals:list<unit_total>", "base_totals:option<base_totals>", "idempotency_key:bytes", "origin:entry_origin", "principal_ref:u128", "session_ref:option<u128>", "evidence:list<evidence_ref>", "supersession:list<supersession>", "pending:option<pending>", "external_ids:list<external_id>", "tags:list<tag>", "extensions:list<extension>"]
 envelope_fields = ["proposal_digest:bytes32", "plan_certificate_oid:option<bytes32>", "approvals:list<approval_ref>", "entry_digest:bytes32"]
-extension_tags = ["1:fa:balancing:v1", "2:fa:auto-reverse:v1", "3:fa:effective-date-basis:v1", "4:fa:legal-hold-scope:v1", "5:fa:allocation-posting:v1", "6:fa:event-ref:v1", "7:fa:capability-body:v1", "8:fa:draft-body:v1", "9:fa:draft-intent:v1", "10:fa:scenario-body:v1", "11:fa:scenario-intent:v1", "12:fa:year-end-close:v1", "13:fa:production-profile:v1", "14:fa:production-bates:v1", "15:fa:statement-issuance:v1"]
+extension_tags = ["1:fa:balancing:v1", "2:fa:auto-reverse:v1", "3:fa:effective-date-basis:v1", "4:fa:legal-hold-scope:v1", "5:fa:allocation-posting:v1", "6:fa:event-ref:v1", "7:fa:capability-body:v1", "8:fa:draft-body:v1", "9:fa:draft-intent:v1", "10:fa:scenario-body:v1", "11:fa:scenario-intent:v1", "12:fa:year-end-close:v1", "13:fa:production-profile:v1", "14:fa:production-bates:v1", "15:fa:statement-issuance:v1", "16:fa:fx-revaluation:v1"]
 
 [[decision]]
 field = "effective_date"
@@ -30,3 +30,10 @@ appendix_a = "Intrinsic YearEndClose source provenance (plan §7.5)"
 code_type = "fa-model::closing::YearEndCloseBasis; YEAR_END_CLOSE_EXTENSION=12"
 rationale = "The versioned FA-YEAR-CLOSE framing retains fiscal_year, closing_period, closing_date, observed_at, routes_entry, routes_digest and source_digest. Every field is covered by the ordinary proposal digest. The native kernel requires this basis for every new Closing admission and independently reproduces the exact complete fiscal-year contributions, nominal residuals and equity routes. A PostIntent preserves the sealed proposal across independent approval records; a PostPlan retains the new publication frontier guard. This intrinsic computation makes no claim that the generic Canon rule VM executed."
 tracking_bead = "fa-4o0"
+
+[[decision]]
+field = "extensions.16"
+appendix_a = "Source-bound cumulative PeriodEndRevaluation (plan §5.2, §12.4)"
+code_type = "fa-model::revaluation::FxRevaluationBasis; FX_REVALUATION_EXTENSION=16"
+rationale = "Versioned FA-FX-REVALUE bytes bind period and its last included date, original observation prefix, foreign source account and selected entity, immutable route control and digest, retained closing Rate OID and commitment, and complete cumulative source digest. Fresh native Revaluation admissions reproduce the original and current source and exact derived legs; publication guards the full preparation frontier. Caller-provided exposure or carrying balances are not accepted. Exact immutable legacy retries are recognized before requiring the new basis; historical decoding does not invent a basis for old entries. No generic Canon execution, reverse-revaluation workflow, batch or draft-promotion support is claimed."
+tracking_bead = "fa-3ock"

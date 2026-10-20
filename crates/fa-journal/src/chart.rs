@@ -11,10 +11,16 @@
 //! invoking it.
 
 mod closing;
+mod fx;
 
 pub use closing::{
     ClosingRoutes, ClosingRoutesRecorded, ClosingRoutesRequest, MAX_CLOSING_ROUTES,
     SCHEMA_CHANGE_CLOSING_ROUTES, closing_routes_at, set_closing_routes,
+};
+pub use fx::{
+    FxRevaluationRoute, FxRevaluationRoutes, FxRevaluationRoutesRecorded,
+    FxRevaluationRoutesRequest, MAX_FX_REVALUATION_ROUTES, SCHEMA_CHANGE_FX_REVALUATION_ROUTES,
+    fx_revaluation_routes_at, set_fx_revaluation_routes,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -141,6 +147,7 @@ pub struct ChartSnapshot {
     parents: BTreeMap<VId, VId>,
     children: BTreeMap<VId, Vec<VId>>,
     closing_routes: Vec<ClosingRoutes>,
+    fx_revaluation_routes: Vec<FxRevaluationRoutes>,
 }
 
 impl ChartSnapshot {
@@ -201,6 +208,7 @@ fn corrupt(message: impl Into<String>) -> KernelError {
 enum ChartOp {
     Install(Vec<AccountSpec>),
     ClosingRoutes(closing::ClosingRoutesSpec),
+    FxRevaluationRoutes(fx::FxRevaluationRoutesSpec),
     OpenAccount {
         spec: AccountSpec,
         opened: DateDay,
@@ -325,6 +333,17 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
                 ChartOp::ClosingRoutes(spec)
             }
             Some(ControlPayload::SchemaChange {
+                kind: SCHEMA_CHANGE_FX_REVALUATION_ROUTES,
+                canonical_bytes,
+            }) => {
+                let spec = fx::FxRevaluationRoutesSpec::decode(canonical_bytes)
+                    .map_err(|error| corrupt(format!("control {:032x}: {error}", row.vid.0)))?;
+                if spec.effective_from != entry.proposal.effective_date {
+                    return Err(corrupt("FX-map start differs from its schema-control date"));
+                }
+                ChartOp::FxRevaluationRoutes(spec)
+            }
+            Some(ControlPayload::SchemaChange {
                 kind,
                 canonical_bytes,
             }) if fa_model::ReaControlOp::is_rea_schema_change_kind(*kind) => {
@@ -445,8 +464,17 @@ fn replay_controls(
     let mut effectivity: BTreeMap<VId, AccountEffectivity> = BTreeMap::new();
     let mut parents = BTreeMap::new();
     let mut closing_routes = Vec::new();
+    let mut fx_revaluation_routes = Vec::new();
     for (created_at, control_entry, op) in controls {
         match op {
+            ChartOp::FxRevaluationRoutes(spec) => {
+                if created_at > known_at {
+                    return Err(corrupt("an FX route map lies after the selected frontier"));
+                }
+                spec.validate(&accounts, &effectivity, &fx_revaluation_routes)
+                    .map_err(corrupt)?;
+                fx_revaluation_routes.push(spec.recorded(book, control_entry, created_at)?);
+            }
             ChartOp::ClosingRoutes(spec) => {
                 if created_at > known_at {
                     return Err(corrupt("a closing map lies after the selected frontier"));
@@ -579,7 +607,14 @@ fn replay_controls(
             }
         }
     }
-    finalize_snapshot(known_at, accounts, effectivity, parents, closing_routes)
+    finalize_snapshot(
+        known_at,
+        accounts,
+        effectivity,
+        parents,
+        closing_routes,
+        fx_revaluation_routes,
+    )
 }
 
 #[cfg(test)]
@@ -600,7 +635,14 @@ fn assemble(
             &mut parents,
         )?;
     }
-    finalize_snapshot(known_at, accounts, BTreeMap::new(), parents, Vec::new())
+    finalize_snapshot(
+        known_at,
+        accounts,
+        BTreeMap::new(),
+        parents,
+        Vec::new(),
+        Vec::new(),
+    )
 }
 
 fn finalize_snapshot(
@@ -609,6 +651,7 @@ fn finalize_snapshot(
     effectivity: BTreeMap<VId, AccountEffectivity>,
     parents: BTreeMap<VId, VId>,
     closing_routes: Vec<ClosingRoutes>,
+    fx_revaluation_routes: Vec<FxRevaluationRoutes>,
 ) -> Result<ChartSnapshot, KernelError> {
     let mut children: BTreeMap<VId, Vec<VId>> = BTreeMap::new();
     for (child, parent) in &parents {
@@ -647,6 +690,7 @@ fn finalize_snapshot(
         parents,
         children,
         closing_routes,
+        fx_revaluation_routes,
     })
 }
 

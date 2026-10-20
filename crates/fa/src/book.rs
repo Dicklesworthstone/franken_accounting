@@ -3807,6 +3807,51 @@ impl Book {
         }))
     }
 
+    /// Install complete additive routes for period-end FX revaluation.
+    pub fn set_fx_revaluation_routes(
+        &mut self,
+        request: crate::FxRevaluationRoutesRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::FxRevaluationRoutesRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.set_fx_revaluation_routes(&purposes, request, capability)
+        ))
+    }
+
+    /// Read journaled FX routes at an effective date and recorded prefix.
+    pub fn fx_revaluation_routes_at(
+        &mut self,
+        effective_date: DateDay,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Option<crate::FxRevaluationRoutes>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.fx_revaluation_routes_at(&purposes, effective_date, known_at, capability)
+        ))
+    }
+
+    /// Derive a period-end adjustment from immutable exposure and carrying
+    /// values. Retain its PostIntent for review; ordinary planning and posting
+    /// independently reproduce the basis and guard publication.
+    pub fn prepare_fx_revaluation(
+        &mut self,
+        request: &crate::FxRevaluationRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::PreparedFxRevaluation> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_fx_revaluation(&purposes, request, capability, &mut budget)
+        ))
+    }
+
     /// Install the complete effective-dated nominal-to-equity routing map.
     pub fn set_closing_routes(
         &mut self,

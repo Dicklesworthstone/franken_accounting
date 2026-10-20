@@ -29,6 +29,7 @@ pub mod ids;
 pub mod limits;
 pub mod mirrors;
 pub mod rea;
+pub mod revaluation;
 pub mod symbols;
 pub mod unit;
 
@@ -56,5 +57,6 @@ pub use rea::{
     LegalEntityFullSpec, OwnershipPct, PartyIdentifierUpdate, PartyKind, PartySpec, ReaControlOp,
     RelationshipKind, RelationshipSpec,
 };
+pub use revaluation::FxRevaluationBasis;
 pub use symbols::SymbolTable;
 pub use unit::UnitDefinition;
