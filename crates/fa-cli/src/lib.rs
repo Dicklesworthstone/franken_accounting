@@ -25,6 +25,7 @@ pub mod entry;
 mod export;
 mod finding;
 mod fx;
+mod fx_revaluation;
 mod intake;
 mod intake_provenance;
 mod issuance;

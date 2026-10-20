@@ -7288,6 +7288,115 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     assert_eq!(text(&functional_stock, "effective_through"), "2026-03-31");
     assert_eq!(functional_stock.get("balanced"), Some(&Json::Bool(true)));
 
+    let fx_book = dir.join("fx-revaluation-events-book");
+    let mut run_fx = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&fx_book), &argv);
+        assert_eq!(code, 0, "{argv:?}: {out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        out
+    };
+    run_fx(&["book", "create", "--name", "Revaluation event source"]);
+    let fx_chart = write(
+        &dir,
+        "fx-revaluation-chart.json",
+        r#"{"accounts":[{"code":"1200","name":"EUR receivable","type":"Asset","unit":"EUR"},{"code":"4000","name":"EUR revenue","type":"Revenue","unit":"EUR"},{"code":"1290","name":"AR valuation","type":"Asset","unit":"USD"},{"code":"4900","name":"Unrealized FX","type":"Revenue","unit":"USD"}]}"#,
+    );
+    run_fx(&["chart", "import", &fx_chart]);
+    run_fx(&["period", "create", "--fiscal-year", "2026"]);
+    run_fx(&["period", "open", "FY2026-P03"]);
+    run_fx(&[
+        "fx",
+        "routes",
+        "set",
+        "--route",
+        "1200:1290:4900",
+        "--effective-from",
+        "2026-01-01",
+        "--key",
+        "fx-route-events",
+    ]);
+    let routes = doc(&run_fx(&["fx", "routes", "show", "--as-of", "2026-03-31"]));
+    assert_eq!(arr(&routes, "routes").len(), 1);
+    let spot_path = write(
+        &dir,
+        "fx-revaluation-spot.json",
+        r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"1","rate_den":"1","rounding":"HalfEven","as_of":"2026-03-05","retrieved_at_ns":1772668800000000000,"purpose":"spot_close","source":"retained transaction quote"}"#,
+    );
+    let spot = doc(&run_fx(&["fx", "rate", "add", "--from-json", &spot_path]));
+    let fx_invoice = write(
+        &dir,
+        "fx-revaluation-invoice.txt",
+        "Actual FX invoice fixture",
+    );
+    let fx_evidence = doc(&run_fx(&[
+        "document",
+        "add",
+        &fx_invoice,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]));
+    let fx_intent = write(
+        &dir,
+        "fx-revaluation-post.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-05","idempotency_key":"fx-event-invoice","legs":[{{"side":"debit","account":"1200","amount":"100.00 EUR"}},{{"side":"credit","account":"4000","amount":"100.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#,
+            text(&spot, "oid")
+        ),
+    );
+    run_fx(&[
+        "post",
+        "--intent",
+        &fx_intent,
+        "--evidence",
+        text(&fx_evidence, "oid"),
+    ]);
+    let close_rate = doc(&run_fx(&["fx", "rate", "add", "--from-json", &rate_path]));
+    let closing_oid = format!("D:{}", text(&close_rate, "oid"));
+    let reviewed = doc(&run_fx(&[
+        "fx",
+        "revalue",
+        "--period",
+        "FY2026-P03",
+        "--account",
+        "1200",
+        "--rate",
+        &closing_oid,
+        "--key",
+        "fx-event-revalue",
+        "--review-only",
+    ]));
+    assert_eq!(text(&reviewed, "source_native_net"), "100.00 EUR");
+    assert_eq!(text(&reviewed, "current_carrying_net"), "100.00 USD");
+    assert_eq!(text(&reviewed, "delta"), "10.00 USD");
+    run_fx(&[
+        "fx",
+        "revalue",
+        "--review",
+        text(&reviewed, "bytes"),
+        "--digest",
+        text(&reviewed, "review_digest"),
+        "--yes",
+    ]);
+    let noop = doc(&run_fx(&[
+        "fx",
+        "revalue",
+        "--period",
+        "FY2026-P03",
+        "--account",
+        "1200",
+        "--rate",
+        &closing_oid,
+        "--key",
+        "fx-event-noop",
+        "--yes",
+    ]));
+    assert_eq!(text(&noop, "current_carrying_net"), "110.00 USD");
+    assert_eq!(text(&noop, "target_base_net"), "110.00 USD");
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events

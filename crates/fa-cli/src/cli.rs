@@ -1822,7 +1822,8 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             | "bill"
             | "receipt"
             | "payment"
-    ) || (verb == "close" && args.positional.get(1).map(String::as_str) == Some("year-end")))
+    ) || (verb == "close" && args.positional.get(1).map(String::as_str) == Some("year-end"))
+        || (verb == "fx" && args.positional.get(1).map(String::as_str) == Some("revalue")))
         && (args.switch("--dry-run")
             || args.switch("--review-only")
             || args.flag("--review-out").is_some())

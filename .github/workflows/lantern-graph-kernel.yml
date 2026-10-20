@@ -115,6 +115,8 @@ on:
       - 'crates/fa-cli/src/fx.rs'
       - 'crates/fa-cli/tests/fx.rs'
       - 'crates/fa-cli/tests/fx_stock.rs'
+      - 'crates/fa-cli/src/fx_revaluation.rs'
+      - 'crates/fa-cli/tests/fx_revaluation.rs'
       - 'crates/fa-model/src/revaluation.rs'
       - 'crates/fa-journal/src/revaluation.rs'
       - 'crates/fa-journal/tests/fx_routes.rs'
@@ -254,6 +256,7 @@ jobs:
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test fx_routes --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --test fx_revaluation --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test fx_revaluation --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test fx_revaluation --jobs 2
       - name: Test immutable period births and current schema authority
         if: ${{ !cancelled() }}
         shell: bash
