@@ -300,7 +300,7 @@ mod tests {
             }
             let wrong_kind = match kind {
                 ObjectKind::PostPlan => ObjectKind::ReplacementPlan,
-                ObjectKind::ReplacementPlan => ObjectKind::PostPlan,
+                ObjectKind::ReplacementPlan | ObjectKind::BatchPlan => ObjectKind::PostPlan,
             };
             assert!(
                 read(
