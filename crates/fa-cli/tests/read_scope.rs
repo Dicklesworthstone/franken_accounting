@@ -407,3 +407,128 @@ fn a_scoped_issuer_issues_nothing_and_an_unknown_period_is_usage() {
     assert_eq!(head(&f), before);
     assert!(!f.dir.join("unknown.token").exists());
 }
+
+/// Every launch-bound command whose `[[bound]]` rule does not say
+/// `reach = "judged"` reaches the whole book at its head, so a token carrying
+/// a periods, effective or known-at caveat is refused before the book is
+/// opened (no book, no coordinate), never answered (fa-0x0: `fa event list`
+/// and `fa statement` used to answer one). The commands come from the
+/// registry, so a new rule is covered the day it lands.
+#[test]
+fn every_command_that_does_not_judge_its_reach_refuses_a_scoped_token() {
+    let f = Fixture::new();
+    let pin = number(data(&f.march), "recorded_at").to_string();
+    let held = ["read", "post", "verify", "reconcile", "produce"];
+    // `issue` already grants read.
+    let mut ops = Vec::new();
+    for &op in &held[1..] {
+        ops.extend(["--op", op, "--grant", op]);
+    }
+    let tokens: Vec<(String, &str)> = [
+        (["--period", "FY2026-P03"], "`periods`", "march"),
+        (
+            ["--effective-through", "2026-03-31"],
+            "`effective`",
+            "through",
+        ),
+        (["--known-at-most", pin.as_str()], "`known_at`", "pinned"),
+    ]
+    .into_iter()
+    .map(|(scope, caveat, holder)| {
+        let mut args = ops.clone();
+        args.extend(scope);
+        (f.issue(holder, &args).0, caveat)
+    })
+    .collect();
+
+    let reg = fa_cli::verbs::registry().unwrap();
+    let switches = reg.switches();
+    let mut exercised = 0;
+    for (index, rule) in reg.bound.iter().enumerate() {
+        if rule.judged
+            || rule.ops.is_empty()
+            || !rule.ops.iter().all(|op| held.contains(&op.as_str()))
+        {
+            continue;
+        }
+        let mut flags: Vec<&str> = Vec::new();
+        for flag in rule.when_all.iter().chain(rule.when_any.first()) {
+            flags.push(flag.as_str());
+            if !switches.contains(&flag.as_str()) {
+                flags.push("1");
+            }
+        }
+        if let (Some(flag), Some(value)) = (&rule.flag, rule.values.first()) {
+            flags.extend([flag.as_str(), value.as_str()]);
+        }
+        let present = |flag: &str| flags.contains(&flag);
+        let value = |flag: &str| {
+            flags
+                .iter()
+                .position(|f| *f == flag)
+                .and_then(|i| flags.get(i + 1))
+                .map(|v| (*v).to_string())
+        };
+        for verb in &rule.verbs {
+            let registered = &reg.verb(verb).unwrap().subcommands;
+            let candidates: Vec<Option<&str>> = if !rule.subcommands.is_empty() {
+                rule.subcommands.iter().map(|s| Some(s.as_str())).collect()
+            } else if !registered.is_empty() {
+                registered.iter().map(|s| Some(s.as_str())).collect()
+            } else {
+                vec![None]
+            };
+            let arg = rule.args.first().map(String::as_str);
+            // The first subcommand this rule decides (an earlier rule may
+            // decide the others).
+            let sub = candidates
+                .into_iter()
+                .find(|sub| {
+                    reg.bound_rule(verb, *sub, arg, &present, &value)
+                        .is_some_and(|(decided, _)| decided == index)
+                })
+                .unwrap_or_else(|| panic!("bound rule {index} decides no `{verb}` command"));
+            let mut argv: Vec<&str> = vec![verb.as_str()];
+            argv.extend(sub);
+            argv.extend(arg);
+            argv.extend(flags.iter().copied());
+            for (token, caveat) in &tokens {
+                let mut scoped = vec!["--token", token.as_str()];
+                scoped.extend(argv.iter().copied());
+                let (exit, event) = f.run(&scoped);
+                assert_eq!(exit, 7, "rule {index}: {scoped:?}\n{event:?}");
+                assert_eq!(text(data(&event), "refusal_id"), "FA-REF-011", "{event:?}");
+                let message = text(data(&event), "message");
+                assert!(
+                    message.contains("reaches the whole book") && message.contains(caveat),
+                    "rule {index}: {scoped:?}: {message}"
+                );
+                assert_eq!(
+                    event.get("book"),
+                    Some(&Json::Null),
+                    "{scoped:?}: {event:?}"
+                );
+                assert_eq!(
+                    event.get("coordinate"),
+                    Some(&Json::Null),
+                    "{scoped:?}: {event:?}"
+                );
+            }
+            exercised += 1;
+        }
+    }
+    // Statements, events, documents, drafts, scenarios, gl, verify, export,
+    // proofs and the rest: well over the four judged readers.
+    assert!(exercised >= 40, "only {exercised} commands exercised");
+
+    // The judged readers still answer inside the scope.
+    let (march, _) = &tokens[0];
+    f.ok(&[
+        "--token",
+        march,
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--activity",
+    ]);
+}

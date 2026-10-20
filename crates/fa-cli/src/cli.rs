@@ -1840,17 +1840,59 @@ fn recovery_preview_only(verb: &str, args: &Args) -> bool {
 /// not admitted on the bound route.
 #[must_use]
 pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy::Op]> {
+    bound_command_rule(verb, args).map(|(ops, _)| ops)
+}
+
+/// The deciding `[[bound]]` rule's ops, and whether the command judges the
+/// session's scope caveats against what it reaches (`reach = "judged"`).
+fn bound_command_rule(verb: &str, args: &Args) -> Option<(&'static [fa_policy::Op], bool)> {
     let reg = crate::verbs::registry().ok()?;
     let present = |flag: &str| args.switch(flag) || !args.flag_all(flag).is_empty();
     let value = |flag: &str| args.flag(flag).map(str::to_string);
-    let (index, _) = reg.bound_rule(
+    let (index, rule) = reg.bound_rule(
         verb,
         args.positional.get(1).map(String::as_str),
         args.positional.get(2).map(String::as_str),
         &present,
         &value,
     )?;
-    bound_rule_ops().get(index)?.as_deref()
+    Some((bound_rule_ops().get(index)?.as_deref()?, rule.judged))
+}
+
+/// A bound command that reads a book and does not judge its own reach
+/// reaches the whole book at the head (doctrine 8, fa-0x0), so a token
+/// carrying any scope caveat is refused before the book is opened, never
+/// answered with a filtered result.
+fn bound_scope_refusal(
+    capability: &Capability,
+    ops: &[fa_policy::Op],
+    judged: bool,
+    command: &str,
+) -> Result<(), Refusal> {
+    if judged || ops.is_empty() {
+        return Ok(());
+    }
+    fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None).map_err(|denial| {
+        let mut refusal = fa_journal::policy::refusal(&denial);
+        let judging: std::collections::BTreeSet<&str> = crate::verbs::registry()
+            .map(|reg| {
+                reg.bound
+                    .iter()
+                    .filter(|rule| rule.judged)
+                    .flat_map(|rule| rule.verbs.iter().map(String::as_str))
+                    .collect()
+            })
+            .unwrap_or_default();
+        refusal.message = format!(
+            "`{command}` reaches the whole book at its head: {}",
+            refusal.message
+        );
+        refusal.fix = format!(
+            "a scoped capability runs only the commands that judge their own reach (fa {}); ask the book's steward for a capability without scope caveats to run `{command}`",
+            judging.into_iter().collect::<Vec<_>>().join(", fa ")
+        );
+        refusal
+    })
 }
 
 /// Each `[[bound]]` rule's ops as `fa_policy::Op`s, resolved once. A rule
@@ -1906,7 +1948,7 @@ pub fn bound_command_admissible(
             }
         }
     }
-    let Some(required) = bound_command_ops(verb, args) else {
+    let Some((required, judged)) = bound_command_rule(verb, args) else {
         return Err(format!(
             "`{}` is not admitted by the launch-bound MCP command surface",
             command_name(verb, sub)
@@ -1919,6 +1961,14 @@ pub fn bound_command_admissible(
                 command_name(verb, sub)
             ));
         }
+    }
+    if let Err(refusal) = bound_scope_refusal(
+        authority.capability(),
+        required,
+        judged,
+        &command_name(verb, sub),
+    ) {
+        return Err(format!("{} ({})", refusal.message, refusal.code));
     }
     // The typed documents (fa invoice, bill, receipt, payment) post through
     // fa post's own path, so they are trunk posts like it.
@@ -1970,7 +2020,7 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
         return Ok(());
     };
     let sub = args.positional.get(1).map(String::as_str);
-    let Some(required) = bound_command_ops(&verb.name, args) else {
+    let Some((required, judged)) = bound_command_rule(&verb.name, args) else {
         return Err(Refusal::new(
             fa_journal::refusal::code::CAPABILITY,
             exit::SAFETY,
@@ -1991,6 +2041,12 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
                 Fail::Refusal(refusal)
             })?;
     }
+    bound_scope_refusal(
+        authority.capability(),
+        required,
+        judged,
+        &command_name(&verb.name, sub),
+    )?;
     Ok(())
 }
 

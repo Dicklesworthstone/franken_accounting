@@ -3767,6 +3767,13 @@ fields = ["name:string", "bytes:int", "digest:hex"]
 # registries/capability_caveats.toml; an empty list reads nothing from a
 # book. fa-verbs validates every verb, subcommand, flag and op a rule names;
 # fa-cli tests/write_authority.rs pins every writing command's ops.
+#
+# Scope caveats (accounts, periods, effective, known_at, branch; plan §14.2)
+# are judged before the book is opened (doctrine 8, fa-0x0). A rule with
+# `reach = "judged"` names commands that judge them against exactly what they
+# reach (Book::read_scope, before any query). Every other command that reads
+# a book reaches all of it at the head, so a token carrying any scope caveat
+# is refused on the bound route, never answered with a filtered result.
 
 # Plans and dry runs of period transitions publish nothing.
 [[bound]]
@@ -3820,8 +3827,17 @@ verbs = ["chart", "period"]
 subcommands = ["list"]
 ops = ["read"]
 
+# Each judges what it reaches at its recorded frontier: a trial balance its
+# periods (a stock balance from inception), an explanation of a balance,
+# period or register its period, open items their day, and an entry, its
+# lineage or its evidence the whole book.
 [[bound]]
-verbs = ["tb", "statement", "open-items", "gl", "explain", "replay", "certificate", "entry", "procedure", "triage", "next", "doctor"]
+verbs = ["tb", "open-items", "explain", "entry"]
+ops = ["read"]
+reach = "judged"
+
+[[bound]]
+verbs = ["statement", "gl", "replay", "certificate", "procedure", "triage", "next", "doctor"]
 ops = ["read"]
 
 [[bound]]

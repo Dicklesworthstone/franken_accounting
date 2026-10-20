@@ -324,6 +324,12 @@ pub struct BoundRule {
     /// Capability op names (`registries/capability_caveats.toml`); empty:
     /// the command reads nothing from a book.
     pub ops: Vec<String>,
+    /// `reach = "judged"`: the command judges the session's scope caveats
+    /// against what it reaches (its handler through `Book::read_scope`, or
+    /// the kernel at its write). Without it the command reaches the whole
+    /// book at the head, so a token carrying any scope caveat is refused
+    /// before the book is opened (doctrine 8, fa-0x0).
+    pub judged: bool,
 }
 
 impl BoundRule {
@@ -606,7 +612,7 @@ impl Registry {
             .enumerate()
         {
             let what = format!("bound rule {i}");
-            const KEYS: [&str; 9] = [
+            const KEYS: [&str; 10] = [
                 "verbs",
                 "subcommands",
                 "args",
@@ -616,6 +622,7 @@ impl Registry {
                 "flag",
                 "values",
                 "ops",
+                "reach",
             ];
             if let Some(key) = t.keys().find(|k| !KEYS.contains(&k.as_str())) {
                 return Err(format!("verbs.toml: {what}: unknown key `{key}`"));
@@ -644,6 +651,15 @@ impl Registry {
                 },
                 values: optional("values")?,
                 ops: get_strs(t, "ops", &what)?,
+                judged: match t.get("reach") {
+                    None => false,
+                    Some(v) if v.as_str() == Some("judged") => true,
+                    Some(_) => {
+                        return Err(format!(
+                            "verbs.toml: {what}: `reach` must be \"judged\" (omit it for a command that reaches the whole book)"
+                        ));
+                    }
+                },
             });
         }
         let registry = Self {
@@ -729,6 +745,11 @@ impl Registry {
             }
             if let Some(op) = rule.ops.iter().find(|op| !op_names.contains(op.as_str())) {
                 return Err(format!("{what}: `{op}` is not a registered capability op"));
+            }
+            if rule.judged && rule.ops.is_empty() {
+                return Err(format!(
+                    "{what}: a rule without ops reads nothing from a book, so it has no reach to judge"
+                ));
             }
         }
         Ok(())
@@ -1749,6 +1770,40 @@ mod bound_tests {
         }
     }
 
+    /// Only the readers that judge the session's scope caveats through
+    /// `Book::read_scope` say so; every other command, writes included,
+    /// reaches the whole book on the bound route (fa-0x0).
+    #[test]
+    fn only_the_scope_judging_readers_are_judged() {
+        let reg = Registry::parse(SOURCE).expect("the embedded registry");
+        let judged = |verb: &str, sub: Option<&str>, present: &[&str]| {
+            let present = |flag: &str| present.contains(&flag);
+            reg.bound_rule(verb, sub, None, &present, &|_: &str| None::<String>)
+                .map(|(_, rule)| rule.judged)
+        };
+        for (verb, sub) in [
+            ("tb", None),
+            ("open-items", None),
+            ("explain", Some("balance")),
+            ("explain", Some("lineage")),
+            ("entry", Some("show")),
+        ] {
+            assert_eq!(judged(verb, sub, &[]), Some(true), "{verb} {sub:?}");
+        }
+        for (verb, sub, present) in [
+            ("tb", None, &["--summary", "--certify"][..]),
+            ("statement", Some("balance-sheet"), &[][..]),
+            ("gl", Some("detail"), &[][..]),
+            ("event", Some("list"), &[][..]),
+            ("document", Some("read"), &[][..]),
+            ("verify", Some("periods"), &[][..]),
+            ("post", None, &[][..]),
+            ("draft", Some("list"), &[][..]),
+        ] {
+            assert_eq!(judged(verb, sub, present), Some(false), "{verb} {sub:?}");
+        }
+    }
+
     fn planted(from: &str, to: &str) -> Result<Registry, String> {
         assert_eq!(SOURCE.matches(from).count(), 1, "anchor {from:?}");
         Registry::parse(&SOURCE.replacen(from, to, 1))
@@ -1795,6 +1850,22 @@ mod bound_tests {
                 "an op listed twice",
                 planted("ops = [\"read\", \"verify\"]", "ops = [\"read\", \"read\"]"),
                 "an op is listed twice",
+            ),
+            (
+                "a reach other than judged",
+                planted(
+                    witness,
+                    "verbs = [\"checkpoint\"]\nops = [\"witness\"]\nreach = \"whole\"",
+                ),
+                "`reach` must be \"judged\"",
+            ),
+            (
+                "a judged rule without ops",
+                planted(
+                    "verbs = [\"capabilities\", \"robot-docs\", \"help\"]\nops = []",
+                    "verbs = [\"capabilities\", \"robot-docs\", \"help\"]\nops = []\nreach = \"judged\"",
+                ),
+                "has no reach to judge",
             ),
         ] {
             let error = result.expect_err(what);
