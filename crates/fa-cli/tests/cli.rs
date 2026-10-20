@@ -9015,12 +9015,19 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
     let listed = ok(&["procedure", "list"]);
     let listed_doc = doc(&listed);
     let rows = arr(&listed_doc, "procedures");
-    assert_eq!(rows.len(), 51, "{listed}");
-    assert!(
-        rows.iter()
-            .any(|r| r.get("id").and_then(Json::as_str) == Some("jet.round_amounts")),
-        "{listed}"
-    );
+    assert_eq!(rows.len(), 59, "{listed}");
+    for id in [
+        "jet.round_amounts",
+        "solvency.balance_sheet_test",
+        "ponzi.net_investment",
+        "damages.but_for",
+    ] {
+        assert!(
+            rows.iter()
+                .any(|r| r.get("id").and_then(Json::as_str) == Some(id)),
+            "{id}: {listed}"
+        );
+    }
 
     // The planted round amount is found, cited by the posted entry's vid.
     let out = ok(&["procedure", "run", "jet.round_amounts"]);
