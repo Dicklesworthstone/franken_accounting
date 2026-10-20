@@ -1317,6 +1317,18 @@ fn run_scoped(
     );
     let out = Out::styled_format(format, capture, style).with_authority(authority);
     if authority.is_none() {
+        if daemon_files.is_some() && (args.flags.contains_key("--as") || args.switch("--as")) {
+            return finish_into(
+                out,
+                Err(Fail::Refusal(Refusal::new(
+                    fa_journal::refusal::code::CAPABILITY,
+                    fa_journal::exit::SAFETY,
+                    "`--as` is not admitted on the daemon path: fad authenticates callers by capability token, never by unverified `--as` flag",
+                    "plan §14.2, §15.3 (daemon caller authentication; fa-r3q)",
+                    "present a token: fa capability issue --holder <principal> --out <file> … then fa --token <file> …",
+                ))),
+            );
+        }
         out.said.borrow_mut().owner_principal =
             Some(args.flag("--as").unwrap_or("operator").to_string());
     }

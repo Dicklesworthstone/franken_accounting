@@ -42,6 +42,17 @@ pub fn fa(argv: &[String], capture: bool) -> (u8, Captured) {
 /// stdin here instead of the process's own. Through a daemon, the forwarded
 /// bytes travel in the request. MCP hosts use [`fa_with_authority`] instead.
 pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
+    let env_token = std::env::var("FA_TOKEN").ok().filter(|s| !s.is_empty());
+    fa_with_env_token(argv, env_token.as_deref(), files, capture)
+}
+
+/// [`fa_with`] with an explicit `FA_TOKEN` fallback path (or `None` when unset).
+pub fn fa_with_env_token(
+    argv: &[String],
+    env_token: Option<&str>,
+    files: Files,
+    capture: bool,
+) -> (u8, Captured) {
     let Ok(reg) = verbs::registry() else {
         // `cli::run` reports the unreadable registry itself.
         return cli::run(argv, Books::Dir, files, capture);
@@ -58,8 +69,9 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
             capture,
         );
     }
-    if parsed.flag("--token").is_some() {
-        return fa_with_token(argv, &parsed, files, capture);
+    let env_token = env_token.filter(|s| !s.is_empty());
+    if parsed.flag("--token").is_some() || env_token.is_some() {
+        return fa_with_token(argv, &parsed, env_token, files, capture);
     }
     if discovery(&parsed, reg) {
         return cli::run(argv, Books::Dir, files, capture);
@@ -168,6 +180,7 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
 fn fa_with_token(
     argv: &[String],
     parsed: &args::Args,
+    env_token: Option<&str>,
     files: Files,
     capture: bool,
 ) -> (u8, Captured) {
@@ -184,7 +197,7 @@ fn fa_with_token(
             );
         }
     }
-    let path = parsed.flag("--token").unwrap_or_default();
+    let path = parsed.flag("--token").or(env_token).unwrap_or_default();
     if path.is_empty() || path == "-" || parsed.flag_all("--token").len() > 1 {
         return cli::usage_error(argv, "--token names one holder's token file", FIX, capture);
     }
@@ -235,7 +248,38 @@ fn fa_with_token(
             );
         }
     };
-    fa_with_authority(&routing::bound_args(parsed), files, &authority, capture)
+    let bound_argv = routing::bound_args(parsed);
+    if let Ok(reg) = verbs::registry()
+        && !discovery(parsed, reg)
+        && let Ok(bound_parsed) = args::parse(&bound_argv, &reg.value_flags(), &reg.switches())
+    {
+        if parsed.flag("--via") == Some("fad") {
+            return through_daemon(
+                &bound_argv,
+                &bound_parsed,
+                authority.book(),
+                None,
+                authority.token(),
+                &files,
+                capture,
+            );
+        }
+        if parsed.flag("--via") == Some("direct")
+            && let Some(holder) = Lease::holder(authority.book(), &reg.daemon.lease)
+        {
+            let held = LeaseError::Held {
+                path: authority.book().join(&reg.daemon.lease),
+                holder,
+            };
+            return cli::refuse_with_authority(
+                &bound_argv,
+                held.refusal(authority.book()),
+                &authority,
+                capture,
+            );
+        }
+    }
+    fa_with_authority(&bound_argv, files, &authority, capture)
 }
 
 /// Run a request under the authority fixed when an MCP server starts, or by
