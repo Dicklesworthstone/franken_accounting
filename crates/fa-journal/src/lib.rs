@@ -27,6 +27,7 @@ pub mod chart;
 pub mod closing;
 pub mod custody;
 pub mod draft;
+pub mod engagement;
 pub mod entity;
 pub mod entry_history;
 pub mod evidence;
@@ -153,6 +154,12 @@ pub use policy::{
 pub use post::{
     Capability, PostPreparation, PostRequest, Posted, PreparedPost, decide_admissibility_cell,
     explain_entry_lineage, post, post_replacement_pair, prepare_post, superseded_by,
+};
+pub use engagement::{
+    AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, EngagementKind,
+    EngagementOpened, EngagementProfile, EngagementRequest, EngagementState, EngagementView,
+    Materiality, ProposalLeg, ProposalView, ProposedAdjustment, RecordedDecision,
+    decide_adjustment, list_engagements, open_engagement, propose_adjustment, read_engagement,
 };
 pub use production::{
     BatesRange, Produced, ProducedDocument, ProducedRange, ProductionOpened, ProductionProfile,

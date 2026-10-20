@@ -113,6 +113,8 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("search", search_cmd),
     ("procedure", procedure_cmd),
     ("sample", crate::sample::sample_cmd),
+    ("engagement", crate::engagement::engagement_cmd),
+    ("adjustment", crate::engagement::adjustment_cmd),
     ("checkpoint", notary::checkpoint_cmd),
     ("proof", crate::proof::proof_cmd),
     ("bundle", crate::proof::bundle_cmd),

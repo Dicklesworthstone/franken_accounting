@@ -192,6 +192,9 @@ name = "BatesRange"
 [[label]]
 id = 52
 name = "AccessEvent"
+[[label]]
+id = 60
+name = "ProposedAdjustment"
 
 # ---- property keys --------------------------------------------------------
 [[property]]
@@ -383,6 +386,9 @@ name = "unit_table_digest"
 [[property]]
 id = 69
 name = "next_bates"
+[[property]]
+id = 80
+name = "next_proposal"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]
