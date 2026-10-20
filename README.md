@@ -669,6 +669,9 @@ fa procedure run jet.weekend --book acme.fabook --json
 fa procedure run trace.libr --effective-through 2025-12-31 --account 1010 --source <deposit entry vid> --book acme.fabook --json
 fa procedure run graph.related_party_exposure --param max_depth=4 --book acme.fabook --json
 
+# Audit samples reproducible from a declared seed, over an account's open items at one recorded coordinate (available today; the Stringer evaluation is library-only).
+fa sample mus --account 1200 --seed 20260115 --interval "5000.00 USD" --as-of 2025-12-31 --book acme.fabook --json
+
 # Proofs an outsider can check without the book (`fa bundle produce` and `fa-verify bundle` available today).
 fa bundle produce --account 1000 --from 2025-01-01 --to 2025-12-31 --inline-documents --out fy2025-cash.fab --receipt-out fy2025-cash.receipt --book acme.fabook --json
 fa-verify bundle fy2025-cash.fab --key <checkpoint_public_key> --receipt fy2025-cash.receipt --json

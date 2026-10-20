@@ -439,6 +439,18 @@ usage = ["procedure list", "procedure run <procedure id> [--known-at HEAD|<seq>]
 example = "fa procedure run jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
+name = "sample"
+summary = "Audit sampling (plan §11.7): a reproducible uniform or monetary-unit (MUS) sample of one account's open items at one recorded coordinate, from a declared seed. Nothing is written."
+writes = false
+subcommands = ["uniform", "mus"]
+flags = ["--account", "--seed", "--size", "--interval", "--as-of", "--as-known-at"]
+switches = []
+events = ["sample_drawn"]
+exits = [0, 2, 3, 4, 5, 7]
+usage = ["sample uniform --account <code> --seed <u64> --size <n> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample mus --account <code> --seed <u64> --interval \"<amount> <UNIT>\" [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "The population is the account's open items (fa open-items) on its normal-balance side with a positive open amount, in one unit, at --as-known-at (and, with --as-of, through that effective date). Items are <entry vid hex>:<five-digit ordinal> valued at their open amount, canonically ordered and digested (population_digest). Open items on the other side cannot carry a positive book value: they are listed in excluded, to be tested separately, never silently dropped. Fully applied items are not open. Read authority is required.", "uniform selects --size items without replacement; mus selects every item whose open amount is at least --interval (top stratum) and a systematic dollar hit every --interval from a seeded random start. Selection is a pure function of the population digest, the declared --seed and the parameters over PCG64DXSM, reproducible in Python with numpy.random.PCG64DXSM(seed) and the snippet documented on fa_lantern::sample::Pcg64Dxsm. The seed is never drawn from entropy.", "sample_digest binds the method, population digest, seed, parameters and selected item ids; it is recomputed, not a retained report certificate. replay_command repeats the draw at the same recorded sequence. Evaluating audited values (the Stringer bound) is not on the CLI yet."]
+example = "fa sample uniform --account 1200 --seed 20260115 --size 25 --book ./books/myco --json"
+
+[[verb]]
 name = "checkpoint"
 summary = "Publish a recomputable accumulator state over the book's entry prefix and its TransparencyCheckpoint signed by the book's key."
 writes = true
@@ -1843,6 +1855,22 @@ book = true
 doc = "One Lantern procedure run over the trunk as known at `known_at` (and, for the historical folds, through `effective_through`): the parameters and inputs it ran with, the digests an opposing expert reproduces, the population and work counted, and the findings sorted by severity then statistic then citations. A finding is a statistic with typed citations, never a conclusion."
 fields = ["procedure:string", "version:int", "claim:string", "evidence:string", "known_at:seq", "effective_through:date?", "parameters:[procedure_parameter]", "inputs:[procedure_input]", "parameters_digest:hex", "inputs_digest:hex", "population:int", "work:lantern_work", "findings:[finding]", "finding_count:int", "findings_digest:hex"]
 
+[[event]]
+name = "sample_drawn"
+book = true
+doc = "One reproducible audit sample (uniform or MUS) of an account's open items at `known_at` (and through `as_of` when given): the population's count, total and digest, the declared seed and parameters, the selected items in population order, the excluded opposite-side items, and the sample_digest over method, population digest, seed, parameters and selected ids. MUS rows carry their basis (top_stratum or systematic) and, for a systematic hit, the cumulative dollar it landed on. Nothing is written to the book."
+fields = ["method:string", "account:string", "unit:string", "as_of:date?", "known_at:seq", "seed:int", "population_count:int", "population_total:amount", "population_digest:hex", "parameters:string", "size:int?", "interval:amount?", "start:amount?", "top_stratum_count:int?", "systematic_count:int?", "selected_count:int", "selected:[sample_item]", "excluded:[sample_excluded]", "sample_digest:hex", "replay_command:string"]
+
+[[shape]]
+name = "sample_item"
+doc = "One selected population item: its id (entry vid hex and five-digit leg ordinal), entry and ordinal, open amount as book value, and for MUS its selection basis and the cumulative dollar hit (null for top-stratum items and uniform samples)."
+fields = ["item_id:string", "entry:hex", "ordinal:int", "book_value:amount", "basis:string?", "hit:amount?"]
+
+[[shape]]
+name = "sample_excluded"
+doc = "An open item on the account's other side, outside the positive-value population, to be tested separately."
+fields = ["item_id:string", "entry:hex", "ordinal:int", "side:string", "open:amount"]
+
 [[shape]]
 name = "procedure_row"
 doc = "One procedures.toml row."
@@ -2477,7 +2505,7 @@ hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--versio
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--date-window", "--page-size", "--line-ordinal", "--source-known-at"]
+integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--date-window", "--page-size", "--line-ordinal", "--source-known-at"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -3538,6 +3566,17 @@ positionals = ["id?"]
 required = []
 dont = ["Don't invent a procedure id or a parameter name: `action: \"list\"` returns every registered procedure with its pinned default and meaning.", "Don't treat a finding as a conclusion: it is a statistic with citations; every cited handle resolves and should be read before anything is asserted.", "Don't pass an instant to known_at: procedures run at HEAD or a recorded sequence."]
 mistakes = ["Passing a parameter in display units (10000.00) instead of the unit's mantissa (1000000 at scale 2); the listing's `meaning` says which.", "Running aging.* or trace.* without effective_through (they are historical folds and are refused naming it).", "Running trace.* without account and source (the commingled account and the deposit entry).", "Overriding a parameter with a float; parameters are integers in the registered unit."]
+
+[[mcp.tool]]
+cluster = "fa.forensics"
+name = "sample"
+verb = "sample"
+subcommands = ["uniform", "mus"]
+selector = "method"
+positionals = []
+required = ["--account", "--seed"]
+dont = ["Don't pick or change a seed to get a different sample: the seed is declared before drawing and recorded with the sample, and an examiner reproduces the draw from it.", "Don't treat excluded items as tested: they are the account's opposite-side open items, outside the positive-value population, and need their own procedure.", "Don't claim a sample was evaluated: this tool selects; the Stringer evaluation of audited values is not exposed yet."]
+mistakes = ["Passing --interval as a bare number: it is an amount with its unit, \"500.00 USD\", in the population's unit.", "Asking for a uniform size larger than population_count, or passing size to mus or interval to uniform."]
 
 # Intrinsic fiscal-year closing (fa-4o0).
 [[event]]
