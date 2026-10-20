@@ -348,10 +348,10 @@ if [ "$QUICK" -eq 0 ]; then
   # replays every checked-in seed and synthesized golden vector with
   # deterministic PRNG mutations across all 7 live decoder/parser targets.
   cargo_build "fuzz-smoke" run -p fa-fuzz --bin fa-fuzz-smoke
-  # §17 benchmark smoke + operation-cost witness gate (plan §17, Appendix G,
-  # beads fa-tu58 / fa-i5s): verifies all 19 baseline manifests, all 9 counted
-  # kernel operation witnesses, and runs smoke benchmark distributions with
-  # live incumbent comparison in the same invocation.
+  # Operation-cost witness gate (plan Appendix G, beads fa-tu58 / fa-i5s):
+  # verifies the 19 §17 manifests and all 9 counted kernel operation
+  # witnesses. It measures no §17 workload: every §17 benchmark reports
+  # `bench_unmeasured` until fa-ykbp (fa-e75k withdrew the earlier timings).
   cargo_build "bench-smoke" run -p fa-bench --bin fa-bench -- --smoke --json
   # Substrate conformance mutation gate (plan §16.3, bead fa-zy1):
   # inverts each #[test] in crates/fa-conformance/tests/substrate.rs via

@@ -2720,7 +2720,8 @@ mod tests {
 
         let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
         assert_eq!(slo.rows.len(), 20);
-        assert_eq!(slo.activated_manifest_ids().len(), 20);
+        // fa-e75k: no §17 row is measured, so none may be activated.
+        assert_eq!(slo.activated_manifest_ids().len(), 0);
 
         let lot_laws = LotLaws::embedded().expect("lot_laws.toml");
         assert_eq!(lot_laws.laws.len(), 4);

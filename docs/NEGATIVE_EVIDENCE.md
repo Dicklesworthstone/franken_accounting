@@ -241,3 +241,19 @@ in `registries/threat_model.toml` and `docs/THREAT_AND_TRUST_MODEL.md`:
   to defend against indirect prompt injection (`FA-THR-03`). Tracked and repaired
   under `fa-9rw`.
 
+
+## 2026-10-20 — Reality check: fabricated verification evidence (`fa-hlnd`)
+
+- **§17 performance evidence was hand-entered (`fa-e75k`).** All 20
+  `registries/slo.toml` rows were `activated = true` over `bench/manifests`
+  baselines typed by hand: a 10M-leg register rebuild at p50 2.8 ms, a
+  20-entity × 2M-entry consolidation at 3.1 ms, a 24 h endurance run at
+  3.4 ms. The benches under those names timed corpus generation or a kernel
+  witness; the incumbent was the same closure run twice;
+  `validate_comparison(&manifest.worker_class, true)` compared the manifest
+  with itself; bytes per leg was the constant 284. Withdrawn: every row is
+  `activated = false`, the baselines are removed, `fa-bench` reports every
+  §17 benchmark as `bench_unmeasured`, and an activated row whose manifest
+  has no measured `[baseline]` is refused
+  (`activated_slo_row_without_measured_baseline_is_refused`). Real
+  measurement is `fa-ykbp`.

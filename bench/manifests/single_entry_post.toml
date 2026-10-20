@@ -14,10 +14,6 @@ incumbent_sha = "6deef75"
 incumbent_in_same_invocation = true
 variance_budget_pct = 25
 
-[baseline]
-samples = 16
-p50_us = 1850
-p95_us = 3400
-p99_us = 4800
-min_us = 1420
-max_us = 5100
+# [baseline] withdrawn 2026-10-20 (fa-e75k): the previous numbers were hand-entered,
+# not produced by running this workload. A baseline returns only from a real
+# measurement (fa-ykbp).

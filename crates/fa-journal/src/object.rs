@@ -229,14 +229,18 @@ mod tests {
             ))
             .unwrap();
         let book = Id128([14; 16]);
-        for (n, (kind, size)) in [ObjectKind::PostPlan, ObjectKind::ReplacementPlan]
-            .into_iter()
-            .flat_map(|kind| {
-                [4095, 4096, 4097, 16383, 16384, 16385, 1024 * 1024]
-                    .into_iter()
-                    .map(move |size| (kind, size))
-            })
-            .enumerate()
+        for (n, (kind, size)) in [
+            ObjectKind::PostPlan,
+            ObjectKind::ReplacementPlan,
+            ObjectKind::BatchPlan,
+        ]
+        .into_iter()
+        .flat_map(|kind| {
+            [4095, 4096, 4097, 16383, 16384, 16385, 1024 * 1024]
+                .into_iter()
+                .map(move |size| (kind, size))
+        })
+        .enumerate()
         {
             let root = VId(n as u128 + 1);
             let bytes: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
@@ -300,7 +304,7 @@ mod tests {
             }
             let wrong_kind = match kind {
                 ObjectKind::PostPlan => ObjectKind::ReplacementPlan,
-                ObjectKind::ReplacementPlan => ObjectKind::PostPlan,
+                ObjectKind::ReplacementPlan | ObjectKind::BatchPlan => ObjectKind::PostPlan,
             };
             assert!(
                 read(

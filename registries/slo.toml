@@ -15,6 +15,15 @@
 #    row must set `requires_watermark_disclosure = true` so `fa-bench` reports
 #    whether the read was served at the watermark or with a tail fold and the
 #    exact `tail_length`.
+# 4. Activation needs a measurement (fa-e75k): `activated = false` is legal only
+#    when the row's manifest carries a [baseline] produced by running the named
+#    workload; fa-bench refuses an activated row whose manifest has none.
+#
+# Status (2026-10-20, fa-e75k): every row is a provisional target, none is
+# measured. Earlier revisions marked all 20 rows activated over hand-entered
+# baselines (e.g. a 10M-leg register rebuild at "2.8 ms") whose benchmarks did
+# not execute the named workloads; that evidence was withdrawn
+# (docs/NEGATIVE_EVIDENCE.md). Real measurement is fa-ykbp.
 
 schema_version = 1
 
@@ -36,7 +45,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 2000
 target_p99_us = 15000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "p50 <= 2 * pinned fsync p50; p99 < 15 ms warm; unbatched rate bounded by 1 / (2 * fsync p50) reported until R-GC"
 derivation = "single_entry_post has barrier_count = 2 (capsule sync + marker sync); target_p50_us (2000) >= 2 * pinned_fsync_p50_us (1000)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench single_entry_post"
@@ -53,7 +62,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 5000
 target_p99_us = 60000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = ">= 20k entries/s sustained at N = 100 on one writer with full durability, encryption, and FEC on; batch p99 < 60 ms"
 derivation = "batch_post amortizes barrier_count = 2 across N = 100 entries in one WriteBatch; target_p50_us (5000) >= 2 * 1000"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench batched_post"
@@ -70,7 +79,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 2000
 target_p99_us = 100000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = ">= 500k legs/s into sealed storage via the substrate bulk protocol; opening-balance attestation computed in the same run"
 derivation = "bulk_migration stages chunks and finalizes in 1 transaction (barrier_count = 2); target_p50_us (2000) >= 2 * 1000"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench bulk_migration"
@@ -87,7 +96,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 10
 target_p99_us = 50
 requires_watermark_disclosure = true
-activated = true
+activated = false
 provisional_gate = "p99 < 50 us warm; tail fold <= 1 us per tail leg, tail length reported"
 derivation = "balance_read_at_watermark has barrier_count = 0 (SnapshotQuery cell read + bounded tail fold)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench balance_read_watermark"
@@ -104,7 +113,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 100000
 target_p99_us = 200000
 requires_watermark_disclosure = true
-activated = true
+activated = false
 provisional_gate = "< 200 ms; certified against fold"
 derivation = "certified_report has barrier_count = 0; pure scan over register cells + tail fold"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench trial_balance_100k"
@@ -121,7 +130,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 5000000
 target_p99_us = 10000000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "< 10 s on the reference machine; digest-equal to maintained registers"
 derivation = "register_maintenance_flush folds visible journal stream and writes checkpoints (barrier_count = 2)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench register_rebuild_10m"
@@ -138,7 +147,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 50000
 target_p99_us = 250000
 requires_watermark_disclosure = true
-activated = true
+activated = false
 provisional_gate = "p99 < 250 ms behind head; lag is a reported slo row, never an invariant"
 derivation = "register_maintenance_flush runs off the write path with barrier_count = 2 per flush tick; target_p50_us (50000) >= 2 * 1000"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench register_watermark_lag"
@@ -155,7 +164,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 250000
 target_p99_us = 500000
 requires_watermark_disclosure = true
-activated = true
+activated = false
 provisional_gate = "< 2.5x the head trial balance for the pinned retention fixture"
 derivation = "certified_report at nearest prior RegisterCheckpoint + bounded delta fold (barrier_count = 0)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench known_at_trial_balance"
@@ -172,7 +181,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 15000000
 target_p99_us = 30000000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "< 30 s to statements and diff"
 derivation = "close_run_execute rehearsal over scratch/draft book + statement diff (barrier_count = 4); target_p50_us >= 4 * 1000"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench close_dry_run"
@@ -189,7 +198,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 2000000
 target_p99_us = 5000000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "< 5 s"
 derivation = "restatement_case_post computes dual-coordinate statements and diff Certificate (barrier_count = 2)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench restatement_diff_certificate"
@@ -206,7 +215,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 1000000
 target_p99_us = 5000000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "< 5 s bundle production; fa-verify < 2 s on laptop class machine; per-entry inclusion proof verify < 100 us"
 derivation = "bundle_production has barrier_count = 0; O(N log N) MMR inclusion proofs + BLAKE3/Ed25519 verification"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench bundle_production_and_verify"
@@ -223,7 +232,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 10000000
 target_p99_us = 20000000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "< 20 s total; Benford first-two-digits < 3 s; duplicates < 10 s"
 derivation = "certified_report read-only scan over visible legs under stripped Cx (barrier_count = 0)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench lantern_jet_benford"
@@ -240,7 +249,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 500000
 target_p99_us = 1000000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "< 60 s with CGSE witness for graph.layering; trace.libr over 1 instrument-year < 1 s"
 derivation = "certified_report bounded hop traversal and LIBR queue trace (barrier_count = 0)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench lantern_graph_trace"
@@ -257,7 +266,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 60000000
 target_p99_us = 120000000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "< 2 min to certified consolidated statements"
 derivation = "draft_promotion + multi-entity fold + intercompany elimination (barrier_count = 2)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench consolidation_branch"
@@ -274,7 +283,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 2000
 target_p99_us = 10000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "O(log n) peaks; signing < 10 ms; witness round-trip reported, never gated"
 derivation = "accumulator_checkpoint has barrier_count = 2 + 1 constant-time Ed25519 signature; target_p50_us (2000) >= 2 * 1000"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench accumulator_checkpoint"
@@ -291,7 +300,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 25000
 target_p99_us = 100000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "< 100 ms warm daemon; bare fa with no book < 50 ms"
 derivation = "balance_read_at_watermark SnapshotQuery read + robot JSON serialization (barrier_count = 0)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench cli_first_try_latency"
@@ -308,7 +317,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 5000
 target_p99_us = 20000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "< 20 ms over stdio excluding the read itself"
 derivation = "balance_read_at_watermark stdio JSON-RPC dispatch + SnapshotQuery read (barrier_count = 0)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench mcp_tool_round_trip"
@@ -326,7 +335,7 @@ target_p50_us = 2000
 target_p99_us = 15000
 max_bytes_per_leg = 400
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "reported with component breakdown; provisional ceiling 400 B/leg at steady state"
 derivation = "single_entry_post Entry wire payload + Leg projection vertices/edges + Register cell + LeafEnvelope <= 400 B/leg"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench memory_bytes_per_leg"
@@ -343,7 +352,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 2000
 target_p99_us = 15000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "no unexplained RSS drift; register lag bounded; compaction debt bounded in the substrate's model terms"
 derivation = "sustained single_entry_post + periodic register_maintenance_flush + accumulator_checkpoint (barrier_count = 2)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench endurance_sustained_post"
@@ -360,7 +369,7 @@ pinned_fsync_p50_us = 1000
 target_p50_us = 2000
 target_p99_us = 250000
 requires_watermark_disclosure = false
-activated = true
+activated = false
 provisional_gate = "checkpoint_cadence <= retention_floor so delta_since never hits DeltaCursorRetired in steady state"
 derivation = "register_maintenance_flush emits RegisterCheckpoint every checkpoint_cadence <= retention_floor commits (barrier_count = 2)"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench register_watermark_lag"

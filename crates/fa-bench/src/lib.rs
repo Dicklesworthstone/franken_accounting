@@ -21,20 +21,22 @@
 //!    in-memory book and its substrate operations (`point_reads`, `witnesses`,
 //!    `cas_moves`, `edges_written`, `vertices_written`, `transactions`) are
 //!    checked against `registries/operation_costs.toml`.
+//!
+//! **What this crate does not do yet (fa-e75k, fa-ykbp):** it times none of the
+//! §17 workloads. Earlier revisions timed corpus generation or a kernel witness
+//! under the §17 names and shipped hand-entered baselines; that was withdrawn.
+//! Every §17 benchmark now reports [`BenchOutcome::Unmeasured`] with its reason
+//! until a bench executes the named workload at the stated scale.
 
 #![forbid(unsafe_code)]
 
 use std::fmt;
-use std::time::Instant;
 
 use fa::book::{Book, BookKeys, Entropy};
 use fa_demo::us_gaap_smb_accounts;
-use fa_gen::{GenConfig, ScenarioKind, generate};
 use fa_journal::{
     BalanceLimit, BookSpec, Capability, Document, LimitScope, PostRequest, TimeZonePolicy,
 };
-use fa_lantern::digits::FirstDigit;
-use fa_lantern::graph::RoundTrips;
 use fa_lantern::jet::RoundAmounts;
 use fa_model::{
     ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid,
@@ -291,7 +293,9 @@ pub struct BenchManifest {
     pub incumbent_sha: String,
     pub incumbent_in_same_invocation: bool,
     pub variance_budget_pct: u32,
-    pub baseline: Distribution,
+    /// The measured distribution, present only when a run of the named workload
+    /// produced it. `None` means the §17 target is unmeasured.
+    pub baseline: Option<Distribution>,
     pub watermark_disclosure: Option<WatermarkDisclosure>,
     pub bytes_per_leg: Option<u64>,
 }
@@ -370,10 +374,34 @@ impl BenchManifest {
             BenchError::ManifestParse(format!("{path}: variance_budget_pct range"))
         })?;
 
-        let base_tbl = doc
-            .tables
-            .get("baseline")
-            .ok_or_else(|| BenchError::ManifestParse(format!("{path}: missing [baseline]")))?;
+        let Some(base_tbl) = doc.tables.get("baseline") else {
+            // An unmeasured target: nothing below may be claimed for it, and an
+            // activated slo row needs a measurement (fa-e75k).
+            if slo_row.activated {
+                return Err(BenchError::ManifestParse(format!(
+                    "{path}: slo row `{slo_id}` is activated but the manifest has no measured [baseline]"
+                )));
+            }
+            return Ok(Self {
+                path: path.to_string(),
+                slo_id,
+                bench_name,
+                operation_class,
+                worker_class,
+                cpu_model,
+                os_filesystem,
+                pinned_fsync_p50_us,
+                toolchain,
+                substrate_rev,
+                fixture_seed,
+                incumbent_sha,
+                incumbent_in_same_invocation,
+                variance_budget_pct,
+                baseline: None,
+                watermark_disclosure: None,
+                bytes_per_leg: None,
+            });
+        };
         let samples = usize::try_from(req_u64(path, base_tbl, "samples")?)
             .map_err(|_| BenchError::ManifestParse(format!("{path}: baseline.samples")))?;
         let min_us = req_u64(path, base_tbl, "min_us")?;
@@ -454,14 +482,14 @@ impl BenchManifest {
             incumbent_sha,
             incumbent_in_same_invocation,
             variance_budget_pct,
-            baseline: Distribution {
+            baseline: Some(Distribution {
                 samples,
                 min_us,
                 p50_us,
                 p95_us,
                 p99_us,
                 max_us,
-            },
+            }),
             watermark_disclosure,
             bytes_per_leg,
         })
@@ -1001,6 +1029,10 @@ impl BenchRunReport {
             ),
             None => String::new(),
         };
+        let baseline = match &self.manifest.baseline {
+            Some(b) => b.p50_us.to_string(),
+            None => "null".to_string(),
+        };
         format!(
             "{{\"event\":\"bench_result\",\"slo_id\":\"{}\",\"bench_name\":\"{}\",\"operation_class\":\"{}\",\"worker_class\":\"{}\",\"incumbent_in_same_invocation\":true,\"samples\":{},\"incumbent_p50_us\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"min_us\":{},\"max_us\":{},\"baseline_p50_us\":{}{}{}}}",
             self.manifest.slo_id,
@@ -1014,154 +1046,75 @@ impl BenchRunReport {
             self.candidate.p99_us,
             self.candidate.min_us,
             self.candidate.max_us,
-            self.manifest.baseline.p50_us,
+            baseline,
             wm,
             mem
         )
     }
 }
 
-fn measure_samples<F: FnMut() -> Result<(), BenchError>>(
-    iters: usize,
-    mut f: F,
-) -> Result<Distribution, BenchError> {
-    let mut samples = Vec::with_capacity(iters);
-    for _ in 0..iters {
-        let t0 = Instant::now();
-        f()?;
-        let elapsed_us = u64::try_from(t0.elapsed().as_micros())
-            .unwrap_or(u64::MAX)
-            .max(1);
-        samples.push(elapsed_us);
-    }
-    Distribution::from_samples_us(&samples)
+/// What running one §17 benchmark produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BenchOutcome {
+    /// A measured run of the named workload.
+    Measured(BenchRunReport),
+    /// No bench executes this workload at its stated scale yet; no number is claimed.
+    Unmeasured {
+        slo_id: String,
+        bench_name: String,
+        reason: String,
+    },
 }
 
-/// Run one §17 benchmark by `bench_name` (in `smoke` or standard mode), executing
-/// both the incumbent baseline path and the candidate path in the same invocation.
-pub fn run_benchmark(bench_name: &str, smoke: bool) -> Result<BenchRunReport, BenchError> {
+impl BenchOutcome {
+    /// Format the outcome as a deterministic JSON line for `--json` output.
+    #[must_use]
+    pub fn to_json_line(&self) -> String {
+        match self {
+            Self::Measured(report) => report.to_json_line(),
+            Self::Unmeasured {
+                slo_id,
+                bench_name,
+                reason,
+            } => format!(
+                "{{\"event\":\"bench_unmeasured\",\"slo_id\":\"{slo_id}\",\"bench_name\":\"{bench_name}\",\"reason\":\"{reason}\"}}"
+            ),
+        }
+    }
+}
+
+/// Why a §17 workload is unmeasured. No bench in this crate runs one yet.
+const UNMEASURED_REASON: &str =
+    "no bench executes this workload at its stated scale yet; tracked by fa-ykbp";
+
+/// Run one §17 benchmark by `bench_name` or `slo_id`.
+///
+/// No §17 workload is executed by this crate yet, so every known benchmark
+/// returns [`BenchOutcome::Unmeasured`]; an unknown name is an error. `smoke`
+/// is accepted for interface stability and has no effect until real workloads
+/// exist (fa-ykbp).
+pub fn run_benchmark(bench_name: &str, smoke: bool) -> Result<BenchOutcome, BenchError> {
+    let _ = smoke;
     let manifests = load_embedded_manifests()?;
     let manifest = manifests
         .into_iter()
         .find(|m| m.bench_name == bench_name || m.slo_id == bench_name)
         .ok_or_else(|| BenchError::UnknownBenchmark(bench_name.to_string()))?;
-
-    let iters = if smoke { 2 } else { 6 };
-    let scale = if smoke { 2 } else { 6 };
-
-    // Execute deterministic workload for the target benchmark twice in the same
-    // invocation: pass 1 records the live incumbent reference distribution;
-    // pass 2 records the candidate distribution.
-    let run_once = || -> Result<(), BenchError> {
-        match manifest.bench_name.as_str() {
-            "single_entry_post" => {
-                let _ = measure_kernel_op_witness("post")?;
-                Ok(())
-            }
-            "batched_post" | "bulk_migration" | "endurance_sustained_post" => {
-                let corpus = generate(
-                    GenConfig::new(ScenarioKind::CleanRetailer, manifest.fixture_seed)
-                        .with_scale(scale),
-                );
-                if corpus.entries.is_empty() {
-                    return Err(BenchError::Execution("empty corpus".into()));
-                }
-                Ok(())
-            }
-            "balance_read_watermark" | "trial_balance_100k" | "known_at_trial_balance" => {
-                let _ = measure_kernel_op_witness("verify_per_cell")?;
-                Ok(())
-            }
-            "register_rebuild_10m" | "register_watermark_lag" => {
-                let _ = measure_kernel_op_witness("fold_per_entry")?;
-                Ok(())
-            }
-            "accumulator_checkpoint" | "bundle_production_and_verify" => {
-                let _ = measure_kernel_op_witness("checkpoint")?;
-                Ok(())
-            }
-            "lantern_jet_benford" => {
-                let corpus = generate(
-                    GenConfig::new(ScenarioKind::CleanRetailer, manifest.fixture_seed)
-                        .with_scale(scale),
-                );
-                if corpus.entries.is_empty() {
-                    return Err(BenchError::Execution("empty corpus".into()));
-                }
-                let _ = FirstDigit::new().map_err(|e| BenchError::Execution(e.to_string()))?;
-                let _ = measure_kernel_op_witness("query_procedure")?;
-                Ok(())
-            }
-            "lantern_graph_trace" => {
-                let corpus = generate(
-                    GenConfig::new(ScenarioKind::ShellNetwork, manifest.fixture_seed)
-                        .with_scale(scale),
-                );
-                if corpus.entries.is_empty() {
-                    return Err(BenchError::Execution("empty corpus".into()));
-                }
-                let _ = RoundTrips::new().map_err(|e| BenchError::Execution(e.to_string()))?;
-                let _ = measure_kernel_op_witness("query_procedure")?;
-                Ok(())
-            }
-            _ => {
-                let corpus = generate(
-                    GenConfig::new(ScenarioKind::CleanRetailer, manifest.fixture_seed)
-                        .with_scale(scale),
-                );
-                if corpus.corpus_digest().0 == [0u8; 32] {
-                    return Err(BenchError::Execution("zero corpus digest".into()));
-                }
-                Ok(())
-            }
-        }
-    };
-
-    let incumbent = measure_samples(iters, run_once)?;
-    let candidate = measure_samples(iters, run_once)?;
-
-    manifest.validate_comparison(&manifest.worker_class, true)?;
-
-    let memory_breakdown = if manifest.bench_name == "memory_bytes_per_leg" {
-        // Deterministic wire-format component measurement per live leg:
-        // Entry header share (96 B) + LegPayload & projection edges (112 B) +
-        // Register cell share (44 B) + LeafEnvelope share (32 B) = 284 B/leg <= 400 B ceiling.
-        let breakdown = MemoryLegBreakdown {
-            entry_payload_bytes: 96,
-            leg_projection_bytes: 112,
-            register_cell_bytes: 44,
-            accumulator_leaf_bytes: 32,
-            total_bytes_per_leg: 284,
-        };
-        if breakdown.total_bytes_per_leg > 400 {
-            return Err(BenchError::BytesPerLegExceeded {
-                manifest: manifest.path.clone(),
-                actual: breakdown.total_bytes_per_leg,
-                ceiling: 400,
-            });
-        }
-        Some(breakdown)
-    } else {
-        None
-    };
-
-    Ok(BenchRunReport {
-        watermark_disclosure: manifest.watermark_disclosure,
-        manifest,
-        incumbent,
-        candidate,
-        memory_breakdown,
+    Ok(BenchOutcome::Unmeasured {
+        slo_id: manifest.slo_id,
+        bench_name: manifest.bench_name,
+        reason: UNMEASURED_REASON.to_string(),
     })
 }
 
-/// Run all 19 §17 benchmarks in deterministic order.
-pub fn run_all_benchmarks(smoke: bool) -> Result<Vec<BenchRunReport>, BenchError> {
+/// Run all 19 §17 benchmarks in deterministic manifest order.
+pub fn run_all_benchmarks(smoke: bool) -> Result<Vec<BenchOutcome>, BenchError> {
     let manifests = load_embedded_manifests()?;
-    let mut reports = Vec::with_capacity(manifests.len());
+    let mut outcomes = Vec::with_capacity(manifests.len());
     for m in &manifests {
-        reports.push(run_benchmark(&m.bench_name, smoke)?);
+        outcomes.push(run_benchmark(&m.bench_name, smoke)?);
     }
-    Ok(reports)
+    Ok(outcomes)
 }
 
 #[cfg(test)]
@@ -1169,14 +1122,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_embedded_manifests_parse_and_satisfy_laws() {
+    fn all_embedded_manifests_parse_and_none_claims_a_measurement() {
         let manifests = load_embedded_manifests().expect("all 19 manifests valid");
         assert_eq!(manifests.len(), 19);
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
         for m in &manifests {
             assert!(m.incumbent_in_same_invocation);
-            assert!(m.baseline.p50_us <= m.baseline.p95_us);
-            assert!(m.baseline.p95_us <= m.baseline.p99_us);
+            // fa-e75k: the hand-entered baselines were withdrawn; nothing is measured yet.
+            assert_eq!(m.baseline, None, "{} claims a baseline", m.path);
+            assert_eq!(m.watermark_disclosure, None, "{}", m.path);
+            assert_eq!(m.bytes_per_leg, None, "{}", m.path);
         }
+        assert!(
+            slo.activated_manifest_ids().is_empty(),
+            "no slo row may be activated without a measurement"
+        );
+    }
+
+    #[test]
+    fn activated_slo_row_without_measured_baseline_is_refused() {
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        let slo_text = include_str!("../../../registries/slo.toml");
+        // Planted negative (fa-e75k): flip FA-BENCH-01 to activated while its
+        // manifest carries no [baseline].
+        let activated_text = slo_text.replacen("activated = false", "activated = true", 1);
+        let slo = SloRegistry::parse(&activated_text, &op_costs).expect("slo.toml variant");
+        assert_eq!(
+            slo.activated_manifest_ids(),
+            vec!["FA-BENCH-01".to_string()]
+        );
+        let (path, text) = EMBEDDED_MANIFESTS[0];
+        let err = BenchManifest::parse(path, text, &slo, &op_costs)
+            .expect_err("activated row without a measured baseline must be refused");
+        assert!(
+            matches!(&err, BenchError::ManifestParse(m) if m.contains("no measured [baseline]")),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1237,39 +1219,47 @@ mod tests {
             "{err}"
         );
 
-        // Planted negative (§17 standing law): balance-read manifest without watermark disclosure fails.
+        // Planted negative (§17 standing law): a measured balance-read baseline
+        // without its watermark disclosure fails; with it, the manifest parses.
         let (wm_path, wm_text) = EMBEDDED_MANIFESTS[3]; // balance_read_watermark.toml
-        let stripped_wm = wm_text
-            .replacen("served_mode = \"watermark\"\n", "", 1)
-            .replacen("tail_length = 0\n", "", 1);
-        let err = BenchManifest::parse(wm_path, &stripped_wm, &slo, &op_costs)
+        let measured = "\n[baseline]\nsamples = 8\np50_us = 40\np95_us = 45\np99_us = 49\nmin_us = 30\nmax_us = 60\n";
+        let without_disclosure = format!("{wm_text}{measured}");
+        let err = BenchManifest::parse(wm_path, &without_disclosure, &slo, &op_costs)
             .expect_err("missing watermark disclosure must fail");
         assert!(
             matches!(err, BenchError::MissingWatermarkDisclosure(_)),
             "{err}"
         );
+        let with_disclosure =
+            format!("{without_disclosure}served_mode = \"watermark\"\ntail_length = 0\n");
+        let parsed = BenchManifest::parse(wm_path, &with_disclosure, &slo, &op_costs)
+            .expect("disclosed baseline parses");
+        assert_eq!(parsed.baseline.map(|b| b.p50_us), Some(40));
     }
 
     #[test]
-    fn smoke_benchmarks_run_and_emit_jsonl_with_watermark_and_memory_disclosures() {
-        let reports = run_all_benchmarks(true).expect("smoke benchmarks");
-        assert_eq!(reports.len(), 19);
-        for r in &reports {
-            let line = r.to_json_line();
-            assert!(
-                line.contains("\"incumbent_in_same_invocation\":true"),
-                "{line}"
-            );
-            if r.manifest.bench_name == "balance_read_watermark" {
-                assert!(
-                    line.contains("\"served_mode\":\"watermark\"")
-                        && line.contains("\"tail_length\":0"),
-                    "{line}"
-                );
-            }
-            if r.manifest.bench_name == "memory_bytes_per_leg" {
-                assert!(line.contains("\"bytes_per_leg\":284"), "{line}");
+    fn unimplemented_workloads_emit_no_timing() {
+        // fa-e75k: no §17 workload is executed yet, so no run may emit a timing,
+        // a baseline, or a bytes-per-leg figure.
+        let outcomes = run_all_benchmarks(true).expect("benchmarks resolve");
+        assert_eq!(outcomes.len(), 19);
+        for o in &outcomes {
+            let BenchOutcome::Unmeasured { reason, .. } = o else {
+                panic!("a §17 benchmark claimed a measurement: {o:?}");
+            };
+            assert!(reason.contains("fa-ykbp"), "{reason}");
+            let line = o.to_json_line();
+            assert!(line.contains("\"event\":\"bench_unmeasured\""), "{line}");
+            for forbidden in ["p50_us", "baseline", "bytes_per_leg", "samples"] {
+                assert!(!line.contains(forbidden), "{forbidden} in {line}");
             }
         }
+        // The consolidation workload used to fall through to "generate a corpus".
+        let consolidation = run_benchmark("consolidation_branch", true).expect("known benchmark");
+        assert!(matches!(consolidation, BenchOutcome::Unmeasured { .. }));
+        assert!(matches!(
+            run_benchmark("no_such_benchmark", true),
+            Err(BenchError::UnknownBenchmark(_))
+        ));
     }
 }
