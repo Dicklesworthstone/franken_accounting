@@ -2728,8 +2728,9 @@ fn replay_workpapers_equal_the_library_export_and_never_overwrite_or_widen_famil
         "{errors:?}"
     );
 
-    // A family without an export is refused before replay and writes nothing:
-    // the same roll-forward source without --view detail.
+    // A roll-forward workpaper is bound to a view: the same source without
+    // --view detail is refused before replay, naming the view, and writes
+    // nothing.
     let refused = f.dir.join("no-export.jsonl");
     let (exit, errors) = f.run(&[
         "replay",
@@ -2739,11 +2740,35 @@ fn replay_workpapers_equal_the_library_export_and_never_overwrite_or_widen_famil
     ]);
     assert_eq!(exit, 2, "{errors:?}");
     assert!(
-        text(data(&errors, "error"), "message")
-            .contains("roll-forward certificates have no JSONL workpaper export"),
+        text(data(&errors, "error"), "message").contains("--view detail or --view roll-forward"),
         "{errors:?}"
     );
     assert!(!refused.exists());
+    // A workpaper target that cannot be created is refused before the
+    // report is written, so a failed export leaves no report file behind:
+    // the report's own path, or a directory that does not exist.
+    let both = f.dir.join("both.out");
+    let missing = f.dir.join("no-such-dir").join("detail.jsonl");
+    for (output, workpaper, expected) in [
+        (&both, &both, "both name"),
+        (&both, &missing, "does not exist"),
+    ] {
+        let mut replay = vec!["replay", locator.as_str(), "--view", "detail"];
+        replay.extend(scope);
+        replay.extend([
+            "--output",
+            output.to_str().unwrap(),
+            "--workpaper-out",
+            workpaper.to_str().unwrap(),
+        ]);
+        let (exit, errors) = f.run(&replay);
+        assert_eq!(exit, 2, "{errors:?}");
+        assert!(
+            text(data(&errors, "error"), "message").contains(expected),
+            "{errors:?}"
+        );
+        assert!(!both.exists(), "no report file is written");
+    }
 
     // A launch-bound session cannot name a host output path at all: the new
     // flag is in the shared host-path containment list.
@@ -3111,6 +3136,48 @@ fn aging_from_saved_certificates_reuses_them_byte_for_byte_and_answers_only_thei
             2,
             "without a fixed --as-known-at",
         ),
+        // The saved sources are gl aging's: another subcommand would fold
+        // afresh and ignore them, so it is refused before certifying.
+        (
+            vec![
+                "gl",
+                "roll-forward",
+                "--account",
+                "1000",
+                "--from",
+                "2026-01-01",
+                "--to",
+                "2026-01-31",
+                "--label",
+                "ignored source",
+                "--as-known-at",
+                &at,
+                "--from-source",
+                &open_items_oid,
+                "--certify",
+            ],
+            2,
+            "--from-source on roll-forward",
+        ),
+        (
+            vec![
+                "gl",
+                "detail",
+                "--account",
+                "1000",
+                "--from",
+                "2026-01-01",
+                "--to",
+                "2026-01-31",
+                "--aging-certificate",
+                &aging_oid,
+                "--control-certificate",
+                &control_oid,
+                "--certify",
+            ],
+            2,
+            "a saved pair on detail",
+        ),
     ] {
         let (code, errors) = f.run(&args);
         assert_eq!(code, exit, "{why}: {errors:?}");
@@ -3177,6 +3244,15 @@ fn roll_forward_view_binds_the_lead_schedule_to_the_stated_request_and_exports_i
     let certified = f.ok(&certify);
     let metadata = data(&certified, "report_certificate");
     let locator = format!("C:{}", text(metadata, "oid"));
+    // The receipt's replay command states the certified request as the
+    // lead-schedule view, so following it reaches the workpaper export.
+    let command = text(metadata, "replay_command");
+    assert!(
+        command.starts_with(&format!(
+            "fa replay {locator} --view roll-forward --account '1000' --unit 'USD' --from 2026-01-01 --to 2026-01-31 --label 'January lead' --as-known-at {at} --book "
+        )),
+        "{command}"
+    );
     let aging = f.ok(&[
         "gl",
         "aging",
