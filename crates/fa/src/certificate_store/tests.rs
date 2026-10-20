@@ -86,6 +86,25 @@ impl Harness {
             .unwrap()
     }
 
+    fn read_outcome(&self, digest: &[u8; 32]) -> Outcome<ReportCertificate> {
+        self.runtime
+            .block_on(self.book.read_certificate(&self.cx(), digest))
+    }
+
+    /// Preserve a real historical representation for decoder regressions.
+    fn retain_legacy(&mut self, certificate: &ReportCertificate) {
+        let batch = chunks::stage(
+            &self.cx().query(),
+            self.book.context(),
+            &certificate.digest,
+            certificate_vid(BOOK, &certificate.digest),
+            certificate.canonical_bytes().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        self.write(batch);
+    }
+
     fn reopen(self) -> Self {
         let Self {
             runtime,
@@ -261,6 +280,28 @@ impl Harness {
     }
 }
 
+/// Independent construction from object_storage.toml, not the writer helper.
+fn shared_fragment_vid(certificate: &ReportCertificate, index: u64) -> VId {
+    let root = certificate_vid(BOOK, &certificate.digest);
+    let digest = domain_digest(
+        b"fa:object-content:v1",
+        &[
+            &3_u16.to_le_bytes(),
+            &certificate.canonical_bytes().unwrap(),
+        ],
+    );
+    let hash = domain_digest(
+        b"fa:object-fragment:v1",
+        &[
+            &BOOK.0,
+            &root.0.to_le_bytes(),
+            &digest,
+            &index.to_le_bytes(),
+        ],
+    );
+    VId(u128::from_le_bytes(hash[..16].try_into().unwrap()))
+}
+
 #[test]
 fn native_rows_cross_the_inline_boundary_with_one_atomic_publication() {
     let mut h = Harness::new();
@@ -347,7 +388,7 @@ fn large_native_report_retains_reopens_replays_and_retries_without_changing_expo
 fn an_existing_fragment_identity_aborts_retention_without_publishing_the_root_or_other_parts() {
     let (mut h, certificate) = Harness::populated();
     let root = certificate_vid(BOOK, &certificate.digest);
-    let fragment = chunks::fragment_vid(BOOK, &certificate.digest, 1);
+    let fragment = shared_fragment_vid(&certificate, 1);
     let mut batch = WriteBatch::new(relation::DERIVED_FROM);
     stage_record(
         &mut batch,
@@ -368,7 +409,7 @@ fn an_existing_fragment_identity_aborts_retention_without_publishing_the_root_or
     assert!(
         h.book
             .db
-            .vertex(chunks::fragment_vid(BOOK, &certificate.digest, 0))
+            .vertex(shared_fragment_vid(&certificate, 0))
             .unwrap()
             .is_none()
     );
@@ -415,7 +456,9 @@ fn incomplete_roots_are_neither_readable_nor_repaired_by_idempotent_retention() 
 fn restoring_exact_root_or_fragment_bytes_does_not_erase_rewrite_history() {
     for root in [true, false] {
         let (mut h, certificate) = Harness::populated();
-        h.retain(&certificate).unwrap();
+        // The historical decoder must retain its original immutability law.
+        // Current shared fragments have their own exit-5 checks below.
+        h.retain_legacy(&certificate);
         let vid = if root {
             certificate_vid(BOOK, &certificate.digest)
         } else {
@@ -445,6 +488,105 @@ fn restoring_exact_root_or_fragment_bytes_does_not_erase_rewrite_history() {
         );
         assert_eq!(h.head(), before);
     }
+}
+
+#[test]
+fn shared_report_fragments_refuse_corruption_and_restoration_as_foundation_errors() {
+    for retire in [false, true] {
+        let (mut h, certificate) = Harness::populated();
+        let ack = h.retain(&certificate).unwrap();
+        let root = certificate_vid(BOOK, &certificate.digest);
+        let row = h.book.db.vertex(root).unwrap().unwrap();
+        let payload = prop(&row, property::FA_PAYLOAD).unwrap();
+        assert!(
+            matches!(payload, CanonicalScalar::Bytes(bytes) if bytes.as_slice().starts_with(b"fa:object:v1")),
+            "new retention must use the shared object manifest"
+        );
+        let count = certificate
+            .canonical_bytes()
+            .unwrap()
+            .len()
+            .div_ceil(object::CHUNK_BYTES);
+        let rows = h.book.db.vertices_at(ack.recorded_at).unwrap();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.created_at == ack.recorded_at)
+                .count(),
+            count + 1,
+            "root and all fragments publish together without extra objects"
+        );
+        let fragment = shared_fragment_vid(&certificate, 0);
+        let original = h.book.db.vertex(fragment).unwrap().unwrap();
+        let mut tamper = WriteBatch::new(relation::DERIVED_FROM);
+        if retire {
+            tamper.delete_vertex(fragment);
+        } else {
+            tamper.set_vertex_property(
+                fragment,
+                property::FA_PAYLOAD,
+                Some(scalar_bytes("corrupt fragment", vec![0xff]).unwrap()),
+            );
+        }
+        h.write(tamper);
+        for restore in [false, true] {
+            if restore && !retire {
+                let mut repair = WriteBatch::new(relation::DERIVED_FROM);
+                repair.set_vertex_property(
+                    fragment,
+                    property::FA_PAYLOAD,
+                    Some(prop(&original, property::FA_PAYLOAD).unwrap().clone()),
+                );
+                h.write(repair);
+            }
+            let before = h.head();
+            let error = h.read_outcome(&certificate.digest).unwrap_err();
+            assert_eq!(error.exit(), exit::FOUNDATION);
+            assert!(
+                matches!(error, BookError::Kernel(KernelError::Corrupt(ref message))
+                    if message.contains(&format!("{:032x}", root.0))),
+                "{error}"
+            );
+            let cx = h.cx();
+            let error = h
+                .runtime
+                .block_on(h.book.retain_certificate(&cx, &certificate))
+                .unwrap_err();
+            assert_eq!(error.exit(), exit::FOUNDATION);
+            assert!(matches!(error, BookError::Kernel(KernelError::Corrupt(_))));
+            assert_eq!(h.head(), before, "neither read nor retry repairs storage");
+        }
+    }
+}
+
+#[test]
+fn shared_report_root_without_fragments_never_becomes_an_idempotent_success() {
+    let (mut h, certificate) = Harness::populated();
+    let root = certificate_vid(BOOK, &certificate.digest);
+    let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+    stage_record(
+        &mut batch,
+        h.book.context(),
+        &certificate.digest,
+        root,
+        object::payload(
+            ObjectKind::ReportCertificate,
+            &certificate.canonical_bytes().unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let before = h.write(batch);
+    let error = h.read_outcome(&certificate.digest).unwrap_err();
+    assert_eq!(error.exit(), exit::FOUNDATION);
+    assert!(matches!(error, BookError::Kernel(KernelError::Corrupt(_))));
+    let cx = h.cx();
+    let error = h
+        .runtime
+        .block_on(h.book.retain_certificate(&cx, &certificate))
+        .unwrap_err();
+    assert_eq!(error.exit(), exit::FOUNDATION);
+    assert!(matches!(error, BookError::Kernel(KernelError::Corrupt(_))));
+    assert_eq!(h.head(), before);
 }
 
 #[test]

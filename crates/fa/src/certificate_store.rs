@@ -7,7 +7,7 @@
 //! public read APIs are unchanged. See `report_certificate_storage.toml`.
 //!
 //! The root's public digest commits to the reassembled canonical certificate.
-//! Fragment identities bind book, full certificate digest and ordinal. Every
+//! Fragment identities bind book, root, full object digest and ordinal. Every
 //! read pins one native snapshot and requires every fragment's original birth
 //! to coincide with the root, before validating the full content digest. A
 //! missing, rewritten, reordered or substituted fragment never yields a
@@ -17,12 +17,14 @@
 //! still verify: the read fetches the named blob and checks it against the
 //! public digest. New retention does not write that external form. Above the
 //! inline row, a new certificate is the manifest plus ordered fragments in
-//! one native transaction. [`MAX_INLINE_CERTIFICATE_BYTES`] is that inline
-//! threshold, equal to one fragment.
+//! one native transaction through `fa_journal::object`. Historical 12 KiB
+//! fragment manifests retain their original decoder. New fragments are 4 KiB
+//! document-Merkle leaves; [`MAX_INLINE_CERTIFICATE_BYTES`] is that threshold.
 
 use asupersync::fs::Vfs;
 use fa_journal::BlobStore;
 use fa_journal::genesis::BookContext;
+use fa_journal::object::{self, ObjectKind};
 use fa_journal::refusal::{KernelError, Refusal, exit};
 use fa_journal::rows::{prop, scalar_bytes};
 use fa_model::symbols::{label, property, relation};
@@ -37,10 +39,9 @@ use crate::{BookError, Outcome, ReportArtifact, ReportArtifactFamily};
 
 mod chunks;
 
-/// Inline vertex-row threshold. One fragment is the same size, so a
-/// historical test can still recognize a certificate that no longer fits
-/// inline. New writes above this size use native fragments, not a blob.
-pub const MAX_INLINE_CERTIFICATE_BYTES: usize = chunks::CHUNK_BYTES;
+/// New writes above one document-Merkle leaf use the shared object format.
+/// Historical inline records remain readable under their original format bound.
+pub const MAX_INLINE_CERTIFICATE_BYTES: usize = object::CHUNK_BYTES;
 
 /// Vertex payload of a certificate retained in the book's blob store before
 /// fragment manifests existed: this tag, the store id (u16) and the byte
@@ -318,7 +319,19 @@ async fn unchanged_row<V: Vfs + Clone, W: Vfs + Clone>(
             Ok(Some((store, size))) => {
                 fetched(cx, blobs, book, digest, row.created_at, store, size).await
             }
-            Ok(None) => Ok(verified_bytes(payload, book, digest, row.created_at)),
+            Ok(None) => {
+                let bytes = object::read(
+                    db,
+                    cx,
+                    book.book_id,
+                    row,
+                    label::CERTIFICATE,
+                    ObjectKind::ReportCertificate,
+                    at,
+                    MAX_CERTIFICATE_BYTES,
+                )?;
+                Ok(verified_bytes(&bytes, book, digest, row.created_at))
+            }
             Err(refusal) => Ok(Err(refusal)),
         },
         Err(refusal) => Ok(Err(refusal)),
@@ -519,13 +532,23 @@ async fn retain_inner<V: Vfs + Clone, W: Vfs + Clone>(
         }
     }
     query_cx.checkpoint().map_err(BookError::Context)?;
-    let batch = match chunks::stage(&query_cx, book, digest, vid, payload)? {
-        Ok(batch) => batch,
-        Err(refusal) => {
-            txn.abort();
-            return Ok(Err(refusal));
-        }
-    };
+    let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+    stage_record(
+        &mut batch,
+        book,
+        digest,
+        vid,
+        object::payload(ObjectKind::ReportCertificate, &payload)?,
+    )?;
+    object::stage(
+        &query_cx,
+        &mut batch,
+        book.book_id,
+        vid,
+        label::CERTIFICATE,
+        ObjectKind::ReportCertificate,
+        &payload,
+    )?;
     if let Err(error) = txn.write(db, batch) {
         txn.abort();
         return refused_write(error);

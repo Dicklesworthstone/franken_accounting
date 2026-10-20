@@ -15,6 +15,12 @@ fragment_identity_domain = "fa:vid:report-certificate-fragment:v1"
 manifest_format = "fa:certificate-chunks:v1"
 fragment_format = "fa:certificate-fragment:v1"
 
+# New retention uses object_storage.toml. The fields above continue to bind
+# the historical 12 KiB durable decoder; only test fixtures write that form.
+writer_max_inline_bytes = 4096
+writer_fragment_bytes = 4096
+writer_object_kind = 3
+
 # A root remains raw canonical certificate bytes at/below the inline bound.
 # Above it: fixed(manifest_format) || u64 byte_length || u32 fragment_bytes
 # || u32 fragment_count, all integers little-endian. Count MUST equal the
@@ -35,7 +41,7 @@ fragment_format = "fa:certificate-fragment:v1"
 # No individual part is an inclusion proof or a report certificate.
 
 # Publication: one native transaction, one commit sequence, root + parts.
-# Price: 1 vertex if inline, otherwise 1 + ceil(bytes/12288) vertices, with
+# New-write price: 1 vertex if inline, otherwise 1 + ceil(bytes/4096) vertices, with
 # no new journal Entry or edge. No partial commits or read-time repair.
 # Native transaction/resource limits still apply and may refuse the whole
 # operation; this registry is a format bound, not a measured 64 MiB SLO.

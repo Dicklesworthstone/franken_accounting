@@ -1,5 +1,5 @@
 # Transaction-local canonical payload storage (fa-nd7g).
-# First consumers: PostPlan and ReplacementPlan. Other object families
+# Consumers: PostPlan, ReplacementPlan and ReportCertificate. Other object families
 # have not migrated; this format does not claim their capacity acceptance.
 schema_version = 1
 manifest_format = "fa:object:v1"
@@ -9,6 +9,7 @@ chunk_bytes = 4096
 inline_bytes = 4096
 post_plan_kind = 1
 replacement_plan_kind = 2
+report_certificate_kind = 3
 
 # At/below one document Merkle leaf, preserve raw canonical bytes.
 # Above it, the root payload is fixed(manifest_format) || u16 kind ||

@@ -58,11 +58,11 @@ today_posture = "SnapshotQuery reads; optional lazy Certificate persistence on -
 today_transactions = 0
 barrier_count = 0
 today_barrier_count = 0
-derived_objects = "1 Certificate (persisted lazily on request)"
+derived_objects = "1 Certificate root on optional retention; above 4096 bytes, ceil(bytes/4096) shared object fragments in the same retention transaction"
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "O(accounts + tail_legs) pure over registers and tail"
-notes = "pure over registers and tail"
+complexity_witness = "O(accounts + tail_legs) pure report; optional retention/retrieval adds O(certificate_bytes) digest, document-Merkle tree and fragment work"
+notes = "numeric transaction/barrier counts cover the pure report; optional retention adds one publication with two ordered syncs, regardless of fragment count; exact storage retry adds zero publications"
 
 [[operation_class]]
 id = "single_entry_post"

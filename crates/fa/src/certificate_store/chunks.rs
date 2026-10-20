@@ -1,4 +1,4 @@
-//! Native storage encoding for report artifacts larger than a vertex row.
+//! Historical 12 KiB report storage decoder and independent fixture writer.
 //!
 //! Only the root is a public certificate locator. Parts have distinct,
 //! book/digest/ordinal-derived identities. Both use the existing Certificate
@@ -7,7 +7,9 @@
 //! staging state, custom cache, filesystem access or per-part commits exist.
 
 use super::*;
-use fa_model::{Reader, Writer};
+use fa_model::Reader;
+#[cfg(test)]
+use fa_model::Writer;
 
 /// Leaves room in the pinned substrate's 16 KiB encoded vertex row for the
 /// byte-scalar encoding, three mirrors and fragment framing. Also the inline
@@ -35,6 +37,7 @@ impl Manifest {
         Ok(Self { size, count })
     }
 
+    #[cfg(test)]
     pub(super) fn encode(self) -> Result<Vec<u8>, Refusal> {
         let mut w = Writer::new();
         w.fixed(MANIFEST_FORMAT)
@@ -93,6 +96,7 @@ pub(super) fn fragment_vid(book: Id128, digest: &[u8; 32], index: u32) -> VId {
     VId(u128::from_le_bytes(low))
 }
 
+#[cfg(test)]
 fn fragment(index: u32, bytes: &[u8]) -> Result<Vec<u8>, Refusal> {
     if bytes.is_empty() || bytes.len() > CHUNK_BYTES {
         return Err(invalid(
@@ -132,6 +136,7 @@ fn fragment_bytes(payload: &[u8], index: u32, size: usize) -> Result<&[u8], Refu
 
 /// Construct a single batch. The caller performs canonical and native replay
 /// verification first, and retains the same root-absence witness until commit.
+#[cfg(test)]
 pub(super) fn stage(
     cx: &QueryCx,
     book: &BookContext,
@@ -275,6 +280,18 @@ mod tests {
         assert_eq!(text("manifest_format").as_bytes(), MANIFEST_FORMAT);
         assert_eq!(text("fragment_format").as_bytes(), FRAGMENT_FORMAT);
         assert_eq!(text("fragment_identity_domain").as_bytes(), FRAGMENT_DOMAIN);
+        assert_eq!(
+            integer("writer_max_inline_bytes"),
+            MAX_INLINE_CERTIFICATE_BYTES as i128
+        );
+        assert_eq!(
+            integer("writer_fragment_bytes"),
+            object::CHUNK_BYTES as i128
+        );
+        assert_eq!(
+            integer("writer_object_kind"),
+            ObjectKind::ReportCertificate as i128
+        );
     }
 
     #[test]

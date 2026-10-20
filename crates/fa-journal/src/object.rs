@@ -2,7 +2,7 @@
 //!
 //! The caller owns the root, authority checks and transaction. This module
 //! only stages immutable fragments; it never publishes, repairs or opens a
-//! second store. The first consumers are posting and correction plans.
+//! second store. Consumers include posting plans and report certificates.
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::property;
@@ -23,6 +23,7 @@ const FORMAT: &[u8] = b"fa:object:v1";
 pub enum ObjectKind {
     PostPlan = 1,
     ReplacementPlan = 2,
+    ReportCertificate = 3,
 }
 
 /// Public content identity, separate from a caller's graph locator.
@@ -228,14 +229,18 @@ mod tests {
             ))
             .unwrap();
         let book = Id128([14; 16]);
-        for (n, (kind, size)) in [ObjectKind::PostPlan, ObjectKind::ReplacementPlan]
-            .into_iter()
-            .flat_map(|kind| {
-                [4095, 4096, 4097, 16383, 16384, 16385, 1024 * 1024]
-                    .into_iter()
-                    .map(move |size| (kind, size))
-            })
-            .enumerate()
+        for (n, (kind, size)) in [
+            ObjectKind::PostPlan,
+            ObjectKind::ReplacementPlan,
+            ObjectKind::ReportCertificate,
+        ]
+        .into_iter()
+        .flat_map(|kind| {
+            [4095, 4096, 4097, 16383, 16384, 16385, 1024 * 1024]
+                .into_iter()
+                .map(move |size| (kind, size))
+        })
+        .enumerate()
         {
             let root = VId(n as u128 + 1);
             let bytes: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
@@ -474,6 +479,10 @@ mod tests {
             ("inline_bytes", CHUNK_BYTES as i128),
             ("post_plan_kind", ObjectKind::PostPlan as i128),
             ("replacement_plan_kind", ObjectKind::ReplacementPlan as i128),
+            (
+                "report_certificate_kind",
+                ObjectKind::ReportCertificate as i128,
+            ),
         ] {
             assert_eq!(schema.root.get(key).unwrap().as_int().unwrap(), expected);
         }
