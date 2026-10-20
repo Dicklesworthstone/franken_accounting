@@ -905,6 +905,25 @@ fn capabilities_and_robot_docs_are_in_tool() {
         .collect();
     assert!(live.contains(&"FA-INV-01.per-unit"), "{live:?}");
     assert_eq!(arr(invariants, "gate_g1").len(), 18, "{out}");
+    // Every registered procedure with its claim class (fa-vpk): the same
+    // set `fa procedure list` reports, and a digit test is statistical.
+    let procedures = arr(&caps, "procedures");
+    let registered = fa_lantern::catalog::registered().unwrap();
+    assert_eq!(procedures.len(), registered.len(), "{out}");
+    for (listed, row) in procedures.iter().zip(&registered) {
+        assert_eq!(text(listed, "id"), row.id);
+        assert_eq!(text(listed, "claim"), row.claim.name(), "{}", row.id);
+    }
+    let claim_of = |id: &str| {
+        procedures
+            .iter()
+            .find(|row| text(row, "id") == id)
+            .map(|row| text(row, "claim").to_string())
+    };
+    assert_eq!(
+        claim_of("jet.round_amounts").as_deref(),
+        Some("statistical")
+    );
     let model = caps.get("capability").expect("capability section");
     let ops: Vec<&str> = arr(model, "ops").iter().filter_map(Json::as_str).collect();
     assert_eq!(ops.len(), 21, "{ops:?}");
@@ -3547,6 +3566,129 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         "{mus:?}"
     );
 
+    // Planned from the auditor's inputs (plan §11.12): (1,500.00 - 100.00 x
+    // 1.6) / 3.00 = 446.666..., rounded down to 446.66 at 95%. The draw is
+    // the stated interval's, reports its inputs, and its replay command
+    // restates them.
+    let planned = doc(&draw(&[
+        "mus",
+        "--account",
+        "1200",
+        "--seed",
+        "7",
+        "--tolerable",
+        "1500.00 USD",
+        "--expected",
+        "100.00 USD",
+        "--confidence",
+        "95",
+        "--as-known-at",
+        first.as_str(),
+    ]));
+    let stated = doc(&draw(&[
+        "mus",
+        "--account",
+        "1200",
+        "--seed",
+        "7",
+        "--interval",
+        "446.66 USD",
+        "--as-known-at",
+        first.as_str(),
+    ]));
+    assert_eq!(text(&planned, "interval"), "446.66 USD");
+    for key in ["population_digest", "sample_digest", "selected", "parameters"] {
+        assert_eq!(planned.get(key), stated.get(key), "{key}");
+    }
+    assert_eq!(text(&planned, "tolerable"), "1500.00 USD");
+    assert_eq!(text(&planned, "expected"), "100.00 USD");
+    assert_eq!(planned.get("confidence_percent"), Some(&Json::Int(95)));
+    assert_eq!(stated.get("tolerable"), Some(&Json::Null));
+    let replay = text(&planned, "replay_command");
+    assert!(
+        replay.contains(r#"--tolerable "1500.00 USD" --expected "100.00 USD" --confidence 95"#),
+        "{replay}"
+    );
+    // Evaluating the planned sample plans the same interval: every item at
+    // its book value leaves the basic precision, 446.66 x 3.00.
+    let clean: Vec<String> = arr(&planned, "selected")
+        .iter()
+        .map(|row| {
+            format!(
+                r#"{{"item_id":"{}","audited":"{}"}}"#,
+                text(row, "item_id"),
+                text(row, "book_value")
+            )
+        })
+        .collect();
+    let clean = write(
+        &dir,
+        "planned-audited.json",
+        &format!(r#"{{"items":[{}]}}"#, clean.join(",")),
+    );
+    let evaluated = doc(&draw(&[
+        "evaluate",
+        "--account",
+        "1200",
+        "--seed",
+        "7",
+        "--tolerable",
+        "1500.00 USD",
+        "--expected",
+        "100.00 USD",
+        "--confidence",
+        "95",
+        "--as-known-at",
+        first.as_str(),
+        "--audited",
+        clean.as_str(),
+    ]));
+    assert_eq!(
+        text(&evaluated, "sample_digest"),
+        text(&planned, "sample_digest")
+    );
+    assert_eq!(text(&evaluated, "tolerable"), "1500.00 USD");
+    assert_eq!(
+        text(&evaluated, "upper_misstatement_limit"),
+        "1339.98 USD"
+    );
+    // Planning refusals (exit 2): no explicit --expected, no --confidence,
+    // both forms at once, a confidence on a stated draw, an expected
+    // misstatement that leaves nothing to plan for (1,000.00 x 1.6 =
+    // 1,600.00 exceeds 1,500.00), and a confidence on a uniform draw.
+    for args in [
+        vec!["mus", "--tolerable", "1500.00 USD", "--confidence", "95"],
+        vec!["mus", "--tolerable", "1500.00 USD", "--expected", "1.00 USD"],
+        vec![
+            "mus",
+            "--interval",
+            "300.00 USD",
+            "--tolerable",
+            "1500.00 USD",
+            "--expected",
+            "0.00 USD",
+            "--confidence",
+            "95",
+        ],
+        vec!["mus", "--interval", "300.00 USD", "--confidence", "95"],
+        vec![
+            "mus",
+            "--tolerable",
+            "1500.00 USD",
+            "--expected",
+            "1000.00 USD",
+            "--confidence",
+            "95",
+        ],
+        vec!["uniform", "--size", "2", "--confidence", "95"],
+    ] {
+        let mut argv = vec!["sample", args[0], "--account", "1200", "--seed", "7"];
+        argv.extend(&args[1..]);
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 2, "{argv:?}\n{out}\n{err}");
+    }
+
     // Evaluation re-draws that sample. The 700.00 top-stratum item is 10.00
     // overstated and the first systematic item 10% overstated; at 95%
     // (R0 = 3.00, R1 = 4.75) and a 300.00 interval: basic precision 900.00,
@@ -3631,6 +3773,22 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
     let (code, out, err) = fa(Some(&book), &argv);
     assert_eq!(code, 8, "{out}\n{err}");
     assert!(out.contains("missing"), "{out}");
+    // An audited value in another unit is refused for its unit (exit 2).
+    let item = text(&arr(&mus, "selected")[0], "item_id").to_string();
+    let mut other_unit = rows.clone();
+    other_unit[0] = format!(r#"{{"item_id":"{item}","audited":"90.00 EUR"}}"#);
+    let other_unit = write(
+        &dir,
+        "other-unit.json",
+        &format!(r#"{{"items":[{}]}}"#, other_unit.join(",")),
+    );
+    let argv = evaluate(&other_unit);
+    let mut argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    argv.insert(0, "sample");
+    argv.push("--json");
+    let (code, out, err) = fa(Some(&book), &argv);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(out.contains("not in the sample's unit USD"), "{out}");
     let mut argv = evaluate(&audited);
     assert_eq!(argv[7], "--as-known-at");
     argv.drain(7..9);
@@ -3710,6 +3868,85 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         argv.push("--json");
         let (code, out, err) = fa(Some(&book), &argv);
         assert_eq!(code, 2, "{argv:?}\n{out}\n{err}");
+    }
+
+    // The sample discloses the account's open items, so a token is judged
+    // as `fa open-items` judges it, before the query (doctrine 8, fa-0x0):
+    // confined to March, bounded to effective dates through March 31, or
+    // pinned at the first sequence, the whole-book read is refused
+    // (FA-REF-011, exit 7), and an evaluation is refused before its audited
+    // values are judged. Inside its caveats a token draws the owner's sample.
+    let token = |holder: &str, scope: &[&str]| -> String {
+        let path = dir.join(format!("{holder}.token")).display().to_string();
+        let mut argv = vec![
+            "capability",
+            "issue",
+            "--holder",
+            holder,
+            "--profile",
+            "human",
+            "--op",
+            "read",
+            "--out",
+            path.as_str(),
+            "--grant",
+            "issue_capability",
+            "--json",
+        ];
+        argv.extend_from_slice(scope);
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{out}\n{err}");
+        path
+    };
+    let march = token("auditor-march", &["--period", "FY2026-P03"]);
+    let through = token("auditor-q1", &["--effective-through", "2026-03-31"]);
+    let pinned = token("auditor-pinned", &["--known-at-most", &first]);
+    let scoped = |token: &str, args: &[&str]| {
+        let mut argv = vec!["--token", token, "sample"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    for (token, as_of, caveat) in [
+        (march.as_str(), false, "`periods`"),
+        (march.as_str(), true, "`periods`"),
+        (through.as_str(), false, "`effective`"),
+        (pinned.as_str(), false, "`known_at`"),
+    ] {
+        let mut args = uniform.to_vec();
+        if as_of {
+            args.extend(["--as-of", "2026-03-20"]);
+        }
+        let (code, out, err) = scoped(token, &args);
+        assert_eq!(code, 7, "{args:?}\n{out}\n{err}");
+        assert!(out.contains("FA-REF-011") && out.contains(caveat), "{out}");
+    }
+    let argv = evaluate(&audited);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, out, err) = scoped(&march, &argv);
+    assert_eq!(code, 7, "{out}\n{err}");
+    assert!(
+        out.contains("FA-REF-011") && out.contains("`periods`"),
+        "{out}"
+    );
+    for (token, extra) in [
+        (through.as_str(), ["--as-of", "2026-03-20"]),
+        (pinned.as_str(), ["--as-known-at", first.as_str()]),
+    ] {
+        let mut args = uniform.to_vec();
+        args.extend(extra);
+        let (code, theirs, err) = scoped(token, &args);
+        assert_eq!(code, 0, "{args:?}\n{theirs}\n{err}");
+        let (theirs, ours) = (doc(&theirs), doc(&draw(&args)));
+        for key in [
+            "known_at",
+            "population_count",
+            "population_digest",
+            "sample_digest",
+            "selected",
+        ] {
+            assert_eq!(theirs.get(key), ours.get(key), "{key}");
+        }
     }
     Ok(())
 }
@@ -9429,7 +9666,39 @@ fn projection_verification_case(plant: &str) -> std::io::Result<()> {
         assert_eq!(head(), damaged_at, "a failed repair published nothing");
         assert_eq!(fa(Some(&book), &verify).0, 8);
     } else {
-        let repaired = ok(&publish);
+        // Publishing binds to the preview: a basis the head no longer is
+        // is refused as invalidated (exit 6) and writes nothing; a dry run
+        // that also says --yes is a usage error.
+        let stale = (damaged_at.0 - 1).to_string();
+        let (code, out, err) = fa(
+            Some(&book),
+            &[
+                "recover",
+                "projections",
+                "--yes",
+                "--basis",
+                &stale,
+                "--json",
+            ],
+        );
+        assert_eq!(code, 6, "{out}\n{err}");
+        assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-034", "{out}");
+        assert_eq!(head(), damaged_at, "a stale basis published nothing");
+        let (code, out, err) = fa(
+            Some(&book),
+            &["recover", "projections", "--dry-run", "--yes", "--json"],
+        );
+        assert_eq!(code, 2, "{out}\n{err}");
+        assert_eq!(head(), damaged_at);
+        let basis = damaged_at.0.to_string();
+        let repaired = ok(&[
+            "recover",
+            "projections",
+            "--yes",
+            "--basis",
+            &basis,
+            "--json",
+        ]);
         assert_eq!(field(&repaired, "event"), Some("projections_rebuilt"));
         let data = doc(&repaired);
         assert_eq!(data.get("dry_run"), Some(&Json::Bool(false)), "{repaired}");

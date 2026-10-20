@@ -23,7 +23,6 @@ use fa_lantern::LanternError;
 use fa_lantern::sample::{self, MusSelectionBasis, PopulationItem, SamplePopulation};
 use fa_model::account_vid;
 use fa_money::{Amount, Side, UnitId};
-use fa_policy::Op;
 use fa_registers::open_items::OpenItem;
 use fa_time::DateDay;
 use fgdb_types::{CommitSeq, VId};
@@ -32,9 +31,9 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, Out, hex, known_at_flag, registered_unit_code, render_amount, usage};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa sample uniform --account <code> --seed <u64> --size <n> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>] --json, or fa sample mus --account <code> --seed <u64> --interval \"<amount> <UNIT>\" [...]";
+const EXAMPLE: &str = "fa sample uniform --account <code> --seed <u64> --size <n> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>] --json, or fa sample mus --account <code> --seed <u64> (--interval \"<amount> <UNIT>\" | --tolerable \"<amount> <UNIT>\" --expected \"<amount> <UNIT>\" --confidence 90|95|99) [...]";
 
-const EVALUATE_EXAMPLE: &str = "fa sample evaluate --account <code> --seed <u64> --interval \"<amount> <UNIT>\" --as-known-at <seq> [--as-of YYYY-MM-DD] --audited <audited.json|-> --confidence 90|95|99 --json";
+const EVALUATE_EXAMPLE: &str = "fa sample evaluate --account <code> --seed <u64> (--interval \"<amount> <UNIT>\" | --tolerable \"<amount> <UNIT>\" --expected \"<amount> <UNIT>\") --as-known-at <seq> [--as-of YYYY-MM-DD] --audited <audited.json|-> --confidence 90|95|99 --json";
 
 pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let method = match args.positional.get(1).map(String::as_str) {
@@ -54,6 +53,8 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--seed",
         "--size",
         "--interval",
+        "--tolerable",
+        "--expected",
         "--as-of",
         "--as-known-at",
         "--known-at",
@@ -74,51 +75,34 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "--seed 20260115",
             )
         })?;
-    if method != "evaluate" {
-        for flag in ["--audited", "--confidence"] {
-            if args.flag(flag).is_some() {
-                return Err(usage(
-                    format!(
-                        "{flag} belongs to `fa sample evaluate`, which evaluates a drawn MUS sample"
-                    ),
-                    EVALUATE_EXAMPLE,
-                ));
-            }
-        }
+    if method != "evaluate" && args.flag("--audited").is_some() {
+        return Err(usage(
+            "--audited belongs to `fa sample evaluate`, which evaluates a drawn MUS sample",
+            EVALUATE_EXAMPLE,
+        ));
     }
-    // Evaluation re-draws the MUS sample it evaluates, so it is bound to the
-    // sample's recorded sequence, never to a moving HEAD.
-    let evaluation = if method == "evaluate" {
-        let recorded = args.flag("--as-known-at");
-        if !recorded.is_some_and(|seq| !seq.is_empty() && seq.bytes().all(|b| b.is_ascii_digit())) {
-            return Err(usage(
-                "evaluation re-draws the sample at its recorded sequence: pass --as-known-at <seq>",
-                "the sample's replay_command names it; fa sample evaluate takes the same --account, --seed, --interval, --as-of and --as-known-at",
-            ));
-        }
-        let confidence_bps = match args.require("--confidence", "90, 95 or 99 (percent)")? {
-            "90" => 9_000,
-            "95" => 9_500,
-            "99" => 9_900,
-            other => {
-                return Err(usage(
-                    format!("--confidence `{other}` is not 90, 95 or 99 (percent)"),
-                    "--confidence 95",
-                ));
-            }
-        };
-        let audited = ctx
-            .files
-            .read_text(args.require("--audited", "<audited.json|->")?)?;
-        Some((confidence_bps, audited))
-    } else {
-        None
-    };
+    let confidence_bps = args
+        .flag("--confidence")
+        .map(|text| match text {
+            "90" => Ok(9_000),
+            "95" => Ok(9_500),
+            "99" => Ok(9_900),
+            other => Err(usage(
+                format!("--confidence `{other}` is not 90, 95 or 99 (percent)"),
+                "--confidence 95",
+            )),
+        })
+        .transpose()?;
     let (size, interval) = match method {
         "uniform" => {
-            if args.flag("--interval").is_some() {
+            if let Some(flag) = ["--interval", "--tolerable", "--expected", "--confidence"]
+                .into_iter()
+                .find(|flag| args.flag(flag).is_some())
+            {
                 return Err(usage(
-                    "--interval is the MUS sampling interval; a uniform sample takes --size",
+                    format!(
+                        "{flag} plans or evaluates an MUS sample; a uniform sample takes --size"
+                    ),
                     EXAMPLE,
                 ));
             }
@@ -133,18 +117,35 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         _ => {
             if args.flag("--size").is_some() {
                 return Err(usage(
-                    "--size is a uniform sample's size; an MUS sample takes --interval",
+                    "--size is a uniform sample's size; an MUS sample takes --interval, or --tolerable and --expected",
                     EXAMPLE,
                 ));
             }
-            (
-                None,
-                Some(args.require(
-                    "--interval",
-                    "\"<amount> <UNIT>\", for example \"500.00 USD\"",
-                )?),
-            )
+            (None, Some(interval_spec(args, method, confidence_bps)?))
         }
+    };
+    // Evaluation re-draws the MUS sample it evaluates, so it is bound to the
+    // sample's recorded sequence, never to a moving HEAD.
+    let evaluation = if method == "evaluate" {
+        let recorded = args.flag("--as-known-at");
+        if !recorded.is_some_and(|seq| !seq.is_empty() && seq.bytes().all(|b| b.is_ascii_digit())) {
+            return Err(usage(
+                "evaluation re-draws the sample at its recorded sequence: pass --as-known-at <seq>",
+                "the sample's replay_command names it; fa sample evaluate takes the same --account, --seed, interval (--interval, or --tolerable, --expected and --confidence), --as-of and --as-known-at",
+            ));
+        }
+        let confidence_bps = confidence_bps.ok_or_else(|| {
+            usage(
+                "--confidence is required",
+                "--confidence 90, 95 or 99 (percent)",
+            )
+        })?;
+        let audited = ctx
+            .files
+            .read_text(args.require("--audited", "<audited.json|->")?)?;
+        Some((confidence_bps, audited))
+    } else {
+        None
     };
     let as_of = args
         .flag("--as-of")
@@ -157,21 +158,35 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })
         })
         .transpose()?;
-    // Authority precedes observation: the sample discloses the account's
-    // open items, so read is checked before the book is read.
+    // Authority precedes observation (doctrine 8, fa-0x0): the sample
+    // discloses the account's open items, so the capability is admitted as
+    // current read authority on open, and each read is judged by the scope
+    // caveats before its query, exactly as `fa open-items` is.
+    let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
-    fa_policy::require(&capability, Op::Read, "drawing an audit sample")
-        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-    let book = ctx.books.open(args)?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &capability)??;
+        Ok(())
+    })?;
     let (requested, _) = known_at_flag(args, &book, &ctx.out)?;
     let account = account_vid(book.context().book_id, code);
     let (known_at, items) = match as_of {
         Some(day) => {
+            // The snapshot reaches every period that starts by its day.
+            book.read_scope(who, &capability)??
+                .admit_as_of(day, requested)??;
             let snapshot = book.open_items_as_of(Some(account), day, requested)?;
             ctx.out.effective(format!("as-of:{day}"));
             (snapshot.known_at, snapshot.items)
         }
         None => {
+            // Open items reach the whole book.
+            book.read_scope(who, &capability)??.admit_report(
+                &fa::ReportSelection::OpenItems {
+                    account: Some(account),
+                },
+                requested,
+            )??;
             let report = book.open_items_report(Some(account), requested)?;
             (report.known_at, report.items)
         }
@@ -197,6 +212,8 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let render = |amount: Amount| render_amount(amount, units);
 
     let mut fields: Vec<(&str, Json)> = Vec::new();
+    // The MUS planning inputs, when the interval was planned from them.
+    let mut planning: Option<Planning> = None;
     let (parameters, digest, selected) = match (size, interval) {
         (Some(size), _) => {
             let plan = sample::sample_uniform(&population, seed, size).map_err(sample_error)?;
@@ -211,6 +228,9 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("start", Json::Null),
                 ("top_stratum_count", Json::Null),
                 ("systematic_count", Json::Null),
+                ("tolerable", Json::Null),
+                ("expected", Json::Null),
+                ("confidence_percent", Json::Null),
             ]);
             (
                 plan.certificate.parameters_summary,
@@ -218,13 +238,25 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 rows,
             )
         }
-        (None, Some(text)) => {
-            let interval = Amount::parse(text, units).map_err(|e| {
-                usage(
-                    format!("--interval: {e}"),
-                    format!("--interval \"500.00 {unit_code}\" (the population's unit)"),
-                )
-            })?;
+        (None, Some(spec)) => {
+            let interval = match spec {
+                IntervalSpec::Stated(text) => Amount::parse(text, units).map_err(|e| {
+                    usage(
+                        format!("--interval: {e}"),
+                        format!("--interval \"500.00 {unit_code}\" (the population's unit)"),
+                    )
+                })?,
+                IntervalSpec::Planned {
+                    tolerable,
+                    expected,
+                    confidence_bps,
+                } => {
+                    let planned =
+                        plan_interval(tolerable, expected, confidence_bps, &population, units)?;
+                    planning = Some(planned);
+                    planned.interval
+                }
+            };
             let plan = sample::sample_mus(&population, seed, interval).map_err(sample_error)?;
             if let Some((confidence_bps, audited)) = &evaluation {
                 let summary = Evaluated {
@@ -234,6 +266,7 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     known_at,
                     seed,
                     population: &population,
+                    planning,
                 };
                 return evaluate(&ctx.out, units, &summary, &plan, *confidence_bps, audited);
             }
@@ -278,6 +311,7 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     Json::Int(plan.systematic_sample_count as i128),
                 ),
             ]);
+            fields.extend(planning_fields(planning, &render)?);
             (
                 plan.certificate.parameters_summary,
                 plan.certificate.certificate_oid,
@@ -311,9 +345,16 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .collect::<Result<Vec<_>, Fail>>()?;
     let replay = format!(
         "fa sample {method} --account {code} --seed {seed} {} --as-known-at {}{}",
-        match (size, interval) {
-            (Some(size), _) => format!("--size {size}"),
-            (_, interval) => format!("--interval \"{}\"", interval.unwrap_or_default()),
+        match (size, interval, planning) {
+            (Some(size), _, _) => format!("--size {size}"),
+            (_, _, Some(planned)) => format!(
+                "--tolerable \"{}\" --expected \"{}\" --confidence {}",
+                render(planned.tolerable)?,
+                render(planned.expected)?,
+                planned.confidence_bps / 100
+            ),
+            (_, Some(IntervalSpec::Stated(text)), None) => format!("--interval \"{text}\""),
+            _ => return Err(Fail::Internal("sample replay without parameters".into())),
         },
         known_at.0,
         as_of.map_or(String::new(), |day| format!(" --as-of {day}")),
@@ -357,6 +398,152 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// (lexicographic) population order is entry, then leg order.
 fn item_id(item: &OpenItem) -> String {
     format!("{:032x}:{:05}", item.entry.0, item.ordinal)
+}
+
+const PLANNED_EXAMPLE: &str = "fa sample mus --account <code> --seed <u64> --tolerable \"50000.00 USD\" --expected \"5000.00 USD\" --confidence 95 [--as-of YYYY-MM-DD] --json, or --interval \"<amount> <UNIT>\"";
+
+/// How an MUS sample's interval is given: stated, or planned from its
+/// named inputs at the confidence level (plan §11.12).
+#[derive(Clone, Copy)]
+enum IntervalSpec<'a> {
+    Stated(&'a str),
+    Planned {
+        tolerable: &'a str,
+        expected: &'a str,
+        confidence_bps: u32,
+    },
+}
+
+/// The MUS interval flags: `--interval`, or `--tolerable` with an explicit
+/// `--expected` (never a silent zero) and the `--confidence` the interval is
+/// planned at. A draw with a stated interval takes no confidence; an
+/// evaluation always takes one, and plans with it.
+fn interval_spec<'a>(
+    args: &'a Args,
+    method: &str,
+    confidence_bps: Option<u32>,
+) -> Result<IntervalSpec<'a>, Fail> {
+    match (
+        args.flag("--interval"),
+        args.flag("--tolerable"),
+        args.flag("--expected"),
+    ) {
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => Err(usage(
+            "--interval states the interval and --tolerable with --expected plans it: give one or the other",
+            PLANNED_EXAMPLE,
+        )),
+        (Some(text), None, None) => {
+            if method == "mus" && confidence_bps.is_some() {
+                return Err(usage(
+                    "--confidence on a draw plans the interval from --tolerable and --expected; a stated --interval takes none",
+                    PLANNED_EXAMPLE,
+                ));
+            }
+            Ok(IntervalSpec::Stated(text))
+        }
+        (None, Some(tolerable), Some(expected)) => {
+            let confidence_bps = confidence_bps.ok_or_else(|| {
+                usage(
+                    "planning an interval needs --confidence 90|95|99 (one minus the risk of incorrect acceptance)",
+                    PLANNED_EXAMPLE,
+                )
+            })?;
+            Ok(IntervalSpec::Planned {
+                tolerable,
+                expected,
+                confidence_bps,
+            })
+        }
+        (None, Some(_), None) => Err(usage(
+            "--tolerable plans the interval with an explicit --expected misstatement (\"0.00 <UNIT>\" when none is expected)",
+            PLANNED_EXAMPLE,
+        )),
+        (None, None, Some(_)) => Err(usage(
+            "--expected plans the interval with --tolerable",
+            PLANNED_EXAMPLE,
+        )),
+        (None, None, None) => Err(usage(
+            "an MUS sample needs --interval \"<amount> <UNIT>\", or --tolerable and --expected with --confidence",
+            PLANNED_EXAMPLE,
+        )),
+    }
+}
+
+/// An interval planned from tolerable and expected misstatement.
+#[derive(Clone, Copy)]
+struct Planning {
+    tolerable: Amount,
+    expected: Amount,
+    confidence_bps: u32,
+    interval: Amount,
+}
+
+fn plan_interval(
+    tolerable: &str,
+    expected: &str,
+    confidence_bps: u32,
+    population: &SamplePopulation,
+    units: &fa_money::UnitRegistry,
+) -> Result<Planning, Fail> {
+    let unit_code = registered_unit_code(population.unit, units)?;
+    let parse = |flag: &str, text: &str| {
+        Amount::parse(text, units)
+            .map_err(|e| format!("{flag}: {e}"))
+            .and_then(|amount| {
+                if amount.unit == population.unit {
+                    Ok(amount)
+                } else {
+                    Err(format!(
+                        "{flag} is not in the population's unit {unit_code}"
+                    ))
+                }
+            })
+            .map_err(|message| {
+                usage(
+                    message,
+                    format!("{flag} \"5000.00 {unit_code}\", in the population's unit"),
+                )
+            })
+    };
+    let tolerable = parse("--tolerable", tolerable)?;
+    let expected = parse("--expected", expected)?;
+    let interval = sample::mus_interval(tolerable, expected, confidence_bps).map_err(|error| {
+        match error {
+            LanternError::Parameter { message, .. } => usage(
+                format!("sample mus: {message}"),
+                "state a tolerable misstatement above the expected misstatement times its expansion factor (1.5 at 90%, 1.6 at 95%, 1.9 at 99%)",
+            ),
+            other => sample_error(other),
+        }
+    })?;
+    Ok(Planning {
+        tolerable,
+        expected,
+        confidence_bps,
+        interval,
+    })
+}
+
+/// The planning inputs on an MUS event; null when the interval was stated.
+fn planning_fields(
+    planning: Option<Planning>,
+    render: &dyn Fn(Amount) -> Result<String, Fail>,
+) -> Result<[(&'static str, Json); 3], Fail> {
+    Ok(match planning {
+        Some(planned) => [
+            ("tolerable", s(render(planned.tolerable)?)),
+            ("expected", s(render(planned.expected)?)),
+            (
+                "confidence_percent",
+                Json::Int(i128::from(planned.confidence_bps / 100)),
+            ),
+        ],
+        None => [
+            ("tolerable", Json::Null),
+            ("expected", Json::Null),
+            ("confidence_percent", Json::Null),
+        ],
+    })
 }
 
 /// The account's open items on its normal side with a positive open amount,
@@ -460,6 +647,7 @@ struct Evaluated<'a> {
     known_at: CommitSeq,
     seed: u64,
     population: &'a SamplePopulation,
+    planning: Option<Planning>,
 }
 
 /// `fa sample evaluate`: the Stringer upper misstatement limit over the
@@ -510,12 +698,24 @@ fn evaluate(
                 AUDITED_SHAPE,
             ));
         };
-        let value = Amount::parse(text, units).map_err(|e| {
-            usage(
-                format!("audited value of {id}: {e}"),
-                format!("\"95.00 {}\", in the sample's unit", drawn.unit_code),
-            )
-        })?;
+        let value = Amount::parse(text, units)
+            .map_err(|e| format!("audited value of {id}: {e}"))
+            .and_then(|value| {
+                if value.unit == drawn.population.unit {
+                    Ok(value)
+                } else {
+                    Err(format!(
+                        "audited value of {id} is not in the sample's unit {}",
+                        drawn.unit_code
+                    ))
+                }
+            })
+            .map_err(|message| {
+                usage(
+                    message,
+                    format!("\"95.00 {}\", in the sample's unit", drawn.unit_code),
+                )
+            })?;
         if values.insert(id, value).is_some() {
             return Err(usage(
                 format!("{id} has more than one audited value"),
@@ -553,7 +753,7 @@ fn evaluate(
             ]),
             cite: None,
             fix: Some(
-                "audit exactly the selected items of the sample drawn with the same --account, --seed, --interval, --as-of and --as-known-at (fa sample mus)".into(),
+                "audit exactly the selected items of the sample drawn with the same --account, --seed, interval (--interval, or --tolerable, --expected and --confidence), --as-of and --as-known-at (fa sample mus)".into(),
             ),
         });
     }
@@ -572,8 +772,18 @@ fn evaluate(
             })
         })
         .collect::<Result<Vec<_>, Fail>>()?;
-    let result = sample::evaluate_stringer_bound(plan.interval, confidence_bps, &items)
-        .map_err(sample_error)?;
+    let result = sample::evaluate_stringer_bound(plan.interval, confidence_bps, &items).map_err(
+        |error| match error {
+            LanternError::Parameter { name, message, .. } if name == "misstatements" => usage(
+                format!("sample evaluate: {message}"),
+                format!(
+                    "the Stringer factors are registered for at most {} misstatements; a sample with more needs another evaluation method",
+                    sample::MAX_TABLED_MISSTATEMENTS
+                ),
+            ),
+            other => sample_error(other),
+        },
+    )?;
     let render = |amount: Amount| render_amount(amount, units);
     let taintings: BTreeMap<&str, String> = result
         .ranked_taintings
@@ -653,6 +863,22 @@ fn evaluate(
             (
                 "confidence_percent",
                 Json::Int(i128::from(confidence_bps / 100)),
+            ),
+            (
+                "tolerable",
+                drawn
+                    .planning
+                    .map(|planned| render(planned.tolerable))
+                    .transpose()?
+                    .map_or(Json::Null, s),
+            ),
+            (
+                "expected",
+                drawn
+                    .planning
+                    .map(|planned| render(planned.expected))
+                    .transpose()?
+                    .map_or(Json::Null, s),
             ),
             (
                 "population_digest",

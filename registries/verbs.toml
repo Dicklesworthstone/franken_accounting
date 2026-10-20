@@ -455,11 +455,11 @@ name = "sample"
 summary = "Audit sampling (plan §11.7): a reproducible uniform or monetary-unit (MUS) sample of one account's open items at one recorded coordinate, from a declared seed, and the Stringer evaluation of an MUS sample's audited values. Nothing is written."
 writes = false
 subcommands = ["uniform", "mus", "evaluate"]
-flags = ["--account", "--seed", "--size", "--interval", "--as-of", "--as-known-at", "--audited", "--confidence"]
+flags = ["--account", "--seed", "--size", "--interval", "--tolerable", "--expected", "--as-of", "--as-known-at", "--audited", "--confidence"]
 switches = []
 events = ["sample_drawn", "sample_evaluated"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["sample uniform --account <code> --seed <u64> --size <n> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample mus --account <code> --seed <u64> --interval \"<amount> <UNIT>\" [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample evaluate --account <code> --seed <u64> --interval \"<amount> <UNIT>\" --as-known-at <seq> [--as-of YYYY-MM-DD] --audited <audited.json|-> --confidence 90|95|99", "evaluate re-draws the MUS sample from the same --account, --seed, --interval, --as-of and a numeric --as-known-at, then takes {\"items\":[{\"item_id\",\"audited\":\"<amount> <UNIT>\"}]} with exactly one audited value for every selected item and none for any other (exit 8 otherwise, naming the missing and unexpected ids). Book values come from the sample, never from the file. The Stringer upper misstatement limit is the basic precision (interval times the Poisson factor at zero errors) plus the most likely error (top-stratum overstatement in full, and interval times each tainting) plus the incremental allowance for ranked taintings; each component is exact and rounded up to the unit, and upper_misstatement_limit_exact keeps the exact value in minor units. Overstatements are bounded; understatements are counted. The limit is a statistic for the auditor's conclusion, not the conclusion.","The population is the account's open items (fa open-items) on its normal-balance side with a positive open amount, in one unit, at --as-known-at (and, with --as-of, through that effective date). Items are <entry vid hex>:<five-digit ordinal> valued at their open amount, canonically ordered and digested (population_digest). Open items on the other side cannot carry a positive book value: they are listed in excluded, to be tested separately, never silently dropped. Fully applied items are not open. Read authority is required.", "uniform selects --size items without replacement; mus selects every item whose open amount is at least --interval (top stratum) and a systematic dollar hit every --interval from a seeded random start. Selection is a pure function of the population digest, the declared --seed and the parameters over PCG64DXSM, reproducible in Python with numpy.random.PCG64DXSM(seed) and the snippet documented on fa_lantern::sample::Pcg64Dxsm. The seed is never drawn from entropy.", "sample_digest binds the method, population digest, seed, parameters and selected item ids; it is recomputed, not a retained report certificate. replay_command repeats the draw at the same recorded sequence. Stratified (Neyman) selection is not on the CLI yet."]
+usage = ["sample uniform --account <code> --seed <u64> --size <n> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample mus --account <code> --seed <u64> (--interval \"<amount> <UNIT>\" | --tolerable \"<amount> <UNIT>\" --expected \"<amount> <UNIT>\" --confidence 90|95|99) [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample evaluate --account <code> --seed <u64> (--interval \"<amount> <UNIT>\" | --tolerable \"<amount> <UNIT>\" --expected \"<amount> <UNIT>\") --as-known-at <seq> [--as-of YYYY-MM-DD] --audited <audited.json|-> --confidence 90|95|99", "plan §11.12: instead of stating --interval, an MUS sample can be planned from the auditor's tolerable and expected misstatement at a confidence: interval = (tolerable - expected x expansion factor) / reliability factor, rounded down to the unit, with the AICPA expansion factors 1.5, 1.6, 1.9 and the zero-misstatement Poisson factors 2.31, 3.00, 4.61 at 90, 95, 99%. --expected is always explicit (\"0.00 <UNIT>\" when none is expected). The draw reports tolerable, expected and confidence_percent, and its replay_command restates them; evaluate plans the same interval at its --confidence. Tolerable misstatement is a parameter the auditor states, never a judgment made here.", "evaluate re-draws the MUS sample from the same --account, --seed, --interval, --as-of and a numeric --as-known-at, then takes {\"items\":[{\"item_id\",\"audited\":\"<amount> <UNIT>\"}]} with exactly one audited value for every selected item and none for any other (exit 8 otherwise, naming the missing and unexpected ids). Book values come from the sample, never from the file. The Stringer upper misstatement limit is the basic precision (interval times the Poisson factor at zero errors) plus the most likely error (top-stratum overstatement in full, and interval times each tainting) plus the incremental allowance for ranked taintings; each component is exact and rounded up to the unit, and upper_misstatement_limit_exact keeps the exact value in minor units. Overstatements are bounded; understatements are counted. The limit is a statistic for the auditor's conclusion, not the conclusion.","The population is the account's open items (fa open-items) on its normal-balance side with a positive open amount, in one unit, at --as-known-at (and, with --as-of, through that effective date). Items are <entry vid hex>:<five-digit ordinal> valued at their open amount, canonically ordered and digested (population_digest). Open items on the other side cannot carry a positive book value: they are listed in excluded, to be tested separately, never silently dropped. Fully applied items are not open. Read authority is required.", "uniform selects --size items without replacement; mus selects every item whose open amount is at least --interval (top stratum) and a systematic dollar hit every --interval from a seeded random start. Selection is a pure function of the population digest, the declared --seed and the parameters over PCG64DXSM, reproducible in Python with numpy.random.PCG64DXSM(seed) and the snippet documented on fa_lantern::sample::Pcg64Dxsm. The seed is never drawn from entropy.", "sample_digest binds the method, population digest, seed, parameters and selected item ids; it is recomputed, not a retained report certificate. replay_command repeats the draw at the same recorded sequence. Stratified (Neyman) selection is not on the CLI yet."]
 example = "fa sample uniform --account 1200 --seed 20260115 --size 25 --book ./books/myco --json"
 
 [[verb]]
@@ -636,11 +636,11 @@ name = "recover"
 summary = "Explicitly rebuild derived state from the journal: leg mirrors and projection edges, each derived from immutable entry payloads after every source entry is checked against its native creation history. Preview with --dry-run; publishing needs --yes."
 writes = true
 subcommands = ["projections"]
-flags = []
+flags = ["--basis"]
 switches = ["--dry-run"]
 events = ["projections_rebuilt"]
-exits = [0, 2, 4, 5, 7, 8]
-usage = ["recover projections --dry-run   (the exact mirror and edge changes a repair would publish at this head; writes nothing)", "recover projections --yes   (one commit, then projections and open items are rechecked; a clean book publishes nothing; needs read, verify and schema_change, never on trunk from an Agent profile; host-only over MCP)"]
+exits = [0, 2, 4, 5, 6, 7, 8]
+usage = ["recover projections --dry-run   (the exact mirror and edge changes a repair would publish at this head; writes nothing)", "recover projections --yes [--basis <seq>]   (one commit, then projections and open items are rechecked; with the dry run's --basis it publishes exactly that previewed repair and exits 6 if the head moved; a clean book publishes nothing; needs read, verify and schema_change, never on trunk from an Agent profile; host-only over MCP)"]
 example = "fa recover projections --dry-run --book ./books/myco --json"
 
 [[verb]]
@@ -909,7 +909,7 @@ safe = "`fa verify registers --period <code> --json` checks the existing cells a
 verb = "recover"
 subcommand = "projections"
 condition = "always"
-safe = "`fa verify projections --json` reports the drift without writing, and `fa recover projections --dry-run --json` previews every mirror and edge the repair would publish; retain both before repairing"
+safe = "`fa verify projections --json` reports the drift without writing, and `fa recover projections --dry-run --json` previews every mirror and edge the repair would publish; retain both, then publish exactly that repair with `--yes --basis <its basis>`"
 
 [[dangerous]]
 verb = "draft"
@@ -1176,7 +1176,7 @@ fields = ["class:string", "exit:int", "refusal_id:string?", "message:string", "c
 [[event]]
 name = "capabilities"
 doc = "What this build can do."
-fields = ["version:string", "verbs:[string]", "aliases:[alias]", "exit_codes:[exit_code]", "entry_classes:[string]", "robot_mode:robot_mode", "stdout:string", "stderr:string", "tui:bool", "capability:capability_model", "dangerous:[dangerous_op]", "invariants:invariant_clauses", "slo_manifests:[string]"]
+fields = ["version:string", "verbs:[string]", "aliases:[alias]", "exit_codes:[exit_code]", "entry_classes:[string]", "robot_mode:robot_mode", "stdout:string", "stderr:string", "tui:bool", "capability:capability_model", "dangerous:[dangerous_op]", "invariants:invariant_clauses", "slo_manifests:[string]", "procedures:[procedure_claim]"]
 
 [[event]]
 name = "robot_docs"
@@ -2021,7 +2021,7 @@ fields = ["procedure:string", "version:int", "claim:string", "evidence:string", 
 name = "sample_drawn"
 book = true
 doc = "One reproducible audit sample (uniform or MUS) of an account's open items at `known_at` (and through `as_of` when given): the population's count, total and digest, the declared seed and parameters, the selected items in population order, the excluded opposite-side items, and the sample_digest over method, population digest, seed, parameters and selected ids. MUS rows carry their basis (top_stratum or systematic) and, for a systematic hit, the cumulative dollar it landed on. Nothing is written to the book."
-fields = ["method:string", "account:string", "unit:string", "as_of:date?", "known_at:seq", "seed:int", "population_count:int", "population_total:amount", "population_digest:hex", "parameters:string", "size:int?", "interval:amount?", "start:amount?", "top_stratum_count:int?", "systematic_count:int?", "selected_count:int", "selected:[sample_item]", "excluded:[sample_excluded]", "sample_digest:hex", "replay_command:string"]
+fields = ["method:string", "account:string", "unit:string", "as_of:date?", "known_at:seq", "seed:int", "population_count:int", "population_total:amount", "population_digest:hex", "parameters:string", "size:int?", "interval:amount?", "start:amount?", "top_stratum_count:int?", "systematic_count:int?", "tolerable:amount?", "expected:amount?", "confidence_percent:int?", "selected_count:int", "selected:[sample_item]", "excluded:[sample_excluded]", "sample_digest:hex", "replay_command:string"]
 
 [[shape]]
 name = "sample_item"
@@ -2032,7 +2032,7 @@ fields = ["item_id:string", "entry:hex", "ordinal:int", "book_value:amount", "ba
 name = "sample_evaluated"
 book = true
 doc = "The Stringer evaluation of one re-drawn MUS sample (same account, seed, interval, as_of and known_at) against the auditor's value for every selected item: the confidence, the sample's digests, the counts, the exact-then-ceiling components (basic precision, most likely error, incremental allowance) and the upper misstatement limit, with its exact value in minor units, and each overstated item with its tainting and rank (top-stratum items carry their overstatement in full, without a tainting). A statistic for the auditor's conclusion, not the conclusion. Nothing is written to the book."
-fields = ["account:string", "unit:string", "as_of:date?", "known_at:seq", "seed:int", "interval:amount", "confidence_percent:int", "population_digest:hex", "sample_digest:hex", "sample_size:int", "misstatement_count:int", "understatement_count:int", "top_stratum_misstatement:amount", "basic_precision:amount", "most_likely_error:amount", "incremental_allowance:amount", "upper_misstatement_limit:amount", "upper_misstatement_limit_exact:string", "misstatements:[sample_misstatement]"]
+fields = ["account:string", "unit:string", "as_of:date?", "known_at:seq", "seed:int", "interval:amount", "confidence_percent:int", "tolerable:amount?", "expected:amount?", "population_digest:hex", "sample_digest:hex", "sample_size:int", "misstatement_count:int", "understatement_count:int", "top_stratum_misstatement:amount", "basic_precision:amount", "most_likely_error:amount", "incremental_allowance:amount", "upper_misstatement_limit:amount", "upper_misstatement_limit_exact:string", "misstatements:[sample_misstatement]"]
 
 [[shape]]
 name = "sample_misstatement"
@@ -2048,6 +2048,11 @@ fields = ["item_id:string", "entry:hex", "ordinal:int", "side:string", "open:amo
 name = "procedure_row"
 doc = "One procedures.toml row."
 fields = ["id:string", "version:int", "claim:string", "evidence:string", "tie_break:string", "complexity:string", "calibration:string", "summary:string", "inputs:[procedure_input_decl]", "parameters:[procedure_parameter_decl]"]
+
+[[shape]]
+name = "procedure_claim"
+doc = "`fa capabilities`: one registered Lantern procedure and the claim class of its output (doctrine 12: a score or threshold test is `statistical`, never an invariant); `fa procedure list` has the full row."
+fields = ["id:string", "version:int", "claim:string", "summary:string"]
 
 [[shape]]
 name = "procedure_input_decl"
@@ -3909,7 +3914,7 @@ stdin_kind = "object"
 stdin_via = "--audited"
 required = ["--account", "--seed"]
 dont = ["Don't pick or change a seed to get a different sample: the seed is declared before drawing and recorded with the sample, and an examiner reproduces the draw from it.", "Don't treat excluded items as tested: they are the account's opposite-side open items, outside the positive-value population, and need their own procedure.", "Don't present upper_misstatement_limit as a conclusion: it is the Stringer statistic; comparing it with tolerable misstatement is the auditor's judgment.", "Don't supply book values to evaluate: they come from the re-drawn sample; audited carries only item_id and audited for every selected item."]
-mistakes = ["Passing --interval as a bare number: it is an amount with its unit, \"500.00 USD\", in the population's unit.", "Asking for a uniform size larger than population_count, or passing size to mus or interval to uniform.", "Evaluating without the sample's numeric as_known_at, or with audited values for only some selected items (exit 8 names the missing and unexpected ids)."]
+mistakes = ["Passing --interval as a bare number: it is an amount with its unit, \"500.00 USD\", in the population's unit.", "Planning with tolerable but without an explicit expected (\"0.00 USD\" when none is expected) and confidence, or passing interval together with tolerable.", "Asking for a uniform size larger than population_count, or passing size to mus or interval to uniform.", "Evaluating without the sample's numeric as_known_at, or with audited values for only some selected items (exit 8 names the missing and unexpected ids)."]
 
 # Intrinsic fiscal-year closing (fa-4o0).
 [[event]]
@@ -4169,7 +4174,7 @@ ops = ["read"]
 reach = "judged"
 
 [[bound]]
-verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor"]
+verbs = ["gl", "replay", "certificate", "procedure", "sample", "triage", "next", "doctor"]
 ops = ["read"]
 
 # A search reads every entry: the whole book.

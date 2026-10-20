@@ -3522,6 +3522,16 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
         "--book",
         &b,
         "--json",
+/// fa-kaf7: the on-demand fa.audit cluster draws exactly the CLI's sample
+/// under the launch-bound read surface, and evaluates an MUS sample from
+/// inline audited values at the sample's recorded sequence.
+#[test]
+fn the_audit_cluster_draws_and_evaluates_the_clis_sample() {
+    let dir = tmp("audit-sample");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book", "create", "--book", &b, "--name", "Audit Co", "--json",
     ]);
     let chart = dir.join("chart.json");
     std::fs::write(
@@ -3971,6 +3981,11 @@ fn an_agent_posts_into_a_scenario_over_mcp_and_trunk_is_untouched() {
         &b,
         "--json",
     ]);
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","leaf":true,"unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","leaf":true,"unit":"USD"}]}"#,
+    )
+    .unwrap();
+    let chart = chart.display().to_string();
+    cli_data(&["chart", "import", &chart, "--book", &b, "--json"]);
     cli_data(&[
         "period",
         "create",
@@ -4023,4 +4038,94 @@ fn an_agent_posts_into_a_scenario_over_mcp_and_trunk_is_untouched() {
         scenario.contains("37.00"),
         "the scenario carries it: {scenario}"
     );
+    for (key, amount) in [("a", "100.00"), ("b", "250.00"), ("c", "700.00")] {
+        let intent = dir.join(format!("{key}.json"));
+        std::fs::write(
+            &intent,
+            format!(
+                r#"{{"idempotency_key":"sale-{key}","effective_date":"2026-03-15","legs":[{{"side":"debit","account":"1200","amount":"{amount} USD"}},{{"side":"credit","account":"4000","amount":"{amount} USD"}}]}}"#
+            ),
+        )
+        .unwrap();
+        let intent = intent.display().to_string();
+        cli_data(&[
+            "post",
+            "--intent",
+            &intent,
+            "--evidence",
+            &oid,
+            "--book",
+            &b,
+            "--json",
+        ]);
+    }
+    let parse = |text: &str| -> JsonValue { fastmcp_rust::serde_json::from_str(text).unwrap() };
+    let expected = parse(&cli_data(&[
+        "sample",
+        "uniform",
+        "--account",
+        "1200",
+        "--seed",
+        "7",
+        "--size",
+        "2",
+        "--book",
+        &b,
+        "--json",
+    ]));
+
+    let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.audit"]);
+    mcp.discover();
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_audit_sample",
+        json!({"method": "uniform", "account": "1200", "seed": 7, "size": 2}),
+    );
+    assert!(!error, "a read-only Agent session draws a sample: {text}");
+    let drawn = parse(&text);
+    for key in [
+        "known_at",
+        "population_count",
+        "population_digest",
+        "sample_digest",
+        "selected",
+    ] {
+        assert_eq!(drawn[key], expected[key], "{key}: {text}");
+    }
+    assert_eq!(drawn["population_count"], json!(3), "{text}");
+
+    let known_at = drawn["known_at"].as_u64().unwrap().to_string();
+    let draw = json!({
+        "method": "mus", "account": "1200", "seed": 7, "interval": "300.00 USD",
+        "as_known_at": known_at,
+    });
+    let (error, text, _) = call_tool(&mut mcp, "fa_audit_sample", draw);
+    assert!(!error, "{text}");
+    let mus = parse(&text);
+    // Every selected item audited at its book value: no misstatement, so the
+    // upper limit is the basic precision, 300.00 x 3.00 at 95%.
+    let items: Vec<JsonValue> = mus["selected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| json!({"item_id": row["item_id"], "audited": row["book_value"]}))
+        .collect();
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_audit_sample",
+        json!({
+            "method": "evaluate", "account": "1200", "seed": 7, "interval": "300.00 USD",
+            "as_known_at": known_at, "confidence": 95, "audited": {"items": items},
+        }),
+    );
+    assert!(!error, "{text}");
+    let evaluated = parse(&text);
+    assert_eq!(evaluated["sample_digest"], mus["sample_digest"], "{text}");
+    assert_eq!(evaluated["misstatement_count"], json!(0), "{text}");
+    assert_eq!(
+        evaluated["upper_misstatement_limit"],
+        json!("900.00 USD"),
+        "{text}"
+    );
+    assert_eq!(mcp.finish(), 0);
 }
