@@ -49,6 +49,7 @@ const LOCAL_FLAGS: &[&str] = &[
     "--evidence",
     "--export-format",
     "--out",
+    "--file",
 ];
 
 fn invalid(message: impl Into<String>) -> Fail {
@@ -125,12 +126,15 @@ fn check_options(args: &Args, sub: &str) -> Result<(), Fail> {
         ],
         "list" => &["--certificate", "--known-at", "--as-known-at"],
         "show" => &["--known-at", "--as-known-at"],
+        // --certificate and --file select a run review (review_run).
         "review" => &[
             "--action",
             "--note",
             "--dismissal-reason",
             "--previous",
             "--evidence",
+            "--certificate",
+            "--file",
         ],
         "export" => &[
             "--certificate",
@@ -737,6 +741,12 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 fn review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() == 2 && args.flag("--file").is_some() {
         return review_run(ctx, args);
+    }
+    if args.flag("--certificate").is_some() || args.flag("--file").is_some() {
+        return Err(usage(
+            "--certificate and --file select a run review, which names no F:<vid>",
+            REVIEW_RUN_EXAMPLE,
+        ));
     }
     if args.positional.len() != 3 {
         return Err(usage("finding review needs one F:<vid>", EXAMPLE));
