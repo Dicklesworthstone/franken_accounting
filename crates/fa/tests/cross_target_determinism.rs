@@ -582,6 +582,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // binds, and the symbol-table digest the book's genesis records, which
     // the checkpoint's substrate chain commitment covers. The fold and
     // every report-byte pin are unchanged.
+    // fa-t8gk narrowed the bound registry closure of report certificates to
+    // the 4 registries their folds read (`account_types`, `entry_classes`,
+    // `units`, `foundations`; plus `reason_codes` for `ExplainBalance` only),
+    // excluding unread post-time/symbol registries (`admissibility`, `limits`,
+    // `rounding_laws`, `symbols`, and `reason_codes` on statements). That moves
+    // only `tb_cert`, `bs_cert`, and `is_cert` once; the fold, report bytes,
+    // and evidence bundle pins are unchanged.
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -608,7 +615,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "99814c298bd63c28f3c23815a2fcf50b945340653e62df319bb1b5ad2d51ab8f",
+        "f7ff642371e3219ab0df40cc75fa82b62bbd7806b68561dce5a7b842e1c08fbd",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -620,7 +627,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "120d5829008af2d8c05fed181488966b4044dae2fb1ed49c6055e0da566923d9",
+        "fd97ba60449e5402dd126a5afa064f95925c039e33398525f7bc1c5e306b46db",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -632,7 +639,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "91ff54afabc2c522a362a888191c369b4f0c8261ed5a8d794fc5be17fd3cafe6",
+        "a2c29a1e1728711da548c04cebb9c52d3cfbf2d5aea640fccb3fa423f0418b32",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
