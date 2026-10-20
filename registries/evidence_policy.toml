@@ -347,3 +347,12 @@ class = "ProductionControl"
 requirement = "control_record"
 min_documents = 0
 kinds = "any"
+
+# An engagement's records (fa-zgn) carry their subject in the payload; a Book
+# record's proof ref is the committed entry that makes the correction, read
+# and compared leg for leg at commit. None needs a document.
+[[minimum]]
+class = "EngagementControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"
