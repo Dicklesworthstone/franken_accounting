@@ -28,6 +28,7 @@ use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{book_root, edge_id, leg_vid, reversal_vid};
 
 mod lifecycle;
+mod reconciliation;
 mod verify;
 mod wire;
 
@@ -35,9 +36,16 @@ mod wire;
 pub const SCHEMA_REGISTRY: &str =
     include_str!("../../../registries/object_schemas/bank_match.toml");
 
+pub use crate::attestation::ReconciledClaim;
 pub use lifecycle::{
     BankMatchHistory, BankUnmatch, BankUnmatchRecorded, BankUnmatchRequest,
     UNMATCH_SCHEMA_REGISTRY, admit_bank_match_history, bank_match_history, unmatch_bank_match,
+};
+pub use reconciliation::{
+    BankReconciliationLock, BankReconciliationPreparation, BankReconciliationRecorded,
+    BankReconciliationRequest, BankReconciliationState, BankReconciliationStatus,
+    PreparedBankReconciliation, bank_reconciliation_status, prepare_bank_reconciliation,
+    reconcile_bank_statement, witness_reconciliation_locks,
 };
 pub use wire::BankMatchConfirmation;
 use wire::{BankLine, claim_props, match_props};

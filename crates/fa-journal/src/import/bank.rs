@@ -368,7 +368,7 @@ pub struct BankStatementLink {
 }
 
 impl BankStatementLink {
-    fn payload(&self) -> Result<Vec<u8>, KernelError> {
+    pub(crate) fn payload(&self) -> Result<Vec<u8>, KernelError> {
         let manifest = self
             .manifest
             .canonical_bytes()

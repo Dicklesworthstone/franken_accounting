@@ -722,6 +722,9 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     admission: Admission,
 ) -> Outcome<Option<fa_policy::AccountScope>> {
     let proposal = &req.proposal;
+    if let Err(refusal) = validate_post_coordinate(book, proposal) {
+        return Ok(Err(refusal));
+    }
     let explicit: Vec<(fa_money::UnitId, i128)> = proposal
         .legs
         .iter()
@@ -766,6 +769,67 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     Ok(Ok(scope))
 }
 
+/// Reject malformed or foreign intents before admission observes policy or
+/// hydrates history, including through the asynchronous compound entrypoints.
+fn validate_post_coordinate(book: &BookContext, proposal: &EntryPayload) -> Result<(), Refusal> {
+    proposal.validate().map_err(|error| {
+        Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            error.to_string(),
+            "Appendix A fa:entry:v1",
+            "fix the named field and resubmit",
+        )
+    })?;
+    if proposal.book_id != book.book_id {
+        return Err(Refusal::new(
+            code::COORDINATE,
+            exit::USAGE,
+            format!(
+                "the intent names book {} but this book is {}",
+                proposal.book_id.to_hex(),
+                book.book_id.to_hex()
+            ),
+            "plan §2.2 (an entry belongs to exactly one book)",
+            "set book_id to this book's id (fa book info --json) or open the book the intent names",
+        ));
+    }
+    if proposal.branch_id != Id128::TRUNK {
+        return Err(Refusal::new(
+            code::COORDINATE,
+            exit::USAGE,
+            format!(
+                "the intent names branch {}, but only trunk is writable in this slice",
+                proposal.branch_id.to_hex()
+            ),
+            "plan Appendix H (branches: interim posture = intent-log drafts)",
+            "set branch_id to trunk; drafts and scenarios land with the branch slice",
+        ));
+    }
+    if proposal.class == EntryClass::SCHEDULE_CONTROL {
+        return Err(Refusal::new(
+            code::CANCEL_BY_KERNEL,
+            exit::USAGE,
+            "a ScheduleControl entry (a schedule's cancellation) is journaled by the kernel, never posted",
+            "plan §7.6 (cancelled by lineage), FA-INV-08",
+            "reverse the scheduled target with a Reversal; its commit journals the cancellation",
+        ));
+    }
+    if proposal.class.is_control() {
+        return Err(Refusal::new(
+            code::CONTROL_VIA_POST,
+            exit::USAGE,
+            format!(
+                "`{}` is a control class",
+                proposal.class.name().unwrap_or("?")
+            ),
+            "plan §8.1",
+            "use `fa period <transition>` or `fa chart import`; control records are not posted",
+        ));
+    }
+    Ok(())
+}
+
 /// Post one entry. Exactly one substrate transaction commits on success;
 /// a refusal leaves the book unchanged.
 pub async fn post<V: asupersync::fs::Vfs + Clone>(
@@ -774,16 +838,16 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<Posted> {
-    if !req.capability.daily_totals().is_empty() {
-        if let Err(refusal) = authorize_request(db, book, &req, Admission::Commit)? {
-            return Ok(Err(refusal));
-        }
-        ctx.query()
-            .checkpoint()
-            .map_err(WriteTxnError::Interrupted)?;
-        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
-            return Ok(Err(refusal));
-        }
+    if let Err(refusal) = authorize_request(db, book, &req, Admission::Commit)? {
+        return Ok(Err(refusal));
+    }
+    // Reconciliation protection, like daily usage, derives from immutable
+    // native history. Reopening a checkpoint must not hide a retired close.
+    ctx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
     }
     match prepare_post(db, ctx, book, req)? {
         Err(refusal) => Ok(Err(refusal)),
@@ -810,6 +874,8 @@ const POSTED_CLASSES: [EntryClass; 9] = [
 /// witnesses at one prefix without publishing a commit. Another prepared
 /// operation may commit before this one; the ordinary validator decides
 /// whether the original witnesses still hold.
+/// The caller must have loaded the retained history from sequence zero;
+/// [`post`] performs that admission and hydration for ordinary callers.
 pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -857,6 +923,106 @@ fn shown(book: &BookContext, unit: fa_money::UnitId, mantissa: i128) -> String {
         .unwrap_or_else(|_| mantissa.to_string())
 }
 
+/// A reconciled account's cutoff protects every later leg at or before that
+/// date. The account endpoint is a real native absence witness: publishing a
+/// new attestation's mandatory ATTESTS edge conflicts with a prepared posting.
+/// The immutable claim remains protected even after its live balance drifts.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconciliation_citations<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    effective_date: fa_time::DateDay,
+    legs: &[fa_model::LegPayload],
+) -> Outcome<Vec<crate::bank::BankDecisionRef>> {
+    let accounts = legs
+        .iter()
+        .map(|leg| ((leg.account_ref, leg.amount.unit), effective_date))
+        .collect();
+    reconciliation_citations_for_accounts(txn, db, ctx, book, capability, &accounts)
+}
+
+/// A migration activation can touch several dates. The earliest new effective
+/// day on each account and currency is sufficient to judge every cutoff once.
+pub(crate) fn reconciliation_citations_for_accounts<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    account_dates: &BTreeMap<(VId, fa_money::UnitId), fa_time::DateDay>,
+) -> Outcome<Vec<crate::bank::BankDecisionRef>> {
+    if account_dates.is_empty() {
+        return Ok(Ok(Vec::new()));
+    }
+    let accounts: Vec<_> = account_dates
+        .keys()
+        .map(|(account, _)| *account)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let locks = match crate::bank::witness_reconciliation_locks(db, ctx, book, txn, &accounts)? {
+        Ok(locks) => locks,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let mut citations = BTreeSet::new();
+    for lock in locks {
+        let Some(effective_date) = account_dates.get(&(lock.account, lock.unit)) else {
+            // Multi-currency leaves may have independent statement closes;
+            // another currency does not contribute to this exact cash fold.
+            continue;
+        };
+        if *effective_date > lock.reconciled_through {
+            continue;
+        }
+        if let Err(denial) = fa_policy::require(
+            capability,
+            fa_policy::Op::Reconcile,
+            "posting into an attested bank reconciliation",
+        ) {
+            let mut refusal = policy::refusal(&denial);
+            refusal.message = format!(
+                "{}; account {:032x} in unit {} is reconciled through {} by attestation {:032x}, and this entry is effective {}",
+                refusal.message,
+                lock.account.0,
+                lock.unit.0,
+                lock.reconciled_through.render(),
+                lock.attestation.vid.0,
+                effective_date.render(),
+            );
+            refusal.cite = "plan §9.4 (postings on or before an attested cash cutoff require reconcile; historical assertions remain immutable)".into();
+            refusal.fix = "have an authorized reconciler review and post the backdated change; the new entry will retain a citation to the affected attestation and bank status will report its live drift".into();
+            return Ok(Err(refusal));
+        }
+        citations.insert(lock.attestation);
+    }
+    Ok(Ok(citations.into_iter().collect()))
+}
+
+/// Retain every affected assertion in the same publication as its authorized
+/// late change. These edges are evidence for the live reconciliation monitor,
+/// not a mutable replacement for the assertion or a separately stored balance.
+pub(crate) fn reconciliation_edges(
+    entry: VId,
+    citations: &[crate::bank::BankDecisionRef],
+) -> Option<WriteBatch> {
+    if citations.is_empty() {
+        return None;
+    }
+    let mut batch = WriteBatch::new(relation::CITES);
+    for citation in citations {
+        batch.add_edge(
+            edge_id(relation::CITES, entry, citation.vid),
+            entry,
+            citation.vid,
+            vec![],
+        );
+    }
+    Some(batch)
+}
+
 /// Prepare the actual class over an optional already-staged reversal.
 /// The second member reads the first member's native transaction overlay,
 /// including released applications and limit-cell moves. No rehearsal
@@ -880,63 +1046,11 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         .as_ref()
         .and_then(ReplacementBasis::recorded_at);
 
-    // 1. Structure (fa-model's rules). Usage error: the payload is malformed.
-    if let Err(e) = proposal.validate() {
-        return Ok(Err(Refusal::new(
-            code::STRUCTURE,
-            exit::USAGE,
-            e.to_string(),
-            "Appendix A fa:entry:v1",
-            "fix the named field and resubmit",
-        )));
-    }
-    // 1'. The coordinate (plan §2.2): this book, trunk. Decided from the
-    //     payload alone, before any storage observation; branches arrive with
-    //     the branch API (Appendix H), not by admitting a foreign branch_id.
-    if proposal.book_id != book.book_id {
-        return Ok(Err(Refusal::new(
-            code::COORDINATE,
-            exit::USAGE,
-            format!(
-                "the intent names book {} but this book is {}",
-                proposal.book_id.to_hex(),
-                book.book_id.to_hex()
-            ),
-            "plan §2.2 (an entry belongs to exactly one book)",
-            "set book_id to this book's id (fa book info --json) or open the book the intent names",
-        )));
-    }
-    if proposal.branch_id != Id128::TRUNK {
-        return Ok(Err(Refusal::new(
-            code::COORDINATE,
-            exit::USAGE,
-            format!(
-                "the intent names branch {}, but only trunk is writable in this slice",
-                proposal.branch_id.to_hex()
-            ),
-            "plan Appendix H (branches: interim posture = intent-log drafts)",
-            "set branch_id to trunk; drafts and scenarios land with the branch slice",
-        )));
+    // 1. Structure and coordinate are decided before any storage observation.
+    if let Err(refusal) = validate_post_coordinate(book, proposal) {
+        return Ok(Err(refusal));
     }
     let class_name = proposal.class.name().unwrap_or("?");
-    if proposal.class == EntryClass::SCHEDULE_CONTROL {
-        return Ok(Err(Refusal::new(
-            code::CANCEL_BY_KERNEL,
-            exit::USAGE,
-            "a ScheduleControl entry (a schedule's cancellation) is journaled by the kernel, never posted",
-            "plan §7.6 (cancelled by lineage), FA-INV-08",
-            "reverse the scheduled target with a Reversal; its commit journals the cancellation",
-        )));
-    }
-    if proposal.class.is_control() {
-        return Ok(Err(Refusal::new(
-            code::CONTROL_VIA_POST,
-            exit::USAGE,
-            format!("`{class_name}` is a control class"),
-            "plan §8.1",
-            "use `fa period <transition>` or `fa chart import`; control records are not posted",
-        )));
-    }
     // 1a. Authorization precedes observation (doctrine 8, FA-INV-10): the
     //     capability is the acting principal's, an Agent profile never
     //     writes trunk, `post` is held, every explicit leg is within its
@@ -2945,6 +3059,32 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let entry: Entry = sealed.seal(req.approvals.clone(), req.plan_certificate)?;
+    // Reservations and staged migration chunks do not change posted cash.
+    // Resolution(Posts) is checked when it posts; Finalize checks the chunks
+    // it actually activates. Voids already has an empty sealed leg vector.
+    let posted_legs = if matches!(
+        entry.proposal.class,
+        EntryClass::PENDING | EntryClass::MIGRATION
+    ) {
+        &[][..]
+    } else {
+        entry.proposal.legs.as_slice()
+    };
+    let reconciliation = match reconciliation_citations(
+        &txn,
+        db,
+        ctx,
+        book,
+        &req.capability,
+        entry.proposal.effective_date,
+        posted_legs,
+    )? {
+        Ok(citations) => citations,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
     let usage = match crate::usage::judge(&txn, db, ctx, book, &req.capability, &entry, evid)? {
         Ok(usage) => usage,
         Err(refusal) => {
@@ -3090,6 +3230,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         batches.push(derived_from);
     }
     batches.extend(evidence_edges(evid, &evidence));
+    batches.extend(reconciliation_edges(evid, &reconciliation));
     batches.retain(|b| !b.is_empty());
     txn.write_ordered(db, batches)?;
 
@@ -3101,6 +3242,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     let entry_bytes = entry.encode()?;
     effect_hasher.update(&(entry_bytes.len() as u64).to_le_bytes());
     effect_hasher.update(&entry_bytes);
+    // Existing plans without reconciliation effects preserve their bytes.
+    // A new plan binds the exact immutable citations it will publish.
+    if !reconciliation.is_empty() {
+        effect_hasher.update(b"fa:post-reconciliation-citations:v1");
+        effect_hasher.update(&(reconciliation.len() as u64).to_le_bytes());
+        for citation in &reconciliation {
+            effect_hasher.update(&citation.vid.0.to_le_bytes());
+            effect_hasher.update(&citation.digest);
+        }
+    }
     effect_hasher.update(&(judged.moves.len() as u64).to_le_bytes());
     for m in &judged.moves {
         effect_hasher.update(&m.cell.0.to_le_bytes());
@@ -3356,20 +3507,16 @@ pub async fn post_replacement_pair<V: asupersync::fs::Vfs + Clone>(
     reversal_req: PostRequest,
     replacement_req: PostRequest,
 ) -> Outcome<(Posted, Posted)> {
-    if !reversal_req.capability.daily_totals().is_empty()
-        || !replacement_req.capability.daily_totals().is_empty()
-    {
-        for request in [&reversal_req, &replacement_req] {
-            if let Err(refusal) = authorize_request(db, book, request, Admission::Commit)? {
-                return Ok(Err(refusal));
-            }
-        }
-        ctx.query()
-            .checkpoint()
-            .map_err(WriteTxnError::Interrupted)?;
-        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+    for request in [&reversal_req, &replacement_req] {
+        if let Err(refusal) = authorize_request(db, book, request, Admission::Commit)? {
             return Ok(Err(refusal));
         }
+    }
+    ctx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
     }
     let (prior, prepared) =
         match prepare_replacement_pair(db, ctx, book, reversal_req, replacement_req, false)? {

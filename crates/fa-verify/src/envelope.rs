@@ -25,9 +25,11 @@
 use crate::blake3::hash_parts;
 use crate::codec::{DecodeError, Reader, Reason, Writer};
 
+mod reconciled;
+
 /// Record kinds covered by the accumulator (plan §13.2, bead `fa-va02`):
 /// journal entries (posting and control classes), attestations (`Reviewed`,
-/// `ManualAssertion`, `RegisterEquals`), custody receipts and transfers, and
+/// `ManualAssertion`, `RegisterEquals`, `Reconciled`), custody receipts and transfers, and
 /// supplemental evidence attachments.
 pub const KIND_ENTRY: u8 = 1;
 pub const KIND_ATTESTATION: u8 = 2;
@@ -615,6 +617,16 @@ fn attestation_record(
     within_commit_ordinal: u32,
 ) -> Result<LeafEnvelope, RecordError> {
     let n = payload.len();
+    if n > MAX_RECORD_BYTES {
+        return Err(RecordError::Decode(DecodeError {
+            offset: 0,
+            what: "attestation.payload",
+            reason: Reason::TooLong {
+                max: MAX_RECORD_BYTES,
+                actual: n,
+            },
+        }));
+    }
     if proposal_len > n || n - proposal_len != 66 {
         return Err(RecordError::Split);
     }
@@ -658,6 +670,7 @@ fn attestation_record(
         let book_id = r.fixed("attestation.book_id")?;
         let claim_tag = r.u8("attestation.claim")?;
         let mut expected_cell = None;
+        let mut expected_source = None;
         match claim_tag {
             2 => {
                 let count = r.count(1024, 32, "attestation.against")?;
@@ -689,6 +702,12 @@ fn attestation_record(
                 r.fixed::<32>("register_equals.fold_digest")?;
                 expected_cell = Some(register_cell_digest(account, unit_id, period, entity));
             }
+            3 => {
+                if profile != 0 {
+                    return Err(r.error("reconciled.profile", Reason::BadTag(profile)));
+                }
+                expected_source = Some(reconciled::read(&mut r, book_id)?);
+            }
             t => return Err(r.error("attestation.claim", Reason::BadTag(t))),
         }
         let subjects = r.count(1, 33, "attestation.subject_refs")?;
@@ -700,13 +719,28 @@ fn attestation_record(
         let valid_subject = match (claim_tag, subject_tag) {
             (2, 1) | (8, 2) => true,
             (4, 3) => expected_cell == Some(subject_bytes),
+            (3, 1) => expected_source
+                .as_ref()
+                .is_some_and(|source| source.manifest_oid == subject_bytes),
             _ => false,
         };
         if !valid_subject {
             return Err(r.error("attestation.subject", Reason::BadTag(subject_tag)));
         }
         r.u128("attestation.principal")?;
-        if claim_tag == 4 {
+        if let Some(source) = expected_source {
+            let mut expected = [source.manifest_oid, source.statement_oid];
+            expected.sort();
+            let count = r.count(2, 32, "reconciled.evidence_refs")?;
+            if count != 2 || expected[0] == expected[1] {
+                return Err(r.error("reconciled.evidence_refs", Reason::BadTag(0)));
+            }
+            for oid in expected {
+                if r.fixed::<32>("reconciled.evidence_ref")? != oid {
+                    return Err(r.error("reconciled.evidence_refs", Reason::Unsorted));
+                }
+            }
+        } else if claim_tag == 4 {
             let count = r.count(1024, 32, "attestation.evidence_refs")?;
             let mut prev: Option<[u8; 32]> = None;
             for _ in 0..count {

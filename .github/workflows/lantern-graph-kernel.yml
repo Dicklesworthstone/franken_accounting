@@ -6,6 +6,7 @@ on:
     paths:
       - 'registries/object_schemas/bank_unmatch.toml'
       - 'registries/object_schemas/bank_match.toml'
+      - 'registries/object_schemas/attestation.toml'
       - 'crates/fa-mcp/tests/parity.rs'
       - 'crates/fa-policy/src/lib.rs'
       - 'crates/fa-policy/src/bank_matching.rs'
@@ -24,6 +25,14 @@ on:
       - 'crates/fa-journal/src/bank.rs'
       - 'crates/fa-journal/src/bank/**'
       - 'crates/fa-journal/tests/bank_matches.rs'
+      - 'crates/fa-journal/tests/bank_matches/**'
+      - 'crates/fa-journal/src/attestation.rs'
+      - 'crates/fa-journal/src/draft.rs'
+      - 'crates/fa-journal/src/migration.rs'
+      - 'crates/fa-journal/src/schedule.rs'
+      - 'crates/fa-notary/src/journal.rs'
+      - 'crates/fa-verify/src/envelope.rs'
+      - 'crates/fa-verify/src/envelope/**'
       - 'crates/fa-cli/src/bank.rs'
       - 'crates/fa-cli/src/closing.rs'
       - 'crates/fa-cli/tests/closing.rs'
@@ -247,12 +256,15 @@ jobs:
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-policy --lib capability --jobs 2 -- --nocapture
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test usage --jobs 2 -- --nocapture
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test closing_history --jobs 2
-      - name: Test native bank claims, immutable releases and generation history
+      - name: Test native bank claims, statement closes and protected cash history
         if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test bank_matches --jobs 2 -- --nocapture
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib attestation --jobs 2 -- --nocapture
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-verify --lib envelope --jobs 2 -- --nocapture
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-notary --lib journal::tests::every_evidence_kind_matches_the_verifier_byte_for_byte --jobs 2 -- --exact --nocapture
       - name: Test bank statement parsers, retained intake, matching and native confirmations
         if: ${{ !cancelled() }}
         shell: bash

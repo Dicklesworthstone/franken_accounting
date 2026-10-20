@@ -129,7 +129,7 @@ pub fn plan_post<V: Vfs + Clone>(
     }
 }
 
-/// Async planning admission for a checkpoint-opened daily quota. Loading
+/// Async planning admission for checkpoint-opened reconciliation and quota history. Loading
 /// retained history does not publish anything; it follows current native
 /// authority and scope admission, before the ordinary synchronous pipeline.
 pub async fn plan_post_with_history<V: Vfs + Clone>(
@@ -139,21 +139,22 @@ pub async fn plan_post_with_history<V: Vfs + Clone>(
     capability: Capability,
     intent: PostIntent,
 ) -> Outcome<PostPlan> {
-    if !capability.daily_totals().is_empty() {
-        if let Err(refusal) = crate::post::authorize_request(
-            db,
-            book,
-            &request(&intent, capability.clone()),
-            crate::post::Admission::Plan,
-        )? {
-            return Ok(Err(refusal));
-        }
-        ctx.query()
-            .checkpoint()
-            .map_err(WriteTxnError::Interrupted)?;
-        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
-            return Ok(Err(refusal));
-        }
+    if let Err(denial) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
+    if let Err(refusal) = crate::post::authorize_request(
+        db,
+        book,
+        &request(&intent, capability.clone()),
+        crate::post::Admission::Plan,
+    )? {
+        return Ok(Err(refusal));
+    }
+    ctx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
     }
     plan_post(db, ctx, book, capability, intent)
 }
@@ -533,13 +534,11 @@ pub async fn commit_plan<V: Vfs + Clone>(
     if let Err(refusal) = policy::capability_admitted(db, book, &capability)? {
         return Ok(Err(refusal));
     }
-    if !capability.daily_totals().is_empty() {
-        ctx.query()
-            .checkpoint()
-            .map_err(WriteTxnError::Interrupted)?;
-        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
-            return Ok(Err(refusal));
-        }
+    ctx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
     }
     let certificate = plan.certificate();
     let commitment = capability
@@ -827,28 +826,24 @@ pub async fn plan_replacement_with_history<V: Vfs + Clone>(
     reversal: PostIntent,
     replacement: PostIntent,
 ) -> Outcome<ReplacementPlan> {
-    if !capability.daily_totals().is_empty() {
-        if let Err(denial) =
-            fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None)
-        {
-            return Ok(Err(policy::refusal(&denial)));
-        }
-        for intent in [&reversal, &replacement] {
-            if let Err(refusal) = crate::post::authorize_request(
-                db,
-                book,
-                &request(intent, capability.clone()),
-                crate::post::Admission::Plan,
-            )? {
-                return Ok(Err(refusal));
-            }
-        }
-        ctx.query()
-            .checkpoint()
-            .map_err(WriteTxnError::Interrupted)?;
-        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+    if let Err(denial) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
+    for intent in [&reversal, &replacement] {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &request(intent, capability.clone()),
+            crate::post::Admission::Plan,
+        )? {
             return Ok(Err(refusal));
         }
+    }
+    ctx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
     }
     plan_replacement(db, ctx, book, capability, reversal, replacement)
 }
@@ -1003,13 +998,11 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
             "the correction plan changed or belongs to a different acting capability",
         )));
     }
-    if !capability.daily_totals().is_empty() {
-        ctx.query()
-            .checkpoint()
-            .map_err(WriteTxnError::Interrupted)?;
-        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
-            return Ok(Err(refusal));
-        }
+    ctx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
     }
     let cvid = plan_certificate_vid(book.book_id, &plan.certificate_digest().map_err(codec)?);
     match recorded_replacement(db, ctx, book, &plan, cvid).await? {

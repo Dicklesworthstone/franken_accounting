@@ -783,10 +783,10 @@ impl ClaimsLintConfig {
 // operation_costs.toml (Appendix G, beads fa-tu58, fa-i5s)
 // ---------------------------------------------------------------------------
 
-// The 19 Appendix G classes plus the registered native bank-import extension.
+// The 19 Appendix G classes plus the registered native accounting extensions.
 // Require their identities, not merely a row count: an unrelated class cannot
 // replace an existing operation's cost contract.
-const REQUIRED_OPERATION_CLASS_IDS: [&str; 24] = [
+const REQUIRED_OPERATION_CLASS_IDS: [&str; 25] = [
     "balance_read_at_watermark",
     "certified_report",
     "single_entry_post",
@@ -809,6 +809,7 @@ const REQUIRED_OPERATION_CLASS_IDS: [&str; 24] = [
     "bank_statement_import",
     "bank_match_confirmation",
     "bank_match_unmatch",
+    "bank_statement_reconciliation",
     "closing_routes_record",
     "year_end_close",
 ];
@@ -2767,6 +2768,7 @@ mod tests {
             "year_end_close",
             "bank_match_confirmation",
             "bank_match_unmatch",
+            "bank_statement_reconciliation",
         ] {
             let closing = op_costs.class(id).expect("native closing cost contract");
             assert_eq!(closing.today_transactions, 1);

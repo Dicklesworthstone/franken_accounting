@@ -22,8 +22,12 @@
 //!   layer (fa-registers) refolds the claim before it is committed, and
 //!   re-verifies a stored one by refold wherever it is relied on.
 //!
-//! The other Appendix A claims (`Prepared`, `Reconciled`, `Confirmed`,
-//! `Examined`, `Custom`) keep their tags (1, 3, 5–7) and are not
+//! - **`Reconciled`** (§5.7 / §9.4): an exact statement close, evaluated
+//!   natively from cumulative posted cash and active immutable bank matches.
+//!   Its publication and historical verification live in [`crate::bank`].
+//!
+//! The other Appendix A claims (`Prepared`, `Confirmed`,
+//! `Examined`, `Custom`) keep their tags (1, 5–7) and are not
 //! representable in this build: no constructor exists, and a stored payload
 //! carrying one does not decode.
 //!
@@ -68,6 +72,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::evidence::{document_vid, drift, hex, verify_row};
 use crate::genesis::BookContext;
+use crate::import::BankImportManifest;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{edge_id, prop, scalar_bytes, scalar_text};
 
@@ -80,7 +85,7 @@ const SCHEME_CAPABILITY: u8 = 0;
 pub const MANUAL_ASSERTION_SCOPE: &str = "manual_assertion";
 
 /// `AttestationClaim` tags, in Appendix A's order; 8 is §9.2's
-/// ManualAssertion. [`claim::REVIEWED`], [`claim::REGISTER_EQUALS`] and
+/// ManualAssertion. [`claim::REVIEWED`], [`claim::RECONCILED`], [`claim::REGISTER_EQUALS`] and
 /// [`claim::MANUAL_ASSERTION`] are implemented.
 pub mod claim {
     pub const PREPARED: u8 = 1;
@@ -97,6 +102,96 @@ pub mod claim {
 const SUBJECT_DOCUMENT: u8 = 1;
 const SUBJECT_PROPOSAL: u8 = 2;
 const SUBJECT_CELL: u8 = 3;
+
+/// Exact, cumulative cash closing against one retained statement. Unlike a
+/// `RegisterEquals` period movement, this claim binds all posted cash effective
+/// through `manifest.statement_date`, and every active confirmation used to
+/// account for the statement's lines. Values are derived by the native bank
+/// recorder, never accepted as caller-entered monetary truth.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconciledClaim {
+    pub manifest_oid: Oid,
+    pub manifest: BankImportManifest,
+    /// Complete retained interpretations, newest predecessor first. Their
+    /// publication coordinates are bound by the preceding manifest's link.
+    pub predecessors: Vec<BankImportManifest>,
+    pub import_run: VId,
+    pub import_receipt_hash: [u8; 32],
+    pub import_recorded_at: CommitSeq,
+    pub evaluated_known_at: CommitSeq,
+    pub cash_balance: i128,
+    pub cash_fold_digest: [u8; 32],
+    /// Sorted strictly by immutable native identity and digest.
+    pub matches: Vec<crate::bank::BankDecisionRef>,
+}
+
+impl ReconciledClaim {
+    fn encode(&self, w: &mut Writer) -> Result<(), KernelError> {
+        let predecessor_bytes = self
+            .predecessors
+            .iter()
+            .map(BankImportManifest::canonical_bytes)
+            .collect::<Result<Vec<_>, _>>()?;
+        w.fixed(&self.manifest_oid.0)
+            .bytes(&self.manifest.canonical_bytes()?)
+            .list(&predecessor_bytes, |w, bytes| {
+                w.bytes(bytes);
+            })
+            .u128(self.import_run.0)
+            .fixed(&self.import_receipt_hash)
+            .u64(self.import_recorded_at.0)
+            .u64(self.evaluated_known_at.0)
+            .i128(self.cash_balance)
+            .fixed(&self.cash_fold_digest)
+            .list(&self.matches, |w, reference| {
+                w.u128(reference.vid.0).fixed(&reference.digest);
+            });
+        Ok(())
+    }
+
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let claim = Self {
+            manifest_oid: Oid(r.fixed("reconciled.manifest_oid")?),
+            manifest: BankImportManifest::decode(
+                r.bytes(fa_model::limits::MAX_ENTRY_BYTES, "reconciled.manifest")?,
+            )?,
+            predecessors: r.list(
+                fa_model::limits::MAX_BANK_PREDECESSOR_DEPTH,
+                "reconciled.predecessors",
+                |r| {
+                    BankImportManifest::decode(
+                        r.bytes(fa_model::limits::MAX_ENTRY_BYTES, "reconciled.predecessor")?,
+                    )
+                },
+            )?,
+            import_run: VId(r.u128("reconciled.import_run")?),
+            import_receipt_hash: r.fixed("reconciled.import_receipt_hash")?,
+            import_recorded_at: CommitSeq(r.u64("reconciled.import_recorded_at")?),
+            evaluated_known_at: CommitSeq(r.u64("reconciled.evaluated_known_at")?),
+            cash_balance: r.i128("reconciled.cash_balance")?,
+            cash_fold_digest: r.fixed("reconciled.cash_fold_digest")?,
+            matches: r.list(
+                fa_model::limits::MAX_IMPORT_DOCUMENTS - 2,
+                "reconciled.matches",
+                |r| {
+                    Ok(crate::bank::BankDecisionRef {
+                        vid: VId(r.u128("reconciled.match.vid")?),
+                        digest: r.fixed("reconciled.match.digest")?,
+                    })
+                },
+            )?,
+        };
+        if claim.import_recorded_at.0 == 0
+            || claim.import_recorded_at > claim.evaluated_known_at
+            || claim.cash_balance != claim.manifest.closing_balance
+            || claim.matches.len() != claim.manifest.line_oids.len()
+            || !claim.matches.windows(2).all(|pair| pair[0] < pair[1])
+        {
+            return Err(r.invalid("reconciled.exact_close"));
+        }
+        Ok(claim)
+    }
+}
 
 /// A `RegisterEquals` claim's bytes (GrayPike's field table, fa-bvx 3221):
 /// the per-entity cell, its posted net in debit sign (the unit is the
@@ -202,6 +297,8 @@ pub enum AttestationClaim {
     },
     /// "This register cell equals this amount at this sequence" (§9.4).
     RegisterEquals(RegisterEqualsClaim),
+    /// "Every statement line is confirmed and cumulative cash equals its close."
+    Reconciled(Box<ReconciledClaim>),
 }
 
 impl AttestationClaim {
@@ -211,6 +308,7 @@ impl AttestationClaim {
             Self::Reviewed { .. } => claim::REVIEWED,
             Self::ManualAssertion { .. } => claim::MANUAL_ASSERTION,
             Self::RegisterEquals(_) => claim::REGISTER_EQUALS,
+            Self::Reconciled(_) => claim::RECONCILED,
         }
     }
 
@@ -221,6 +319,7 @@ impl AttestationClaim {
             Self::Reviewed { .. } => "Reviewed",
             Self::ManualAssertion { .. } => "ManualAssertion",
             Self::RegisterEquals(_) => "RegisterEquals",
+            Self::Reconciled(_) => "Reconciled",
         }
     }
 }
@@ -311,6 +410,24 @@ pub fn register_equals_vid(
     VId(u128::from_le_bytes(lo))
 }
 
+/// One exact statement-close claim per principal, retained interpretation and
+/// evaluated native prefix. Retry identity is independent of later activity.
+#[must_use]
+pub fn reconciled_vid(book: Id128, manifest: Oid, known_at: CommitSeq, principal: VId) -> VId {
+    let digest = domain_digest(
+        b"fa:vid:attestation-reconciled:v1",
+        &[
+            &book.0,
+            &manifest.0,
+            &known_at.0.to_le_bytes(),
+            &principal.0.to_le_bytes(),
+        ],
+    );
+    let mut short = [0; 16];
+    short.copy_from_slice(&digest[..16]);
+    VId(u128::from_le_bytes(short))
+}
+
 impl Attestation {
     /// The derived identity: the claim and its subject decide it.
     #[must_use]
@@ -326,6 +443,16 @@ impl Attestation {
                 Some(register_equals_vid(
                     self.book_id,
                     d,
+                    c.evaluated_known_at,
+                    self.principal,
+                ))
+            }
+            (AttestationClaim::Reconciled(c), Subject::Document(oid))
+                if *oid == c.manifest_oid && c.manifest.book_id == self.book_id =>
+            {
+                Some(reconciled_vid(
+                    self.book_id,
+                    *oid,
                     c.evaluated_known_at,
                     self.principal,
                 ))
@@ -355,6 +482,7 @@ impl Attestation {
                 statement.encode(&mut w);
             }
             AttestationClaim::RegisterEquals(c) => c.encode(&mut w),
+            AttestationClaim::Reconciled(c) => c.encode(&mut w)?,
         }
         w.list(&[self.subject], |w, s| match s {
             Subject::Document(oid) => {
@@ -395,6 +523,11 @@ impl StoredAttestation {
     /// Decode and verify: the trailing digest is the body's, and the claim
     /// and subject are a pair this build records.
     pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
+        if bytes.len() > fa_model::limits::MAX_ENTRY_BYTES {
+            return Err(KernelError::Corrupt(
+                "attestation exceeds its payload bound".into(),
+            ));
+        }
         let mut r = Reader::new(bytes);
         let (attestation, signed_digest, binding) =
             (|| -> Result<(Attestation, [u8; 32], CapabilityBinding), DecodeError> {
@@ -425,7 +558,10 @@ impl StoredAttestation {
                     claim::REGISTER_EQUALS => {
                         AttestationClaim::RegisterEquals(RegisterEqualsClaim::decode(&mut r)?)
                     }
-                    // Prepared, Reconciled, Confirmed, Examined, Custom: not
+                    claim::RECONCILED => {
+                        AttestationClaim::Reconciled(Box::new(ReconciledClaim::decode(&mut r)?))
+                    }
+                    // Prepared, Confirmed, Examined, Custom: not
                     // in this build.
                     t => return Err(r.bad_tag("attestation.claim", t)),
                 };
@@ -443,9 +579,12 @@ impl StoredAttestation {
                     return Err(r.invalid("attestation.subject_refs"));
                 };
                 let principal = VId(r.u128("attestation.principal")?);
-                // Only a RegisterEquals rests on documents in this build; for
-                // every other claim a count above 0 is refused.
-                let evidence_refs = if matches!(claim, AttestationClaim::RegisterEquals(_)) {
+                // RegisterEquals and Reconciled retain document evidence; for
+                // the other implemented claims a count above 0 is refused.
+                let evidence_refs = if matches!(
+                    claim,
+                    AttestationClaim::RegisterEquals(_) | AttestationClaim::Reconciled(_)
+                ) {
                     let refs = r.list(
                         fa_model::limits::MAX_EVIDENCE_PER_ENTRY,
                         "attestation.evidence_refs",
@@ -497,6 +636,19 @@ impl StoredAttestation {
                 hex(&signed_digest)
             )));
         }
+        if let AttestationClaim::Reconciled(claim) = &attestation.claim {
+            let mut expected = vec![claim.manifest_oid, claim.manifest.statement_oid];
+            expected.sort();
+            if binding.profile != Profile::Human
+                || claim.manifest.document_oid()? != claim.manifest_oid
+                || attestation.evidence_refs != expected
+            {
+                return Err(KernelError::Corrupt(
+                    "a Reconciled attestation lacks its exact source or Human capability binding"
+                        .into(),
+                ));
+            }
+        }
         Ok(Self {
             attestation,
             signed_digest,
@@ -521,7 +673,7 @@ fn attestation_drift(vid: VId, why: &str) -> Refusal {
 /// Check a stored Attestation row against itself: the payload decodes and
 /// hashes to its digest, the vertex is the one its claim and subject derive,
 /// and every mirror equals what the payload says.
-fn verify_attestation_row(row: &VertexRow) -> Result<StoredAttestation, String> {
+pub(crate) fn verify_attestation_row(row: &VertexRow) -> Result<StoredAttestation, String> {
     if !row.labels.contains(&label::ATTESTATION) {
         return Err("the vertex is not labeled Attestation".into());
     }
@@ -637,9 +789,12 @@ pub fn witness_manual_assertion<V: asupersync::fs::Vfs + Clone>(
             attestation: vid,
             reason_code,
         }))),
-        AttestationClaim::Reviewed { .. } | AttestationClaim::RegisterEquals(_) => Ok(Err(
-            attestation_drift(vid, "another claim sits at a ManualAssertion's identity"),
-        )),
+        AttestationClaim::Reviewed { .. }
+        | AttestationClaim::RegisterEquals(_)
+        | AttestationClaim::Reconciled(_) => Ok(Err(attestation_drift(
+            vid,
+            "another claim sits at a ManualAssertion's identity",
+        ))),
     }
 }
 

@@ -3368,7 +3368,9 @@ fn a_preparers_manual_assertion_stands_in_for_a_document_only_where_registered()
             reason_code,
             statement,
         } => Some((*reason_code, statement.clone())),
-        AttestationClaim::Reviewed { .. } | AttestationClaim::RegisterEquals(_) => None,
+        AttestationClaim::Reviewed { .. }
+        | AttestationClaim::RegisterEquals(_)
+        | AttestationClaim::Reconciled(_) => None,
     };
     let (reason_code, statement) = manual.expect("a ManualAssertion");
     assert_eq!(reason_code, 1);

@@ -488,6 +488,21 @@ complexity_witness = "A complete H-row retained-prefix scan discovers M immutabl
 notes = "A release is an attributed append-only decision referring to an exact match VID and digest. Retries return the original releasing principal and publication sequence, even after a later generation reclaims either resource. Historical prefixes preserve earlier active state. Deleted, rewritten or relabelled native rows cannot free resources or resurrect an old claim. Complete metadata-history reads hydrate retained native history only after current capability admission and do not open external manifest or BankStatement bytes. Counted witness: fa-journal/tests/bank_matches.rs."
 
 [[operation_class]]
+id = "bank_statement_reconciliation"
+name = "Native exact bank statement close and protected cash history"
+substrate_class = "Current authority, complete native history replay and one witnessed Attestation publication"
+substrate_transactions = "1 for a new exact close; 0 for an exact recorded retry or status read"
+today_posture = "One immutable Reconciled attestation binds cumulative cash, every active statement-line confirmation and the retained predecessor closure"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 Attestation vertex; 1 ATTESTS account anchor; 1 IN_BOOK edge; CITES edges to statement, manifest, import, exact confirmations and predecessor sources. Authorized later monetary posts or migration activation cite affected attestations in their existing publication."
+hot_object_exceptions = []
+external_authorities = "none at native publication; full-source facade replay uses the already governed retained document store before closing"
+complexity_witness = "Complete retained-prefix scans discover attestation births and reject later row/edge mutation. Each prior close independently refolds its original cash prefix, bank-decision history, source receipts and complete predecessor closure; nested source/birth verification may revisit history. Status additionally refolds current cash/matches and authenticates late CITES history. Work is proportional to retained history and nested prior-claim/source populations, not constant time or one account-index lookup. New close preparation witnesses the complete vertex population; ordinary posting witnesses affected accounts and attestations so the account ATTESTS anchor detects concurrent new closes without a shared mutable head."
+notes = "No changed monetary amount, independent balance store, mutable reconciliation head or extra posting transaction. New closes require the reviewed current prefix at preparation and publication; exact retries preserve the original claim without writing. The full attestation is bounded by max_entry_bytes and predecessor/line lists by existing import bounds; excess scope refuses rather than truncating. Counted native witnesses and historical/mutation negatives live under fa-journal/tests/bank_matches/reconciliation.rs and reconciliation_guard.rs."
+
+[[operation_class]]
 id = "closing_routes_record"
 name = "Journaled nominal-to-equity closing routes"
 substrate_class = "One witnessed SchemaChange control transaction"
