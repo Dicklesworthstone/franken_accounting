@@ -4570,8 +4570,9 @@ fn statistical_audit_lane_oracles_numpy_sampling_and_propcheck_suites() {
                 return Err("sample_uniform selected count mismatch".into());
             }
             let epoch = [0x42; 32];
-            let strat = sample_stratified_neyman(&pop, seed, 4, Some(epoch), epoch, VId(1))
-                .map_err(|e| e.to_string())?;
+            let strat =
+                sample_stratified_neyman(&pop, seed, 4, "fixture", Some(epoch), epoch, VId(1))
+                    .map_err(|e| e.to_string())?;
             if strat.selected.len() != 4 {
                 return Err("sample_stratified_neyman selected count mismatch".into());
             }

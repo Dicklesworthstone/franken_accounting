@@ -81,7 +81,16 @@ fn population(scale: i128) -> SamplePopulation {
 fn stratified_neyman_allocation_is_scale_invariant_for_wide_mantissas() {
     let epoch = [0x55; 32];
     let plan = |scale| -> StratifiedSamplePlan {
-        sample_stratified_neyman(&population(scale), 7, 6, Some(epoch), epoch, VId(99)).unwrap()
+        sample_stratified_neyman(
+            &population(scale),
+            7,
+            6,
+            "fixture",
+            Some(epoch),
+            epoch,
+            VId(99),
+        )
+        .unwrap()
     };
     let allocation = |plan: &StratifiedSamplePlan| {
         plan.strata
