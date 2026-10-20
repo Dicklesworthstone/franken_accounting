@@ -82,7 +82,7 @@ subcommands = ["create", "info"]
 flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods", "--time-zone", "--opening-date", "--entity"]
 switches = []
 events = ["book_created", "book"]
-exits = [0, 2, 3, 4, 5]
+exits = [0, 2, 3, 4, 5, 7]
 usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]]] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC] [--opening-date YYYY-MM-DD] [--entity <code>[:<name>][:<functional_unit>]]...", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info"]
 example = "fa book create --book ./books/myco --name \"My Co\" --json"
 
@@ -408,7 +408,7 @@ subcommands = []
 flags = ["--account", "--as-of", "--as-known-at", "--certificate-out", "--branch"]
 switches = ["--certify"]
 events = ["open_items", "report_certificate"]
-exits = [0, 2, 3, 4, 5, 8]
+exits = [0, 2, 3, 4, 5, 7, 8]
 usage = ["open-items [--account <code>] [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "Without certification this is a pure read. --as-of folds open items through an inclusive civil date. --certify retains an immutable report certificate in the book; --certificate-out also creates a new external copy. Unknown account filters refuse, including accounts absent at the selected known-at. Replay fixes that snapshot, account metadata, and application/reversal lineage."]
 example = "fa open-items --account 1200 --book ./books/myco --json"
 
@@ -432,7 +432,7 @@ subcommands = ["balance", "entry", "evidence", "refusal", "period", "register", 
 flags = ["--period", "--unit", "--as-known-at", "--certificate-out", "--branch"]
 switches = ["--certify", "--as-originally-reported"]
 events = ["balance_explained", "entry_explained", "evidence_explained", "refusal_explained", "period_explained", "register_explained", "lineage_explained", "report_certificate"]
-exits = [0, 2, 3, 4, 5, 8]
+exits = [0, 2, 3, 4, 5, 7, 8]
 usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "explain balance <account code> --period <code> --as-originally-reported [--certify | --certificate-out <new-file>]   (plan §7.4: the balance as its period was first reported, at the known-at of the period's first Lock transition, as fa tb --as-originally-reported; FA-REF-161 when the period was never reported; cannot be combined with --as-known-at)","explain entry <vid|E:vid>", "explain lineage <vid|E:vid> [--as-known-at HEAD|<seq>]", "explain evidence <entry-vid|E:vid>", "explain refusal <FA-REF-nnn>", "explain period <period-code>", "explain register <account-code> --period <code> [--unit <CODE>] [--as-known-at HEAD|<seq>]", "Without certification this is a pure read; `explain refusal` requires no book. --certify, --certificate-out and --as-originally-reported apply only to `explain balance`; the other subcommands refuse them (exit 2). --certify (on `explain balance`) retains the exact explanation and native read closure in the book; --certificate-out also creates a new external copy. The certificate binds historical account metadata, contributing entries, evidence references, lineage, cell history, and the whole-period fold."]
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
@@ -444,7 +444,7 @@ subcommands = ["list", "run"]
 flags = ["--known-at", "--effective-through", "--param", "--account", "--source"]
 switches = []
 events = ["procedure_list", "procedure_run"]
-exits = [0, 2, 3, 4, 5]
+exits = [0, 2, 3, 4, 5, 7]
 usage = ["procedure list", "procedure run <procedure id> [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--param <name>=<integer>]... [--account <code>] [--source <entry vid>]", "Parameters default to procedures.toml's pinned values; --param overrides one registered parameter. aging.* and trace.* need --effective-through; trace.* also need --account (the commingled account) and --source (the deposit entry)."]
 example = "fa procedure run jet.round_amounts --book ./books/myco --json"
 
@@ -670,7 +670,7 @@ subcommands = ["show"]
 flags = []
 switches = []
 events = ["entry"]
-exits = [0, 2, 4, 5]
+exits = [0, 2, 4, 5, 7]
 usage = ["entry show <vid-hex>"]
 example = "fa entry show 3f2a… --book ./books/myco --json"
 
@@ -682,7 +682,7 @@ subcommands = []
 flags = []
 switches = []
 events = ["doctor"]
-exits = [0, 2, 4, 5, 8]
+exits = [0, 2, 4, 5, 7, 8]
 usage = ["doctor   (each check is ok, warn, fail or skipped, with the fix; exit 0 only when none failed, else the first failing check's class: 4 environment, 5 foundation, 8 verification)"]
 example = "fa doctor --book ./books/myco --json"
 

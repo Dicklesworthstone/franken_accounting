@@ -751,6 +751,16 @@ impl Registry {
                     "{what}: a rule without ops reads nothing from a book, so it has no reach to judge"
                 ));
             }
+            // A launch-bound session is refused with exit 7 for a missing
+            // op or an uncovered scope, so a verb it can run documents 7.
+            if !rule.ops.is_empty()
+                && let Some(v) = verbs.iter().find(|v| !v.exits.contains(&7))
+            {
+                return Err(format!(
+                    "{what}: {} can be refused on the bound route (exit 7) but its exits omit 7",
+                    v.name
+                ));
+            }
         }
         Ok(())
     }
@@ -1866,6 +1876,14 @@ mod bound_tests {
                     "verbs = [\"checkpoint\"]\nops = [\"witness\"]\nreach = \"whole\"",
                 ),
                 "`reach` must be \"judged\"",
+            ),
+            (
+                "a bound verb whose exits omit 7",
+                planted(
+                    "events = [\"entry\"]\nexits = [0, 2, 4, 5, 7]",
+                    "events = [\"entry\"]\nexits = [0, 2, 4, 5]",
+                ),
+                "entry can be refused on the bound route (exit 7) but its exits omit 7",
             ),
             (
                 "a judged rule without ops",
