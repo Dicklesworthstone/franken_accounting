@@ -2605,14 +2605,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, _| Ok(fa_journal::genesis::list_accounts(db)?))
     }
 
-    /// Accounts from one recorded chart prefix, sorted by code. Authority
+    /// The journaled chart at one recorded prefix (plan §4.3). Authority
     /// remains current even when the chart observation is pinned to history.
-    pub fn accounts_at(
+    pub fn chart_at(
         &self,
         cx: &PurposeContexts,
         known_at: CommitSeq,
         capability: &fa_policy::Capability,
-    ) -> Outcome<Vec<AccountRow>> {
+    ) -> Outcome<fa_journal::chart::ChartSnapshot> {
         self.query(cx, |db, book| {
             if let Err(refusal) =
                 fa_journal::policy::admit_reads(db, book, capability.holder(), capability)?
@@ -2641,11 +2641,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "select an existing recorded sequence",
                 )));
             }
-            let chart = fa_journal::chart::read_at(db, book, known_at)?;
+            Ok(Ok(fa_journal::chart::read_at(db, book, known_at)?))
+        })
+    }
+
+    /// Accounts from one recorded chart prefix, sorted by code, under the
+    /// authority [`Self::chart_at`] judges.
+    pub fn accounts_at(
+        &self,
+        cx: &PurposeContexts,
+        known_at: CommitSeq,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Vec<AccountRow>> {
+        Ok(self.chart_at(cx, known_at, capability)?.map(|chart| {
             let mut accounts: Vec<_> = chart.accounts().values().cloned().collect();
             accounts.sort_by(|left, right| left.code.cmp(&right.code));
-            Ok(Ok(accounts))
-        })
+            accounts
+        }))
     }
 
     pub fn fold_period(&self, cx: &PurposeContexts, period: &str) -> Result<Fold, BookError> {

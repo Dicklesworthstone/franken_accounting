@@ -6635,6 +6635,16 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["chart", "import", &chart]).0, 0);
     assert_eq!(run(true, &["chart", "list"]).0, 0);
+    // fa-waow: one account with its place in the tree.
+    let (code, out) = run(true, &["chart", "show", "1000"]);
+    assert_eq!(code, 0, "{out}");
+    let shown = doc(&out);
+    let account = shown.get("account").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&account, "code"), "1000", "{out}");
+    assert_eq!(text(&account, "normal_side"), "debit", "{out}");
+    assert!(int(&account, "created_at").is_some(), "{out}");
+    assert_eq!(run(true, &["chart", "show", "1001"]).0, 2);
+    assert_eq!(run(true, &["chart", "show"]).0, 2);
     assert_eq!(
         run(true, &["period", "create", "--fiscal-year", "2026"]).0,
         0

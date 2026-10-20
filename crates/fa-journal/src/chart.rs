@@ -176,6 +176,12 @@ impl ChartSnapshot {
         &self.parents
     }
 
+    /// Each summary account's direct children.
+    #[must_use]
+    pub fn children(&self) -> &BTreeMap<VId, Vec<VId>> {
+        &self.children
+    }
+
     /// Exactly the posting leaves below `root`, including `root` itself if
     /// it is a leaf. An empty summary has an empty set, not a missing balance.
     /// The walk is iterative: valid deep charts never consume the call stack.

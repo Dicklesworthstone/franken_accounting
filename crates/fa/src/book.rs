@@ -2415,6 +2415,18 @@ impl Book {
         with_store!(&self.store, core => core.accounts(&self.purposes()))
     }
 
+    /// The journaled chart at a recorded prefix under current read
+    /// authority: accounts, effectivity, parents and children (plan §4.3).
+    pub fn chart_at(
+        &self,
+        known_at: CommitSeq,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::chart::ChartSnapshot> {
+        with_store!(&self.store, core =>
+            core.chart_at(&self.purposes(), known_at, capability)
+        )
+    }
+
     /// Accounts from a recorded chart prefix under current read authority.
     pub fn accounts_at(
         &self,

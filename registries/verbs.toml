@@ -90,12 +90,12 @@ example = "fa book create --book ./books/myco --name \"My Co\" --json"
 name = "chart"
 summary = "Install a chart of accounts as one journaled schema effect (from a file or an embedded template), list it, or list the templates."
 writes = true
-subcommands = ["import", "list", "templates", "open", "close", "promote"]
+subcommands = ["import", "list", "show", "templates", "open", "close", "promote"]
 flags = ["--date", "--key", "--template", "--opened", "--closed", "--on"]
 switches = []
-events = ["chart_installed", "accounts", "chart_templates", "account_lifecycle"]
+events = ["chart_installed", "accounts", "chart_account", "chart_templates", "account_lifecycle"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign; \"unit\": \"base\" is the book's base unit)", "chart list", "chart templates   (us-gaap-smb, ifrs-sme, us-bank-call-report: starting points, not GAAP, IFRS or regulatory advice)", "chart open <account.json|-> --opened YYYY-MM-DD [--closed YYYY-MM-DD] [--key K]   (one account object in the chart format, e.g. {\"code\":\"6100\",\"name\":\"Office supplies\",\"type\":\"Expense\",\"unit\":\"USD\"}; it accepts legs dated in [opened, closed))", "chart close <code> --on YYYY-MM-DD [--key K]   (the account must have a zero balance in every unit; nothing posts to it on or after that day, and its history stays)", "chart promote <code> --on YYYY-MM-DD [--key K]   (the leaf becomes a summary account from that day; new legs go to its children)", "open, close and promote are journaled SchemaChange controls under schema_change authority; no date defaults to today. The default key is account-open:<code>, or account-<action>:<code>:<day>, so an exact retry returns the recorded control."]
+usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign; \"unit\": \"base\" is the book's base unit)", "chart list", "chart show <code>   (one account: its row, normal side, parent and children codes, opened/closed/promoted dates and the commit that created it)", "chart templates   (us-gaap-smb, ifrs-sme, us-bank-call-report: starting points, not GAAP, IFRS or regulatory advice)", "chart open <account.json|-> --opened YYYY-MM-DD [--closed YYYY-MM-DD] [--key K]   (one account object in the chart format, e.g. {\"code\":\"6100\",\"name\":\"Office supplies\",\"type\":\"Expense\",\"unit\":\"USD\"}; it accepts legs dated in [opened, closed))", "chart close <code> --on YYYY-MM-DD [--key K]   (the account must have a zero balance in every unit; nothing posts to it on or after that day, and its history stays)", "chart promote <code> --on YYYY-MM-DD [--key K]   (the leaf becomes a summary account from that day; new legs go to its children)", "open, close and promote are journaled SchemaChange controls under schema_change authority; no date defaults to today. The default key is account-open:<code>, or account-<action>:<code>:<day>, so an exact retry returns the recorded control."]
 example = "fa chart import chart.json --book ./books/myco --json"
 
 [[verb]]
@@ -1279,6 +1279,12 @@ doc = "The chart templates this build embeds (plan §4.3): each one's name, vers
 fields = ["templates:[chart_template]"]
 
 [[event]]
+name = "chart_account"
+book = true
+doc = "One account of the journaled chart at head: its chart row (shape account) with its normal side, parent and children codes (sorted), the opened, closed and promoted_on dates its lifecycle controls journaled (null when none) and created_at, the commit that created it."
+fields = ["account:chart_account_detail"]
+
+[[event]]
 name = "accounts"
 book = true
 doc = "The chart, sorted by code."
@@ -2273,6 +2279,11 @@ fields = ["name:string", "doc:text", "fields:[field_doc]"]
 name = "field_doc"
 doc = "One field and its type."
 fields = ["name:string", "type:string"]
+
+[[shape]]
+name = "chart_account_detail"
+doc = "An account row (as in shape account) with its normal side (debit or credit), parent code (null at a root), children codes, opened/closed/promoted_on dates (null when not journaled) and the commit that created it."
+fields = ["code:string", "name:string", "type:string", "leaf:bool", "unit:string", "lower_bound:amount?", "upper_bound:amount?", "limit_scope:string?", "normal_side:string", "parent:string?", "children:[string]", "opened:date?", "closed:date?", "promoted_on:date?", "created_at:seq"]
 
 [[shape]]
 name = "account"
@@ -3291,9 +3302,9 @@ mistakes = ["Passing a host path as `file`: supply the chart object inline as `c
 cluster = "fa.chart"
 name = "list_accounts"
 verb = "chart"
-subcommands = ["list", "templates"]
+subcommands = ["list", "show", "templates"]
 selector = "action"
-positionals = []
+positionals = ["target?"]
 flags = []
 required = []
 dont = ["Don't pick an account by name alone; post by `code`, and only to a `leaf`.", "Don't treat a template as advice: it is a starting chart to adapt, not GAAP, IFRS or a regulatory mapping."]
@@ -4412,6 +4423,11 @@ ops = ["read"]
 [[bound]]
 verbs = ["chart", "period"]
 subcommands = ["list"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["chart"]
+subcommands = ["show"]
 ops = ["read"]
 
 # Each judges what it reaches at its recorded frontier: a trial balance its

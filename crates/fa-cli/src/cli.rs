@@ -4181,43 +4181,9 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let book = ctx.books.open(args)?;
             let rows = book.accounts()?;
             let units = &book.context().units;
-            let bound = |a: &fa_journal::AccountRow, m: Option<i128>| -> Result<Json, Fail> {
-                match (a.unit_policy, m) {
-                    (UnitPolicy::Single(u), Some(m)) => {
-                        Ok(s(render_amount(Amount::new(u, m), units)?))
-                    }
-                    _ => Ok(Json::Null),
-                }
-            };
             let items: Vec<Json> = rows
                 .iter()
-                .map(|a| {
-                    Ok(obj(vec![
-                        ("lower_bound", bound(a, a.limit.and_then(|l| l.lower))?),
-                        ("upper_bound", bound(a, a.limit.and_then(|l| l.upper))?),
-                        (
-                            "limit_scope",
-                            a.limit.map_or(Json::Null, |l| {
-                                s(match l.scope {
-                                    fa_journal::LimitScope::Lifetime => "lifetime",
-                                    fa_journal::LimitScope::Period => "period",
-                                })
-                            }),
-                        ),
-                        ("code", s(&a.code)),
-                        ("name", s(&a.name)),
-                        ("type", s(AccountType(a.account_type).name().unwrap_or("?"))),
-                        ("leaf", Json::Bool(a.is_leaf)),
-                        (
-                            "unit",
-                            s(match a.unit_policy {
-                                UnitPolicy::Single(u) => registered_unit_code(u, units)?,
-                                UnitPolicy::AnyCurrency => "any-currency".into(),
-                                UnitPolicy::AnyUnit => "any".into(),
-                            }),
-                        ),
-                    ]))
-                })
+                .map(|a| Ok(obj(account_fields(a, units)?)))
                 .collect::<Result<_, Fail>>()?;
             if out.json {
                 out.event("accounts", vec![("accounts", Json::Arr(items))], "");
@@ -4234,8 +4200,112 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             Ok(())
         }
+        Some("show") => {
+            const EXAMPLE: &str = "fa chart show 1000 --book <dir> --json";
+            let code = match args.positional.get(2) {
+                Some(code) if args.positional.len() == 3 => code,
+                _ => return Err(usage("chart show needs exactly one account code", EXAMPLE)),
+            };
+            let capability = ctx.capability(args, &["read"])?;
+            let book = ctx.books.open(args)?;
+            let chart = book.chart_at(book.head()?, &capability)??;
+            let units = &book.context().units;
+            let accounts = chart.accounts();
+            let Some(account) = accounts.values().find(|a| &a.code == code) else {
+                let codes: Vec<&str> = accounts.values().map(|a| a.code.as_str()).collect();
+                return Err(usage(
+                    format!("no account `{code}` in the chart"),
+                    nearest(code, &codes).map_or_else(
+                        || "fa chart list --json lists every code".to_string(),
+                        |n| format!("did you mean `fa chart show {n}`? (fa chart list --json lists every code)"),
+                    ),
+                ));
+            };
+            let code_of = |vid: &VId| accounts.get(vid).map(|a| a.code.clone());
+            let parent = chart.parents().get(&account.vid).and_then(code_of);
+            let mut children: Vec<String> = chart
+                .children()
+                .get(&account.vid)
+                .map(|c| c.iter().filter_map(code_of).collect())
+                .unwrap_or_default();
+            children.sort();
+            let effectivity = chart.account_effectivity(account.vid).unwrap_or_default();
+            let day = |d: Option<DateDay>| d.map_or(Json::Null, |d| s(d.render()));
+            let side = if account.normal_balance == 0 {
+                "debit"
+            } else {
+                "credit"
+            };
+            let mut fields = account_fields(account, units)?;
+            fields.extend([
+                ("normal_side", s(side)),
+                ("parent", parent.as_ref().map_or(Json::Null, s)),
+                ("children", Json::Arr(children.iter().map(s).collect())),
+                ("opened", day(effectivity.opened)),
+                ("closed", day(effectivity.closed)),
+                ("promoted_on", day(effectivity.promoted_on)),
+                ("created_at", Json::Int(i128::from(account.created_at.0))),
+            ]);
+            let human = format!(
+                "{} {} ({}, {}, {}-normal){}{}{}",
+                account.code,
+                account.name,
+                AccountType(account.account_type).name().unwrap_or("?"),
+                if account.is_leaf { "leaf" } else { "summary" },
+                side,
+                parent.map_or_else(String::new, |p| format!("\n  parent: {p}")),
+                if children.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n  children: {}", children.join(", "))
+                },
+                effectivity
+                    .closed
+                    .map_or_else(String::new, |d| format!("\n  closed on {}", d.render())),
+            );
+            out.event("chart_account", vec![("account", obj(fields))], &human);
+            Ok(())
+        }
         other => Err(unhandled("chart", other)),
     }
+}
+
+/// One chart row as `chart list` and `chart show` print it (shape `account`).
+fn account_fields(
+    a: &fa_journal::AccountRow,
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<(&'static str, Json)>, Fail> {
+    let bound = |a: &fa_journal::AccountRow, m: Option<i128>| -> Result<Json, Fail> {
+        match (a.unit_policy, m) {
+            (UnitPolicy::Single(u), Some(m)) => Ok(s(render_amount(Amount::new(u, m), units)?)),
+            _ => Ok(Json::Null),
+        }
+    };
+    Ok(vec![
+        ("lower_bound", bound(a, a.limit.and_then(|l| l.lower))?),
+        ("upper_bound", bound(a, a.limit.and_then(|l| l.upper))?),
+        (
+            "limit_scope",
+            a.limit.map_or(Json::Null, |l| {
+                s(match l.scope {
+                    fa_journal::LimitScope::Lifetime => "lifetime",
+                    fa_journal::LimitScope::Period => "period",
+                })
+            }),
+        ),
+        ("code", s(&a.code)),
+        ("name", s(&a.name)),
+        ("type", s(AccountType(a.account_type).name().unwrap_or("?"))),
+        ("leaf", Json::Bool(a.is_leaf)),
+        (
+            "unit",
+            s(match a.unit_policy {
+                UnitPolicy::Single(u) => registered_unit_code(u, units)?,
+                UnitPolicy::AnyCurrency => "any-currency".into(),
+                UnitPolicy::AnyUnit => "any".into(),
+            }),
+        ),
+    ])
 }
 
 // ---------------------------------------------------------------------------
