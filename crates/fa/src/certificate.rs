@@ -1972,7 +1972,7 @@ impl AccountMetadata {
     }
 }
 
-fn selected(
+pub(crate) fn selected(
     book: &BookContext,
     selection: &ReportSelection,
     report: &ReportOutput,
@@ -2100,7 +2100,7 @@ fn selected(
     })
 }
 
-fn open_item_selected(
+pub(crate) fn open_item_selected(
     entry: &Entry,
     entries: &BTreeMap<VId, Entry>,
     account: Option<VId>,

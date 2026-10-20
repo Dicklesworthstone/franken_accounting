@@ -95,6 +95,21 @@ complexity_witness = "O(legs) rehearsed and aborted on plan; O(legs + plan_bytes
 notes = "same-basis native effects comparison; certificate retention extends the same transaction; correction plans use the same chunk representation with two CITES edges; no shared mutable object or additional publication; durable IntentOutcome remains a separate unimplemented contract"
 
 [[operation_class]]
+id = "portable_batch_plan_and_commit"
+name = "Portable atomic batch rehearsal and confirmed commit"
+substrate_class = "Ordered member preparation in one carried WriteTxn, aborted; exact-basis revalidation and one commit"
+substrate_transactions = "0 for planning; 1 for first commit; 0 for exact recorded-outcome retry"
+today_posture = "0 publications during full-batch rehearsal, including retention capacity staging; 1 publication (2 syncs) for entries, outcome and retained plan together"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "N admitted Entry/Leg censuses with all native member effects + 1 IntentOutcome + N IN_BATCH edges + 1 immutable Certificate root + N+1 CITES edges; above 4096 plan bytes, ceil(plan_bytes/4096) immutable Certificate fragments in the same transaction"
+hot_object_exceptions = []
+external_authorities = "none; all evidence, approvals and rates are already in the book"
+complexity_witness = "Sum of N production member preparations over the carried overlay, plus O(native_delta_bytes + plan_bytes + N) hashing and retention per rehearsal/first commit; repeated prefix staging and member history/usage checks retain their native costs. Exact retry checks O(N + fragment_count) original rows/edges plus O(plan_bytes) reconstruction."
+notes = "Complete native LogicalDeltaTemplate digest binds the exact snapshot; any intervening publication before first commit requires re-planning. No per-member publication, additional shared cell or approval publication is introduced. Existing member reservation/usage cells retain their existing admission and costs. The 8190-member and 67440560-byte format ceilings are not capacity acceptance claims: IntentOutcome remains one scalar (52+48*N canonical bytes before framing) subject to the native 16384-byte row ceiling, and all other native row/transaction limits apply. Rehearsal stages retention before aborting; refusal writes nothing. Durable refusal outcomes and atomic batch drafts are not implemented by this operation."
+
+[[operation_class]]
 id = "batch_post"
 name = "Batch post (N entries)"
 substrate_class = "Autocommit write, fused arm (one WriteBatch)"

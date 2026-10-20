@@ -303,15 +303,18 @@ impl PreparedPost {
 
     /// Hand a batch member's staged transaction to the next member (plan
     /// §5.8), keeping what the batch commit reports for this member.
-    pub(crate) fn into_member(self) -> Result<(WriteTxn, BatchMember), KernelError> {
-        if self.planning
+    pub(crate) fn into_member(
+        self,
+        planning: bool,
+    ) -> Result<(WriteTxn, BatchMember), KernelError> {
+        if self.planning != planning
             || self.paired_reversal.is_some()
             || self.request.proposal.class == EntryClass::CLOSING
             || crate::revaluation::is_source_bound(&self.request.proposal)
         {
             self.txn.abort();
             return Err(KernelError::Corrupt(
-                "a dry-run preparation or a replacement pair never joins a batch".into(),
+                "a preparation joins only a matching batch execution mode; replacement pairs and fold-derived entries have separate protocols".into(),
             ));
         }
         Ok((
@@ -714,6 +717,11 @@ fn not_implemented(class_name: &str) -> Refusal {
 pub(crate) enum Admission {
     /// Publish under the request's own capability ([`fa_policy::admit_base`]).
     Commit,
+    /// A member of an authenticated atomic batch. Only the batch verifier
+    /// can make this token after checking the complete artifact and caller
+    /// binding. The caller still needs their own trunk authority; the token
+    /// satisfies only the capability's required dry-run prerequisite.
+    VerifiedBatch(crate::batch::VerifiedBatchPlan),
     /// A dry run ([`fa_policy::admit_base_for_plan`]): never published.
     Plan,
     /// One planned intent of a draft's promotion (plan §15.2): it publishes
@@ -749,7 +757,7 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     // authority (§15.2). An owned scratch draft publishes only a rehearsal.
     // Every other admission check still runs with the unchanged capability.
     let admit_base = match admission {
-        Admission::Commit => fa_policy::admit_base,
+        Admission::Commit | Admission::VerifiedBatch(_) => fa_policy::admit_base,
         Admission::Plan | Admission::Promote(_) | Admission::ScratchDraft(_) => {
             fa_policy::admit_base_for_plan
         }

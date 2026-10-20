@@ -150,8 +150,12 @@ fn bucket(entry: &Entry) -> Bucket {
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
-    /// Produce a historical account lead schedule under CURRENT whole-book
-    /// read authority. Every financial read is pinned to the same prefix.
+    /// Produce a historical account lead schedule under CURRENT authority to
+    /// read the whole book at the selected recorded prefix. A known-at caveat
+    /// permits an explicit prefix within its bound; account, period and
+    /// effective caveats are refused because the native source reads the whole
+    /// prefix before projecting the requested monetary leaves and date window.
+    /// Every financial read is pinned to the same prefix.
     /// Posted reversals and Closing entries are real movements, Pending
     /// reservations are not. Zero legs have no movement and are omitted.
     /// Current expiry/revocation apply even when selecting an older prefix.
@@ -163,7 +167,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: &RollForwardRequest,
     ) -> Outcome<RollForward> {
-        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context().book_id) {
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context().book_id)
+            .and_then(|()| {
+                fa_policy::reach(
+                    capability,
+                    &fa_policy::Reach {
+                        observes: request
+                            .known_at
+                            .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                        ..fa_policy::Reach::whole_book(true)
+                    },
+                    None,
+                )
+            })
+        {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         let query = cx.query();
@@ -659,6 +676,225 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn native_ledger_reads_enforce_caveats_and_preserve_authorized_historical_bytes() {
+        let mut h = Harness::new();
+        h.post(10, b"before-pin", h.usd, 50);
+        let pin = h.head();
+        let request = RollForwardRequest {
+            known_at: Some(pin),
+            ..h.request()
+        };
+        let expected = h.read(&request).canonical_bytes().unwrap();
+        let expected_gl = h
+            .book
+            .general_ledger(&h.cx(), PRINCIPAL, &cap(&["read"]), &request)
+            .unwrap()
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        let source = h
+            .book
+            .certify_roll_forward(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]), &request)
+            .unwrap()
+            .unwrap();
+        h.post(15, b"after-pin", h.usd, 70);
+        let head = h.head();
+        let pinned = cap(&["read", "produce"]).known_at_most(pin);
+        assert_eq!(
+            h.book
+                .roll_forward(&h.cx(), PRINCIPAL, &pinned, &request)
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            expected
+        );
+        assert_eq!(
+            h.book
+                .general_ledger(&h.cx(), PRINCIPAL, &pinned, &request)
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            expected_gl
+        );
+        assert_ne!(h.read(&h.request()).canonical_bytes().unwrap(), expected);
+        let cx = h.cx();
+        h.runtime
+            .block_on(
+                h.book
+                    .prepare_report_history(&cx, PRINCIPAL, &pinned, Some(pin)),
+            )
+            .unwrap()
+            .unwrap();
+
+        for known_at in [None, Some(head)] {
+            let outside = RollForwardRequest {
+                known_at,
+                ..request.clone()
+            };
+            let denial = h
+                .book
+                .roll_forward(&cx, PRINCIPAL, &pinned, &outside)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!((denial.code, denial.exit), ("FA-REF-011", 7));
+            assert!(denial.message.contains("known_at"));
+            let denial = h
+                .runtime
+                .block_on(
+                    h.book
+                        .prepare_report_history(&cx, PRINCIPAL, &pinned, known_at),
+                )
+                .unwrap()
+                .unwrap_err();
+            assert_eq!((denial.code, denial.exit), ("FA-REF-011", 7));
+        }
+
+        // Account/date selectors are report projections, not permission to
+        // load a wider source. Even a caveat containing every requested leaf
+        // or the report's last day cannot authorize that whole-prefix read.
+        for (restricted, caveat) in [
+            (
+                cap(&["read", "produce"])
+                    .for_accounts(&["1000", "3000", "6100"])
+                    .unwrap(),
+                "accounts",
+            ),
+            (
+                cap(&["read", "produce"])
+                    .for_periods(&["FY2026-P01"])
+                    .unwrap(),
+                "periods",
+            ),
+            (
+                cap(&["read", "produce"]).effective_through(day(20)),
+                "effective",
+            ),
+            (
+                cap(&["read", "produce"]).on_branch(Id128([9; 16])).unwrap(),
+                "branch",
+            ),
+            (
+                cap(&["read", "produce"]).known_at_most(CommitSeq(pin.0 - 1)),
+                "known_at",
+            ),
+        ] {
+            for denial in [
+                h.book
+                    .roll_forward(&cx, PRINCIPAL, &restricted, &request)
+                    .unwrap()
+                    .unwrap_err(),
+                h.book
+                    .general_ledger(&cx, PRINCIPAL, &restricted, &request)
+                    .unwrap()
+                    .unwrap_err(),
+                h.book
+                    .certify_roll_forward(&cx, PRINCIPAL, &restricted, &request)
+                    .unwrap()
+                    .unwrap_err(),
+                h.book
+                    .replay_roll_forward(&cx, PRINCIPAL, &restricted, &source.certificate)
+                    .unwrap()
+                    .unwrap_err(),
+            ] {
+                assert_eq!((denial.code, denial.exit), ("FA-REF-011", 7));
+                assert!(denial.message.contains(caveat), "{denial:?}");
+            }
+        }
+        // The certificate itself contains a complete native closure. Its
+        // conservative head admission is distinct from the plain read above.
+        let denial = h
+            .book
+            .certify_roll_forward(&cx, PRINCIPAL, &pinned, &request)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((denial.code, denial.exit), ("FA-REF-011", 7));
+        assert_eq!(h.head(), head);
+
+        let expired = pinned.clone().expiring_at(head);
+        let denial = h
+            .book
+            .general_ledger(&cx, PRINCIPAL, &expired, &request)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((denial.code, denial.exit), ("FA-REF-014", 7));
+        h.runtime
+            .block_on(h.book.revoke_capability(
+                &cx,
+                cap(&["issue_capability"]),
+                pinned.commitment().unwrap(),
+                day(20),
+                b"revoke-pinned-ledger",
+                "Revoke the pinned ledger reader",
+            ))
+            .unwrap()
+            .unwrap();
+        let revoked_head = h.head();
+        let denial = h
+            .book
+            .general_ledger(&cx, PRINCIPAL, &pinned, &request)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((denial.code, denial.exit), ("FA-REF-023", 7));
+        assert_eq!(h.head(), revoked_head);
+    }
+
+    #[test]
+    fn native_ledger_scope_refusal_precedes_poisoned_source_reads() {
+        let mut h = Harness::new();
+        h.post(10, b"visible-before-poison", h.usd, 50);
+        let pin = h.head();
+        let pinned = cap(&["read"]).known_at_most(pin);
+        let request = RollForwardRequest {
+            known_at: Some(pin),
+            ..h.request()
+        };
+        let expected = h.read(&request).canonical_bytes().unwrap();
+        let mut damage = fgdb::WriteBatch::new(fa_model::symbols::relation::CHILD_OF);
+        damage.set_vertex_property(
+            h.id("1000"),
+            property::ACCOUNT_TYPE,
+            Some(fgdb_types::CanonicalScalar::bytes(vec![0xff]).unwrap()),
+        );
+        let cx = h.cx();
+        h.runtime
+            .block_on(h.book.db.write(&cx.commit(), damage))
+            .unwrap();
+        assert!(
+            h.book
+                .roll_forward(&cx, PRINCIPAL, &cap(&["read"]), &h.request())
+                .is_err(),
+            "the poisoned head must be reached by an unrestricted read"
+        );
+        let head = h.head();
+        for restricted in [
+            pinned.clone(),
+            cap(&["read"]).for_accounts(&["1000"]).unwrap(),
+            cap(&["read"]).for_periods(&["FY2026-P01"]).unwrap(),
+            cap(&["read"]).effective_through(day(20)),
+        ] {
+            let denial = h
+                .book
+                .roll_forward(&cx, PRINCIPAL, &restricted, &h.request())
+                .unwrap()
+                .unwrap_err();
+            assert_eq!((denial.code, denial.exit), ("FA-REF-011", 7));
+        }
+        assert_eq!(
+            h.book
+                .roll_forward(&cx, PRINCIPAL, &pinned, &request)
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            expected,
+            "an authorized old prefix never decodes a poisoned later chart"
+        );
+        assert_eq!(h.head(), head);
     }
 
     #[test]

@@ -1528,6 +1528,64 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )
     }
 
+    /// Rehearse all batch members in one carried transaction, then abort.
+    /// Later members observe earlier staged effects. Daily quota history
+    /// must already be available; use `plan_batch_with_history` after open.
+    pub fn plan_batch(
+        &mut self,
+        cx: &PurposeContexts,
+        batch: fa_intents::PostBatch,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::BatchPlan> {
+        cx.txn().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::plan_batch(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability.clone(),
+            batch,
+        )?)
+    }
+
+    /// Admit and hydrate daily-quota history before a zero-write batch rehearsal.
+    pub async fn plan_batch_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        batch: fa_intents::PostBatch,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::BatchPlan> {
+        cx.txn().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::plan_batch_with_history(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability.clone(),
+            batch,
+        )
+        .await?)
+    }
+
+    /// Authenticate and re-admit an exact batch plan under current authority.
+    /// All entries, the outcome and the retaining certificate publish together.
+    pub async fn commit_batch_plan(
+        &mut self,
+        cx: &PurposeContexts,
+        plan: fa_intents::BatchPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::BatchPosted> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(
+            fa_journal::commit_batch_plan(
+                &mut self.db,
+                cx,
+                &self.context,
+                capability.clone(),
+                plan,
+            )
+            .await?,
+        )
+    }
+
     /// Commit an atomic batch (plan §5.8) under the caller's capability:
     /// every member through the posting pipeline in one transaction, with
     /// the batch's IntentOutcome; an identical retry returns that outcome.
@@ -2899,8 +2957,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Prepare retained history for an admitted report without publishing.
     /// An older label registry needs its native Book creation record; an
     /// explicit historical selector may also require loading past a checkpoint.
-    /// Current whole-book Read authority is checked before observation and
-    /// again after loading. Selected context integrity remains the report's
+    /// Current authority to read the whole book at the selected recorded
+    /// prefix is checked before observation and again after loading. A
+    /// known-at caveat permits an explicit prefix within its bound; account,
+    /// period and effective scopes still refuse whole-history hydration.
+    /// Selected context integrity remains the report's
     /// responsibility: a later forged mirror cannot invalidate an intact
     /// earlier selected prefix. Current compiled-registry HEAD reads do not
     /// load history.
@@ -2914,7 +2975,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
         if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
-            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+            .and_then(|()| {
+                fa_policy::reach(
+                    capability,
+                    &fa_policy::Reach {
+                        observes: known_at
+                            .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                        ..fa_policy::Reach::whole_book(true)
+                    },
+                    None,
+                )
+            })
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }

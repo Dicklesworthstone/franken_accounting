@@ -1,5 +1,5 @@
 # Transaction-local canonical payload storage (fa-nd7g).
-# First consumers: PostPlan and ReplacementPlan. Other object families
+# First consumers: PostPlan, ReplacementPlan and BatchPlan. Other object families
 # have not migrated; this format does not claim their capacity acceptance.
 schema_version = 1
 manifest_format = "fa:object:v1"
@@ -9,6 +9,7 @@ chunk_bytes = 4096
 inline_bytes = 4096
 post_plan_kind = 1
 replacement_plan_kind = 2
+batch_plan_kind = 3
 
 # At/below one document Merkle leaf, preserve raw canonical bytes.
 # Above it, the root payload is fixed(manifest_format) || u16 kind ||
@@ -29,3 +30,7 @@ replacement_plan_kind = 2
 # Reassembly checks exact lengths, full content digest and Merkle root.
 # Corruption is a KernelError (exit 5), never a partial successful read.
 # Historical raw plan payloads remain readable under their original codec.
+# BatchPlan uses one root for the complete ordered batch, with CITES from
+# every member and its IntentOutcome. Its own format bound is registered in
+# batch_plan.toml. The IntentOutcome body remains a single native scalar;
+# fragmenting the plan does not expand the accepted outcome/transaction size.

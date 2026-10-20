@@ -1397,6 +1397,37 @@ impl Book {
         )))
     }
 
+    /// Rehearse an atomic batch without publishing any member or consuming keys.
+    /// Every member runs the posting laws against the earlier members' staged
+    /// effects, so an invoice and its application can be reviewed together.
+    /// The portable plan binds the complete ordered request, resolved entries,
+    /// caller capability and snapshot. Any required approvals must exist first.
+    pub fn plan_batch(
+        &mut self,
+        batch: fa_intents::PostBatch,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::BatchPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.plan_batch_with_history(&purposes, batch, capability)
+        ))
+    }
+
+    /// Commit an exact reviewed batch and retain its certificate atomically.
+    /// Current authority and every member's accounting laws are rechecked;
+    /// a stale basis or different native effect refuses the complete batch.
+    /// An exact retry verifies and returns the original recorded outcome.
+    pub fn commit_batch_plan(
+        &mut self,
+        plan: fa_intents::BatchPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::BatchPosted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.commit_batch_plan(&purposes, plan, capability)
+        ))
+    }
+
     /// Commit an atomic batch of entries (plan §5.8): all or none, in order,
     /// each member seeing the earlier members' effects, with the batch's
     /// key-derived IntentOutcome. An identical retry returns the recorded
@@ -4458,6 +4489,38 @@ impl ReadScope<'_> {
     pub fn admit_whole_book(&self, known_at: Option<CommitSeq>) -> Outcome<CommitSeq> {
         let seq = self.frontier(known_at)?;
         Ok(self.authority.whole_book(seq).map(|()| seq))
+    }
+
+    /// The book's genesis specification at an admitted recorded frontier.
+    /// Historical readers use this for defaults such as the base unit instead
+    /// of loading the current Book row after admitting an earlier prefix.
+    pub fn spec_at(&self, known_at: Option<CommitSeq>) -> Outcome<Option<BookSpec>> {
+        let seq = match self.admit_whole_book(known_at)? {
+            Ok(seq) => seq,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let purposes = self.book.purposes();
+        with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
+            let Some(row) = db
+                .vertex_at(fa_journal::rows::book_root(), seq)
+                .map_err(KernelError::from)?
+                .filter(|row| row.labels.contains(&fa_model::symbols::label::BOOK))
+            else {
+                return Ok(Ok(None));
+            };
+            let payload = fa_journal::rows::bytes(
+                &row,
+                fa_model::symbols::property::FA_PAYLOAD,
+                "book._fa_payload",
+            )?;
+            let spec = BookSpec::decode(&payload)?;
+            if spec.book_id != book.book_id {
+                return Err(KernelError::Corrupt(
+                    "historical Book specification belongs to another book".into(),
+                ).into());
+            }
+            Ok(Ok(Some(spec)))
+        }))
     }
 
     /// [`Book::explain_balance`] under the scope caveats: it reaches its one

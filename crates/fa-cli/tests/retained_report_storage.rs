@@ -477,18 +477,13 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
             retained_at,
             "{family}: exact retry reuses its retention"
         );
-        // A summary has its own relevance law (the report reproduces at
-        // HEAD) and a roll-forward its selected-schedule law; effective-date
-        // aging still refuses selector status.
+        // Each family has its own accounting-selection freshness law; a
+        // metadata-only certificate retention changes none of those inputs.
         let (exit, status) = f.run(&["certificate", "status", &locator]);
-        if family == "effective-date-aging" {
-            assert_eq!(exit, 8, "{family}: {status:?}");
-        } else {
-            assert_eq!(exit, 0, "{family}: {status:?}");
-            let status = data(&status, "certificate_status");
-            assert_eq!(text(status, "status"), "Current", "{family}");
-            assert_eq!(status.get("later_entries"), Some(&Json::Arr(Vec::new())));
-        }
+        assert_eq!(exit, 0, "{family}: {status:?}");
+        let status = data(&status, "certificate_status");
+        assert_eq!(text(status, "status"), "Current", "{family}");
+        assert_eq!(status.get("later_entries"), Some(&Json::Arr(Vec::new())));
         assert_eq!(f.head(), retained_at, "{family}: status is a read");
         originals.push((event_name, events, bytes, locator, file));
     }
@@ -547,6 +542,77 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
         assert_eq!(book.head().unwrap(), later, "replay never publishes");
     }
     assert_eq!(f.head(), later);
+}
+
+#[test]
+fn aging_status_binds_the_recipient_question_before_reporting_current_or_superseded() {
+    let f = Fixture::new();
+    let events = f.ok(&[
+        "gl",
+        "aging",
+        "--account",
+        "1000",
+        "--as-of",
+        "2026-01-31",
+        "--bucket",
+        "0,30,60",
+        "--certify",
+    ]);
+    let metadata = data(&events, "report_certificate");
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let artifact = fa::ReportArtifact::decode(&unhex(text(metadata, "bytes"))).unwrap();
+    let expected = format!(
+        "{{\"kind\":\"aging\",\"account\":\"1000\",\"through\":\"2026-01-31\",\"known_at\":{},\"buckets\":[0,30,60]}}",
+        artifact.known_at().0,
+    );
+    let before = f.head();
+    let status = f.ok(&["certificate", "status", &locator, "--expect", &expected]);
+    assert_eq!(
+        text(data(&status, "certificate_status"), "status"),
+        "Current"
+    );
+    assert_eq!(f.head(), before);
+    let wrong = [
+        expected.replace("2026-01-31", "2026-01-30"),
+        expected.replace("1000", "4000"),
+        expected.replace("[0,30,60]", "[0,15,60]"),
+    ];
+    for expected in &wrong {
+        let (exit, refused) = f.run(&["certificate", "status", &locator, "--expect", expected]);
+        assert_eq!(exit, 8, "{refused:?}");
+        assert!(
+            !refused
+                .iter()
+                .any(|event| text(event, "event") == "certificate_status")
+        );
+        assert_eq!(f.head(), before, "a mismatched question publishes nothing");
+    }
+    let mut book = f.open();
+    post(&mut book, 64);
+    drop(book);
+    let after = f.head();
+    let status = f.ok(&["certificate", "status", &locator, "--expect", &expected]);
+    let status = data(&status, "certificate_status");
+    assert_eq!(text(status, "status"), "SupersededBy");
+    assert_eq!(
+        status
+            .get("later_entries")
+            .and_then(Json::as_arr)
+            .unwrap()
+            .len(),
+        1
+    );
+    let (exit, refused) = f.run(&["certificate", "status", &locator, "--expect", &wrong[0]]);
+    assert_eq!(
+        exit, 8,
+        "later activity must not hide a wrong cutoff: {refused:?}"
+    );
+    assert!(
+        !refused
+            .iter()
+            .any(|event| text(event, "event") == "certificate_status")
+    );
+    assert_eq!(f.head(), after);
 }
 
 #[test]

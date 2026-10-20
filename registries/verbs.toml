@@ -177,9 +177,20 @@ writes = true
 subcommands = []
 flags = ["--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on", "--draft", "--scenario"]
 switches = ["--dry-run"]
-events = ["posted", "recorded", "plan", "batch_posted", "draft_planned", "scenario_run"]
+events = ["posted", "recorded", "plan", "batch_posted", "batch_plan", "draft_planned", "scenario_run"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["A leg may name its legal entity (\"entity\": code; in a multi-entity book every leg names one) and its counterparty (\"party\": code from fa party list); the kernel refuses an undeclared entity or an unknown party.", "post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--event <code|vid>] [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target.", "A PostBatch intent {\"idempotency_key\": K, \"intents\": [<entry intent>, ...]} commits every member atomically, in order, in one transaction: all or none, each member seeing the earlier members' effects (an application may settle an invoice earlier in the same batch by its derived vid). Members are Original, Adjusting, Reversal, Pending or Resolution entries of one principal with distinct keys. The batch key names its IntentOutcome: an identical retry returns the recorded outcome; the same key with different members is refused (exit 6). Batch plans, --plan-out and per-batch flags are not available; a member refusal names its index and nothing is posted.", "post --intent <file.json|-> --draft <name>   (plan §15.2: rehearses the intent under every posting law and journals it into the open draft; nothing reaches trunk until a principal holding approve who is not the draft's owner runs fa draft promote <name>)", "post --intent <file.json|-> --scenario <name>   (fa-k07b: rehearses the intent on the scenario's materialization under every posting law and journals it into the open scenario; trunk never moves; fa scenario diff shows the effect)"]
+usage = [
+  "A leg may name its legal entity (\"entity\": code; in a multi-entity book every leg names one) and its counterparty (\"party\": code from fa party list); the kernel refuses an undeclared entity or an unknown party.",
+  "post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--event <code|vid>] [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)",
+  "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the complete sealed PostEntry or PostBatch plan, commits nothing)",
+  "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; planning does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.",
+  "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.",
+  "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target.",
+  "A PostBatch intent {\"idempotency_key\": K, \"intents\": [<entry intent>, ...]} commits every member atomically, in order, in one transaction: all or none, each member seeing the earlier members' effects (an application may settle an invoice earlier in the same batch by its derived vid). Members are Original, Adjusting, Reversal, Pending or Resolution entries of one principal with distinct keys. The batch key names its IntentOutcome: an identical retry returns the recorded outcome; the same key with different members is refused (exit 6). A member refusal names its index and nothing is posted.",
+  "PostBatch --dry-run [--plan-out <new-file>] rehearses the complete carried transaction, including same-batch applications, and previews every member's exact amounts, dimensions and settlement targets. fa commit --plan publishes the reviewed batch, outcome and retaining certificate atomically. Exact retries verify and return the original publication. Agent-profile plans remain rehearsal only. Batch drafts, scenarios, saturating balancing and per-batch posting flags remain unsupported; put member options in each intent.",
+  "post --intent <file.json|-> --draft <name>   (plan §15.2: rehearses a single intent under every posting law and journals it into the open draft; nothing reaches trunk until a principal holding approve who is not the draft's owner runs fa draft promote <name>)",
+  "post --intent <file.json|-> --scenario <name>   (fa-k07b: rehearses a single intent on the scenario's materialization under every posting law and journals it into the open scenario; trunk never moves; fa scenario diff shows the effect)",
+]
 example = "fa post --intent entry.json --book ./books/myco --json"
 
 [[verb]]
@@ -236,14 +247,18 @@ example = "fa payment --party V-17 --number ACH-OUT-1 --date 2026-03-25 --cash 1
 
 [[verb]]
 name = "commit"
-summary = "Commit an exact reviewed PostEntry or atomic Replace plan after current capability, snapshot and native effects revalidation."
+summary = "Commit an exact reviewed PostEntry, atomic Replace or PostBatch plan after current capability, snapshot and native effects revalidation."
 writes = true
 subcommands = []
 flags = ["--plan", "--grant"]
 switches = []
-events = ["plan_committed", "replacement_plan_committed"]
+events = ["plan_committed", "replacement_plan_committed", "batch_plan_committed"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["commit --plan <file|-> [--as <principal>] [--grant <op>]...", "The file is canonical binary bytes from --dry-run --plan-out; stdin also accepts the plan event's complete bytes hex string. PostEntry and atomic Replace plans are admitted. The explicit commit confirms that authenticated exact artifact. The current caller independently supplies the same capability; no authority is taken from the file.", "The first commit atomically retains the canonical plan as a graph Certificate linked from every member by CITES. A Replace plan publishes its Reversal and Replacement together and returns both identities; neither member may be committed separately. Entry.plan_certificate remains absent because the pinned substrate has no generic object-store API. An exact retry returns the original identities and already_recorded=true. An intervening accounting publication before the first commit invalidates the plan (exit 6); perform a new dry run and review its result."]
+usage = [
+  "commit --plan <file|-> [--as <principal>] [--grant <op>]...",
+  "The file is canonical binary bytes from --dry-run --plan-out; stdin also accepts the plan event's complete bytes hex string. PostEntry, atomic Replace and PostBatch plans are admitted. The explicit commit confirms that authenticated exact artifact. The current caller independently supplies the same capability; no authority is taken from the file.",
+  "The first commit atomically retains the canonical plan as a graph Certificate linked from every member by CITES. A Replace plan publishes its Reversal and Replacement together; a PostBatch plan publishes its ordered members and keyed IntentOutcome together. Joint plans cannot be committed member by member. Entry.plan_certificate remains absent because the pinned substrate has no generic object-store API. An exact retry verifies and returns the original identities and already_recorded=true. Any intervening publication before the first commit invalidates the plan (exit 6); perform a new dry run and review its result.",
+]
 example = "fa commit --plan entry.plan --book ./books/myco --json"
 
 [[verb]]
@@ -1411,6 +1426,18 @@ doc = "A PostBatch committed every member in one transaction (plan §5.8), or, w
 fields = ["outcome:hex", "idempotency_key:string", "recorded_at:seq", "already_recorded:bool", "members:[batch_member]"]
 
 [[event]]
+name = "batch_plan"
+book = true
+doc = "Zero-write rehearsal of one complete ordered PostBatch in a carried native transaction. Later members see earlier staged entries and applications. Each member previews its exact prepared identity, legs, settlements, dimensions, lineage and approvals; bytes retains the complete bounded canonical artifact. Authentication binds the ordered request, prepared entries and periods, independently supplied capability, policy epoch, snapshot and complete staged native effects, including the batch outcome. The planner stages certificate retention before aborting so actual native capacity is checked. First commit requires the exact reviewed snapshot; Agent-profile artifacts remain rehearsal only and cannot publish to trunk. Atomic batch drafts and saturating balancing are unsupported."
+fields = ["intent_kind:string", "idempotency_key:hex", "principal:hex", "intent_digest:hex", "prepared_digest:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "members:[batch_plan_member]", "bytes:hex", "file:string?", "scope:string", "authority:string"]
+
+[[event]]
+name = "batch_plan_committed"
+book = true
+doc = "The authenticated reviewed batch published every ordered member, its keyed outcome, retained certificate and all certificate links atomically after current authority and complete native effect revalidation. An exact retry verifies the original immutable identities, payloads and retaining links, returns their original recorded_at with already_recorded=true, and writes nothing. Members retain their reviewed periods on retries."
+fields = ["outcome:hex", "recorded_at:seq", "already_recorded:bool", "members:[batch_member]", "plan_digest:hex", "certificate_digest:hex"]
+
+[[event]]
 name = "recorded"
 book = true
 doc = "The same idempotency key was already recorded with the same content; nothing new was written. For a balancing post the identity is the request (key, requested amount, leg): `requested`/`moved` are the recorded ones, whatever availability is now; null otherwise."
@@ -2557,6 +2584,26 @@ doc = "One ordered member of the joint correction artifact: exact request and pr
 fields = ["class:string", "effective_date:date", "period:string", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "entry_digest:hex", "legs:[plan_leg]", "supersedes:[lineage]", "evidence:[evidence_head]", "approvals:int"]
 
 [[shape]]
+name = "batch_plan_member"
+doc = "One ordered member of an atomic batch rehearsal, with its derived entry identity and exact request/prepared digests. Complete sealed bytes and supplied approvals remain in the portable artifact."
+fields = ["index:int", "vid:hex", "class:string", "effective_date:date", "period:string", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "entry_digest:hex", "legs:[batch_plan_leg]", "resolves:hex?", "disposition:string?", "supersedes:[lineage]", "evidence:[evidence_head]", "approvals:int"]
+
+[[shape]]
+name = "batch_plan_leg"
+doc = "One admitted batch leg including exact native/base amounts, application references and registered dimensions. Earlier batch members may be settlement targets; the native carried transaction independently validates their immutable digests and available amounts."
+fields = ["ordinal:int", "account:string", "account_vid:hex", "side:string", "amount:amount", "base_amount:amount?", "settles:[batch_plan_settlement]", "dimensions:[batch_plan_dimension]"]
+
+[[shape]]
+name = "batch_plan_settlement"
+doc = "One exact application to an existing or earlier batch member's entry and leg."
+fields = ["entry:hex", "entry_digest:hex", "ordinal:int", "amount:amount"]
+
+[[shape]]
+name = "batch_plan_dimension"
+doc = "One registered dimension identifier and its immutable value identity."
+fields = ["dimension:int", "value:hex"]
+
+[[shape]]
 name = "explained_cell"
 doc = "The account's cell in one unit: the posted column and the pending column."
 fields = ["unit:string", "debits:amount", "credits:amount", "net:amount", "entry_count:int", "debits_pending:amount", "credits_pending:amount", "pending_count:int"]
@@ -3160,7 +3207,7 @@ stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
 required = []
-dont = ["Don't balance an entry by inventing a leg: report the imbalance; a residual leg exists only where a law names the rounding account.", "Don't pick an effective date to dodge a closed period: the matrix decides; the refusal names the admissible class and capability.", "Don't \"fix\" a posted entry: post a Reversal (`reverses`) with a registered reason; the original stays. Corrected legs post only as a Replacement paired with its Reversal, through the reverse tool's `replace_with`; Reclassification remains refused with FA-REF-102.", "Don't fabricate evidence: cite a document recorded with `fa_evidence_import_document`, or make an explicit manual assertion."]
+dont = ["Don't balance an entry by inventing a leg: report the imbalance; a residual leg exists only where a law names the rounding account.", "Don't pick an effective date to dodge a closed period: the matrix decides; the refusal names the admissible class and capability.", "Don't \"fix\" a posted entry: post a Reversal (`reverses`) with a registered reason; the original stays. Corrected legs post only as a Replacement paired with its Reversal, through the reverse tool's `replace_with`; Reclassification remains refused with FA-REF-102.", "Don't fabricate evidence: cite a document recorded with `fa_evidence_import_document`, or make an explicit manual assertion.", "Rehearse a complete atomic batch by passing intent with idempotency_key and intents, plus dry_run: true. Review every batch_plan member and its application targets before passing the artifact's complete bytes to fa_post_commit_plan. Agent batch plans cannot commit to trunk, and atomic batch drafts are unsupported."]
 mistakes = ["A JSON number in `amount` (write \"1500.00 USD\").", "An instant (\"2026-03-15T00:00:00Z\") in `effective_date` (write the civil date \"2026-03-15\").", "A placeholder such as \"<document oid>\" in `evidence`.", "Posting to a summary account (`leaf: false` in `fa_chart_list_accounts`).", "Re-submitting the same intent with a different `effective_date` after a period-law refusal.", "Expecting a second post with the same `idempotency_key` to post again: it returns the recorded outcome (`recorded`)."]
 
 [[mcp.tool]]
@@ -3215,8 +3262,8 @@ stdin_property = "plan"
 stdin_kind = "string"
 stdin_via = "--plan"
 required = ["--plan"]
-dont = ["Review the plan event, then pass its complete bytes hex string as plan using the same fixed launch authority. A Preparer can commit an admitted ordinary posting; an Agent remains unable to write trunk. The artifact provides no authority and tool arguments cannot change the principal or grants.", "A plan applies only at its recorded snapshot. After another book publication, run dry_run again and review the new result; do not edit a stale plan or change an effective date to obtain admission.", "Planning itself acquires no hold, releases no reservation and consumes no idempotency key. A first commit retains the artifact with its entry; exact commit retries return already_recorded=true.", "A void plan cannot supply the separate dangerous-operation confirmation exchange: bound MCP void commits remain refused with FA-REF-007, even when the launch capability matches."]
-mistakes = ["Passing plan_file: host paths are refused; supply the plan event's complete bytes string inline as plan.", "Passing an intent JSON object as plan: use the plan event's bytes string.", "Passing as, grant, yes, book or keys: these remain forbidden per-call overrides.", "Expecting new approval collection, drafts, issued tokens or balancing to be covered by this first same-snapshot PostEntry slice."]
+dont = ["Review the plan, replacement_plan or batch_plan event, then pass its complete bytes hex string as plan using the same fixed launch authority. A Preparer can commit an admitted posting or complete atomic group; an Agent remains unable to write trunk. The artifact provides no authority and tool arguments cannot change the principal or grants.", "A plan applies only at its recorded snapshot. After another book publication, run dry_run again and review the new result; do not edit a stale plan or change an effective date to obtain admission.", "Planning itself acquires no hold, releases no reservation and consumes no idempotency key. A first commit retains the artifact with every member in one transaction; exact commit retries return already_recorded=true.", "A void plan cannot supply the separate dangerous-operation confirmation exchange: bound MCP void commits remain refused with FA-REF-007, including any batch containing a reservation release, even when the launch capability matches."]
+mistakes = ["Passing plan_file: host paths are refused; supply the plan event's complete bytes string inline as plan.", "Passing an intent JSON object as plan: use the plan event's bytes string.", "Passing as, grant, yes, book or keys: these remain forbidden per-call overrides.", "Expecting new approval collection, atomic batch drafts or saturating balancing to be covered by same-snapshot plans."]
 
 [[mcp.tool]]
 cluster = "fa.post"
@@ -4170,6 +4217,15 @@ ops = ["read"]
 # the latest of its periods, an activity basis exactly its periods.
 [[bound]]
 verbs = ["statement"]
+ops = ["read"]
+reach = "judged"
+
+# Plain detail and roll-forward judge a complete recorded prefix. Their
+# account/date selections project the result, so account/period/effective
+# caveats still refuse. Certification keeps the earlier whole-head rule.
+[[bound]]
+verbs = ["gl"]
+subcommands = ["detail", "roll-forward"]
 ops = ["read"]
 reach = "judged"
 

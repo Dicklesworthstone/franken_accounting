@@ -892,6 +892,146 @@ fn every_command_that_does_not_judge_its_reach_refuses_a_scoped_token() {
     ]);
 }
 
+/// A pinned auditor reads a complete historical ledger prefix under current
+/// authority. Output selectors cannot widen account or date caveats, and
+/// certificate retention remains a separately admitted operation.
+#[test]
+fn pinned_auditors_read_plain_ledger_detail_and_roll_forward_at_their_prefix() {
+    let f = Fixture::new();
+    let pin = number(data(&f.march), "recorded_at");
+    let pin_text = pin.to_string();
+    let later = (pin + 1).to_string();
+    let (pinned, commitment) = f.issue_ops(
+        "ledger-pinned",
+        &["read", "produce"],
+        &["--known-at-most", &pin_text],
+    );
+    let head = |f: &Fixture| {
+        number(
+            f.ok(&["book", "info"]).get("coordinate").unwrap(),
+            "known_at",
+        )
+    };
+    let before = head(&f);
+    for sub in ["detail", "roll-forward"] {
+        // Omit --unit deliberately: the default must be read from the
+        // authorized historical Book row, not from current book metadata.
+        let selected = [
+            "gl",
+            sub,
+            "--account",
+            "1000",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-04-30",
+            "--as-known-at",
+            pin_text.as_str(),
+        ];
+        let mut scoped = vec!["--token", pinned.as_str()];
+        scoped.extend(selected);
+        let read = f.ok(&scoped);
+        assert_eq!(data(&read), data(&f.ok(&selected)));
+        assert_eq!(number(read.get("coordinate").unwrap(), "known_at"), pin);
+        assert_ne!(
+            data(&read),
+            data(&f.ok(&selected[..8])),
+            "the later April posting must not enter the historical report"
+        );
+        assert_eq!(head(&f), before, "plain reads never retain a certificate");
+
+        for suffix in [
+            vec![],
+            vec!["--as-known-at", "HEAD"],
+            vec!["--as-known-at", later.as_str()],
+            vec!["--as-known-at", "2026-03-31T00:00:00Z"],
+        ] {
+            let mut outside = vec!["--token", pinned.as_str()];
+            outside.extend_from_slice(&selected[..8]);
+            outside.extend(suffix);
+            let (exit, error) = f.run(&outside);
+            assert_eq!(exit, 7, "{outside:?}: {error:?}");
+            assert_eq!(text(data(&error), "refusal_id"), "FA-REF-011");
+            assert!(text(data(&error), "message").contains("known_at"));
+            assert_eq!(error.get("book"), Some(&Json::Null));
+            assert_eq!(error.get("coordinate"), Some(&Json::Null));
+        }
+        // Certificate publication/replay still requires its own complete
+        // native closure and head authority; a plain read grant is not enough.
+        let output = format!("refused-{sub}.certificate");
+        let mut retaining = scoped.clone();
+        retaining.extend(["--certificate-out", &output]);
+        f.out_of_scope(&retaining, "known_at");
+        assert!(!f.dir.join(output).exists());
+        assert_eq!(head(&f), before);
+    }
+
+    for (holder, scope, caveat) in [
+        ("ledger-march", vec!["--period", "FY2026-P03"], "periods"),
+        (
+            "ledger-through",
+            vec!["--effective-through", "2026-04-30"],
+            "effective",
+        ),
+        ("ledger-account", vec!["--account", "1000"], "accounts"),
+    ] {
+        let (token, _) = f.issue(holder, &scope);
+        let before = head(&f);
+        for sub in ["detail", "roll-forward"] {
+            f.out_of_scope(
+                &[
+                    "--token",
+                    &token,
+                    "gl",
+                    sub,
+                    "--account",
+                    "1000",
+                    "--from",
+                    "2026-03-01",
+                    "--to",
+                    "2026-03-31",
+                    "--as-known-at",
+                    &pin_text,
+                ],
+                caveat,
+            );
+        }
+        assert_eq!(head(&f), before);
+    }
+
+    f.ok(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &commitment,
+        "--grant",
+        "issue_capability",
+        "--yes",
+    ]);
+    let revoked_head = head(&f);
+    for sub in ["detail", "roll-forward"] {
+        let (exit, error) = f.run(&[
+            "--token",
+            &pinned,
+            "gl",
+            sub,
+            "--account",
+            "1000",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-04-30",
+            "--as-known-at",
+            &pin_text,
+        ]);
+        assert_eq!(exit, 7, "{error:?}");
+        assert_eq!(text(data(&error), "refusal_id"), "FA-REF-023");
+        assert_eq!(error.get("book"), Some(&Json::Null));
+        assert_eq!(error.get("coordinate"), Some(&Json::Null));
+    }
+    assert_eq!(head(&f), revoked_head);
+}
+
 /// A statement's columns are judged by what their basis folds (fa-0x0): an
 /// activity statement reaches exactly its periods, a stock statement every
 /// period through its latest one, both at the selected frontier. Inside the

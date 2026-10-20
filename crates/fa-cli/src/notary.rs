@@ -836,6 +836,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some(view) => Some(crate::cli::parse_gl_scope(
             args,
             &book,
+            &capability,
             &ctx.out,
             if view == "detail" {
                 "gl-detail"
@@ -1243,15 +1244,21 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         }
         _ => {
             let expected = expectations::parse(args, &book, principal, &capability)?;
-            // The shared verifier replays aging as supplied, so a mismatched
-            // aging question must be refused here rather than ignored.
-            if matches!(expected, expectations::Expected::Aging(_))
-                && artifact.family() != ReportArtifactFamily::EffectiveDateAging
-            {
-                return Err(certificate_invalid(format!(
-                    "an aging expectation names an effective-date-aging certificate, not {}",
-                    artifact.family().name()
-                )));
+            // The shared verifier replays aging as supplied. Bind a supplied
+            // question before reporting freshness, just as `fa replay` does.
+            if let expectations::Expected::Aging(request) = &expected {
+                if artifact.family() != ReportArtifactFamily::EffectiveDateAging {
+                    return Err(certificate_invalid(format!(
+                        "an aging expectation names an effective-date-aging certificate, not {}",
+                        artifact.family().name()
+                    )));
+                }
+                book.replay_effective_date_aging_for(
+                    principal,
+                    &capability,
+                    &fa::AgingCertificate::decode(&bytes)?,
+                    request,
+                )??;
             }
             entry_status(book.report_artifact_status(
                 principal,

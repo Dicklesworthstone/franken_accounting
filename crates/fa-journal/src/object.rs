@@ -23,6 +23,7 @@ const FORMAT: &[u8] = b"fa:object:v1";
 pub enum ObjectKind {
     PostPlan = 1,
     ReplacementPlan = 2,
+    BatchPlan = 3,
 }
 
 /// Public content identity, separate from a caller's graph locator.

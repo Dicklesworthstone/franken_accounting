@@ -9150,6 +9150,481 @@ fn a_batch_needs_members_of_one_principal_with_distinct_keys() {
 }
 
 // ---------------------------------------------------------------------------
+// Portable atomic batch plans (plan §5.8, §10.4)
+// ---------------------------------------------------------------------------
+
+impl Harness {
+    fn planned_batch(
+        &mut self,
+        batch: fa_intents::PostBatch,
+        capability: &Capability,
+    ) -> Result<fa_intents::BatchPlan, Refusal> {
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(fa_journal::plan_batch_with_history(
+                &mut self.db,
+                &ctx,
+                &self.book,
+                capability.clone(),
+                batch,
+            ))
+            .expect("batch planning kernel")
+    }
+
+    fn publish_batch_plan(
+        &mut self,
+        plan: fa_intents::BatchPlan,
+        capability: &Capability,
+    ) -> Result<fa_journal::BatchPosted, Refusal> {
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(fa_journal::commit_batch_plan(
+                &mut self.db,
+                &ctx,
+                &self.book,
+                capability.clone(),
+                plan,
+            ))
+            .expect("batch plan commit kernel")
+    }
+}
+
+#[test]
+fn batch_plan_rehearses_an_invoice_and_application_then_retains_one_exact_retry() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let invoice = h.invoice(50_000, b"planned-batch-invoice");
+    let target = h.member_ref(&invoice);
+    let receipt = h.receipt(
+        20_000,
+        vec![settle(target, 0, h.usd, 20_000)],
+        b"planned-batch-receipt",
+    );
+    let batch = h.batch(b"planned-batch", vec![invoice, receipt]);
+    let before = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let plan = h.planned_batch(batch, &capability).unwrap();
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(
+        h.db.vertices().unwrap(),
+        vertices,
+        "no accounting or certificate publication"
+    );
+    assert_eq!(plan.prepared_entries().len(), 2);
+    assert_eq!(plan.periods(), [h.march.clone(), h.march.clone()]);
+    assert_eq!(plan.certificate().snapshot_seq, before);
+    let bytes = plan.canonical_bytes().unwrap();
+    let restored = fa_intents::BatchPlan::decode(&bytes).unwrap();
+    assert_eq!(restored, plan);
+    let posted = h.publish_batch_plan(restored, &capability).unwrap();
+    assert!(!posted.already_recorded);
+    assert_eq!(posted.recorded_at.0, before.0 + 1);
+    assert_eq!(posted.entries[0], target);
+    assert_eq!(h.applied_to(target.vid, 0), 20_000);
+    let cvid = plan_certificate_vid(h.book.book_id, &plan.certificate_digest().unwrap());
+    let certificate = h.db.vertex(cvid).unwrap().unwrap();
+    assert_eq!(certificate.created_at, posted.recorded_at);
+    for entry in &posted.entries {
+        assert_eq!(
+            read_entry(&h.db, entry.vid).unwrap().unwrap().1,
+            posted.recorded_at
+        );
+        let edge =
+            h.db.edge(edge_id(relation::CITES, entry.vid, cvid))
+                .unwrap()
+                .unwrap();
+        assert_eq!(edge.entry.created_at, posted.recorded_at);
+    }
+    let unrelated = h.proposal(h.rent_legs(100), b"after-batch-plan", EntryClass::ORIGINAL);
+    h.post(h.request(unrelated, &["post"])).unwrap();
+    let head = h.db.frontier().unwrap();
+    let retry = h.publish_batch_plan(plan, &capability).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.entries, posted.entries);
+    assert_eq!(retry.recorded_at, posted.recorded_at);
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn batch_plan_refuses_member_failure_forward_reference_and_stale_basis_without_writes() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let good = h.proposal(h.rent_legs(100), b"batch-plan-good", EntryClass::ORIGINAL);
+    let mut bad = h.proposal(
+        h.rent_legs(100),
+        b"batch-plan-unbalanced",
+        EntryClass::ORIGINAL,
+    );
+    bad.legs[1].amount.mantissa = 99;
+    bad.unit_totals = EntryPayload::fold_unit_totals(&bad.legs).unwrap();
+    let before = h.db.frontier().unwrap();
+    let refusal = h
+        .planned_batch(h.batch(b"bad-plan", vec![good.clone(), bad]), &capability)
+        .unwrap_err();
+    assert!(refusal.message.starts_with("batch member 1:"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let later = h.invoice(500, b"batch-plan-later");
+    let receipt = h.receipt(
+        100,
+        vec![settle(h.member_ref(&later), 0, h.usd, 100)],
+        b"batch-plan-forward",
+    );
+    let refusal = h
+        .planned_batch(h.batch(b"forward-plan", vec![receipt, later]), &capability)
+        .unwrap_err();
+    assert!(refusal.message.starts_with("batch member 0:"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let plan = h
+        .planned_batch(h.batch(b"stale-plan", vec![good]), &capability)
+        .unwrap();
+    let march = h.march.clone();
+    h.transition(&march, PeriodTransition::Close, b"close-after-batch-plan")
+        .unwrap();
+    let closed = h.db.frontier().unwrap();
+    let refusal = h.publish_batch_plan(plan, &capability).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-034", "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), closed);
+}
+
+#[test]
+fn batch_plan_authentication_binds_order_previews_effects_and_current_authority() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let a = h.proposal(h.rent_legs(100), b"batch-auth-a", EntryClass::ORIGINAL);
+    let b = h.proposal(h.rent_legs(200), b"batch-auth-b", EntryClass::ORIGINAL);
+    let plan = h
+        .planned_batch(h.batch(b"batch-auth", vec![a, b]), &capability)
+        .unwrap();
+    let before = h.db.frontier().unwrap();
+    let mut changed = plan.certificate().clone();
+    changed.effects_digest[0] ^= 1;
+    let forged = fa_intents::BatchPlan::new(
+        plan.batch().clone(),
+        plan.prepared_entries().to_vec(),
+        plan.periods().to_vec(),
+        changed,
+    )
+    .unwrap();
+    assert_eq!(
+        h.publish_batch_plan(forged, &capability).unwrap_err().code,
+        "FA-REF-034"
+    );
+    let mut members = plan.batch().members().to_vec();
+    members.reverse();
+    let reordered =
+        fa_intents::PostBatch::new(plan.batch().idempotency_key().to_vec(), members).unwrap();
+    let mut entries = plan.prepared_entries().to_vec();
+    entries.reverse();
+    let mut certificate = plan.certificate().clone();
+    certificate.intent_digest = reordered.digest().unwrap();
+    certificate.prepared_digest =
+        fa_intents::BatchPlan::prepared_digest(&entries, plan.periods()).unwrap();
+    let forged =
+        fa_intents::BatchPlan::new(reordered, entries, plan.periods().to_vec(), certificate)
+            .unwrap();
+    assert_eq!(
+        h.publish_batch_plan(forged, &capability).unwrap_err().code,
+        "FA-REF-034"
+    );
+    let changed_capability = capability.clone().with_ceiling(h.usd, 1_000).unwrap();
+    assert_eq!(
+        h.publish_batch_plan(plan.clone(), &changed_capability)
+            .unwrap_err()
+            .code,
+        "FA-REF-034"
+    );
+    let other = Capability::embedded(VId(99), &["post"]).unwrap();
+    assert!(h.publish_batch_plan(plan.clone(), &other).is_err());
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let bytes = plan.canonical_bytes().unwrap();
+    for end in [0, 1, 13, 14, 18, bytes.len() / 2, bytes.len() - 1] {
+        assert!(
+            fa_intents::BatchPlan::decode(&bytes[..end]).is_err(),
+            "prefix {end}"
+        );
+    }
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(fa_intents::BatchPlan::decode(&trailing).is_err());
+    let mut future = bytes;
+    future[14] = 2;
+    assert!(fa_intents::BatchPlan::decode(&future).is_err());
+
+    // A test issuer with the actual book key can authenticate a false
+    // effects claim. Native re-staging, independently of authentication,
+    // must still refuse it before a single member or certificate publishes.
+    let mut certificate = plan.certificate().clone();
+    certificate.effects_digest[0] ^= 1;
+    let key = fgdb_crypto::derive_key("fa:batch-plan-authentication-key:v1", &h.book.seal_key.0);
+    certificate.authentication =
+        fgdb_crypto::keyed_hash(&key, &certificate.authentication_bytes().unwrap()).0;
+    let forged = fa_intents::BatchPlan::new(
+        plan.batch().clone(),
+        plan.prepared_entries().to_vec(),
+        plan.periods().to_vec(),
+        certificate,
+    )
+    .unwrap();
+    let refusal = h.publish_batch_plan(forged, &capability).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-034");
+    assert!(refusal.message.contains("native effects"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn batch_plan_satisfies_required_dry_run_without_weakening_direct_commit_admission() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"])
+        .unwrap()
+        .with_requires_dry_run();
+    let proposal = h.proposal(
+        h.rent_legs(100),
+        b"requires-batch-plan",
+        EntryClass::ORIGINAL,
+    );
+    let batch = h.batch(b"requires-batch-review", vec![proposal]);
+    let before = h.db.frontier().unwrap();
+    let ctx = h.ctx();
+    let refusal = h
+        .runtime
+        .block_on(fa_journal::post_batch(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            capability.clone(),
+            batch.clone(),
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    let plan = h.planned_batch(batch, &capability).unwrap();
+    let mut certificate = plan.certificate().clone();
+    certificate.authentication[0] ^= 1;
+    let forged = fa_intents::BatchPlan::new(
+        plan.batch().clone(),
+        plan.prepared_entries().to_vec(),
+        plan.periods().to_vec(),
+        certificate,
+    )
+    .unwrap();
+    assert_eq!(
+        h.publish_batch_plan(forged, &capability).unwrap_err().code,
+        "FA-REF-034"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    let posted = h.publish_batch_plan(plan.clone(), &capability).unwrap();
+    assert_eq!(posted.recorded_at.0, before.0 + 1);
+    assert!(
+        h.publish_batch_plan(plan, &capability)
+            .unwrap()
+            .already_recorded
+    );
+    assert_eq!(h.db.frontier().unwrap(), posted.recorded_at);
+}
+
+#[test]
+fn batch_plan_agent_rehearsal_cannot_publish_or_change_its_holder() {
+    let mut h = harness();
+    let agent = Capability::new(
+        PRINCIPAL,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap();
+    let proposal = h.proposal(h.rent_legs(100), b"agent-batch-plan", EntryClass::ORIGINAL);
+    let before = h.db.frontier().unwrap();
+    let plan = h
+        .planned_batch(h.batch(b"agent-batch", vec![proposal]), &agent)
+        .unwrap();
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let refusal = h.publish_batch_plan(plan.clone(), &agent).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-013", "{refusal}");
+    let human = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    assert_eq!(
+        h.publish_batch_plan(plan, &human).unwrap_err().code,
+        "FA-REF-034"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn batch_plan_rechecks_revocation_even_when_its_original_outcome_is_recorded() {
+    for published in [false, true] {
+        let mut h = harness();
+        let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+        let proposal = h.proposal(
+            h.rent_legs(100),
+            b"revoked-batch-plan",
+            EntryClass::ORIGINAL,
+        );
+        let plan = h
+            .planned_batch(h.batch(b"revoked-batch", vec![proposal]), &capability)
+            .unwrap();
+        if published {
+            h.publish_batch_plan(plan.clone(), &capability).unwrap();
+        }
+        let revoke = RevocationRequest {
+            capability: Capability::embedded(VId(99), &["issue_capability"]).unwrap(),
+            revoked: capability.commitment().unwrap(),
+            effective_date: h.day(),
+            idempotency_key: b"revoke-batch-authority".to_vec(),
+            description: h.statement("revoke batch authority", 17),
+        };
+        let ctx = h.ctx();
+        h.runtime
+            .block_on(revoke_capability(&mut h.db, &ctx, &h.book, revoke))
+            .unwrap()
+            .unwrap();
+        let before = h.db.frontier().unwrap();
+        let refusal = h.publish_batch_plan(plan, &capability).unwrap_err();
+        assert!(
+            refusal.message.contains("revoked"),
+            "{published}: {refusal}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+}
+
+#[test]
+fn batch_plan_retains_large_transcripts_and_refuses_an_ordinary_batch_as_its_retry() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let members = (0..12)
+        .map(|index| {
+            let mut proposal = h.proposal(
+                h.rent_legs(100),
+                format!("chunked-plan-{index}").as_bytes(),
+                EntryClass::ORIGINAL,
+            );
+            proposal.description = h.statement(&"batch evidence ".repeat(80), index + 1);
+            proposal
+        })
+        .collect();
+    let batch = h.batch(b"chunked-batch-plan", members);
+    let plan = h.planned_batch(batch.clone(), &capability).unwrap();
+    assert!(plan.canonical_bytes().unwrap().len() > 16_384);
+    let posted = h.publish_batch_plan(plan.clone(), &capability).unwrap();
+    assert_eq!(posted.entries.len(), 12);
+    assert!(
+        h.publish_batch_plan(plan, &capability)
+            .unwrap()
+            .already_recorded
+    );
+
+    let mut h = harness();
+    let member = h.proposal(
+        h.rent_legs(100),
+        b"ordinary-batch-member",
+        EntryClass::ORIGINAL,
+    );
+    let batch = h.batch(b"ordinary-batch", vec![member]);
+    let plan = h.planned_batch(batch.clone(), &capability).unwrap();
+    h.post_batch(batch).unwrap();
+    let before = h.db.frontier().unwrap();
+    assert_eq!(
+        h.publish_batch_plan(plan, &capability).unwrap_err().code,
+        "FA-REF-034"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn batch_plan_retry_derives_member_identity_from_the_authenticated_request() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let proposal = h.proposal(h.rent_legs(100), b"batch-identity", EntryClass::ORIGINAL);
+    let expected = h.member_ref(&proposal);
+    let batch = h.batch(b"batch-identity-review", vec![proposal]);
+    let plan = h.planned_batch(batch, &capability).unwrap();
+    let digest = plan.certificate_digest().unwrap();
+    let cvid = plan_certificate_vid(h.book.book_id, &digest);
+    let ovid = outcome_vid(&h.book, plan.batch());
+    let alternate = VId(0xfeed);
+    assert_ne!(alternate, expected.vid);
+    let body = OutcomeBody {
+        request_digest: request_digest(plan.batch().idempotency_key(), &[alternate]),
+        entries: vec![plan.prepared_entries()[0].entry_ref(alternate)],
+    };
+    // A corrupt raw publication reproduces the payloads, authentic plan and
+    // all retaining edges at the expected birth, but substitutes another
+    // entry identity. Its self-consistent outcome is not this plan's retry.
+    let mut rows = fgdb::WriteBatch::new(relation::CITES);
+    rows.create_vertex(
+        alternate,
+        vec![fa_model::symbols::label::ENTRY],
+        fa_model::entry_mirrors(&plan.prepared_entries()[0]).unwrap(),
+    );
+    rows.create_vertex(
+        ovid,
+        vec![fa_model::symbols::label::INTENT_OUTCOME],
+        vec![(
+            property::FA_PAYLOAD,
+            CanonicalScalar::bytes(body.canonical_bytes().unwrap()).unwrap(),
+        )],
+    );
+    let ctx = h.ctx();
+    let bytes = plan.canonical_bytes().unwrap();
+    fa_journal::object::stage(
+        &ctx.query(),
+        &mut rows,
+        h.book.book_id,
+        cvid,
+        fa_model::symbols::label::CERTIFICATE,
+        fa_journal::object::ObjectKind::BatchPlan,
+        &bytes,
+    )
+    .unwrap();
+    rows.create_vertex(
+        cvid,
+        vec![fa_model::symbols::label::CERTIFICATE],
+        vec![
+            (
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(
+                    fa_journal::object::payload(fa_journal::object::ObjectKind::BatchPlan, &bytes)
+                        .unwrap(),
+                )
+                .unwrap(),
+            ),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(digest.to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(h.book.book_id.0.to_vec()).unwrap(),
+            ),
+        ],
+    );
+    for source in [alternate, ovid] {
+        rows.add_edge(edge_id(relation::CITES, source, cvid), source, cvid, vec![]);
+    }
+    let mut membership = fgdb::WriteBatch::new(relation::IN_BATCH);
+    membership.add_edge(
+        edge_id(relation::IN_BATCH, alternate, ovid),
+        alternate,
+        ovid,
+        vec![],
+    );
+    let mut txn = h.db.begin(&ctx.txn()).unwrap();
+    txn.write_ordered(&mut h.db, vec![rows, membership])
+        .unwrap();
+    let written = h
+        .runtime
+        .block_on(txn.commit(&mut h.db, &ctx.commit()))
+        .unwrap();
+    assert_eq!(written.0, plan.certificate().snapshot_seq.0 + 1);
+    let refusal = h.publish_batch_plan(plan, &capability).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-034", "{refusal}");
+    assert!(h.db.vertex(expected.vid).unwrap().is_none());
+    assert_eq!(h.db.frontier().unwrap(), written);
+}
+
+// ---------------------------------------------------------------------------
 // Drafts (plan §15.2, bead fa-s7x)
 // ---------------------------------------------------------------------------
 

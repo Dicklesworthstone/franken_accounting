@@ -132,8 +132,8 @@ pub use draft_review::{
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
 pub use fa_docket::search::{SearchHit, SearchRecordId, SearchRecordKind};
 pub use fa_intents::{
-    IntentError, MAX_BATCH_BYTES, MAX_PLAN_BYTES, PlanCertificate, PostBatch, PostIntent, PostPlan,
-    ReplacementPlan,
+    BatchPlan, BatchPlanCertificate, IntentError, MAX_BATCH_BYTES, MAX_BATCH_PLAN_BYTES,
+    MAX_PLAN_BYTES, PlanCertificate, PostBatch, PostIntent, PostPlan, ReplacementPlan,
 };
 pub use fa_journal::chart::{ClosingRoutes, ClosingRoutesRecorded, ClosingRoutesRequest};
 pub use fa_journal::closing::{
