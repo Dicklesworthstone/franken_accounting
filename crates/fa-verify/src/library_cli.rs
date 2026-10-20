@@ -9,6 +9,8 @@
 //! the library under a NUL-prefixed placeholder (a real path never contains
 //! NUL) that is resolved back to the original name when the file is opened.
 
+mod witness;
+
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -20,7 +22,7 @@ use fa_verify::cli::{EXIT_IO, MAX_INPUT_BYTES};
 const PLACEHOLDER: &str = "\u{0}non-UTF-8 argument #";
 
 /// Commands only the library verifies.
-const LIBRARY_COMMANDS: [&str; 5] = ["state", "checkpoint", "scope", "doc-commit", "bundle"];
+const LIBRARY_COMMANDS: [&str; 6] = ["state", "checkpoint", "scope", "doc-commit", "bundle", "witness"];
 /// Commands both grammars verify; the raw grammar always names `--proof`.
 const SHARED_COMMANDS: [&str; 4] = ["inclusion", "prefix", "balance", "consistency"];
 /// Commands only this binary's own parser verifies.
@@ -102,8 +104,8 @@ fn has_positional(rest: &[OsString]) -> bool {
 
 /// The library's usage text, appended to this binary's `--help`.
 #[must_use]
-pub fn usage() -> &'static str {
-    fa_verify::cli::USAGE
+pub fn usage() -> String {
+    format!("{}\n{}", fa_verify::cli::USAGE, witness::HELP)
 }
 
 fn read_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
@@ -130,6 +132,14 @@ fn read_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
 /// Run the library CLI over `args`, printing its report and exiting with its
 /// code (5 when stdout cannot be written).
 pub fn run(args: Vec<OsString>) -> ExitCode {
+    if args.first().is_some_and(|arg| arg == "witness") {
+        return emit(witness::run(&args));
+    }
+    if args.is_empty() {
+        return emit(fa_verify::cli::Output {
+            exit: 0, stdout: format!("{}\n", usage()), stderr: String::new(),
+        });
+    }
     let mut raw: Vec<OsString> = Vec::new();
     let args: Vec<String> = args
         .into_iter()
@@ -148,7 +158,10 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         let os: &OsStr = original.map_or_else(|| OsStr::new(path), OsString::as_os_str);
         read_bounded(Path::new(os))
     };
-    let out = fa_verify::cli::run(&args, &read);
+    emit(fa_verify::cli::run(&args, &read))
+}
+
+fn emit(out: fa_verify::cli::Output) -> ExitCode {
     let written = {
         let mut stdout = std::io::stdout().lock();
         stdout
