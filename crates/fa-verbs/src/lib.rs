@@ -1787,12 +1787,20 @@ mod bound_tests {
             ("explain", Some("balance")),
             ("explain", Some("lineage")),
             ("entry", Some("show")),
+            ("statement", Some("balance-sheet")),
+            ("statement", Some("income-statement")),
         ] {
             assert_eq!(judged(verb, sub, &[]), Some(true), "{verb} {sub:?}");
         }
         for (verb, sub, present) in [
             ("tb", None, &["--summary", "--certify"][..]),
-            ("statement", Some("balance-sheet"), &[][..]),
+            ("statement", Some("diff"), &[][..]),
+            ("statement", Some("trace"), &["--certify"][..]),
+            (
+                "statement",
+                Some("balance-sheet"),
+                &["--before-certificate"][..],
+            ),
             ("gl", Some("detail"), &[][..]),
             ("event", Some("list"), &[][..]),
             ("document", Some("read"), &[][..]),
