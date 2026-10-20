@@ -867,3 +867,280 @@ fn invalid_plain_and_certified_selections_refuse_without_changing_the_book() {
         before
     );
 }
+
+/// fa-wrrw (plan §7.4, §12.5): a period's first `StatementIssuance` is what
+/// `AS ORIGINALLY REPORTED` reads, at the known-at of the certificate it
+/// issued; it takes `close` and one independent Human approval of the exact
+/// plan, and a later issuance never moves the pin.
+#[test]
+fn the_first_statement_issuance_pins_as_originally_reported_to_its_certificate() {
+    use fa_journal::refusal::code;
+    use fa_journal::{IssuedTo, ReportedBasis};
+
+    let mut fixture = Fixture::new(0x9a);
+    let usd = fixture.usd;
+    fixture.transfer(day(2026, 2, 10), b"feb-sale", usd, ("1000", "4000"), 500);
+    assert_eq!(
+        fixture
+            .book
+            .originally_reported(FEBRUARY)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::NOT_ORIGINALLY_REPORTED,
+        "neither issued nor locked: nothing was reported"
+    );
+    let chosen = StatementSelection {
+        definition: StatementDefinition::embedded("income-statement").unwrap(),
+        periods: vec![FEBRUARY.into()],
+        comparative: Vec::new(),
+    };
+    let at = fixture.book.head().unwrap();
+    let certified = fixture
+        .book
+        .certify_statement(chosen.clone(), Some(at))
+        .unwrap()
+        .unwrap();
+    let retained = fixture
+        .book
+        .retain_certificate(&certified.certificate)
+        .unwrap()
+        .unwrap();
+    // A February correction recorded after the issued certificate.
+    fixture.transfer(day(2026, 2, 20), b"feb-late", usd, ("1000", "4000"), 25);
+
+    let controller = Capability::embedded(PRINCIPAL, &["close", "read"]).unwrap();
+    let reviewer = Capability::embedded(VId(2), &["approve"]).unwrap();
+    let date = day(2026, 3, 5);
+    let plan = fixture
+        .book
+        .plan_statement_issuance(
+            &controller,
+            &retained.digest,
+            None,
+            IssuedTo::Auditor,
+            None,
+            date,
+            b"feb-auditor",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.issuance.ordinal, 1);
+    assert_eq!(plan.issuance.period, FEBRUARY);
+    assert_eq!(plan.issuance.certified_at, at);
+    assert_eq!(plan.issuance.certificate, retained.digest);
+    assert_eq!(plan.issuance.definition_name, "income-statement");
+    assert_eq!(
+        fa_journal::IssuancePlan::decode(&plan.encode().unwrap()).unwrap(),
+        plan
+    );
+    let digest = plan.proposal_digest(fixture.book.context()).unwrap();
+    let planned_at = fixture.book.head().unwrap();
+
+    // Authority and segregation of duties, each refused before a write.
+    let no_close = Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap();
+    assert_eq!(
+        fixture
+            .book
+            .plan_statement_issuance(
+                &no_close,
+                &retained.digest,
+                None,
+                IssuedTo::Auditor,
+                None,
+                date,
+                b"feb-auditor",
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::CAPABILITY
+    );
+    assert_eq!(
+        fixture
+            .book
+            .issue_statements(&controller, plan.clone(), Vec::new())
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::APPROVALS,
+        "an issuance needs one approval"
+    );
+    assert_eq!(
+        fixture.book.head().unwrap(),
+        planned_at,
+        "planning and refusals write nothing"
+    );
+    let own = fixture
+        .book
+        .approve(
+            Capability::embedded(PRINCIPAL, &["approve"]).unwrap(),
+            digest,
+        )
+        .unwrap()
+        .unwrap()
+        .approval();
+    assert_eq!(
+        fixture
+            .book
+            .issue_statements(&controller, plan.clone(), vec![own])
+            .unwrap()
+            .unwrap_err()
+            .code,
+        "FA-REF-008",
+        "the planner cannot approve its own issuance"
+    );
+    let approved_at = fixture.book.head().unwrap();
+    // A plan whose issuance its certificate does not state.
+    let mut forged = plan.clone();
+    forged.issuance.certified_at = CommitSeq(at.0 + 1);
+    assert_eq!(
+        fixture
+            .book
+            .issue_statements(&controller, forged, Vec::new())
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::NOT_ISSUABLE
+    );
+    // A period the certificate does not report.
+    assert_eq!(
+        fixture
+            .book
+            .plan_statement_issuance(
+                &controller,
+                &retained.digest,
+                Some(MARCH),
+                IssuedTo::Auditor,
+                None,
+                date,
+                b"march",
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::NOT_ISSUABLE
+    );
+    assert_eq!(
+        fixture.book.head().unwrap(),
+        approved_at,
+        "refusals write nothing"
+    );
+
+    let approval = fixture
+        .book
+        .approve(reviewer.clone(), digest)
+        .unwrap()
+        .unwrap()
+        .approval();
+    let issued = fixture
+        .book
+        .issue_statements(&controller, plan.clone(), vec![approval])
+        .unwrap()
+        .unwrap();
+    assert!(!issued.already_recorded);
+    assert_eq!(issued.record.issuance, plan.issuance);
+    assert_eq!(issued.record.approvals, 1);
+    assert_eq!(issued.record.principal, PRINCIPAL);
+    let head = fixture.book.head().unwrap();
+    assert_eq!(head, issued.record.recorded_at);
+    // The same plan again returns the recorded issuance and writes nothing.
+    let again = fixture
+        .book
+        .issue_statements(&controller, plan.clone(), vec![approval])
+        .unwrap()
+        .unwrap();
+    assert!(again.already_recorded);
+    assert_eq!(again.record, issued.record);
+    assert_eq!(fixture.book.head().unwrap(), head);
+
+    // As originally reported is the issued certificate's coordinate, and the
+    // statement there is the issued statement, byte for byte; as currently
+    // stated differs by exactly the later correction.
+    let reported = fixture.book.originally_reported(FEBRUARY).unwrap().unwrap();
+    assert_eq!(reported.known_at, at);
+    assert!(matches!(&reported.basis, ReportedBasis::Issuance(first) if **first == issued.record));
+    let original = fixture
+        .book
+        .statement(chosen.clone(), Some(reported.known_at))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        original.canonical_bytes().unwrap(),
+        certified.certificate.output
+    );
+    let current = fixture
+        .book
+        .statement(chosen.clone(), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(amounts(&original, "net_income", usd), [500]);
+    assert_eq!(amounts(&current, "net_income", usd), [525]);
+
+    // The restated statements issued to a lender are the period's second
+    // issuance; the pin stays on the first.
+    let restated = fixture
+        .book
+        .certify_statement(chosen, None)
+        .unwrap()
+        .unwrap();
+    let restated = fixture
+        .book
+        .retain_certificate(&restated.certificate)
+        .unwrap()
+        .unwrap();
+    let plan_for = |book: &Book, key: &[u8]| {
+        book.plan_statement_issuance(
+            &controller,
+            &restated.digest,
+            Some(FEBRUARY),
+            IssuedTo::Lender,
+            None,
+            date,
+            key,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let second = plan_for(&fixture.book, b"feb-lender");
+    let rival = plan_for(&fixture.book, b"feb-lender-rival");
+    assert_eq!((second.issuance.ordinal, rival.issuance.ordinal), (2, 2));
+    let mut commit = |plan: &fa_journal::IssuancePlan| {
+        let digest = plan.proposal_digest(fixture.book.context()).unwrap();
+        let approval = fixture
+            .book
+            .approve(reviewer.clone(), digest)
+            .unwrap()
+            .unwrap()
+            .approval();
+        fixture
+            .book
+            .issue_statements(&controller, plan.clone(), vec![approval])
+            .unwrap()
+    };
+    assert_eq!(commit(&second).unwrap().record.issuance.ordinal, 2);
+    let stale = commit(&rival).unwrap_err();
+    assert_eq!(
+        (stale.code, stale.exit),
+        (code::CONFLICT, 6),
+        "a plan for an ordinal another issuance took is stale"
+    );
+    let all = fixture.book.statement_issuances(Some(FEBRUARY)).unwrap();
+    assert_eq!(
+        all.iter()
+            .map(|r| (r.issuance.ordinal, r.issuance.issued_to))
+            .collect::<Vec<_>>(),
+        [(1, IssuedTo::Auditor), (2, IssuedTo::Lender)]
+    );
+    assert_eq!(fixture.book.statement_issuances(None).unwrap(), all);
+    assert_eq!(
+        fixture
+            .book
+            .originally_reported(FEBRUARY)
+            .unwrap()
+            .unwrap()
+            .known_at,
+        at,
+        "a later issuance never moves AS ORIGINALLY REPORTED"
+    );
+}

@@ -55,14 +55,9 @@ pub struct RetainedCertificate {
     pub recorded_at: CommitSeq,
 }
 
-/// The report-certificate locator is scoped to its book and public digest.
-/// The complete digest remains mandatory when reading the located vertex.
-pub(crate) fn certificate_vid(book_id: Id128, digest: &[u8; 32]) -> VId {
-    let hash = domain_digest(b"fa:vid:report-certificate:v1", &[&book_id.0, digest]);
-    let mut low = [0_u8; 16];
-    low.copy_from_slice(&hash[..16]);
-    VId(u128::from_le_bytes(low))
-}
+/// The report-certificate locator is scoped to its book and public digest
+/// (`fa_model::report_certificate_vid`, which the kernel also reads).
+pub(crate) use fa_model::report_certificate_vid as certificate_vid;
 
 fn invalid(message: impl Into<String>) -> Refusal {
     Refusal::new(

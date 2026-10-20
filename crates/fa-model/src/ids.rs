@@ -217,6 +217,26 @@ pub fn bates_range_vid(book: Id128, matter: &str, document: &Oid) -> VId {
     )
 }
 
+/// `vid(Certificate) = H("fa:vid:report-certificate:v1" ‖ book ‖ digest)`:
+/// where a book retains the report certificate with this public digest.
+/// The complete digest remains mandatory when reading the located vertex.
+#[must_use]
+pub fn report_certificate_vid(book: Id128, digest: &[u8; 32]) -> VId {
+    derive_vid(b"fa:vid:report-certificate:v1", &[&book.0, digest])
+}
+
+/// `vid(StatementIssuance) = H("fa:vid:statement-issuance:v1" ‖ book ‖
+/// period ‖ u32 ordinal)` (plan §12.5, bead fa-wrrw): a period's issuances
+/// are numbered from 1 in commit order, so its first issuance, the one `AS
+/// ORIGINALLY REPORTED` reads, is one point read.
+#[must_use]
+pub fn statement_issuance_vid(book: Id128, period: &str, ordinal: u32) -> VId {
+    derive_vid(
+        b"fa:vid:statement-issuance:v1",
+        &[&book.0, period.as_bytes(), &ordinal.to_le_bytes()],
+    )
+}
+
 /// `vid(Entry) = H("fa:vid:migration-entry:v1" ‖ book_id ‖ run ‖
 /// idempotency_key)` for a `Migration` entry (plan §8.6): the run is part of
 /// the identity, so a retry run reuses the abandoned run's keys.

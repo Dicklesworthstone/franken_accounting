@@ -368,11 +368,11 @@ name = "statement"
 summary = "Balance sheet or income statement from exact journal folds under a registered definition, with optional period comparatives, retained replay certificates, and frontier diff/trace bridges."
 writes = true
 subcommands = []
-flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out", "--branch", "--before-certificate", "--after-certificate", "--from-diff"]
-switches = ["--certify", "--as-originally-reported"]
-events = ["statement", "statement_diff", "statement_trace", "report_certificate"]
-exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "statement balance-sheet|income-statement --for <period> [--compare <period>] --as-originally-reported [--certify]   (plan §7.4: the statement as it stood when its --for period was first reported, at the known-at of that period's first Lock transition (a StatementIssuance takes precedence once issuances are journaled); never its first Close, never HEAD. A --compare column is read at that same snapshot. A period with neither is refused with FA-REF-161. Cannot be combined with a known-at selector, diff, trace or certificate inputs.)","statement diff --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>]", "statement trace --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>] [--max-publications 1..=256]", "statement diff --before-certificate <C:oid|file|-> --after-certificate <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--certify]   (bridge two retained certificates of the same trunk statement selection at ordered frontiers; both replay in full first, and a certified comparison keeps those exact source certificates)", "statement trace --from-diff <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--max-publications 1..=256] --certify   (attribute a saved statement comparison to every intermediate publication; its original endpoint certificates are kept and the trace must reproduce the saved bridge)", "With certificate inputs, the certificates fix both frontiers: --before, --after and known-at selectors are refused. A stated --for, --compare or --definition is checked against the certificates (exit 8 when they answer a different statement), never used to re-select.", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector."]
+flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--certificate", "--issued-to", "--document", "--key", "--date", "--plan", "--approval"]
+switches = ["--certify", "--as-originally-reported", "--dry-run"]
+events = ["statement", "statement_diff", "statement_trace", "report_certificate", "statement_issuance_plan", "statement_issued", "statement_issuances"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "statement balance-sheet|income-statement --for <period> [--compare <period>] --as-originally-reported [--certify]   (plan §7.4: the statement as it stood when its --for period was first reported: at the known-at of the certificate the period's first StatementIssuance issued, else at its first Lock transition; never its first Close, never HEAD. A --compare column is read at that same snapshot. A period with neither is refused with FA-REF-161. Cannot be combined with a known-at selector, diff, trace or certificate inputs.)","statement diff --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>]", "statement trace --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>] [--max-publications 1..=256]", "statement diff --before-certificate <C:oid|file|-> --after-certificate <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--certify]   (bridge two retained certificates of the same trunk statement selection at ordered frontiers; both replay in full first, and a certified comparison keeps those exact source certificates)", "statement trace --from-diff <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--max-publications 1..=256] --certify   (attribute a saved statement comparison to every intermediate publication; its original endpoint certificates are kept and the trace must reproduce the saved bridge)", "With certificate inputs, the certificates fix both frontiers: --before, --after and known-at selectors are refused. A stated --for, --compare or --definition is checked against the certificates (exit 8 when they answer a different statement), never used to re-select.", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.", "statement issue --certificate C:<oid> [--for <period>] --issued-to board|auditor|lender|regulator|sec|tax-authority|other [--document <oid>] [--key K] [--date YYYY-MM-DD] --dry-run   (plan §12.5, IssueStatements: plans the StatementIssuance of a retained trunk statement certificate for the period it reports (--for may be omitted when it reports one) at the period's next ordinal; needs close and read; writes nothing. An approver who is not the planner runs fa approve --proposal <proposal_digest>.)", "statement issue --plan <file|-> --approval <vid>...   (journals exactly the planned issuance under close and read with one independent Human approval; the plan's ordinal must still be the period's next (exit 6 otherwise: plan again). The period's first issuance is what --as-originally-reported reads from then on; a later issuance never moves it. The same plan committed again returns the recorded issuance.)", "statement issuances [--for <period>]   (every journaled issuance of the period, by ordinal, or of the book)"]
 example = "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --certify --book ./books/myco --json"
 
 [[verb]]
@@ -1410,6 +1410,24 @@ name = "statement"
 book = true
 doc = "A registered financial statement evaluated from exact journal folds. The definition digest commits its versioned mappings and formulas; mappings list the checked leaf-account partition. Each line contains amounts in one native unit, in column order. All columns share known_at. Certification and replay use the same presentation; no GAAP conformity, consolidation, FX conversion or presentation rounding is implied."
 fields = ["name:string", "definition_version:int", "definition_digest:hex", "known_at:seq", "columns:[statement_column]", "lines:[statement_line]", "mappings:[statement_mapping]", "scope:string"]
+
+[[event]]
+name = "statement_issuance_plan"
+book = true
+doc = "A statement issuance was planned (plan §12.5, IssueStatements); nothing was written. The issuance names the retained statement certificate, the period it reports, its known-at (certified_at) and the audience, at the period's next ordinal. bytes is the complete canonical IssuancePlan in hex, with its description sealed once; approvals bind proposal_digest. Scope is statement-issuance-proposal: commit checks authority, approvals, the certificate and the ordinal again."
+fields = ["issuance:statement_issuance", "principal:hex", "proposal_digest:hex", "bytes:hex", "scope:string"]
+
+[[event]]
+name = "statement_issued"
+book = true
+doc = "A StatementIssuance was journaled by an IssuanceControl record (or the same plan was already committed: then nothing was written). The period's first issuance (ordinal 1) is what AS ORIGINALLY REPORTED reads: its certificate's certified_at."
+fields = ["issuance:statement_issuance", "already_recorded:bool"]
+
+[[event]]
+name = "statement_issuances"
+book = true
+doc = "Every journaled statement issuance of the period, by ordinal, or of the book, by period then ordinal."
+fields = ["period:string?", "issuances:[statement_issuance]"]
 
 [[event]]
 name = "summary_trial_balance"
@@ -3884,6 +3902,11 @@ doc = "A bundle-scoped production's evidence bundle: its digest, the recorded ch
 fields = ["digest:hex", "checkpoint:hex", "checkpoint_public_key:hex", "verify:string"]
 
 [[shape]]
+name = "statement_issuance"
+doc = "One statement issuance: its vertex, period and ordinal, the statement definition, the retained certificate it issued with that certificate's known-at (certified_at), the audience and the optional transmittal document. control_entry, recorded_at, principal and approvals are those of its IssuanceControl record, null in a plan."
+fields = ["issuance:hex", "period:string", "ordinal:int", "definition:string", "definition_version:int", "definition_digest:hex", "certificate:hex", "certified_at:seq", "issued_to:string", "document:hex?", "control_entry:hex?", "recorded_at:seq?", "principal:hex?", "approvals:int?"]
+
+[[shape]]
 name = "production_file"
 doc = "One file written into the production volume directory: its path inside the volume, size and BLAKE3 digest under fa:production-file:v1."
 fields = ["name:string", "bytes:int", "digest:hex"]
@@ -3928,6 +3951,13 @@ verbs = ["statement"]
 subcommands = ["diff", "trace"]
 when_any = ["--certify", "--certificate-out"]
 ops = ["read", "produce"]
+
+# A statement issuance (fa-wrrw) is planned and committed by its preparer
+# under close: an issuance takes the authority of the Lock it supersedes.
+[[bound]]
+verbs = ["statement"]
+subcommands = ["issue"]
+ops = ["read", "close"]
 
 [[bound]]
 verbs = ["gl"]

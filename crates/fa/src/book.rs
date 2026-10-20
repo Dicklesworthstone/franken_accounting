@@ -1130,6 +1130,54 @@ impl Book {
         with_store!(&self.store, core => core.drafts(&self.purposes()))
     }
 
+    /// Plan the issuance of the retained statement certificate `certificate`
+    /// for `period` to `issued_to` (plan §12.5, Appendix B
+    /// `IssueStatements`, bead fa-wrrw): `close` and `read` are admitted
+    /// first; the certificate must be a trunk statement certificate of this
+    /// book reporting `period` (omit it when the certificate reports one).
+    /// Nothing is written; an approver who is not the planner approves the
+    /// plan's proposal digest, and [`Self::issue_statements`] commits it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan_statement_issuance(
+        &self,
+        capability: &fa_journal::Capability,
+        certificate: &[u8; 32],
+        period: Option<&str>,
+        issued_to: fa_journal::IssuedTo,
+        document: Option<fa_model::Oid>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::IssuancePlan> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.plan_statement_issuance(
+            &purposes, capability, certificate, period, issued_to, document, effective_date,
+            idempotency_key,
+        )))
+    }
+
+    /// Journal a planned statement issuance under `capability` and the cited
+    /// `approvals` (plan §12.5, bead fa-wrrw). The period's first issuance is
+    /// what `AS ORIGINALLY REPORTED` reads from then on.
+    pub fn issue_statements(
+        &mut self,
+        capability: &fa_journal::Capability,
+        plan: fa_journal::IssuancePlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<fa_journal::StatementsIssued> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.issue_statements(
+            &purposes, capability, plan, approvals,
+        )))
+    }
+
+    /// Every statement issuance of `period`, by ordinal, or of the book.
+    pub fn statement_issuances(
+        &self,
+        period: Option<&str>,
+    ) -> Result<Vec<fa_journal::IssuanceRecord>, BookError> {
+        with_store!(&self.store, core => core.statement_issuances(&self.purposes(), period))
+    }
+
     /// Open the production profile of `profile.matter` (plan §13.2, bead
     /// fa-6l9): its Bates prefix and first number, journaled once per matter.
     pub fn open_production(
@@ -2015,7 +2063,8 @@ impl Book {
     }
 
     /// Where `AS ORIGINALLY REPORTED` pins `period_code`'s reads (plan §7.4):
-    /// its first Lock transition (no StatementIssuance is journaled yet).
+    /// the known-at of the certificate its first StatementIssuance issued,
+    /// else its first Lock transition.
     pub fn originally_reported(
         &self,
         period_code: &str,

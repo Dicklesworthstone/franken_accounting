@@ -236,3 +236,9 @@ class = "ProductionControl"
 reversible = "no"
 why = "ProductionControl records are a matter's production history with no legs; a produced Bates number is never withdrawn or reassigned"
 corrective_route = "produce the corrected documents again in the matter with `fa produce`: they receive the next Bates numbers, and the earlier ranges stay on record"
+
+[[target_class]]
+class = "IssuanceControl"
+reversible = "no"
+why = "an IssuanceControl record is the fact that a statement package left the entity, with no legs; what was issued is never withdrawn, and the period's first issuance stays what AS ORIGINALLY REPORTED reads"
+corrective_route = "correct the books with a lawfully classified adjustment or a restatement case, certify the restated statements and issue them with `fa statement issue`: the later issuance is recorded beside the first"
