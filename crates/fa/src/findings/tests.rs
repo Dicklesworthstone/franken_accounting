@@ -183,10 +183,14 @@ impl Fixture {
             ))
             .unwrap()
             .unwrap();
-        match result {
-            Posted::Committed { entry_ref, .. } => entry_ref.vid,
-            _ => panic!("fresh transaction"),
-        }
+        let Posted::Committed { entry_ref, .. } = result else {
+            assert!(
+                matches!(result, Posted::Committed { .. }),
+                "fresh transaction"
+            );
+            return VId(0);
+        };
+        entry_ref.vid
     }
     fn certify(&mut self, id: &str, source: Option<VId>) -> ProcedureCertificate {
         let cx = self.cx();
@@ -502,6 +506,434 @@ fn orphan_identity_aborts_the_entire_transaction_without_a_run_index() {
         "no root or first finding leaked on failed staging"
     );
     assert!(f.read(cert.digest()).is_err());
+}
+
+#[test]
+fn lantern_thirty_entry_corpus_journals_findings_replays_workpaper_and_retries_idempotently() {
+    let mut f = Fixture::new(131);
+    let mut first_source = None;
+    for i in 0..30u8 {
+        let day_of_month = (i % 28) + 1;
+        let (from, to, amount) = match i % 3 {
+            0 => ("3000", "1000", 1_000_000 * i128::from((i / 3) + 1)),
+            1 => ("1000", "1010", 250_000 * i128::from((i / 3) + 1)),
+            _ => ("3000", "1000", 12_345 + i128::from(i) * 111),
+        };
+        let entry_vid = f.post(day_of_month, from, to, amount);
+        if first_source.is_none() {
+            first_source = Some(entry_vid);
+        }
+    }
+    let operational_entries = f
+        .book
+        .query(&f.cx(), |db, book| {
+            Ok(fa_registers::entries_at(db, book, f.head())?
+                .into_iter()
+                .filter(|e| !e.1.proposal.legs.is_empty())
+                .count())
+        })
+        .unwrap();
+    assert_eq!(
+        operational_entries, 30,
+        "30-entry Lantern corpus must contain 30 committed operational entries"
+    );
+
+    for (procedure_id, source) in [
+        ("jet.weekend", None),
+        ("jet.round_amounts", None),
+        ("trace.network_fifo", first_source),
+    ] {
+        let cert = f.certify(procedure_id, source);
+        let head_before = f.head();
+        let recorded = f.record(cert.digest()).unwrap();
+        assert_eq!(recorded.recorded_at.0, head_before.0 + 1);
+        assert!(
+            !recorded.finding_ids.is_empty(),
+            "{procedure_id} over 30-entry corpus must produce findings"
+        );
+        assert_eq!(recorded.finding_ids.len(), cert.report().findings.len());
+        let citations_count: usize = recorded.report.findings.iter().map(|v| v.cites.len()).sum();
+        let cert_hex: String = cert.digest().iter().map(|b| format!("{b:02x}")).collect();
+        let finding_ids_hex: Vec<String> = recorded
+            .finding_ids
+            .iter()
+            .map(|id| format!("{:032x}", id.0))
+            .collect();
+        println!(
+            "procedure={procedure_id} finding_ids={finding_ids_hex:?} citations_count={citations_count} certificate_oid={cert_hex}"
+        );
+
+        f.book
+            .query(&f.cx(), |db, book| {
+                for (id, finding) in recorded.finding_ids.iter().zip(&recorded.report.findings) {
+                    for cite in &finding.cites {
+                        let dst = target(cite, book);
+                        let edge = db
+                            .edge_at(edge_id(relation::CITES, *id, dst), recorded.recorded_at)
+                            .map_err(KernelError::from)?
+                            .unwrap();
+                        assert_eq!(edge.entry.created_at, recorded.recorded_at);
+                        assert!(cite.resolves(db, book, cert.known_at())?);
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        let cx = f.cx();
+        let workpaper = f
+            .runtime
+            .block_on(f.book.finding_workpaper(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                cert.digest(),
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(
+            workpaper
+                .id()
+                .ends_with(&format!("-WP-{}", recorded.recorded_at.0))
+        );
+        let wp_bytes = workpaper.canonical_bytes().unwrap();
+        let wp_again = f
+            .runtime
+            .block_on(f.book.finding_workpaper(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                cert.digest(),
+            ))
+            .unwrap()
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        assert_eq!(
+            wp_bytes, wp_again,
+            "workpaper export must be deterministic byte-for-byte"
+        );
+        let replayed = f
+            .runtime
+            .block_on(
+                f.book
+                    .replay_finding_workpaper(&cx, PRINCIPAL, &cap(&["read"]), &wp_bytes),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed, recorded);
+
+        // Second identical run is a no-op that returns the exact same ids and recorded_at.
+        let head_after_record = f.head();
+        let retry = f.record(cert.digest()).unwrap();
+        assert_eq!(retry, recorded);
+        assert_eq!(retry.finding_ids, recorded.finding_ids);
+        assert_eq!(
+            f.head(),
+            head_after_record,
+            "second identical run must be a no-op"
+        );
+    }
+}
+
+#[test]
+fn fault_vfs_crash_between_retain_and_commit_is_all_or_nothing() {
+    use fgdb_sim::vfs::{FaultKind, FaultPlan, FaultVfs, Trigger};
+
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let cx = PurposeContexts::narrow_runtime_root(&root);
+    let unit = UnitRegistry::embedded().unwrap().lookup("USD").unwrap();
+    let backing = cx.commit().with_restriction(MemVfs::new).unwrap();
+    let vfs = FaultVfs::new(
+        backing.clone(),
+        FaultPlan {
+            dirent_loss: Trigger::Always,
+            ..FaultPlan::faultless()
+        },
+    );
+    let dir = Path::new("crash-findings");
+    let seed = 132u8;
+    let keys = BookKeys::for_development(seed);
+    let mut book = runtime
+        .block_on(AsyncBook::create_with_vfs(
+            &cx,
+            vfs.clone(),
+            dir,
+            keys.clone(),
+            BookSpec {
+                book_id: Id128([seed; 16]),
+                name: "Crash findings".into(),
+                base_unit: unit,
+                calendar: FiscalCalendar::monthly("findings", 1, 0).unwrap(),
+                time_zone_policy: None,
+                entities: Vec::new(),
+                opening_date: None,
+            },
+            Entropy::deterministic(u64::from(seed)),
+        ))
+        .unwrap();
+    let chart = [("1000", AccountType::ASSET), ("3000", AccountType::EQUITY)]
+        .into_iter()
+        .map(|(code, kind)| AccountSpec {
+            code: code.into(),
+            name: code.into(),
+            account_type: kind.0,
+            normal_balance: u8::from(kind == AccountType::EQUITY),
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        })
+        .collect::<Vec<_>>();
+    runtime
+        .block_on(book.install_chart(
+            &cx,
+            &chart,
+            PRINCIPAL,
+            day(1),
+            b"chart",
+            &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    runtime
+        .block_on(book.create_periods(
+            &cx,
+            2026,
+            fgdb_types::VId(1),
+            &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    runtime
+        .block_on(book.transition_period(
+            &cx,
+            "FY2026-P01",
+            PeriodTransition::Open,
+            PRINCIPAL,
+            1,
+            b"open",
+            &cap(&["close"]),
+        ))
+        .unwrap()
+        .unwrap();
+    let document = Document {
+        book_id: book.context().book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"Crash test evidence".to_vec(),
+    };
+    runtime
+        .block_on(book.add_document(&cx, &document))
+        .unwrap()
+        .unwrap();
+    let book_id = book.context().book_id;
+    for (idx, saturday) in [10u8, 17u8].into_iter().enumerate() {
+        let legs = vec![
+            LegPayload::simple(
+                Side::Credit,
+                account_vid(book_id, "3000"),
+                Amount::new(unit, 100 * (idx as i128 + 1)),
+            ),
+            LegPayload::simple(
+                Side::Debit,
+                account_vid(book_id, "1000"),
+                Amount::new(unit, 100 * (idx as i128 + 1)),
+            ),
+        ];
+        let proposal = EntryPayload {
+            schema_minor: 0,
+            book_id,
+            branch_id: Id128::TRUNK,
+            class: EntryClass::ORIGINAL,
+            effective_date: day(saturday),
+            document_date: None,
+            description: book.seal_text(&cx, "Weekend transaction").unwrap(),
+            effective_period: None,
+            unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+            legs,
+            control: None,
+            base_totals: None,
+            idempotency_key: vec![idx as u8 + 1],
+            origin: EntryOrigin::Intent {
+                intent_oid: Oid([1; 32]),
+                intent_kind: 1,
+            },
+            principal_ref: PRINCIPAL,
+            session_ref: None,
+            evidence: vec![document.evidence_ref(1)],
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            tags: Vec::new(),
+            extensions: Vec::new(),
+        };
+        runtime
+            .block_on(book.post(
+                &cx,
+                PostRequest {
+                    proposal,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: cap(&["post"]),
+                },
+            ))
+            .unwrap()
+            .unwrap();
+    }
+
+    // Step 1: Run procedure and retain certificate, then crash BEFORE committing findings.
+    let mut request =
+        ProcedureRequest::new("jet.weekend", fa_lantern::catalog::Inputs::default()).unwrap();
+    request.effective_through = Some(day(31));
+    let certified = book
+        .certify_procedure(&cx, PRINCIPAL, &cap(&["read", "produce"]), &request)
+        .unwrap()
+        .unwrap();
+    let artifact = ReportArtifact::try_from(&certified.certificate).unwrap();
+    runtime
+        .block_on(book.retain_report_artifact(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &artifact.canonical_bytes().unwrap(),
+            Some(artifact.digest()),
+        ))
+        .unwrap()
+        .unwrap();
+    let cert = certified.certificate;
+    let head_after_retain = book.head(&cx).unwrap();
+    drop(book);
+    runtime
+        .block_on(cx.commit().with_restriction_async(vfs.crash()))
+        .unwrap();
+
+    // Step 2: Reopen on a WriteEnospc FaultVfs so record_findings fails mid-commit (all-or-nothing).
+    let enospc_vfs = FaultVfs::new(
+        backing.clone(),
+        FaultPlan {
+            write_enospc: Trigger::Always,
+            dirent_loss: Trigger::Always,
+            ..FaultPlan::faultless()
+        },
+    );
+    let mut enospc_book = runtime
+        .block_on(AsyncBook::open_with_vfs(
+            &cx,
+            enospc_vfs.clone(),
+            dir,
+            keys.clone(),
+            Entropy::deterministic(u64::from(seed)),
+        ))
+        .unwrap();
+    assert!(
+        runtime
+            .block_on(enospc_book.read_findings(&cx, PRINCIPAL, &cap(&["read"]), cert.digest()))
+            .unwrap()
+            .is_err(),
+        "crash before record_findings must leave zero published findings"
+    );
+    assert!(
+        runtime
+            .block_on(enospc_book.record_findings(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                cert.digest(),
+            ))
+            .is_err(),
+        "injected write_enospc during record_findings commit must abort atomically"
+    );
+    assert!(
+        enospc_vfs
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, FaultKind::WriteEnospc { .. }))
+    );
+    drop(enospc_book);
+    runtime
+        .block_on(cx.commit().with_restriction_async(enospc_vfs.crash()))
+        .unwrap();
+
+    // Step 3: Reopen on clean FaultVfs (with dirent_loss on crash); verify 0 findings leaked, then commit and crash again.
+    let mut recovered = runtime
+        .block_on(AsyncBook::open_with_vfs(
+            &cx,
+            vfs.clone(),
+            dir,
+            keys.clone(),
+            Entropy::deterministic(u64::from(seed)),
+        ))
+        .unwrap();
+    assert_eq!(recovered.head(&cx).unwrap(), head_after_retain);
+    let finding_vertices_after_abort = recovered
+        .query(&cx, |db, _| {
+            Ok(db
+                .vertices_at(db.frontier().map_err(KernelError::from)?)
+                .map_err(KernelError::from)?
+                .iter()
+                .filter(|r| r.labels.contains(&label::FINDING))
+                .count())
+        })
+        .unwrap();
+    assert_eq!(
+        finding_vertices_after_abort, 0,
+        "aborted commit must leave zero FINDING vertices"
+    );
+
+    let recorded = runtime
+        .block_on(recovered.record_findings(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            cert.digest(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(recorded.finding_ids.len(), 2);
+    let citations_count: usize = recorded.report.findings.iter().map(|v| v.cites.len()).sum();
+    let cert_hex: String = cert.digest().iter().map(|b| format!("{b:02x}")).collect();
+    let finding_ids_hex: Vec<String> = recorded
+        .finding_ids
+        .iter()
+        .map(|id| format!("{:032x}", id.0))
+        .collect();
+    println!(
+        "procedure=jet.weekend finding_ids={finding_ids_hex:?} citations_count={citations_count} certificate_oid={cert_hex}"
+    );
+    drop(recovered);
+    runtime
+        .block_on(cx.commit().with_restriction_async(vfs.crash()))
+        .unwrap();
+
+    let mut reopened = runtime
+        .block_on(AsyncBook::open_with_vfs(
+            &cx,
+            vfs,
+            dir,
+            keys,
+            Entropy::deterministic(u64::from(seed)),
+        ))
+        .unwrap();
+    let read_back = runtime
+        .block_on(reopened.read_findings(&cx, PRINCIPAL, &cap(&["read"]), cert.digest()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(read_back, recorded);
+    let retry = runtime
+        .block_on(reopened.record_findings(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            cert.digest(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry, recorded);
+    assert_eq!(reopened.head(&cx).unwrap(), recorded.recorded_at);
 }
 
 mod workpaper;
