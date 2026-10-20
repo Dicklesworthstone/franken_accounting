@@ -627,6 +627,493 @@ pub fn render_restatement_diff_ir(
     })
 }
 
+/// One account row in a Trial Balance or Period Activity fold (`fa-cet`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrialBalanceIrRow {
+    pub account_code: String,
+    pub account_name: String,
+    pub unit_id: u32,
+    pub debits: i128,
+    pub credits: i128,
+}
+
+/// Input fold for building a deterministic Trial Balance or Period Activity Markdown IR (`fa-cet`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrialBalanceIrInput {
+    pub book_id: Id128,
+    pub branch_id: Id128,
+    pub known_at: u64,
+    pub effective_label: String,
+    pub activity_only: bool,
+    pub rows: Vec<TrialBalanceIrRow>,
+}
+
+/// Build a deterministic Markdown IR for a Trial Balance or Period Activity fold (`fa-cet`).
+pub fn render_trial_balance_ir(
+    input: &TrialBalanceIrInput,
+    units: &[UnitFormatSpec],
+) -> Result<StatementMarkdownIr, StatementError> {
+    let unit_map = validate_unit_specs(units)?;
+    let mut distinct_units: Vec<u32> = input.rows.iter().map(|r| r.unit_id).collect();
+    distinct_units.sort_unstable();
+    distinct_units.dedup();
+    if distinct_units.is_empty() {
+        distinct_units.push(units[0].unit_id);
+    }
+
+    let definition_name = if input.activity_only {
+        "period-activity".to_string()
+    } else {
+        "trial-balance".to_string()
+    };
+    let definition_digest = Oid(domain_digest(
+        b"fa:markdown-ir-def:v1",
+        &[definition_name.as_bytes(), input.effective_label.as_bytes()],
+    ));
+
+    let headers = vec![
+        "Account".to_string(),
+        "Name".to_string(),
+        "Debits".to_string(),
+        "Credits".to_string(),
+        "Net (Dr - Cr)".to_string(),
+    ];
+    let alignments = vec![
+        ColumnAlignment::Left,
+        ColumnAlignment::Left,
+        ColumnAlignment::Right,
+        ColumnAlignment::Right,
+        ColumnAlignment::Right,
+    ];
+
+    let mut tables = Vec::with_capacity(distinct_units.len());
+    for unit_id in distinct_units {
+        let spec = unit_map.get(&unit_id).ok_or_else(|| {
+            StatementError::Input(format!(
+                "trial balance uses unit_id {unit_id} missing from UnitFormatSpec list"
+            ))
+        })?;
+        let mut unit_rows: Vec<&TrialBalanceIrRow> = input
+            .rows
+            .iter()
+            .filter(|r| r.unit_id == unit_id)
+            .collect();
+        unit_rows.sort_by(|a, b| a.account_code.cmp(&b.account_code));
+
+        let mut rows = Vec::with_capacity(unit_rows.len() + 1);
+        let mut total_debits: i128 = 0;
+        let mut total_credits: i128 = 0;
+
+        for r in unit_rows {
+            total_debits = total_debits.checked_add(r.debits).ok_or_else(|| {
+                StatementError::Overflow {
+                    line: r.account_code.clone(),
+                    column: "Debits".into(),
+                    unit_id,
+                }
+            })?;
+            total_credits = total_credits.checked_add(r.credits).ok_or_else(|| {
+                StatementError::Overflow {
+                    line: r.account_code.clone(),
+                    column: "Credits".into(),
+                    unit_id,
+                }
+            })?;
+            let net = r.debits.checked_sub(r.credits).ok_or_else(|| {
+                StatementError::Overflow {
+                    line: r.account_code.clone(),
+                    column: "Net (Dr - Cr)".into(),
+                    unit_id,
+                }
+            })?;
+            rows.push(MarkdownRow {
+                line_code: r.account_code.clone(),
+                footing: FootingRule::None,
+                cells: vec![
+                    r.account_code.clone(),
+                    r.account_name.clone(),
+                    format_scaled_i128(r.debits, spec.scale)?,
+                    format_scaled_i128(r.credits, spec.scale)?,
+                    format_scaled_i128(net, spec.scale)?,
+                ],
+            });
+        }
+
+        let total_net = total_debits.checked_sub(total_credits).ok_or_else(|| {
+            StatementError::Overflow {
+                line: "total_trial_balance".into(),
+                column: "Net (Dr - Cr)".into(),
+                unit_id,
+            }
+        })?;
+        rows.push(MarkdownRow {
+            line_code: "total_trial_balance".to_string(),
+            footing: FootingRule::Double,
+            cells: vec![
+                "TOTAL".to_string(),
+                "Trial Balance Total".to_string(),
+                format_scaled_i128(total_debits, spec.scale)?,
+                format_scaled_i128(total_credits, spec.scale)?,
+                format_scaled_i128(total_net, spec.scale)?,
+            ],
+        });
+
+        tables.push(MarkdownTable {
+            unit_id,
+            unit_code: spec.code.clone(),
+            unit_scale: spec.scale,
+            headers: headers.clone(),
+            alignments: alignments.clone(),
+            rows,
+        });
+    }
+
+    let mut markdown = format!(
+        "# Statement: {} (v1)\n\n- Book: `{}`\n- Branch: `{}`\n- Known-At Sequence: `{}`\n- Effective: `{}`\n- Definition Digest: `{}`\n\n",
+        definition_name,
+        input.book_id.to_hex(),
+        input.branch_id.to_hex(),
+        input.known_at,
+        input.effective_label,
+        hex_bytes(&definition_digest.0),
+    );
+    for (idx, table) in tables.iter().enumerate() {
+        if idx > 0 {
+            markdown.push('\n');
+        }
+        markdown.push_str(&render_table_markdown(table));
+    }
+
+    Ok(StatementMarkdownIr {
+        book_id: input.book_id,
+        branch_id: input.branch_id,
+        known_at: input.known_at,
+        compared_known_at: None,
+        definition_name,
+        definition_version: 1,
+        definition_digest,
+        tables,
+        markdown,
+    })
+}
+
+/// One posting leg in an Account Register fold (`fa-cet`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisterIrRow {
+    pub recorded_at: u64,
+    pub effective_date: String,
+    pub entry_vid_hex: String,
+    pub description: String,
+    pub debit: i128,
+    pub credit: i128,
+}
+
+/// Input fold for building a deterministic Account Register Markdown IR (`fa-cet`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisterIrInput {
+    pub book_id: Id128,
+    pub branch_id: Id128,
+    pub known_at: u64,
+    pub account_code: String,
+    pub account_name: String,
+    pub unit_id: u32,
+    pub opening_balance: i128,
+    pub rows: Vec<RegisterIrRow>,
+}
+
+/// Build a deterministic Markdown IR for an Account Register fold (`fa-cet`).
+pub fn render_register_ir(
+    input: &RegisterIrInput,
+    units: &[UnitFormatSpec],
+) -> Result<StatementMarkdownIr, StatementError> {
+    let unit_map = validate_unit_specs(units)?;
+    let spec = unit_map.get(&input.unit_id).ok_or_else(|| {
+        StatementError::Input(format!(
+            "register uses unit_id {} missing from UnitFormatSpec list",
+            input.unit_id
+        ))
+    })?;
+
+    let definition_name = format!("register:{}", input.account_code);
+    let definition_digest = Oid(domain_digest(
+        b"fa:markdown-ir-def:v1",
+        &[definition_name.as_bytes(), input.account_name.as_bytes()],
+    ));
+
+    let headers = vec![
+        "Entry / Date".to_string(),
+        "Description".to_string(),
+        "Debit".to_string(),
+        "Credit".to_string(),
+        "Running Balance".to_string(),
+    ];
+    let alignments = vec![
+        ColumnAlignment::Left,
+        ColumnAlignment::Left,
+        ColumnAlignment::Right,
+        ColumnAlignment::Right,
+        ColumnAlignment::Right,
+    ];
+
+    let mut rows = Vec::with_capacity(input.rows.len() + 2);
+    let mut running = input.opening_balance;
+    rows.push(MarkdownRow {
+        line_code: "opening_balance".to_string(),
+        footing: FootingRule::Single,
+        cells: vec![
+            "OPENING".to_string(),
+            format!("Opening balance ({})", input.account_name),
+            format_scaled_i128(0, spec.scale)?,
+            format_scaled_i128(0, spec.scale)?,
+            format_scaled_i128(running, spec.scale)?,
+        ],
+    });
+
+    let mut total_debits: i128 = 0;
+    let mut total_credits: i128 = 0;
+    for (idx, r) in input.rows.iter().enumerate() {
+        total_debits = total_debits.checked_add(r.debit).ok_or_else(|| {
+            StatementError::Overflow {
+                line: format!("row_{idx}"),
+                column: "Debit".into(),
+                unit_id: input.unit_id,
+            }
+        })?;
+        total_credits = total_credits.checked_add(r.credit).ok_or_else(|| {
+            StatementError::Overflow {
+                line: format!("row_{idx}"),
+                column: "Credit".into(),
+                unit_id: input.unit_id,
+            }
+        })?;
+        let delta = r.debit.checked_sub(r.credit).ok_or_else(|| {
+            StatementError::Overflow {
+                line: format!("row_{idx}"),
+                column: "Running Balance".into(),
+                unit_id: input.unit_id,
+            }
+        })?;
+        running = running.checked_add(delta).ok_or_else(|| {
+            StatementError::Overflow {
+                line: format!("row_{idx}"),
+                column: "Running Balance".into(),
+                unit_id: input.unit_id,
+            }
+        })?;
+        rows.push(MarkdownRow {
+            line_code: format!("leg_{}_{}", r.recorded_at, idx),
+            footing: FootingRule::None,
+            cells: vec![
+                format!("{} (seq {})", r.effective_date, r.recorded_at),
+                format!("{} [{}]", r.description, r.entry_vid_hex),
+                format_scaled_i128(r.debit, spec.scale)?,
+                format_scaled_i128(r.credit, spec.scale)?,
+                format_scaled_i128(running, spec.scale)?,
+            ],
+        });
+    }
+
+    rows.push(MarkdownRow {
+        line_code: "closing_balance".to_string(),
+        footing: FootingRule::Double,
+        cells: vec![
+            "CLOSING".to_string(),
+            format!("Closing balance ({})", input.account_name),
+            format_scaled_i128(total_debits, spec.scale)?,
+            format_scaled_i128(total_credits, spec.scale)?,
+            format_scaled_i128(running, spec.scale)?,
+        ],
+    });
+
+    let table = MarkdownTable {
+        unit_id: input.unit_id,
+        unit_code: spec.code.clone(),
+        unit_scale: spec.scale,
+        headers,
+        alignments,
+        rows,
+    };
+    let markdown = format!(
+        "# Statement: {} (v1)\n\n- Book: `{}`\n- Branch: `{}`\n- Known-At Sequence: `{}`\n- Account: `{} ({})`\n- Definition Digest: `{}`\n\n{}",
+        definition_name,
+        input.book_id.to_hex(),
+        input.branch_id.to_hex(),
+        input.known_at,
+        input.account_code,
+        input.account_name,
+        hex_bytes(&definition_digest.0),
+        render_table_markdown(&table),
+    );
+
+    Ok(StatementMarkdownIr {
+        book_id: input.book_id,
+        branch_id: input.branch_id,
+        known_at: input.known_at,
+        compared_known_at: None,
+        definition_name,
+        definition_version: 1,
+        definition_digest,
+        tables: vec![table],
+        markdown,
+    })
+}
+
+/// One open item in an Open Items fold (`fa-cet`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenItemIrRow {
+    pub item_vid_hex: String,
+    pub effective_date: String,
+    pub counterparty_or_memo: String,
+    pub original_amount: i128,
+    pub settled_amount: i128,
+    pub open_amount: i128,
+}
+
+/// Input fold for building a deterministic Open Items Markdown IR (`fa-cet`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenItemsIrInput {
+    pub book_id: Id128,
+    pub branch_id: Id128,
+    pub known_at: u64,
+    pub account_code: String,
+    pub account_name: String,
+    pub unit_id: u32,
+    pub items: Vec<OpenItemIrRow>,
+}
+
+/// Build a deterministic Markdown IR for an Open Items fold (`fa-cet`).
+pub fn render_open_items_ir(
+    input: &OpenItemsIrInput,
+    units: &[UnitFormatSpec],
+) -> Result<StatementMarkdownIr, StatementError> {
+    let unit_map = validate_unit_specs(units)?;
+    let spec = unit_map.get(&input.unit_id).ok_or_else(|| {
+        StatementError::Input(format!(
+            "open items uses unit_id {} missing from UnitFormatSpec list",
+            input.unit_id
+        ))
+    })?;
+
+    let definition_name = format!("open-items:{}", input.account_code);
+    let definition_digest = Oid(domain_digest(
+        b"fa:markdown-ir-def:v1",
+        &[definition_name.as_bytes(), input.account_name.as_bytes()],
+    ));
+
+    let headers = vec![
+        "Item / Date".to_string(),
+        "Counterparty / Memo".to_string(),
+        "Original".to_string(),
+        "Settled".to_string(),
+        "Open Balance".to_string(),
+    ];
+    let alignments = vec![
+        ColumnAlignment::Left,
+        ColumnAlignment::Left,
+        ColumnAlignment::Right,
+        ColumnAlignment::Right,
+        ColumnAlignment::Right,
+    ];
+
+    let mut rows = Vec::with_capacity(input.items.len() + 1);
+    let mut total_orig: i128 = 0;
+    let mut total_settled: i128 = 0;
+    let mut total_open: i128 = 0;
+
+    for (idx, item) in input.items.iter().enumerate() {
+        let expected_open =
+            item.original_amount
+                .checked_sub(item.settled_amount)
+                .ok_or_else(|| StatementError::Overflow {
+                    line: item.item_vid_hex.clone(),
+                    column: "Open Balance".into(),
+                    unit_id: input.unit_id,
+                })?;
+        if expected_open != item.open_amount {
+            return Err(StatementError::Input(format!(
+                "open item `{}` open_amount ({}) != original ({}) - settled ({})",
+                item.item_vid_hex, item.open_amount, item.original_amount, item.settled_amount
+            )));
+        }
+        total_orig = total_orig.checked_add(item.original_amount).ok_or_else(|| {
+            StatementError::Overflow {
+                line: item.item_vid_hex.clone(),
+                column: "Original".into(),
+                unit_id: input.unit_id,
+            }
+        })?;
+        total_settled = total_settled
+            .checked_add(item.settled_amount)
+            .ok_or_else(|| StatementError::Overflow {
+                line: item.item_vid_hex.clone(),
+                column: "Settled".into(),
+                unit_id: input.unit_id,
+            })?;
+        total_open = total_open.checked_add(item.open_amount).ok_or_else(|| {
+            StatementError::Overflow {
+                line: item.item_vid_hex.clone(),
+                column: "Open Balance".into(),
+                unit_id: input.unit_id,
+            }
+        })?;
+        rows.push(MarkdownRow {
+            line_code: format!("item_{idx}_{}", item.item_vid_hex),
+            footing: FootingRule::None,
+            cells: vec![
+                format!("{} ({})", item.effective_date, item.item_vid_hex),
+                item.counterparty_or_memo.clone(),
+                format_scaled_i128(item.original_amount, spec.scale)?,
+                format_scaled_i128(item.settled_amount, spec.scale)?,
+                format_scaled_i128(item.open_amount, spec.scale)?,
+            ],
+        });
+    }
+
+    rows.push(MarkdownRow {
+        line_code: "total_open_items".to_string(),
+        footing: FootingRule::Double,
+        cells: vec![
+            "TOTAL".to_string(),
+            format!("Total Open Items ({})", input.account_code),
+            format_scaled_i128(total_orig, spec.scale)?,
+            format_scaled_i128(total_settled, spec.scale)?,
+            format_scaled_i128(total_open, spec.scale)?,
+        ],
+    });
+
+    let table = MarkdownTable {
+        unit_id: input.unit_id,
+        unit_code: spec.code.clone(),
+        unit_scale: spec.scale,
+        headers,
+        alignments,
+        rows,
+    };
+    let markdown = format!(
+        "# Statement: {} (v1)\n\n- Book: `{}`\n- Branch: `{}`\n- Known-At Sequence: `{}`\n- Account: `{} ({})`\n- Definition Digest: `{}`\n\n{}",
+        definition_name,
+        input.book_id.to_hex(),
+        input.branch_id.to_hex(),
+        input.known_at,
+        input.account_code,
+        input.account_name,
+        hex_bytes(&definition_digest.0),
+        render_table_markdown(&table),
+    );
+
+    Ok(StatementMarkdownIr {
+        book_id: input.book_id,
+        branch_id: input.branch_id,
+        known_at: input.known_at,
+        compared_known_at: None,
+        definition_name,
+        definition_version: 1,
+        definition_digest,
+        tables: vec![table],
+        markdown,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
