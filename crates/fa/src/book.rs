@@ -1294,6 +1294,27 @@ impl Book {
         with_store!(&self.store, core => core.engagements(&self.purposes()))
     }
 
+    /// The summary of uncorrected misstatements of `engagement` (plan
+    /// §11.12): its passed proposals' effects by line, in the engagement's
+    /// unit, against the stated parameters. `None` when there is no such
+    /// engagement.
+    pub fn uncorrected_misstatements(
+        &self,
+        engagement: &str,
+    ) -> Result<Option<fa_journal::UncorrectedSummary>, BookError> {
+        let Some(view) = self.engagement(engagement)? else {
+            return Ok(None);
+        };
+        let types: std::collections::BTreeMap<u128, fa_model::AccountType> = self
+            .accounts()?
+            .into_iter()
+            .map(|row| (row.vid.0, fa_model::AccountType(row.account_type)))
+            .collect();
+        Ok(Some(fa_journal::uncorrected_misstatements(&view, |vid| {
+            types.get(&vid.0).copied()
+        })?))
+    }
+
     /// Fork the scenario `name` over the trunk prefix at `fork.at` (the head
     /// when absent): plan §15.2, Appendix B `ForkScenario`, fa-k07b.
     pub fn open_scenario(
