@@ -304,7 +304,7 @@ mod tests {
             }
             let wrong_kind = match kind {
                 ObjectKind::PostPlan => ObjectKind::ReplacementPlan,
-                ObjectKind::ReplacementPlan => ObjectKind::PostPlan,
+                ObjectKind::ReplacementPlan | ObjectKind::ReportCertificate => ObjectKind::PostPlan,
             };
             assert!(
                 read(
