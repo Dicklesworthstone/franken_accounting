@@ -477,7 +477,32 @@ pub fn read_run<V: asupersync::fs::Vfs + Clone>(
         Some(seq) => db.vertex_at(vid, seq)?,
         None => db.vertex(vid)?,
     };
-    row.as_ref().map(run_from_row).transpose()
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let mut run = run_from_row(&row)?;
+    // A terminal state write versions the vertex, and a version's
+    // `created_at` is that write's sequence: the run opened at its first.
+    run.opened_at = vertex_birth(db, &row)?;
+    Ok(Some(run))
+}
+
+/// The sequence `row`'s vertex was born at: walk back through the versions
+/// visible just before each one while they keep its birth ordinal.
+fn vertex_birth<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+) -> Result<CommitSeq, KernelError> {
+    let mut born = row.created_at;
+    while let Some(before) = born.0.checked_sub(1) {
+        match db.vertex_at(row.vid, CommitSeq(before))? {
+            Some(earlier) if earlier.birth_ordinal == row.birth_ordinal => {
+                born = earlier.created_at;
+            }
+            _ => break,
+        }
+    }
+    Ok(born)
 }
 
 /// Every entry linked by edge into `run_vid` as of `at` (head when `None`),

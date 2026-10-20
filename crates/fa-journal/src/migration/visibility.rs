@@ -255,7 +255,10 @@ pub fn verify_run_visibility_at<V: Vfs + Clone>(
         let born = db
             .vertex_at(vid, run.opened_at)?
             .ok_or_else(|| corrupt("run birth snapshot is unavailable"))?;
-        if born.created_at != row.created_at
+        // Only the terminal state write re-stamps the selected version, at
+        // its control's sequence; an open run is still its birth version.
+        if born.created_at != run.opened_at
+            || row.created_at != terminal_at.unwrap_or(run.opened_at)
             || born.birth_ordinal != row.birth_ordinal
             || born.labels != row.labels
             || prop(&born, property::STATE) != Some(&RunState::Open.scalar())

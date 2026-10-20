@@ -1374,12 +1374,19 @@ fn activation_is_all_or_nothing_across_crash_points() {
         opening_net(&k, Some(before_finalize)).is_empty(),
         "and never at an earlier known-at"
     );
+    let opened = read_run(&k.db, run, Some(before_finalize))
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened.state, RunState::Open);
+    // The Finalize's state write versions the run vertex at its own commit;
+    // the run still opened when it opened.
+    let finalized = read_run(&k.db, run, None).unwrap().unwrap();
+    assert!(opened.opened_at < done.recorded_at);
+    assert_eq!(finalized.opened_at, opened.opened_at);
     assert_eq!(
-        read_run(&k.db, run, Some(before_finalize))
-            .unwrap()
-            .unwrap()
-            .state,
-        RunState::Open
+        k.db.vertex(run).unwrap().unwrap().created_at,
+        done.recorded_at,
+        "the selected version is the Finalize's"
     );
 }
 
