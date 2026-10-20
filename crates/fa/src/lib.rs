@@ -66,6 +66,7 @@ pub mod document_disclosure;
 pub mod evidence_disclosure;
 pub mod findings;
 pub mod fx;
+pub mod fx_revaluation;
 pub mod general_ledger;
 pub mod indirect_cash_flow;
 pub mod intake;
@@ -177,6 +178,10 @@ pub use fa_statements::{
 };
 pub use findings::{RecordedFindings, finding_run_vid, finding_vid};
 pub use fx::{FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms};
+pub use fx_revaluation::{
+    FxRevaluationRequest, FxRevaluationRoute, FxRevaluationRoutes, FxRevaluationRoutesRecorded,
+    FxRevaluationRoutesRequest, PreparedFxRevaluation,
+};
 pub use general_ledger::{
     CASH_FLOW_FORMAT, CashFlow, CashFlowActivity, CashFlowAssignment, CashFlowDefinition,
     CashFlowSection, CashFlowUnit, CertifiedGeneralLedger, GENERAL_LEDGER_FORMAT,
@@ -211,8 +216,9 @@ pub use roll_forward::{
     ROLL_FORWARD_CERTIFICATE_FORMAT, RollForward, RollForwardCertificate, RollForwardRequest,
 };
 pub use scenario::{
-    CertifiedScenarioDiff, SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT,
-    ScenarioBook, ScenarioDiff, ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
+    CertifiedScenarioDiff, LEGACY_SCENARIO_DIFF_CERTIFICATE_FORMAT,
+    SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioBook, ScenarioDiff,
+    ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
 };
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{

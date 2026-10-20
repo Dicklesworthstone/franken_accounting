@@ -3523,7 +3523,7 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
     let chart = dir.join("chart.json");
     std::fs::write(
         &chart,
-        r#"{"accounts":[{"code":"1200","name":"EUR Receivable","type":"Asset","unit":"EUR"},{"code":"4000","name":"EUR Revenue","type":"Revenue","unit":"EUR"}]}"#,
+        r#"{"accounts":[{"code":"1200","name":"EUR Receivable","type":"Asset","unit":"EUR"},{"code":"1290","name":"Receivable Valuation","type":"Asset","unit":"USD"},{"code":"4000","name":"EUR Revenue","type":"Revenue","unit":"EUR"},{"code":"4900","name":"Unrealized FX Gain","type":"Revenue","unit":"USD"}]}"#,
     )
     .unwrap();
     cli_data(&[
@@ -3599,6 +3599,44 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
         "--json",
     ]);
 
+    // The owner installs the dedicated valuation route and retains a Human
+    // closing quote before the Agent session can review the exposure.
+    cli_data(&[
+        "fx",
+        "routes",
+        "set",
+        "--route",
+        "1200:1290:4900",
+        "--effective-from",
+        "2026-01-01",
+        "--key",
+        "mcp-fx-routes",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let mut closing_rate = rate.clone();
+    closing_rate["rate_num"] = json!("12");
+    closing_rate["rate_den"] = json!("10");
+    closing_rate["as_of"] = json!("2026-03-31");
+    closing_rate["purpose"] = json!("period_close");
+    closing_rate["source"] = json!("Human uploaded March closing quote");
+    let closing_source = dir.join("closing-rate.json");
+    std::fs::write(&closing_source, closing_rate.to_string()).unwrap();
+    let closing = cli_data(&[
+        "fx",
+        "rate",
+        "add",
+        "--from-json",
+        closing_source.to_str().unwrap(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let closing: JsonValue = fastmcp_rust::serde_json::from_str(&closing).unwrap();
+    assert_eq!(closing["grade"], json!("HumanUpload"));
+    let closing_ref = format!("D:{}", closing["oid"].as_str().unwrap());
+
     let mut mcp = Mcp::start_with(
         &book,
         &["--cluster", "fa.fx", "--principal", "fx-agent-uploader"],
@@ -3630,6 +3668,150 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
         assert_eq!(repeated[key], uploaded[key], "{key}");
     }
     assert_eq!(repeated["already_recorded"], json!(true));
+
+    let expected_routes = cli_data(&[
+        "fx",
+        "routes",
+        "show",
+        "--as-of",
+        "2026-03-31",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let (error, routes, _) = call_tool(
+        &mut mcp,
+        "fa_fx_routes",
+        json!({"action": "show", "as_of": "2026-03-31"}),
+    );
+    assert!(
+        !error,
+        "registered revaluation routes through MCP: {routes}"
+    );
+    assert_eq!(routes, expected_routes, "MCP and CLI route data must agree");
+    let routes: JsonValue = fastmcp_rust::serde_json::from_str(&routes).unwrap();
+    assert_eq!(routes["found"], json!(true));
+    assert_eq!(routes["routes"].as_array().unwrap().len(), 1);
+    assert_eq!(routes["routes"][0]["account"], json!("1200"));
+    assert_eq!(routes["routes"][0]["valuation_account"], json!("1290"));
+    assert_eq!(routes["routes"][0]["unrealized_account"], json!("4900"));
+
+    let expected_review = cli_data(&[
+        "fx",
+        "revalue",
+        "--period",
+        "FY2026-P03",
+        "--account",
+        "1200",
+        "--rate",
+        &closing_ref,
+        "--key",
+        "mcp-fx-review",
+        "--review-only",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let expected_review: JsonValue = fastmcp_rust::serde_json::from_str(&expected_review).unwrap();
+    let (error, reviewed, _) = call_tool(
+        &mut mcp,
+        "fa_fx_revalue",
+        json!({
+            "period": "FY2026-P03", "account": "1200", "rate": closing_ref,
+            "key": "mcp-fx-review", "review_only": true,
+        }),
+    );
+    assert!(!error, "source-bound Agent revaluation review: {reviewed}");
+    let reviewed: JsonValue = fastmcp_rust::serde_json::from_str(&reviewed).unwrap();
+    // The preparers and sealed descriptions differ. The selected source,
+    // rate, routing, arithmetic and proposed account effects must agree.
+    for field in [
+        "period",
+        "closing_date",
+        "known_at",
+        "account",
+        "account_vid",
+        "entity",
+        "rate_document",
+        "routes_entry",
+        "routes_digest",
+        "source_digest",
+        "source_native_net",
+        "source_base_net",
+        "prior_adjustment_net",
+        "current_carrying_net",
+        "target_base_net",
+        "delta",
+        "legs",
+        "scope",
+    ] {
+        assert_eq!(reviewed[field], expected_review[field], "{field}");
+    }
+    assert_eq!(reviewed["source_native_net"], json!("100.00 EUR"));
+    assert_eq!(reviewed["source_base_net"], json!("110.00 USD"));
+    assert_eq!(reviewed["prior_adjustment_net"], json!("0.00 USD"));
+    assert_eq!(reviewed["current_carrying_net"], json!("110.00 USD"));
+    assert_eq!(reviewed["target_base_net"], json!("120.00 USD"));
+    assert_eq!(reviewed["delta"], json!("10.00 USD"));
+    assert_eq!(reviewed["rate_document"], closing["oid"]);
+    assert_eq!(reviewed["legs"].as_array().unwrap().len(), 2);
+    assert_eq!(reviewed["legs"][0]["account"], json!("1290"));
+    assert_eq!(reviewed["legs"][0]["side"], json!("debit"));
+    assert_eq!(reviewed["legs"][0]["amount"], json!("10.00 USD"));
+    assert_eq!(reviewed["legs"][1]["account"], json!("4900"));
+    assert_eq!(reviewed["legs"][1]["side"], json!("credit"));
+    assert_eq!(reviewed["legs"][1]["amount"], json!("10.00 USD"));
+    assert_eq!(reviewed["file"], JsonValue::Null);
+    assert_eq!(
+        reviewed["scope"],
+        json!("period-end-fx-revaluation-proposal")
+    );
+    assert_eq!(reviewed["review_digest"].as_str().unwrap().len(), 64);
+    assert!(
+        reviewed["bytes"]
+            .as_str()
+            .unwrap()
+            .starts_with("46412d494e54454e5400")
+    );
+
+    // Even an actual readable file containing this session's valid review
+    // cannot turn a bound argument into host filesystem access.
+    let host_review = dir.join("valid-agent-fx-review.hex");
+    std::fs::write(&host_review, reviewed["bytes"].as_str().unwrap()).unwrap();
+    let (error, path_refusal, _) = call_tool(
+        &mut mcp,
+        "fa_fx_revalue",
+        json!({
+            "review": host_review.display().to_string(),
+            "digest": reviewed["review_digest"], "dry_run": true,
+        }),
+    );
+    assert!(
+        error,
+        "MCP cannot restore a host review path: {path_refusal}"
+    );
+    let refused = structured_error(&path_refusal);
+    assert_eq!(refused["exit"], json!(2));
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("host filesystem path")
+    );
+
+    let (error, unconfirmed, _) = call_tool(
+        &mut mcp,
+        "fa_fx_revalue",
+        json!({"review": reviewed["bytes"], "digest": reviewed["review_digest"]}),
+    );
+    assert!(
+        error,
+        "a portable review does not confirm an MCP commit: {unconfirmed}"
+    );
+    assert_eq!(
+        structured_error(&unconfirmed)["refusal_id"],
+        json!("FA-REF-007")
+    );
 
     let expected = cli_data(&[
         "tb",
@@ -3690,7 +3872,7 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
     assert_eq!(
         cli_data(&["book", "info", "--book", &b, "--json"]),
         before,
-        "exact retry and functional reads must not publish"
+        "exact retry, route reads, revaluation review and functional reads must not publish"
     );
 }
 
@@ -3735,6 +3917,21 @@ fn fx_rate_transport_refuses_missing_authority_and_host_paths_before_io() {
         assert_eq!(refused["type"], json!("forbidden_path"));
         assert_eq!(refused["data"]["argument"], json!("from_json_file"));
         assert_eq!(refused["authority"]["ops"], json!(["read"]));
+    }
+    for property in ["review_out", "plan_out"] {
+        for value in [
+            json!(dir.join("outside-output").display().to_string()),
+            JsonValue::Null,
+        ] {
+            let mut arguments = json!({"review_only": true});
+            arguments[property] = value;
+            let (error, output, _) = call_tool(&mut mcp, "fa_fx_revalue", arguments);
+            assert!(error, "host revaluation output must be refused: {output}");
+            let refused = structured_error(&output);
+            assert_eq!(refused["type"], json!("forbidden_path"));
+            assert_eq!(refused["data"]["argument"], json!(property));
+            assert_eq!(refused["authority"]["ops"], json!(["read"]));
+        }
     }
     assert_eq!(mcp.finish(), 0);
     assert!(!book.exists(), "denied calls must not create a book");

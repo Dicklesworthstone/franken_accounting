@@ -511,6 +511,179 @@ fn closing_reads_lower_to_exact_history_and_mutations_remain_host_only() {
 }
 
 #[test]
+fn fx_routes_lower_repeated_typed_destinations_and_preserve_operation_authority() {
+    let (mcp, reg) = embedded();
+    assert!(mcp.cluster("fa.fx").unwrap().on_demand);
+    let names: BTreeSet<_> = mcp.tools_of("fa.fx").map(ToolSpec::wire_name).collect();
+    assert_eq!(
+        names,
+        BTreeSet::from([
+            "fa_fx_rate".to_string(),
+            "fa_fx_routes".to_string(),
+            "fa_fx_revalue".to_string(),
+        ])
+    );
+    assert!(mcp.exposed(&[]).all(|tool| tool.cluster != "fa.fx"));
+    assert_eq!(
+        mcp.exposed(&["fa.fx".into()]).count(),
+        mcp.exposed(&[]).count() + 3,
+    );
+
+    let routes = mcp.tool_for("fx", Some("routes")).unwrap();
+    let arguments = json!({
+        "action": "set", "route": ["1200:1290:4900", "2200:2290:6900"],
+        "effective_from": "2026-01-01", "key": "fx-routing-v1",
+    });
+    let invocation = routes.invocation(&mcp, reg, &arguments).unwrap();
+    assert!(invocation.stdin.is_none());
+    let parsed =
+        fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(parsed.positional, vec!["fx", "routes", "set"]);
+    assert_eq!(
+        parsed.flag_all("--route"),
+        vec!["1200:1290:4900", "2200:2290:6900"]
+    );
+    assert_eq!(parsed.flag("--effective-from"), Some("2026-01-01"));
+    assert_eq!(parsed.flag("--key"), Some("fx-routing-v1"));
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("fx", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        vec!["read", "schema_change"]
+    );
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        std::path::PathBuf::from("/unused-fx-book"),
+        None,
+        "fx-agent",
+        fa_cli::authority::LaunchProfile::Agent,
+        &[],
+    )
+    .unwrap();
+    let denied = fa_cli::cli::bound_command_admissible(reg, "fx", &parsed, &authority)
+        .expect_err("a route array must not confer schema_change authority");
+    assert!(denied.contains("schema_change"), "{denied}");
+    let translated = mcp
+        .command_to_call(
+            reg,
+            "fa fx routes set --route 1200:1290:4900 --route 2200:2290:6900 --effective-from 2026-01-01 --key fx-routing-v1 --json",
+        )
+        .unwrap();
+    assert_eq!(translated.tool, "fa_fx_routes");
+    assert_eq!(translated.arguments, arguments);
+
+    let schema = routes.input_schema(&mcp, reg);
+    assert_eq!(
+        schema["properties"]["route"]["type"],
+        json!(["string", "array"])
+    );
+    assert_eq!(
+        schema["properties"]["route"]["items"]["type"],
+        json!("string")
+    );
+    for route in [json!(["1200:1290:4900", 2]), json!(12), json!([null])] {
+        assert!(
+            routes
+                .invocation(&mcp, reg, &json!({"action": "set", "route": route}))
+                .is_err()
+        );
+    }
+    let show_args = json!({"action": "show", "as_of": "2026-03-31", "as_known_at": "17"});
+    let show = routes.invocation(&mcp, reg, &show_args).unwrap();
+    let parsed = fa_cli::args::parse(&show.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(parsed.positional, vec!["fx", "routes", "show"]);
+    assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+    assert_eq!(
+        fa_cli::cli::bound_command_admissible(reg, "fx", &parsed, &authority)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        vec!["read"]
+    );
+}
+
+#[test]
+fn fx_revaluation_previews_are_typed_and_do_not_supply_host_paths_or_commit_confirmation() {
+    let (mcp, reg) = embedded();
+    let revalue = mcp.tool_for("fx", Some("revalue")).unwrap();
+    assert_eq!(revalue.wire_name(), "fa_fx_revalue");
+    let schema = revalue.input_schema(&mcp, reg);
+    for property in ["review_only", "dry_run"] {
+        assert_eq!(schema["properties"][property]["type"], json!("boolean"));
+    }
+    assert_eq!(schema["properties"]["review"]["type"], json!("string"));
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        std::path::PathBuf::from("/unused-fx-book"),
+        None,
+        "fx-agent",
+        fa_cli::authority::LaunchProfile::Agent,
+        &[],
+    )
+    .unwrap();
+    let selectors = json!({
+        "period": "FY2026-P03", "account": "1200",
+        "rate": format!("D:{}", "ab".repeat(32)), "key": "review-fx",
+    });
+    for preview in ["review_only", "dry_run"] {
+        let mut arguments = selectors.clone();
+        arguments[preview] = json!(true);
+        let invocation = revalue.invocation(&mcp, reg, &arguments).unwrap();
+        assert!(invocation.stdin.is_none());
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.positional, vec!["fx", "revalue"]);
+        assert_eq!(parsed.flag("--period"), Some("FY2026-P03"));
+        assert!(parsed.switch(&format!("--{}", preview.replace('_', "-"))));
+        assert!(!parsed.switch("--yes"));
+        assert_eq!(
+            fa_cli::cli::bound_command_admissible(reg, "fx", &parsed, &authority)
+                .unwrap()
+                .iter()
+                .map(|op| op.name())
+                .collect::<Vec<_>>(),
+            vec!["read", "post"]
+        );
+        arguments[preview] = json!("true");
+        assert!(revalue.invocation(&mcp, reg, &arguments).is_err());
+    }
+
+    let invocation = revalue.invocation(&mcp, reg, &selectors).unwrap();
+    let parsed =
+        fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    let denied = fa_cli::cli::bound_command_admissible(reg, "fx", &parsed, &authority)
+        .expect_err("selecting a rate does not independently confirm a commit");
+    assert!(denied.contains("FA-REF-007"), "{denied}");
+    for property in ["review_out", "plan_out"] {
+        assert!(schema["properties"].get(property).is_none());
+        for value in [json!("/outside-launch-root/fx-review"), JsonValue::Null] {
+            let mut arguments = selectors.clone();
+            arguments["review_only"] = json!(true);
+            arguments[property] = value;
+            let refused = revalue.invocation(&mcp, reg, &arguments).unwrap_err();
+            assert!(
+                refused.message.contains("host filesystem argument"),
+                "{refused:?}"
+            );
+            assert!(refused.message.contains(property), "{refused:?}");
+        }
+    }
+    assert!(schema["properties"].get("yes").is_none());
+    assert!(
+        mcp.command_to_call(
+            reg,
+            "fa fx revalue --review-out /private/review --review-only"
+        )
+        .is_none()
+    );
+    assert!(
+        mcp.command_to_call(reg, "fa fx revalue --dry-run --plan-out /private/plan")
+            .is_none()
+    );
+}
+
+#[test]
 fn bank_history_preserves_existing_tools_and_keeps_unmatch_host_only() {
     let (mcp, reg) = embedded();
     assert!(mcp.cluster("fa.bank").unwrap().on_demand);

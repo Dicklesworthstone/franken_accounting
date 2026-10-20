@@ -596,3 +596,20 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §13.2 (a document produced in two matters carries both ranges); Appendix B Produce"
+
+# A statement package leaving the entity (plan §12.5, Appendix B
+# IssueStatements; fa-wrrw). Appendix C has no IssuanceControl row. The
+# period's first issuance supersedes its first Lock as the AS ORIGINALLY
+# REPORTED coordinate, so an issuance takes the authority of the Lock it
+# supersedes: the close op and one Human approver who is not the preparer.
+[[rule]]
+name = "statement-issuance"
+class = "IssuanceControl"
+transition = "Issue"
+preparer_op = "close"
+approvers = 1
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 1
+exclusions = ["preparer", "duplicate"]
+cite = "plan §12.5 (StatementIssuance is what 'previously issued' means), §7.4 (AS ORIGINALLY REPORTED pins the first issuance); Appendix C PeriodControl Closed Lock W(close, 1)"

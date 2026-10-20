@@ -29,6 +29,7 @@ pub mod ids;
 pub mod limits;
 pub mod mirrors;
 pub mod rea;
+pub mod revaluation;
 pub mod symbols;
 pub mod unit;
 
@@ -48,7 +49,7 @@ pub use ids::{
     dimension_value_vid, dimension_vid, domain_digest, draft_vid, entity_value_vid, entry_vid,
     event_vid, external_id_vid, instrument_vid, intent_outcome_vid, legal_entity_vid,
     migration_entry_vid, migration_run_vid, party_value_vid, party_vid, period_vid, principal_vid,
-    production_profile_vid, scenario_vid, unit_vid,
+    production_profile_vid, report_certificate_vid, scenario_vid, statement_issuance_vid, unit_vid,
 };
 pub use mirrors::{MirrorError, entry_mirrors, leg_mirrors};
 pub use rea::{
@@ -56,5 +57,6 @@ pub use rea::{
     LegalEntityFullSpec, OwnershipPct, PartyIdentifierUpdate, PartyKind, PartySpec, ReaControlOp,
     RelationshipKind, RelationshipSpec,
 };
+pub use revaluation::FxRevaluationBasis;
 pub use symbols::SymbolTable;
 pub use unit::UnitDefinition;

@@ -589,6 +589,11 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // `rounding_laws`, `symbols`, and `reason_codes` on statements). That moves
     // only `tb_cert`, `bs_cert`, and `is_cert` once; the fold, report bytes,
     // and evidence bundle pins are unchanged.
+    // fa-wrrw then moved `tb_cert`, `bs_cert` and `is_cert`, measured
+    // together: the IssuanceControl class (28) and its control kind (15) are
+    // `entry_classes` rows, which every report certificate binds. No symbol
+    // changed, so the evidence bundle, the fold and every report-byte pin are
+    // unchanged.
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -615,7 +620,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "f7ff642371e3219ab0df40cc75fa82b62bbd7806b68561dce5a7b842e1c08fbd",
+        "ce57e21c446f6fa32aefda9a368760b0a1380f9f5c4b7bc4b3b6d58b594b32f5",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -627,7 +632,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "fd97ba60449e5402dd126a5afa064f95925c039e33398525f7bc1c5e306b46db",
+        "d764a4cdf6ded6c86351ef02c55f553bc67190dea5f32440879218e7e005361f",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -639,7 +644,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "a2c29a1e1728711da548c04cebb9c52d3cfbf2d5aea640fccb3fa423f0418b32",
+        "666a1cee7c66406a3e52556da4ee6aaa2bf90c1fa01059541c121abefb9e8056",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );

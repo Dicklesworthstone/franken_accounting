@@ -307,6 +307,7 @@ impl PreparedPost {
         if self.planning
             || self.paired_reversal.is_some()
             || self.request.proposal.class == EntryClass::CLOSING
+            || crate::revaluation::is_source_bound(&self.request.proposal)
         {
             self.txn.abort();
             return Err(KernelError::Corrupt(
@@ -368,6 +369,14 @@ impl PreparedPost {
             if frontier != basis {
                 txn.abort();
                 return Ok(Err(crate::closing::frontier_changed(basis, frontier)));
+            }
+        }
+        if crate::revaluation::is_source_bound(&request.proposal) {
+            let frontier = db.frontier()?;
+            let basis = txn.basis();
+            if frontier != basis {
+                txn.abort();
+                return Ok(Err(crate::revaluation::frontier_changed(basis, frontier)));
             }
         }
         match txn.commit(db, &commit).await {
@@ -713,6 +722,11 @@ pub(crate) enum Admission {
     /// admitted and witnesses in this transaction. Only that module can
     /// make the token.
     Promote(crate::draft::Promoting),
+    /// One retained draft intent in an owned, freshly replayed memory book.
+    /// Only the draft rehearsal factory can make this token; no source book
+    /// is published or promoted. Original planner authority and every other
+    /// posting law remain in force at the exact selected source coordinate.
+    ScratchDraft(crate::draft::Rehearsing),
 }
 
 pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
@@ -732,10 +746,13 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
         .collect();
     // A dry run writes nothing, so an Agent may rehearse a trunk post
     // (plan §15.3); a promoted intent reaches trunk on its Human promoter's
-    // authority (§15.2). Every other admission check still runs.
+    // authority (§15.2). An owned scratch draft publishes only a rehearsal.
+    // Every other admission check still runs with the unchanged capability.
     let admit_base = match admission {
         Admission::Commit => fa_policy::admit_base,
-        Admission::Plan | Admission::Promote(_) => fa_policy::admit_base_for_plan,
+        Admission::Plan | Admission::Promote(_) | Admission::ScratchDraft(_) => {
+            fa_policy::admit_base_for_plan
+        }
     };
     if let Err(denial) = admit_base(
         &req.capability,
@@ -911,6 +928,12 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     admission: Admission,
     carried: Option<WriteTxn>,
 ) -> Outcome<PostPreparation> {
+    if crate::revaluation::is_source_bound(&req.proposal) {
+        if let Some(txn) = carried {
+            txn.abort();
+        }
+        return Ok(Err(crate::revaluation::unsupported_batch()));
+    }
     prepare_post_in(db, ctx, book, req, None, admission, carried)
 }
 
@@ -1104,7 +1127,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         if let Err(refusal) = crate::closing::authorize(db, book, &req.capability, true)? {
             return Ok(Err(refusal));
         }
-        if carried.is_some() || matches!(admission, Admission::Promote(_)) {
+        if carried.is_some()
+            || matches!(
+                admission,
+                Admission::Promote(_) | Admission::ScratchDraft(_)
+            )
+        {
             return Ok(Err(Refusal::new(
                 code::CLASS_NOT_IMPLEMENTED,
                 exit::REFUSAL,
@@ -1112,6 +1140,26 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 "plan §5.10 / §7.5 (complete aggregate dependency)",
                 "review and commit the close as its own native PostPlan",
             )));
+        }
+    }
+    // A present source basis requires whole-book observation authority before
+    // reads. A missing basis is refused only after exact outcome recognition,
+    // so legacy immutable Revaluation retries retain their recorded outcome.
+    let revaluation = match crate::revaluation::admit(proposal) {
+        Ok(basis) => basis,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if revaluation.is_some() {
+        if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
+            return Ok(Err(refusal));
+        }
+        if carried.is_some()
+            || matches!(
+                admission,
+                Admission::Promote(_) | Admission::ScratchDraft(_)
+            )
+        {
+            return Ok(Err(crate::revaluation::unsupported_batch()));
         }
     }
     // Allocation is admitted only by recomputing its exact, evidence-bound
@@ -1662,6 +1710,18 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
+    if crate::revaluation::is_source_bound(proposal) {
+        let Some(basis) = &revaluation else {
+            txn.abort();
+            return Ok(Err(crate::revaluation::missing_basis()));
+        };
+        if let Err(refusal) =
+            crate::revaluation::validate_post(&txn, db, ctx, book, proposal, basis)?
+        {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    }
 
     // A fresh correction names a registered reason. Outcome recognition
     // stays first: an identical retry never rewrites or reinterprets an old
@@ -2174,6 +2234,26 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(refusal));
     }
 
+    // A new exact reversal inherits its original valuation. This is derived
+    // only after recorded retries have returned, from witnessed immutable
+    // ancestry; its own posting date and period still govern every other law.
+    let fx_origin = match (&fx_claim, reversal_target) {
+        (Some(claim), Some(target))
+            if matches!(
+                claim.law,
+                crate::fx::FxLawId::SpotClose | crate::fx::FxLawId::PeriodAverage
+            ) =>
+        {
+            match reversal_fx_origin(&txn, db, ctx, book, proposal, target)? {
+                Ok(origin) => Some(origin),
+                Err(refusal) => {
+                    txn.abort();
+                    return Ok(Err(refusal));
+                }
+            }
+        }
+        _ => None,
+    };
     if let Some(claim) = &fx_claim
         && let Err(refusal) = crate::fx::verify_in_txn(
             &txn,
@@ -2184,6 +2264,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             &leg_entities,
             proposal,
             claim,
+            fx_origin.as_ref().map(|(origin, period)| (origin, period)),
         )?
     {
         txn.abort();
@@ -2735,33 +2816,14 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 ),
             )));
         }
-        let swapped = original.proposal.legs.len() == proposal.legs.len()
-            && original
-                .proposal
-                .legs
-                .iter()
-                .zip(&proposal.legs)
-                .all(|(o, r)| {
-                    o.account_ref == r.account_ref
-                        && o.amount == r.amount
-                        && o.dimension_set == r.dimension_set
-                        && matches!(
-                            (o.side, r.side),
-                            (Side::Debit, Side::Credit) | (Side::Credit, Side::Debit)
-                        )
-                });
-        if original.proposal.legs.is_empty() || !swapped {
+        // A reversal cancels the target's committed functional carrying
+        // values as well as its native amounts. Repricing an exact native
+        // side-swap under another otherwise valid quote would leave a new
+        // functional balance. Compare the complete retained law/rate/residual
+        // claim here, after exact recorded-outcome recognition above.
+        if !exact_side_swap(&original.proposal, proposal) {
             txn.abort();
-            return Ok(Err(Refusal::new(
-                code::REVERSAL_SHAPE,
-                exit::REFUSAL,
-                format!(
-                    "the legs are not the exact side-swap of entry {:032x}",
-                    target.vid.0
-                ),
-                "plan §4.4 (a reversal is a side swap with the same mantissa, never a signed storno)",
-                "post the same accounts and amounts in the same order with debit and credit exchanged; a different correction is a Replacement",
-            )));
+            return Ok(Err(reversal_shape(target.vid)));
         }
         // 7c. Application effects (plan §5.7, §8.2): a target or any ancestor
         //     in its witnessed reversal chain with live applications against its
@@ -3452,6 +3514,177 @@ fn checked_entry_staged<V: asupersync::fs::Vfs + Clone>(
         Some(leg) => Ok(Some(leg)),
         None => Ok(txn.vertex(db, vid)?),
     })
+}
+
+/// The exact monetary negation includes the inherited functional valuation.
+/// Every rate used by that valuation retains its original evidence commitment;
+/// additional supporting evidence may be cited without changing the quote.
+fn exact_side_swap(original: &EntryPayload, reversal: &EntryPayload) -> bool {
+    !original.legs.is_empty()
+        && original.base_totals == reversal.base_totals
+        && original.base_totals.as_ref().is_none_or(|totals| {
+            totals.rate_doc_oids.iter().all(|oid| {
+                original
+                    .evidence
+                    .iter()
+                    .find(|evidence| {
+                        evidence.document_oid == *oid
+                            && evidence.role == crate::fx::RATE_EVIDENCE_ROLE
+                    })
+                    .is_some_and(|evidence| reversal.evidence.contains(evidence))
+            })
+        })
+        && original.legs.len() == reversal.legs.len()
+        && original.legs.iter().zip(&reversal.legs).all(|(o, r)| {
+            o.account_ref == r.account_ref
+                && o.amount == r.amount
+                && o.base_amount == r.base_amount
+                && o.dimension_set == r.dimension_set
+                && matches!(
+                    (o.side, r.side),
+                    (Side::Debit, Side::Credit) | (Side::Credit, Side::Debit)
+                )
+        })
+}
+
+fn reversal_shape(target: VId) -> Refusal {
+    Refusal::new(
+        code::REVERSAL_SHAPE,
+        exit::REFUSAL,
+        format!(
+            "the legs are not the exact side-swap of entry {:032x}",
+            target.0
+        ),
+        "plan §4.4, §8.2 (a reversal preserves the original valuation, never reprices it)",
+        "post the same accounts, native amounts and retained functional valuations in the same order with debit and credit exchanged; preserve the original FX law, Rate evidence commitments and residual; a different correction is a Replacement",
+    )
+}
+
+/// An inherited FX valuation is priced at its original source coordinate,
+/// never at a reversal's date. Walk actual transaction-witnessed ancestors so
+/// a reversal of a reversal keeps the same origin. No caller supplies this
+/// context, and every intermediate entry must preserve the exact valuation.
+fn reversal_fx_origin<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    target: EntryRef,
+) -> Outcome<(EntryPayload, fa_time::PeriodDef)> {
+    let mut child = proposal.clone();
+    let mut handle = target;
+    let mut first = true;
+    let mut seen = BTreeSet::new();
+    loop {
+        ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+        if !seen.insert(handle.vid) {
+            return Err(KernelError::Corrupt(format!(
+                "FX reversal ancestry of {:032x} cycles",
+                target.vid.0,
+            )));
+        }
+        let row = match txn.vertex(db, handle.vid)? {
+            Some(row) if row.labels.contains(&label::ENTRY) => row,
+            _ if first => return Ok(Err(no_reversal_target(handle.vid))),
+            _ => {
+                return Err(KernelError::Corrupt(format!(
+                    "FX reversal ancestry names a missing entry {:032x}",
+                    handle.vid.0,
+                )));
+            }
+        };
+        let (entry, _) = checked_entry_staged(txn, db, &row)?;
+        if entry.entry_digest != handle.entry_digest
+            || entry.proposal.book_id != book.book_id
+            || entry.proposal.branch_id != proposal.branch_id
+        {
+            if first {
+                return Ok(Err(Refusal::new(
+                    code::REVERSAL_TARGET,
+                    exit::REFUSAL,
+                    "the reversal handle does not bind an entry of this book and branch",
+                    "plan §4.9 / §8.2 (self-verifying EntryRef lineage)",
+                    "read the target again and retain its exact EntryRef",
+                )));
+            }
+            return Err(KernelError::Corrupt(format!(
+                "FX reversal ancestry does not bind entry {:032x}",
+                handle.vid.0,
+            )));
+        }
+        if !exact_side_swap(&entry.proposal, &child) {
+            if first {
+                return Ok(Err(reversal_shape(handle.vid)));
+            }
+            return Err(KernelError::Corrupt(format!(
+                "a retained FX reversal is not the exact valuation-preserving side-swap of entry {:032x}",
+                handle.vid.0,
+            )));
+        }
+        if entry.proposal.class != EntryClass::REVERSAL {
+            let origin = entry.proposal;
+            // Period boundaries come from the immutable calendar declaration,
+            // not a source period's mutable state or date mirrors. Witness
+            // that canonical declaration while preserving the current-period
+            // checks above: a historical valuation remains reversible after
+            // its source period closes.
+            let declared =
+                match txn.vertex_property(db, crate::rows::book_root(), property::FA_PAYLOAD)? {
+                    Some(CanonicalScalar::Bytes(payload)) => {
+                        crate::genesis::BookSpec::decode(payload.as_slice())?
+                    }
+                    other => {
+                        return Err(KernelError::Corrupt(format!(
+                            "FX valuation origin has no canonical book declaration: {other:?}",
+                        )));
+                    }
+                };
+            if declared.book_id != book.book_id || declared.calendar != book.calendar {
+                return Err(KernelError::Corrupt(
+                    "the FX valuation origin's calendar disagrees with the retained book declaration"
+                        .into(),
+                ));
+            }
+            if origin
+                .effective_period
+                .as_ref()
+                .is_some_and(|period| period.calendar != book.calendar.id)
+            {
+                return Err(KernelError::Corrupt(
+                    "the FX valuation origin names a different fiscal calendar".into(),
+                ));
+            }
+            let year = declared.calendar.fiscal_year_of(origin.effective_date)?;
+            let periods = declared.calendar.periods_for_year(year)?;
+            let period = resolve_period(
+                &periods,
+                origin.effective_date,
+                origin
+                    .effective_period
+                    .as_ref()
+                    .map(|period| period.code.as_str()),
+            )
+            .map_err(|error| {
+                KernelError::Corrupt(format!(
+                    "the FX valuation origin has no fiscal period: {error:?}",
+                ))
+            })?
+            .clone();
+            return Ok(Ok((origin, period)));
+        }
+        let next = match entry.proposal.supersession.as_slice() {
+            [parent] if parent.kind == SupersessionKind::Reverses => parent.target,
+            _ => {
+                return Err(KernelError::Corrupt(
+                    "a retained FX reversal does not name exactly one Reverses target".into(),
+                ));
+            }
+        };
+        child = entry.proposal;
+        handle = next;
+        first = false;
+    }
 }
 
 fn checked_entry_with(

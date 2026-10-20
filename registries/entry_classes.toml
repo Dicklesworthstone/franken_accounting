@@ -220,6 +220,20 @@ name = "ProductionControl"
 kind = "control"
 supersession = "none"
 
+# A statement package leaving the entity (plan §12.5, Appendix A
+# `StatementIssuance`; fa-wrrw): book-scoped and undated;
+# ControlPayload::LifecycleTransition 0 -> Issued on the issuance's
+# StatementIssuance vertex, the issuance in extension 15
+# `fa:statement-issuance:v1` (period, ordinal, definition, the retained
+# statement certificate and its known-at, audience, optional transmittal
+# document, which is also the record's proof ref). Never withdrawn; the
+# period's first issuance is what AS ORIGINALLY REPORTED reads.
+[[class]]
+tag = 28
+name = "IssuanceControl"
+kind = "control"
+supersession = "none"
+
 # ---- Control kinds (fa-g23) ---------------------------------------------------
 # `EntryOrigin::Control.control_kind`: the act that minted a control record. It
 # is durable in every control record's origin, so it is registered here rather
@@ -317,3 +331,9 @@ id = 14
 name = "production_transition"
 class = "ProductionControl"
 minted_by = "fa-journal production::open_production, production::produce"
+
+[[control_kind]]
+id = 15
+name = "statement_issuance"
+class = "IssuanceControl"
+minted_by = "fa-journal issuance::issue_statements"

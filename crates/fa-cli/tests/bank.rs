@@ -107,6 +107,31 @@ fn ok(book: &Path, args: &[&str]) -> Json {
     output
 }
 
+fn certified_events(book: &Path, args: &[&str]) -> Vec<Json> {
+    let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(book)
+        .args(args)
+        .arg("--json")
+        .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{args:?}: {stdout}\n{stderr}");
+    stdout
+        .lines()
+        .map(|line| {
+            fa_cli::verbs::registry()
+                .unwrap()
+                .check_line(line)
+                .unwrap_or_else(|error| panic!("{args:?}: {error}\n{stdout}"));
+            json::parse(line).unwrap()
+        })
+        .collect()
+}
+
 // Replaying the original governed BankStatement is an explicit owner choice;
 // the ordinary reader and every launch-bound template retain their ceilings.
 fn run_privileged(book: &Path, args: &[&str]) -> (i32, Json) {
@@ -508,36 +533,12 @@ fn exact_bank_reconciliation_carries_opening_cash_and_survives_reopen_retry_and_
 #[test]
 fn reconciled_cash_scenarios_preserve_native_coordinates_and_planner_authority() {
     let f = Fixture::new();
-    let certified_events = |args: &[&str]| -> Vec<Json> {
-        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
-            .arg("--book")
-            .arg(&f.book)
-            .args(args)
-            .arg("--json")
-            .env_remove("FA_BOOK")
-            .env_remove("FA_TOKEN")
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(output.status.success(), "{args:?}: {stdout}\n{stderr}");
-        stdout
-            .lines()
-            .map(|line| {
-                fa_cli::verbs::registry()
-                    .unwrap()
-                    .check_line(line)
-                    .unwrap_or_else(|error| panic!("{args:?}: {error}\n{stdout}"));
-                json::parse(line).unwrap()
-            })
-            .collect()
-    };
     f.post("scenario-source", "2026-03-10", "debit", "100.00", "SOURCE");
 
     // Retained certificates and checkpoints are omitted accounting objects,
     // but their real source sequences precede the import, confirmations and
     // close. A compressed replay would invalidate the immutable native claim.
-    let retained = certified_events(&["tb", "--as-of", "2026-03-15", "--certify"]);
+    let retained = certified_events(&f.book, &["tb", "--as-of", "2026-03-15", "--certify"]);
     assert_eq!(retained.len(), 2);
     assert_eq!(text(&retained[1], "event"), "report_certificate");
     let retained_locator = format!("C:{}", text(data(&retained[1]), "oid"));
@@ -641,16 +642,33 @@ fn reconciled_cash_scenarios_preserve_native_coordinates_and_planner_authority()
         .map(|row| (text(row, "code"), text(row, "delta")))
         .collect();
     assert_eq!(deltas, [("1000", "1.00 USD"), ("4000", "-1.00 USD")]);
-    let certified = certified_events(&[
-        "scenario",
-        "diff",
-        "protected-cash",
-        "--period",
-        "FY2026-P03",
-        "--certify",
-    ]);
+    let certified = certified_events(
+        &f.book,
+        &[
+            "scenario",
+            "diff",
+            "protected-cash",
+            "--period",
+            "FY2026-P03",
+            "--certify",
+        ],
+    );
     assert_eq!(certified.len(), 2);
     assert_eq!(data(&certified[0]), data(&diff));
+    let encoded = text(data(&certified[1]), "bytes");
+    let bytes: Vec<u8> = (0..encoded.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&encoded[i..i + 2], 16).unwrap())
+        .collect();
+    let mut reader = fa_model::Reader::new(&bytes);
+    assert_eq!(
+        reader.bytes(64, "scenario certificate format").unwrap(),
+        b"fa:scenario-diff-certificate:v2"
+    );
+    assert_eq!(
+        text(data(&certified[1]), "output_format"),
+        "fa:scenario-diff:v1"
+    );
     let locator = format!("C:{}", text(data(&certified[1]), "oid"));
     let before_replay = head(&f.book);
     let replayed = ok(&f.book, &["replay", &locator]);
@@ -685,6 +703,256 @@ fn reconciled_cash_scenarios_preserve_native_coordinates_and_planner_authority()
     ] {
         assert_eq!(retry.get(field), original.get(field), "immutable {field}");
     }
+}
+
+#[test]
+fn soft_closed_scenarios_preserve_only_granted_posting_authority_on_cold_replay() {
+    let f = Fixture::new();
+    f.post("soft-source", "2026-03-10", "debit", "100.00", "SOURCE");
+    ok(&f.book, &["period", "soft-close", "FY2026-P03"]);
+    let trunk = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    ok(&f.book, &["scenario", "fork", "soft-review"]);
+    let original = f.file("soft-original.json", r#"{"effective_date":"2026-03-12","idempotency_key":"soft-original","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#);
+    let before = head(&f.book);
+    for grants in [
+        Vec::new(),
+        vec![
+            "--grant",
+            "post_closed",
+            "--grant",
+            "close",
+            "--grant",
+            "restate",
+        ],
+    ] {
+        let mut args = vec![
+            "scenario",
+            "run",
+            "soft-review",
+            "--intent",
+            &original,
+            "--evidence",
+            &f.evidence,
+        ];
+        args.extend(grants);
+        let (exit, denied) = run(&f.book, &args);
+        assert_eq!(exit, 7, "{denied:?}");
+        assert_eq!(text(data(&denied), "refusal_id"), "FA-REF-011");
+        assert!(text(data(&denied), "message").contains("post_softclosed"));
+        assert_eq!(head(&f.book), before, "missing authority records nothing");
+    }
+    let planned = ok(
+        &f.book,
+        &[
+            "scenario",
+            "run",
+            "soft-review",
+            "--intent",
+            &original,
+            "--evidence",
+            &f.evidence,
+            "--grant",
+            "post_softclosed",
+        ],
+    );
+    assert_eq!(data(&planned).get("rehearsed"), Some(&Json::Bool(true)));
+    assert_eq!(integer(data(&planned), "ordinal"), 1);
+    assert_eq!(head(&f.book), before + 1);
+
+    // Adjusting is already admissible in SoftClosed with Post alone. The
+    // scratch capability must preserve exceptions, not require new ones.
+    let adjustment = f.file("soft-adjustment.json", r#"{"class":"Adjusting","effective_date":"2026-03-12","idempotency_key":"soft-adjustment","legs":[{"side":"debit","account":"1000","amount":"2.00 USD"},{"side":"credit","account":"4000","amount":"2.00 USD"}]}"#);
+    let planned = ok(
+        &f.book,
+        &[
+            "scenario",
+            "run",
+            "soft-review",
+            "--intent",
+            &adjustment,
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    assert_eq!(integer(data(&planned), "ordinal"), 2);
+    assert_eq!(head(&f.book), before + 2, "only scenario records publish");
+    let diff = ok(
+        &f.book,
+        &["scenario", "diff", "soft-review", "--period", "FY2026-P03"],
+    );
+    let deltas: Vec<_> = rows(data(&diff), "rows")
+        .iter()
+        .map(|row| (text(row, "code"), text(row, "delta")))
+        .collect();
+    assert_eq!(deltas, [("1000", "3.00 USD"), ("4000", "-3.00 USD")]);
+    let certified = certified_events(
+        &f.book,
+        &[
+            "scenario",
+            "diff",
+            "soft-review",
+            "--period",
+            "FY2026-P03",
+            "--certify",
+        ],
+    );
+    assert_eq!(certified.len(), 2);
+    assert_eq!(data(&certified[0]), data(&diff));
+    let locator = format!("C:{}", text(data(&certified[1]), "oid"));
+
+    // A later real period close does not change the scenario's historical
+    // fork. Every command cold-opens the directory book, including replay.
+    ok(
+        &f.book,
+        &[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--yes",
+        ],
+    );
+    ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
+    let before_replay = head(&f.book);
+    let replayed = ok(&f.book, &["replay", &locator]);
+    assert_eq!(data(&replayed), data(&diff));
+    assert_eq!(head(&f.book), before_replay);
+    let after = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    assert_eq!(data(&after).get("rows"), data(&trunk).get("rows"));
+}
+
+#[test]
+fn closed_adjustment_scenarios_keep_post_closed_and_independent_approvals() {
+    let f = Fixture::new();
+    f.post("closed-source", "2026-03-10", "debit", "100.00", "SOURCE");
+    let adjustment = f.file("closed-adjustment.json", r#"{"class":"Adjusting","effective_date":"2026-03-12","idempotency_key":"closed-adjustment","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#);
+    let plan_path = f.dir.join("closed-adjustment.plan");
+    let before_plan = head(&f.book);
+    let planned = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &adjustment,
+            "--evidence",
+            &f.evidence,
+            "--dry-run",
+            "--plan-out",
+            plan_path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(head(&f.book), before_plan);
+    let plan = fa::PostPlan::decode(&std::fs::read(&plan_path).unwrap()).unwrap();
+    let approval = ok(
+        &f.book,
+        &[
+            "approve",
+            "--proposal",
+            text(data(&planned), "proposal_digest"),
+            "--as",
+            "independent-close-reviewer",
+        ],
+    );
+    let approval_ref = fa_model::ApprovalRef {
+        approval_vid: fgdb_types::VId(
+            u128::from_str_radix(text(data(&approval), "approval_vid"), 16).unwrap(),
+        ),
+        approved_digest: plan.certificate().proposal_digest,
+    };
+    ok(&f.book, &["period", "soft-close", "FY2026-P03"]);
+    ok(
+        &f.book,
+        &[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--yes",
+        ],
+    );
+    let forked = ok(&f.book, &["scenario", "fork", "closed-review"]);
+    assert!(integer(data(&approval), "recorded_at") < integer(data(&forked), "fork_at"));
+    let trunk = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    let before = head(&f.book);
+    {
+        // Preserve the exact sealed proposal prepared by the real CLI. A
+        // JSON reconstruction would reseal it and invalidate the approval.
+        // The old PostPlan is never committed: the scenario reruns the intent
+        // under the now-Closed period and retains its own planning record.
+        let keys = fa::BookKeys::load(&f.book.join("book.keys")).unwrap();
+        let mut book = fa::Book::open_dir(&f.book, keys, fa::Entropy::production()).unwrap();
+        let principal = fa_model::principal_vid("operator");
+        let intent =
+            fa::PostIntent::new(plan.intent().proposal().clone(), vec![approval_ref]).unwrap();
+        let missing_op =
+            fa::Capability::embedded(principal, &["post", "close", "restate"]).unwrap();
+        let refusal = book
+            .run_in_scenario(missing_op, "closed-review", intent.clone())
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, "FA-REF-011");
+        assert!(refusal.message.contains("post_closed"));
+        assert_eq!(i128::from(book.head().unwrap().0), before);
+        let granted = fa::Capability::embedded(principal, &["post", "post_closed"]).unwrap();
+        let refusal = book
+            .run_in_scenario(granted.clone(), "closed-review", plan.intent().clone())
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, "FA-REF-012", "{refusal:?}");
+        assert_eq!(i128::from(book.head().unwrap().0), before);
+        let rehearsed = book
+            .run_in_scenario(granted.clone(), "closed-review", intent.clone())
+            .unwrap()
+            .unwrap();
+        assert!(rehearsed.rehearsed.is_some());
+        assert_eq!(rehearsed.ordinal, 1);
+        assert_eq!(i128::from(book.head().unwrap().0), before + 1);
+        let retry = book
+            .run_in_scenario(granted, "closed-review", intent)
+            .unwrap()
+            .unwrap();
+        assert!(retry.recorded.already_recorded);
+        assert_eq!(i128::from(book.head().unwrap().0), before + 1);
+    }
+
+    let diff = ok(
+        &f.book,
+        &[
+            "scenario",
+            "diff",
+            "closed-review",
+            "--period",
+            "FY2026-P03",
+        ],
+    );
+    let deltas: Vec<_> = rows(data(&diff), "rows")
+        .iter()
+        .map(|row| (text(row, "code"), text(row, "delta")))
+        .collect();
+    assert_eq!(deltas, [("1000", "1.00 USD"), ("4000", "-1.00 USD")]);
+    let certified = certified_events(
+        &f.book,
+        &[
+            "scenario",
+            "diff",
+            "closed-review",
+            "--period",
+            "FY2026-P03",
+            "--certify",
+        ],
+    );
+    assert_eq!(certified.len(), 2);
+    assert_eq!(data(&certified[0]), data(&diff));
+    let locator = format!("C:{}", text(data(&certified[1]), "oid"));
+    ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
+    let before_replay = head(&f.book);
+    let replayed = ok(&f.book, &["replay", &locator]);
+    assert_eq!(data(&replayed), data(&diff));
+    assert_eq!(head(&f.book), before_replay);
+    let after = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    assert_eq!(data(&after).get("rows"), data(&trunk).get("rows"));
 }
 
 #[test]
@@ -823,7 +1091,7 @@ fn bank_drift_becomes_typed_recorded_findings_with_replayable_original_workpaper
         f.book.clone(),
         None,
         "bank-drift-observer",
-        LaunchProfile::Human,
+        LaunchProfile::Preparer,
         &["read", "reconcile"],
     )
     .unwrap();
@@ -1189,7 +1457,7 @@ fn bank_drift_admission_precedes_open_and_read_only_procedures_keep_their_author
         missing.clone(),
         None,
         "bank-drift-denied",
-        LaunchProfile::Human,
+        LaunchProfile::Preparer,
         &["read", "produce"],
     )
     .unwrap();
@@ -1221,7 +1489,7 @@ fn bank_drift_admission_precedes_open_and_read_only_procedures_keep_their_author
         f.book.clone(),
         None,
         "ordinary-procedure-reader",
-        LaunchProfile::Human,
+        LaunchProfile::Preparer,
         &["read"],
     )
     .unwrap();

@@ -254,6 +254,7 @@ fn markdown_renders_inline_without_a_tick_and_dated_formats_wait_for_one() {
             "--render",
             "md",
         ],
+        vec!["statement", "issuances", "--render", "md"],
         vec![
             "statement",
             "diff",

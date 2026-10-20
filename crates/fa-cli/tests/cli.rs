@@ -3043,6 +3043,377 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
     Ok(())
 }
 
+/// fa-wrrw (plan §7.4, §12.5): `fa statement issue` journals a period's
+/// StatementIssuance in two hands: the preparer plans it (`--dry-run`),
+/// another principal approves the plan's digest, and the preparer commits
+/// exactly that plan. From then on `--as-originally-reported` reads the
+/// issued certificate's known-at, ahead of the period's later Lock, and a
+/// second issuance never moves it.
+#[test]
+fn statement_issue_pins_as_originally_reported_to_the_issued_certificate() -> std::io::Result<()> {
+    let dir = tmp("statement-issue")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Issuer Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    let march = "FY2026-P03";
+    assert_eq!(fa(Some(&book), &["period", "open", march]).0, 0);
+    let ev = source_doc(&dir, &book);
+    let post = |key: &str, amount: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-15","description":"rent","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"{amount} USD"}},{{"side":"credit","account":"1000","amount":"{amount} USD"}}]}}"#
+            ),
+        );
+        let (code, out, _) = fa(
+            Some(&book),
+            &["post", "--intent", &intent, "--evidence", &ev, "--json"],
+        );
+        assert_eq!(code, 0, "{out}");
+    };
+    post("rent-1", "10.00");
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "statement",
+            "income-statement",
+            "--for",
+            march,
+            "--certify",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let issued_oid = field(&out, "oid").unwrap_or_default().to_string();
+    let certified_at = field(&out, "known_at").unwrap_or_default().to_string();
+    // A later March posting, then the period's Lock: without an issuance,
+    // as originally reported reads the Lock, which includes it.
+    post("rent-2", "5.00");
+    let (code, out, _) = fa(
+        Some(&book),
+        &["period", "close", march, "--reason", "Scheduled", "--yes"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let lock_plan = dir.join("lock.plan").display().to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "lock",
+            march,
+            "--reason",
+            "Scheduled",
+            "--plan-out",
+            &lock_plan,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let digest = field(&out, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "approve",
+            "--proposal",
+            &digest,
+            "--as",
+            "controller",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let approval = field(&out, "approval_vid").unwrap_or_default().to_string();
+    assert_eq!(
+        fa(
+            Some(&book),
+            &[
+                "period",
+                "lock",
+                march,
+                "--plan",
+                &lock_plan,
+                "--approval",
+                &approval
+            ]
+        )
+        .0,
+        0
+    );
+    let originally = [
+        "tb",
+        "--period",
+        march,
+        "--as-originally-reported",
+        "--json",
+    ];
+    let (code, at_lock, _) = fa(Some(&book), &originally);
+    assert_eq!(code, 0, "{at_lock}");
+    assert_ne!(field(&at_lock, "known_at"), Some(certified_at.as_str()));
+    assert!(at_lock.contains("15.00 USD"), "{at_lock}");
+
+    // Refused before anything is planned or written.
+    let (code, out, _) = fa(
+        Some(&book),
+        &["tb", "--period", march, "--certify", "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let tb_oid = field(&out, "oid").unwrap_or_default().to_string();
+    let plan_args = |oid: &str| {
+        vec![
+            "statement".to_string(),
+            "issue".into(),
+            "--certificate".into(),
+            format!("C:{oid}"),
+            "--issued-to".into(),
+            "auditor".into(),
+            "--dry-run".into(),
+            "--json".into(),
+        ]
+    };
+    let run = |args: &[String]| {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        fa(Some(&book), &args)
+    };
+    let (code, out, _) = run(&plan_args(&tb_oid));
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-172"), "{out}");
+    for bad in [
+        vec!["statement", "issue", "--json"],
+        vec![
+            "statement",
+            "issue",
+            "--certificate",
+            &issued_oid,
+            "--issued-to",
+            "shareholders",
+            "--dry-run",
+            "--json",
+        ],
+        vec![
+            "statement",
+            "issue",
+            "--certificate",
+            &issued_oid,
+            "--issued-to",
+            "auditor",
+            "--dry-run",
+            "--approval",
+            &approval,
+            "--json",
+        ],
+        vec![
+            "statement",
+            "issue",
+            "--plan",
+            &lock_plan,
+            "--for",
+            march,
+            "--json",
+        ],
+        // Each statement command refuses the other's flags, never ignores them.
+        vec![
+            "statement",
+            "issue",
+            "--certificate",
+            &issued_oid,
+            "--issued-to",
+            "auditor",
+            "--compare",
+            "FY2026-P02",
+            "--dry-run",
+            "--json",
+        ],
+        vec!["statement", "issuances", "--certify", "--json"],
+        vec!["statement", "issuances", "--issued-to", "auditor", "--json"],
+        vec![
+            "statement",
+            "income-statement",
+            "--for",
+            march,
+            "--dry-run",
+            "--json",
+        ],
+        vec![
+            "statement",
+            "income-statement",
+            "--for",
+            march,
+            "--issued-to",
+            "auditor",
+            "--json",
+        ],
+    ] {
+        let (code, out, err) = fa(Some(&book), &bad);
+        assert_eq!(code, 2, "{bad:?}\n{out}\n{err}");
+    }
+
+    // Plan, approve in another hand, commit the exact plan.
+    let (code, out, _) = run(&plan_args(&issued_oid));
+    assert_eq!(code, 0, "{out}");
+    let planned = doc(&out);
+    let issuance = planned.get("issuance").cloned().unwrap_or(Json::Null);
+    assert_eq!(int(&issuance, "ordinal"), Some(1), "{out}");
+    assert_eq!(text(&issuance, "period"), march);
+    assert_eq!(text(&issuance, "certificate"), issued_oid);
+    assert_eq!(
+        int(&issuance, "certified_at").map(|n| n.to_string()),
+        Some(certified_at.clone())
+    );
+    assert_eq!(issuance.get("recorded_at"), Some(&Json::Null));
+    let plan = write(&dir, "issue.plan", text(&planned, "bytes"));
+    let digest = text(&planned, "proposal_digest").to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &["statement", "issue", "--plan", &plan, "--json"],
+    );
+    assert_eq!(code, 7, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-012"), "{out}");
+    let (code, out, _) = fa(Some(&book), &["approve", "--proposal", &digest, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let own = field(&out, "approval_vid").unwrap_or_default().to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "statement",
+            "issue",
+            "--plan",
+            &plan,
+            "--approval",
+            &own,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 7, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-008"), "{out}");
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "approve",
+            "--proposal",
+            &digest,
+            "--as",
+            "controller",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let approval = field(&out, "approval_vid").unwrap_or_default().to_string();
+    let commit = [
+        "statement",
+        "issue",
+        "--plan",
+        &plan,
+        "--approval",
+        &approval,
+        "--json",
+    ];
+    let (code, out, _) = fa(Some(&book), &commit);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("statement_issued"), "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("false"), "{out}");
+    let (code, out, _) = fa(Some(&book), &commit);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("true"), "{out}");
+
+    // As originally reported is now the issued certificate's coordinate,
+    // ahead of the Lock: rent-2 is absent, and the read is byte-identical to
+    // the same read at that known-at.
+    let (code, reported, _) = fa(Some(&book), &originally);
+    assert_eq!(code, 0, "{reported}");
+    assert_eq!(
+        field(&reported, "known_at"),
+        Some(certified_at.as_str()),
+        "{reported}"
+    );
+    assert!(!reported.contains("15.00 USD"), "{reported}");
+    let (code, at_certificate, _) = fa(
+        Some(&book),
+        &[
+            "tb",
+            "--period",
+            march,
+            "--as-known-at",
+            &certified_at,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{at_certificate}");
+    assert_eq!(reported, at_certificate);
+
+    // A second issuance (to the lender) is ordinal 2; the pin stays.
+    let mut lender = plan_args(&issued_oid);
+    lender[5] = "lender".into();
+    let (code, out, _) = run(&lender);
+    assert_eq!(code, 0, "{out}");
+    let planned = doc(&out);
+    let second = planned.get("issuance").cloned().unwrap_or(Json::Null);
+    assert_eq!(int(&second, "ordinal"), Some(2), "{out}");
+    let plan2 = write(&dir, "issue2.plan", text(&planned, "bytes"));
+    let digest = text(&planned, "proposal_digest").to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "approve",
+            "--proposal",
+            &digest,
+            "--as",
+            "controller",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let approval = field(&out, "approval_vid").unwrap_or_default().to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "statement",
+            "issue",
+            "--plan",
+            &plan2,
+            "--approval",
+            &approval,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let (code, out, _) = fa(Some(&book), &originally);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        field(&out, "known_at"),
+        Some(certified_at.as_str()),
+        "{out}"
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["statement", "issuances", "--for", march, "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let listed = doc(&out);
+    let rows = arr(&listed, "issuances");
+    assert_eq!(
+        rows.iter()
+            .map(|r| (int(r, "ordinal"), text(r, "issued_to"), int(r, "approvals")))
+            .collect::<Vec<_>>(),
+        [(Some(1), "auditor", Some(1)), (Some(2), "lender", Some(1))]
+    );
+    Ok(())
+}
+
 /// `fa sample uniform|mus` (fa-kaf7, fa-vpk): a sample of one account's
 /// normal-side open items, reproducible from the declared seed at a recorded
 /// sequence; opposite-side open items are excluded and listed, never dropped.
@@ -5925,6 +6296,56 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["statement", "balance-sheet", "--for", "FY2026-P03"]).0,
         0
     );
+    // A statement issuance (fa-wrrw): planned, approved in another hand,
+    // committed from the exact plan, then listed.
+    let (code, out) = run(
+        true,
+        &[
+            "statement",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let issued = field(&out, "oid").unwrap_or_default().to_string();
+    let (code, out) = run(
+        true,
+        &[
+            "statement",
+            "issue",
+            "--certificate",
+            &issued,
+            "--issued-to",
+            "auditor",
+            "--dry-run",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let issue_plan = write(&dir, "issue.plan", field(&out, "bytes").unwrap_or_default());
+    let issue_digest = field(&out, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let (code, out) = run(
+        true,
+        &["approve", "--proposal", &issue_digest, "--as", "controller"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let issue_approval = field(&out, "approval_vid").unwrap_or_default().to_string();
+    let (code, out) = run(
+        true,
+        &[
+            "statement",
+            "issue",
+            "--plan",
+            &issue_plan,
+            "--approval",
+            &issue_approval,
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(run(true, &["statement", "issuances"]).0, 0);
     let (code, out) = run(true, &["registers", "advance", "--period", "FY2026-P03"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(
@@ -6874,6 +7295,115 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     assert_eq!(text(&functional_stock, "scope"), "stock");
     assert_eq!(text(&functional_stock, "effective_through"), "2026-03-31");
     assert_eq!(functional_stock.get("balanced"), Some(&Json::Bool(true)));
+
+    let fx_book = dir.join("fx-revaluation-events-book");
+    let mut run_fx = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&fx_book), &argv);
+        assert_eq!(code, 0, "{argv:?}: {out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        out
+    };
+    run_fx(&["book", "create", "--name", "Revaluation event source"]);
+    let fx_chart = write(
+        &dir,
+        "fx-revaluation-chart.json",
+        r#"{"accounts":[{"code":"1200","name":"EUR receivable","type":"Asset","unit":"EUR"},{"code":"4000","name":"EUR revenue","type":"Revenue","unit":"EUR"},{"code":"1290","name":"AR valuation","type":"Asset","unit":"USD"},{"code":"4900","name":"Unrealized FX","type":"Revenue","unit":"USD"}]}"#,
+    );
+    run_fx(&["chart", "import", &fx_chart]);
+    run_fx(&["period", "create", "--fiscal-year", "2026"]);
+    run_fx(&["period", "open", "FY2026-P03"]);
+    run_fx(&[
+        "fx",
+        "routes",
+        "set",
+        "--route",
+        "1200:1290:4900",
+        "--effective-from",
+        "2026-01-01",
+        "--key",
+        "fx-route-events",
+    ]);
+    let routes = doc(&run_fx(&["fx", "routes", "show", "--as-of", "2026-03-31"]));
+    assert_eq!(arr(&routes, "routes").len(), 1);
+    let spot_path = write(
+        &dir,
+        "fx-revaluation-spot.json",
+        r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"1","rate_den":"1","rounding":"HalfEven","as_of":"2026-03-05","retrieved_at_ns":1772668800000000000,"purpose":"spot_close","source":"retained transaction quote"}"#,
+    );
+    let spot = doc(&run_fx(&["fx", "rate", "add", "--from-json", &spot_path]));
+    let fx_invoice = write(
+        &dir,
+        "fx-revaluation-invoice.txt",
+        "Actual FX invoice fixture",
+    );
+    let fx_evidence = doc(&run_fx(&[
+        "document",
+        "add",
+        &fx_invoice,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]));
+    let fx_intent = write(
+        &dir,
+        "fx-revaluation-post.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-05","idempotency_key":"fx-event-invoice","legs":[{{"side":"debit","account":"1200","amount":"100.00 EUR"}},{{"side":"credit","account":"4000","amount":"100.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#,
+            text(&spot, "oid")
+        ),
+    );
+    run_fx(&[
+        "post",
+        "--intent",
+        &fx_intent,
+        "--evidence",
+        text(&fx_evidence, "oid"),
+    ]);
+    let close_rate = doc(&run_fx(&["fx", "rate", "add", "--from-json", &rate_path]));
+    let closing_oid = format!("D:{}", text(&close_rate, "oid"));
+    let reviewed = doc(&run_fx(&[
+        "fx",
+        "revalue",
+        "--period",
+        "FY2026-P03",
+        "--account",
+        "1200",
+        "--rate",
+        &closing_oid,
+        "--key",
+        "fx-event-revalue",
+        "--review-only",
+    ]));
+    assert_eq!(text(&reviewed, "source_native_net"), "100.00 EUR");
+    assert_eq!(text(&reviewed, "current_carrying_net"), "100.00 USD");
+    assert_eq!(text(&reviewed, "delta"), "10.00 USD");
+    run_fx(&[
+        "fx",
+        "revalue",
+        "--review",
+        text(&reviewed, "bytes"),
+        "--digest",
+        text(&reviewed, "review_digest"),
+        "--yes",
+    ]);
+    let noop = doc(&run_fx(&[
+        "fx",
+        "revalue",
+        "--period",
+        "FY2026-P03",
+        "--account",
+        "1200",
+        "--rate",
+        &closing_oid,
+        "--key",
+        "fx-event-noop",
+        "--yes",
+    ]));
+    assert_eq!(text(&noop, "current_carrying_net"), "110.00 USD");
+    assert_eq!(text(&noop, "target_base_net"), "110.00 USD");
 
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg

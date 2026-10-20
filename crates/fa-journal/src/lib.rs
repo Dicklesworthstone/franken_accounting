@@ -33,6 +33,7 @@ pub mod finding_history;
 pub mod fx;
 pub mod genesis;
 pub mod import;
+pub mod issuance;
 pub mod legal_hold;
 pub mod limit;
 pub mod migration;
@@ -48,6 +49,7 @@ pub mod projections;
 pub mod rea;
 pub mod redaction;
 pub mod refusal;
+pub mod revaluation;
 pub mod rows;
 pub mod scenario;
 pub mod schedule;
@@ -69,9 +71,10 @@ pub use chart::{
 };
 pub use custody::{CustodyBody, CustodyEvent, CustodyMoved, custody_chain, transfer_custody};
 pub use draft::{
-    DraftBody, DraftClosure, DraftPlanned, DraftPromoted, DraftRecorded, DraftRequest, DraftState,
+    DraftBody, DraftClosure, DraftPlanned, DraftPromoted, DraftRecorded, DraftRehearsal,
+    DraftRehearsalRequest, DraftRehearsalSource, DraftRequest, DraftSourceRecord, DraftState,
     DraftView, PlannedIntent, discard_draft, list_drafts, open_draft, plan_into_draft,
-    promote_draft, read_draft,
+    promote_draft, read_draft, rehearse_draft_into,
 };
 pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{
@@ -98,6 +101,10 @@ pub use import::{
     decode_derivation, decode_extraction_derivation, document_sources, encode_derivation,
     encode_extraction_derivation, import_run, verify_receipt, verify_receipt_in,
 };
+pub use issuance::{
+    IssuancePlan, IssuanceRecord, IssuedTo, StatementIssuance, StatementsIssued, first_issuance,
+    issuances, issue_statements, list_issuances, plan_issuance,
+};
 pub use legal_hold::{
     LegalHold, LegalHoldPlaced, LegalHoldReleased, LegalHoldRequest, Pinned, ReleasePlan,
     active_legal_holds, place_legal_hold, plan_release, read_legal_hold, release_legal_hold,
@@ -113,9 +120,9 @@ pub use migration::{
 };
 pub use period::{
     OriginallyReported, PeriodCheck, PeriodTransitionRecord, PeriodVerification,
-    PreparedTransition, TransitionPlan, Transitioned, originally_reported, period_transitions,
-    plan_transition, prepare_transition, transition_name, transition_period, transition_proposal,
-    verify_periods,
+    PreparedTransition, ReportedBasis, TransitionPlan, Transitioned, originally_reported,
+    period_transitions, plan_transition, prepare_transition, transition_name, transition_period,
+    transition_proposal, verify_periods,
 };
 pub use period_history::{PeriodHistoryVerification, verify_periods_with_history};
 pub use plan::{
@@ -148,6 +155,7 @@ pub use redaction::{
     read_document_for_with, redacted_view_vid,
 };
 pub use refusal::{KernelError, Refusal, exit};
+pub use revaluation::{FxRevaluationRequest, PreparedFxRevaluation, prepare_fx_revaluation};
 pub use rows::{AccountRow, PeriodRow};
 pub use scenario::{
     ScenarioBody, ScenarioClosure, ScenarioFork, ScenarioRecorded, ScenarioRequest, ScenarioState,

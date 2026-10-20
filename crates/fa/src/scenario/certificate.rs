@@ -12,6 +12,13 @@
 //! output byte for byte, so an intent run in the scenario later never changes
 //! what an earlier certificate replays.
 //!
+//! Version 2 fixes the replay law to the protected native coordinates used
+//! by bank closes. Version 1 was emitted with both compressed and protected
+//! coordinates: replay first tries the protected form, then the historical
+//! compressed form only after a successful replay differs from the bound
+//! output. Both validate the original source and enforce every posting law.
+//! An integrity or posting refusal never selects the legacy form.
+//!
 //! No-claim boundary: the scenario side is not a native certificate (a
 //! scratch book cannot carry trunk certificate identities); its evidence is
 //! the re-performed materialization. Producer and capability commitment are
@@ -24,22 +31,48 @@ use fa_model::{DecodeError, Id128, Reader, Writer, domain_digest};
 use fa_policy::{Capability, Op, Reach};
 use fgdb_types::{CommitSeq, VId};
 
-use super::ScenarioDiff;
+use super::{ScenarioDiff, ScenarioReplay};
 use crate::{
     Book, CertificateStatus, Outcome, ReportCertificate, ReportOutput, ReportSelection,
     RetainedCertificate, TrialBalanceSelection,
 };
 
 /// The family's format field (`ReportArtifact::decode` dispatches on it).
-pub const CERTIFICATE_FORMAT: &[u8] = b"fa:scenario-diff-certificate:v1";
+pub const CERTIFICATE_FORMAT: &[u8] = b"fa:scenario-diff-certificate:v2";
+/// Original certificates retain their exact bytes and historical replay law.
+pub const LEGACY_CERTIFICATE_FORMAT: &[u8] = b"fa:scenario-diff-certificate:v1";
 /// The canonical output's format (`report_certificate.output_format`).
 pub const OUTPUT_FORMAT: &str = "fa:scenario-diff:v1";
-const DIGEST_DOMAIN: &[u8] = b"fa:scenario-diff-certificate-digest:v1";
+const DIGEST_DOMAIN: &[u8] = b"fa:scenario-diff-certificate-digest:v2";
+const LEGACY_DIGEST_DOMAIN: &[u8] = b"fa:scenario-diff-certificate-digest:v1";
 const MAX_BYTES: usize = crate::certificate::MAX_CERTIFICATE_BYTES;
 const MAX_NAME_BYTES: usize = 128;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Version {
+    LegacyV1,
+    ProtectedV2,
+}
+
+impl Version {
+    const fn format(self) -> &'static [u8] {
+        match self {
+            Self::LegacyV1 => LEGACY_CERTIFICATE_FORMAT,
+            Self::ProtectedV2 => CERTIFICATE_FORMAT,
+        }
+    }
+
+    const fn digest_domain(self) -> &'static [u8] {
+        match self {
+            Self::LegacyV1 => LEGACY_DIGEST_DOMAIN,
+            Self::ProtectedV2 => DIGEST_DOMAIN,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScenarioDiffCertificate {
+    version: Version,
     trunk: ReportCertificate,
     scenario: VId,
     name: String,
@@ -145,6 +178,7 @@ impl ScenarioDiffCertificate {
         output: Vec<u8>,
     ) -> Result<Self, Refusal> {
         let mut value = Self {
+            version: Version::ProtectedV2,
             trunk,
             scenario,
             name,
@@ -157,7 +191,7 @@ impl ScenarioDiffCertificate {
             output,
             digest: [0; 32],
         };
-        value.digest = domain_digest(DIGEST_DOMAIN, &[&value.body()?]);
+        value.digest = domain_digest(value.version.digest_domain(), &[&value.body()?]);
         value.validate()?;
         Ok(value)
     }
@@ -168,7 +202,7 @@ impl ScenarioDiffCertificate {
             .canonical_bytes()
             .map_err(|e| invalid(e.to_string()))?;
         let mut w = Writer::new();
-        w.bytes(CERTIFICATE_FORMAT)
+        w.bytes(self.version.format())
             .bytes(&trunk)
             .u128(self.scenario.0)
             .str(&self.name)
@@ -204,7 +238,7 @@ impl ScenarioDiffCertificate {
         if self.scenario_known_at.0 == 0 {
             return Err(invalid("a scenario diff names its materialization's head"));
         }
-        if domain_digest(DIGEST_DOMAIN, &[&self.body()?]) != self.digest {
+        if domain_digest(self.version.digest_domain(), &[&self.body()?]) != self.digest {
             return Err(invalid("scenario diff certificate digest mismatch"));
         }
         Ok(())
@@ -231,9 +265,15 @@ impl ScenarioDiffCertificate {
             ));
         }
         let mut r = Reader::new(bytes);
-        if r.bytes(64, "format").map_err(malformed)? != CERTIFICATE_FORMAT {
-            return Err(invalid("not a scenario diff certificate"));
-        }
+        let version = match r.bytes(64, "format").map_err(malformed)? {
+            CERTIFICATE_FORMAT => Version::ProtectedV2,
+            LEGACY_CERTIFICATE_FORMAT => Version::LegacyV1,
+            _ => {
+                return Err(invalid(
+                    "not a scenario diff certificate of a supported version",
+                ));
+            }
+        };
         let trunk =
             ReportCertificate::decode(r.bytes(MAX_BYTES, "trunk source").map_err(malformed)?)?;
         let scenario = VId(r.u128("scenario").map_err(malformed)?);
@@ -255,6 +295,7 @@ impl ScenarioDiffCertificate {
         let digest = r.fixed::<32>("digest").map_err(malformed)?;
         r.finish().map_err(malformed)?;
         let value = Self {
+            version,
             trunk,
             scenario,
             name,
@@ -272,6 +313,11 @@ impl ScenarioDiffCertificate {
             return Err(invalid("noncanonical scenario diff certificate"));
         }
         Ok(value)
+    }
+
+    #[must_use]
+    pub fn format(&self) -> &'static [u8] {
+        self.version.format()
     }
 
     #[must_use]
@@ -437,24 +483,45 @@ impl Book {
             )));
         }
         let through = certificate.intents.len();
-        let report = match self.diff_view(view, through, &trunk, &periods, activity)? {
+        let report = match self.diff_view(view.clone(), through, &trunk, &periods, activity)? {
             Ok(report) => report,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        if report.seq_map_digest != certificate.seq_map_digest
-            || report.scenario_known_at != certificate.scenario_known_at
-        {
-            return Ok(Err(invalid(
-                "the scenario re-materialized at a different replay than the one certified",
-            )));
+        let matches = |report: &ScenarioDiff| -> Result<bool, Refusal> {
+            Ok(report.seq_map_digest == certificate.seq_map_digest
+                && report.scenario_known_at == certificate.scenario_known_at
+                && output_bytes(report)? == certificate.output)
+        };
+        match matches(&report) {
+            Ok(true) => return Ok(Ok(report)),
+            Ok(false) => {}
+            Err(refusal) => return Ok(Err(refusal)),
         }
-        match output_bytes(&report) {
-            Ok(output) if output == certificate.output => Ok(Ok(report)),
-            Ok(_) => Ok(Err(invalid(
-                "the scenario re-materialized but its diff differs from the certified one",
-            ))),
-            Err(refusal) => Ok(Err(refusal)),
+        if certificate.version == Version::LegacyV1 {
+            // The v1 format predates the protected replay law and was also
+            // emitted during its rollout. Only a successful, source-verified
+            // current replay whose exact bound output differs may reach this
+            // second reconstruction. Refusals above are never bypassed.
+            let legacy = match self.diff_view_with_replay(
+                view,
+                through,
+                &trunk,
+                &periods,
+                activity,
+                ScenarioReplay::LegacyCertificateV1,
+            )? {
+                Ok(report) => report,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            match matches(&legacy) {
+                Ok(true) => return Ok(Ok(legacy)),
+                Ok(false) => {}
+                Err(refusal) => return Ok(Err(refusal)),
+            }
         }
+        Ok(Err(invalid(
+            "the scenario re-materialized at a different replay or output than the one certified",
+        )))
     }
 
     /// Whether certifying the scenario now would reproduce this
@@ -517,6 +584,10 @@ impl Book {
         self.retain_replayed_scenario_diff(principal, capability, certificate, verified_at)
     }
 }
+
+#[cfg(test)]
+#[path = "certificate/replay_tests.rs"]
+mod replay_tests;
 
 #[cfg(test)]
 mod tests {

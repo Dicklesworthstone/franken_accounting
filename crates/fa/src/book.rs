@@ -34,7 +34,7 @@ use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::AsyncBook;
-use crate::async_book::{rooted_path, sync_file};
+use crate::async_book::{ScratchReplayMode, rooted_path, sync_file};
 
 /// The three secrets a book directory needs: the object-identity key, the
 /// security namespace, and the data-encryption key (the substrate's
@@ -1130,6 +1130,54 @@ impl Book {
         with_store!(&self.store, core => core.drafts(&self.purposes()))
     }
 
+    /// Plan the issuance of the retained statement certificate `certificate`
+    /// for `period` to `issued_to` (plan §12.5, Appendix B
+    /// `IssueStatements`, bead fa-wrrw): `close` and `read` are admitted
+    /// first; the certificate must be a trunk statement certificate of this
+    /// book reporting `period` (omit it when the certificate reports one).
+    /// Nothing is written; an approver who is not the planner approves the
+    /// plan's proposal digest, and [`Self::issue_statements`] commits it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan_statement_issuance(
+        &self,
+        capability: &fa_journal::Capability,
+        certificate: &[u8; 32],
+        period: Option<&str>,
+        issued_to: fa_journal::IssuedTo,
+        document: Option<fa_model::Oid>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::IssuancePlan> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.plan_statement_issuance(
+            &purposes, capability, certificate, period, issued_to, document, effective_date,
+            idempotency_key,
+        )))
+    }
+
+    /// Journal a planned statement issuance under `capability` and the cited
+    /// `approvals` (plan §12.5, bead fa-wrrw). The period's first issuance is
+    /// what `AS ORIGINALLY REPORTED` reads from then on.
+    pub fn issue_statements(
+        &mut self,
+        capability: &fa_journal::Capability,
+        plan: fa_journal::IssuancePlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<fa_journal::StatementsIssued> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.issue_statements(
+            &purposes, capability, plan, approvals,
+        )))
+    }
+
+    /// Every statement issuance of `period`, by ordinal, or of the book.
+    pub fn statement_issuances(
+        &self,
+        period: Option<&str>,
+    ) -> Result<Vec<fa_journal::IssuanceRecord>, BookError> {
+        with_store!(&self.store, core => core.statement_issuances(&self.purposes(), period))
+    }
+
     /// Open the production profile of `profile.matter` (plan §13.2, bead
     /// fa-6l9): its Bates prefix and first number, journaled once per matter.
     pub fn open_production(
@@ -1447,8 +1495,10 @@ impl Book {
 
     /// Replay this book's accounting history through `prefix` (head when
     /// `None`) into a fresh in-memory scratch book (plan §15.2): the same
-    /// objects, byte for byte, one scratch commit per source commit that
-    /// carries any, under the scratch book's own commit sequences. Returns
+    /// objects, byte for byte. Normally only accounting commits consume
+    /// scratch sequences. Prefixes containing native reconciliation claims
+    /// preserve their source coordinates with real no-op publications for
+    /// omitted maintenance, after verifying the source history. Returns
     /// the scratch book (its database opened with `keys`, sealing with
     /// `entropy`, its checkpoints signed with `keys`' checkpoint key) and
     /// the [`fa_journal::SeqMap`] binding the two histories. External
@@ -1460,6 +1510,38 @@ impl Book {
         keys: BookKeys,
         entropy: Entropy,
     ) -> Outcome<(Book, fa_journal::SeqMap)> {
+        self.replay_into_scratch_with_mode(
+            prefix,
+            keys,
+            entropy,
+            ScratchReplayMode::ProtectedCoordinates,
+        )
+    }
+
+    /// Reconstruct only a retained v1 scenario certificate's original
+    /// compressed coordinates. The caller must compare its exact map, head
+    /// and output; new materializations always use the public protected path.
+    pub(crate) fn replay_into_scratch_legacy_scenario_v1(
+        &mut self,
+        prefix: Option<CommitSeq>,
+        keys: BookKeys,
+        entropy: Entropy,
+    ) -> Outcome<(Book, fa_journal::SeqMap)> {
+        self.replay_into_scratch_with_mode(
+            prefix,
+            keys,
+            entropy,
+            ScratchReplayMode::LegacyScenarioV1,
+        )
+    }
+
+    fn replay_into_scratch_with_mode(
+        &mut self,
+        prefix: Option<CommitSeq>,
+        keys: BookKeys,
+        entropy: Entropy,
+        mode: ScratchReplayMode,
+    ) -> Outcome<(Book, fa_journal::SeqMap)> {
         let owner_token = keys.owner_token();
         let (scratch_runtime, scratch_root) = Self::runtime_and_root()?;
         let scratch_purposes = PurposeContexts::narrow_runtime_root(&scratch_root);
@@ -1468,13 +1550,34 @@ impl Book {
         })?;
         let replayed = match &mut self.store {
             Store::Memory(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
+                .block_on(core.replay_into_with_mode(
+                    &scratch_purposes,
+                    db,
+                    &keys,
+                    prefix,
+                    entropy,
+                    mode,
+                ))?
                 .map(|(copy, map)| (Store::Memory(copy), map)),
             Store::Dir(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
+                .block_on(core.replay_into_with_mode(
+                    &scratch_purposes,
+                    db,
+                    &keys,
+                    prefix,
+                    entropy,
+                    mode,
+                ))?
                 .map(|(copy, map)| (Store::ScratchDir(copy), map)),
             Store::ScratchDir(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
+                .block_on(core.replay_into_with_mode(
+                    &scratch_purposes,
+                    db,
+                    &keys,
+                    prefix,
+                    entropy,
+                    mode,
+                ))?
                 .map(|(copy, map)| (Store::ScratchDir(copy), map)),
         };
         let (store, map) = match replayed {
@@ -2029,7 +2132,8 @@ impl Book {
     }
 
     /// Where `AS ORIGINALLY REPORTED` pins `period_code`'s reads (plan §7.4):
-    /// its first Lock transition (no StatementIssuance is journaled yet).
+    /// the known-at of the certificate its first StatementIssuance issued,
+    /// else its first Lock transition.
     pub fn originally_reported(
         &self,
         period_code: &str,
@@ -3776,6 +3880,51 @@ impl Book {
         with_store!(&self.store, core => core.query(&purposes, |db, book| {
             Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
         }))
+    }
+
+    /// Install complete additive routes for period-end FX revaluation.
+    pub fn set_fx_revaluation_routes(
+        &mut self,
+        request: crate::FxRevaluationRoutesRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::FxRevaluationRoutesRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.set_fx_revaluation_routes(&purposes, request, capability)
+        ))
+    }
+
+    /// Read journaled FX routes at an effective date and recorded prefix.
+    pub fn fx_revaluation_routes_at(
+        &mut self,
+        effective_date: DateDay,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Option<crate::FxRevaluationRoutes>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.fx_revaluation_routes_at(&purposes, effective_date, known_at, capability)
+        ))
+    }
+
+    /// Derive a period-end adjustment from immutable exposure and carrying
+    /// values. Retain its PostIntent for review; ordinary planning and posting
+    /// independently reproduce the basis and guard publication.
+    pub fn prepare_fx_revaluation(
+        &mut self,
+        request: &crate::FxRevaluationRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::PreparedFxRevaluation> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_fx_revaluation(&purposes, request, capability, &mut budget)
+        ))
     }
 
     /// Install the complete effective-dated nominal-to-equity routing map.

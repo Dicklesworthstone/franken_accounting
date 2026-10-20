@@ -102,6 +102,10 @@ pub mod code {
     /// A production asks for another page count or designation for a
     /// document its matter already produced: a Bates range never changes.
     pub const BATES_RANGE_FIXED: &str = "FA-REF-171";
+    /// A statement issuance names a certificate this book does not retain,
+    /// one that is not a statement certificate, or one that does not report
+    /// the named period (plan §12.5, bead fa-wrrw).
+    pub const NOT_ISSUABLE: &str = "FA-REF-172";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

@@ -359,11 +359,11 @@ name = "statement"
 summary = "Balance sheet or income statement from exact journal folds under a registered definition, with optional period comparatives, retained replay certificates, and frontier diff/trace bridges."
 writes = true
 subcommands = []
-flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--render", "--out"]
-switches = ["--certify", "--as-originally-reported"]
-events = ["statement", "statement_diff", "statement_trace", "report_certificate", "rendered"]
-exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "statement balance-sheet|income-statement --for <period> [--compare <period>] --as-originally-reported [--certify]   (plan §7.4: the statement as it stood when its --for period was first reported, at the known-at of that period's first Lock transition (a StatementIssuance takes precedence once issuances are journaled); never its first Close, never HEAD. A --compare column is read at that same snapshot. A period with neither is refused with FA-REF-161. Cannot be combined with a known-at selector, diff, trace or certificate inputs.)","statement diff --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>]", "statement trace --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>] [--max-publications 1..=256]", "statement diff --before-certificate <C:oid|file|-> --after-certificate <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--certify]   (bridge two retained certificates of the same trunk statement selection at ordered frontiers; both replay in full first, and a certified comparison keeps those exact source certificates)", "statement trace --from-diff <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--max-publications 1..=256] --certify   (attribute a saved statement comparison to every intermediate publication; its original endpoint certificates are kept and the trace must reproduce the saved bridge)", "With certificate inputs, the certificates fix both frontiers: --before, --after and known-at selectors are refused. A stated --for, --compare or --definition is checked against the certificates (exit 8 when they answer a different statement), never used to re-select.", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.", "Add --render md|html|svg|pdf|pdfa to also render the statement as a document (not diff, trace or certificate-sourced statements) (fa-cet): md returns the Markdown inline unless --out <new-file> names a file; html, svg, pdf and pdfa write --out <new-file> (never overwriting) and are dated by the latest corroborated TimeEvidence tick known at the report's frontier, never the wall clock, so the same report renders to the same bytes whenever it is rendered; a book with no such tick renders md only (exit 4 otherwise). pdfa is checked by the built-in PDF/A-2b validator before it is written. The rendered event names the IR digest, the file digest and the tick."]
+flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--certificate", "--issued-to", "--document", "--key", "--date", "--plan", "--approval", "--render", "--out"]
+switches = ["--certify", "--as-originally-reported", "--dry-run"]
+events = ["statement", "statement_diff", "statement_trace", "report_certificate", "statement_issuance_plan", "statement_issued", "statement_issuances", "rendered"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "statement balance-sheet|income-statement --for <period> [--compare <period>] --as-originally-reported [--certify]   (plan §7.4: the statement as it stood when its --for period was first reported: at the known-at of the certificate the period's first StatementIssuance issued, else at its first Lock transition; never its first Close, never HEAD. A --compare column is read at that same snapshot. A period with neither is refused with FA-REF-161. Cannot be combined with a known-at selector, diff, trace or certificate inputs.)", "statement diff --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>]", "statement trace --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>] [--max-publications 1..=256]", "statement diff --before-certificate <C:oid|file|-> --after-certificate <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--certify]   (bridge two retained certificates of the same trunk statement selection at ordered frontiers; both replay in full first, and a certified comparison keeps those exact source certificates)", "statement trace --from-diff <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--max-publications 1..=256] --certify   (attribute a saved statement comparison to every intermediate publication; its original endpoint certificates are kept and the trace must reproduce the saved bridge)", "With certificate inputs, the certificates fix both frontiers: --before, --after and known-at selectors are refused. A stated --for, --compare or --definition is checked against the certificates (exit 8 when they answer a different statement), never used to re-select.", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.", "statement issue --certificate C:<oid> [--for <period>] --issued-to board|auditor|lender|regulator|sec|tax-authority|other [--document <oid>] [--key K] [--date YYYY-MM-DD] --dry-run   (plan §12.5, IssueStatements: plans the StatementIssuance of a retained trunk statement certificate for the period it reports (--for may be omitted when it reports one) at the period's next ordinal; needs close and read; writes nothing. An approver who is not the planner runs fa approve --proposal <proposal_digest>.)", "statement issue --plan <file|-> --approval <vid>...   (journals exactly the planned issuance under close and read with one independent Human approval; the plan's ordinal must still be the period's next (exit 6 otherwise: plan again). The period's first issuance is what --as-originally-reported reads from then on; a later issuance never moves it. The same plan committed again returns the recorded issuance.)", "statement issuances [--for <period>]   (every journaled issuance of the period, by ordinal, or of the book)", "Add --render md|html|svg|pdf|pdfa to also render the statement as a document (not diff, trace or certificate-sourced statements) (fa-cet): md returns the Markdown inline unless --out <new-file> names a file; html, svg, pdf and pdfa write --out <new-file> (never overwriting) and are dated by the latest corroborated TimeEvidence tick known at the report's frontier, never the wall clock, so the same report renders to the same bytes whenever it is rendered; a book with no such tick renders md only (exit 4 otherwise). pdfa is checked by the built-in PDF/A-2b validator before it is written. The rendered event names the IR digest, the file digest and the tick."]
 example = "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --certify --book ./books/myco --json"
 
 [[verb]]
@@ -561,14 +561,14 @@ example = "fa finding record jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
 name = "fx"
-summary = "Retain exact typed Rate evidence for functional-currency posting; no uploaded rate claims provider authentication."
+summary = "Retain exact Rate evidence, journal revaluation routes, and review or post source-derived period-end FX adjustments."
 writes = true
-subcommands = ["rate"]
-flags = ["--from-json", "--grant"]
-switches = []
-events = ["fx_rate_added"]
+subcommands = ["rate", "routes", "revalue"]
+flags = ["--from-json", "--grant", "--route", "--effective-from", "--key", "--description", "--as-of", "--as-known-at", "--period", "--account", "--rate", "--entity", "--evidence", "--approval", "--review", "--review-out", "--digest", "--plan-out"]
+switches = ["--dry-run", "--review-only"]
+events = ["fx_rate_added", "fx_routes_recorded", "fx_routes", "fx_revaluation_reviewed", "fx_revaluation_noop", "plan", "posted", "recorded"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["fx rate add --from-json <rate.json|->", "Rate JSON fields: base_unit (functional currency code), quote_unit (foreign currency code), rate_num and rate_den (positive exact decimal integer strings, at most u128), rounding (registered law name), as_of (YYYY-MM-DD), retrieved_at_ns (nonnegative u64 integer), purpose (spot_close | period_average | period_close | settlement), and source (uploader's source description). The ratio states functional-currency units per one foreign-currency unit. Unknown and repeated fields, floats, zero denominators and unknown units refuse.", "The existing authenticated intake path derives HumanUpload or AgentUpload. Source and retrieval metadata are uploaded assertions, never a verified provider transcript or trusted clock. A retry preserves the original uploader's evidence grade and receipt. Admission precedes host-file or stdin consumption. MCP uses the on-demand fa.fx cluster with action add and inline rate JSON; host paths are refused.", "For a valued posting, fa post --intent <entry.json|-> accepts fx: {law: SpotClose | PeriodAverage, rates: [D:<retained-Rate-oid>, ...]}. JSON string values must be quoted. The facade reads complete governed Rate documents and computes base amounts; the posting kernel independently recomputes them inside its transaction. Caller-supplied base_amount and base_totals refuse. Current read and post authority are required; a bound capability is never widened.", "SpotClose uses spot_close evidence as of the entry's effective date. PeriodAverage uses period_average evidence as of the last included day of the actual posting period. Both live laws require HalfEven rounding. A Reversal inherits its target's exact valuation and retained Rate evidence and cannot supply a new fx selection; an explicit later SpotClose reversal date must satisfy native rate-date law.", "Read functional stock with fa tb --functional --period <one code> or --as-of YYYY-MM-DD; add --activity with one period for movement only. Optional --as-known-at HEAD|<seq>|<RFC3339> fixes the retained prefix. Stock includes opening history across fiscal years. Posted and outstanding pending columns stay separate; foreign legs lacking committed base valuations refuse. These reads do not revalue entries or issue certificates; summary, fiscal-year, scenario, original-report and certification options refuse. Current whole-book read authority is checked even for historical prefixes."]
+usage = ["fx rate add --from-json <rate.json|->", "Rate JSON fields: base_unit (functional currency code), quote_unit (foreign currency code), rate_num and rate_den (positive exact decimal integer strings, at most u128), rounding (registered law name), as_of (YYYY-MM-DD), retrieved_at_ns (nonnegative u64 integer), purpose (spot_close | period_average | period_close | settlement), and source (uploader's source description). The ratio states functional-currency units per one foreign-currency unit. Unknown and repeated fields, floats, zero denominators and unknown units refuse.", "The existing authenticated intake path derives HumanUpload or AgentUpload. Source and retrieval metadata are uploaded assertions, never a verified provider transcript or trusted clock. A retry preserves the original uploader's evidence grade and receipt. Admission precedes host-file or stdin consumption. MCP uses the on-demand fa.fx cluster with action add and inline rate JSON; host paths are refused.", "For a valued posting, fa post --intent <entry.json|-> accepts fx: {law: SpotClose | PeriodAverage, rates: [D:<retained-Rate-oid>, ...]}. JSON string values must be quoted. The facade reads complete governed Rate documents and computes base amounts; the posting kernel independently recomputes them inside its transaction. Caller-supplied base_amount and base_totals refuse. Current read and post authority are required; a bound capability is never widened.", "SpotClose uses spot_close evidence as of the entry's effective date. PeriodAverage uses period_average evidence as of the last included day of the actual posting period. Both live laws require HalfEven rounding. A Reversal inherits the original entry's exact valuation, Rate evidence and residual and cannot supply a new fx selection. SpotClose and PeriodAverage reversals may post on a later lawful date or period: native admission verifies the original valuation date and period through the exact retained reversal chain. The new posting date still governs period admission, account effectivity and approvals.", "Read functional stock with fa tb --functional --period <one code> or --as-of YYYY-MM-DD; add --activity with one period for movement only. Optional --as-known-at HEAD|<seq>|<RFC3339> fixes the retained prefix. Stock includes opening history across fiscal years. Posted and outstanding pending columns stay separate; foreign legs lacking committed base valuations refuse. These reads do not revalue entries or issue certificates; summary, fiscal-year, scenario, original-report and certification options refuse. Current whole-book read authority is checked even for historical prefixes.", "fx routes set --route <source-code>:<valuation-code>:<unrealized-code>... --effective-from YYYY-MM-DD --key K [--description TEXT]   (complete additive map; read and schema_change required; sources are single foreign-currency Asset/Liability leaves, dedicated unused valuation leaves use the base currency and same account type)", "fx routes show --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>]", "fx revalue --period <normal-period> --account <source-code> --rate D:<closing-rate-oid> --key K [--entity <legal-entity-code>] [--description TEXT] [--evidence <oid>]... [--review-only | --review-out <new-file> | --dry-run [--plan-out <new-file>] | --yes]", "fx revalue --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--dry-run [--plan-out <new-file>] | --yes]   (restore unchanged PostIntent bytes; independent approvals name proposal_digest)", "Revaluation derives cumulative foreign exposure and functional carrying values from immutable entries, including prior verified adjustments. PeriodClose evidence uses the actual Normal period's last included date and HalfEven. Native foreign amounts never change; only the signed difference is posted between the registered valuation and unrealized leaves. An exact zero difference publishes nothing. An old recorded review retry returns its original outcome; relevant source or route drift invalidates an unposted review.", "This revaluation workflow requires current whole-book read/post authority and full governed Rate access. Closed periods retain normal post_closed authority and independent approval. Multiple legal entities require an explicit entity. General dimensions, limited accounts, AnyCurrency source exposure, atomic batches, draft promotion and reversing a revaluation are refused; corrections use another source-derived delta. Manual postings to a dedicated valuation leaf make revaluation refuse, including offsetting pairs.", "Native --dry-run plans write nothing. Commit exact plan bytes with fa commit --plan <file|-> --grant read and the same holder and grants. Review is a proposed calculation, not a certificate, approval or posting permit."]
 example = "fa fx rate add --from-json rate.json --book ./books/myco --json"
 
 [[verb]]
@@ -809,6 +809,12 @@ condition = "always"
 safe = "prepare the exact closing proposal with --review-only, or rehearse its native posting with --dry-run; inspect the nominal residuals and obtain any required independent approval before committing"
 
 [[dangerous]]
+verb = "fx"
+subcommand = "revalue"
+condition = "always"
+safe = "prepare the source-derived adjustment with --review-only or rehearse the native --dry-run plan; inspect the signed carrying values and retained closing Rate before committing"
+
+[[dangerous]]
 verb = "period"
 subcommand = "close"
 condition = "always"
@@ -1031,6 +1037,35 @@ name = "fx_rate_added"
 book = true
 doc = "One canonical typed Rate document retained through authenticated upload. The exact rational is functional-currency units per foreign-currency unit. Its source and retrieved_at_ns are uploader assertions, with no implied provider or clock authentication. Exact retries preserve the original grade, commitment and receipt."
 fields = ["oid:hex", "doc_commit:hex", "kind:string", "grade:string", "size:int", "recorded_at:seq", "already_recorded:bool", "base_unit:string", "quote_unit:string", "rate_num:string", "rate_den:string", "rounding:string", "as_of:date", "retrieved_at_ns:int", "purpose:string"]
+
+[[event]]
+name = "fx_routes_recorded"
+book = true
+doc = "A complete additive FX route map retained as a native SchemaChange. Established source, dedicated valuation and unrealized destinations cannot be reassigned. Exact semantic retries retain the original control and publish nothing."
+fields = ["effective_from:date", "routes:int", "control_entry:hex", "recorded_at:seq", "digest:hex", "already_recorded:bool"]
+
+[[event]]
+name = "fx_routes"
+book = true
+doc = "Applicable FX routing at one effective date and retained prefix under current whole-book authority. Account names and route identities come from the same selected prefix. found=false has null optional headers and empty routes."
+fields = ["as_of:date", "known_at:seq", "found:bool", "effective_from:date?", "control_entry:hex?", "recorded_at:seq?", "digest:hex?", "routes:[fx_revaluation_route]"]
+
+[[shape]]
+name = "fx_revaluation_route"
+doc = "One foreign Asset/Liability source and its exclusively assigned same-type functional-currency valuation leaf and Revenue/Expense unrealized destination."
+fields = ["account:string", "account_vid:hex", "valuation_account:string", "valuation_vid:hex", "unrealized_account:string", "unrealized_vid:hex"]
+
+[[event]]
+name = "fx_revaluation_reviewed"
+book = true
+doc = "An unexecuted source-bound PeriodEndRevaluation PostIntent. Signed net amounts are debit less credit; target minus current carrying gives delta. Carrying includes original committed base valuations plus verified prior adjustments through closing_date. Rate, routing and complete exposure witnesses are reproduced by native admission. Review bytes preserve sealed fields across independent approval commits; review_digest authenticates these bytes and proposal_digest is the approval subject. This is neither a PostPlan nor posting permission."
+fields = ["period:string", "closing_date:date", "known_at:seq", "account:string", "account_vid:hex", "entity:hex?", "rate_document:hex", "routes_entry:hex", "routes_digest:hex", "source_digest:hex", "source_native_net:amount", "source_base_net:amount", "prior_adjustment_net:amount", "current_carrying_net:amount", "target_base_net:amount", "delta:amount", "legs:[plan_leg]", "review_digest:hex", "proposal_digest:hex", "bytes:hex", "file:string?", "scope:string"]
+
+[[event]]
+name = "fx_revaluation_noop"
+book = true
+doc = "The source's committed functional carrying value already equals its retained closing-rate target. No monetary entry, review, plan, approval or metadata was published. Signed amounts remain debit less credit, including liabilities."
+fields = ["period:string", "closing_date:date", "known_at:seq", "account:string", "account_vid:hex", "entity:hex?", "source_native_net:amount", "current_carrying_net:amount", "target_base_net:amount", "reason:string"]
 
 [[event]]
 name = "bank_imported"
@@ -1393,6 +1428,24 @@ name = "rendered"
 book = true
 doc = "A report rendered as a document by --render (fa-cet), from its deterministic Markdown IR. ir_digest commits the IR (the report's rows, units, frontier and definition); digest is BLAKE3(\"fa:rendering-file:v1\" || bytes) of the exact document; out is the new file written (null when Markdown travels inline in markdown). created and tick name the latest corroborated TimeEvidence tick known at the report's frontier that dates HTML, SVG and PDF output (null for Markdown, which carries no date); the same report at the same frontier renders to the same bytes. pdfa_valid is true when a PDF/A-2b passed the built-in validator before it was written (null otherwise). No GAAP conformity or signature is implied."
 fields = ["format:string", "ir_digest:hex", "digest:hex", "bytes:int", "out:string?", "created:string?", "tick:hex?", "pdfa_valid:bool?", "markdown:string?"]
+
+[[event]]
+name = "statement_issuance_plan"
+book = true
+doc = "A statement issuance was planned (plan §12.5, IssueStatements); nothing was written. The issuance names the retained statement certificate, the period it reports, its known-at (certified_at) and the audience, at the period's next ordinal. bytes is the complete canonical IssuancePlan in hex, with its description sealed once; approvals bind proposal_digest. Scope is statement-issuance-proposal: commit checks authority, approvals, the certificate and the ordinal again."
+fields = ["issuance:statement_issuance", "principal:hex", "proposal_digest:hex", "bytes:hex", "scope:string"]
+
+[[event]]
+name = "statement_issued"
+book = true
+doc = "A StatementIssuance was journaled by an IssuanceControl record (or the same plan was already committed: then nothing was written). The period's first issuance (ordinal 1) is what AS ORIGINALLY REPORTED reads: its certificate's certified_at."
+fields = ["issuance:statement_issuance", "already_recorded:bool"]
+
+[[event]]
+name = "statement_issuances"
+book = true
+doc = "Every journaled statement issuance of the period, by ordinal, or of the book, by period then ordinal."
+fields = ["period:string?", "issuances:[statement_issuance]"]
 
 [[event]]
 name = "summary_trial_balance"
@@ -2634,7 +2687,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book", "--token"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at"]
 
@@ -2679,7 +2732,7 @@ doc = "Evidence: record a source document, content-addressed, so an entry can ci
 [[mcp.cluster]]
 name = "fa.fx"
 on_demand = true
-doc = "Foreign-currency evidence: retain typed uploaded Rate documents for source-valued posting. Rates retain the authenticated uploader's grade; no provider or clock provenance is inferred. Functional activity is read through fa_read_trial_balance."
+doc = "Retained FX evidence, effective revaluation routes, and source-derived period-end adjustments. Rates retain the authenticated uploader's grade. Functional stock and activity are read through fa_read_trial_balance; revaluation review preserves exact PostIntent bytes for native admission."
 
 [[mcp.cluster]]
 name = "fa.rea"
@@ -3256,6 +3309,30 @@ dont = ["Use action add and supply the complete typed source object inline as ra
 mistakes = ["Supplying a raw rate or caller-computed base_amount in a posting intent instead of a retained Rate document.", "Treating an uploaded rate as a verified provider quote, or a duplicate upload as a grade promotion."]
 
 [[mcp.tool]]
+cluster = "fa.fx"
+name = "routes"
+verb = "fx"
+subcommands = ["routes"]
+positionals = ["action"]
+flags = ["--route", "--effective-from", "--key", "--description", "--as-of", "--as-known-at"]
+switches = []
+required = ["action"]
+dont = ["Use action show with as_of to read the registered source, valuation and unrealized account routes at one retained prefix. Historical selection still requires current whole-book read authority.", "Action set requires current read and schema_change authority and a complete additive map. Launch-bound sessions cannot add grants or change profile; an independently authorized operator installs routes on the host."]
+mistakes = ["Reusing a valuation leaf for a second source or attempting to reassign an established route.", "Supplying a route with a previously used valuation account, an AnyCurrency source or a balance-limited account; these require a separate declared treatment."]
+
+[[mcp.tool]]
+cluster = "fa.fx"
+name = "revalue"
+verb = "fx"
+subcommands = ["revalue"]
+positionals = []
+flags = ["--period", "--account", "--rate", "--key", "--entity", "--description", "--evidence", "--approval", "--review", "--digest"]
+switches = ["--review-only", "--dry-run"]
+required = []
+dont = ["Prepare with period, account, rate (retained D:oid), key and review_only:true. A multi-entity book also requires entity. The journal supplies exposure and carrying values; do not supply balances or computed legs. Rate must be PeriodClose with the live law's rounding and actual period-end date.", "Rehearse unchanged review bytes with review as a hex string, its review_digest in digest, any required independent approval references, and dry_run:true. Current read/post authority, full governed Rate access, evidence grade, period law and profile restrictions still apply. MCP cannot supply dangerous confirmation; an authorized operator commits the exact reviewed proposal on the host with fa fx revalue --review <hex> --digest <review_digest> --yes. Review grants no posting permission.", "This workflow supports registered single foreign-currency Asset/Liability sources in Normal periods and legal-entity dimensions only. Draft promotion, atomic batching and reversal of a revaluation are currently refused. A later revaluation posts only the remaining delta; zero delta publishes nothing."]
+mistakes = ["Using host review/plan paths; MCP accepts inline hex and returns review/plan bytes inline.", "Regenerating sealed review bytes after obtaining an approval, or interpreting a signed liability delta as an unsigned gain.", "Posting directly to a dedicated valuation leaf: unrelated entries make revaluation refuse, even if they later net to zero."]
+
+[[mcp.tool]]
 cluster = "fa.bank"
 name = "import"
 verb = "bank"
@@ -3560,6 +3637,7 @@ verb = "statement"
 subcommands = []
 positionals = ["name"]
 flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--render"]
+switches = ["--certify", "--as-originally-reported"]
 required = ["name", "--for"]
 dont = ["Use name balance-sheet or income-statement (or diff|trace with definition and before), for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate, including diff and trace, and replay it with fa_read_replay. Certified comparisons and traces require read and produce on the launch capability. certificate_out is forbidden; certificate bytes and oid are returned inline.", "To compare two statements already certified (for example as reported then and as stated now), use name diff with before_certificate and after_certificate set to their C:<oid> values and for (plus compare) naming the statement they certify; the certificates fix both frontiers, so omit before, after and known_at, and a for, compare or definition they do not answer is refused. To attribute a saved comparison to each intermediate publication, use name trace with from_diff set to its C:<oid>, the same for, and certify: true.", "Use render: md to also receive the statement as Markdown inline (a rendered item after the report; not for diff or trace). html, svg, pdf and pdfa write files and are host-only: MCP exposes no out host-file write."]
 mistakes = ["Omitting for, passing multiple for or compare periods, or using a date where a period code is required.", "Supplying known_at and as_known_at together: they name the same selector.", "Treating a later-period comparative as a different known-at snapshot; use a separate statement call for that question.", "Passing a file path as a certificate input: MCP accepts retained C:<oid> values only."]
@@ -3878,6 +3956,11 @@ doc = "A bundle-scoped production's evidence bundle: its digest, the recorded ch
 fields = ["digest:hex", "checkpoint:hex", "checkpoint_public_key:hex", "verify:string"]
 
 [[shape]]
+name = "statement_issuance"
+doc = "One statement issuance: its vertex, period and ordinal, the statement definition, the retained certificate it issued with that certificate's known-at (certified_at), the audience and the optional transmittal document. control_entry, recorded_at, principal and approvals are those of its IssuanceControl record, null in a plan."
+fields = ["issuance:hex", "period:string", "ordinal:int", "definition:string", "definition_version:int", "definition_digest:hex", "certificate:hex", "certified_at:seq", "issued_to:string", "document:hex?", "control_entry:hex?", "recorded_at:seq?", "principal:hex?", "approvals:int?"]
+
+[[shape]]
 name = "production_file"
 doc = "One file written into the production volume directory: its path inside the volume, size and BLAKE3 digest under fa:production-file:v1."
 fields = ["name:string", "bytes:int", "digest:hex"]
@@ -3922,6 +4005,13 @@ verbs = ["statement"]
 subcommands = ["diff", "trace"]
 when_any = ["--certify", "--certificate-out"]
 ops = ["read", "produce"]
+
+# A statement issuance (fa-wrrw) is planned and committed by its preparer
+# under close: an issuance takes the authority of the Lock it supersedes.
+[[bound]]
+verbs = ["statement"]
+subcommands = ["issue"]
+ops = ["read", "close"]
 
 [[bound]]
 verbs = ["gl"]
@@ -3994,6 +4084,13 @@ ops = ["read"]
 [[bound]]
 verbs = ["statement"]
 when_any = ["--before-certificate", "--after-certificate", "--from-diff"]
+ops = ["read"]
+
+# Statement issuances (fa-wrrw) are book metadata: listing them reaches the
+# whole book.
+[[bound]]
+verbs = ["statement"]
+subcommands = ["issuances"]
 ops = ["read"]
 
 # A statement's columns reach what their basis folds: a stock basis through
@@ -4073,6 +4170,24 @@ verbs = ["fx"]
 subcommands = ["rate"]
 args = ["add"]
 ops = ["post"]
+
+[[bound]]
+verbs = ["fx"]
+subcommands = ["routes"]
+args = ["show"]
+ops = ["read"]
+reach = "judged"
+
+[[bound]]
+verbs = ["fx"]
+subcommands = ["routes"]
+args = ["set"]
+ops = ["read", "schema_change"]
+
+[[bound]]
+verbs = ["fx"]
+subcommands = ["revalue"]
+ops = ["read", "post"]
 
 [[bound]]
 verbs = ["production"]

@@ -217,7 +217,9 @@ impl ReportArtifact {
             Artifact::AgingPortfolio(Box::new(AgingPortfolioCertificate::decode(bytes)?))
         } else if format == crate::cash_flow_split::CASH_FLOW_SPLIT_CERTIFICATE_FORMAT.as_bytes() {
             Artifact::SplitCashFlow(Box::new(CashFlowSplitCertificate::decode(bytes)?))
-        } else if format == crate::SCENARIO_DIFF_CERTIFICATE_FORMAT {
+        } else if format == crate::SCENARIO_DIFF_CERTIFICATE_FORMAT
+            || format == crate::LEGACY_SCENARIO_DIFF_CERTIFICATE_FORMAT
+        {
             Artifact::ScenarioDiff(Box::new(crate::ScenarioDiffCertificate::decode(bytes)?))
         } else if format == crate::cash_flow_policy::CASH_FLOW_POLICY_CERTIFICATE_FORMAT {
             let certificate = CashFlowPolicyCertificate::decode(bytes)?;

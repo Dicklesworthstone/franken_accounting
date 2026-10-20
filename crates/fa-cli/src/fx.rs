@@ -68,15 +68,25 @@ pub(crate) fn admit_intent_sources(
 }
 
 pub(crate) fn fx_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    if args
+    match args
         .positional
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>()
-        != ["fx", "rate", "add"]
+        .as_slice()
     {
-        return Err(usage("expected `fa fx rate add`", RATE_USAGE));
+        ["fx", "routes", "set"] => return crate::fx_revaluation::set_routes(ctx, args),
+        ["fx", "routes", "show"] => return crate::fx_revaluation::show_routes(ctx, args),
+        ["fx", "revalue"] => return crate::fx_revaluation::revalue(ctx, args),
+        ["fx", "rate", "add"] => {}
+        _ => {
+            return Err(usage(
+                "FX operations are rate add, routes set, routes show and revalue",
+                RATE_USAGE,
+            ));
+        }
     }
+    crate::fx_revaluation::options(args, &["--from-json"], &[])?;
     if args.flag_all("--from-json").len() != 1 {
         return Err(usage("supply exactly one --from-json source", RATE_USAGE));
     }

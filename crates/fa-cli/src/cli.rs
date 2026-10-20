@@ -1822,7 +1822,8 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             | "bill"
             | "receipt"
             | "payment"
-    ) || (verb == "close" && args.positional.get(1).map(String::as_str) == Some("year-end")))
+    ) || (verb == "close" && args.positional.get(1).map(String::as_str) == Some("year-end"))
+        || (verb == "fx" && args.positional.get(1).map(String::as_str) == Some("revalue")))
         && (args.switch("--dry-run")
             || args.switch("--review-only")
             || args.flag("--review-out").is_some())
@@ -9811,8 +9812,23 @@ pub(crate) fn render_summary_trial_balance(
 fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
         return Err(usage(
-            "statement needs a registered definition name or diff|trace",
+            "statement needs a registered definition name, diff|trace, or issue|issuances",
             "fa statement balance-sheet|income-statement --for <period> [--compare <period>] --json",
+        ));
+    }
+    // Statement issuance (plan §12.5, bead fa-wrrw).
+    match args.positional[1].as_str() {
+        "issue" => return crate::issuance::issue(ctx, args),
+        "issuances" => return crate::issuance::issuances(ctx, args),
+        _ => {}
+    }
+    if let Some(flag) = crate::issuance::ISSUE_ONLY
+        .iter()
+        .find(|flag| crate::issuance::present(args, flag))
+    {
+        return Err(usage(
+            format!("{flag} applies only to `fa statement issue`, never to a statement report"),
+            "fa statement issue --certificate C:<oid> --issued-to <audience> --dry-run --json",
         ));
     }
     for flag in [

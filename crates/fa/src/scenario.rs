@@ -31,10 +31,20 @@ mod certificate;
 
 pub use certificate::{
     CERTIFICATE_FORMAT as SCENARIO_DIFF_CERTIFICATE_FORMAT, CertifiedScenarioDiff,
+    LEGACY_CERTIFICATE_FORMAT as LEGACY_SCENARIO_DIFF_CERTIFICATE_FORMAT,
     OUTPUT_FORMAT as SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioDiffCertificate,
 };
 
 const INTENTS_DOMAIN: &[u8] = b"fa:scenario-intents:v1";
+
+/// The ordinary replay preserves the native coordinates needed by bank
+/// closes. Compressed replay exists only to reproduce an older v1
+/// certificate; it never selects the policy for a new scenario result.
+#[derive(Clone, Copy)]
+enum ScenarioReplay {
+    Protected,
+    LegacyCertificateV1,
+}
 
 /// A scenario's materialization: a scratch replay of its trunk prefix plus
 /// its intents.
@@ -153,12 +163,30 @@ impl Book {
     /// intents, in planning order (all of them except when a certificate
     /// replays the prefix it covered).
     fn materialize(&mut self, view: ScenarioView, through: usize) -> Outcome<ScenarioBook> {
+        self.materialize_with_replay(view, through, ScenarioReplay::Protected)
+    }
+
+    fn materialize_with_replay(
+        &mut self,
+        view: ScenarioView,
+        through: usize,
+        replay: ScenarioReplay,
+    ) -> Outcome<ScenarioBook> {
         let keys = BookKeys::generate(&Entropy::production())?;
-        let (mut book, map) =
-            match self.replay_into_scratch(Some(view.body.fork_at), keys, Entropy::production())? {
-                Ok(replayed) => replayed,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let replayed = match replay {
+            ScenarioReplay::Protected => {
+                self.replay_into_scratch(Some(view.body.fork_at), keys, Entropy::production())?
+            }
+            ScenarioReplay::LegacyCertificateV1 => self.replay_into_scratch_legacy_scenario_v1(
+                Some(view.body.fork_at),
+                keys,
+                Entropy::production(),
+            )?,
+        };
+        let (mut book, map) = match replayed {
+            Ok(replayed) => replayed,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let mut entries = Vec::with_capacity(through);
         for (i, planned) in view.intents.iter().take(through).enumerate() {
             match book.post(scratch_request(
@@ -277,8 +305,27 @@ impl Book {
         periods: &[String],
         activity: bool,
     ) -> Outcome<ScenarioDiff> {
+        self.diff_view_with_replay(
+            view,
+            through,
+            trunk,
+            periods,
+            activity,
+            ScenarioReplay::Protected,
+        )
+    }
+
+    fn diff_view_with_replay(
+        &mut self,
+        view: ScenarioView,
+        through: usize,
+        trunk: &TrialBalance,
+        periods: &[String],
+        activity: bool,
+        replay: ScenarioReplay,
+    ) -> Outcome<ScenarioDiff> {
         let fork_at = view.body.fork_at;
-        let scenario = match self.materialize(view, through)? {
+        let scenario = match self.materialize_with_replay(view, through, replay)? {
             Ok(scenario) => scenario,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -315,9 +362,12 @@ impl Book {
 }
 
 /// An intent as the scratch book posts it: under an embedded capability of
-/// its planner holding `post`, and `reconcile` only when that planner's
-/// admitted capability carries it. The planner's own authority (ops, ceilings,
-/// scope caveats, currency and revocation) was admitted on trunk when the
+/// its planner holding only the posting operations that planner actually
+/// carried: `post`, `post_softclosed`, `post_closed` and `reconcile`. Period
+/// exceptions and protected cash therefore retain their native admission
+/// without granting close, restatement or any unrelated authority. The
+/// planner's own authority (ops, ceilings, scope caveats, currency and
+/// revocation) was admitted on trunk when the
 /// intent was recorded, as a dry run of it is. The scratch book is the
 /// scenario's review copy, where an Agent's trunk-write denial (a rule about
 /// the real trunk) does not apply; every posting law does, and the intent's
@@ -329,12 +379,20 @@ fn scratch_request(
     planner: &fa_journal::Capability,
 ) -> Result<PostRequest, BookError> {
     let principal = intent.proposal().principal_ref;
-    let ops = if planner.ops().contains(&fa_policy::Op::Reconcile) {
-        &["post", "reconcile"][..]
-    } else {
-        &["post"][..]
-    };
-    let capability = fa_journal::Capability::embedded(principal, ops)
+    // These are the only additional operations used by the batchable
+    // posting classes. A Closing or Restatement intent cannot enter a
+    // scenario, so their more powerful operations are never copied.
+    let ops: Vec<&str> = [
+        fa_policy::Op::Post,
+        fa_policy::Op::PostSoftclosed,
+        fa_policy::Op::PostClosed,
+        fa_policy::Op::Reconcile,
+    ]
+    .into_iter()
+    .filter(|op| planner.ops().contains(op))
+    .map(fa_policy::Op::name)
+    .collect();
+    let capability = fa_journal::Capability::embedded(principal, &ops)
         .map_err(|e| BookError::Kernel(fa_journal::KernelError::Corrupt(e.to_string())))?;
     let approvals = intent.approvals().to_vec();
     Ok(PostRequest {

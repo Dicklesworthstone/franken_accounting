@@ -39,3 +39,10 @@ appendix_a = "Effective-dated Account closes_to routes (plan §7.5)"
 code_type = "fa-journal::chart::closing::ClosingRoutes; SchemaChange subkind 12"
 rationale = "One canonical SchemaChange entry retains the complete sorted Revenue/Expense-to-Equity route map, effective date and digest. Chart replay validates the complete map at its recorded point; historical selection uses both effective date and recorded prefix. The write witnesses account definitions, schema controls and current policy/capability authority in its own native transaction. It never rewrites Account canonical fields or a shared mutable routing head. SchemaChange subkind 12 is distinct from the existing scenario ControlKind 12 and period-creation SchemaChange subkind 13."
 tracking_bead = "fa-4o0"
+
+[[decision]]
+field = "SchemaChange.kind=14"
+appendix_a = "Registered Valuation and unrealized FX routes (plan §5.2, §12.4)"
+code_type = "fa-journal::chart::FxRevaluationRoutes; SchemaChange subkind 14"
+rationale = "Canonical version-1 FA-FX-ROUTES bytes retain effective date, the book base-unit id and a complete sorted source/valuation/unrealized map. Foreign Single-unit Asset/Liability sources have distinct same-type Single-base valuation leaves and Single-base Revenue/Expense destinations; leaves have no balance limits. Updates may add sources but cannot remove or reassign an established triple. A valuation leaf is exclusive to one source and must have no earlier posting history when first assigned. Current whole-book Read plus SchemaChange authority and a complete-frontier commit guard protect the configuration. Fixed-prefix chart replay checks declaration order and historical selection."
+tracking_bead = "fa-3ock"
