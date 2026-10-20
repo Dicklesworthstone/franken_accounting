@@ -2481,6 +2481,19 @@ impl Book {
         ))
     }
 
+    /// A statement comparison's bounded review package (JSONL and Markdown),
+    /// only after the comparison and both of its sources replay.
+    pub fn statement_diff_workpaper(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::StatementDiffCertificate,
+    ) -> Outcome<crate::StatementDiffWorkpaper> {
+        with_store!(&self.store, core => core.statement_diff_workpaper(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
     /// Produce a historical account lead schedule under current whole-book read authority.
     pub fn roll_forward(
         &self,
