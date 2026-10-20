@@ -847,6 +847,52 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         "a portfolio never replays without its request: {output}"
     );
     assert!(output.contains("--expect"), "{output}");
+    // An agent reconciles from saved sources by their oids: an aging and a
+    // stock trial balance certified at one prefix are reused byte-for-byte.
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_proof_gl",
+        json!({"view": "aging", "account": "1000", "as_of": "2026-03-31", "bucket": ["0", "30", "60"], "certify": true}),
+    );
+    assert!(!error, "{output}");
+    let aged: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    let prefix = aged[0]["known_at"].to_string();
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_trial_balance",
+        json!({"as_of": "2026-03-31", "as_known_at": prefix, "certify": true}),
+    );
+    assert!(!error, "{output}");
+    let control: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    let question = json!({
+        "view": "aging", "reconcile": true, "account": "1000", "as_of": "2026-03-31",
+        "bucket": ["0", "30", "60"], "as_known_at": prefix,
+    });
+    let (error, plain, _) = call_tool(&mut producer, "fa_proof_gl", question.clone());
+    assert!(!error, "{plain}");
+    let mut saved = question.clone();
+    saved["aging_certificate"] = json!(format!("C:{}", aged[1]["oid"].as_str().unwrap()));
+    saved["control_certificate"] = json!(format!("C:{}", control[1]["oid"].as_str().unwrap()));
+    saved["certify"] = json!(true);
+    let (error, output, _) = call_tool(&mut producer, "fa_proof_gl", saved.clone());
+    assert!(!error, "{output}");
+    let reconciled: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    let plain: JsonValue = fastmcp_rust::serde_json::from_str(&plain).unwrap();
+    assert_eq!(
+        reconciled[0], plain,
+        "the saved sources answer the same question"
+    );
+    assert_eq!(
+        reconciled[1]["output_format"],
+        json!("fa:aging-control-reconciliation:v1")
+    );
+    saved["control_certificate"] = json!(chart.to_str().unwrap());
+    let (error, output, _) = call_tool(&mut producer, "fa_proof_gl", saved);
+    assert!(error, "{output}");
+    assert!(
+        output.contains("--control-certificate cannot name a host filesystem path"),
+        "{output}"
+    );
     // A producer certifies the bridge between exactly those retained
     // statements, then attributes it to each intermediate publication.
     let (error, output, _) = call_tool(

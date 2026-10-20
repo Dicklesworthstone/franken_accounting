@@ -2554,6 +2554,20 @@ impl Book {
         ))
     }
 
+    /// Age a retained OpenItems certificate at its own prefix, keeping it as the source.
+    pub fn certify_effective_date_aging_from_source(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        source: &crate::ReportCertificate,
+        effective_through: DateDay,
+        buckets: &crate::AgingBuckets,
+    ) -> Outcome<crate::CertifiedAging> {
+        with_store!(&self.store, core => core.certify_effective_date_aging_from_source(
+            &self.purposes(), principal, capability, source, effective_through, buckets
+        ))
+    }
+
     /// Replay a certified effective-date aging report under current read authority.
     pub fn replay_effective_date_aging(
         &self,
@@ -2587,6 +2601,21 @@ impl Book {
     ) -> Outcome<crate::CertifiedAgingReconciliation> {
         with_store!(&self.store, core => core.certify_effective_date_aging_reconciliation(
             &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify a reconciliation from retained aging and control certificates,
+    /// reused byte-for-byte, against the recipient's fixed request.
+    pub fn certify_effective_date_aging_reconciliation_from_sources(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        aging: &crate::AgingCertificate,
+        control: &crate::ReportCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<crate::CertifiedAgingReconciliation> {
+        with_store!(&self.store, core => core.certify_effective_date_aging_reconciliation_from_sources(
+            &self.purposes(), principal, capability, aging, control, expected
         ))
     }
 
@@ -2625,6 +2654,21 @@ impl Book {
     ) -> Outcome<crate::aging::portfolio::CertifiedAgingPortfolio> {
         with_store!(&self.store, core => core.certify_aging_portfolio(
             &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify a portfolio from retained whole-book aging and control
+    /// certificates, reused byte-for-byte, against the recipient's fixed request.
+    pub fn certify_aging_portfolio_from_sources(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        aging: &crate::AgingCertificate,
+        control: &crate::ReportCertificate,
+        expected: &crate::aging::portfolio::AgingPortfolioRequest,
+    ) -> Outcome<crate::aging::portfolio::CertifiedAgingPortfolio> {
+        with_store!(&self.store, core => core.certify_aging_portfolio_from_sources(
+            &self.purposes(), principal, capability, aging, control, expected
         ))
     }
 
