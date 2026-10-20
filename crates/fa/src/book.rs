@@ -3078,6 +3078,37 @@ impl Book {
         with_store!(&self.store, core => core.trial_balance_at(&self.purposes(), periods, known_at))
     }
 
+    /// Load the delta window back to the oldest maintained register cursor
+    /// so head reads in this process can fold just the tail after each
+    /// cursor (fa-715; see [`AsyncBook::prepare_head_reads`]).
+    pub fn prepare_head_reads(
+        &mut self,
+        principal: VId,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_head_reads(
+            &purposes, principal, capability,
+        )))
+    }
+
+    /// The trial balance at the head and how it was served: maintained
+    /// cells plus the exact tail, or the literal fold and why (plan §17).
+    pub fn trial_balance_served(
+        &self,
+        periods: &[String],
+    ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
+        with_store!(&self.store, core => core.trial_balance_served(&self.purposes(), periods))
+    }
+
+    /// The period activity at the head and how it was served (plan §17).
+    pub fn period_activity_served(
+        &self,
+        periods: &[String],
+    ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
+        with_store!(&self.store, core => core.period_activity_served(&self.purposes(), periods))
+    }
+
     /// Stock balances through an inclusive civil date, including opening history.
     pub fn balance_as_of(
         &self,

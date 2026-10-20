@@ -161,6 +161,19 @@ fn report(book: &Path, args: &[&str]) -> String {
     out
 }
 
+/// A trial balance line without its `served` disclosure (fa-715): how a
+/// head read was answered is not part of the fold it answers, and a
+/// historical read of the same coordinate always folds the journal.
+fn without_served(out: &str) -> Json {
+    let mut line = json::parse(out.trim()).expect("one robot line");
+    if let Json::Obj(fields) = &mut line
+        && let Some((_, Json::Obj(data))) = fields.iter_mut().find(|(key, _)| key == "data")
+    {
+        data.retain(|(key, _)| key != "served");
+    }
+    line
+}
+
 fn assert_cash_credits(out: &str, expected: &str) {
     let cash = out
         .split('{')
@@ -551,7 +564,7 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
         retained.push((oid.to_string(), original));
     }
     assert_eq!(
-        report(
+        without_served(&report(
             &book,
             &[
                 "tb",
@@ -561,8 +574,8 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
                 known_at.as_str(),
                 "--json",
             ]
-        ),
-        before,
+        )),
+        without_served(&before),
         "certificate metadata never changes the certified accounting fold"
     );
 

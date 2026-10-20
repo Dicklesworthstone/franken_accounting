@@ -561,7 +561,7 @@ example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
 name = "registers"
-summary = "Advance native posted/pending period registers from the journal delta, or explicitly rebuild them from a fresh fold. Reports remain journal folds."
+summary = "Advance native posted/pending period registers from the journal delta, or explicitly rebuild them from a fresh fold. Head trial balances and period activity read these cells plus the exact tail when they can answer (`served` says which); every other report folds the journal."
 writes = true
 subcommands = ["materialize", "advance"]
 flags = ["--period", "--fiscal-year"]
@@ -1277,7 +1277,7 @@ fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "requested:amount?",
 name = "trial_balance"
 book = true
 doc = "Stock (through `effective_through`) or activity (the selected periods), at the `known_at` snapshot."
-fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool"]
+fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool", "served:tb_served?"]
 
 [[event]]
 name = "statement"
@@ -1999,6 +1999,16 @@ fields = ["unit_id:int", "max_mantissa:int"]
 name = "tb_row"
 doc = "One account in one unit."
 fields = ["code:string", "name:string", "type:string", "debits:amount", "credits:amount", "net:amount", "debits_pending:amount", "credits_pending:amount"]
+
+[[shape]]
+name = "tb_served"
+doc = "How a head trial balance or period activity was answered (plan §5.3, §17). mode maintained: every contributing period from its maintained register cells at their cursor plus the exact tail after it; tail_length counts the entries decoded for those tails. mode literal: the journal was folded, and reason says why maintained cells could not answer and how to make them answer. Both modes yield the same report. Null for certified, historical, as-of and summary reads, which always fold the journal."
+fields = ["mode:string", "tail_length:int?", "reason:string?", "periods:[tb_served_period]"]
+
+[[shape]]
+name = "tb_served_period"
+doc = "One period maintained cells answered: its maintenance cursor and the entries decoded for its tail."
+fields = ["period:string", "served_at:seq", "tail_entries:int"]
 
 [[shape]]
 name = "statement_column"

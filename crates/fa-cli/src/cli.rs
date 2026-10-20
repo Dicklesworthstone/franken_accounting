@@ -9058,6 +9058,12 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    // The capability a head read loads its register window under (fa-715),
+    // taken before the book is opened.
+    let read_cap = match &certify_cap {
+        Some(capability) => capability.clone(),
+        None => ctx.capability(args, &["read"])?,
+    };
     let out = &ctx.out;
     let mut book = if let Some(capability) = summary_cap.as_ref() {
         ctx.books.open_admitted(args, |book| {
@@ -9217,7 +9223,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let summary = book.summary_trial_balance(who, &capability, &request)??;
         return render_summary_trial_balance(out, &book, &summary, &selection, None);
     }
-    let (tb, certificate) = if let Some(capability) = certify_cap.as_ref() {
+    let (tb, certificate, served) = if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;
         let certified = match requested_utc_ns {
             Some(instant) => {
@@ -9226,14 +9232,51 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             None => book.certify_trial_balance(selection.clone(), known_at)??,
         };
         out.time_selection(certified.certificate.time_selection.as_ref());
-        (certified.report, Some(certified.certificate))
+        (certified.report, Some(certified.certificate), None)
     } else {
-        let report = match &selection {
-            TrialBalanceSelection::AsOf(day) => book.balance_as_of(*day, known_at)?,
-            TrialBalanceSelection::Periods(periods) => book.trial_balance_at(periods, known_at)?,
-            TrialBalanceSelection::Activity(periods) => book.period_activity(periods, known_at)?,
+        // A head read is answered from maintained registers plus the exact
+        // tail when they can serve it, and says how it was served (fa-715,
+        // plan §17). Loading the delta window is only preparation: a
+        // capability that cannot load it reads the journal literally, and
+        // the disclosure names its refusal.
+        let window = if known_at.is_none() && !matches!(selection, TrialBalanceSelection::AsOf(_)) {
+            Some(book.prepare_head_reads(who, &read_cap)?)
+        } else {
+            None
         };
-        (report, None)
+        let refused = |refusal: Refusal| {
+            Some(fa_registers::Served::Literal(format!(
+                "this capability cannot load the register window ({}: {}); the read folds the journal",
+                refusal.code, refusal.message
+            )))
+        };
+        match (&selection, window) {
+            (TrialBalanceSelection::Periods(periods), Some(Ok(()))) => {
+                let (report, served) = book.trial_balance_served(periods)?;
+                (report, None, Some(served))
+            }
+            (TrialBalanceSelection::Activity(periods), Some(Ok(()))) => {
+                let (report, served) = book.period_activity_served(periods)?;
+                (report, None, Some(served))
+            }
+            (TrialBalanceSelection::Periods(periods), Some(Err(refusal))) => (
+                book.trial_balance_at(periods, None)?,
+                None,
+                refused(refusal),
+            ),
+            (TrialBalanceSelection::Activity(periods), Some(Err(refusal))) => {
+                (book.period_activity(periods, None)?, None, refused(refusal))
+            }
+            (TrialBalanceSelection::AsOf(day), _) => {
+                (book.balance_as_of(*day, known_at)?, None, None)
+            }
+            (TrialBalanceSelection::Periods(periods), None) => {
+                (book.trial_balance_at(periods, known_at)?, None, None)
+            }
+            (TrialBalanceSelection::Activity(periods), None) => {
+                (book.period_activity(periods, known_at)?, None, None)
+            }
+        }
     };
     validate_trial_balance_units(&tb, &book.context().units)?;
     let retained = certificate
@@ -9246,7 +9289,14 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let digest = certificate
         .as_ref()
         .map(|certificate| hex(&certificate.digest));
-    render_trial_balance(out, &book, &tb, &selection, digest.as_deref())?;
+    render_trial_balance(
+        out,
+        &book,
+        &tb,
+        &selection,
+        digest.as_deref(),
+        served.as_ref(),
+    )?;
     if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
         notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
     }
@@ -10044,8 +10094,52 @@ pub(crate) fn render_trial_balance(
     tb: &fa_registers::TrialBalance,
     selection: &TrialBalanceSelection,
     certificate: Option<&str>,
+    served: Option<&fa_registers::Served>,
 ) -> Result<(), Fail> {
-    render_trial_balance_with_units(out, &book.context().units, tb, selection, certificate)
+    render_trial_balance_with_units(
+        out,
+        &book.context().units,
+        tb,
+        selection,
+        certificate,
+        served,
+    )
+}
+
+/// How a head read was answered (`tb_served`, plan §17): maintained cells
+/// at their cursors plus the exact tail, or the literal journal fold and why.
+fn served_json(served: &fa_registers::Served) -> Json {
+    match served {
+        fa_registers::Served::Maintained(periods) => obj(vec![
+            ("mode", s("maintained")),
+            (
+                "tail_length",
+                Json::Int(periods.iter().map(|(_, _, tail)| *tail as i128).sum()),
+            ),
+            ("reason", Json::Null),
+            (
+                "periods",
+                Json::Arr(
+                    periods
+                        .iter()
+                        .map(|(period, served_at, tail)| {
+                            obj(vec![
+                                ("period", s(period)),
+                                ("served_at", Json::Int(i128::from(served_at.0))),
+                                ("tail_entries", Json::Int(*tail as i128)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+        ]),
+        fa_registers::Served::Literal(reason) => obj(vec![
+            ("mode", s("literal")),
+            ("tail_length", Json::Null),
+            ("reason", s(reason)),
+            ("periods", Json::Arr(Vec::new())),
+        ]),
+    }
 }
 
 fn render_trial_balance_with_units(
@@ -10054,6 +10148,7 @@ fn render_trial_balance_with_units(
     tb: &fa_registers::TrialBalance,
     selection: &TrialBalanceSelection,
     certificate: Option<&str>,
+    served: Option<&fa_registers::Served>,
 ) -> Result<(), Fail> {
     validate_trial_balance_units(tb, units)?;
     let periods: &[String] = match selection {
@@ -10131,6 +10226,7 @@ fn render_trial_balance_with_units(
                 ("unit_totals", Json::Arr(totals)),
                 ("pending_unit_totals", Json::Arr(pending_totals)),
                 ("balanced", Json::Bool(tb.is_balanced())),
+                ("served", served.map_or(Json::Null, served_json)),
             ],
             "",
             certificate,
@@ -17217,6 +17313,7 @@ mod tests {
                     &tb,
                     &selection,
                     Some(&certificate),
+                    None,
                 );
                 assert!(matches!(
                     &result,
@@ -17274,8 +17371,14 @@ mod tests {
                 known_at: CommitSeq(10),
                 effective: "all".into(),
             });
-            let result =
-                render_trial_balance_with_units(&out, &units, &tb, &selection, Some(&certificate));
+            let result = render_trial_balance_with_units(
+                &out,
+                &units,
+                &tb,
+                &selection,
+                Some(&certificate),
+                None,
+            );
             let (code, captured) = finish_into(out, result);
             assert_eq!(code, exit::SUCCESS, "{}", captured.stderr);
             assert!(captured.stderr.is_empty(), "{}", captured.stderr);

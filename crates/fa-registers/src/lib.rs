@@ -1238,10 +1238,7 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
         }
         let Some(head) = maintainer::head_fold(db, book, &period.code, &accounts)? else {
             if period_has_postings(db, period.vid)? {
-                return Ok(Err(format!(
-                    "period `{}` has postings but no servable maintained cells",
-                    period.code
-                )));
+                return Ok(Err(unservable(&period.code)));
             }
             continue;
         };
@@ -1249,6 +1246,14 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
         served.push((period.code, head.served_at, head.tail_entries));
     }
     Ok(Ok((sums, served)))
+}
+
+/// Why maintained cells could not answer for a period with postings, and
+/// how to make them answer.
+fn unservable(period: &str) -> String {
+    format!(
+        "period `{period}` has postings but its maintained cells cannot answer at the head (no or damaged state, drifted cells, or a tail outside this process's delta window); `fa registers advance --period {period}` or a daemon's register cycle keeps them current"
+    )
 }
 
 /// Add a fold's posted and pending cells into trial-balance column sums.
@@ -1290,8 +1295,7 @@ pub fn period_activity_served<V: asupersync::fs::Vfs + Clone>(
                 served.push((code.clone(), head.served_at, head.tail_entries));
             }
             None if period_has_postings(db, period_at(db, book, code, seq)?.vid)? => {
-                let reason =
-                    format!("period `{code}` has postings but no servable maintained cells");
+                let reason = unservable(code);
                 return Ok((
                     report_at(db, book, selected.clone(), seq, None, &[])?,
                     Served::Literal(reason),

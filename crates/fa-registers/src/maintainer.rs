@@ -599,6 +599,55 @@ fn release<V: asupersync::fs::Vfs + Clone>(
     Ok(())
 }
 
+/// The period's maintenance state when it can serve a read at `basis`: its
+/// identity, checksum and format agree and its cursor does not pass the
+/// frontier. The cells are not read here. `None` otherwise; reads never
+/// repair state.
+fn servable_state<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    basis: CommitSeq,
+) -> Result<Option<(CommitSeq, Fold)>, RegisterError> {
+    let Some(state) = db.vertex(state_vid(book.book_id, period))? else {
+        return Ok(None);
+    };
+    let payload = match (
+        prop(&state, property::BOOK_ID),
+        prop(&state, property::EFFECTIVE_PERIOD),
+        prop(&state, property::FA_PAYLOAD),
+        prop(&state, property::FA_DIGEST),
+    ) {
+        (
+            Some(CanonicalScalar::Bytes(owner)),
+            Some(CanonicalScalar::Text(code)),
+            Some(CanonicalScalar::Bytes(payload)),
+            Some(CanonicalScalar::Bytes(digest)),
+        ) if state.labels == vec![label::REGISTER_STATE]
+            && owner.as_slice() == &book.book_id.0[..]
+            && code.as_str() == period
+            && digest.as_slice() == &state_digest(book.book_id, period, payload.as_slice())[..] =>
+        {
+            payload.as_slice().to_vec()
+        }
+        _ => return Ok(None),
+    };
+    let Ok((through, fold)) = decode(&payload, period) else {
+        return Ok(None);
+    };
+    Ok((through <= basis).then_some((through, fold)))
+}
+
+/// The maintenance cursor of `period` when its state could serve a read at
+/// the frontier (fa-715); a caller loads the delta window back to it.
+pub fn cursor<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+) -> Result<Option<CommitSeq>, RegisterError> {
+    Ok(servable_state(db, book, period, db.frontier()?)?.map(|(through, _)| through))
+}
+
 /// A period's fold at the frontier, served from its maintained cells and the
 /// exact tail after their cursor, without writing (plan §5.3, fa-715).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -628,35 +677,9 @@ pub fn head_fold<V: asupersync::fs::Vfs + Clone>(
     accounts: &[AccountRow],
 ) -> Result<Option<HeadFold>, RegisterError> {
     let basis = db.frontier()?;
-    let Some(state) = db.vertex(state_vid(book.book_id, period))? else {
+    let Some((through, mut fold)) = servable_state(db, book, period, basis)? else {
         return Ok(None);
     };
-    let payload = match (
-        prop(&state, property::BOOK_ID),
-        prop(&state, property::EFFECTIVE_PERIOD),
-        prop(&state, property::FA_PAYLOAD),
-        prop(&state, property::FA_DIGEST),
-    ) {
-        (
-            Some(CanonicalScalar::Bytes(owner)),
-            Some(CanonicalScalar::Text(code)),
-            Some(CanonicalScalar::Bytes(payload)),
-            Some(CanonicalScalar::Bytes(digest)),
-        ) if state.labels == vec![label::REGISTER_STATE]
-            && owner.as_slice() == &book.book_id.0[..]
-            && code.as_str() == period
-            && digest.as_slice() == &state_digest(book.book_id, period, payload.as_slice())[..] =>
-        {
-            payload.as_slice().to_vec()
-        }
-        _ => return Ok(None),
-    };
-    let Ok((through, mut fold)) = decode(&payload, period) else {
-        return Ok(None);
-    };
-    if through > basis {
-        return Ok(None);
-    }
     for account in accounts {
         let units: Vec<u32> = match account.unit_policy {
             UnitPolicy::Single(unit) => vec![unit.0],

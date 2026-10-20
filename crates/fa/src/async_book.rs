@@ -2793,6 +2793,62 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
     }
 
+    /// Load the committed delta window back to the oldest maintained
+    /// register cursor (fa-715). A store reopened from a checkpoint holds
+    /// only its frontier, so without this a head read in a new process
+    /// cannot fold the tail after a cursor and folds the journal literally.
+    /// Admitted like [`AsyncBook::prepare_report_history`]: whole-book read
+    /// authority, checked before anything is observed. A book without
+    /// maintained cells loads nothing; an explicitly retired interval stays
+    /// retired, and reads over it keep folding literally.
+    pub async fn prepare_head_reads(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<()> {
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = fa_journal::policy::current_at(&self.db, &self.context, capability)? {
+            return Ok(Err(refusal));
+        }
+        let oldest = self.query(cx, |db, book| {
+            let mut oldest: Option<CommitSeq> = None;
+            for period in fa_journal::genesis::list_periods(db)? {
+                if let Some(cursor) = fa_registers::maintainer::cursor(db, book, &period.code)? {
+                    oldest = Some(oldest.map_or(cursor, |seen: CommitSeq| seen.min(cursor)));
+                }
+            }
+            Ok(oldest)
+        })?;
+        let Some(oldest) = oldest else {
+            return Ok(Ok(()));
+        };
+        match self.db.ensure_delta_window(&cx.commit(), oldest).await {
+            Ok(())
+            | Err(fgdb::RebuildError::Index {
+                error: fgdb_delta_types::IndexError::CursorRetired { .. },
+                ..
+            }) => Ok(Ok(())),
+            Err(other) => Err(KernelError::Write(fgdb::WriteError::from(other)).into()),
+        }
+    }
+
+    /// The period activity at the head and how it was served (plan §17).
+    pub fn period_activity_served(
+        &self,
+        cx: &PurposeContexts,
+        periods: &[String],
+    ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::period_activity_served(db, book, periods)?)
+        })
+    }
+
     /// The trial balance at the head and how it was served: from
     /// maintained cells with their cursors and tail lengths, or literally
     /// with the reason (plan §17).

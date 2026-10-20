@@ -699,7 +699,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ctx.out.time_selection(certificate.time_selection.as_ref());
         match (&report, &certificate.selection) {
             (ReportOutput::TrialBalance(report), ReportSelection::TrialBalance(selection)) => {
-                render_trial_balance(&ctx.out, &book, report, selection, Some(&digest))?
+                render_trial_balance(&ctx.out, &book, report, selection, Some(&digest), None)?
             }
             (ReportOutput::ExplainBalance(report), ReportSelection::ExplainBalance { .. }) => {
                 render_balance_explanation(&ctx.out, &book, report, Some(&digest))?
