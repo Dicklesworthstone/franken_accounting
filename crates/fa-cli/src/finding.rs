@@ -739,10 +739,12 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 fn review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    if args.positional.len() == 2 && args.flag("--file").is_some() {
+    let run = args.flag("--certificate").is_some() || args.flag("--file").is_some();
+    if run && args.positional.len() == 2 {
+        // A run review needs both; review_run names whichever is missing.
         return review_run(ctx, args);
     }
-    if args.flag("--certificate").is_some() || args.flag("--file").is_some() {
+    if run {
         return Err(usage(
             "--certificate and --file select a run review, which names no F:<vid>",
             REVIEW_RUN_EXAMPLE,
@@ -753,6 +755,7 @@ fn review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let selected = handle(&args.positional[2], "F:", "finding")?;
     let request = review_request(
+        Source::Flags,
         selected,
         args.require("--action", "acknowledge|dismiss|reopen")?,
         args.flag("--dismissal-reason"),
@@ -789,9 +792,41 @@ fn review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// Where a review decision was written: the single review's flags, or one
+/// item of a run review file. Refusals name what the caller wrote, so a fix
+/// never points a run review at a flag it refuses.
+#[derive(Clone, Copy)]
+enum Source {
+    Flags,
+    File,
+}
+
+impl Source {
+    /// The flag, or the run review field that carries the same value.
+    fn name(self, flag: &'static str) -> &'static str {
+        match (self, flag) {
+            (Self::Flags, _) => flag,
+            (Self::File, "--action") => "action",
+            (Self::File, "--dismissal-reason") => "dismissal_reason",
+            (Self::File, "--note") => "note",
+            (Self::File, "--previous") => "previous",
+            (Self::File, "--evidence") => "evidence",
+            (Self::File, other) => other,
+        }
+    }
+
+    fn fix(self, flags: &str, file: &str) -> String {
+        match self {
+            Self::Flags => flags.to_string(),
+            Self::File => file.to_string(),
+        }
+    }
+}
+
 /// One review decision, validated the same way whether it comes from flags
 /// (`finding review F:<vid>`) or from one item of a run review file.
 fn review_request(
+    source: Source,
     selected: VId,
     action: &str,
     dismissal: Option<&str>,
@@ -799,14 +834,18 @@ fn review_request(
     previous: Option<&str>,
     evidence: &[&str],
 ) -> Result<FindingReviewRequest, Fail> {
+    let reasons = source.fix(
+        "--dismissal-reason explained|duplicate|data-quality|outside-scope|other",
+        r#""dismissal_reason":"explained|duplicate|data-quality|outside-scope|other""#,
+    );
     let action = match action {
         "acknowledge" => FindingReviewAction::Acknowledge,
         "reopen" => FindingReviewAction::Reopen,
         "dismiss" => FindingReviewAction::Dismiss(
             match dismissal.ok_or_else(|| {
                 usage(
-                    "--dismissal-reason is required",
-                    "--dismissal-reason explained|duplicate|data-quality|outside-scope|other",
+                    format!("{} is required", source.name("--dismissal-reason")),
+                    reasons.clone(),
                 )
             })? {
                 "explained" => DismissalReason::Explained,
@@ -815,41 +854,61 @@ fn review_request(
                 "outside-scope" => DismissalReason::OutsideScope,
                 "other" => DismissalReason::Other,
                 _ => {
-                    return Err(usage(
-                        "unregistered finding dismissal reason",
-                        "--dismissal-reason explained|duplicate|data-quality|outside-scope|other",
-                    ));
+                    return Err(usage("unregistered finding dismissal reason", reasons));
                 }
             },
         ),
         _ => {
             return Err(usage(
                 "unregistered finding review action",
-                "--action acknowledge|dismiss|reopen",
+                source.fix(
+                    "--action acknowledge|dismiss|reopen",
+                    r#""action":"acknowledge|dismiss|reopen""#,
+                ),
             ));
         }
     };
     if !matches!(action, FindingReviewAction::Dismiss(_)) && dismissal.is_some() {
         return Err(usage(
-            "--dismissal-reason belongs to a dismissal",
-            "use --note for every decision; add --dismissal-reason and --evidence for dismiss",
+            format!("{} belongs to a dismissal", source.name("--dismissal-reason")),
+            source.fix(
+                "use --note for every decision; add --dismissal-reason and --evidence for dismiss",
+                r#"give every decision a "note"; add "dismissal_reason" and "evidence" only to a dismiss"#,
+            ),
         ));
     }
     let note = note
-        .ok_or_else(|| usage("--note is required", "--note <nonempty human explanation>"))?
+        .ok_or_else(|| {
+            usage(
+                format!("{} is required", source.name("--note")),
+                source.fix(
+                    "--note <nonempty human explanation>",
+                    r#""note":"<nonempty human explanation>""#,
+                ),
+            )
+        })?
         .to_string();
     if note.trim().is_empty() || note.len() > fa::findings::review::MAX_REVIEW_NOTE_BYTES {
         return Err(usage(
             "review note is empty or exceeds its registered UTF-8 byte bound",
-            "--note <nonempty explanation of at most 2048 UTF-8 bytes>",
+            source.fix(
+                "--note <nonempty explanation of at most 2048 UTF-8 bytes>",
+                r#""note":"<nonempty explanation of at most 2048 UTF-8 bytes>""#,
+            ),
         ));
     }
     let previous = previous
-        .map(|text| handle(text, "R:", "--previous"))
+        .map(|text| handle(text, "R:", source.name("--previous")))
         .transpose()?;
     let mut evidence = evidence
         .iter()
-        .map(|text| fixed_hex(text.strip_prefix("D:").unwrap_or(text), "--evidence").map(Oid))
+        .map(|text| {
+            fixed_hex(
+                text.strip_prefix("D:").unwrap_or(text),
+                source.name("--evidence"),
+            )
+            .map(Oid)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     evidence.sort();
     if evidence.len() > fa::findings::review::MAX_REVIEW_EVIDENCE
@@ -857,13 +916,19 @@ fn review_request(
     {
         return Err(usage(
             "review evidence must contain at most 16 distinct retained documents",
-            "supply each --evidence document once",
+            source.fix(
+                "supply each --evidence document once",
+                r#"list each "evidence" document once"#,
+            ),
         ));
     }
     if matches!(action, FindingReviewAction::Dismiss(_)) && evidence.is_empty() {
         return Err(usage(
             "dismissing a finding requires retained evidence",
-            "--evidence <document oid>; import the actual supporting document with fa document add first",
+            source.fix(
+                "--evidence <document oid>; import the actual supporting document with fa document add first",
+                r#""evidence":["D:<document oid>"]; import the actual supporting document with fa document add first"#,
+            ),
         ));
     }
     Ok(FindingReviewRequest {
@@ -899,9 +964,14 @@ fn review_run(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
     }
     let digest = certificate(args)?;
-    let text = ctx
-        .files
-        .read_text(args.require("--file", "<reviews.json|->")?)?;
+    let file = args.require("--file", "<reviews.json|->")?;
+    // Current authority and whole-book scope precede reading the decisions.
+    let who = ctx.principal(args);
+    let cap = capability(ctx, args, &["read", "approve"])?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_book(book, who, &cap))?;
+    let text = ctx.files.read_text(file)?;
     let doc = crate::json::parse(&text).map_err(|error| {
         usage(
             format!("invalid run review JSON: {error}"),
@@ -925,11 +995,6 @@ fn review_run(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .enumerate()
         .map(|(index, item)| run_review_item(index, item))
         .collect::<Result<Vec<_>, Fail>>()?;
-    let who = ctx.principal(args);
-    let cap = capability(ctx, args, &["read", "approve"])?;
-    let mut book = ctx
-        .books
-        .open_admitted(args, |book| admit_book(book, who, &cap))?;
     let before = book.head()?;
     let decisions = book.review_finding_run(who, &cap, &digest, &requests)??;
     ctx.out.at_book(&book)?;
@@ -969,8 +1034,17 @@ fn item_text<'a>(item: &'a Json, index: usize, key: &str) -> Result<Option<&'a s
 /// One run-review decision. Field names mirror the single review's flags;
 /// every error names the item it came from.
 fn run_review_item(index: usize, item: &Json) -> Result<FindingReviewRequest, Fail> {
+    // The hex parsers' fix is the single review's example; an item's errors
+    // point at the run review's file form instead.
     let in_item = |fail: Fail| match fail {
-        Fail::Usage(error) => usage(format!("reviews[{index}]: {}", error.message), error.fix),
+        Fail::Usage(error) => usage(
+            format!("reviews[{index}]: {}", error.message),
+            if error.fix == EXAMPLE {
+                REVIEW_RUN_EXAMPLE.to_string()
+            } else {
+                error.fix
+            },
+        ),
         other => other,
     };
     let Json::Obj(fields) = item else {
@@ -1028,6 +1102,7 @@ fn run_review_item(index: usize, item: &Json) -> Result<FindingReviewRequest, Fa
         }
     };
     review_request(
+        Source::File,
         handle(finding, "F:", "finding").map_err(in_item)?,
         action,
         item_text(item, index, "dismissal_reason")?,
