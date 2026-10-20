@@ -8770,7 +8770,7 @@ fn projection_verification_case(plant: &str) -> std::io::Result<()> {
     let (code, out, err) = fa(Some(&book), &bound);
     assert_eq!(code, 2, "{out}\n{err}");
     assert!(
-        text(&doc(&out), "message").contains("--yes cannot override launch-bound authority"),
+        text(&doc(&out), "message").contains("--yes cannot be supplied by a launch-bound request"),
         "{out}"
     );
     assert_eq!(head(), issued, "a bound session recovers nothing");
