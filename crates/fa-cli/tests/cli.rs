@@ -6635,6 +6635,13 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["chart", "import", &chart]).0, 0);
     assert_eq!(run(true, &["chart", "list"]).0, 0);
+    // fa-waow: no drafts or scenarios yet; trunk is implicit.
+    let (code, out) = run(true, &["branch", "list"]);
+    assert_eq!(code, 0, "{out}");
+    let branches = doc(&out);
+    assert!(arr(&branches, "drafts").is_empty(), "{out}");
+    assert!(arr(&branches, "scenarios").is_empty(), "{out}");
+    assert_eq!(run(true, &["branch", "show"]).0, 2);
     // fa-waow: one account with its place in the tree.
     let (code, out) = run(true, &["chart", "show", "1000"]);
     assert_eq!(code, 0, "{out}");

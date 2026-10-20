@@ -195,6 +195,18 @@ usage = ["scenario fork <name> [--at HEAD|<seq>] [--from YYYY-MM-DD] [--evidence
 example = "fa scenario fork but-for-breach --from 2025-07-01 --book ./books/myco --json"
 
 [[verb]]
+name = "branch"
+summary = "Every branch of the book in one listing (plan §15.3): its drafts, by opening sequence, and its scenarios, by forking sequence, as draft list and scenario list show them."
+writes = false
+subcommands = ["list"]
+flags = []
+switches = []
+events = ["branches"]
+exits = [0, 2, 4, 5, 7]
+usage = ["branch list   (drafts and scenarios; trunk is implicit. fa draft show <name> and fa scenario show <name> read one)"]
+example = "fa branch list --book ./books/myco --json"
+
+[[verb]]
 name = "case"
 summary = "Restatement cases (plan §8.3): open a case over the periods a material correction affects, journal its determination (day and authority), and read it. Rehearsal, dual-control approval, posting, disclosure and closing are later fa-75j4 slices."
 writes = true
@@ -1397,6 +1409,12 @@ name = "scenario_run"
 book = true
 doc = "An intent journaled into a scenario after its rehearsal on the scenario's materialization. ordinal is its position (from 1); entry is the identity the intent posts under in every materialization; rehearsed is false on a recorded retry, which rehearses nothing. Trunk receives the record, never the entry."
 fields = ["scenario:hex", "name:string", "control_entry:hex", "recorded_at:seq", "already_recorded:bool", "ordinal:int", "entry:hex", "rehearsed:bool"]
+
+[[event]]
+name = "branches"
+book = true
+doc = "Every draft of the book by opening sequence and every scenario by forking sequence, in the shapes draft list and scenario list use. Both are empty on a trunk-only book."
+fields = ["drafts:[draft_summary]", "scenarios:[scenario_summary]"]
 
 [[event]]
 name = "scenarios"
@@ -3273,6 +3291,16 @@ mistakes = ["Running in a scenario another principal owns (FA-REF-011).", "Runni
 
 [[mcp.tool]]
 cluster = "fa.scenario"
+name = "branches"
+verb = "branch"
+subcommands = ["list"]
+positionals = []
+required = []
+dont = ["Don't read a draft's or a scenario's state as trunk's: both are branches; trunk changes only through promotion, which a Human approves on the host."]
+mistakes = ["Looking for trunk in the listing: trunk is implicit and never listed."]
+
+[[mcp.tool]]
+cluster = "fa.scenario"
 name = "diff"
 verb = "scenario"
 subcommands = ["diff"]
@@ -4779,6 +4807,10 @@ ops = ["post"]
 [[bound]]
 verbs = ["scenario"]
 subcommands = ["list", "show", "diff"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["branch"]
 ops = ["read"]
 
 # party identifiers is absent on purpose: a bank-detail change is the

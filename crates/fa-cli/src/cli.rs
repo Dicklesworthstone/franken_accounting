@@ -84,6 +84,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("capability", capability_cmd),
     ("draft", draft_cmd),
     ("scenario", crate::scenario::scenario_cmd),
+    ("branch", crate::scenario::branch_cmd),
     ("case", crate::case::case_cmd),
     ("post", post_cmd),
     ("invoice", crate::typed::invoice_cmd),
@@ -5386,7 +5387,7 @@ fn draft_name<'a>(args: &'a Args, sub: &str) -> Result<&'a str, Fail> {
 }
 
 /// One draft as robot data (plan §15.2, bead fa-s7x).
-fn draft_json(view: &fa_journal::DraftView) -> Json {
+pub(crate) fn draft_json(view: &fa_journal::DraftView) -> Json {
     let closed = view.closed.as_ref();
     obj(vec![
         ("draft", s(format!("{:032x}", view.vid.0))),
