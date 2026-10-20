@@ -43,7 +43,12 @@ pub use decision::{
 };
 pub use denial::Denial;
 pub use op::Op;
-pub use sod::{Approver, Party};
+pub use sod::{
+    Approver, AuthorityGraph, AuthorityVertex, CachedJudgment, ConservedRightsPool,
+    DECISION_CLOSURE_DOMAIN, DecisionClosure, EMPTINESS_WITNESS_DOMAIN, EmptinessWitness,
+    JudgmentCache, PERMIT_DOMAIN, Party, PermitDenial, PermitGate, PermitTarget, RightViolation,
+    SOD_GRAPH_PROOF_DOMAIN, SingleUsePermit, SodBypassViolation, SodGraphProof,
+};
 
 use fa_model::domain_digest;
 use fa_registry::sod_policy::{SodKey, SodPolicy};
