@@ -801,6 +801,46 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if workpaper_requested && !has_workpaper(artifact.family(), view.is_some(), aging_expected) {
         return Err(unsupported_workpaper(artifact.family()));
     }
+    if artifact.family() == ReportArtifactFamily::DraftDiff {
+        if args.flag("--expect").is_some() {
+            return Err(usage(
+                "a draft rehearsal replays its exact retained draft, source prefix and period",
+                "fa replay C:<oid> --json",
+            ));
+        }
+        let certificate = fa::DraftDiffCertificate::decode(&bytes)?;
+        let diff = book.replay_draft_diff(principal, &capability, &certificate)??;
+        if let Some(path) = args.flag("--output") {
+            crate::cli::write_new_output_file(
+                &ctx.files,
+                path,
+                certificate.output(),
+                "replayed report",
+                "--output",
+            )?;
+        }
+        let digest = hex(artifact.digest());
+        crate::closing::render_draft_diff(&ctx.out, &book, &diff, Some(&digest))?;
+        if let Some(path) = args.flag("--output") {
+            ctx.out.event_with_certificate(
+                "report_replayed",
+                vec![
+                    ("family", s(artifact.family().name())),
+                    ("known_at", Json::Int(i128::from(certificate.known_at().0))),
+                    ("output_bytes", Json::Int(certificate.output().len() as i128)),
+                    ("output_digest", s(hex(&artifact.output_digest()))),
+                    ("file", s(path)),
+                ],
+                &format!(
+                    "Replayed draft-diff certificate {digest} at sequence {} ({} canonical output bytes)",
+                    certificate.known_at().0,
+                    certificate.output().len(),
+                ),
+                Some(&digest),
+            );
+        }
+        return Ok(());
+    }
     if artifact.family() == ReportArtifactFamily::ScenarioDiff {
         // Its replay re-materializes the scenario with exactly the intents it
         // covered (Book::replay_scenario_diff); no recipient expectation

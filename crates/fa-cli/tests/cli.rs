@@ -5756,6 +5756,21 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["draft", "list"]).0, 0);
     assert_eq!(run(true, &["draft", "show", "close-03"]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &[
+                "close",
+                "dry-run",
+                "--period",
+                "FY2026-P03",
+                "--draft",
+                "close-03"
+            ],
+        )
+        .0,
+        0,
+    );
     let (code, out) = run(
         true,
         &[

@@ -1817,6 +1817,45 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )))
     }
 
+    /// Materialize an existing draft into an owned, empty memory database.
+    /// The native factory admits current source reads, preserves publication
+    /// coordinates and rehearses all retained plans in one scratch batch.
+    /// Its private admission token cannot authorize a write to this book.
+    pub(crate) async fn rehearse_draft_into(
+        &mut self,
+        cx: &PurposeContexts,
+        target: Database<fgdb::MemVfs>,
+        keys: &BookKeys,
+        reviewer: &fa_journal::Capability,
+        request: fa_journal::DraftRehearsalRequest,
+        entropy: Entropy,
+    ) -> Outcome<(AsyncBook<fgdb::MemVfs, B>, fa_journal::DraftRehearsal)> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let (target, rehearsal) = match fa_journal::rehearse_draft_into(
+            &mut self.db,
+            target,
+            cx,
+            &self.context,
+            reviewer,
+            request,
+        )
+        .await?
+        {
+            Ok(rehearsed) => rehearsed,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok((
+            AsyncBook {
+                db: target,
+                blobs: self.blobs.clone(),
+                context: self.context.clone(),
+                entropy,
+                signer: keys.checkpoint_signing_key(),
+            },
+            rehearsal,
+        )))
+    }
+
     /// Independently verify a replay's mapped accounting history.
     pub fn verify_replay<W: Vfs + Clone, C: Vfs + Clone>(
         &self,

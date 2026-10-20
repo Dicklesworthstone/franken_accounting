@@ -45,8 +45,9 @@
 //! [`CashFlowCertificate`] binds explicit cash classifications and exact output
 //! to a retained native ledger closure. Replay checks current authority and the
 //! recipient's independently selected fixed scope and classification inputs.
-//! Sessions and drafts remain later slices of the embedded API described
-//! in `COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md` (§15.2).
+//! Existing draft intent logs can be rehearsed atomically for review.
+//! [`DraftDiffCertificate`] binds their complete historical source and exact
+//! balance comparison without promoting the draft or changing trunk (§15.2).
 
 #![forbid(unsafe_code)]
 
@@ -63,6 +64,7 @@ pub mod cash_flow_split;
 pub mod certificate;
 mod certificate_store;
 pub mod document_disclosure;
+pub mod draft_review;
 pub mod evidence_disclosure;
 pub mod findings;
 pub mod fx;
@@ -122,6 +124,10 @@ pub use certificate::{
 };
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
 pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
+pub use draft_review::{
+    CertifiedDraftDiff, DRAFT_DIFF_CERTIFICATE_FORMAT, DRAFT_DIFF_OUTPUT_FORMAT, DraftDiff,
+    DraftDiffCertificate, DraftDiffRow, MAX_DRAFT_DIFF_CERTIFICATE_BYTES, MAX_DRAFT_DIFF_ROWS,
+};
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
 pub use fa_intents::{
     IntentError, MAX_BATCH_BYTES, MAX_PLAN_BYTES, PlanCertificate, PostBatch, PostIntent, PostPlan,
