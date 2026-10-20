@@ -1000,26 +1000,33 @@ pub struct StratumAllocation {
     pub allocated_sample_size: usize,
 }
 
-/// Stratified sample plan with Neyman optimal allocation and replayable
-/// [`DecisionCard`].
+/// Stratified sample plan with the allocation its replayable [`DecisionCard`]
+/// chose.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StratifiedSamplePlan {
     pub population_digest: [u8; 32],
     pub seed: u64,
     pub total_sample_size: usize,
+    /// `"neyman"`, or `"proportional"` when the card used its pinned
+    /// fallback (no active sampling policy epoch).
+    pub allocation: &'static str,
     pub strata: Vec<StratumAllocation>,
     pub selected: Vec<PopulationItem>,
     pub decision_card: DecisionCard,
     pub certificate: SampleCertificate,
 }
 
-/// Compute Neyman optimal stratum allocation and draw a stratified sample using
-/// `Pcg64Dxsm::new(seed)`, emitting a replayable [`DecisionCard`] with
-/// proportional allocation as the pinned deterministic fallback.
+/// Allocate a stratified sample over the population's declared strata and
+/// draw it using `Pcg64Dxsm::new(seed)`, emitting a replayable
+/// [`DecisionCard`]: Neyman allocation under an active policy epoch,
+/// otherwise the pinned deterministic fallback, proportional allocation.
+/// `basis` names how the strata were declared (for example book-value
+/// bands); the certificate binds it with the allocation used.
 pub fn sample_stratified_neyman(
     population: &SamplePopulation,
     seed: u64,
     total_sample_size: usize,
+    basis: &str,
     policy_epoch: Option<[u8; 32]>,
     enforced_policy_epoch: [u8; 32],
     _subject: VId,
@@ -1128,15 +1135,18 @@ pub fn sample_stratified_neyman(
     let neyman_alloc = allocate_by_weights(&neyman_weights)?;
     let prop_alloc = allocate_by_weights(&prop_weights)?;
 
+    // The pinned fallback (`DecisionKind::SamplingStratification`) is
+    // proportional allocation; Neyman needs an active sampling policy epoch.
+    let h_param = i128::try_from(h_count).map_err(|_| LanternError::Overflow("stratum count"))?;
     let candidates = vec![
         DecisionCandidate {
-            action: "monetary_unit_fixed_strata".into(),
-            parameter: 4,
+            action: "proportional_allocation".into(),
+            parameter: 0,
             analytic_score: 50,
         },
         DecisionCandidate {
-            action: "neyman_optimal_strata".into(),
-            parameter: h_count as i128,
+            action: "neyman_allocation".into(),
+            parameter: h_param,
             analytic_score: 150,
         },
     ];
@@ -1192,12 +1202,33 @@ pub fn sample_stratified_neyman(
         });
     }
 
+    // The certificate binds everything the draw depended on: the declared
+    // basis, the allocation actually used, the policy epoch it was decided
+    // under, and every stratum's population and allocated size.
+    let allocation = if decision_card.used_fallback() {
+        "proportional"
+    } else {
+        "neyman"
+    };
+    let mut summary = format!(
+        "total_sample_size={total_sample_size};basis={basis};allocation={allocation};policy_epoch={}",
+        policy_epoch.map_or_else(
+            || "none".to_string(),
+            |epoch| epoch.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        )
+    );
+    for s in &strata_out {
+        summary.push_str(&format!(
+            ";stratum={}:{}:{}",
+            s.stratum, s.population_count, s.allocated_sample_size
+        ));
+    }
     let selected_ids: Vec<String> = selected.iter().map(|s| s.item_id.clone()).collect();
     let certificate = SampleCertificate::compute(
-        "stratified_neyman",
+        "stratified",
         population.population_digest,
         seed,
-        &format!("total_sample_size={total_sample_size}"),
+        &summary,
         selected_ids,
     );
 
@@ -1205,6 +1236,7 @@ pub fn sample_stratified_neyman(
         population_digest: population.population_digest,
         seed,
         total_sample_size,
+        allocation,
         strata: strata_out,
         selected,
         decision_card,
@@ -1324,11 +1356,38 @@ mod tests {
         assert_eq!(u1.selected.len(), 3);
 
         let epoch = [0x55; 32];
-        let strat = sample_stratified_neyman(&pop, 42, 4, Some(epoch), epoch, VId(99)).unwrap();
+        let strat =
+            sample_stratified_neyman(&pop, 42, 4, "fixture", Some(epoch), epoch, VId(99)).unwrap();
         assert_eq!(strat.selected.len(), 4);
         assert_eq!(
             strat.decision_card.verify_replay(epoch).unwrap(),
             strat.decision_card.digest().unwrap()
+        );
+        assert_eq!(strat.allocation, "neyman");
+
+        // No active policy epoch: the card uses its pinned fallback, and the
+        // certificate binds that proportional allocation, the basis and
+        // every stratum's counts.
+        let fallback =
+            sample_stratified_neyman(&pop, 42, 4, "fixture", None, epoch, VId(99)).unwrap();
+        assert!(fallback.decision_card.used_fallback());
+        assert_eq!(fallback.allocation, "proportional");
+        let summary = &fallback.certificate.parameters_summary;
+        assert!(
+            summary.starts_with(
+                "total_sample_size=4;basis=fixture;allocation=proportional;policy_epoch=none;stratum="
+            ),
+            "{summary}"
+        );
+        let counts: usize = fallback
+            .strata
+            .iter()
+            .map(|s| s.allocated_sample_size)
+            .sum();
+        assert_eq!(counts, 4);
+        assert_ne!(
+            fallback.certificate.certificate_oid,
+            strat.certificate.certificate_oid
         );
     }
 
