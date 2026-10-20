@@ -632,14 +632,18 @@ An audit's mechanics are journaled; the judgments stay the auditor's.
   period. It never posts.
 - **Book or pass, once.**
   - `fa adjustment book` names the committed entry that makes the correction.
-    That entry's legs must equal the proposal's, and one entry books one
-    proposal.
+    That entry must post exactly the proposal's legs, be recorded after the
+    proposal, be effective in the proposal's period, and stand (not be
+    reversed or replaced); one entry books one proposal. Booking reads the
+    entry, so it needs `read` as well as `produce`.
   - `fa adjustment pass` records why the proposal was left uncorrected, from
     the registered `adjustment_pass` reasons.
 - **Summarize.** `fa engagement sud` is the summary of uncorrected
-  misstatements. For each passed proposal it gives the effect on income,
-  assets, liabilities and equity had it been booked. It totals them under
-  rollover and iron curtain, and compares them with the stated parameters.
+  misstatements. For each passed proposal, and each booked one whose entry
+  was later reversed or replaced, it gives the effect on income, assets,
+  liabilities and equity had the correction been booked and stood. It
+  totals them under rollover and iron curtain, and compares them with the
+  stated parameters.
 
 ```bash
 fa engagement open FY26-audit --kind audit --period FY2026-P12 --overall "50000.00 USD" --performance "37500.00 USD" --clearly-trivial "2500.00 USD" --book ./books/acme --json
