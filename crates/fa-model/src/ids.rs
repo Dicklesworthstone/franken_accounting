@@ -206,6 +206,24 @@ pub fn production_profile_vid(book: Id128, matter: &str) -> VId {
     )
 }
 
+/// `vid(Engagement) = H("fa:vid:engagement:v1" ‖ book ‖ engagement)` (plan
+/// §11.12, bead fa-zgn): one engagement per id in a book.
+#[must_use]
+pub fn engagement_vid(book: Id128, engagement: &str) -> VId {
+    derive_vid(b"fa:vid:engagement:v1", &[&book.0, engagement.as_bytes()])
+}
+
+/// `vid(ProposedAdjustment) = H("fa:vid:proposed-adjustment:v1" ‖ book ‖
+/// engagement ‖ ordinal)` (bead fa-zgn): an engagement's proposals are
+/// numbered from 1 in the order they are journaled.
+#[must_use]
+pub fn proposed_adjustment_vid(book: Id128, engagement: &str, ordinal: u32) -> VId {
+    derive_vid(
+        b"fa:vid:proposed-adjustment:v1",
+        &[&book.0, engagement.as_bytes(), &ordinal.to_le_bytes()],
+    )
+}
+
 /// `vid(BatesRange) = H("fa:vid:bates-range:v1" ‖ book ‖ matter ‖ oid)`
 /// (bead fa-6l9): a document's one Bates range in a matter, so producing it
 /// again in that matter never burns new numbers.

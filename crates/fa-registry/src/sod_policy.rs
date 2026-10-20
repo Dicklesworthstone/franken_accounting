@@ -51,6 +51,8 @@ const SCENARIO_TRANSITIONS: &[&str] = &["Open", "Plan", "Discard"];
 const PRODUCTION_TRANSITIONS: &[&str] = &["Open", "Produce"];
 /// A statement package leaving the entity (plan §12.5; fa-wrrw).
 const ISSUANCE_TRANSITIONS: &[&str] = &["Issue"];
+/// An audit engagement's mechanics (plan §11.12; fa-zgn).
+const ENGAGEMENT_TRANSITIONS: &[&str] = &["Open", "Propose", "Book", "Pass"];
 const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "SchemaControl",
     "PolicyControl",
@@ -64,6 +66,7 @@ const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "ScenarioControl",
     "ProductionControl",
     "IssuanceControl",
+    "EngagementControl",
 ];
 /// A MigrationRun's lifecycle (plan §8.6).
 const MIGRATION_TRANSITIONS: &[&str] = &["Open", "Finalize", "Abandon"];
@@ -329,6 +332,7 @@ impl SodPolicy {
                         "ScenarioControl" => SCENARIO_TRANSITIONS,
                         "ProductionControl" => PRODUCTION_TRANSITIONS,
                         "IssuanceControl" => ISSUANCE_TRANSITIONS,
+                        "EngagementControl" => ENGAGEMENT_TRANSITIONS,
                         other => {
                             return Err(invalid(
                                 R,
