@@ -13378,6 +13378,22 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let sub = args.positional.get(1).map(String::as_str);
+    // The saved-source flags are gl aging's; any other subcommand would fold
+    // afresh and silently ignore the source, so they are refused there.
+    if sub != Some("aging")
+        && let Some(flag) = [
+            "--from-source",
+            "--aging-certificate",
+            "--control-certificate",
+        ]
+        .into_iter()
+        .find(|flag| args.flag(flag).is_some())
+    {
+        return Err(usage(
+            format!("{flag} is a saved source of gl aging, not of this subcommand"),
+            AGING_SOURCES_EXAMPLE,
+        ));
+    }
     if certify && !matches!(sub, Some("detail" | "roll-forward" | "aging" | "cash-flow")) {
         return Err(usage(
             "certification is available for gl detail, roll-forward, aging, and cash-flow",
@@ -13478,12 +13494,17 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "fa gl roll-forward --account 1000 --from 2026-03-01 --to 2026-03-31 --book <dir>",
             )?;
             book.prepare_report_history(who, &capability, req.known_at)??;
-            let (rf, artifact) = if certify {
+            let (rf, artifact, replay_options) = if certify {
                 let certified = book.certify_roll_forward(who, &capability, &req)??;
                 let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
-                (certified.report, Some(artifact))
+                let options = notary::roll_forward_replay_options(
+                    &book,
+                    &certified.certificate,
+                    &certified.report,
+                )?;
+                (certified.report, Some(artifact), Some(options))
             } else {
-                (book.roll_forward(who, &capability, &req)??, None)
+                (book.roll_forward(who, &capability, &req)??, None, None)
             };
             out.known_at(CommitSeq(rf.known_at));
             let units = &book.context().units;
@@ -13571,14 +13592,11 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 &human,
                 digest.as_deref(),
             );
-            if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
-                notary::emit_report_artifact(
-                    out,
-                    args,
-                    artifact,
-                    "fa:roll-forward:v1",
-                    &bytes,
-                    &retained,
+            if let (Some(artifact), Some((bytes, retained)), Some(options)) =
+                (artifact.as_ref(), retained, replay_options.as_deref())
+            {
+                notary::emit_general_ledger_certificate(
+                    out, args, artifact, &bytes, &retained, options,
                 );
             }
             Ok(())
