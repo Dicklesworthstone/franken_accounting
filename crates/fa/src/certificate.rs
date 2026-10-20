@@ -367,8 +367,7 @@ impl ReportCertificate {
     /// The pre-narrowing 8/9-registry v2 canonical closure a certificate
     /// retained before fa-t8gk narrowed the bound registry set carries.
     pub(crate) fn legacy_v2_registry_closure(&self) -> [u8; 32] {
-        legacy_v2_registry_digest(&self.selection)
-            .expect("embedded registries parse canonically")
+        legacy_v2_registry_digest(&self.selection).expect("embedded registries parse canonically")
     }
 }
 

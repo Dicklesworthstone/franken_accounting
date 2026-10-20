@@ -77,8 +77,8 @@ fn req_bool(t: &Table, key: &str, what: &str) -> Result<bool, RegistryError> {
 }
 
 fn req_nonempty_str<'a>(t: &'a Table, key: &str, what: &str) -> Result<&'a str, RegistryError> {
-    let val = req_str(R, t, key)
-        .map_err(|_| invalid(R, format!("{what}: missing string `{key}`")))?;
+    let val =
+        req_str(R, t, key).map_err(|_| invalid(R, format!("{what}: missing string `{key}`")))?;
     if val.trim().is_empty() {
         return Err(invalid(R, format!("{what}: `{key}` must not be empty")));
     }
@@ -96,10 +96,12 @@ fn req_str_list(t: &Table, key: &str, what: &str) -> Result<Vec<String>, Registr
     let mut seen = BTreeSet::new();
     let mut out = Vec::with_capacity(arr.len());
     for v in arr {
-        let s = v
-            .as_str()
-            .filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| invalid(R, format!("{what}: `{key}` holds a non-string or empty item")))?;
+        let s = v.as_str().filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+            invalid(
+                R,
+                format!("{what}: `{key}` holds a non-string or empty item"),
+            )
+        })?;
         if !seen.insert(s) {
             return Err(invalid(
                 R,
@@ -133,7 +135,9 @@ impl CapabilityCaveats {
             if usize::from(tag) != expected_tag {
                 return Err(invalid(
                     R,
-                    format!("[[op]] tags must be contiguous starting at 0; expected {expected_tag}, got {tag}"),
+                    format!(
+                        "[[op]] tags must be contiguous starting at 0; expected {expected_tag}, got {tag}"
+                    ),
                 ));
             }
             let what = format!("op {tag}");
@@ -201,7 +205,9 @@ impl CapabilityCaveats {
                     if status != CaveatStatus::Live || tag.is_some() || tracking_bead.is_some() {
                         return Err(invalid(
                             R,
-                            format!("{what}: `field` caveats must be `live` without `tag` or `tracking_bead`"),
+                            format!(
+                                "{what}: `field` caveats must be `live` without `tag` or `tracking_bead`"
+                            ),
                         ));
                     }
                     CaveatEncoding::Field
@@ -216,7 +222,9 @@ impl CapabilityCaveats {
                     if status != CaveatStatus::Live || tracking_bead.is_some() {
                         return Err(invalid(
                             R,
-                            format!("{what}: `tagged` caveats must be `live` without `tracking_bead`"),
+                            format!(
+                                "{what}: `tagged` caveats must be `live` without `tracking_bead`"
+                            ),
                         ));
                     }
                     if !caveat_tags.insert(tag_val) {
@@ -231,7 +239,9 @@ impl CapabilityCaveats {
                     if status != CaveatStatus::Dormant || tag.is_some() || tracking_bead.is_none() {
                         return Err(invalid(
                             R,
-                            format!("{what}: `planned` caveats must be `dormant` with `tracking_bead` and no `tag`"),
+                            format!(
+                                "{what}: `planned` caveats must be `dormant` with `tracking_bead` and no `tag`"
+                            ),
                         ));
                     }
                     CaveatEncoding::Planned
@@ -239,7 +249,9 @@ impl CapabilityCaveats {
                 other => {
                     return Err(invalid(
                         R,
-                        format!("{what}: unknown encoding `{other}` (expected `field`, `tagged`, or `planned`)"),
+                        format!(
+                            "{what}: unknown encoding `{other}` (expected `field`, `tagged`, or `planned`)"
+                        ),
                     ));
                 }
             };
@@ -290,7 +302,9 @@ impl CapabilityCaveats {
                 {
                     return Err(invalid(
                         R,
-                        format!("{what}: ops_ceiling includes `{op_name}`, which is forbidden for base_profile `{base_profile}`"),
+                        format!(
+                            "{what}: ops_ceiling includes `{op_name}`, which is forbidden for base_profile `{base_profile}`"
+                        ),
                     ));
                 }
             }
@@ -299,7 +313,9 @@ impl CapabilityCaveats {
                 if !ops_ceiling.contains(op_name) {
                     return Err(invalid(
                         R,
-                        format!("{what}: default_ops cites `{op_name}`, which is not in ops_ceiling"),
+                        format!(
+                            "{what}: default_ops cites `{op_name}`, which is not in ops_ceiling"
+                        ),
                     ));
                 }
             }

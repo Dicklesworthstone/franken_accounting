@@ -344,7 +344,10 @@ pub fn generate_part370_bundle(book: &Part370BankBook) -> Result<Part370OutputBu
             .checked_add(acct.accrued_interest_mantissa)
             .ok_or_else(|| FormatError::Overflow {
                 format: "fdic_part370_v1",
-                detail: format!("principal + interest overflow on account {}", acct.dp_acct_id),
+                detail: format!(
+                    "principal + interest overflow on account {}",
+                    acct.dp_acct_id
+                ),
             })?;
         if account_map
             .insert(acct.dp_acct_id.clone(), (acct, orc, total_pi))
@@ -352,7 +355,10 @@ pub fn generate_part370_bundle(book: &Part370BankBook) -> Result<Part370OutputBu
         {
             return Err(FormatError::Parse {
                 format: "fdic_part370_v1",
-                detail: format!("duplicate account `DP_Acct_Identifier` {:?}", acct.dp_acct_id),
+                detail: format!(
+                    "duplicate account `DP_Acct_Identifier` {:?}",
+                    acct.dp_acct_id
+                ),
             });
         }
     }
@@ -367,15 +373,16 @@ pub fn generate_part370_bundle(book: &Part370BankBook) -> Result<Part370OutputBu
 
     let mut bps_by_account: BTreeMap<String, u32> = BTreeMap::new();
     for edge in &sorted_participants {
-        let (acct, acct_orc, _) = account_map.get(&edge.dp_acct_id).ok_or_else(|| {
-            FormatError::Parse {
-                format: "fdic_part370_v1",
-                detail: format!(
-                    "participant edge references unknown account {:?}",
-                    edge.dp_acct_id
-                ),
-            }
-        })?;
+        let (acct, acct_orc, _) =
+            account_map
+                .get(&edge.dp_acct_id)
+                .ok_or_else(|| FormatError::Parse {
+                    format: "fdic_part370_v1",
+                    detail: format!(
+                        "participant edge references unknown account {:?}",
+                        edge.dp_acct_id
+                    ),
+                })?;
         if !customer_ids.contains(&edge.cs_unique_id) {
             return Err(FormatError::Parse {
                 format: "fdic_part370_v1",
@@ -464,21 +471,25 @@ pub fn generate_part370_bundle(book: &Part370BankBook) -> Result<Part370OutputBu
 
         let cap_multiplier: i128 = match orc {
             Part370OrcCode::Rev | Part370OrcCode::Irr => {
-                let count = edge.beneficiary_count.clamp(1, FDIC_TRUST_MAX_BENEFICIARIES);
+                let count = edge
+                    .beneficiary_count
+                    .clamp(1, FDIC_TRUST_MAX_BENEFICIARIES);
                 i128::from(count)
             }
             _ => 1,
         };
-        let capacity_limit =
-            book.sdia_mantissa
-                .checked_mul(cap_multiplier)
-                .ok_or_else(|| FormatError::Overflow {
-                    format: "fdic_part370_v1",
-                    detail: "insurance limit overflow".into(),
-                })?;
+        let capacity_limit = book
+            .sdia_mantissa
+            .checked_mul(cap_multiplier)
+            .ok_or_else(|| FormatError::Overflow {
+                format: "fdic_part370_v1",
+                detail: "insurance limit overflow".into(),
+            })?;
 
         let key = (edge.cs_unique_id.clone(), orc);
-        let rem = remaining_insurance.entry(key.clone()).or_insert(capacity_limit);
+        let rem = remaining_insurance
+            .entry(key.clone())
+            .or_insert(capacity_limit);
         let insured = allocable.max(0).min(*rem);
         *rem -= insured;
         let uninsured = allocable - insured;

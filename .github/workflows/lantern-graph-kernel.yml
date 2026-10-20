@@ -20,6 +20,9 @@ on:
       - 'crates/fa/src/book.rs'
       - 'crates/fa/src/bank.rs'
       - 'crates/fa/src/bank/**'
+      - 'crates/fa/src/draft_review.rs'
+      - 'crates/fa/src/draft_review/**'
+      - 'crates/fa/tests/draft_review.rs'
       - 'crates/fa-journal/src/import.rs'
       - 'crates/fa-journal/src/import/**'
       - 'crates/fa-journal/src/bank.rs'
@@ -39,7 +42,9 @@ on:
       - 'crates/fa-verify/src/envelope/**'
       - 'crates/fa-cli/src/bank.rs'
       - 'crates/fa-cli/src/closing.rs'
+      - 'crates/fa-cli/src/closing/**'
       - 'crates/fa-cli/tests/closing.rs'
+      - 'crates/fa-cli/tests/closing/**'
       - 'crates/fa/tests/closing_history.rs'
       - 'crates/fa-journal/src/closing.rs'
       - 'crates/fa-journal/src/chart/**'
@@ -72,6 +77,7 @@ on:
       - 'crates/fa-mcp/src/registry.rs'
       - 'crates/fa-mcp/src/server.rs'
       - 'crates/fa-mcp/tests/e2e_stdio.rs'
+      - 'crates/fa-mcp/tests/e2e_stdio/**'
       - 'crates/fa-registry/src/g0.rs'
       - 'registries/operation_costs.toml'
       - 'registries/verbs.toml'
@@ -310,6 +316,13 @@ jobs:
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib attestation --jobs 2 -- --nocapture
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-verify --lib envelope --jobs 2 -- --nocapture
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-notary --lib journal::tests::every_evidence_kind_matches_the_verifier_byte_for_byte --jobs 2 -- --exact --nocapture
+      - name: Test retained draft comparison certificates and historical authority
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib draft_review --jobs 2 -- --nocapture
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test draft_review --jobs 2 -- --nocapture
       - name: Test bank statement parsers, retained intake, matching and native confirmations
         if: ${{ !cancelled() }}
         shell: bash
@@ -358,6 +371,12 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --test e2e_stdio bank_history_over_stdio_preserves_releases_and_source_authority --jobs 2 -- --exact --nocapture
+      - name: Test launch-bound atomic draft review and retained replay over MCP stdio
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --test e2e_stdio draft_review:: --jobs 2 -- --nocapture
       - name: Regress existing native certificate replay through the CLI
         if: ${{ !cancelled() }}
         shell: bash

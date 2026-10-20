@@ -166,8 +166,7 @@ impl StatementMarkdownIr {
         let book_id = Id128(r.fixed::<16>("book_id")?);
         let branch_id = Id128(r.fixed::<16>("branch_id")?);
         let known_at = r.u64("known_at")?;
-        let compared_known_at =
-            r.opt("compared_known_at", |r| r.u64("compared_known_at"))?;
+        let compared_known_at = r.opt("compared_known_at", |r| r.u64("compared_known_at"))?;
         let definition_name = r.str(64, "definition_name")?.to_string();
         let definition_version = r.u32("definition_version")?;
         let definition_digest = Oid(r.fixed::<32>("definition_digest")?);
@@ -250,7 +249,11 @@ pub fn format_scaled_i128(mantissa: i128, scale: u8) -> Result<String, Statement
     Ok(format!("{sign}{whole}.{frac:0width$}"))
 }
 
-fn classify_footing(definition: &StatementDefinition, line_code: &str, source: &LineSource) -> FootingRule {
+fn classify_footing(
+    definition: &StatementDefinition,
+    line_code: &str,
+    source: &LineSource,
+) -> FootingRule {
     if definition.check_lines().contains(&line_code.to_string())
         || matches!(line_code, "total_equity" | "net_income")
     {
@@ -527,7 +530,10 @@ pub fn render_restatement_diff_ir(
     let headers = vec![
         "Code".to_string(),
         "Line".to_string(),
-        format!("As Originally Reported (seq {})", originally_reported.known_at),
+        format!(
+            "As Originally Reported (seq {})",
+            originally_reported.known_at
+        ),
         format!("As Currently Stated (seq {})", currently_stated.known_at),
         "Restatement Delta".to_string(),
     ];
@@ -570,11 +576,13 @@ pub fn render_restatement_diff_ir(
                         def_line.code
                     ))
                 })?;
-            let delta = curr_amt.checked_sub(orig_amt).ok_or(StatementError::Overflow {
-                line: def_line.code.clone(),
-                column: "Restatement Delta".into(),
-                unit_id,
-            })?;
+            let delta = curr_amt
+                .checked_sub(orig_amt)
+                .ok_or(StatementError::Overflow {
+                    line: def_line.code.clone(),
+                    column: "Restatement Delta".into(),
+                    unit_id,
+                })?;
             rows.push(MarkdownRow {
                 line_code: def_line.code.clone(),
                 footing: classify_footing(definition, &def_line.code, &def_line.source),
@@ -698,11 +706,8 @@ pub fn render_trial_balance_ir(
                 "trial balance uses unit_id {unit_id} missing from UnitFormatSpec list"
             ))
         })?;
-        let mut unit_rows: Vec<&TrialBalanceIrRow> = input
-            .rows
-            .iter()
-            .filter(|r| r.unit_id == unit_id)
-            .collect();
+        let mut unit_rows: Vec<&TrialBalanceIrRow> =
+            input.rows.iter().filter(|r| r.unit_id == unit_id).collect();
         unit_rows.sort_by(|a, b| a.account_code.cmp(&b.account_code));
 
         let mut rows = Vec::with_capacity(unit_rows.len() + 1);
@@ -710,27 +715,30 @@ pub fn render_trial_balance_ir(
         let mut total_credits: i128 = 0;
 
         for r in unit_rows {
-            total_debits = total_debits.checked_add(r.debits).ok_or_else(|| {
-                StatementError::Overflow {
-                    line: r.account_code.clone(),
-                    column: "Debits".into(),
-                    unit_id,
-                }
-            })?;
-            total_credits = total_credits.checked_add(r.credits).ok_or_else(|| {
-                StatementError::Overflow {
-                    line: r.account_code.clone(),
-                    column: "Credits".into(),
-                    unit_id,
-                }
-            })?;
-            let net = r.debits.checked_sub(r.credits).ok_or_else(|| {
-                StatementError::Overflow {
+            total_debits =
+                total_debits
+                    .checked_add(r.debits)
+                    .ok_or_else(|| StatementError::Overflow {
+                        line: r.account_code.clone(),
+                        column: "Debits".into(),
+                        unit_id,
+                    })?;
+            total_credits =
+                total_credits
+                    .checked_add(r.credits)
+                    .ok_or_else(|| StatementError::Overflow {
+                        line: r.account_code.clone(),
+                        column: "Credits".into(),
+                        unit_id,
+                    })?;
+            let net = r
+                .debits
+                .checked_sub(r.credits)
+                .ok_or_else(|| StatementError::Overflow {
                     line: r.account_code.clone(),
                     column: "Net (Dr - Cr)".into(),
                     unit_id,
-                }
-            })?;
+                })?;
             rows.push(MarkdownRow {
                 line_code: r.account_code.clone(),
                 footing: FootingRule::None,
@@ -744,13 +752,14 @@ pub fn render_trial_balance_ir(
             });
         }
 
-        let total_net = total_debits.checked_sub(total_credits).ok_or_else(|| {
-            StatementError::Overflow {
-                line: "total_trial_balance".into(),
-                column: "Net (Dr - Cr)".into(),
-                unit_id,
-            }
-        })?;
+        let total_net =
+            total_debits
+                .checked_sub(total_credits)
+                .ok_or_else(|| StatementError::Overflow {
+                    line: "total_trial_balance".into(),
+                    column: "Net (Dr - Cr)".into(),
+                    unit_id,
+                })?;
         rows.push(MarkdownRow {
             line_code: "total_trial_balance".to_string(),
             footing: FootingRule::Double,
@@ -877,34 +886,37 @@ pub fn render_register_ir(
     let mut total_debits: i128 = 0;
     let mut total_credits: i128 = 0;
     for (idx, r) in input.rows.iter().enumerate() {
-        total_debits = total_debits.checked_add(r.debit).ok_or_else(|| {
-            StatementError::Overflow {
-                line: format!("row_{idx}"),
-                column: "Debit".into(),
-                unit_id: input.unit_id,
-            }
-        })?;
-        total_credits = total_credits.checked_add(r.credit).ok_or_else(|| {
-            StatementError::Overflow {
-                line: format!("row_{idx}"),
-                column: "Credit".into(),
-                unit_id: input.unit_id,
-            }
-        })?;
-        let delta = r.debit.checked_sub(r.credit).ok_or_else(|| {
-            StatementError::Overflow {
-                line: format!("row_{idx}"),
-                column: "Running Balance".into(),
-                unit_id: input.unit_id,
-            }
-        })?;
-        running = running.checked_add(delta).ok_or_else(|| {
-            StatementError::Overflow {
+        total_debits =
+            total_debits
+                .checked_add(r.debit)
+                .ok_or_else(|| StatementError::Overflow {
+                    line: format!("row_{idx}"),
+                    column: "Debit".into(),
+                    unit_id: input.unit_id,
+                })?;
+        total_credits =
+            total_credits
+                .checked_add(r.credit)
+                .ok_or_else(|| StatementError::Overflow {
+                    line: format!("row_{idx}"),
+                    column: "Credit".into(),
+                    unit_id: input.unit_id,
+                })?;
+        let delta = r
+            .debit
+            .checked_sub(r.credit)
+            .ok_or_else(|| StatementError::Overflow {
                 line: format!("row_{idx}"),
                 column: "Running Balance".into(),
                 unit_id: input.unit_id,
-            }
-        })?;
+            })?;
+        running = running
+            .checked_add(delta)
+            .ok_or_else(|| StatementError::Overflow {
+                line: format!("row_{idx}"),
+                column: "Running Balance".into(),
+                unit_id: input.unit_id,
+            })?;
         rows.push(MarkdownRow {
             line_code: format!("leg_{}_{}", r.recorded_at, idx),
             footing: FootingRule::None,
@@ -1026,27 +1038,27 @@ pub fn render_open_items_ir(
     let mut total_open: i128 = 0;
 
     for (idx, item) in input.items.iter().enumerate() {
-        let expected_open =
-            item.original_amount
-                .checked_sub(item.settled_amount)
-                .ok_or_else(|| StatementError::Overflow {
-                    line: item.item_vid_hex.clone(),
-                    column: "Open Balance".into(),
-                    unit_id: input.unit_id,
-                })?;
+        let expected_open = item
+            .original_amount
+            .checked_sub(item.settled_amount)
+            .ok_or_else(|| StatementError::Overflow {
+                line: item.item_vid_hex.clone(),
+                column: "Open Balance".into(),
+                unit_id: input.unit_id,
+            })?;
         if expected_open != item.open_amount {
             return Err(StatementError::Input(format!(
                 "open item `{}` open_amount ({}) != original ({}) - settled ({})",
                 item.item_vid_hex, item.open_amount, item.original_amount, item.settled_amount
             )));
         }
-        total_orig = total_orig.checked_add(item.original_amount).ok_or_else(|| {
-            StatementError::Overflow {
+        total_orig = total_orig
+            .checked_add(item.original_amount)
+            .ok_or_else(|| StatementError::Overflow {
                 line: item.item_vid_hex.clone(),
                 column: "Original".into(),
                 unit_id: input.unit_id,
-            }
-        })?;
+            })?;
         total_settled = total_settled
             .checked_add(item.settled_amount)
             .ok_or_else(|| StatementError::Overflow {
@@ -1054,13 +1066,14 @@ pub fn render_open_items_ir(
                 column: "Settled".into(),
                 unit_id: input.unit_id,
             })?;
-        total_open = total_open.checked_add(item.open_amount).ok_or_else(|| {
-            StatementError::Overflow {
-                line: item.item_vid_hex.clone(),
-                column: "Open Balance".into(),
-                unit_id: input.unit_id,
-            }
-        })?;
+        total_open =
+            total_open
+                .checked_add(item.open_amount)
+                .ok_or_else(|| StatementError::Overflow {
+                    line: item.item_vid_hex.clone(),
+                    column: "Open Balance".into(),
+                    unit_id: input.unit_id,
+                })?;
         rows.push(MarkdownRow {
             line_code: format!("item_{idx}_{}", item.item_vid_hex),
             footing: FootingRule::None,
@@ -1125,7 +1138,11 @@ mod tests {
     use crate::{Account, AccountBalance, ColumnInput, StatementInput, evaluate};
     use fa_time::DateDay;
 
-    fn sample_statement(known_at: u64, revenue_cents: i128, expense_cents: i128) -> (StatementDefinition, Statement) {
+    fn sample_statement(
+        known_at: u64,
+        revenue_cents: i128,
+        expense_cents: i128,
+    ) -> (StatementDefinition, Statement) {
         let def = StatementDefinition::embedded("balance-sheet").unwrap();
         let net_cash = 100_000 + revenue_cents - expense_cents;
         let input = StatementInput {

@@ -150,6 +150,54 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// The sync facade has re-performed this complete historical draft
+    /// rehearsal. Recheck current authority at its selected source prefix;
+    /// a known-at ceiling need not reach today's unrelated trunk entries.
+    /// The store still requires `verified_at` to be the current frontier.
+    pub(crate) async fn retain_replayed_draft_diff(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &crate::DraftDiffCertificate,
+        verified_at: CommitSeq,
+    ) -> Outcome<RetainedCertificate> {
+        let admitted = self.query(cx, |db, context| {
+            let authority =
+                match fa_journal::policy::admit_reads(db, context, principal, capability)? {
+                    Ok(authority) => authority,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
+            if let Err(refusal) = authority.whole_book(certificate.known_at()) {
+                return Ok(Err(refusal));
+            }
+            Ok(
+                fa_policy::require(capability, Op::Produce, "retaining a draft diff")
+                    .map_err(|denial| fa_journal::policy::refusal(&denial)),
+            )
+        })?;
+        if let Err(refusal) = admitted {
+            return Ok(Err(refusal));
+        }
+        let artifact = match ReportArtifact::try_from(certificate) {
+            Ok(artifact) => artifact,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let validated = ValidatedArtifact {
+            artifact,
+            verified_at,
+        };
+        let context = self.context().clone();
+        crate::certificate_store::retain_validated(
+            &mut self.db,
+            cx,
+            &context,
+            &self.blobs,
+            &validated,
+        )
+        .await
+    }
+
     /// Retrieve the original immutable artifact, including non-native families.
     /// The full public digest is mandatory; a nested source is never substituted.
     /// Current whole-book read authority is checked before fetching any bytes and

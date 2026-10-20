@@ -20,6 +20,9 @@ use std::time::{Duration, Instant};
 use fa_cli::json::Json;
 use fastmcp_rust::{JsonValue, json};
 
+#[path = "e2e_stdio/draft_review.rs"]
+mod draft_review;
+
 const PROTOCOL: &str = "2026-07-28";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 

@@ -25,6 +25,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Supports native reports, statement comparisons/traces, roll-forwards
     /// (including their GL detail view), and direct, split and policy cash flow.
     /// Other families refuse until their distinct relevance law is implemented.
+    /// In particular, a historical draft rehearsal is never declared Current
+    /// from its trunk trial-balance certificate alone; its full replay uses the
+    /// sync facade and this slice supplies no draft freshness verdict.
     pub fn report_artifact_status(
         &self,
         cx: &PurposeContexts,

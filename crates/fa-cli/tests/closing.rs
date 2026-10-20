@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fa_cli::json::{self, Json};
 
+#[path = "closing/draft_review.rs"]
+mod draft_review;
+
 fn run(book: &Path, args: &[&str]) -> (i32, Json) {
     let result = Command::new(env!("CARGO_BIN_EXE_fa"))
         .arg("--book")

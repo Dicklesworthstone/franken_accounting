@@ -213,8 +213,9 @@ impl WarehouseExportReceipt {
         let connector = WarehouseConnector::from_tag(connector_tag, &r).map_err(map_dec)?;
         let destination_ref = r.str(256, "destination_ref").map_err(map_dec)?.to_string();
         let report_digest = r.fixed::<32>("report_digest").map_err(map_dec)?;
-        let report_certificate_digest =
-            r.fixed::<32>("report_certificate_digest").map_err(map_dec)?;
+        let report_certificate_digest = r
+            .fixed::<32>("report_certificate_digest")
+            .map_err(map_dec)?;
         let payload_oid_bytes = r.fixed::<32>("payload_document_oid").map_err(map_dec)?;
         let fwc_receipt_hash = r.fixed::<32>("fwc_receipt_hash").map_err(map_dec)?;
         let robot_schema_version = r
@@ -280,7 +281,11 @@ fn extract_json_string_field<'a>(
     Ok(&rest[..end_quote])
 }
 
-fn parse_32_byte_hex(hex_str: &str, _field: &str, format: &'static str) -> Result<[u8; 32], FormatError> {
+fn parse_32_byte_hex(
+    hex_str: &str,
+    _field: &str,
+    format: &'static str,
+) -> Result<[u8; 32], FormatError> {
     hex_decode(format, hex_str)
 }
 
@@ -350,10 +355,12 @@ pub fn parse_fwc_plaid_transactions_sync(
     )?;
 
     let tx_key = "\"transactions\"";
-    let tx_pos = payload_json.find(tx_key).ok_or_else(|| FormatError::Parse {
-        format: FMT,
-        detail: "missing `transactions` array".into(),
-    })?;
+    let tx_pos = payload_json
+        .find(tx_key)
+        .ok_or_else(|| FormatError::Parse {
+            format: FMT,
+            detail: "missing `transactions` array".into(),
+        })?;
     let after_tx = &payload_json[tx_pos + tx_key.len()..];
     let arr_start = after_tx.find('[').ok_or_else(|| FormatError::Parse {
         format: FMT,
@@ -380,8 +387,10 @@ pub fn parse_fwc_plaid_transactions_sync(
         cursor = &after_start[obj_end + 1..];
 
         let _tx_id = extract_json_string_field(obj_str, "transaction_id", FMT)?;
-        let booking_date =
-            parse_date_iso(FMT, extract_json_string_field(obj_str, "booking_date", FMT)?)?;
+        let booking_date = parse_date_iso(
+            FMT,
+            extract_json_string_field(obj_str, "booking_date", FMT)?,
+        )?;
         let value_date =
             parse_date_iso(FMT, extract_json_string_field(obj_str, "value_date", FMT)?)?;
         let direction = extract_json_string_field(obj_str, "direction", FMT)?;
@@ -391,7 +400,9 @@ pub fn parse_fwc_plaid_transactions_sync(
             other => {
                 return Err(FormatError::Parse {
                     format: FMT,
-                    detail: format!("invalid direction {other:?}; expected \"credit\" or \"debit\""),
+                    detail: format!(
+                        "invalid direction {other:?}; expected \"credit\" or \"debit\""
+                    ),
                 });
             }
         };
@@ -638,21 +649,16 @@ mod tests {
     #[test]
     fn fixture_plaid_transactions_sync_payload_parses_to_golden_bank_lines_and_links_document() {
         let units = UnitCatalog::embedded().unwrap();
-        let result = parse_fwc_plaid_transactions_sync(
-            FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON,
-            &units,
-        )
-        .unwrap();
+        let result =
+            parse_fwc_plaid_transactions_sync(FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON, &units)
+                .unwrap();
 
         assert_eq!(result.robot_schema_version, "fwc.robot.v1");
         assert_eq!(
             hex_encode(&result.fwc_receipt_hash),
             "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
         );
-        assert_eq!(
-            result.extract.instrument_account_id,
-            "plaid-acct-chk-1010"
-        );
+        assert_eq!(result.extract.instrument_account_id, "plaid-acct-chk-1010");
         assert_eq!(result.extract.sequence_number, 1);
         assert_eq!(result.extract.currency, "USD");
         assert_eq!(result.extract.opening_balance, 100_000);
@@ -713,7 +719,11 @@ mod tests {
                 assert_eq!(refusal.exit_code, 4);
                 assert_eq!(refusal.code, "FA-REF-094");
                 assert_eq!(refusal.connector, "plaid");
-                assert!(refusal.fix_hint.contains("install flywheel_connectors (`fwc`)"));
+                assert!(
+                    refusal
+                        .fix_hint
+                        .contains("install flywheel_connectors (`fwc`)")
+                );
                 println!("fwc_missing_bank_fetch_refusal={refusal}");
             }
             other => panic!("expected Environment refusal (exit 4), got: {other:?}"),
@@ -732,7 +742,11 @@ mod tests {
             FwcSubprocessError::Environment(refusal) => {
                 assert_eq!(refusal.exit_code, 4);
                 assert_eq!(refusal.connector, "snowflake");
-                assert!(refusal.fix_hint.contains("install flywheel_connectors (`fwc`)"));
+                assert!(
+                    refusal
+                        .fix_hint
+                        .contains("install flywheel_connectors (`fwc`)")
+                );
                 println!("fwc_missing_warehouse_export_refusal={refusal}");
             }
             other => panic!("expected Environment refusal (exit 4), got: {other:?}"),

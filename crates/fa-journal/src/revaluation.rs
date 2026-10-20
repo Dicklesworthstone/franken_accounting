@@ -19,7 +19,8 @@ use fa_model::{
 use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 use fa_money::{Amount, Side, UnitId, UnitKind};
 use fa_policy::{Capability, Op, Reach};
-use fa_registry::{EntryClasses, EvidencePolicy, FxLaws};
+use fa_registry::evidence_policy::EvidencePolicy;
+use fa_registry::{EntryClasses, FxLaws};
 use fa_time::{DateDay, PeriodKind, PeriodState};
 use fgdb::{Database, WriteTxn};
 use fgdb_types::context::PurposeContexts;

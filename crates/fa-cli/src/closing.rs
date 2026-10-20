@@ -4,6 +4,9 @@
 //! survives approval commits. The intrinsic basis is independently recomputed
 //! during native planning; a PostPlan then guards the publication frontier.
 
+mod draft_review;
+pub(crate) use draft_review::render_draft_diff;
+
 use std::collections::BTreeMap;
 
 use fa::{Book, ClosingResidual, PostIntent, PreparedYearEndClose, YearEndCloseRequest};
@@ -39,8 +42,10 @@ const FLAGS: &[&str] = &[
     "--effective-from",
     "--as-of",
     "--as-known-at",
+    "--draft",
+    "--certificate-out",
 ];
-const SWITCHES: &[&str] = &["--dry-run", "--review-only"];
+const SWITCHES: &[&str] = &["--dry-run", "--review-only", "--certify"];
 
 pub(crate) fn close_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
@@ -53,8 +58,9 @@ pub(crate) fn close_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "map" => set_routes(ctx, args),
         "routes" => show_routes(ctx, args),
         "year-end" => year_end(ctx, args),
+        "dry-run" => draft_review::run(ctx, args),
         _ => Err(usage(
-            "close has map, routes and year-end subcommands",
+            "close has map, routes, year-end and dry-run subcommands",
             EXAMPLE,
         )),
     }

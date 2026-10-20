@@ -1425,7 +1425,11 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
     );
     assert_eq!(code_b, 0, "{}\n{}", out_b.stdout, out_b.stderr);
     checked(&out_b.stdout);
-    assert!(out_b.stdout.contains("\"principal\":\"prep-b\""), "{}", out_b.stdout);
+    assert!(
+        out_b.stdout.contains("\"principal\":\"prep-b\""),
+        "{}",
+        out_b.stdout
+    );
     let entry_b = field(&out_b.stdout, "vid").unwrap_or_default().to_string();
 
     // Provenance & SoD across sessions through fad:
@@ -1504,7 +1508,11 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
         &b,
         "--json",
     ]);
-    assert_eq!(field(&reviewed, "event"), Some("attestation_recorded"), "{reviewed}");
+    assert_eq!(
+        field(&reviewed, "event"),
+        Some("attestation_recorded"),
+        "{reviewed}"
+    );
     let posted_after_review = ok(&[
         "--token",
         &prep_tokens[0].1,
@@ -1517,7 +1525,11 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
         &b,
         "--json",
     ]);
-    assert_eq!(field(&posted_after_review, "event"), Some("posted"), "{posted_after_review}");
+    assert_eq!(
+        field(&posted_after_review, "event"),
+        Some("posted"),
+        "{posted_after_review}"
+    );
 
     // A valid token issued in another book is refused by fad with FA-REF-156 (exit 7).
     let other_dir = tmp("other-book");
@@ -1605,9 +1617,11 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
         };
         let mut stream = UnixStream::connect(&socket).expect("connect to fad");
         for req in [&req1, &req2, &req3] {
-            let encoded =
-                fa_cli::wire::encode(req.to_json(1).render().as_bytes(), reg.daemon.max_frame_bytes)
-                    .unwrap();
+            let encoded = fa_cli::wire::encode(
+                req.to_json(1).render().as_bytes(),
+                reg.daemon.max_frame_bytes,
+            )
+            .unwrap();
             stream.write_all(&encoded).unwrap();
         }
         stream.shutdown(std::net::Shutdown::Write).unwrap();
@@ -1622,7 +1636,11 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
         }
         assert_eq!(replies.len(), 3);
         assert_eq!(replies[0].exit, 0, "{}", replies[0].stdout);
-        assert!(replies[0].stdout.contains("\"principal\":\"prep-a\""), "{}", replies[0].stdout);
+        assert!(
+            replies[0].stdout.contains("\"principal\":\"prep-a\""),
+            "{}",
+            replies[0].stdout
+        );
         assert_eq!(replies[1].exit, 0, "{}", replies[1].stdout);
         assert!(
             replies[1].stdout.contains("\"principal\":\"prep-a\""),
@@ -1630,7 +1648,11 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
             replies[1].stdout
         );
         assert_eq!(replies[2].exit, 7, "{}", replies[2].stdout);
-        assert!(replies[2].stdout.contains("FA-REF-011"), "{}", replies[2].stdout);
+        assert!(
+            replies[2].stdout.contains("FA-REF-011"),
+            "{}",
+            replies[2].stdout
+        );
     }
 
     let (code, stopped, err) = fad(&["stop", "--book", &b, "--json"]);
@@ -1644,8 +1666,20 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
         fa::book::Book::open_dir(&book, keys, fa::book::Entropy::production()).expect("open book");
     let vid_a = fgdb_types::VId(u128::from_str_radix(&entry_a, 16).expect("entry_a vid"));
     let vid_b = fgdb_types::VId(u128::from_str_radix(&entry_b, 16).expect("entry_b vid"));
-    let (committed_a, _) = reopened.read_entry(vid_a).expect("read_entry a").expect("entry a");
-    let (committed_b, _) = reopened.read_entry(vid_b).expect("read_entry b").expect("entry b");
-    assert_eq!(committed_a.proposal.principal_ref, fa_model::principal_vid("prep-a"));
-    assert_eq!(committed_b.proposal.principal_ref, fa_model::principal_vid("prep-b"));
+    let (committed_a, _) = reopened
+        .read_entry(vid_a)
+        .expect("read_entry a")
+        .expect("entry a");
+    let (committed_b, _) = reopened
+        .read_entry(vid_b)
+        .expect("read_entry b")
+        .expect("entry b");
+    assert_eq!(
+        committed_a.proposal.principal_ref,
+        fa_model::principal_vid("prep-a")
+    );
+    assert_eq!(
+        committed_b.proposal.principal_ref,
+        fa_model::principal_vid("prep-b")
+    );
 }

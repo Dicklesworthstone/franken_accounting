@@ -698,15 +698,15 @@ fn round_bps_share(
 /// 2. Every `AdjustmentLayerLeg` entry balances per `(entry_id, unit_id)`.
 /// 3. Every difference between `parent_balances` and `layered_balances` is 100% explained
 ///    by rule-versioned adjustment legs with registered M-1/M-3 or statutory reason codes.
-pub fn reconcile_book_to_book(
-    input: &BookToBookInput,
-) -> Result<BookToBookBridge, ConcordatError> {
+pub fn reconcile_book_to_book(input: &BookToBookInput) -> Result<BookToBookBridge, ConcordatError> {
     match input.layered_kind {
         BookKind::AdjustmentLayer {
             parent_book_id,
             parent_known_at,
         } => {
-            if parent_book_id != input.parent_book_id || input.parent_book_id == input.layered_book_id {
+            if parent_book_id != input.parent_book_id
+                || input.parent_book_id == input.layered_book_id
+            {
                 return Err(ConcordatError::ParentBookMismatch {
                     expected_parent: input.parent_book_id,
                     layered_book: input.layered_book_id,
@@ -735,11 +735,12 @@ pub fn reconcile_book_to_book(
     }
     let units: BTreeSet<u32> = input.units.iter().copied().collect();
     if units.len() != input.units.len() {
-        return Err(ConcordatError::Input("duplicate unit in book-to-book input".into()));
+        return Err(ConcordatError::Input(
+            "duplicate unit in book-to-book input".into(),
+        ));
     }
 
-    let accounts: BTreeMap<u128, &Account> =
-        input.accounts.iter().map(|a| (a.id, a)).collect();
+    let accounts: BTreeMap<u128, &Account> = input.accounts.iter().map(|a| (a.id, a)).collect();
     if accounts.len() != input.accounts.len() {
         return Err(ConcordatError::Input(
             "duplicate account ID in book-to-book input".into(),
@@ -754,7 +755,7 @@ pub fn reconcile_book_to_book(
                 "adjustment leg debits and credits must be non-negative".into(),
             ));
         }
-        if ! units.contains(&leg.unit_id) {
+        if !units.contains(&leg.unit_id) {
             return Err(ConcordatError::Input(format!(
                 "adjustment leg uses undeclared unit {}",
                 leg.unit_id
@@ -772,7 +773,9 @@ pub fn reconcile_book_to_book(
                 account.code
             )));
         }
-        let totals = entry_totals.entry((leg.entry_id, leg.unit_id)).or_insert((0, 0));
+        let totals = entry_totals
+            .entry((leg.entry_id, leg.unit_id))
+            .or_insert((0, 0));
         totals.0 = totals
             .0
             .checked_add(leg.debits)
@@ -856,7 +859,10 @@ pub fn reconcile_book_to_book(
     for (account_id, unit_id) in all_keys {
         let account = accounts[&account_id];
         let parent_net = parent_map.get(&(account_id, unit_id)).copied().unwrap_or(0);
-        let layered_net = layered_map.get(&(account_id, unit_id)).copied().unwrap_or(0);
+        let layered_net = layered_map
+            .get(&(account_id, unit_id))
+            .copied()
+            .unwrap_or(0);
         let mut explanations = explanations_by_cell
             .remove(&(account_id, unit_id))
             .unwrap_or_default();
@@ -926,7 +932,9 @@ pub fn match_intercompany_pairs(
     units: &[u32],
 ) -> Result<Vec<MatchedIntercompanyPair>, ConcordatError> {
     if pairs.len() > MAX_IC_PAIRS {
-        return Err(ConcordatError::Input("intercompany pairs exceed bound".into()));
+        return Err(ConcordatError::Input(
+            "intercompany pairs exceed bound".into(),
+        ));
     }
     let mut member_nets: BTreeMap<(Id128, u128, u32), i128> = BTreeMap::new();
     let mut known_entities = BTreeSet::new();
@@ -1113,8 +1121,7 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
         ));
     }
 
-    let accounts: BTreeMap<u128, &Account> =
-        input.accounts.iter().map(|a| (a.id, a)).collect();
+    let accounts: BTreeMap<u128, &Account> = input.accounts.iter().map(|a| (a.id, a)).collect();
     if accounts.len() != input.accounts.len() {
         return Err(ConcordatError::Input(
             "duplicate account in consolidation input".into(),
@@ -1423,12 +1430,14 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
 
     let consolidated_balances: Vec<AccountBalance> = consolidated_totals
         .into_iter()
-        .map(|((account_id, unit_id), (debits, credits))| AccountBalance {
-            account_id,
-            unit_id,
-            debits,
-            credits,
-        })
+        .map(
+            |((account_id, unit_id), (debits, credits))| AccountBalance {
+                account_id,
+                unit_id,
+                debits,
+                credits,
+            },
+        )
         .collect();
 
     let bs_def = StatementDefinition::embedded("balance-sheet")?;
@@ -1468,8 +1477,10 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
 
     // Compute per-entity standalone total equity (Equity + Revenue - Expense, credit-normal)
     // and verify the FA-INV-13 consolidated equity conservation law per unit.
-    let subsidiary_ids: BTreeSet<Id128> =
-        sorted_ownership.iter().map(|s| s.subsidiary_entity).collect();
+    let subsidiary_ids: BTreeSet<Id128> = sorted_ownership
+        .iter()
+        .map(|s| s.subsidiary_entity)
+        .collect();
 
     let entity_total_equity = |entity_id: Id128, unit_id: u32| -> Result<i128, ConcordatError> {
         let mut total = 0i128;
@@ -1775,7 +1786,10 @@ mod tests {
         permuted.members[0].balances.reverse();
         permuted.intercompany_pairs.reverse();
         let run_b = consolidate(&permuted).unwrap();
-        assert_eq!(run.canonical_bytes().unwrap(), run_b.canonical_bytes().unwrap());
+        assert_eq!(
+            run.canonical_bytes().unwrap(),
+            run_b.canonical_bytes().unwrap()
+        );
         assert_eq!(digest_a, run_b.digest().unwrap());
     }
 

@@ -1595,6 +1595,97 @@ impl Book {
         )))
     }
 
+    /// Rehearse the exact draft retained at `known_at` in a separate memory
+    /// book. Current whole-book Read authority is required before source
+    /// observation. Each intent retains its original planner capability and
+    /// approvals; all members publish together only in the returned scratch
+    /// book. Neither book's draft is promoted by this review.
+    ///
+    /// The selected source coordinates are preserved through real scratch
+    /// publications, including no-op maintenance placeholders, so sequence
+    /// dependent expiry and retained accounting evidence keep their meaning.
+    pub fn rehearse_draft_at(
+        &mut self,
+        principal: VId,
+        capability: &fa_journal::Capability,
+        name: &str,
+        known_at: CommitSeq,
+    ) -> Outcome<(Book, fa_journal::DraftRehearsal)> {
+        if let Err(refusal) = self.read_scope(principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        if let Err(denial) = fa_policy::reach(
+            capability,
+            &fa_policy::Reach {
+                branch: Some(fa_model::Id128::TRUNK),
+                observes: fa_policy::Observes::At(known_at),
+                periods: None,
+                through: None,
+                accounts: None,
+            },
+            None,
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let keys = BookKeys::generate(&Entropy::production())?;
+        let owner_token = keys.owner_token();
+        let (scratch_runtime, scratch_root) = Self::runtime_and_root()?;
+        let scratch_purposes = PurposeContexts::narrow_runtime_root(&scratch_root);
+        let target = scratch_runtime.block_on(async {
+            Database::open_memory(&scratch_purposes.commit(), keys.inner.clone()).await
+        })?;
+        let request = fa_journal::DraftRehearsalRequest {
+            name: name.to_string(),
+            known_at,
+        };
+        let entropy = Entropy::production();
+        let rehearsed = match &mut self.store {
+            Store::Memory(core) => scratch_runtime
+                .block_on(core.rehearse_draft_into(
+                    &scratch_purposes,
+                    target,
+                    &keys,
+                    capability,
+                    request,
+                    entropy,
+                ))?
+                .map(|(copy, rehearsal)| (Store::Memory(copy), rehearsal)),
+            Store::Dir(core) => scratch_runtime
+                .block_on(core.rehearse_draft_into(
+                    &scratch_purposes,
+                    target,
+                    &keys,
+                    capability,
+                    request,
+                    entropy,
+                ))?
+                .map(|(copy, rehearsal)| (Store::ScratchDir(copy), rehearsal)),
+            Store::ScratchDir(core) => scratch_runtime
+                .block_on(core.rehearse_draft_into(
+                    &scratch_purposes,
+                    target,
+                    &keys,
+                    capability,
+                    request,
+                    entropy,
+                ))?
+                .map(|(copy, rehearsal)| (Store::ScratchDir(copy), rehearsal)),
+        };
+        let (store, rehearsal) = match rehearsed {
+            Ok(rehearsed) => rehearsed,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok((
+            Book {
+                runtime: scratch_runtime,
+                root: scratch_root,
+                store,
+                owner_token,
+            },
+            rehearsal,
+        )))
+    }
+
     /// Verify `scratch` against the [`fa_journal::SeqMap`] of its replay
     /// from this book (`fa_registers::replay::verify_replay`).
     pub fn verify_replay(
@@ -2445,6 +2536,19 @@ impl Book {
     ) -> Outcome<crate::RetainedCertificate> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.retain_replayed_scenario_diff(
+            &purposes, principal, capability, certificate, verified_at
+        )))
+    }
+
+    pub(crate) fn retain_replayed_draft_diff(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::DraftDiffCertificate,
+        verified_at: CommitSeq,
+    ) -> Outcome<crate::RetainedCertificate> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_replayed_draft_diff(
             &purposes, principal, capability, certificate, verified_at
         )))
     }

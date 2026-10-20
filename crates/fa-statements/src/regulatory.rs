@@ -984,11 +984,13 @@ fn eval_linear_terms(
                 unit_id,
             })?
         };
-        sum = sum.checked_add(signed).ok_or_else(|| StatementError::Overflow {
-            line: term.line_code.clone(),
-            column: col_label.to_string(),
-            unit_id,
-        })?;
+        sum = sum
+            .checked_add(signed)
+            .ok_or_else(|| StatementError::Overflow {
+                line: term.line_code.clone(),
+                column: col_label.to_string(),
+                unit_id,
+            })?;
     }
     Ok(sum)
 }
@@ -1040,11 +1042,13 @@ pub fn evaluate_regulatory_edits(
                     unit_id,
                     &edit.edit_id,
                 )?;
-                let delta = lhs.checked_sub(rhs).ok_or_else(|| StatementError::Overflow {
-                    line: edit.edit_id.clone(),
-                    column: col.label.clone(),
-                    unit_id,
-                })?;
+                let delta = lhs
+                    .checked_sub(rhs)
+                    .ok_or_else(|| StatementError::Overflow {
+                        line: edit.edit_id.clone(),
+                        column: col.label.clone(),
+                        unit_id,
+                    })?;
                 let passed = match edit.operator {
                     FfiecEditOperator::Equals => lhs == rhs,
                     FfiecEditOperator::GreaterOrEqual => lhs >= rhs,
@@ -1264,27 +1268,132 @@ mod tests {
         // Equity = 40_000 (common) + 50_000 (surplus) + 24_000 (prior RE) + 16_000 (current NI) = 130_000
         // Total L + E = 870_000 + 130_000 = 1_000_000
         let balances = vec![
-            AccountBalance { account_id: 1, unit_id: 1, debits: 5_000_000, credits: 0 },
-            AccountBalance { account_id: 2, unit_id: 1, debits: 10_000_000, credits: 0 },
-            AccountBalance { account_id: 3, unit_id: 1, debits: 8_000_000, credits: 0 },
-            AccountBalance { account_id: 4, unit_id: 1, debits: 12_000_000, credits: 0 },
-            AccountBalance { account_id: 5, unit_id: 1, debits: 60_000_000, credits: 0 },
-            AccountBalance { account_id: 6, unit_id: 1, debits: 0, credits: 1_000_000 },
-            AccountBalance { account_id: 7, unit_id: 1, debits: 6_000_000, credits: 0 },
-            AccountBalance { account_id: 8, unit_id: 1, debits: 0, credits: 75_000_000 },
-            AccountBalance { account_id: 9, unit_id: 1, debits: 0, credits: 10_000_000 },
-            AccountBalance { account_id: 10, unit_id: 1, debits: 0, credits: 2_000_000 },
-            AccountBalance { account_id: 11, unit_id: 1, debits: 0, credits: 4_000_000 },
-            AccountBalance { account_id: 12, unit_id: 1, debits: 0, credits: 5_000_000 },
-            AccountBalance { account_id: 13, unit_id: 1, debits: 0, credits: 2_400_000 },
-            AccountBalance { account_id: 14, unit_id: 1, debits: 0, credits: 3_000_000 },
-            AccountBalance { account_id: 15, unit_id: 1, debits: 0, credits: 1_000_000 },
-            AccountBalance { account_id: 16, unit_id: 1, debits: 0, credits: 500_000 },
-            AccountBalance { account_id: 17, unit_id: 1, debits: 800_000, credits: 0 },
-            AccountBalance { account_id: 18, unit_id: 1, debits: 200_000, credits: 0 },
-            AccountBalance { account_id: 19, unit_id: 1, debits: 300_000, credits: 0 },
-            AccountBalance { account_id: 20, unit_id: 1, debits: 1_200_000, credits: 0 },
-            AccountBalance { account_id: 21, unit_id: 1, debits: 400_000, credits: 0 },
+            AccountBalance {
+                account_id: 1,
+                unit_id: 1,
+                debits: 5_000_000,
+                credits: 0,
+            },
+            AccountBalance {
+                account_id: 2,
+                unit_id: 1,
+                debits: 10_000_000,
+                credits: 0,
+            },
+            AccountBalance {
+                account_id: 3,
+                unit_id: 1,
+                debits: 8_000_000,
+                credits: 0,
+            },
+            AccountBalance {
+                account_id: 4,
+                unit_id: 1,
+                debits: 12_000_000,
+                credits: 0,
+            },
+            AccountBalance {
+                account_id: 5,
+                unit_id: 1,
+                debits: 60_000_000,
+                credits: 0,
+            },
+            AccountBalance {
+                account_id: 6,
+                unit_id: 1,
+                debits: 0,
+                credits: 1_000_000,
+            },
+            AccountBalance {
+                account_id: 7,
+                unit_id: 1,
+                debits: 6_000_000,
+                credits: 0,
+            },
+            AccountBalance {
+                account_id: 8,
+                unit_id: 1,
+                debits: 0,
+                credits: 75_000_000,
+            },
+            AccountBalance {
+                account_id: 9,
+                unit_id: 1,
+                debits: 0,
+                credits: 10_000_000,
+            },
+            AccountBalance {
+                account_id: 10,
+                unit_id: 1,
+                debits: 0,
+                credits: 2_000_000,
+            },
+            AccountBalance {
+                account_id: 11,
+                unit_id: 1,
+                debits: 0,
+                credits: 4_000_000,
+            },
+            AccountBalance {
+                account_id: 12,
+                unit_id: 1,
+                debits: 0,
+                credits: 5_000_000,
+            },
+            AccountBalance {
+                account_id: 13,
+                unit_id: 1,
+                debits: 0,
+                credits: 2_400_000,
+            },
+            AccountBalance {
+                account_id: 14,
+                unit_id: 1,
+                debits: 0,
+                credits: 3_000_000,
+            },
+            AccountBalance {
+                account_id: 15,
+                unit_id: 1,
+                debits: 0,
+                credits: 1_000_000,
+            },
+            AccountBalance {
+                account_id: 16,
+                unit_id: 1,
+                debits: 0,
+                credits: 500_000,
+            },
+            AccountBalance {
+                account_id: 17,
+                unit_id: 1,
+                debits: 800_000,
+                credits: 0,
+            },
+            AccountBalance {
+                account_id: 18,
+                unit_id: 1,
+                debits: 200_000,
+                credits: 0,
+            },
+            AccountBalance {
+                account_id: 19,
+                unit_id: 1,
+                debits: 300_000,
+                credits: 0,
+            },
+            AccountBalance {
+                account_id: 20,
+                unit_id: 1,
+                debits: 1_200_000,
+                credits: 0,
+            },
+            AccountBalance {
+                account_id: 21,
+                unit_id: 1,
+                debits: 400_000,
+                credits: 0,
+            },
         ];
 
         let rc_input = StatementInput {
