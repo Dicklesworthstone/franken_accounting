@@ -3150,3 +3150,164 @@ fn aging_from_saved_certificates_reuses_them_byte_for_byte_and_answers_only_thei
     );
     assert_eq!(f.head(), retained);
 }
+
+#[test]
+fn roll_forward_view_binds_the_lead_schedule_to_the_stated_request_and_exports_it() {
+    let f = Fixture::new();
+    let at = f.source_head.0.to_string();
+    let operator = fa_model::principal_vid("operator");
+    let read_produce = Capability::embedded(operator, &["read", "produce"]).unwrap();
+    let scope = [
+        "--account",
+        "1000",
+        "--unit",
+        "USD",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--label",
+        "January lead",
+        "--as-known-at",
+        at.as_str(),
+    ];
+    let mut certify = vec!["gl", "roll-forward"];
+    certify.extend(scope);
+    certify.push("--certify");
+    let certified = f.ok(&certify);
+    let metadata = data(&certified, "report_certificate");
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let aging = f.ok(&[
+        "gl",
+        "aging",
+        "--account",
+        "1000",
+        "--as-of",
+        "2026-01-31",
+        "--as-known-at",
+        &at,
+        "--certify",
+    ]);
+    let aging_locator = format!("C:{}", text(data(&aging, "report_certificate"), "oid"));
+    // A later posting moves HEAD; the certificate still answers `at`.
+    let mut book = f.open();
+    post(&mut book, 900);
+    let later = book.head().unwrap().0.to_string();
+    drop(book);
+    let retained = f.head();
+
+    let mut bound = vec!["replay", locator.as_str(), "--view", "roll-forward"];
+    bound.extend(scope);
+    let replayed = f.ok(&bound);
+    assert_eq!(
+        data(&replayed, "roll_forward"),
+        data(&certified, "roll_forward")
+    );
+    assert_eq!(
+        text(data(&replayed, "report_replayed"), "family"),
+        "roll-forward"
+    );
+    assert_eq!(
+        data(&f.ok(&["replay", &locator]), "roll_forward"),
+        data(&certified, "roll_forward"),
+        "without a view the certificate still replays as supplied"
+    );
+
+    // The lead schedule's workpaper is the library's export of the same
+    // certificate and request.
+    let path = f.dir.join("lead.jsonl");
+    let mut export = bound.clone();
+    export.extend(["--workpaper-out", path.to_str().unwrap()]);
+    let events = f.ok(&export);
+    assert_eq!(
+        text(data(&events, "workpaper_exported"), "family"),
+        "roll-forward"
+    );
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.lines().count() > 1, "{written}");
+    let source = fa::RollForwardCertificate::decode(&unhex(text(metadata, "bytes"))).unwrap();
+    {
+        let book = f.open();
+        let library = book
+            .roll_forward_jsonl(operator, &read_produce, &source, source.request())
+            .unwrap()
+            .unwrap();
+        assert_eq!(written, library, "the CLI writes the library's export");
+        let ledger = book
+            .general_ledger_jsonl(operator, &read_produce, &source, source.request())
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            written, ledger,
+            "the lead schedule is not the ledger detail"
+        );
+    }
+
+    // Planted refusals: a different question exits 8, a malformed one 2.
+    let owned =
+        |words: &[&str]| -> Vec<String> { words.iter().map(|w| (*w).to_string()).collect() };
+    let with = |replace: &str, value: &str| -> Vec<String> {
+        let mut args = owned(&["replay", locator.as_str(), "--view", "roll-forward"]);
+        let mut words = scope.iter();
+        while let Some(flag) = words.next() {
+            let original = words.next().unwrap();
+            args.push((*flag).to_string());
+            let word = if *flag == replace { value } else { *original };
+            args.push(word.to_string());
+        }
+        args
+    };
+    for (args, exit, why) in [
+        (with("--label", "February lead"), 8, "a different label"),
+        (with("--account", "4000"), 8, "a different account"),
+        (with("--as-known-at", later.as_str()), 8, "a later prefix"),
+        (
+            with("--as-known-at", "HEAD"),
+            2,
+            "HEAD is never a stated prefix",
+        ),
+        (
+            owned(&[&bound[..], &["--expect", "{}"][..]].concat()),
+            2,
+            "a view and --expect together",
+        ),
+        (
+            owned(&[
+                "replay",
+                locator.as_str(),
+                "--view",
+                "roll-forward",
+                "--account",
+                "1000",
+            ]),
+            2,
+            "an incomplete request",
+        ),
+        (
+            owned(&["replay", locator.as_str(), "--view", "schedule"]),
+            2,
+            "an unknown view",
+        ),
+        (
+            owned(
+                &[
+                    &["replay", aging_locator.as_str(), "--view", "roll-forward"][..],
+                    &scope[..],
+                ]
+                .concat(),
+            ),
+            8,
+            "an aging certificate",
+        ),
+    ] {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (code, errors) = f.run(&args);
+        assert_eq!(code, exit, "{why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "{why}: {errors:?}");
+    }
+    assert_eq!(
+        f.head(),
+        retained,
+        "replays, exports and refusals are reads"
+    );
+}
