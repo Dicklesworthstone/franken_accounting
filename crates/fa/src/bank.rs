@@ -897,7 +897,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             })
             .collect();
         let mut confirmed_matches = Vec::new();
-        for recorded in active_claims {
+        for recorded in &active_claims {
             let confirmation = &recorded.confirmation;
             if confirmation.statement_oid != manifest.statement_oid
                 || confirmation.manifest_oid != request.manifest_oid
@@ -919,7 +919,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "an active confirmation disagrees with its retained manifest's account or line document",
                 )));
             }
-            confirmed_matches.push(recorded);
+            confirmed_matches.push(recorded.clone());
         }
         let unit = manifest.unit;
         let account = match self.bank_account(cx, manifest.account, unit, seq)? {
@@ -930,7 +930,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let candidate_from = first_day.map(|first| DateDay(first.saturating_sub(window)));
         let candidate_through =
             first_day.map(|_| DateDay(manifest.statement_date.0.saturating_add(window)));
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self.authorize_bank(cx, capability)? {
+            return Ok(Err(refusal));
+        }
         let (candidates, book_closing_balance, epoch) = self.query(cx, |db, book| {
+            fa_journal::entry_history::verify_entry_history(db, cx, book, Some(seq))?;
             let entries = fa_registers::entries_at(db, book, seq)?;
             let mut candidates = Vec::new();
             let mut balance = 0_i128;
@@ -982,6 +989,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             let epoch = fa_journal::policy::security_policy_epoch(db)?;
             Ok((candidates, balance, epoch))
         })?;
+        if let Err(refusal) = self
+            .verify_bank_match_claim_sources(
+                cx,
+                capability,
+                (request.manifest_oid, &manifest),
+                &candidates,
+                &active_claims,
+                seq,
+            )
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
         let decision_epoch = domain_digest(
             b"fa:bank-match-policy:v1",
             &[
