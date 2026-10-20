@@ -3825,6 +3825,79 @@ fn statement_issue_pins_as_originally_reported_to_the_issued_certificate() -> st
     Ok(())
 }
 
+/// `fa law list|show` and `fa unit list` (plan §6.2–§6.4, Appendix D): the
+/// registered laws and unit versions, without a book.
+#[test]
+fn law_and_unit_listings_name_every_registered_law_and_unit() {
+    let (code, out, _) = fa(None, &["law", "list", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let laws = doc(&out);
+    let rows = arr(&laws, "laws");
+    for (family, name) in [
+        ("rounding", "HalfEven"),
+        ("allocation", "LargestRemainder"),
+        ("fx", "SpotClose"),
+    ] {
+        assert!(
+            rows.iter()
+                .any(|r| text(r, "family") == family && text(r, "name") == name),
+            "{family} {name}: {out}"
+        );
+    }
+    let families: BTreeSet<&str> = rows.iter().map(|r| text(r, "family")).collect();
+    assert_eq!(
+        families,
+        [
+            "allocation",
+            "conversion",
+            "fx",
+            "lot",
+            "rounding",
+            "tracing"
+        ]
+        .into_iter()
+        .collect()
+    );
+    let (code, out, _) = fa(None, &["law", "list", "--family", "rounding", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        arr(&doc(&out), "laws")
+            .iter()
+            .all(|r| text(r, "family") == "rounding"),
+        "{out}"
+    );
+    let (code, out, _) = fa(None, &["law", "show", "HalfEven", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let law = doc(&out).get("law").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&law, "family"), "rounding");
+    assert!(
+        arr(&law, "attributes")
+            .iter()
+            .any(|a| text(a, "key") == "definition"),
+        "{out}"
+    );
+    for bad in [
+        vec!["law", "show", "NoSuchLaw", "--json"],
+        vec!["law", "list", "--family", "tax", "--json"],
+        vec!["law", "--json"],
+        vec!["unit", "show", "USD", "--json"],
+    ] {
+        let (code, out, err) = fa(None, &bad);
+        assert_eq!(code, 2, "{bad:?}\n{out}\n{err}");
+    }
+    let (code, out, _) = fa(None, &["unit", "list", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let units = doc(&out);
+    let usd = arr(&units, "units")
+        .iter()
+        .find(|u| text(u, "code") == "USD")
+        .cloned()
+        .unwrap_or(Json::Null);
+    assert_eq!(int(&usd, "scale"), Some(2), "{out}");
+    assert_eq!(int(&usd, "iso4217"), Some(840), "{out}");
+    assert_eq!(text(&usd, "rounding_default"), "HalfEven", "{out}");
+}
+
 /// fa-75j4 (plan §8.3): `fa case` journals a restatement case through the
 /// real binary: numbered, Proposed, then Determined with its day and
 /// authority document; the same command opens it once; every refusal names
@@ -6459,6 +6532,9 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(false, &["robot-docs", "guide"]).0, 0);
     assert_eq!(run(false, &["robot-docs", "schema"]).0, 0);
     assert_eq!(run(false, &["chart", "templates"]).0, 0);
+    assert_eq!(run(false, &["law", "list"]).0, 0);
+    assert_eq!(run(false, &["law", "show", "HalfEven"]).0, 0);
+    assert_eq!(run(false, &["unit", "list"]).0, 0);
     assert_eq!(run(false, &["nosuchverb"]).0, 2);
     assert_eq!(run(true, &["book", "info"]).0, 4);
     assert_eq!(run(true, &["book", "create", "--name", "Events Co"]).0, 0);

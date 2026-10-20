@@ -27,11 +27,12 @@ const RELATIONSHIP_BASES_TOML: &str = include_str!("../../../registries/relation
 const CLAIMS_LINT_TOML: &str = include_str!("../../../registries/claims_lint.toml");
 const OPERATION_COSTS_TOML: &str = include_str!("../../../registries/operation_costs.toml");
 const SLO_TOML: &str = include_str!("../../../registries/slo.toml");
-const LOT_LAWS_TOML: &str = include_str!("../../../registries/lot_laws.toml");
-const CONVERSION_LAWS_TOML: &str = include_str!("../../../registries/conversion_laws.toml");
+pub(crate) const LOT_LAWS_TOML: &str = include_str!("../../../registries/lot_laws.toml");
+pub(crate) const CONVERSION_LAWS_TOML: &str =
+    include_str!("../../../registries/conversion_laws.toml");
 const SUPERSESSION_KINDS_TOML: &str = include_str!("../../../registries/supersession_kinds.toml");
-const TRACING_LAWS_TOML: &str = include_str!("../../../registries/tracing_laws.toml");
-const FX_LAWS_TOML: &str = include_str!("../../../registries/fx_laws.toml");
+pub(crate) const TRACING_LAWS_TOML: &str = include_str!("../../../registries/tracing_laws.toml");
+pub(crate) const FX_LAWS_TOML: &str = include_str!("../../../registries/fx_laws.toml");
 
 fn req_bool(registry: &'static str, t: &Table, key: &str) -> Result<bool, RegistryError> {
     t.get(key)

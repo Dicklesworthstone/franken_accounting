@@ -1902,8 +1902,8 @@ mod bound_tests {
             (
                 "a judged rule without ops",
                 planted(
-                    "verbs = [\"capabilities\", \"robot-docs\", \"help\"]\nops = []",
-                    "verbs = [\"capabilities\", \"robot-docs\", \"help\"]\nops = []\nreach = \"judged\"",
+                    "verbs = [\"capabilities\", \"robot-docs\", \"help\", \"law\", \"unit\"]\nops = []",
+                    "verbs = [\"capabilities\", \"robot-docs\", \"help\", \"law\", \"unit\"]\nops = []\nreach = \"judged\"",
                 ),
                 "has no reach to judge",
             ),

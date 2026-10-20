@@ -50,6 +50,25 @@ const UNITS: &str = include_str!("../../../registries/units.toml");
 const ROUNDING_LAWS: &str = include_str!("../../../registries/rounding_laws.toml");
 const SYMBOLS: &str = include_str!("../../../registries/symbols.toml");
 
+/// The law registries `fa law list|show` reads, embedded at build time:
+/// `(family, the array that holds its laws, the registry text)` (plan
+/// §6.2–§6.4; Appendix D "Chart and registries").
+pub const LAW_REGISTRIES: [(&str, &str, &str); 6] = [
+    ("rounding", "law", ROUNDING_LAWS),
+    (
+        "allocation",
+        "law",
+        include_str!("../../../registries/allocation_laws.toml"),
+    ),
+    ("conversion", "conversion_law", g0::CONVERSION_LAWS_TOML),
+    ("fx", "law", g0::FX_LAWS_TOML),
+    ("lot", "law", g0::LOT_LAWS_TOML),
+    ("tracing", "law", g0::TRACING_LAWS_TOML),
+];
+
+/// units.toml as embedded, the unit versions `fa unit list` reads.
+pub const UNITS_REGISTRY: &str = UNITS;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegistryError {
     Toml {

@@ -99,6 +99,30 @@ usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [-
 example = "fa chart import chart.json --book ./books/myco --json"
 
 [[verb]]
+name = "law"
+summary = "The registered laws this build embeds (plan §6.2–§6.4): rounding, allocation, conversion, FX, lot and tracing laws by family, id, name and version, with every field of their registry row. Reads no book."
+writes = false
+subcommands = ["list", "show"]
+flags = ["--family"]
+switches = []
+events = ["laws", "law"]
+exits = [0, 2]
+usage = ["law list [--family rounding|allocation|conversion|fx|lot|tracing]", "law show <name> [--family <family>]   (a name registered in several families needs --family)", "Every rounding, allocation and FX conversion names a registered law (doctrine 4); these are the names an intent may use."]
+example = "fa law show HalfEven --json"
+
+[[verb]]
+name = "unit"
+summary = "The unit versions this build embeds (plan §4.4): code, version, immutable scale, kind, ISO 4217 number and default rounding law. Reads no book."
+writes = false
+subcommands = ["list"]
+flags = []
+switches = []
+events = ["units"]
+exits = [0, 2]
+usage = ["unit list   (a precision change is a new unit version, never an edit of an existing row)"]
+example = "fa unit list --json"
+
+[[verb]]
 name = "period"
 summary = "Create a fiscal year's periods, list them, or move one along the period state machine (journaled)."
 writes = true
@@ -1229,6 +1253,24 @@ name = "chart_installed"
 book = true
 doc = "A chart installed by one journaled control entry. `template` names the embedded template it came from, or is null for a chart file; either way the control entry's idempotency key is the chart text's content digest."
 fields = ["accounts:int", "control_entry:hex", "recorded_at:seq", "template:string?"]
+
+[[event]]
+name = "laws"
+book = false
+doc = "Every registered law of this build (or of one family), in registry order: family, id, name, optional version, and every other field of its registry row as text."
+fields = ["laws:[law_row]"]
+
+[[event]]
+name = "law"
+book = false
+doc = "One registered law: its family, id, name, optional version, and every other field of its registry row as text."
+fields = ["law:law_row"]
+
+[[event]]
+name = "units"
+book = false
+doc = "Every unit version this build embeds: id, code, version, immutable scale, kind, ISO 4217 number (null when none) and default rounding law."
+fields = ["units:[unit_row]"]
 
 [[event]]
 name = "chart_templates"
@@ -3018,6 +3060,11 @@ on_demand = true
 doc = "Restatement cases (plan §8.3): read one journaled case, or every case of the book, with its kind, affected periods, state and transitions. Opening and determining a case need restate, a host-side operation. On demand (fa-mcp --cluster fa.case)."
 
 [[mcp.cluster]]
+name = "fa.registry"
+on_demand = true
+doc = "The registered laws (rounding, allocation, conversion, FX, lot, tracing) and unit versions this build embeds (plan §6.2–§6.4): the law names an intent may use and each unit's immutable scale. Pure reads without a book. On demand (fa-mcp --cluster fa.registry): the default surface is at its 40-tool budget."
+
+[[mcp.cluster]]
 name = "fa.audit"
 on_demand = true
 doc = "Audit sampling (plan §11.7): reproducible uniform and monetary-unit samples of an account's open items from a declared seed, and the Stringer evaluation of an MUS sample's audited values. Pure reads. On demand (fa-mcp --cluster fa.audit)."
@@ -4035,6 +4082,31 @@ dont = ["Use action list for every restatement case and action show with target 
 mistakes = ["Passing a case's vid as target: action show takes the case number (1, 2, ...).", "Reading a Determined case as approved: rehearsal, approval and posting are later fa-75j4 slices."]
 
 [[mcp.tool]]
+cluster = "fa.registry"
+name = "law"
+verb = "law"
+subcommands = ["list", "show"]
+selector = "action"
+positionals = ["target?"]
+flags = ["--family"]
+switches = []
+required = []
+dont = ["Use action list (optionally with family) to see the registered laws, and action show with target set to a law name before an intent names it; a name in several families needs family.", "Don't invent a rounding, allocation or conversion law: an intent names a registered one or is refused."]
+mistakes = ["Passing a law id as target: action show takes the law's name (HalfEven, LargestRemainder, ...)."]
+
+[[mcp.tool]]
+cluster = "fa.registry"
+name = "unit"
+verb = "unit"
+subcommands = ["list"]
+positionals = []
+flags = []
+switches = []
+required = []
+dont = ["Call it before writing an amount to see each unit version's immutable scale; an amount's mantissa is at the unit's scale."]
+mistakes = ["Expecting a unit's scale to change: a precision change is a new unit version."]
+
+[[mcp.tool]]
 cluster = "fa.audit"
 name = "sample"
 verb = "sample"
@@ -4153,6 +4225,21 @@ fields = ["document:hex", "doc_commit:hex", "bates:string?", "date:date?", "auth
 name = "production_bundle"
 doc = "A bundle-scoped production's evidence bundle: its digest, the recorded checkpoint it was produced against, the book's checkpoint signing key (fa-verify's --key) and the exact offline verification command for the volume's .fab and .receipt."
 fields = ["digest:hex", "checkpoint:hex", "checkpoint_public_key:hex", "verify:string"]
+
+[[shape]]
+name = "law_row"
+doc = "A registered law: its family (rounding, allocation, conversion, fx, lot, tracing), id, name, optional version, and every other registry field as key/value text, in key order."
+fields = ["family:string", "id:int", "name:string", "version:int?", "attributes:[law_attribute]"]
+
+[[shape]]
+name = "law_attribute"
+doc = "One field of a law's registry row, rendered as text (arrays joined with commas)."
+fields = ["key:string", "value:string"]
+
+[[shape]]
+name = "unit_row"
+doc = "A unit version: id, code, version, immutable scale, kind, ISO 4217 number (null when none) and the name of its default rounding law."
+fields = ["id:int", "code:string", "version:int", "scale:int", "kind:string", "iso4217:int?", "rounding_default:string?"]
 
 [[shape]]
 name = "restatement_case"
@@ -4277,7 +4364,7 @@ ops = ["read", "reconcile", "produce"]
 
 # Data embedded in this build: nothing is read from the book.
 [[bound]]
-verbs = ["capabilities", "robot-docs", "help"]
+verbs = ["capabilities", "robot-docs", "help", "law", "unit"]
 ops = []
 
 [[bound]]
