@@ -75,7 +75,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// must bind review.proposal().proposal_digest(), never review.digest().
     /// Save the returned PostPlan BEFORE publication for exact uncertain retries.
     /// This never calls the convenience replanner or commits a payment.
-    pub fn plan_settlement_group_review(
+    pub async fn plan_settlement_group_review(
         &mut self,
         cx: &PurposeContexts,
         review: &SettlementGroupReview,
@@ -87,5 +87,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         self.plan_prepared_settlement_group(cx, fresh, approvals, capability)
+            .await
     }
 }

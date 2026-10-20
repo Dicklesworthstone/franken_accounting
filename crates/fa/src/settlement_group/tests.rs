@@ -212,8 +212,11 @@ impl Harness {
 
     fn plan(&mut self, request: SettlementGroupRequest) -> SettlementGroupPostPlan {
         let cx = self.cx();
-        self.book
-            .plan_settlement_group(&cx, request, Vec::new(), &cap())
+        self.runtime
+            .block_on(
+                self.book
+                    .plan_settlement_group(&cx, request, Vec::new(), &cap()),
+            )
             .unwrap()
             .unwrap()
     }
@@ -250,8 +253,8 @@ impl Harness {
         };
         let cx = self.cx();
         let plan = self
-            .book
-            .plan_settlement(&cx, request, Vec::new(), &cap())
+            .runtime
+            .block_on(self.book.plan_settlement(&cx, request, Vec::new(), &cap()))
             .unwrap()
             .unwrap();
         self.runtime
@@ -374,8 +377,11 @@ fn mixed_native_units_and_debit_credit_applications_publish_as_one_entry() {
     );
     let cx = h.cx();
     let plan = h
-        .book
-        .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().intent().proposal(), &expected);
@@ -504,8 +510,11 @@ fn complete_entry_balance_and_evidence_laws_remain_kernel_enforced() {
     ] {
         let prepared = h.prepare(request);
         let refusal = h
-            .book
-            .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap())
+            .runtime
+            .block_on(
+                h.book
+                    .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap()),
+            )
             .unwrap()
             .unwrap_err();
         assert_eq!(refusal.code, code);
@@ -541,8 +550,13 @@ fn authority_covers_the_whole_payment_and_is_rechecked_at_rehearsal() {
                 .is_err()
         );
         assert!(
-            h.book
-                .plan_prepared_settlement_group(&cx, prepared.clone(), Vec::new(), &capability)
+            h.runtime
+                .block_on(h.book.plan_prepared_settlement_group(
+                    &cx,
+                    prepared.clone(),
+                    Vec::new(),
+                    &capability
+                ))
                 .unwrap()
                 .is_err()
         );

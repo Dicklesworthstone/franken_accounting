@@ -95,6 +95,9 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
                 && matches!(e.subcommand.as_deref(), Some("map" | "year-end")))
             // Releasing a bank claim requires explicit Human host confirmation.
             || (e.verb == "bank" && e.subcommand.as_deref() == Some("unmatch"))
+            // Attesting an exact bank close requires Human host confirmation
+            // and full-source authority, outside the launch templates.
+            || (e.verb == "bank" && e.subcommand.as_deref() == Some("reconcile"))
             // Leg-projection recovery needs schema_change on trunk, outside
             // both launch templates and issued-token ceilings, and --yes.
             || (e.verb == "recover" && e.subcommand.as_deref() == Some("projections"))
@@ -576,4 +579,33 @@ fn bank_history_preserves_existing_tools_and_keeps_unmatch_host_only() {
     assert!(reg.dangerous.iter().any(|dangerous| {
         dangerous.verb == "bank" && dangerous.subcommand.as_deref() == Some("unmatch")
     }));
+    // A close is host-only, but inspecting its retained state remains a
+    // bounded read-and-reconcile tool with no per-call authority escalation.
+    assert!(mcp.tool_for("bank", Some("reconcile")).is_none());
+    assert!(mcp.excluded.iter().any(|excluded| {
+        excluded.verb == "bank"
+            && excluded.subcommand.as_deref() == Some("reconcile")
+            && excluded.reason.contains("host-only")
+    }));
+    assert!(reg.dangerous.iter().any(|dangerous| {
+        dangerous.verb == "bank" && dangerous.subcommand.as_deref() == Some("reconcile")
+    }));
+    let reconciliation = mcp.tool_for("bank", Some("reconciliation")).unwrap();
+    assert_eq!(reconciliation.wire_name(), "fa_bank_reconciliation");
+    let invocation = reconciliation
+        .invocation(&mcp, reg, &json!({"import": manifest, "as_known_at": "17"}))
+        .unwrap();
+    let parsed =
+        fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(parsed.positional, vec!["bank", "reconciliation"]);
+    assert_eq!(parsed.flag("--import"), Some(manifest.as_str()));
+    assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("bank", &parsed)
+            .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+        Some(vec!["read", "reconcile"]),
+    );
+    for forbidden in [json!({"grant": ["privileged"]}), json!({"yes": true})] {
+        assert!(reconciliation.invocation(&mcp, reg, &forbidden).is_err());
+    }
 }

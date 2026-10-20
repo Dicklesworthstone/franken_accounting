@@ -6845,6 +6845,30 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     assert_eq!(int(&close_status, "drifted_count"), Some(0));
     assert_eq!(text(&close_status, "reconciled_through"), "2026-03-31");
 
+    // The FX events must come from fresh binary invocations too. Retain an
+    // exact rational source, then fold the cash entry above in base currency.
+    let rate_source = write(
+        &dir,
+        "event-rate.json",
+        r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"110","rate_den":"100","rounding":"HalfEven","as_of":"2026-03-05","retrieved_at_ns":1772712000000000000,"purpose":"spot_close","source":"event fixture rate"}"#,
+    );
+    let rate = doc(&run5(&["fx", "rate", "add", "--from-json", &rate_source]));
+    assert_eq!(text(&rate, "rate_num"), "11");
+    assert_eq!(text(&rate, "rate_den"), "10");
+    let functional = doc(&run5(&[
+        "tb",
+        "--functional",
+        "--activity",
+        "--period",
+        "FY2026-P03",
+    ]));
+    assert_eq!(text(&functional, "base_unit"), "USD");
+    let cash = arr(&functional, "rows")
+        .iter()
+        .find(|row| text(row, "account") == "1000")
+        .expect("the posted cash entry contributes to the functional fold");
+    assert_eq!(text(cash, "net"), "10.00 USD");
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events

@@ -403,8 +403,11 @@ fn approval_publication_reopen_and_resume_preserve_the_exact_payment_and_retry_r
     let cx = h.cx();
     // The existing strict API is intentionally not loosened.
     assert!(
-        h.book
-            .plan_prepared_settlement(&cx, prepared, vec![approval], &cap())
+        h.runtime
+            .block_on(
+                h.book
+                    .plan_prepared_settlement(&cx, prepared, vec![approval], &cap())
+            )
             .unwrap()
             .is_err()
     );
@@ -429,8 +432,8 @@ fn approval_publication_reopen_and_resume_preserve_the_exact_payment_and_retry_r
         ))
         .unwrap();
     let decoded = SettlementReview::decode(&bytes).unwrap();
-    let plan = reopened
-        .plan_settlement_review(&cx, &decoded, vec![approval], &cap())
+    let plan = runtime
+        .block_on(reopened.plan_settlement_review(&cx, &decoded, vec![approval], &cap()))
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().proposal(), review.proposal());
@@ -485,8 +488,11 @@ fn a_competing_payment_requires_new_review_even_when_the_old_allocation_still_fi
     let other = h.prepare("competing-payment", 10, &[invoice]);
     let cx = h.cx();
     let plan = h
-        .book
-        .plan_prepared_settlement(&cx, other, Vec::new(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, other, Vec::new(), &cap()),
+        )
         .unwrap()
         .unwrap();
     h.runtime
@@ -505,8 +511,11 @@ fn a_competing_payment_requires_new_review_even_when_the_old_allocation_still_fi
     assert_eq!(h.head(), at);
     assert_eq!(h.open(invoice), 990);
     assert!(
-        h.book
-            .plan_settlement_review(&cx, &review, Vec::new(), &cap())
+        h.runtime
+            .block_on(
+                h.book
+                    .plan_settlement_review(&cx, &review, Vec::new(), &cap())
+            )
             .unwrap()
             .is_err()
     );
@@ -556,8 +565,11 @@ fn approval_refs_are_external_and_must_bind_the_proposal_not_the_review_containe
     let at = h.head();
     let cx = h.cx();
     assert!(
-        h.book
-            .plan_settlement_review(&cx, &review, vec![wrong], &cap())
+        h.runtime
+            .block_on(
+                h.book
+                    .plan_settlement_review(&cx, &review, vec![wrong], &cap())
+            )
             .unwrap()
             .is_err()
     );
@@ -566,8 +578,11 @@ fn approval_refs_are_external_and_must_bind_the_proposal_not_the_review_containe
         approved_digest: review.proposal().proposal_digest().unwrap(),
     };
     assert!(
-        h.book
-            .plan_settlement_review(&cx, &review, vec![forged], &cap())
+        h.runtime
+            .block_on(
+                h.book
+                    .plan_settlement_review(&cx, &review, vec![forged], &cap())
+            )
             .unwrap()
             .is_err()
     );
@@ -575,8 +590,11 @@ fn approval_refs_are_external_and_must_bind_the_proposal_not_the_review_containe
     let right = h.approve(review.proposal().proposal_digest().unwrap());
     let at = h.head();
     assert!(
-        h.book
-            .plan_settlement_review(&cx, &review, vec![right], &cap())
+        h.runtime
+            .block_on(
+                h.book
+                    .plan_settlement_review(&cx, &review, vec![right], &cap())
+            )
             .unwrap()
             .is_ok()
     );
@@ -604,8 +622,11 @@ fn a_review_grants_no_read_post_principal_scope_or_expiry_authority() {
                 .is_err()
         );
         assert!(
-            h.book
-                .plan_settlement_review(&cx, &review, Vec::new(), capability)
+            h.runtime
+                .block_on(
+                    h.book
+                        .plan_settlement_review(&cx, &review, Vec::new(), capability)
+                )
                 .unwrap()
                 .is_err()
         );

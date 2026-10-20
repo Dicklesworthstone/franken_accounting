@@ -197,8 +197,14 @@ impl Harness {
 
     fn plan(&mut self, review: &AllocationReview) -> PostPlan {
         let cx = self.cx();
-        self.book
-            .plan_allocation_review(&cx, review, review.digest().unwrap(), Vec::new(), &author())
+        self.runtime
+            .block_on(self.book.plan_allocation_review(
+                &cx,
+                review,
+                review.digest().unwrap(),
+                Vec::new(),
+                &author(),
+            ))
             .unwrap()
             .unwrap()
     }
@@ -224,8 +230,14 @@ fn approval_publications_do_not_change_the_reviewed_proposal_or_create_a_stale_r
     let review = AllocationReview::decode(&saved).unwrap();
     let at = h.head();
     let plan = h
-        .book
-        .plan_allocation_review(&cx, &review, digest, vec![approval.approval()], &author())
+        .runtime
+        .block_on(h.book.plan_allocation_review(
+            &cx,
+            &review,
+            digest,
+            vec![approval.approval()],
+            &author(),
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(plan.proposal(), review.proposal());
@@ -281,8 +293,11 @@ fn planning_refuses_substituted_review_and_inadequate_current_authority_without_
     let mut wrong = digest;
     wrong[0] ^= 1;
     let refusal = h
-        .book
-        .plan_allocation_review(&cx, &review, wrong, Vec::new(), &author())
+        .runtime
+        .block_on(
+            h.book
+                .plan_allocation_review(&cx, &review, wrong, Vec::new(), &author()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, code::PLAN_INVALIDATED);
@@ -294,8 +309,11 @@ fn planning_refuses_substituted_review_and_inadequate_current_authority_without_
         author().for_books(&[Id128([9; 16])]).unwrap(),
     ] {
         assert!(
-            h.book
-                .plan_allocation_review(&cx, &review, digest, Vec::new(), &denied)
+            h.runtime
+                .block_on(
+                    h.book
+                        .plan_allocation_review(&cx, &review, digest, Vec::new(), &denied)
+                )
                 .unwrap()
                 .is_err()
         );
@@ -313,14 +331,14 @@ fn decoding_a_review_does_not_create_driver_evidence_or_approve_zero_share_accou
     let cx = h.cx();
     let before = h.head();
     let result = h
-        .book
-        .plan_allocation_review(
+        .runtime
+        .block_on(h.book.plan_allocation_review(
             &cx,
             &review,
             review.digest().unwrap(),
             Vec::new(),
             &author(),
-        )
+        ))
         .unwrap()
         .unwrap_err();
     assert_eq!(result.code, code::EVIDENCE_UNKNOWN);
@@ -328,14 +346,14 @@ fn decoding_a_review_does_not_create_driver_evidence_or_approve_zero_share_accou
     h.import(basis.basis_bytes().unwrap());
     let before = h.head();
     let result = h
-        .book
-        .plan_allocation_review(
+        .runtime
+        .block_on(h.book.plan_allocation_review(
             &cx,
             &review,
             review.digest().unwrap(),
             Vec::new(),
             &author(),
-        )
+        ))
         .unwrap()
         .unwrap_err();
     assert_eq!(result.code, code::UNKNOWN_ACCOUNT);
@@ -391,8 +409,8 @@ fn portable_review_can_be_planned_after_reopen_without_resealing_the_description
         ))
         .unwrap();
     let decoded = AllocationReview::decode(&bytes).unwrap();
-    let plan = book
-        .plan_allocation_review(&cx, &decoded, digest, Vec::new(), &author())
+    let plan = runtime
+        .block_on(book.plan_allocation_review(&cx, &decoded, digest, Vec::new(), &author()))
         .unwrap()
         .unwrap();
     assert_eq!(plan.proposal(), review.proposal());

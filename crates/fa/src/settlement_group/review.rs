@@ -64,7 +64,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ///
     /// After an uncertain commit, retry the SAVED PostPlan instead: refreshing
     /// would inspect balances which the successful payment already changed.
-    pub fn plan_reviewed_settlement_group(
+    pub async fn plan_reviewed_settlement_group(
         &mut self,
         cx: &PurposeContexts,
         reviewed: &PreparedSettlementGroup,
@@ -76,5 +76,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         self.plan_prepared_settlement_group(cx, fresh, approvals, capability)
+            .await
     }
 }

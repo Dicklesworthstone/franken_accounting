@@ -320,8 +320,11 @@ fn prepared_shared_snapshot_still_commits_atomically_and_retries_the_same_plan()
         .unwrap()
         .unwrap();
     let plan = h
-        .book
-        .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap()),
+        )
         .unwrap()
         .unwrap();
     let saved = plan.post_plan().canonical_bytes().unwrap();

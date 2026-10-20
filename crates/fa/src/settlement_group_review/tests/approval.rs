@@ -61,8 +61,11 @@ fn independent_approver_without_post_authority_records_one_full_proposal_approva
     assert_eq!(denied.code, fa_policy::denial::code::APPROVAL_BINDING);
     assert_eq!(h.head(), head);
     let plan = h
-        .book
-        .plan_settlement_group_review(&cx, &review, vec![approved], &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group_review(&cx, &review, vec![approved], &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().intent().proposal(), review.proposal());
@@ -161,8 +164,8 @@ fn changed_first_or_later_allocation_never_publishes_a_partial_group_approval() 
                 targets: vec![(bill.vid, 1)],
             };
             let plan = h
-                .book
-                .plan_settlement(&cx, request, Vec::new(), &cap())
+                .runtime
+                .block_on(h.book.plan_settlement(&cx, request, Vec::new(), &cap()))
                 .unwrap()
                 .unwrap();
             h.runtime
@@ -276,8 +279,11 @@ fn approval_never_skips_the_production_kernels_accounting_laws() {
         .approval();
     let head = h.head();
     let refusal = h
-        .book
-        .plan_settlement_group_review(&cx, &review, vec![approval], &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group_review(&cx, &review, vec![approval], &cap()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::UNBALANCED);

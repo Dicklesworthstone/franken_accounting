@@ -241,7 +241,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 
     /// Convenience preparation plus rehearsal. Supplied approvals must bind
     /// the complete combined proposal. Review the returned plan before commit.
-    pub fn plan_settlement_group(
+    pub async fn plan_settlement_group(
         &mut self,
         cx: &PurposeContexts,
         request: SettlementGroupRequest,
@@ -253,12 +253,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         self.plan_prepared_settlement_group(cx, prepared, approvals, capability)
+            .await
     }
 
     /// Rehearse the exact in-memory review, without silently reallocating.
     /// An intervening publication invalidates its basis. All selections share
     /// one ordinary kernel transaction, one idempotency key and one certificate.
-    pub fn plan_prepared_settlement_group(
+    pub async fn plan_prepared_settlement_group(
         &mut self,
         cx: &PurposeContexts,
         prepared: PreparedSettlementGroup,
@@ -281,7 +282,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(intent) => intent,
             Err(error) => return Ok(Err(invalid(error.to_string()))),
         };
-        let post = match self.plan(cx, intent, capability)? {
+        let post = match self.plan_with_history(cx, intent, capability).await? {
             Ok(post) => post,
             Err(refusal) => return Ok(Err(refusal)),
         };

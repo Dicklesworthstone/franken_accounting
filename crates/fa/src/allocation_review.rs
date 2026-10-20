@@ -306,7 +306,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ///
     /// No journal write occurs. Persist the returned native PostPlan BEFORE
     /// commit_plan, and retry that plan after an ambiguous publication outcome.
-    pub fn plan_allocation_review(
+    pub async fn plan_allocation_review(
         &mut self,
         cx: &PurposeContexts,
         review: &AllocationReview,
@@ -325,7 +325,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(intent) => intent,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        self.plan(cx, intent, capability)
+        self.plan_with_history(cx, intent, capability).await
     }
 }
 

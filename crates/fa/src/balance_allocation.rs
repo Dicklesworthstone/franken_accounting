@@ -244,11 +244,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// excludes HEAD, allowing unrelated commits without changing the source.
     /// This digest is a recipient-retained expectation, NOT a signed proof.
     ///
-    /// The exclusive mutable handle and absence of suspension keep source
+    /// The exclusive mutable handle keeps source
     /// validation and planning on the same writer's prefix. The native plan
     /// supplies the ordinary unchanged-prefix check at eventual publication.
     #[allow(clippy::too_many_arguments)]
-    pub fn plan_balance_allocation_review(
+    pub async fn plan_balance_allocation_review(
         &mut self,
         cx: &PurposeContexts,
         request: &BalanceAllocationRequest,
@@ -288,6 +288,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(changed()));
         }
         self.plan_allocation_review(cx, review, expected_review_digest, approvals, capability)
+            .await
     }
 
     // Read-only shared observation. Callers separately admit their actual

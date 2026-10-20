@@ -213,8 +213,8 @@ impl Harness {
         };
         let cx = self.cx();
         let plan = self
-            .book
-            .plan_settlement(&cx, request, Vec::new(), &cap())
+            .runtime
+            .block_on(self.book.plan_settlement(&cx, request, Vec::new(), &cap()))
             .unwrap()
             .unwrap();
         self.runtime
@@ -490,8 +490,11 @@ fn reopened_review_accepts_approval_publications_then_one_commit_and_exact_plan_
     let head = h.head();
     let cx = h.cx();
     let plan = h
-        .book
-        .plan_settlement_group_review(&cx, &decoded, vec![approved], &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group_review(&cx, &decoded, vec![approved], &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().intent().proposal(), decoded.proposal());
@@ -552,8 +555,11 @@ fn competing_consumption_requires_new_review_even_when_all_payment_effects_still
         .unwrap();
     assert_eq!(fresh.proposal().proposal_digest().unwrap(), original);
     let denial = h
-        .book
-        .plan_settlement_group_review(&cx, &review, Vec::new(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group_review(&cx, &review, Vec::new(), &cap()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(denial.code, fa_journal::refusal::code::PLAN_INVALIDATED);
@@ -701,8 +707,11 @@ fn large_native_amounts_remain_exact_across_transport_and_resume() {
         2
     );
     let plan = h
-        .book
-        .plan_settlement_group_review(&cx, &decoded, Vec::new(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group_review(&cx, &decoded, Vec::new(), &cap()),
+        )
         .unwrap()
         .unwrap();
     h.runtime

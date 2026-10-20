@@ -328,7 +328,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// current HEAD; use [`Self::plan_prepared_settlement`] to bind planning to
     /// a preparation already reviewed by the caller. Approvals must bind the
     /// completed proposal, not the original proposal with empty settles lists.
-    pub fn plan_settlement(
+    pub async fn plan_settlement(
         &mut self,
         cx: &PurposeContexts,
         request: SettlementPostRequest,
@@ -340,6 +340,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         self.plan_prepared_settlement(cx, prepared, approvals, capability)
+            .await
     }
 
     /// Rehearse the EXACT preparation the caller reviewed, without allocating
@@ -355,7 +356,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// the kernel checks those approvals against the newly completed proposal.
     /// Review the returned plan before publishing it. Neither path automatically
     /// retries a refusal or submits a payment.
-    pub fn plan_prepared_settlement(
+    pub async fn plan_prepared_settlement(
         &mut self,
         cx: &PurposeContexts,
         prepared: PreparedSettlement,
@@ -381,7 +382,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(intent) => intent,
             Err(error) => return Ok(Err(invalid(error.to_string()))),
         };
-        let post = match self.plan(cx, intent, capability)? {
+        let post = match self.plan_with_history(cx, intent, capability).await? {
             Ok(post) => post,
             Err(refusal) => return Ok(Err(refusal)),
         };

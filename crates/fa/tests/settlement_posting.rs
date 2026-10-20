@@ -216,8 +216,11 @@ impl Harness {
 
     fn plan(&mut self, request: SettlementPostRequest) -> SettlementPostPlan {
         let cx = self.cx();
-        self.book
-            .plan_settlement(&cx, request, Vec::new(), &capability())
+        self.runtime
+            .block_on(
+                self.book
+                    .plan_settlement(&cx, request, Vec::new(), &capability()),
+            )
             .unwrap()
             .unwrap()
     }
@@ -394,8 +397,11 @@ fn reviewed_preparation_is_exact_and_an_unrelated_commit_requires_explicit_refre
         .unwrap();
     let at = h.head();
     let plan = h
-        .book
-        .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), &capability()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.allocation(), prepared.allocation());
@@ -405,8 +411,11 @@ fn reviewed_preparation_is_exact_and_an_unrelated_commit_requires_explicit_refre
     let _ = h.invoice("unrelated-review-publication", "2026-03-11", 5);
     let advanced = h.head();
     let refusal = h
-        .book
-        .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), &capability()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::PLAN_INVALIDATED);
@@ -447,8 +456,11 @@ fn reviewed_payment_is_never_silently_reallocated_after_a_competing_application(
     h.commit(other);
     let head = h.head();
     let refusal = h
-        .book
-        .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::OVER_APPLICATION);
@@ -523,8 +535,11 @@ fn authority_is_required_before_target_observation_and_again_before_planning_or_
             "unauthorized callers must not learn target existence"
         );
         assert!(
-            h.book
-                .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), cap)
+            h.runtime
+                .block_on(
+                    h.book
+                        .plan_prepared_settlement(&cx, prepared.clone(), Vec::new(), cap)
+                )
                 .unwrap()
                 .is_err()
         );
@@ -678,8 +693,11 @@ fn production_balance_and_evidence_laws_cannot_be_bypassed_by_preparation() {
     );
     assert_eq!(prepared.proposal().legs[0].amount.mantissa, 59);
     let refusal = h
-        .book
-        .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::UNBALANCED);
@@ -692,8 +710,11 @@ fn production_balance_and_evidence_laws_cannot_be_bypassed_by_preparation() {
         .unwrap()
         .unwrap();
     let refusal = h
-        .book
-        .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, prepared, Vec::new(), &capability()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::EVIDENCE_MINIMUM);

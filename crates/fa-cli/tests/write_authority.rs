@@ -125,6 +125,11 @@ const HOST_ONLY: &[(&str, Option<&str>, &str)] = &[
         "always dangerous: confirmed on the host",
     ),
     (
+        "bank",
+        Some("reconcile"),
+        "an exact bank close requires Human host confirmation and full-source authority",
+    ),
+    (
         "recover",
         Some("projections"),
         "needs schema_change on trunk and --yes, outside every launch ceiling",
@@ -708,9 +713,19 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(
+            &["bank", "reconciliation", "--import", ZERO_DIGEST],
+            &[Op::Read, Op::Reconcile],
+            Reaches,
+        ),
+        row(
             &["bank", "history", "--account", "1000"],
             &[Op::Read, Op::Reconcile],
             Reaches,
+        ),
+        row(
+            &["fx", "rate", "add", "--from-json", "rate.json"],
+            &[Op::Post],
+            Succeeds,
         ),
         row(
             &["registers", "materialize", "--period", "FY2026-P03"],
@@ -812,6 +827,10 @@ fn every_bound_writing_command_is_admitted_on_exactly_its_operations() {
             ),
             ("invoice.txt", "Invoice 1: 100.00 USD for services."),
             ("receipt.txt", "Receipt 1: 1.00 USD received."),
+            (
+                "rate.json",
+                r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"11","rate_den":"10","rounding":"HalfEven","as_of":"2026-03-14","retrieved_at_ns":1772712000000000000,"purpose":"spot_close","source":"write authority fixture"}"#,
+            ),
             (
                 "sale.json",
                 r#"{"effective_date":"2026-03-14","idempotency_key":"matrix-sale","legs":[{"side":"debit","account":"1200","amount":"100.00 USD"},{"side":"credit","account":"4000","amount":"100.00 USD"}]}"#,

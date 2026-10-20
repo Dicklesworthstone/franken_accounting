@@ -2714,7 +2714,13 @@ mod tests {
 
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         assert_eq!(op_costs.hot_object_exceptions.len(), 2);
-        assert_eq!(op_costs.classes.len(), 24);
+        assert_eq!(op_costs.classes.len(), 25);
+        assert!(
+            op_costs
+                .classes
+                .iter()
+                .any(|row| row.id == "bank_statement_reconciliation")
+        );
         assert_eq!(op_costs.kernel_op_witnesses.len(), 9);
 
         let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");

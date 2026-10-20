@@ -383,7 +383,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ///
     /// Preserve the returned PostPlan before publication. The strict original
     /// plan_prepared_settlement API and exact commit retry contract are unchanged.
-    pub fn plan_settlement_review(
+    pub async fn plan_settlement_review(
         &mut self,
         cx: &PurposeContexts,
         review: &SettlementReview,
@@ -395,6 +395,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         self.plan_prepared_settlement(cx, prepared, approvals, capability)
+            .await
     }
 }
 

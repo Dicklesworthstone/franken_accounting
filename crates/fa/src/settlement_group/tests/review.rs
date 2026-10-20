@@ -22,8 +22,13 @@ fn complete_proposal_approval_refresh_reopen_and_exact_commit_retry() {
     let cx = h.cx();
     assert!(at > reviewed.known_at());
     let stale = h
-        .book
-        .plan_prepared_settlement_group(&cx, reviewed.clone(), vec![approval], &cap())
+        .runtime
+        .block_on(h.book.plan_prepared_settlement_group(
+            &cx,
+            reviewed.clone(),
+            vec![approval],
+            &cap(),
+        ))
         .unwrap()
         .unwrap_err();
     assert_eq!(stale.code, fa_journal::refusal::code::PLAN_INVALIDATED);
@@ -45,8 +50,11 @@ fn complete_proposal_approval_refresh_reopen_and_exact_commit_retry() {
         assert_eq!(a.allocation.unapplied, b.allocation.unapplied);
     }
     let plan = h
-        .book
-        .plan_reviewed_settlement_group(&cx, &reviewed, vec![approval], &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_reviewed_settlement_group(&cx, &reviewed, vec![approval], &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().intent().proposal(), reviewed.proposal());
@@ -107,8 +115,11 @@ fn equal_proposal_after_a_competing_payment_is_not_equal_reviewed_observations()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::PLAN_INVALIDATED);
     assert!(
-        h.book
-            .plan_reviewed_settlement_group(&cx, &reviewed, Vec::new(), &cap())
+        h.runtime
+            .block_on(
+                h.book
+                    .plan_reviewed_settlement_group(&cx, &reviewed, Vec::new(), &cap())
+            )
             .unwrap()
             .is_err()
     );
@@ -142,16 +153,22 @@ fn approving_only_one_intermediate_selection_cannot_authorize_the_combined_entry
     let wrong = approve(&mut h, partial.proposal().proposal_digest().unwrap());
     let at = h.head();
     assert!(
-        h.book
-            .plan_reviewed_settlement_group(&cx, &reviewed, vec![wrong], &cap())
+        h.runtime
+            .block_on(
+                h.book
+                    .plan_reviewed_settlement_group(&cx, &reviewed, vec![wrong], &cap())
+            )
             .unwrap()
             .is_err()
     );
     assert_eq!(h.head(), at);
     let correct = approve(&mut h, reviewed.proposal().proposal_digest().unwrap());
     let plan = h
-        .book
-        .plan_reviewed_settlement_group(&cx, &reviewed, vec![correct], &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_reviewed_settlement_group(&cx, &reviewed, vec![correct], &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().intent().proposal(), reviewed.proposal());
