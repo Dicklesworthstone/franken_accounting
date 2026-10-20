@@ -1,4 +1,4 @@
-//! Evidence-backed FX intake, intent valuation, and functional period activity.
+//! Evidence-backed FX intake, intent valuation, and functional stock/activity.
 //!
 //! Input rates are exact rational assertions retained as Rate documents. Their
 //! source and retrieval metadata do not authenticate a provider or a clock.
@@ -21,6 +21,7 @@ use crate::json::{Json, obj, s};
 const RATE_USAGE: &str = "fa fx rate add --from-json rate.json (or - for stdin); rate_num and rate_den are positive decimal integer strings, base_unit is the book's functional currency, quote_unit is the foreign currency";
 const ACTIVITY_USAGE: &str =
     "fa tb --functional --activity --period FY2026-P03 [--as-known-at HEAD|<seq>|<RFC3339>]";
+const STOCK_USAGE: &str = "fa tb --functional (--period FY2026-P03 | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>]; add --activity with one --period for period movement";
 const INTENT_USAGE: &str = r#""fx":{"law":"SpotClose","rates":["D:<retained Rate document oid>"]}; current SpotClose and PeriodAverage laws require HalfEven. SpotClose as_of equals effective_date; PeriodAverage as_of is the posting period's last included day. Base amounts are calculated from retained evidence"#;
 
 /// Embedded owners acquire the read operation needed to resolve selected Rate
@@ -307,6 +308,9 @@ pub(crate) fn value_intent(
 }
 
 pub(crate) fn functional_tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if !args.switch("--activity") {
+        return functional_stock(ctx, args);
+    }
     if args.positional.len() != 1 || !args.switch("--activity") {
         return Err(usage(
             "functional trial balance requires an explicit --activity selection",
@@ -443,6 +447,185 @@ pub(crate) fn functional_tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             ("pending_rows", Json::Arr(rows(&report.pending)?)),
             ("totals", total),
             ("pending_totals", pending_total),
+            ("balanced", Json::Bool(balanced)),
+            ("pending_balanced", Json::Bool(pending_balanced)),
+        ],
+        &human.join("\n"),
+    );
+    Ok(())
+}
+
+fn functional_stock(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let periods = args.flag_all("--period");
+    let dates = args.flag_all("--as-of");
+    if args.positional.len() != 1
+        || !((periods.len() == 1 && dates.is_empty()) || (periods.is_empty() && dates.len() == 1))
+    {
+        return Err(usage(
+            "functional stock requires exactly one --period or one --as-of date",
+            STOCK_USAGE,
+        ));
+    }
+    for flag in ["--fiscal-year", "--root", "--certificate-out", "--branch"] {
+        if args.flag(flag).is_some() {
+            return Err(usage(
+                format!("{flag} is not supported by functional stock"),
+                STOCK_USAGE,
+            ));
+        }
+    }
+    for flag in ["--summary", "--certify", "--as-originally-reported"] {
+        if args.switch(flag) {
+            return Err(usage(
+                format!("{flag} is not supported by functional stock"),
+                STOCK_USAGE,
+            ));
+        }
+    }
+    let as_of = dates
+        .first()
+        .map(|date| {
+            DateDay::parse(date).map_err(|error| {
+                usage(
+                    format!("--as-of must be a civil date: {error}"),
+                    STOCK_USAGE,
+                )
+            })
+        })
+        .transpose()?;
+    let capability = ctx.capability(args, &["read"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        fa_policy::admit_read(&capability, capability.holder(), book.context().book_id)
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        book.read_scope(capability.holder(), &capability)??;
+        Ok(())
+    })?;
+    let (known_at, _) = known_at_read_flag(args, &book, &ctx.out, &capability)?;
+    // This report verifies the complete retained Entry history. Judge that
+    // whole-book reach at the selected prefix before resolving period metadata.
+    let selected = book
+        .read_scope(capability.holder(), &capability)??
+        .admit_whole_book(known_at)??;
+    let through = if let Some(date) = as_of {
+        date
+    } else {
+        // A historical Period row may be outside the live snapshot retained
+        // by an idle, compacted store. Hydrate the admitted prefix before
+        // looking up its end date, just as the stock fold does for entries.
+        book.prepare_report_history(capability.holder(), &capability, Some(selected))??;
+        let periods_verified = book.verify_periods(Some(selected))?;
+        if !periods_verified.is_green() {
+            return Err(Fail::Verification {
+                message: "functional stock cannot use a period whose retained definition or state has drifted".into(),
+                detail: obj(vec![(
+                    "drift",
+                    Json::Arr(periods_verified.drift.iter().map(s).collect()),
+                )]),
+                cite: Some("FA-INV-02 (period dates and state derive from the journal)".into()),
+                fix: Some("inspect fa verify periods at the same known-at prefix; preserve the native history".into()),
+            });
+        }
+        let period = book
+            .read_scope(capability.holder(), &capability)??
+            .period_at(periods[0], Some(selected))??
+            .ok_or_else(|| {
+                usage(
+                    format!(
+                        "period {} does not exist at known-at {}",
+                        periods[0], selected.0
+                    ),
+                    STOCK_USAGE,
+                )
+            })?;
+        period.end.pred().map_err(|error| {
+            usage(
+                format!("cannot resolve the period end: {error}"),
+                STOCK_USAGE,
+            )
+        })?
+    };
+    let report = book.functional_balance_as_of(&capability, through, Some(selected))??;
+    let accounts: BTreeMap<_, _> = book
+        .accounts_at(report.known_at, &capability)??
+        .into_iter()
+        .map(|account| (account.vid, account.code))
+        .collect();
+    let units = &book.context().units;
+    let render = |amount| render_amount(Amount::new(report.base_unit, amount), units);
+    let corrupt = || {
+        Fail::Book(fa::BookError::Kernel(KernelError::Corrupt(
+            "functional stock total overflow or missing account".into(),
+        )))
+    };
+    let base = registered_unit_code(report.base_unit, units)?;
+    let mut human = vec![format!(
+        "functional stock through {} · {base} · known at {}",
+        through.render(),
+        report.known_at.0
+    )];
+    let mut column = |label: &str,
+                      cells: &[fa_registers::FunctionalStockCell]|
+     -> Result<(Json, Json, bool), Fail> {
+        let mut rows = Vec::with_capacity(cells.len());
+        let (mut debits, mut credits) = (0i128, 0i128);
+        for cell in cells {
+            let account = accounts.get(&cell.key.account).ok_or_else(corrupt)?;
+            let net = cell.debits.checked_sub(cell.credits).ok_or_else(corrupt)?;
+            debits = debits.checked_add(cell.debits).ok_or_else(corrupt)?;
+            credits = credits.checked_add(cell.credits).ok_or_else(corrupt)?;
+            rows.push(obj(vec![
+                ("account", s(account)),
+                ("account_ref", s(format!("{:032x}", cell.key.account.0))),
+                ("entity", cell.key.entity.as_ref().map_or(Json::Null, s)),
+                ("debits", s(render(cell.debits)?)),
+                ("credits", s(render(cell.credits)?)),
+                ("net", s(render(net)?)),
+                ("entry_count", Json::Int(i128::from(cell.entry_count))),
+            ]));
+            human.push(format!(
+                "{label} {account}{}  debit {}  credit {}  net {}",
+                cell.key
+                    .entity
+                    .as_ref()
+                    .map_or(String::new(), |entity| format!(" [{entity}]")),
+                render(cell.debits)?,
+                render(cell.credits)?,
+                render(net)?
+            ));
+        }
+        let totals = obj(vec![
+            ("debits", s(render(debits)?)),
+            ("credits", s(render(credits)?)),
+            (
+                "net",
+                s(render(debits.checked_sub(credits).ok_or_else(corrupt)?)?),
+            ),
+        ]);
+        Ok((Json::Arr(rows), totals, debits == credits))
+    };
+    let (rows, totals, balanced) = column("posted", &report.cells)?;
+    let (pending_rows, pending_totals, pending_balanced) = column("pending", &report.pending)?;
+    ctx.out.known_at(report.known_at);
+    ctx.out.effective(format!("through:{}", through.render()));
+    ctx.out.event(
+        "functional_stock_balance",
+        vec![
+            ("scope", s("stock")),
+            ("effective_through", s(through.render())),
+            ("base_unit", s(base)),
+            ("known_at", Json::Int(i128::from(report.known_at.0))),
+            (
+                "watermark",
+                report
+                    .watermark
+                    .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+            ),
+            ("entries", Json::Int(i128::from(report.entries))),
+            ("fold_digest", s(hex(&report.fold_digest))),
+            ("rows", rows),
+            ("pending_rows", pending_rows),
+            ("totals", totals),
+            ("pending_totals", pending_totals),
             ("balanced", Json::Bool(balanced)),
             ("pending_balanced", Json::Bool(pending_balanced)),
         ],

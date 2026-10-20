@@ -6845,6 +6845,28 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     assert_eq!(int(&close_status, "drifted_count"), Some(0));
     assert_eq!(text(&close_status, "reconciled_through"), "2026-03-31");
 
+    let rate_path = write(
+        &dir,
+        "event-fx-rate.json",
+        r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"11","rate_den":"10","rounding":"HalfEven","as_of":"2026-03-31","retrieved_at_ns":1774915200000000000,"purpose":"period_close","source":"event fixture uploaded rate"}"#,
+    );
+    let rate = doc(&run5(&["fx", "rate", "add", "--from-json", &rate_path]));
+    assert_eq!(text(&rate, "kind"), "Rate");
+    assert_eq!(text(&rate, "grade"), "HumanUpload");
+    let functional_activity = doc(&run5(&[
+        "tb",
+        "--functional",
+        "--activity",
+        "--period",
+        "FY2026-P03",
+    ]));
+    assert_eq!(text(&functional_activity, "scope"), "period_activity");
+    assert_eq!(text(&functional_activity, "base_unit"), "USD");
+    let functional_stock = doc(&run5(&["tb", "--functional", "--as-of", "2026-03-31"]));
+    assert_eq!(text(&functional_stock, "scope"), "stock");
+    assert_eq!(text(&functional_stock, "effective_through"), "2026-03-31");
+    assert_eq!(functional_stock.get("balanced"), Some(&Json::Bool(true)));
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events

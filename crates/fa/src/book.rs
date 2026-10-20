@@ -1585,6 +1585,20 @@ impl Book {
         )))
     }
 
+    /// Cumulative functional-currency stock through `effective_through` at
+    /// one retained prefix, with outstanding pending holds kept separate.
+    pub fn functional_balance_as_of(
+        &mut self,
+        capability: &fa_journal::Capability,
+        effective_through: DateDay,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<fa_registers::FunctionalStockFold> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_balance_as_of(
+            &purposes, capability, effective_through, known_at,
+        )))
+    }
+
     /// Record an import run (plan §9.3): the batch's documents and their
     /// receipts, and the run's `ImportControl` receipt, in one commit.
     /// `description` is sealed under the book key with fresh entropy.

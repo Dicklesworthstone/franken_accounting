@@ -107,6 +107,14 @@ on:
       - 'registries/object_schemas/book.toml'
       - 'registries/object_schemas/control_payload.toml'
       - 'crates/fa-registers/tests/registers.rs'
+      - 'crates/fa-registers/src/fx.rs'
+      - 'crates/fa-registers/tests/fx_stock.rs'
+      - 'crates/fa/src/fx.rs'
+      - 'crates/fa/tests/fx.rs'
+      - 'crates/fa/tests/fx_stock.rs'
+      - 'crates/fa-cli/src/fx.rs'
+      - 'crates/fa-cli/tests/fx.rs'
+      - 'crates/fa-cli/tests/fx_stock.rs'
       - 'registries/procedures.toml'
       - '.github/workflows/lantern-graph-kernel.yml'
   workflow_dispatch:
@@ -222,6 +230,15 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --test registers --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test genesis --jobs 2
+      - name: Test retained FX valuation and cumulative functional balances
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --test fx_stock --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test fx --test fx_stock --no-fail-fast --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test fx --test fx_stock --no-fail-fast --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --test e2e_stdio inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli --jobs 2 -- --exact --nocapture
       - name: Test immutable period births and current schema authority
         if: ${{ !cancelled() }}
         shell: bash
