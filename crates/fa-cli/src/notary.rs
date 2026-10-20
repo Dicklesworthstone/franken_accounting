@@ -510,11 +510,12 @@ fn emit_certificate(
 }
 
 /// Families with a recipient-bound JSONL workpaper export (`--workpaper-out`).
-/// Ledger detail needs `--view detail`; effective-date aging needs an aging
-/// `--expect`, because its export binds the recipient's own request.
-fn has_workpaper(family: ReportArtifactFamily, detail_view: bool, aging_expected: bool) -> bool {
+/// A roll-forward source needs `--view detail` (ledger lines) or `--view
+/// roll-forward` (the lead schedule); effective-date aging needs an aging
+/// `--expect`, because each export binds the recipient's own request.
+fn has_workpaper(family: ReportArtifactFamily, view_bound: bool, aging_expected: bool) -> bool {
     match family {
-        ReportArtifactFamily::RollForward => detail_view,
+        ReportArtifactFamily::RollForward => view_bound,
         ReportArtifactFamily::EffectiveDateAging => aging_expected,
         ReportArtifactFamily::CashFlow
         | ReportArtifactFamily::AgingReconciliation
@@ -531,7 +532,7 @@ fn unsupported_workpaper(family: ReportArtifactFamily) -> Fail {
             "{} certificates have no JSONL workpaper export",
             family.name()
         ),
-        "--workpaper-out exports ledger detail (replay a roll-forward source with --view detail), effective-date aging (with its aging --expect), cash-flow, aging-reconciliation, aging-portfolio, statement-diff and statement-trace certificates",
+        "--workpaper-out exports a roll-forward source's ledger detail or lead schedule (replay it with --view detail or --view roll-forward), effective-date aging (with its aging --expect), cash-flow, aging-reconciliation, aging-portfolio, statement-diff and statement-trace certificates",
     )
 }
 
@@ -545,11 +546,18 @@ fn workpaper_jsonl(
     family: ReportArtifactFamily,
     bytes: &[u8],
     expected: &expectations::Expected,
-    detail: Option<&fa::RollForwardRequest>,
+    view: Option<(&str, &fa::RollForwardRequest)>,
 ) -> Result<String, Fail> {
     use expectations::Expected;
-    Ok(match (family, expected, detail) {
-        (ReportArtifactFamily::RollForward, _, Some(request)) => book.general_ledger_jsonl(
+    Ok(match (family, expected, view) {
+        (ReportArtifactFamily::RollForward, _, Some(("detail", request))) => book
+            .general_ledger_jsonl(
+                principal,
+                capability,
+                &fa::RollForwardCertificate::decode(bytes)?,
+                request,
+            )??,
+        (ReportArtifactFamily::RollForward, _, Some((_, request))) => book.roll_forward_jsonl(
             principal,
             capability,
             &fa::RollForwardCertificate::decode(bytes)?,
@@ -642,19 +650,24 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let workpaper_requested = workpaper_inline || workpaper_out.is_some();
-    let detail_view = match args.flag("--view") {
-        None => false,
-        Some("detail") if args.flag_all("--view").len() == 1 => true,
+    // A view binds a roll-forward source to an explicitly stated request and
+    // replays its ledger lines (detail) or its lead schedule (roll-forward).
+    let view = match args.flag("--view") {
+        None => None,
+        Some(view @ ("detail" | "roll-forward")) if args.flag_all("--view").len() == 1 => {
+            Some(view)
+        }
         Some(_) => {
             return Err(usage(
-                "--view accepts only detail",
-                "fa replay C:<oid> --view detail --account <code> --unit <CODE> --from YYYY-MM-DD --to YYYY-MM-DD --label <label> --as-known-at <seq>",
+                "--view accepts detail or roll-forward",
+                "fa replay C:<oid> --view detail|roll-forward --account <code> --unit <CODE> --from YYYY-MM-DD --to YYYY-MM-DD --label <label> --as-known-at <seq>",
             ));
         }
     };
-    if detail_view && args.flag("--expect").is_some() {
+    let detail_view = view == Some("detail");
+    if view.is_some() && args.flag("--expect").is_some() {
         return Err(usage(
-            "--view detail and --expect are separate request formats and cannot be combined",
+            "--view and --expect are separate request formats and cannot be combined",
             "use the complete replay_command from the original certified ledger",
         ));
     }
@@ -666,17 +679,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--label",
         "--as-known-at",
     ];
-    if !detail_view && detail_flags.iter().any(|flag| args.flag(flag).is_some()) {
+    if view.is_none() && detail_flags.iter().any(|flag| args.flag(flag).is_some()) {
         return Err(usage(
-            "explicit ledger-view expectations require --view detail",
+            "explicit ledger-view expectations require --view detail or --view roll-forward",
             "use the complete replay_command from the original certified ledger",
         ));
     }
-    if detail_view {
+    if let Some(view) = view {
         for flag in ["--from", "--to", "--label", "--as-known-at"] {
             if args.flag_all(flag).len() != 1 {
                 return Err(usage(
-                    format!("detail replay requires exactly one {flag}"),
+                    format!("{view} replay requires exactly one {flag}"),
                     "use the independently reviewed account, unit, dates, label and recorded sequence from the original ledger request",
                 ));
             }
@@ -692,7 +705,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .is_none()
         {
             return Err(usage(
-                "detail replay requires explicit units and a numeric --as-known-at sequence, never HEAD",
+                format!(
+                    "{view} replay requires explicit units and a numeric --as-known-at sequence, never HEAD"
+                ),
                 "use the complete replay_command from the original certified ledger",
             ));
         }
@@ -737,16 +752,19 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let expected = expectations::parse(args, &book, principal, &capability)?;
-    let detail_expected = if detail_view {
-        Some(crate::cli::parse_gl_scope(
+    let view_request = match view {
+        Some(view) => Some(crate::cli::parse_gl_scope(
             args,
             &book,
             &ctx.out,
-            "gl-detail",
+            if view == "detail" {
+                "gl-detail"
+            } else {
+                "roll-forward"
+            },
             "use the complete replay_command from the original certified ledger",
-        )?)
-    } else {
-        None
+        )?),
+        None => None,
     };
     let bytes = read_certificate_bytes(
         &book,
@@ -757,10 +775,12 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     )?;
     let artifact = ReportArtifact::decode(&bytes)?;
     prepare_artifact_history(&mut book, principal, &capability, &artifact, &bytes)?;
-    if detail_view && artifact.family() != ReportArtifactFamily::RollForward {
-        return Err(certificate_invalid(
-            "--view detail requires a roll-forward source certificate",
-        ));
+    if let Some(view) = view
+        && artifact.family() != ReportArtifactFamily::RollForward
+    {
+        return Err(certificate_invalid(format!(
+            "--view {view} requires a roll-forward source certificate"
+        )));
     }
     let aging_expected = matches!(expected, expectations::Expected::Aging(_));
     if aging_expected && artifact.family() != ReportArtifactFamily::EffectiveDateAging {
@@ -769,7 +789,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             artifact.family().name()
         )));
     }
-    if workpaper_requested && !has_workpaper(artifact.family(), detail_view, aging_expected) {
+    if workpaper_requested && !has_workpaper(artifact.family(), view.is_some(), aging_expected) {
         return Err(unsupported_workpaper(artifact.family()));
     }
     if artifact.family() == ReportArtifactFamily::ScenarioDiff {
@@ -814,7 +834,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 artifact.family(),
                 &bytes,
                 &expected,
-                detail_expected.as_ref(),
+                view.zip(view_request.as_ref()),
             )
         })
         .transpose()?;
@@ -845,17 +865,25 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let roll_forward = if !detail_view && artifact.family() == ReportArtifactFamily::RollForward {
         let certificate = fa::RollForwardCertificate::decode(&bytes)?;
-        Some(book.replay_roll_forward(principal, &capability, &certificate)??)
+        // --view roll-forward binds the lead schedule to the stated request.
+        Some(match &view_request {
+            Some(expected) => {
+                book.replay_roll_forward_for(principal, &capability, &certificate, expected)??
+            }
+            None => book.replay_roll_forward(principal, &capability, &certificate)??,
+        })
     } else {
         None
     };
-    let detail = if let Some(expected) = detail_expected {
-        let source = fa::RollForwardCertificate::decode(&bytes)?;
-        let report = book.replay_general_ledger(principal, &capability, &source, &expected)??;
-        let presentation = crate::cli::general_ledger_presentation(&book, &report)?;
-        Some((report, presentation))
-    } else {
-        None
+    let detail = match view_request {
+        Some(expected) if detail_view => {
+            let source = fa::RollForwardCertificate::decode(&bytes)?;
+            let report =
+                book.replay_general_ledger(principal, &capability, &source, &expected)??;
+            let presentation = crate::cli::general_ledger_presentation(&book, &report)?;
+            Some((report, presentation))
+        }
+        _ => None,
     };
     let aging = if artifact.family() == ReportArtifactFamily::EffectiveDateAging {
         let certificate = fa::AgingCertificate::decode(&bytes)?;

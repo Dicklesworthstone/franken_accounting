@@ -2530,6 +2530,34 @@ impl Book {
         ))
     }
 
+    /// Replay a certified roll-forward only after binding it to an
+    /// independently supplied expected request with a fixed prefix.
+    pub fn replay_roll_forward_for(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::RollForwardCertificate,
+        expected: &crate::RollForwardRequest,
+    ) -> Outcome<crate::RollForward> {
+        with_store!(&self.store, core => core.replay_roll_forward_for(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// The lead schedule as bounded JSONL, only after the certificate replays
+    /// against the expected request. Produce authority is required by the core.
+    pub fn roll_forward_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::RollForwardCertificate,
+        expected: &crate::RollForwardRequest,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.roll_forward_jsonl(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
     /// Fold open items through an inclusive civil date at one known-at frontier.
     pub fn open_items_as_of(
         &self,
