@@ -3748,3 +3748,348 @@ fields = ["digest:hex", "checkpoint:hex", "checkpoint_public_key:hex", "verify:s
 name = "production_file"
 doc = "One file written into the production volume directory: its path inside the volume, size and BLAKE3 digest under fa:production-file:v1."
 fields = ["name:string", "bytes:int", "digest:hex"]
+
+# ---------------------------------------------------------------------------
+# Launch-bound command authority (plan §14.2–§14.4, §15.1; bead fa-mg2j).
+# ---------------------------------------------------------------------------
+# The capability operations a launch-bound session (MCP, `fa --token`, fad
+# tokens) must hold to run a command, as one ordered rule list read by
+# `fa_cli::cli::bound_command_ops` on every bound route. The first rule whose
+# conditions all hold decides; a command no rule decides is not admitted on
+# the bound route (host-only: book create, chart import, period births and
+# transitions, capability issue, party identifiers, bank unmatch, demo init,
+# recover projections, ...).
+#
+# A rule names `verbs` and may narrow them by `subcommands`, `args` (the
+# second positional), `when_all` (every flag or switch present), `when_any`
+# (at least one present), `unless_any` (none present) and `flag`/`values` (a
+# value flag's value). `ops` are capability op names from
+# registries/capability_caveats.toml; an empty list reads nothing from a
+# book. fa-verbs validates every verb, subcommand, flag and op a rule names;
+# fa-cli tests/write_authority.rs pins every writing command's ops.
+
+# Plans and dry runs of period transitions publish nothing.
+[[bound]]
+verbs = ["period"]
+subcommands = ["open", "soft-close", "close", "lock", "reopen"]
+when_any = ["--plan-out", "--dry-run"]
+unless_any = ["--plan", "--approval"]
+ops = ["read"]
+
+# Certifying retains a certificate: read and produce.
+[[bound]]
+verbs = ["statement"]
+subcommands = ["diff", "trace"]
+when_any = ["--certify", "--certificate-out"]
+ops = ["read", "produce"]
+
+[[bound]]
+verbs = ["gl"]
+when_any = ["--certify", "--certificate-out"]
+ops = ["read", "produce"]
+
+[[bound]]
+verbs = ["scenario"]
+subcommands = ["diff"]
+when_any = ["--certify", "--certificate-out"]
+ops = ["read", "produce"]
+
+[[bound]]
+verbs = ["tb"]
+when_all = ["--summary"]
+when_any = ["--certify", "--certificate-out"]
+ops = ["read", "produce"]
+
+# Data embedded in this build: nothing is read from the book.
+[[bound]]
+verbs = ["capabilities", "robot-docs", "help"]
+ops = []
+
+[[bound]]
+verbs = ["chart"]
+subcommands = ["templates"]
+ops = []
+
+[[bound]]
+verbs = ["book"]
+subcommands = ["info"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["chart", "period"]
+subcommands = ["list"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["tb", "statement", "open-items", "gl", "explain", "replay", "certificate", "entry", "procedure", "triage", "next", "doctor"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["verify", "registers"]
+ops = ["read", "verify"]
+
+[[bound]]
+verbs = ["close"]
+subcommands = ["map"]
+ops = ["read", "schema_change"]
+
+[[bound]]
+verbs = ["close"]
+subcommands = ["routes"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["close"]
+subcommands = ["year-end"]
+ops = ["read", "post", "close"]
+
+[[bound]]
+verbs = ["post", "commit", "reverse", "reserve", "resolve", "invoice", "bill", "receipt", "payment"]
+ops = ["post"]
+
+[[bound]]
+verbs = ["allocate", "settle"]
+subcommands = ["approve"]
+ops = ["read", "approve"]
+
+[[bound]]
+verbs = ["allocate", "settle"]
+when_any = ["--approve"]
+ops = ["read", "approve"]
+
+[[bound]]
+verbs = ["allocate", "settle"]
+ops = ["read", "post"]
+
+[[bound]]
+verbs = ["approve"]
+when_any = ["--review"]
+ops = ["read", "approve"]
+
+[[bound]]
+verbs = ["approve"]
+ops = ["approve"]
+
+[[bound]]
+verbs = ["checkpoint"]
+ops = ["witness"]
+
+[[bound]]
+verbs = ["proof", "bundle", "export"]
+ops = ["read", "produce"]
+
+[[bound]]
+verbs = ["production"]
+subcommands = ["open"]
+ops = ["produce"]
+
+[[bound]]
+verbs = ["production"]
+subcommands = ["list", "show", "document"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["produce"]
+ops = ["read", "produce"]
+
+[[bound]]
+verbs = ["bank"]
+subcommands = ["import"]
+ops = ["read", "post", "reconcile"]
+
+[[bound]]
+verbs = ["bank"]
+subcommands = ["match", "confirm", "status", "history"]
+ops = ["read", "reconcile"]
+
+[[bound]]
+verbs = ["finding"]
+subcommands = ["record", "export"]
+ops = ["read", "produce"]
+
+[[bound]]
+verbs = ["finding"]
+subcommands = ["runs", "list", "show", "replay"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["finding"]
+subcommands = ["review"]
+ops = ["read", "approve"]
+
+# A bound upload's grade derives from the session; a declared grade is
+# host-only.
+[[bound]]
+verbs = ["document"]
+subcommands = ["add"]
+unless_any = ["--grade"]
+ops = ["post"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["read", "list"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["redact"]
+ops = ["privileged"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["disclose"]
+ops = ["read", "produce"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["custody"]
+when_any = ["--to"]
+ops = ["post"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["custody"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["erase"]
+ops = ["erase"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["hold"]
+args = ["show", "list"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["hold"]
+ops = ["hold"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["attest"]
+args = ["review"]
+ops = ["approve"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["attest"]
+args = ["manual"]
+ops = ["post"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["attest"]
+args = ["register-equals"]
+when_any = ["--account"]
+ops = ["reconcile"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["attest"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["import"]
+args = ["run"]
+ops = ["post"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["import"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["event"]
+subcommands = ["record"]
+ops = ["post"]
+
+[[bound]]
+verbs = ["event"]
+subcommands = ["show", "list"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["migrate"]
+subcommands = ["show"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["migrate"]
+subcommands = ["import"]
+flag = "--action"
+values = ["show"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["migrate"]
+subcommands = ["import"]
+flag = "--action"
+values = ["prepare", "stage"]
+ops = ["read", "post", "migrate"]
+
+[[bound]]
+verbs = ["migrate"]
+subcommands = ["open", "stage", "finalize", "abandon"]
+ops = ["read", "post", "migrate"]
+
+[[bound]]
+verbs = ["capability"]
+subcommands = ["revoke"]
+ops = ["read", "issue_capability"]
+
+[[bound]]
+verbs = ["capability"]
+subcommands = ["list", "show"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["draft"]
+subcommands = ["new", "plan", "discard"]
+ops = ["post"]
+
+[[bound]]
+verbs = ["draft"]
+subcommands = ["list", "show"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["draft"]
+subcommands = ["promote"]
+ops = ["approve"]
+
+[[bound]]
+verbs = ["scenario"]
+subcommands = ["fork", "run", "discard"]
+ops = ["post"]
+
+[[bound]]
+verbs = ["scenario"]
+subcommands = ["list", "show", "diff"]
+ops = ["read"]
+
+# party identifiers is absent on purpose: a bank-detail change is the
+# business-email-compromise vector (plan §14.4), so it is host-only and never
+# a launch-bound session's, whatever it holds.
+[[bound]]
+verbs = ["chart"]
+subcommands = ["open", "close", "promote"]
+ops = ["schema_change"]
+
+[[bound]]
+verbs = ["party"]
+subcommands = ["add", "relate", "bind"]
+ops = ["schema_change"]
+
+[[bound]]
+verbs = ["instrument", "entity"]
+subcommands = ["add"]
+ops = ["schema_change"]
+
+[[bound]]
+verbs = ["party", "instrument", "entity"]
+subcommands = ["list"]
+ops = ["read"]

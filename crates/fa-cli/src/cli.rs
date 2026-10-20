@@ -1821,147 +1821,47 @@ fn recovery_preview_only(verb: &str, args: &Args) -> bool {
     verb == "recover" && args.switch("--dry-run")
 }
 
-/// Required capability operations for a command on the launch-bound surface, or
-/// `None` when the command/subcommand is owner-only and never admitted on a
-/// bound session.
+/// The capability operations a launch-bound session (MCP, `fa --token`, fad
+/// tokens) must hold to run this command: the first `[[bound]]` rule of
+/// `registries/verbs.toml` that decides it (plan §15.1: one verb registry
+/// drives every surface; fa-mg2j). `None`: no rule does, so the command is
+/// not admitted on the bound route.
 #[must_use]
 pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy::Op]> {
-    use fa_policy::Op;
-    let sub = args.positional.get(1).map(String::as_str);
-    if period_plan_only(verb, args) {
-        return Some(&[Op::Read]);
-    }
-    if verb == "statement"
-        && matches!(sub, Some("diff" | "trace"))
-        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
-    {
-        return Some(&[Op::Read, Op::Produce]);
-    }
-    if verb == "gl" && (args.switch("--certify") || args.flag("--certificate-out").is_some()) {
-        return Some(&[Op::Read, Op::Produce]);
-    }
-    if verb == "scenario"
-        && sub == Some("diff")
-        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
-    {
-        return Some(&[Op::Read, Op::Produce]);
-    }
-    if verb == "tb"
-        && args.switch("--summary")
-        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
-    {
-        return Some(&[Op::Read, Op::Produce]);
-    }
-    let ops: &'static [Op] = match (verb, sub) {
-        // The chart templates are data embedded in this build; listing
-        // them reads nothing from the book.
-        ("capabilities" | "robot-docs" | "help", _) | ("chart", Some("templates")) => &[],
-        ("book", Some("info"))
-        | ("chart" | "period", Some("list"))
-        | (
-            "tb" | "statement" | "open-items" | "gl" | "explain" | "replay" | "certificate"
-            | "entry" | "procedure" | "triage" | "next" | "doctor",
-            _,
-        ) => &[Op::Read],
-        ("verify" | "registers", _) => &[Op::Read, Op::Verify],
-        ("close", Some("map")) => &[Op::Read, Op::SchemaChange],
-        ("close", Some("routes")) => &[Op::Read],
-        ("close", Some("year-end")) => &[Op::Read, Op::Post, Op::Close],
-        (
-            "post" | "commit" | "reverse" | "reserve" | "resolve" | "invoice" | "bill" | "receipt"
-            | "payment",
-            _,
-        ) => &[Op::Post],
-        ("allocate" | "settle", _) => {
-            if sub == Some("approve") || args.switch("--approve") {
-                &[Op::Read, Op::Approve]
-            } else {
-                &[Op::Read, Op::Post]
-            }
-        }
-        ("approve", _) => {
-            if args.flag("--review").is_some() {
-                &[Op::Read, Op::Approve]
-            } else {
-                &[Op::Approve]
-            }
-        }
-        ("checkpoint", _) => &[Op::Witness],
-        ("proof" | "bundle" | "export", _) => &[Op::Read, Op::Produce],
-        ("production", Some("open")) => &[Op::Produce],
-        ("production", Some("list" | "show" | "document")) => &[Op::Read],
-        ("produce", _) => &[Op::Read, Op::Produce],
-        ("bank", Some("import")) => &[Op::Read, Op::Post, Op::Reconcile],
-        ("bank", Some("match" | "confirm" | "status" | "history")) => &[Op::Read, Op::Reconcile],
-        ("finding", Some("record" | "export")) => &[Op::Read, Op::Produce],
-        ("finding", Some("runs" | "list" | "show" | "replay")) => &[Op::Read],
-        ("finding", Some("review")) => &[Op::Read, Op::Approve],
-        ("document", Some("add")) if args.flag("--grade").is_none() => &[Op::Post],
-        ("document", Some("read" | "list")) => &[Op::Read],
-        ("document", Some("redact")) => &[Op::Privileged],
-        ("document", Some("disclose")) => &[Op::Read, Op::Produce],
-        ("document", Some("custody")) => {
-            if args.flag("--to").is_some() {
-                &[Op::Post]
-            } else {
-                &[Op::Read]
-            }
-        }
-        ("document", Some("erase")) => &[Op::Erase],
-        ("document", Some("hold")) => {
-            if matches!(
-                args.positional.get(2).map(String::as_str),
-                Some("show" | "list")
-            ) {
-                &[Op::Read]
-            } else {
-                &[Op::Hold]
-            }
-        }
-        ("document", Some("attest")) => match args.positional.get(2).map(String::as_str) {
-            Some("review") => &[Op::Approve],
-            Some("manual") => &[Op::Post],
-            Some("register-equals") => {
-                if args.flag("--account").is_some() {
-                    &[Op::Reconcile]
-                } else {
-                    &[Op::Read]
-                }
-            }
-            _ => &[Op::Read],
-        },
-        ("document", Some("import")) => match args.positional.get(2).map(String::as_str) {
-            Some("run") => &[Op::Post],
-            _ => &[Op::Read],
-        },
-        ("event", Some("record")) => &[Op::Post],
-        ("event", Some("show" | "list")) => &[Op::Read],
-        ("migrate", Some("show")) => &[Op::Read],
-        ("migrate", Some("import")) => match args.flag("--action") {
-            Some("show") => &[Op::Read],
-            Some("prepare" | "stage") => &[Op::Read, Op::Post, Op::Migrate],
-            _ => return None,
-        },
-        ("migrate", Some("open" | "stage" | "finalize" | "abandon")) => {
-            &[Op::Read, Op::Post, Op::Migrate]
-        }
-        ("capability", Some("revoke")) => &[Op::Read, Op::IssueCapability],
-        ("capability", Some("list" | "show")) => &[Op::Read],
-        ("draft", Some("new" | "plan" | "discard")) => &[Op::Post],
-        ("draft", Some("list" | "show")) => &[Op::Read],
-        ("draft", Some("promote")) => &[Op::Approve],
-        ("scenario", Some("fork" | "run" | "discard")) => &[Op::Post],
-        ("scenario", Some("list" | "show" | "diff")) => &[Op::Read],
-        // party identifiers is absent on purpose: a bank-detail change is
-        // the business-email-compromise vector (plan §14.4), so it is
-        // host-only and never a launch-bound session's, whatever it holds.
-        ("chart", Some("open" | "close" | "promote"))
-        | ("party", Some("add" | "relate" | "bind"))
-        | ("instrument" | "entity", Some("add")) => &[Op::SchemaChange],
-        ("party" | "instrument" | "entity", Some("list")) => &[Op::Read],
-        _ => return None,
-    };
-    Some(ops)
+    let reg = crate::verbs::registry().ok()?;
+    let present = |flag: &str| args.switch(flag) || !args.flag_all(flag).is_empty();
+    let value = |flag: &str| args.flag(flag).map(str::to_string);
+    let (index, _) = reg.bound_rule(
+        verb,
+        args.positional.get(1).map(String::as_str),
+        args.positional.get(2).map(String::as_str),
+        &present,
+        &value,
+    )?;
+    bound_rule_ops().get(index)?.as_deref()
+}
+
+/// Each `[[bound]]` rule's ops as `fa_policy::Op`s, resolved once. A rule
+/// naming an op this build lacks resolves to `None`: its command is refused,
+/// never admitted on a partial set.
+fn bound_rule_ops() -> &'static [Option<Vec<fa_policy::Op>>] {
+    static OPS: std::sync::OnceLock<Vec<Option<Vec<fa_policy::Op>>>> = std::sync::OnceLock::new();
+    OPS.get_or_init(|| {
+        crate::verbs::registry().map_or_else(
+            |_| Vec::new(),
+            |reg| {
+                reg.bound
+                    .iter()
+                    .map(|rule| {
+                        rule.ops
+                            .iter()
+                            .map(|name| fa_policy::Op::from_name(name))
+                            .collect()
+                    })
+                    .collect()
+            },
+        )
+    })
 }
 
 /// Whether a concrete command is admissible under `authority` on the

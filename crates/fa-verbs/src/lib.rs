@@ -297,6 +297,63 @@ pub struct Daemon {
     pub usage: Vec<String>,
 }
 
+/// One launch-bound authority rule (`[[bound]]`, fa-mg2j): the capability
+/// operations a launch-bound session (MCP, `fa --token`, fad tokens) must
+/// hold to run a command. Rules are ordered: the first whose conditions all
+/// hold decides, and a command no rule decides is not admitted on the bound
+/// route.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundRule {
+    pub verbs: Vec<String>,
+    /// The first positional after the verb: one of its registered
+    /// subcommands, or for a verb with none, the word it reads there
+    /// (`statement diff`). Empty: any, or none.
+    pub subcommands: Vec<String>,
+    /// The second positional; empty: any.
+    pub args: Vec<String>,
+    /// Flags or switches that must all be present.
+    pub when_all: Vec<String>,
+    /// Flags or switches of which at least one must be present; empty: no
+    /// condition.
+    pub when_any: Vec<String>,
+    /// Flags or switches none of which may be present.
+    pub unless_any: Vec<String>,
+    /// A value flag whose value must be one of `values`.
+    pub flag: Option<String>,
+    pub values: Vec<String>,
+    /// Capability op names (`registries/capability_caveats.toml`); empty:
+    /// the command reads nothing from a book.
+    pub ops: Vec<String>,
+}
+
+impl BoundRule {
+    /// Whether this rule decides `verb` with `sub` and `arg` (the first two
+    /// positionals after the verb), `present` telling whether a flag or
+    /// switch was given and `value` a value flag's value.
+    pub fn matches(
+        &self,
+        verb: &str,
+        sub: Option<&str>,
+        arg: Option<&str>,
+        present: &dyn Fn(&str) -> bool,
+        value: &dyn Fn(&str) -> Option<String>,
+    ) -> bool {
+        let listed = |set: &[String], item: Option<&str>| {
+            set.is_empty() || item.is_some_and(|item| set.iter().any(|s| s == item))
+        };
+        self.verbs.iter().any(|v| v == verb)
+            && listed(&self.subcommands, sub)
+            && listed(&self.args, arg)
+            && self.when_all.iter().all(|f| present(f))
+            && (self.when_any.is_empty() || self.when_any.iter().any(|f| present(f)))
+            && !self.unless_any.iter().any(|f| present(f))
+            && self
+                .flag
+                .as_ref()
+                .is_none_or(|f| value(f).is_some_and(|v| self.values.contains(&v)))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registry {
     pub envelope: Envelope,
@@ -308,6 +365,8 @@ pub struct Registry {
     pub next_actions: Vec<NextAction>,
     pub events: Vec<Schema>,
     pub shapes: Vec<Schema>,
+    /// The launch-bound authority rules, in order.
+    pub bound: Vec<BoundRule>,
 }
 
 /// The embedded registry, parsed and validated once.
@@ -537,6 +596,56 @@ impl Registry {
             events: get_strs(d, "events", "daemon")?,
             usage: get_strs(d, "usage", "daemon")?,
         };
+        let mut bound = Vec::new();
+        for (i, t) in doc
+            .arrays
+            .get("bound")
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+        {
+            let what = format!("bound rule {i}");
+            const KEYS: [&str; 9] = [
+                "verbs",
+                "subcommands",
+                "args",
+                "when_all",
+                "when_any",
+                "unless_any",
+                "flag",
+                "values",
+                "ops",
+            ];
+            if let Some(key) = t.keys().find(|k| !KEYS.contains(&k.as_str())) {
+                return Err(format!("verbs.toml: {what}: unknown key `{key}`"));
+            }
+            let optional = |key: &str| -> Result<Vec<String>, String> {
+                if t.contains_key(key) {
+                    get_strs(t, key, &what)
+                } else {
+                    Ok(Vec::new())
+                }
+            };
+            bound.push(BoundRule {
+                verbs: get_strs(t, "verbs", &what)?,
+                subcommands: optional("subcommands")?,
+                args: optional("args")?,
+                when_all: optional("when_all")?,
+                when_any: optional("when_any")?,
+                unless_any: optional("unless_any")?,
+                flag: match t.get("flag") {
+                    None => None,
+                    Some(v) => Some(
+                        v.as_str()
+                            .ok_or_else(|| format!("verbs.toml: {what}: `flag` must be a string"))?
+                            .to_string(),
+                    ),
+                },
+                values: optional("values")?,
+                ops: get_strs(t, "ops", &what)?,
+            });
+        }
         let registry = Self {
             envelope,
             global,
@@ -547,12 +656,86 @@ impl Registry {
             next_actions,
             events: schemas(&doc, "event")?,
             shapes: schemas(&doc, "shape")?,
+            bound,
         };
         registry.validate()?;
         Ok(registry)
     }
 
+    /// The first `[[bound]]` rule deciding this command line, with its
+    /// index; `None` when no rule does (the command is not admitted on the
+    /// launch-bound route).
+    pub fn bound_rule(
+        &self,
+        verb: &str,
+        sub: Option<&str>,
+        arg: Option<&str>,
+        present: &dyn Fn(&str) -> bool,
+        value: &dyn Fn(&str) -> Option<String>,
+    ) -> Option<(usize, &BoundRule)> {
+        self.bound
+            .iter()
+            .enumerate()
+            .find(|(_, rule)| rule.matches(verb, sub, arg, present, value))
+    }
+
+    /// Every rule names registered verbs, their subcommands, flags each of
+    /// its verbs (or the global table) accepts, and registered op names.
+    fn validate_bound(&self) -> Result<(), String> {
+        let caveats = fa_registry::capability_caveats::CapabilityCaveats::embedded()
+            .map_err(|e| format!("verbs.toml: bound rules: {e}"))?;
+        let op_names: BTreeSet<&str> = caveats.ops.iter().map(|o| o.name.as_str()).collect();
+        for (i, rule) in self.bound.iter().enumerate() {
+            let what = format!("verbs.toml: bound rule {i}");
+            if rule.verbs.is_empty() {
+                return Err(format!("{what}: names no verb"));
+            }
+            let mut verbs = Vec::with_capacity(rule.verbs.len());
+            for name in &rule.verbs {
+                verbs.push(
+                    self.verb(name)
+                        .ok_or_else(|| format!("{what}: unknown verb `{name}`"))?,
+                );
+            }
+            for sub in &rule.subcommands {
+                // A verb without registered subcommands takes the word as
+                // its first positional (`statement diff`, `allocate approve`).
+                if let Some(v) = verbs
+                    .iter()
+                    .find(|v| !v.subcommands.is_empty() && !v.subcommands.contains(sub))
+                {
+                    return Err(format!("{what}: `{sub}` is not a subcommand of {}", v.name));
+                }
+            }
+            for flag in rule
+                .when_all
+                .iter()
+                .chain(&rule.when_any)
+                .chain(&rule.unless_any)
+                .chain(rule.flag.iter())
+            {
+                let global =
+                    self.global.flags.contains(flag) || self.global.switches.contains(flag);
+                if let Some(v) = verbs.iter().find(|v| !global && !v.accepts(flag)) {
+                    return Err(format!("{what}: {} does not accept {flag}", v.name));
+                }
+            }
+            if rule.flag.is_some() == rule.values.is_empty() {
+                return Err(format!("{what}: `flag` and `values` go together"));
+            }
+            let unique: BTreeSet<&str> = rule.ops.iter().map(String::as_str).collect();
+            if unique.len() != rule.ops.len() {
+                return Err(format!("{what}: an op is listed twice"));
+            }
+            if let Some(op) = rule.ops.iter().find(|op| !op_names.contains(op.as_str())) {
+                return Err(format!("{what}: `{op}` is not a registered capability op"));
+            }
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> Result<(), String> {
+        self.validate_bound()?;
         let mut names = BTreeSet::new();
         for v in &self.verbs {
             let ok_word =
@@ -1429,5 +1612,193 @@ mod tests {
             Scalar::Date,
             &Json::Str("2026-03-15T00:00".into())
         ));
+    }
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    /// The ops the embedded `[[bound]]` rules give a command line.
+    fn ops(
+        verb: &str,
+        sub: Option<&str>,
+        arg: Option<&str>,
+        present: &[&str],
+        values: &[(&str, &str)],
+    ) -> Option<Vec<String>> {
+        let reg = Registry::parse(SOURCE).expect("the embedded registry");
+        let present = |flag: &str| present.contains(&flag);
+        let value = |flag: &str| {
+            values
+                .iter()
+                .find(|(f, _)| *f == flag)
+                .map(|(_, v)| (*v).to_string())
+        };
+        reg.bound_rule(verb, sub, arg, &present, &value)
+            .map(|(_, rule)| rule.ops.clone())
+    }
+
+    fn names(ops: &[&str]) -> Option<Vec<String>> {
+        Some(ops.iter().map(|o| (*o).to_string()).collect())
+    }
+
+    #[test]
+    fn the_first_matching_rule_decides_and_an_undecided_command_is_not_admitted() {
+        assert_eq!(ops("post", None, None, &[], &[]), names(&["post"]));
+        assert_eq!(ops("help", None, None, &[], &[]), names(&[]));
+        // A plan or dry run of a transition reads; the transition itself is
+        // host-only.
+        assert_eq!(
+            ops(
+                "period",
+                Some("open"),
+                Some("FY2026-P03"),
+                &["--dry-run"],
+                &[]
+            ),
+            names(&["read"])
+        );
+        assert_eq!(
+            ops(
+                "period",
+                Some("open"),
+                Some("FY2026-P03"),
+                &["--dry-run", "--plan"],
+                &[]
+            ),
+            None
+        );
+        assert_eq!(
+            ops("period", Some("open"), Some("FY2026-P03"), &[], &[]),
+            None
+        );
+        // Certification needs produce beside read.
+        assert_eq!(ops("gl", Some("detail"), None, &[], &[]), names(&["read"]));
+        assert_eq!(
+            ops("gl", Some("detail"), None, &["--certify"], &[]),
+            names(&["read", "produce"])
+        );
+        assert_eq!(ops("tb", None, None, &["--certify"], &[]), names(&["read"]));
+        assert_eq!(
+            ops("tb", None, None, &["--summary", "--certify"], &[]),
+            names(&["read", "produce"])
+        );
+        // The second positional and flags narrow a subcommand.
+        assert_eq!(
+            ops("document", Some("hold"), Some("list"), &[], &[]),
+            names(&["read"])
+        );
+        assert_eq!(
+            ops("document", Some("hold"), Some("place"), &[], &[]),
+            names(&["hold"])
+        );
+        assert_eq!(
+            ops(
+                "document",
+                Some("attest"),
+                Some("register-equals"),
+                &["--account"],
+                &[]
+            ),
+            names(&["reconcile"])
+        );
+        assert_eq!(
+            ops(
+                "document",
+                Some("attest"),
+                Some("register-equals"),
+                &[],
+                &[]
+            ),
+            names(&["read"])
+        );
+        assert_eq!(ops("document", Some("add"), None, &["--grade"], &[]), None);
+        assert_eq!(
+            ops("allocate", Some("approve"), None, &[], &[]),
+            names(&["read", "approve"])
+        );
+        assert_eq!(
+            ops(
+                "migrate",
+                Some("import"),
+                None,
+                &["--action"],
+                &[("--action", "stage")]
+            ),
+            names(&["read", "post", "migrate"])
+        );
+        assert_eq!(
+            ops(
+                "migrate",
+                Some("import"),
+                None,
+                &["--action"],
+                &[("--action", "commit")]
+            ),
+            None
+        );
+        // Host-only commands have no rule.
+        for (verb, sub) in [
+            ("party", "identifiers"),
+            ("book", "create"),
+            ("chart", "import"),
+            ("capability", "issue"),
+        ] {
+            assert_eq!(ops(verb, Some(sub), None, &[], &[]), None, "{verb} {sub}");
+        }
+    }
+
+    fn planted(from: &str, to: &str) -> Result<Registry, String> {
+        assert_eq!(SOURCE.matches(from).count(), 1, "anchor {from:?}");
+        Registry::parse(&SOURCE.replacen(from, to, 1))
+    }
+
+    #[test]
+    fn a_rule_naming_anything_unregistered_is_refused() {
+        let witness = "verbs = [\"checkpoint\"]\nops = [\"witness\"]";
+        for (what, result, expected) in [
+            (
+                "unknown verb",
+                planted(witness, "verbs = [\"checkpoints\"]\nops = [\"witness\"]"),
+                "unknown verb `checkpoints`",
+            ),
+            (
+                "unknown op",
+                planted(witness, "verbs = [\"checkpoint\"]\nops = [\"witnes\"]"),
+                "`witnes` is not a registered capability op",
+            ),
+            (
+                "unknown key",
+                planted(
+                    witness,
+                    "verbs = [\"checkpoint\"]\nwhen = [\"--to\"]\nops = [\"witness\"]",
+                ),
+                "unknown key `when`",
+            ),
+            (
+                "unregistered subcommand",
+                planted("subcommands = [\"promote\"]", "subcommands = [\"promot\"]"),
+                "`promot` is not a subcommand of draft",
+            ),
+            (
+                "flag the verb does not accept",
+                planted("when_any = [\"--to\"]", "when_any = [\"--too\"]"),
+                "document does not accept --too",
+            ),
+            (
+                "flag without values",
+                planted("values = [\"show\"]\n", ""),
+                "`flag` and `values` go together",
+            ),
+            (
+                "an op listed twice",
+                planted("ops = [\"read\", \"verify\"]", "ops = [\"read\", \"read\"]"),
+                "an op is listed twice",
+            ),
+        ] {
+            let error = result.expect_err(what);
+            assert!(error.contains(expected), "{what}: {error}");
+        }
     }
 }
