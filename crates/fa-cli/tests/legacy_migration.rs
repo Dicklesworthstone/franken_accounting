@@ -791,6 +791,9 @@ impl Fixture {
             "exact retained chunk retries survive run finalization"
         );
         assert_eq!(head(&self.book), before_retry);
+        // Migration controls publish journal facts; register maintenance is
+        // a separate operation, and verification never initializes a cache.
+        ok(&self.book, &["registers", "advance", "--period", OPENING]);
         ok(&self.book, &["verify", "registers", "--period", OPENING]);
     }
 }
@@ -966,6 +969,7 @@ fn full_detail_preserves_history_and_counts_only_the_separate_opening_and_later_
             "movement in {period}"
         );
         assert_eq!(fixture.cash_at(period, Some(before_finalize)), "0.00 USD");
+        ok(&fixture.book, &["registers", "advance", "--period", period]);
         ok(&fixture.book, &["verify", "registers", "--period", period]);
     }
     for period in ["FY2025-P12", "FY2025-CLOSE"] {
@@ -1078,6 +1082,7 @@ fn sole_full_detail_imports_older_opening_adjustment_and_closing_without_an_own_
         ("FY2025-CLOSE", "0.00 USD"),
     ] {
         assert_eq!(fixture.cash_activity(period), movement);
+        ok(&fixture.book, &["registers", "advance", "--period", period]);
         ok(&fixture.book, &["verify", "registers", "--period", period]);
     }
     assert_cash_open_items(
@@ -1624,12 +1629,17 @@ fn period_balances_preserves_dated_activity_and_activates_elapsed_periods_atomic
         assert_eq!(fixture.cash_at(period, None), cash, "cumulative {period}");
         assert_eq!(fixture.cash_activity(period), movement, "activity {period}");
         assert_eq!(fixture.cash_at(period, Some(before_finalize)), "0.00 USD");
+        ok(&fixture.book, &["registers", "advance", "--period", period]);
         ok(&fixture.book, &["verify", "registers", "--period", period]);
     }
     assert_eq!(
         fixture.cash_activity(OPENING),
         "125.50 USD",
         "January 1 activity is not opening stock"
+    );
+    ok(
+        &fixture.book,
+        &["registers", "advance", "--period", OPENING],
     );
     ok(&fixture.book, &["verify", "registers", "--period", OPENING]);
     let before_retry = head(&fixture.book);

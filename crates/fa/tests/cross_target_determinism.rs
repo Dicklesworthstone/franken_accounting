@@ -568,6 +568,11 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     // Every book pin at once: a deliberate format or registry change is then
     // reviewed as one measured set, never discovered one assertion per run.
+    // Since the prior pins at 2e630879, symbols alone changed in the report
+    // registry closure: UsageCell/UsageDebit and BankMatch/BankMatchedLeg/
+    // BankUnmatch added labels 45..49. The native book birth and registry
+    // commitments change the three certificates and evidence bundle; all
+    // arithmetic, register-fold and report-byte pins remain unchanged.
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -594,7 +599,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "c89d34922b9726a1e0e1f761d4c04bd6448c708b731f23bae3a43c1bf4aa4cd2",
+        "f2c5c07141308fc14094f9aab2efc82da1df775849928a08d2ed719a67cbda0b",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -606,7 +611,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "b4aa02f4a1012fc6a06d8730f8bdd853cf9141b7d13f3a6322d2117338c02390",
+        "d5322a8086ee01371c47b0c20883c11ee8c697f7176f2dec7ca27b56adc56d1a",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -618,13 +623,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "90cfe68b25fd598cba9441d95b21b68f2f7e8366d6236eaf121a308c8799c11f",
+        "dc0a98ab606badab697627de3e86c8ca22bbb48cc98174703eea265d07d54fef",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "1aedd8844bfa9055c68456c4f9a318bb0fdc3e170a29475f5d993fbee3cd47be",
+        "de6fb3858a2a3971fde00beb61b928056b9353acdf1cbe16a8f304040cef5cf4",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );

@@ -109,15 +109,17 @@ fn born_with<V: Vfs + Clone>(
         genesis.add_edge(edge.entry.eid, edge.entry.src, edge.entry.dst, edge.props);
     }
     let commit = cx.commit();
-    let directory = runtime
+    let durable_directory = runtime
         .block_on(DurableDirectory::create(&commit, vfs.clone(), directory))
         .unwrap();
-    runtime.block_on(directory.child(&commit, "blobs")).unwrap();
+    runtime
+        .block_on(durable_directory.child(&commit, "blobs"))
+        .unwrap();
     let mut db = runtime
         .block_on(Database::create_with_vfs(
             &commit,
             vfs.clone(),
-            directory.path().join("store"),
+            durable_directory.path().join("store"),
             BookKeys::for_development(SEED).inner,
         ))
         .unwrap();
@@ -130,11 +132,13 @@ fn born_with<V: Vfs + Clone>(
     );
     drop(db);
     drop(template);
+    // The facade takes the caller's namespace path, not MemVfs's resolved
+    // private host path used by the native database and its writer lease.
     runtime
         .block_on(AsyncBook::open_with_vfs(
             cx,
             vfs,
-            directory.path(),
+            directory,
             BookKeys::for_development(SEED),
             Entropy::deterministic(u64::from(SEED) + 1),
         ))
@@ -169,13 +173,18 @@ impl Harness {
         self.book.head(&self.cx()).unwrap()
     }
 
-    fn certificate(&self, at: Option<CommitSeq>) -> Result<CertifiedReport, BookError> {
+    fn certificate(&mut self, at: Option<CommitSeq>) -> Result<CertifiedReport, BookError> {
+        let cx = self.cx();
+        // Reopening leaves retained native history outside the read window.
+        // Use the same admitted preparation seam as a production report host.
+        self.runtime
+            .block_on(
+                self.book
+                    .prepare_report_history(&cx, PRINCIPAL, &cap(&["read"]), at),
+            )?
+            .unwrap();
         self.book
-            .certify_report(
-                &self.cx(),
-                super::TrialBalanceSelection::AsOf(day()).into(),
-                at,
-            )
+            .certify_report(&cx, super::TrialBalanceSelection::AsOf(day()).into(), at)
             .map(|result| result.unwrap())
     }
 
@@ -382,7 +391,7 @@ fn an_older_book_needs_literal_unchanged_label_property_and_relation_bindings() 
         registry_digest(&property_changed),
         registry_digest(&relation_changed),
     ] {
-        let h = Harness::new(digest);
+        let mut h = Harness::new(digest);
         let before = h.head();
         assert!(
             h.certificate(None)

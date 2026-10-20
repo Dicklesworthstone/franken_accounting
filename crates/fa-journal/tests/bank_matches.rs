@@ -1195,12 +1195,15 @@ fn current_authority_and_privileged_source_admission_win_over_requested_history(
         OWNER,
     )
     .unwrap();
+    let refused = h.confirm(&system, valid.clone()).unwrap_err();
+    assert_eq!(refused.code, fa_policy::denial::code::SOD);
+    assert_eq!(refused.exit, refusal::exit::SAFETY);
     assert!(
-        h.confirm(&system, valid.clone())
-            .unwrap_err()
-            .message
-            .contains("Human")
+        refused.message.contains("System-profile capability"),
+        "{refused:?}"
     );
+    assert_eq!(refused.cite, "sod_policy.toml#bank_match_confirmer");
+    assert!(refused.fix.contains("Human"), "{refused:?}");
     let expired = cap(CONFIRMER).expiring_at(before);
     let mut malformed = valid;
     malformed.line.bytes = b"invalid source".to_vec();
@@ -1585,12 +1588,15 @@ fn correction_requires_exact_target_and_fresh_review_but_old_requests_remain_ret
         OWNER,
     )
     .unwrap();
+    let refused = h.unmatch(&system, decision_ref(&first)).unwrap_err();
+    assert_eq!(refused.code, fa_policy::denial::code::SOD);
+    assert_eq!(refused.exit, refusal::exit::SAFETY);
     assert!(
-        h.unmatch(&system, decision_ref(&first))
-            .unwrap_err()
-            .message
-            .contains("Human")
+        refused.message.contains("System-profile capability"),
+        "{refused:?}"
     );
+    assert_eq!(refused.cite, "sod_policy.toml#bank_match_corrector");
+    assert!(refused.fix.contains("Human"), "{refused:?}");
     assert_eq!(h.head(), before);
     h.unmatch(&metadata_cap(OWNER), decision_ref(&first))
         .unwrap();

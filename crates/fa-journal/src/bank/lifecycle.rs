@@ -302,12 +302,11 @@ fn births<V: Vfs + Clone>(
                 checkpoint(cx)?;
                 if let DeltaRow::CreateVertex { vid, labels, .. } = row
                     && let Some(kind) = labels.iter().find(|kind| families.contains(kind))
+                    && (labels.as_slice() != [*kind] || births.insert(*vid, (*kind, seq)).is_some())
                 {
-                    if labels.as_slice() != [*kind] || births.insert(*vid, (*kind, seq)).is_some() {
-                        return Ok(Err(drift(
-                            "a bank decision or claim has an invalid or repeated native birth",
-                        )));
-                    }
+                    return Ok(Err(drift(
+                        "a bank decision or claim has an invalid or repeated native birth",
+                    )));
                 }
             }
         }
