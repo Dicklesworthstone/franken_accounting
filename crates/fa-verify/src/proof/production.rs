@@ -9,7 +9,7 @@
 
 pub mod derivation;
 
-use crate::envelope::LeafEnvelope;
+use crate::envelope::{KIND_ENTRY, LeafEnvelope};
 use crate::proof::{
     Checkpoint, RecordCheck, SCOPE_SEQ_RANGE_COMPLETE, VerifyError, verify_inclusion, verify_prefix,
 };
@@ -43,8 +43,12 @@ impl ProductionScope {
         Ok(())
     }
 
+    /// Whether the leaf is a selected journal entry. Accumulated evidence
+    /// records (attestations, receipts, transfers, supplements) are bound by
+    /// their envelopes but are never production entries.
     pub(crate) fn selects(&self, entry: &LeafEnvelope) -> bool {
-        self.first_seq <= entry.commit_seq
+        entry.kind == KIND_ENTRY
+            && self.first_seq <= entry.commit_seq
             && entry.commit_seq <= self.known_at
             && self
                 .account

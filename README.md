@@ -451,12 +451,16 @@ checkpoints it returns `status: "no_checkpoints"` and a null
 finding; checkpoint creation refuses a corrupt predecessor. Verification
 and proof generation also reject later rewrites or retirements of checkpointed
 entries, even when the original historical snapshot is still readable.
-These states cover entries, including control entries. The library also signs
+These states cover entries, including control entries, and every journaled
+attestation, import receipt, custody transfer and supplemental-evidence record
+after the state's recorded evidence boundary. A state from before this boundary
+existed covers entries alone and stays valid; the next state extends it. A
+rewrite of any covered record fails `fa verify accumulator`. The library also signs
 each published checkpoint with the book's Ed25519 key
 (`Book::checkpoint_public_key`) as a `TransparencyCheckpoint` and produces
 evidence bundles with detached production receipts (`Book::produce_bundle`);
 `fa-verify checkpoint|scope|bundle` check them. The CLI exports both (see
-below); document-receipt coverage, witnesses and key rotation remain
+below); witnesses and key rotation remain
 unfinished. The
 [CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
 postings, authorization and real storage corruption.

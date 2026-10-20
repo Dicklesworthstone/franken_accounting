@@ -982,6 +982,62 @@ fn tamper_evidence_red_team_matrix() {
     println!(
         "\n| ID | Storage-Level Attack | Detector / Claim Boundary | Invariant / Gate | Observed Exit | Finding / Status |"
     );
+    // 16. Rewrite an ImportReceipt (custody event 0) and recompute its
+    // _fa_digest: an evidence record is an accumulator leaf (fa-va02).
+    {
+        let book = golden.clone_case("16_rewrite_import_receipt_with_digest");
+        let document = Oid(hex32(&golden.inline_doc_oid));
+        let target = fa_journal::custody::custody_vid(BOOK_ID, &document, 0);
+        mutate_store(&book, |db, _| {
+            let row = db.vertex(target).expect("read").expect("import receipt");
+            let raw = fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "receipt.payload")
+                .expect("receipt payload");
+            let mut event =
+                fa_journal::custody::CustodyEvent::decode(&raw).expect("decode receipt");
+            if let fa_journal::custody::CustodyBody::Receipt { received_by, .. } = &mut event.body {
+                *received_by = VId(received_by.0 + 1);
+            }
+            let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+            batch.set_vertex_property(
+                target,
+                property::FA_PAYLOAD,
+                Some(
+                    CanonicalScalar::bytes(event.canonical_bytes().expect("encode"))
+                        .expect("scalar"),
+                ),
+            );
+            batch.set_vertex_property(
+                target,
+                property::FA_DIGEST,
+                Some(
+                    CanonicalScalar::bytes(event.digest().expect("digest").to_vec())
+                        .expect("scalar"),
+                ),
+            );
+            vec![batch]
+        });
+        let (code, out, err) = run(&book, &["verify", "accumulator", "--json"]);
+        assert_eq!(code, 8, "{out}\n{err}");
+        assert!(
+            out.contains(&format!(
+                "checkpointed journal evidence record {:032x}",
+                target.0
+            )),
+            "{out}"
+        );
+        rows.push(MatrixRow {
+            id: "T16",
+            attack: "Rewrite an `ImportReceipt` custody record and recompute `_fa_digest` in place",
+            outcome: ExpectedOutcome::Detected {
+                detector: "fa verify accumulator --json",
+                invariant: "FA-INV-14 / FA-INV-05",
+                finding_substring: "entry accumulator differs from the journal".into(),
+            },
+            observed_exit: code,
+            observed_summary: text(&parsed(&out), "message").to_string(),
+        });
+    }
+
     println!("|---|---|---|---|---|---|");
     for row in &rows {
         match &row.outcome {
@@ -1029,5 +1085,5 @@ fn tamper_evidence_red_team_matrix() {
             }
         }
     }
-    assert_eq!(rows.len(), 15);
+    assert_eq!(rows.len(), 16);
 }

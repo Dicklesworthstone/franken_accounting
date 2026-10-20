@@ -629,7 +629,11 @@ fn attestation_record(
             reason: Reason::BadTag(scheme),
         }));
     }
-    if !(1..=7).contains(&profile) {
+    // The admitting capability's profile tag as the kernel journals it
+    // (`fa_policy::Profile::tag`: Human 0, Agent 1, System 2). A review is
+    // recorded only under a Human capability, so every real Reviewed
+    // attestation carries 0.
+    if profile > 2 {
         return Err(RecordError::Decode(DecodeError {
             offset: proposal_len + 33,
             what: "attestation.profile",

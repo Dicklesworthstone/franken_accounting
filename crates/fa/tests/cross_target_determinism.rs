@@ -571,6 +571,10 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // March 1 (the fixture used to pass March 15). That changes the control
     // entry's digest, so the three certificates and the evidence bundle
     // move; every arithmetic, register-fold and report-byte pin is unchanged.
+    // fa-va02 then moved the evidence bundle alone: the book's document
+    // receipts are accumulator leaves and its state is schema minor 1 (the
+    // evidence boundary), so the signed checkpoint the bundle carries
+    // changes; every certificate, fold and report-byte pin is unchanged.
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -627,7 +631,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "402fee06d692a8e7bf8b1b68411be172e22a46eefb11bc24d5080e782c6a3f42",
+        "42d820c870701a8ffca6477b1ac3bab8ca2bdcd9a41226036fe63e8209733e6e",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );

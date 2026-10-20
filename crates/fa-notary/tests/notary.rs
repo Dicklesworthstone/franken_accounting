@@ -373,18 +373,33 @@ fn every_entry_proves_inclusion_against_a_journaled_state() {
     assert!(stored.recorded_at > stored.state.through_seq);
     assert_eq!(stored.state.prev_state_oid, None);
 
-    // The chart install, fiscal-year birth, March opening, and five postings.
-    let journal = Journal::read(&h.db, &h.book, Some(stored.state.through_seq))
-        .unwrap()
-        .unwrap();
-    assert_eq!(journal.len(), 8);
-    assert_eq!(trusted.leaf_count, 8);
+    // The chart install, fiscal-year birth, March opening, the fixture
+    // document's import receipt, and five postings. A fresh book's first
+    // state accumulates every evidence record (after the first commit).
+    assert_eq!(
+        stored.state.evidence_after,
+        Some(fa_notary::state::FIRST_COMMIT)
+    );
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(stored.state.through_seq),
+        stored.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(journal.len(), 9);
+    assert_eq!(trusted.leaf_count, 9);
     assert_eq!(journal.leaves[0].envelope.class, EntryClass::SCHEMA_CONTROL);
     assert_eq!(journal.leaves[0].envelope.effective_day, None);
     assert_eq!(journal.leaves[1].envelope.class, EntryClass::SCHEMA_CONTROL);
     assert_eq!(journal.leaves[1].envelope.effective_day, None);
     assert_eq!(journal.leaves[2].envelope.class, EntryClass::PERIOD_CONTROL);
     assert!(journal.leaves[2].envelope.effective_day.is_some());
+    let receipt = &journal.leaves[3].envelope;
+    assert_eq!(receipt.kind, fa_notary::journal::KIND_IMPORT_RECEIPT);
+    assert_eq!(receipt.effective_day, None);
+    assert!(receipt.account_vids.is_empty() && receipt.unit_ids.is_empty());
     assert!(
         journal
             .leaves
@@ -427,14 +442,18 @@ fn the_producer_and_the_independent_verifier_agree_on_every_leaf_and_the_root() 
     for i in 0..9u8 {
         h.post(h.rent, 100 + i128::from(i), &[b'd', i]);
     }
-    let journal = Journal::read(&h.db, &h.book, None).unwrap().unwrap();
+    let journal = Journal::read(&h.db, &h.book, None, Some(fa_notary::state::FIRST_COMMIT))
+        .unwrap()
+        .unwrap();
     let mut hashes = Vec::new();
     for leaf in &journal.leaves {
         assert_eq!(fa_verify::tree::leaf_hash(&leaf.envelope_bytes), leaf.hash);
         let decoded = fa_verify::LeafEnvelope::decode(&leaf.envelope_bytes).unwrap();
         assert_eq!(decoded.encode(), leaf.envelope_bytes);
-        // The verifier rebuilds the envelope from the payload bytes alone.
-        let rebuilt = fa_verify::envelope::envelope_of_entry(
+        // The verifier rebuilds the envelope from the payload bytes alone,
+        // by the record kind (an entry, or the fixture's import receipt).
+        let rebuilt = fa_verify::envelope::envelope_of_record(
+            decoded.kind,
             &leaf.payload,
             leaf.proposal_len,
             decoded.commit_seq,
@@ -549,7 +568,9 @@ fn an_entry_recorded_after_the_state_is_refused_and_a_forged_proof_fails() {
     // Forge: prove the late entry against the head journal, then splice the
     // trusted state's statement over the head's. The verifier refuses on
     // the recorded sequence before it even walks the path.
-    let head = Journal::read(&h.db, &h.book, None).unwrap().unwrap();
+    let head = Journal::read(&h.db, &h.book, None, Some(fa_notary::state::FIRST_COMMIT))
+        .unwrap()
+        .unwrap();
     let mut forged = head.inclusion_proof(late, true).unwrap().unwrap();
     let at = 4 + b"fa:acc-inclusion-proof:v1".len();
     forged[at..at + 80].copy_from_slice(&statement_bytes(&a.state));
@@ -588,9 +609,14 @@ fn the_complete_prefix_verifies_and_an_omitted_leaf_is_detected() {
         .collect();
     assert_eq!(rent.len(), 4);
 
-    let journal = Journal::read(&h.db, &h.book, Some(a.state.through_seq))
-        .unwrap()
-        .unwrap();
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(a.state.through_seq),
+        a.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
     let envelopes: Vec<Vec<u8>> = journal
         .leaves
         .iter()
@@ -661,7 +687,9 @@ fn recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it() {
 
     // Plant a state whose root is not the journal's, chained from b and
     // installed as the head — what an insider rewriting history would do.
-    let head = Journal::read(&h.db, &h.book, None).unwrap().unwrap();
+    let head = Journal::read(&h.db, &h.book, None, Some(fa_notary::state::FIRST_COMMIT))
+        .unwrap()
+        .unwrap();
     let mut forged = AccumulatorState::of_journal(&head, Some(b.oid));
     forged.root[0] ^= 1;
     let bytes = forged.canonical_bytes().unwrap();
@@ -759,9 +787,14 @@ fn checkpointed_entries_must_remain_unchanged_before_verification_or_production(
         .unwrap();
         assert!(saved_bundle_report.verified(), "{saved_bundle_report:?}");
         let trusted = outsider_checkpoint(&a);
-        let before = Journal::read(&h.db, &h.book, Some(a.state.through_seq))
-            .unwrap()
-            .unwrap();
+        let before = Journal::read(
+            &h.db,
+            &h.book,
+            Some(a.state.through_seq),
+            a.state.evidence_after,
+        )
+        .unwrap()
+        .unwrap();
         h.post(h.utilities, 75, b"later-prefix");
         let b = h.checkpoint();
 
@@ -827,9 +860,14 @@ fn checkpointed_entries_must_remain_unchanged_before_verification_or_production(
         let attacked_head = h.db.frontier().unwrap();
 
         assert_eq!(
-            Journal::read(&h.db, &h.book, Some(a.state.through_seq))
-                .unwrap()
-                .unwrap(),
+            Journal::read(
+                &h.db,
+                &h.book,
+                Some(a.state.through_seq),
+                a.state.evidence_after
+            )
+            .unwrap()
+            .unwrap(),
             before,
             "{change}: the historical view alone cannot expose this attack"
         );
@@ -899,9 +937,14 @@ fn an_unchanged_checkpoint_prefix_still_proves_after_later_postings() {
         inline_documents: true,
     };
     let saved_bundle = h.bundle(&a, &bundle_request).unwrap();
-    let prefix = Journal::read(&h.db, &h.book, Some(a.state.through_seq))
-        .unwrap()
-        .unwrap();
+    let prefix = Journal::read(
+        &h.db,
+        &h.book,
+        Some(a.state.through_seq),
+        a.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
 
     h.post(h.utilities, 250, b"later-ordinary-posting");
     let b = h.checkpoint();
@@ -949,9 +992,14 @@ fn every_byte_of_an_inclusion_proof_is_bound() {
     }
     let a = h.checkpoint();
     let trusted = outsider_checkpoint(&a);
-    let journal = Journal::read(&h.db, &h.book, Some(a.state.through_seq))
-        .unwrap()
-        .unwrap();
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(a.state.through_seq),
+        a.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
     let target = journal.leaves[3].vid;
     let proof = prove_inclusion(&h.db, &h.book, &a.state, target, true)
         .unwrap()
@@ -1079,7 +1127,9 @@ fn checkpoint_refuses_a_predecessor_that_claims_its_own_recording_commit() {
     h.post(h.rent, 1, b"g1");
     let a = h.checkpoint();
     let next = CommitSeq(h.db.frontier().unwrap().0 + 1);
-    let journal = Journal::read(&h.db, &h.book, None).unwrap().unwrap();
+    let journal = Journal::read(&h.db, &h.book, None, Some(fa_notary::state::FIRST_COMMIT))
+        .unwrap()
+        .unwrap();
     let mut early = AccumulatorState::of_journal(&journal, Some(a.oid));
     early.through_seq = next;
     let (_, recorded_at) = h.plant_state(&early, Some(a.oid));
@@ -1197,9 +1247,14 @@ fn balance_proofs_refold_exactly_the_register_balances_and_refuse_tampering() {
     assert_eq!(cash_all.contributing.len(), 3);
 
     // Plant one fault at a time into the honest parts.
-    let journal = Journal::read(&h.db, &h.book, Some(a.state.through_seq))
-        .unwrap()
-        .unwrap();
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(a.state.through_seq),
+        a.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
     let statement = a.state.statement();
     let envelopes: Vec<Vec<u8>> = journal
         .leaves
@@ -1493,9 +1548,14 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
 
     let staged = h.checkpoint();
     let staged_trusted = outsider_checkpoint(&staged);
-    let journal = Journal::read(&h.db, &h.book, Some(staged.state.through_seq))
-        .unwrap()
-        .unwrap();
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(staged.state.through_seq),
+        staged.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
     assert!(
         journal
             .leaves
@@ -1919,9 +1979,14 @@ fn finalized_full_detail_history_before_the_opening_date_never_counts() {
 
     let active = h.checkpoint();
     let trusted = outsider_checkpoint(&active);
-    let journal = Journal::read(&h.db, &h.book, Some(active.state.through_seq))
-        .unwrap()
-        .unwrap();
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(active.state.through_seq),
+        active.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(
         journal
             .leaves
@@ -2118,9 +2183,14 @@ fn full_detail_proof_boundary_preserves_inclusion_and_supported_balances() {
             .expect("finalizes");
         let active = h.checkpoint();
         let trusted = outsider_checkpoint(&active);
-        let journal = Journal::read(&h.db, &h.book, Some(active.state.through_seq))
-            .unwrap()
-            .unwrap();
+        let journal = Journal::read(
+            &h.db,
+            &h.book,
+            Some(active.state.through_seq),
+            active.state.evidence_after,
+        )
+        .unwrap()
+        .unwrap();
         let chunks: Vec<_> = journal
             .leaves
             .iter()
@@ -2334,9 +2404,14 @@ fn checkpoints_are_signed_by_the_book_key_and_forgeries_are_refused() {
     assert!(signed.not_judged.is_empty());
     assert_eq!(signed.witness_policy_oid, None);
     assert_eq!(signed.time_evidence_oid, None);
-    let journal = Journal::read(&h.db, &h.book, Some(c.stored.state.through_seq))
-        .unwrap()
-        .unwrap();
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(c.stored.state.through_seq),
+        c.stored.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(
         signed.scope_index_root,
         fa_notary::ScopeIndex::of(&journal).root()
@@ -3026,17 +3101,29 @@ fn bundles_of_every_scope_verify_predicate_by_predicate_and_reproduce_byte_for_b
         assert_eq!(report.summary.inline, inline);
         entries.push(report.summary.entries);
     }
-    // Every leaf; rent's two; none of rent's between the 4th and the 19th;
-    // three distinct named entries.
-    assert_eq!(entries[0], c.stored.state.leaf_count);
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(c.stored.state.through_seq),
+        c.stored.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
+    // Every entry leaf (the two documents' import receipts are leaves the
+    // completeness proof binds, not bundle entries); rent's two; none of
+    // rent's between the 4th and the 19th; three distinct named entries.
+    let entry_leaves = journal
+        .leaves
+        .iter()
+        .filter(|l| l.envelope.is_entry())
+        .count() as u64;
+    assert_eq!(entry_leaves + 2, c.stored.state.leaf_count);
+    assert_eq!(entries[0], entry_leaves);
     assert_eq!(entries[1..], [2, 0, 3]);
 
-    let journal = Journal::read(&h.db, &h.book, Some(c.stored.state.through_seq))
-        .unwrap()
-        .unwrap();
     let mut controls = 0;
     let mut two_documents = 0;
-    for leaf in &journal.leaves {
+    for leaf in journal.leaves.iter().filter(|l| l.envelope.is_entry()) {
         let entry = fa_model::Entry::decode(&leaf.payload).unwrap();
         controls += usize::from(entry.proposal.control.is_some());
         let mut model: Vec<[u8; 32]> = entry
@@ -3092,9 +3179,14 @@ fn an_import_run_control_record_decodes_in_fa_verify() {
         .expect("kernel")
         .expect("imported");
     let stored = h.checkpoint();
-    let journal = Journal::read(&h.db, &h.book, Some(stored.state.through_seq))
-        .unwrap()
-        .unwrap();
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(stored.state.through_seq),
+        stored.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
     let leaf = journal
         .leaves
         .iter()
@@ -3291,9 +3383,14 @@ fn planted_bundle_defects_fail_the_predicate_they_break() {
     let (h, c, [rent_3, utilities, _hold, rent_20]) = bundle_book();
     let pk = h.signer.public_key();
     let at = h.db.frontier().unwrap();
-    let journal = Journal::read(&h.db, &h.book, Some(c.stored.state.through_seq))
-        .unwrap()
-        .unwrap();
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(c.stored.state.through_seq),
+        c.stored.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
     let leaf = |vid: VId| journal.leaf_index(vid).unwrap() as u64;
     let (rent_3, utilities, rent_20) = (leaf(rent_3), leaf(utilities), leaf(rent_20));
 
@@ -3930,4 +4027,356 @@ fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
             .declaration_template_md
             .contains("ACME-SEC-00000001..=ACME-SEC-00000004")
     );
+}
+
+const REVIEWER: VId = VId(11);
+const CUSTODIAN: VId = VId(12);
+
+/// What a fa-va02 scenario recorded: every evidence vertex, by kind.
+struct Evidence {
+    entry: VId,
+    receipts: [VId; 2],
+    review: VId,
+    supplement: VId,
+    transfer: VId,
+}
+
+/// An entry, then a second document (its import receipt), a Reviewed
+/// attestation of the fixture document, a supplement attaching the second
+/// document to the entry, and a custody transfer of the fixture document —
+/// one commit each, after the fixture's own import receipt.
+fn record_evidence(h: &mut Harness) -> Evidence {
+    let entry = h.post(h.rent, 500, b"evidenced");
+    let fixture = h.evidence[0].document_oid;
+    let second = Document {
+        book_id: h.book.book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"RECEIPT (the supplement's document)".to_vec(),
+    };
+    let ctx = h.ctx();
+    let entry_digest =
+        h.db.vertex(entry)
+            .unwrap()
+            .map(|row| fa_journal::rows::bytes(&row, property::FA_DIGEST, "digest").unwrap())
+            .unwrap();
+    let supplement = fa_journal::evidence::SupplementalEvidence {
+        book_id: h.book.book_id,
+        entry_ref: fa_model::EntryRef {
+            vid: entry,
+            entry_digest: entry_digest.try_into().unwrap(),
+        },
+        documents: vec![second.evidence_ref(1)],
+        attached_by: PRINCIPAL,
+    };
+    let receipts = [
+        fa_journal::custody::custody_vid(h.book.book_id, &fixture, 0),
+        fa_journal::custody::custody_vid(h.book.book_id, &second.oid(), 0),
+    ];
+    let db = &mut h.db;
+    let book = &h.book;
+    let (review, attached, moved) = h.runtime.block_on(async move {
+        add_document(db, &ctx, book, &second)
+            .await
+            .expect("kernel")
+            .expect("the second document is admitted");
+        let review = record_review(
+            db,
+            &ctx,
+            book,
+            &Capability::embedded(REVIEWER, &["approve"]).unwrap(),
+            REVIEWER,
+            fixture,
+            Vec::new(),
+        )
+        .await
+        .expect("kernel")
+        .expect("the review is admitted");
+        let attached = fa_journal::evidence::attach_evidence(
+            db,
+            &ctx,
+            book,
+            &Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+            &supplement,
+        )
+        .await
+        .expect("kernel")
+        .expect("the supplement is admitted");
+        let moved = transfer_custody(
+            db,
+            &ctx,
+            book,
+            &Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+            fixture,
+            PRINCIPAL,
+            CUSTODIAN,
+        )
+        .await
+        .expect("kernel")
+        .expect("the transfer is admitted");
+        (review, attached, moved)
+    });
+    Evidence {
+        entry,
+        receipts,
+        review: review.vid,
+        supplement: attached.vid,
+        transfer: moved.event,
+    }
+}
+
+/// The same record of the same kind with one identity changed and every
+/// digest recomputed: what a key holder rewriting history would store.
+fn rewritten(record: fa_notary::Record) -> fa_notary::Record {
+    use fa_journal::custody::CustodyBody;
+    let bump = |v: &mut VId| *v = VId(v.0 + 1);
+    match record {
+        fa_notary::Record::Attestation(mut a) => {
+            bump(&mut a.attestation.principal);
+            a.signed_digest = a.attestation.signed_digest().unwrap();
+            fa_notary::Record::Attestation(a)
+        }
+        fa_notary::Record::Custody(mut e) => {
+            match &mut e.body {
+                CustodyBody::Receipt { received_by, .. } => bump(received_by),
+                CustodyBody::Transfer { to, .. } => bump(to),
+            }
+            fa_notary::Record::Custody(e)
+        }
+        fa_notary::Record::Supplement(mut s) => {
+            bump(&mut s.attached_by);
+            fa_notary::Record::Supplement(s)
+        }
+        entry @ fa_notary::Record::Entry(_) => entry,
+    }
+}
+
+/// fa-va02: attestations, import receipts, custody transfers and
+/// supplemental evidence are leaves in commit order beside the entries;
+/// each proves inclusion with its record to the independent verifier, the
+/// payload-complete prefix authenticates all of them, and the whole-prefix
+/// bundle still carries exactly the entries.
+#[test]
+fn evidence_records_are_leaves_the_independent_verifier_recomputes() {
+    let mut h = harness();
+    let ev = record_evidence(&mut h);
+    let a = h.checkpoint();
+    let trusted = outsider_checkpoint(&a);
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(a.state.through_seq),
+        a.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
+    use fa_notary::journal::{
+        KIND_ATTESTATION, KIND_CUSTODY_TRANSFER, KIND_ENTRY, KIND_IMPORT_RECEIPT,
+        KIND_SUPPLEMENTAL_EVIDENCE,
+    };
+    let leaves: Vec<(VId, u8)> = journal
+        .leaves
+        .iter()
+        .map(|l| (l.vid, l.envelope.kind))
+        .collect();
+    assert_eq!(
+        leaves[3..],
+        [
+            (ev.receipts[0], KIND_IMPORT_RECEIPT),
+            (ev.entry, KIND_ENTRY),
+            (ev.receipts[1], KIND_IMPORT_RECEIPT),
+            (ev.review, KIND_ATTESTATION),
+            (ev.supplement, KIND_SUPPLEMENTAL_EVIDENCE),
+            (ev.transfer, KIND_CUSTODY_TRANSFER),
+        ]
+    );
+    assert_eq!(trusted.leaf_count, 9);
+    for leaf in &journal.leaves {
+        let proof = prove_inclusion(&h.db, &h.book, &a.state, leaf.vid, true)
+            .unwrap()
+            .unwrap();
+        let report = fa_verify::verify_inclusion(&proof, &trusted).expect("inclusion verifies");
+        assert_eq!(report.record, RecordCheck::Recomputed);
+        assert_eq!(report.envelope.kind, leaf.envelope.kind);
+        assert_eq!(report.envelope.encode(), leaf.envelope_bytes);
+    }
+    let complete = fa_notary::prefix::prove_prefix_with_records(&h.db, &h.book, &a.state)
+        .unwrap()
+        .unwrap();
+    let verified =
+        fa_verify::proof::production::derivation::verify_prefix_with_records(&complete, &trusted)
+            .expect("every record of the complete prefix verifies");
+    assert_eq!(verified.envelopes.len(), journal.leaves.len());
+    assert!(
+        verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer)
+            .unwrap()
+            .is_green()
+    );
+
+    // A whole-prefix bundle discloses the entries, not the evidence records.
+    let request = BundleRequest {
+        scope: BundleScope::Prefix,
+        balances: Vec::new(),
+        inline_documents: false,
+    };
+    let bundle = h.bundle(&a, &request).unwrap();
+    let receipt = h.receipt(&bundle, h.db.frontier().unwrap());
+    let report = fa_verify::verify_bundle(&bundle.bytes, &[h.signer.public_key()], Some(&receipt))
+        .expect("readable bundle");
+    assert!(report.verified(), "{:#?}", not_passed(&report));
+    let named = BundleRequest {
+        scope: BundleScope::Entries(vec![ev.review]),
+        balances: Vec::new(),
+        inline_documents: false,
+    };
+    let refused = h.bundle(&a, &named).unwrap_err();
+    assert_eq!(refused.code, code::NOT_IN_PREFIX);
+}
+
+/// fa-va02 acceptance: rewriting an attestation, a receipt, a transfer or a
+/// supplement under the book's keys — valid digests and all — is found by
+/// recomputation (exit 8), blocks every new checkpoint and proof, and fails
+/// the outsider's inclusion check of the rewritten record, while the
+/// outsider's proof saved before the rewrite still verifies.
+#[test]
+fn a_rewrite_of_any_evidence_record_is_found() {
+    for which in ["receipt", "review", "supplement", "transfer"] {
+        let mut h = harness();
+        let ev = record_evidence(&mut h);
+        let a = h.checkpoint();
+        let trusted = outsider_checkpoint(&a);
+        let target = match which {
+            "receipt" => ev.receipts[0],
+            "review" => ev.review,
+            "supplement" => ev.supplement,
+            _ => ev.transfer,
+        };
+        let saved = prove_inclusion(&h.db, &h.book, &a.state, target, true)
+            .unwrap()
+            .unwrap();
+        let before = Journal::read(
+            &h.db,
+            &h.book,
+            Some(a.state.through_seq),
+            a.state.evidence_after,
+        )
+        .unwrap()
+        .unwrap();
+
+        let row = h.db.vertex(target).unwrap().unwrap();
+        let original = fa_notary::Record::of_row(&row).unwrap().unwrap();
+        let honest = original.payload().unwrap();
+        let forged = rewritten(original);
+        let payload = forged.payload().unwrap();
+        assert_ne!(payload, honest, "{which}");
+        assert_eq!(payload.len(), honest.len(), "{which}");
+        let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+        batch.set_vertex_property(
+            target,
+            property::FA_PAYLOAD,
+            Some(CanonicalScalar::bytes(payload.clone()).unwrap()),
+        );
+        batch.set_vertex_property(
+            target,
+            property::FA_DIGEST,
+            Some(CanonicalScalar::bytes(forged.record_digest().unwrap().to_vec()).unwrap()),
+        );
+        h.write_raw(batch);
+
+        assert_eq!(
+            Journal::read(
+                &h.db,
+                &h.book,
+                Some(a.state.through_seq),
+                a.state.evidence_after
+            )
+            .unwrap()
+            .unwrap(),
+            before,
+            "{which}: the historical view alone cannot expose this rewrite"
+        );
+        let found = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
+        assert!(!found.is_green(), "{which}");
+        assert!(
+            found.states[0].finding.as_deref().is_some_and(|f| f
+                .contains(&format!("{:032x}", target.0))
+                && f.contains("evidence record")),
+            "{which}: {found:?}"
+        );
+        let refused = h.checkpoint_refusal();
+        assert_eq!(refused.code, code::ACCUMULATOR_DRIFT, "{which}");
+        assert_eq!(refused.exit, exit::VERIFICATION, "{which}");
+        let no_proof = prove_inclusion(&h.db, &h.book, &a.state, target, true)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(no_proof.code, code::ACCUMULATOR_DRIFT, "{which}");
+
+        // The outsider: the saved proof still verifies; the same proof
+        // carrying the rewritten record does not.
+        fa_verify::verify_inclusion(&saved, &trusted).expect("the saved proof verifies");
+        let at = saved
+            .windows(honest.len())
+            .position(|w| w == honest.as_slice())
+            .unwrap();
+        let mut spliced = saved.clone();
+        spliced[at..at + payload.len()].copy_from_slice(&payload);
+        assert!(
+            matches!(
+                fa_verify::verify_inclusion(&spliced, &trusted),
+                Err(VerifyError::Record(_))
+            ),
+            "{which}"
+        );
+    }
+}
+
+/// A state that moves its evidence boundary — here to hide the attestation
+/// recorded before it — is found, even though the journal reproduces its
+/// root under the boundary it claims.
+#[test]
+fn a_state_that_moves_its_evidence_boundary_is_found() {
+    let mut h = harness();
+    let a = h.checkpoint();
+    let ev = record_evidence(&mut h);
+    let b = h.checkpoint();
+    assert_eq!(b.state.evidence_after, a.state.evidence_after);
+    let hidden = Journal::read(&h.db, &h.book, None, Some(b.state.through_seq))
+        .unwrap()
+        .unwrap();
+    assert!(hidden.leaf_index(ev.review).is_none());
+    let forged = AccumulatorState::of_journal(&hidden, Some(b.oid));
+    assert_eq!(forged.evidence_after, Some(b.state.through_seq));
+    let bytes = forged.canonical_bytes().unwrap();
+    let oid = state_oid(&bytes);
+    let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+    batch.create_vertex(
+        state_vid(&oid),
+        vec![label::ACCUMULATOR_STATE],
+        vec![
+            (property::FA_PAYLOAD, CanonicalScalar::bytes(bytes).unwrap()),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(oid.0.to_vec()).unwrap(),
+            ),
+        ],
+    );
+    batch.compare_and_set_vertex_property(
+        book_root(),
+        property::ACCUMULATOR_HEAD,
+        Some(CanonicalScalar::bytes(b.oid.0.to_vec()).unwrap()),
+        CanonicalScalar::bytes(oid.0.to_vec()).unwrap(),
+        WriteMismatchPolicy::AbortWrite,
+    );
+    h.write_raw(batch);
+    let found = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
+    assert!(
+        found.states[0]
+            .finding
+            .as_deref()
+            .is_some_and(|f| f.contains("evidence boundary")),
+        "{found:?}"
+    );
+    assert!(found.states[1..].iter().all(|s| s.finding.is_none()));
 }

@@ -82,9 +82,20 @@ fn select(
     let mut records = Vec::new();
     let mut needed = BTreeSet::new();
     for (index, leaf) in journal.leaves.iter().enumerate() {
-        let selected = leaf.envelope.class == EntryClass::MIGRATION_CONTROL
-            || candidate(leaf, account, unit, through);
+        let selected = leaf.envelope.is_entry()
+            && (leaf.envelope.class == EntryClass::MIGRATION_CONTROL
+                || candidate(leaf, account, unit, through));
         if !complete && !selected {
+            continue;
+        }
+        if !leaf.envelope.is_entry() {
+            // A complete proof carries every record; an evidence record never
+            // enters the fold, so it only has to be what its envelope commits.
+            if leaf.authenticated_record()?.is_none() {
+                return Ok(Err(refusal(format!(
+                    "leaf {index} disagrees with its authoritative record payload"
+                ))));
+            }
             continue;
         }
         let entry = Entry::decode(&leaf.payload)?;
@@ -464,7 +475,7 @@ fn prove<V: asupersync::fs::Vfs + Clone>(
     mode: ProofMode,
 ) -> Outcome<Vec<u8>> {
     let observed_at = db.frontier()?;
-    let journal = match Journal::read(db, book, Some(state.through_seq))? {
+    let journal = match Journal::read(db, book, Some(state.through_seq), state.evidence_after)? {
         Ok(journal) => journal,
         Err(r) => return Ok(Err(r)),
     };

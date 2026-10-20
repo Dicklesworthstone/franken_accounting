@@ -2,20 +2,21 @@
 //!
 //! Unlike a balance witness, this export requires no account, unit, migration
 //! body, or posted-visibility decision. Every Entry, including controls and
-//! staged migrations, is authenticated as a journal record. No assertion of
+//! staged migrations, and every accumulated evidence record is authenticated
+//! as a journal record. No assertion of
 //! accounting validity, authorization, document availability, or economic
 //! truth follows. The caller must authorize disclosure of the WHOLE prefix.
 //!
 //! Wire: bytes("fa:acc-prefix-proof:v2") || Checkpoint || list(bytes(envelope))
-//! || list(leaf_index u64 || proposal_len u32 || bytes(entry_payload)).
+//! || list(leaf_index u64 || proposal_len u32 || bytes(record_payload)).
 
 use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Outcome, Refusal, exit};
-use fa_model::{Entry, Writer};
+use fa_model::Writer;
 use fgdb::Database;
 
 use crate::tree::{Tree, leaf_hash};
-use crate::{AccumulatorState, Journal, LeafEnvelope, code};
+use crate::{AccumulatorState, Journal, code};
 
 pub const PREFIX_FORMAT_V2: &[u8] = b"fa:acc-prefix-proof:v2";
 pub const MAX_PREFIX_PROOF_BYTES: usize = 64 * 1024 * 1024;
@@ -78,8 +79,9 @@ fn encoded_size(journal: &Journal) -> Result<usize, Refusal> {
 impl Journal {
     /// Export every payload at this journal's exact checkpoint as prefix v2.
     /// The existing `prefix_proof` keeps its frozen envelope-only v1 bytes.
-    /// This pure producer grants no read or disclosure authority. All entries
-    /// are included regardless of their effective dates, classes, or accounts.
+    /// This pure producer grants no read or disclosure authority. All records
+    /// are included regardless of their kinds, effective dates, classes, or
+    /// accounts.
     pub fn prefix_proof_with_records(&self) -> Outcome<Vec<u8>> {
         let size = match encoded_size(self) {
             Ok(size) => size,
@@ -102,22 +104,9 @@ impl Journal {
                 ))));
             }
             previous = Some(position);
-            let entry = Entry::decode(&leaf.payload)?;
-            let envelope = LeafEnvelope::of_entry(
-                &entry,
-                leaf.envelope.commit_seq,
-                leaf.envelope.within_commit_ordinal,
-            );
-            if envelope != leaf.envelope
-                || envelope
-                    .canonical_bytes()
-                    .map_err(fa_model::EntryError::Encode)?
-                    != leaf.envelope_bytes
-                || entry.proposal.canonical_bytes()?.len() != leaf.proposal_len
-                || entry.encode()? != leaf.payload
-            {
+            if leaf.authenticated_record()?.is_none() {
                 return Ok(Err(drift(format!(
-                    "prefix leaf {index} disagrees with its canonical entry payload"
+                    "prefix leaf {index} disagrees with its canonical record payload"
                 ))));
             }
             let hash = leaf_hash(&leaf.envelope_bytes);
@@ -166,7 +155,7 @@ pub fn prove_prefix_with_records<V: asupersync::fs::Vfs + Clone>(
     state: &AccumulatorState,
 ) -> Outcome<Vec<u8>> {
     let observed_at = db.frontier()?;
-    let journal = match Journal::read(db, book, Some(state.through_seq))? {
+    let journal = match Journal::read(db, book, Some(state.through_seq), state.evidence_after)? {
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
     };

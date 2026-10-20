@@ -1,13 +1,26 @@
 //! Journaled accumulator states (plan §13.2, Appendix A `AccumulatorState`).
 //!
 //! ```text
-//! AccumulatorState { schema_major: u16 (1), schema_minor: u16 (0),
+//! AccumulatorState { schema_major: u16 (1), schema_minor: u16 (0 | 1),
 //!                    book_id: [16], branch_id: [16], through_seq: u64,
 //!                    leaf_count: u64, root: [32], peaks: [[32]],
-//!                    prev_state_oid: Option<[32]> }
+//!                    prev_state_oid: Option<[32]>,
+//!                    evidence_after_seq: u64 (minor 1 only) }
 //! oid = BLAKE3("fa:accumulator-state:v1" ‖ canonical bytes)
 //! vid = low 128 bits of BLAKE3("fa:vid:accumulator-state:v1" ‖ oid)
 //! ```
+//!
+//! Minor 0 states accumulate entries alone. A minor 1 state also
+//! accumulates the evidence records created after `evidence_after_seq`
+//! (bead fa-va02; [`crate::journal`]'s evidence boundary), which lies in
+//! `1..=through_seq`. Every new state is minor 1, and the boundary is a
+//! property of the chain, never a choice: a book's first state takes
+//! [`FIRST_COMMIT`] (the substrate's first commit, which is or precedes the
+//! book's genesis and records no evidence, so every evidence record is a
+//! leaf), a state after a minor 0 predecessor takes that predecessor's
+//! sequence, and a state after a minor 1 predecessor keeps its boundary.
+//! [`verify_accumulator`] refuses any other boundary, so a key holder
+//! cannot drop evidence by moving it.
 //!
 //! A state is a payload object: immutable, content-addressed, written by
 //! the notary in its own transaction — never inside a posting transaction,
@@ -51,7 +64,14 @@ use crate::{Statement, code};
 pub const STATE_OID_DOMAIN: &[u8] = b"fa:accumulator-state:v1";
 pub const STATE_VID_DOMAIN: &[u8] = b"fa:vid:accumulator-state:v1";
 pub const STATE_SCHEMA_MAJOR: u16 = 1;
+/// States that accumulate entries alone.
 pub const STATE_SCHEMA_MINOR: u16 = 0;
+/// States that also accumulate evidence records after a recorded boundary.
+pub const STATE_SCHEMA_MINOR_BOUNDARY: u16 = 1;
+/// The substrate's first commit (an empty database's frontier is 0): the
+/// evidence boundary of a book's first state. No commit at or before a
+/// book's genesis records evidence, so the state accumulates all of it.
+pub const FIRST_COMMIT: CommitSeq = CommitSeq(1);
 /// One peak per bit of a `u64` leaf count.
 const MAX_PEAKS: usize = 64;
 
@@ -66,13 +86,20 @@ pub struct AccumulatorState {
     /// Largest (leftmost) first; they bag right to left to `root`.
     pub peaks: Vec<Digest>,
     pub prev_state_oid: Option<Oid>,
+    /// The evidence boundary: `None` for a minor 0 state (entries alone),
+    /// otherwise the commit after which evidence records are leaves.
+    pub evidence_after: Option<CommitSeq>,
 }
 
 impl AccumulatorState {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
-        let mut w = Writer::with_capacity(128 + 32 * self.peaks.len());
+        let minor = match self.evidence_after {
+            None => STATE_SCHEMA_MINOR,
+            Some(_) => STATE_SCHEMA_MINOR_BOUNDARY,
+        };
+        let mut w = Writer::with_capacity(136 + 32 * self.peaks.len());
         w.u16(STATE_SCHEMA_MAJOR)
-            .u16(STATE_SCHEMA_MINOR)
+            .u16(minor)
             .fixed(&self.book_id.0)
             .fixed(&self.branch_id.0)
             .u64(self.through_seq.0)
@@ -84,6 +111,9 @@ impl AccumulatorState {
             .opt(self.prev_state_oid.as_ref(), |w, o| {
                 w.fixed(&o.0);
             });
+        if let Some(boundary) = self.evidence_after {
+            w.u64(boundary.0);
+        }
         w.finish()
     }
 
@@ -92,10 +122,11 @@ impl AccumulatorState {
         if r.u16("state.schema_major")? != STATE_SCHEMA_MAJOR {
             return Err(r.invalid("state.schema_major"));
         }
-        if r.u16("state.schema_minor")? != STATE_SCHEMA_MINOR {
+        let minor = r.u16("state.schema_minor")?;
+        if minor != STATE_SCHEMA_MINOR && minor != STATE_SCHEMA_MINOR_BOUNDARY {
             return Err(r.invalid("state.schema_minor"));
         }
-        let state = Self {
+        let mut state = Self {
             book_id: Id128(r.fixed("state.book_id")?),
             branch_id: Id128(r.fixed("state.branch_id")?),
             through_seq: CommitSeq(r.u64("state.through_seq")?),
@@ -105,7 +136,15 @@ impl AccumulatorState {
             prev_state_oid: r.opt("state.prev_state_oid", |r| {
                 r.fixed("state.prev_state_oid").map(Oid)
             })?,
+            evidence_after: None,
         };
+        if minor == STATE_SCHEMA_MINOR_BOUNDARY {
+            let boundary = r.u64("state.evidence_after_seq")?;
+            if boundary == 0 || boundary > state.through_seq.0 {
+                return Err(r.invalid("state.evidence_after_seq"));
+            }
+            state.evidence_after = Some(CommitSeq(boundary));
+        }
         r.finish()?;
         Ok(state)
     }
@@ -125,7 +164,8 @@ impl AccumulatorState {
         }
     }
 
-    /// The state that commits `journal` after `prev`.
+    /// The state that commits `journal` after `prev`, with the journal's
+    /// evidence boundary.
     #[must_use]
     pub fn of_journal(journal: &Journal, prev_state_oid: Option<Oid>) -> Self {
         Self {
@@ -136,7 +176,16 @@ impl AccumulatorState {
             root: journal.root(),
             peaks: journal.peaks(),
             prev_state_oid,
+            evidence_after: journal.evidence_after,
         }
+    }
+
+    /// The evidence boundary of the state that follows this one on the
+    /// chain: this state's own, or, after an entries-only state, its
+    /// sequence (so the successor still extends it).
+    #[must_use]
+    pub fn successor_boundary(&self) -> CommitSeq {
+        self.evidence_after.unwrap_or(self.through_seq)
     }
 }
 
@@ -455,11 +504,21 @@ pub struct Checkpointed {
     pub checkpoint: StoredCheckpoint,
 }
 
+/// The evidence boundary of a book's state given its predecessor on the
+/// chain (module docs): [`FIRST_COMMIT`] for the first state, otherwise
+/// [`AccumulatorState::successor_boundary`].
+#[must_use]
+pub fn chained_boundary(prev: Option<&AccumulatorState>) -> CommitSeq {
+    prev.map_or(FIRST_COMMIT, AccumulatorState::successor_boundary)
+}
+
 /// Recompute the accumulator over the whole journal at the head and journal
 /// it as the next `AccumulatorState` with its `TransparencyCheckpoint`
 /// signed by `signer`, after checking that the journal still extends the
 /// previous state and reproduces its checkpoint (a rewritten history or a
-/// forged checkpoint is refused with exit 8, never papered over).
+/// forged checkpoint is refused with exit 8, never papered over). The new
+/// state accumulates evidence records after the boundary the chain implies
+/// ([`chained_boundary`]).
 pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -467,20 +526,6 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
     signer: &dyn CheckpointSigner,
 ) -> Outcome<Checkpointed> {
     let through = db.frontier()?;
-    let journal = match Journal::read(db, book, Some(through)) {
-        Ok(Ok(journal)) => journal,
-        Ok(Err(refusal)) => return Ok(Err(refusal)),
-        Err(KernelError::Corrupt(why)) => return Ok(Err(drift(why))),
-        Err(KernelError::Model(error)) => {
-            return Ok(Err(drift(format!(
-                "the journal contains an invalid entry payload: {error}"
-            ))));
-        }
-        Err(error) => return Err(error),
-    };
-    if let Err(refusal) = journal.verify_unchanged_at(db, through)? {
-        return Ok(Err(refusal));
-    }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     let basis = txn.basis();
@@ -527,6 +572,39 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
             return Err(e);
         }
     };
+    let boundary = chained_boundary(prev.as_ref().map(|p| &p.state));
+    let journal = match Journal::read(db, book, Some(through), Some(boundary)) {
+        Ok(Ok(journal)) => journal,
+        Ok(Err(refusal)) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+        Err(KernelError::Corrupt(why)) => {
+            txn.abort();
+            return Ok(Err(drift(why)));
+        }
+        Err(KernelError::Model(error)) => {
+            txn.abort();
+            return Ok(Err(drift(format!(
+                "the journal contains an invalid record payload: {error}"
+            ))));
+        }
+        Err(error) => {
+            txn.abort();
+            return Err(error);
+        }
+    };
+    match journal.verify_unchanged_at(db, through) {
+        Ok(Ok(())) => {}
+        Ok(Err(refusal)) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+        Err(error) => {
+            txn.abort();
+            return Err(error);
+        }
+    }
     if let Some(stored_prev) = prev.as_ref() {
         let prev = &stored_prev.state;
         // Publish only over a predecessor verification accepts: recorded
@@ -712,16 +790,28 @@ impl AccumulatorVerification {
     }
 }
 
+/// The evidence boundaries a state may carry after `prev` (`None` for the
+/// oldest state on the chain): an entries-only state may follow only an
+/// entries-only predecessor (or start the chain); otherwise exactly the
+/// boundary [`chained_boundary`] derives.
+fn boundary_admitted(state: &AccumulatorState, prev: Option<&AccumulatorState>) -> bool {
+    match state.evidence_after {
+        None => prev.is_none_or(|p| p.evidence_after.is_none()),
+        Some(b) => b == chained_boundary(prev),
+    }
+}
+
 /// FA-INV-14 by recomputation: every state on the chain is rebuilt from the
 /// journal prefix it names and must match field for field; its checkpoint
 /// is rebuilt from the same prefix and signed again by `signer` (Ed25519 is
 /// deterministic) and must match byte for byte; each state extends its
-/// predecessor; each was recorded after the prefix it covers; and every
-/// state and checkpoint vertex in the store is on the chain. Every
-/// checkpointed record must also retain its label, creating sequence,
-/// payload and digest at the observed head: historical MVCC versions alone
-/// cannot show a later rewrite or retirement. The additional work is one
-/// point read per leaf of each checked state.
+/// predecessor; each was recorded after the prefix it covers; each carries
+/// the evidence boundary its place on the chain implies; and every state
+/// and checkpoint vertex in the store is on the chain. Every checkpointed
+/// record must also retain its label, creating sequence, payload and digest
+/// at the observed head: historical MVCC versions alone cannot show a later
+/// rewrite or retirement. The additional work is one point read per leaf
+/// of each checked state.
 pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     ctx: &PurposeContexts,
@@ -733,6 +823,7 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
     let mut states = Vec::with_capacity(chain.len());
     for (i, s) in chain.iter().enumerate() {
         let st = &s.state;
+        let prev = chain.get(i + 1).map(|p| &p.state);
         let mut finding = if st.book_id != book.book_id || st.branch_id != Id128::TRUNK {
             Some("the state names another book or branch".to_string())
         } else if s.recorded_at <= st.through_seq {
@@ -740,8 +831,15 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
                 "recorded at {} but claims a prefix through {}",
                 s.recorded_at.0, st.through_seq.0
             ))
+        } else if !boundary_admitted(st, prev) {
+            Some(format!(
+                "its evidence boundary {} is not the one its place on the chain implies ({})",
+                st.evidence_after
+                    .map_or_else(|| "none".to_string(), |b| b.0.to_string()),
+                chained_boundary(prev).0
+            ))
         } else {
-            match Journal::read(db, book, Some(st.through_seq))? {
+            match Journal::read(db, book, Some(st.through_seq), st.evidence_after)? {
                 Err(r) => Some(r.message),
                 Ok(journal) => {
                     let expected = AccumulatorState::of_journal(&journal, st.prev_state_oid);
@@ -828,7 +926,7 @@ fn supported<V: asupersync::fs::Vfs + Clone>(
     state: &AccumulatorState,
 ) -> Outcome<Journal> {
     let observed_at = db.frontier()?;
-    let journal = match Journal::read(db, book, Some(state.through_seq))? {
+    let journal = match Journal::read(db, book, Some(state.through_seq), state.evidence_after)? {
         Ok(j) => j,
         Err(r) => return Ok(Err(r)),
     };
@@ -971,5 +1069,72 @@ pub fn bundle_basis<V: asupersync::fs::Vfs + Clone>(
     match supported(db, book, &state.state)? {
         Ok(journal) => Ok(Ok((journal, checkpoint))),
         Err(r) => Ok(Err(r)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(evidence_after: Option<u64>) -> AccumulatorState {
+        // The empty prefix: no peaks, and the root the verifier expects.
+        let journal = Journal::from_records(Id128([7; 16]), CommitSeq(9), Vec::new()).unwrap();
+        AccumulatorState {
+            evidence_after: evidence_after.map(CommitSeq),
+            ..AccumulatorState::of_journal(&journal, Some(Oid([3; 32])))
+        }
+    }
+
+    /// A minor 0 state keeps its exact bytes; a minor 1 state appends its
+    /// boundary; the independent verifier accepts both, and both decoders
+    /// refuse a boundary outside `1..=through_seq`.
+    #[test]
+    fn the_boundary_is_an_additive_minor_both_implementations_read() {
+        let entries_only = state(None);
+        let old = entries_only.canonical_bytes().unwrap();
+        assert_eq!(old[2..4], STATE_SCHEMA_MINOR.to_le_bytes());
+        assert_eq!(AccumulatorState::decode(&old).unwrap(), entries_only);
+        fa_verify::verify_state(&old).expect("minor 0 verifies");
+
+        let bounded = state(Some(4));
+        let new = bounded.canonical_bytes().unwrap();
+        assert_eq!(new[2..4], STATE_SCHEMA_MINOR_BOUNDARY.to_le_bytes());
+        assert_eq!(new[4..new.len() - 8], old[4..]);
+        assert_eq!(new[new.len() - 8..], 4u64.to_le_bytes());
+        assert_eq!(AccumulatorState::decode(&new).unwrap(), bounded);
+        let outsider = fa_verify::verify_state(&new).expect("minor 1 verifies");
+        assert_eq!(outsider.oid, state_oid(&new).0);
+
+        for boundary in [0, 10] {
+            let bytes = state(Some(boundary)).canonical_bytes().unwrap();
+            assert!(AccumulatorState::decode(&bytes).is_err(), "{boundary}");
+            assert!(fa_verify::verify_state(&bytes).is_err(), "{boundary}");
+        }
+        let mut unknown = new;
+        unknown[2] = 2;
+        assert!(AccumulatorState::decode(&unknown).is_err());
+    }
+
+    /// The boundary is a property of the chain: the first commit for the
+    /// first state, the predecessor's sequence after an entries-only state,
+    /// and otherwise inherited. An entries-only state never follows a
+    /// bounded one, and no other boundary is admitted.
+    #[test]
+    fn the_chain_admits_exactly_one_boundary_per_state() {
+        let legacy = state(None);
+        let bounded = state(Some(4));
+        assert_eq!(chained_boundary(None), FIRST_COMMIT);
+        assert_eq!(chained_boundary(Some(&legacy)), legacy.through_seq);
+        assert_eq!(chained_boundary(Some(&bounded)), CommitSeq(4));
+
+        assert!(boundary_admitted(&state(Some(1)), None));
+        assert!(boundary_admitted(&state(None), None));
+        assert!(!boundary_admitted(&state(Some(2)), None));
+        assert!(boundary_admitted(&state(Some(9)), Some(&legacy)));
+        assert!(boundary_admitted(&state(None), Some(&legacy)));
+        assert!(!boundary_admitted(&state(Some(8)), Some(&legacy)));
+        assert!(boundary_admitted(&state(Some(4)), Some(&bounded)));
+        assert!(!boundary_admitted(&state(Some(5)), Some(&bounded)));
+        assert!(!boundary_admitted(&state(None), Some(&bounded)));
     }
 }

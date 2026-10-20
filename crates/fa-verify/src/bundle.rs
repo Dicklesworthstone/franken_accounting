@@ -82,7 +82,7 @@ use crate::checkpoint::{SCHEME_ED25519, SignedCheckpoint, signer_key_id, verify_
 use crate::codec::{DecodeError, Reader, Reason};
 use crate::document::{chunk_root, commit_of};
 use crate::ed25519::{self, SignatureError};
-use crate::envelope::{LeafEnvelope, check_record, cited_documents};
+use crate::envelope::{KIND_ENTRY, LeafEnvelope, check_record, cited_documents};
 use crate::proof::{
     MAX_ENVELOPE_BYTES, SCOPE_SEQ_RANGE_COMPLETE, VerifyError, read_path, verify_prefix, within,
 };
@@ -617,10 +617,13 @@ fn in_scope(
 ) -> Result<BTreeMap<u64, LeafEnvelope>, VerifyError> {
     let cp = &signed.checkpoint;
     match (&p.proof, &p.manifest.scope) {
+        // A bundle's entries are its journal entries (kind 1): evidence
+        // records are bound by their envelopes and carry no entry.
         (ProofSection::Prefix(proof), BundleScope::Prefix) => Ok(verify_prefix(proof, cp)?
             .envelopes
             .into_iter()
             .zip(0u64..)
+            .filter(|(e, _)| e.kind == KIND_ENTRY)
             .map(|(e, i)| (i, e))
             .collect()),
         (ProofSection::Scope(proof), BundleScope::Account(claim)) => {

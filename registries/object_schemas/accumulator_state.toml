@@ -7,7 +7,7 @@ schema_version = 1
 name = "AccumulatorState"
 owner = "fa-notary::state::AccumulatorState"
 major = 1
-minor = 0
+minor = 1
 oid_domain = "fa:accumulator-state:v1"
 vid_domain = "fa:vid:accumulator-state:v1"
 checkpoint_domain = "fa:checkpoint:v1"
@@ -15,5 +15,8 @@ checkpoint_signature_domain = "fa:checkpoint-signature:v1"
 max_peaks = 64
 externally_verifiable = true
 
-fields = ["schema_major:u16", "schema_minor:u16", "book_id:bytes16", "branch_id:bytes16", "through_seq:u64", "leaf_count:u64", "root:bytes32", "peaks:list<bytes32>", "prev_state_oid:option<bytes32>"]
+# Minor 1 (fa-va02) appends evidence_after_seq in 1..=through_seq: the commit
+# after which evidence records are leaves. A minor 0 state (no trailing
+# field) accumulates entries alone and stays valid forever.
+fields = ["schema_major:u16", "schema_minor:u16", "book_id:bytes16", "branch_id:bytes16", "through_seq:u64", "leaf_count:u64", "root:bytes32", "peaks:list<bytes32>", "prev_state_oid:option<bytes32>", "evidence_after_seq:trailing<u64>"]
 checkpoint_fields = ["book_id:bytes16", "branch_id:bytes16", "through_seq:u64", "leaf_count:u64", "root:bytes32", "scope_index_root:bytes32", "substrate_chain_commitment:bytes32", "witness_policy_oid:option<bytes32>", "time_evidence_oid:option<bytes32>", "body_digest:bytes32", "signatures:list<signature>"]

@@ -177,9 +177,10 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     assert_ne!(text(&second, "oid"), text(&first, "oid"));
     assert_ne!(text(&second, "root"), text(&first, "root"));
     // Chart, the fiscal year's journaled creation control (fa-ehd),
-    // period-open control, and posting are all the entry leaves. Book
-    // creation, documents, and accumulator states are not entries.
-    assert_eq!(integer(&second, "leaf_count"), 4);
+    // period-open control, the document's import receipt (an evidence
+    // leaf since fa-va02), and posting. Book creation, the document vertex
+    // itself, and accumulator states are not leaves.
+    assert_eq!(integer(&second, "leaf_count"), 5);
     assert!(integer(&second, "through_seq") >= integer(&posted, "recorded_at"));
     let verified_bytes = ok(&book, &["verify", "accumulator", "--json"]);
     let verified = parsed(&verified_bytes);

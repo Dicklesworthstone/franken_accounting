@@ -1070,7 +1070,7 @@ fn certify_selected<V: Vfs + Clone>(
             .map_err(BookError::CertifiedRead)?;
         inputs.push(certificate);
     }
-    let journal = match Journal::read(db, book, Some(at))? {
+    let journal = match Journal::read(db, book, Some(at), None)? {
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -1233,7 +1233,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
             "the certified historical book context is unavailable: {error}"
         ))));
     }
-    let journal = match Journal::read(db, book, Some(certificate.known_at))? {
+    let journal = match Journal::read(db, book, Some(certificate.known_at), None)? {
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -1288,7 +1288,7 @@ pub(crate) fn status<V: Vfs + Clone>(
             "the current book context no longer matches the certified context: {error}"
         ))));
     }
-    let journal = match Journal::read(db, book, Some(head))? {
+    let journal = match Journal::read(db, book, Some(head), None)? {
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
     };
