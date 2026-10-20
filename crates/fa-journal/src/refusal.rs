@@ -96,6 +96,12 @@ pub mod code {
     /// A scenario intent is effective before the scenario's counterfactual
     /// start (`--from`).
     pub const SCENARIO_BEFORE_START: &str = "FA-REF-164";
+    /// The book has no production profile for the matter (plan §13.2, bead
+    /// fa-6l9).
+    pub const PRODUCTION_UNKNOWN: &str = "FA-REF-170";
+    /// A production asks for another page count or designation for a
+    /// document its matter already produced: a Bates range never changes.
+    pub const BATES_RANGE_FIXED: &str = "FA-REF-171";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

@@ -70,6 +70,7 @@ pub mod indirect_cash_flow;
 pub mod intake;
 pub mod interop;
 pub mod procedure_certificate;
+pub mod production;
 pub mod projections;
 pub mod proof;
 pub mod report_artifact;
@@ -198,6 +199,7 @@ pub use scenario::{
     CertifiedScenarioDiff, SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT,
     ScenarioBook, ScenarioDiff, ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
 };
+pub use production::{DEFAULT_VOLUME as DEFAULT_PRODUCTION_VOLUME, ProductionVolume};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,

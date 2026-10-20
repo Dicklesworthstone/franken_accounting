@@ -75,6 +75,8 @@ symbols!(
         (BANK_MATCH, "BankMatch", 47),
         (BANK_MATCHED_LEG, "BankMatchedLeg", 48),
         (BANK_UNMATCH, "BankUnmatch", 49),
+        (PRODUCTION_PROFILE, "ProductionProfile", 50),
+        (BATES_RANGE, "BatesRange", 51),
     ]
 );
 
@@ -141,6 +143,7 @@ symbols!(
         (CUSTODY_LEN, "custody_len", 66),
         (LEGAL_HOLDS, "legal_holds", 67),
         (UNIT_TABLE_DIGEST, "unit_table_digest", 68),
+        (NEXT_BATES, "next_bates", 69),
     ]
 );
 

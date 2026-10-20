@@ -230,3 +230,9 @@ class = "ScenarioControl"
 reversible = "no"
 why = "ScenarioControl records are a scenario's counterfactual intent log with no legs; nothing in a scenario is a trunk entry"
 corrective_route = "discard the scenario with `fa scenario discard`, and fork a new one with the corrected intents"
+
+[[target_class]]
+class = "ProductionControl"
+reversible = "no"
+why = "ProductionControl records are a matter's production history with no legs; a produced Bates number is never withdrawn or reassigned"
+corrective_route = "produce the corrected documents again in the matter with `fa produce`: they receive the next Bates numbers, and the earlier ranges stay on record"

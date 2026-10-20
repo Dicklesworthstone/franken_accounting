@@ -105,6 +105,8 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("checkpoint", notary::checkpoint_cmd),
     ("proof", crate::proof::proof_cmd),
     ("bundle", crate::proof::bundle_cmd),
+    ("production", crate::production::production_cmd),
+    ("produce", crate::production::produce_cmd),
     ("party", crate::rea::party_cmd),
     ("instrument", crate::rea::instrument_cmd),
     ("entity", crate::rea::entity_cmd),
@@ -1886,6 +1888,9 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         }
         ("checkpoint", _) => &[Op::Witness],
         ("proof" | "bundle" | "export", _) => &[Op::Read, Op::Produce],
+        ("production", Some("open")) => &[Op::Produce],
+        ("production", Some("list" | "show" | "document")) => &[Op::Read],
+        ("produce", _) => &[Op::Read, Op::Produce],
         ("bank", Some("import")) => &[Op::Read, Op::Post, Op::Reconcile],
         ("bank", Some("match" | "confirm" | "status" | "history")) => &[Op::Read, Op::Reconcile],
         ("finding", Some("record" | "export")) => &[Op::Read, Op::Produce],

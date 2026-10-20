@@ -1263,6 +1263,7 @@ mod tests {
                 (11, "draft_transition"),
                 (12, "scenario_transition"),
                 (13, "period_creation"),
+                (14, "production_transition"),
             ]
         );
         assert_eq!(

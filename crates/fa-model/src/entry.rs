@@ -103,6 +103,17 @@ pub const SCENARIO_INTENT_EXTENSION: u16 = 11;
 /// Extension tag 12, the intrinsic YearEndClose v1 source and routing basis.
 /// The kernel recomputes its complete fold on every Closing admission.
 pub const YEAR_END_CLOSE_EXTENSION: u16 = 12;
+/// Extension tag 13, `fa:production-profile:v1` (plan §13.2, Appendix A
+/// `ProductionProfile`, bead fa-6l9): a matter's immutable production
+/// profile on its `ProductionControl` Open record — `u16 version ‖
+/// book_id[16] ‖ str matter ‖ str bates_prefix ‖ u64 first_bates ‖ u8
+/// load_file_format ‖ opt oid protective_order`.
+pub const PRODUCTION_PROFILE_EXTENSION: u16 = 13;
+/// Extension tag 14, `fa:production-bates:v1` (bead fa-6l9): the Bates ranges
+/// one `ProductionControl` Produce record assigns in its matter — `u16
+/// version ‖ str matter ‖ list(oid document ‖ [32] doc_commit ‖ u64 start ‖
+/// u64 end ‖ u8 designation)`, in production order.
+pub const PRODUCTION_BATES_EXTENSION: u16 = 14;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -118,6 +129,8 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     SCENARIO_BODY_EXTENSION,
     SCENARIO_INTENT_EXTENSION,
     YEAR_END_CLOSE_EXTENSION,
+    PRODUCTION_PROFILE_EXTENSION,
+    PRODUCTION_BATES_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -163,6 +176,10 @@ impl EntryClass {
     /// A `Scenario`'s lifecycle (plan §15.2, bead fa-k07b): Open, Plan,
     /// Discard. Book-scoped, undated; a scenario never posts to trunk.
     pub const SCENARIO_CONTROL: Self = Self(26);
+    /// A matter's litigation production (plan §13.2, bead fa-6l9): Open (its
+    /// `ProductionProfile`), Produce (the Bates ranges a production assigns).
+    /// Book-scoped, undated; a Bates number is never reassigned.
+    pub const PRODUCTION_CONTROL: Self = Self(27);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -192,6 +209,7 @@ impl EntryClass {
         (24, "HoldControl", true),
         (25, "DraftControl", true),
         (26, "ScenarioControl", true),
+        (27, "ProductionControl", true),
     ];
 
     #[must_use]
@@ -264,6 +282,7 @@ impl ControlKind {
     pub const DRAFT_TRANSITION: Self = Self(11);
     pub const SCENARIO_TRANSITION: Self = Self(12);
     pub const PERIOD_CREATION: Self = Self(13);
+    pub const PRODUCTION_TRANSITION: Self = Self(14);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -319,6 +338,11 @@ impl ControlKind {
             Self::PERIOD_CREATION,
             "period_creation",
             EntryClass::SCHEMA_CONTROL,
+        ),
+        (
+            Self::PRODUCTION_TRANSITION,
+            "production_transition",
+            EntryClass::PRODUCTION_CONTROL,
         ),
     ];
 
@@ -2248,7 +2272,7 @@ mod tests {
             );
         }
         // Keep the negative probes beyond every registered control kind.
-        for id in [0, 14, 15, u16::MAX] {
+        for id in [0, 15, 16, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"

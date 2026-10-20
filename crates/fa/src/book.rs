@@ -1125,6 +1125,59 @@ impl Book {
         with_store!(&self.store, core => core.drafts(&self.purposes()))
     }
 
+    /// Open the production profile of `profile.matter` (plan §13.2, bead
+    /// fa-6l9): its Bates prefix and first number, journaled once per matter.
+    pub fn open_production(
+        &mut self,
+        capability: fa_journal::Capability,
+        profile: fa_journal::ProductionProfile,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::ProductionOpened> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.open_production(
+            &purposes, capability, profile, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Produce `documents` in `matter`: each document the matter has not
+    /// produced receives the next Bates numbers, journaled by one Produce
+    /// record; a produced document keeps its range.
+    pub fn produce(
+        &mut self,
+        capability: fa_journal::Capability,
+        matter: &str,
+        documents: Vec<fa_journal::ProducedDocument>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::Produced> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce(
+            &purposes, capability, matter, documents, effective_date, idempotency_key,
+        )))
+    }
+
+    /// The production profile of `matter` and every range it assigned.
+    pub fn production(
+        &self,
+        matter: &str,
+    ) -> Result<Option<fa_journal::ProductionView>, BookError> {
+        with_store!(&self.store, core => core.production(&self.purposes(), matter))
+    }
+
+    /// Every matter's production profile.
+    pub fn productions(&self) -> Result<Vec<fa_journal::ProductionView>, BookError> {
+        with_store!(&self.store, core => core.productions(&self.purposes()))
+    }
+
+    /// Every matter's Bates range for `document`.
+    pub fn document_bates_ranges(
+        &self,
+        document: &fa_model::Oid,
+    ) -> Result<Vec<(fa_journal::ProductionProfile, fa_journal::RecordedRange)>, BookError> {
+        with_store!(&self.store, core => core.document_bates_ranges(&self.purposes(), document))
+    }
+
     /// Fork the scenario `name` over the trunk prefix at `fork.at` (the head
     /// when absent): plan §15.2, Appendix B `ForkScenario`, fa-k07b.
     pub fn open_scenario(

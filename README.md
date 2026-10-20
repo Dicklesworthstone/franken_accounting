@@ -557,6 +557,34 @@ capability must include `--grant read --grant produce`; per-call authority
 and host output paths are refused. Complete-prefix and balance proofs disclose
 every journal envelope, so they require whole-book read authority.
 
+### Litigation productions
+
+A matter's Bates numbering is journaled, so it never restarts and never
+reuses a number. `fa production open` records the matter's profile once: its
+Bates prefix, its first number and an optional protective order the book
+holds. `fa produce` gives each document the matter has not produced the next
+numbers, journaled by one `ProductionControl` record, and writes the volume
+into a new directory: a Concordance `.dat`, an Opticon `.opt` and each
+document's native. A document the matter already produced keeps its range.
+The same document produced in another matter gets that matter's range, and
+its `doc_commit` never changes.
+
+```bash
+fa production open SEC-v-Acme --bates-prefix ACME-SEC --protective-order <order_oid> --book ./books/acme --json
+fa produce --matter SEC-v-Acme --document <oid>:12:confidential --document <oid> --out ./prod-001 --book ./books/acme --json
+fa production show SEC-v-Acme --json       # every range, with the record that assigned it
+fa production document <oid> --json        # the document's range in every matter
+```
+
+Both writes need `produce`, and an Agent-profile capability can prepare
+neither. Every document's read is judged before any number is journaled.
+A governed document (a bank statement) that the producer can see only through
+its redacted view is listed as `REDACTED`, with its contract, and ships no
+bytes. The default key is the request itself: running the identical command
+again returns the recorded production, and it can write the same volume into
+another new directory. EDRM XML, the privilege log and the `.fab` bundle with
+its FRE 902(13)/(14) package are not written yet (`fa-6l9`).
+
 ### Exact arithmetic available now
 
 `fa-money` supports the full signed `i128` amount range, including parsing,

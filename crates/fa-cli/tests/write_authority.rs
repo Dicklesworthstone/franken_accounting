@@ -454,6 +454,24 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(&["checkpoint", "create"], &[Op::Witness], Reaches),
+        row(
+            &["production", "open", "matrix-matter", "--bates-prefix", "MTX"],
+            &[Op::Produce],
+            Succeeds,
+        ),
+        row(
+            &[
+                "produce",
+                "--matter",
+                "no-such-matter",
+                "--document",
+                document,
+                "--out",
+                "matrix-volume",
+            ],
+            &[Op::Read, Op::Produce],
+            Reaches,
+        ),
         row(&["draft", "new", "matrix-draft"], &[Op::Post], Succeeds),
         row(
             &["draft", "plan", "matrix-draft", "--intent", "junk.json"],

@@ -487,6 +487,30 @@ usage = ["bundle produce [--state <64-hex-oid|latest>] [--out <new.fab> --receip
 example = "fa bundle produce --account 1000 --from 2026-03-01 --to 2026-03-31 --balance 1000:USD:2026-03-31 --out cash.fab --receipt-out cash.receipt --book ./books/myco --json"
 
 [[verb]]
+name = "production"
+summary = "Litigation production profiles (plan §13.2, §0.4 decision 4): open a matter's profile (its Bates prefix and first number, journaled once by a ProductionControl record and never restarted), list the book's matters, show the ranges a matter has assigned, or list one document's ranges across matters."
+writes = true
+subcommands = ["open", "list", "show", "document"]
+flags = ["--bates-prefix", "--start", "--load-file", "--protective-order", "--key", "--date", "--grant"]
+switches = []
+events = ["production_opened", "productions", "production_detail", "document_bates_ranges"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["production open <matter> --bates-prefix <PREFIX> [--start <n>] [--load-file dat] [--protective-order <oid>] [--key K] [--date YYYY-MM-DD]   (journals the matter's profile once, under produce authority; the prefix is 1..=16 printable ASCII bytes without spaces, --start is the first Bates number (1 by default), and the protective order is a document the book holds. One profile per matter: another principal's open is refused, and an exact retry returns the recorded profile. --load-file dat (Concordance DAT/OPT) is the only format in this build: EDRM XML needs the production bundle)", "production list   (every matter: its prefix, next number and how many documents it has produced)", "production show <matter>   (every range the matter assigned, ascending, with the Produce record that assigned it)", "production document <oid>   (the document's range in every matter that produced it; plan §13.2: a document produced in two matters carries both ranges)"]
+example = "fa production open SEC-v-Acme --bates-prefix ACME-SEC --book ./books/myco --json"
+
+[[verb]]
+name = "produce"
+summary = "Produce documents in a matter (plan §13.2, Appendix B Produce): each document the matter has not produced receives the next Bates numbers, journaled by one ProductionControl record, a document it produced keeps its range, and the volume is written into a new directory: Concordance DAT and Opticon OPT load files and each fully readable document's native."
+writes = true
+subcommands = []
+flags = ["--matter", "--document", "--out", "--volume", "--key", "--date", "--grant"]
+switches = []
+events = ["production_recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["produce --matter <matter> --document <oid>[:pages[:designation]]... --out <new-dir> [--volume VOL001] [--key K] [--date YYYY-MM-DD]   (needs read and produce; documents are numbered in argument order; pages default to 1 and the designation to none (none, confidential, aeo, highly-confidential), both only for a document the matter has not produced: for a produced one they must be absent or equal to its range (FA-REF-171))", "The volume is <out>/<VOLUME>.dat, <out>/<VOLUME>.opt and <out>/NATIVES/<BEGBATES><ext>. A document the capability reads only through its redacted view is listed REDACTED with its contract and ships no native. The directory must not exist; it is checked before anything is journaled. The default key is the request itself, so the identical command returns the recorded production (and writes the same volume into a new --out); a production that numbers nothing new writes no record.", "No-claim boundary: EDRM XML, the privilege log, and the .fab bundle with its FRE 902(13)/(14) package belong to the production bundle and are not in this build; the volume proves only the journaled Bates ranges and the documents' public commitments."]
+example = "fa produce --matter SEC-v-Acme --document <oid>:12:confidential --document <oid> --out ./prod-001 --book ./books/myco --json"
+
+[[verb]]
 name = "party"
 summary = "REA parties (plan §4.1, §4.5): record a party (customer, vendor, employee, bank, related entity, beneficial owner, regulator, counterparty), relate two parties by a registered basis over a valid-time interval, bind another system's identifier to a party, legal entity or instrument, or list them."
 writes = true
@@ -2516,7 +2540,7 @@ hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--versio
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at"]
+integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -2650,6 +2674,10 @@ reason = "host-only: issuing authority needs --grant issue_capability and writes
 verb = "capability"
 subcommand = "list"
 reason = "host-only: the operator's inventory of every grant in the book; a bound session reads its own authority through fa_orient_capabilities (plan §15.4 registered exclusion, fa-v62)"
+
+[[mcp.excluded]]
+verb = "produce"
+reason = "host-only: a production volume writes Bates-stamped load files and natives into a new directory on the host; MCP has inline output only (plan §13.2/§15.4 registered exclusion, fa-6l9)"
 
 [[mcp.excluded]]
 verb = "capability"
@@ -3353,6 +3381,19 @@ dont = ["The launch capability must include read and produce. Output paths are f
 mistakes = ["Combining account with entry: a bundle has one scope.", "Passing from/to without account.", "Writing balance as an amount: it is <account-code>:<UNIT>[:YYYY-MM-DD], and the amount is recomputed."]
 
 [[mcp.tool]]
+cluster = "fa.notary"
+name = "production"
+verb = "production"
+subcommands = ["open", "list", "show", "document"]
+selector = "action"
+positionals = ["target?"]
+flags = ["--bates-prefix", "--start", "--load-file", "--protective-order", "--key", "--date"]
+switches = []
+required = []
+dont = ["Opening a matter needs produce and a Human launch profile: an Agent-profile session cannot journal a matter's Bates numbering (FA-REF-013). Reads need read.", "Don't open a second profile to restart a matter's numbering: one profile per matter, and a Bates number is never reassigned. Production volumes (fa produce) are written on the host, never over MCP."]
+mistakes = ["Passing load_file edrm or both: this build writes Concordance DAT/OPT only.", "Naming a document by doc_commit instead of its 64-hex oid in action document.", "Expecting action show to list documents of another matter: each matter numbers only its own productions."]
+
+[[mcp.tool]]
 cluster = "fa.proof"
 name = "gl"
 verb = "gl"
@@ -3642,3 +3683,58 @@ fields = ["account:string","account_vid:hex","closes_to:hex","entity:hex?","unit
 name = "bank_import_predecessor"
 doc = "The immediate predecessor verified from its retained original statement, canonical manifest and native ImportRun receipt. This records structural statement continuity, not a reconciliation confirmation."
 fields = ["manifest_oid:hex","manifest_commit:hex","statement_oid:hex","statement_commit:hex","import_run:hex","receipt_hash:hex","recorded_at:seq","sequence_number:int","statement_date:date","closing_balance:amount"]
+
+[[event]]
+name = "production_opened"
+book = true
+doc = "A matter's production profile was journaled by a ProductionControl Open record (or the identical profile was already open: then nothing was written). Its Bates numbering starts at first_bates and is never restarted."
+fields = ["production:production_summary", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "productions"
+book = true
+doc = "Every matter's production profile, by opening sequence."
+fields = ["productions:[production_summary]"]
+
+[[event]]
+name = "production_detail"
+book = true
+doc = "One matter's production profile and every Bates range its Produce records assigned, ascending."
+fields = ["production:production_summary", "ranges:[bates_range]"]
+
+[[event]]
+name = "document_bates_ranges"
+book = true
+doc = "One document's Bates range in every matter that produced it, by matter (plan §13.2); empty when no matter has."
+fields = ["document:hex", "ranges:[matter_bates_range]"]
+
+[[event]]
+name = "production_recorded"
+book = true
+doc = "A production: every named document's range in argument order (assigned is false for a document the matter produced before), the Produce record that numbered the new ones (null when nothing new was numbered: then nothing was written), and the files written into the new volume directory."
+fields = ["matter:string", "record:hex?", "recorded_at:seq?", "already_recorded:bool", "next_bates:string", "volume:string", "out:string", "ranges:[produced_range]", "files:[production_file]"]
+
+[[shape]]
+name = "production_summary"
+doc = "A matter's production profile as its ProductionControl records state it (plan §13.2, Appendix A ProductionProfile)."
+fields = ["matter:string", "profile:hex", "bates_prefix:string", "first_bates:int", "next_bates:int", "load_file:string", "protective_order:hex?", "state:string", "opened_at:seq", "opened_by:hex", "documents:int"]
+
+[[shape]]
+name = "bates_range"
+doc = "One document's Bates range in a matter and the Produce record that assigned it. doc_commit is the document's unchanged public commitment."
+fields = ["document:hex", "doc_commit:hex", "beg_bates:string", "end_bates:string", "pages:int", "designation:string", "record:hex", "recorded_at:seq", "produced_by:hex"]
+
+[[shape]]
+name = "matter_bates_range"
+doc = "One matter's Bates range for a document."
+fields = ["matter:string", "document:hex", "doc_commit:hex", "beg_bates:string", "end_bates:string", "pages:int", "designation:string", "record:hex", "recorded_at:seq", "produced_by:hex"]
+
+[[shape]]
+name = "produced_range"
+doc = "One document of a production volume: its range, whether this production numbered it, whether it ships only as a redacted listing, and its native path in the volume (null when redacted)."
+fields = ["document:hex", "beg_bates:string", "end_bates:string", "pages:int", "designation:string", "assigned:bool", "redacted:bool", "native:string?"]
+
+[[shape]]
+name = "production_file"
+doc = "One file written into the production volume directory: its path inside the volume, size and BLAKE3 digest under fa:production-file:v1."
+fields = ["name:string", "bytes:int", "digest:hex"]

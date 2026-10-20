@@ -969,6 +969,99 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, context| Ok(fa_journal::list_drafts(db, context)?))
     }
 
+    fn production_request(
+        &self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        effective_date: DateDay,
+        description: &str,
+        idempotency_key: &[u8],
+    ) -> Result<fa_journal::ProductionRequest, BookError> {
+        Ok(fa_journal::ProductionRequest {
+            capability,
+            effective_date,
+            description: self.seal_text(cx, description)?,
+            idempotency_key: idempotency_key.to_vec(),
+        })
+    }
+
+    /// Open the production profile of `profile.matter` (plan §13.2, bead
+    /// fa-6l9): its Bates prefix and first number, journaled once per matter.
+    pub async fn open_production(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        profile: fa_journal::ProductionProfile,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::ProductionOpened> {
+        let description = format!("open production profile for matter {}", profile.matter);
+        let req = self.production_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::open_production(&mut self.db, cx, &self.context, profile, req).await?)
+    }
+
+    /// Produce `documents` in `matter`: each document the matter has not
+    /// produced receives the next Bates numbers, journaled by one Produce
+    /// record; a produced document keeps its range.
+    pub async fn produce(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        matter: &str,
+        documents: Vec<fa_journal::ProducedDocument>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::Produced> {
+        let description = format!("produce {} documents in matter {matter}", documents.len());
+        let req = self.production_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::produce(&mut self.db, cx, &self.context, matter, documents, req).await?)
+    }
+
+    /// The production profile of `matter` and every range it assigned.
+    pub fn production(
+        &self,
+        cx: &PurposeContexts,
+        matter: &str,
+    ) -> Result<Option<fa_journal::ProductionView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_production(db, context, matter)?)
+        })
+    }
+
+    /// Every matter's production profile.
+    pub fn productions(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<Vec<fa_journal::ProductionView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::list_productions(db, context)?)
+        })
+    }
+
+    /// Every matter's Bates range for `document` (plan §13.2: a document
+    /// produced in two matters carries both ranges).
+    pub fn document_bates_ranges(
+        &self,
+        cx: &PurposeContexts,
+        document: &fa_model::Oid,
+    ) -> Result<Vec<(fa_journal::ProductionProfile, fa_journal::RecordedRange)>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::document_ranges(db, context, document)?)
+        })
+    }
+
     fn scenario_request(
         &self,
         cx: &PurposeContexts,

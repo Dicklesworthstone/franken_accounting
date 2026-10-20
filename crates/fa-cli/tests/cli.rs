@@ -5423,6 +5423,41 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["scenario", "discard", "what-if"]).0, 0);
+    // Litigation productions (fa-6l9).
+    assert_eq!(
+        run(
+            true,
+            &[
+                "production",
+                "open",
+                "events-matter",
+                "--bates-prefix",
+                "EVT"
+            ]
+        )
+        .0,
+        0
+    );
+    let volume = dir.join("events-volume").display().to_string();
+    assert_eq!(
+        run(
+            true,
+            &[
+                "produce",
+                "--matter",
+                "events-matter",
+                "--document",
+                &ev,
+                "--out",
+                &volume
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["production", "list"]).0, 0);
+    assert_eq!(run(true, &["production", "show", "events-matter"]).0, 0);
+    assert_eq!(run(true, &["production", "document", &ev]).0, 0);
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(

@@ -996,6 +996,23 @@ exit = "verification"
 cite = "FA-INV-02 / FA-INV-04 / plan §5.7 (confirmation payload, source bindings and native creation records agree)"
 fix = "preserve the store and investigate the original confirmation, source ImportRun and documents, Entry and occupied-leg claim; do not reset or reuse a damaged identity"
 
+# ---- Litigation productions (fa-6l9) -------------------------------------------
+[[refusal]]
+code = "FA-REF-170"
+name = "PRODUCTION_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §13.2 (a ProductionProfile governs a matter's productions; bead fa-6l9)"
+fix = "list the book's matters with fa production list --json, or open one with fa production open <matter> --bates-prefix <PREFIX>"
+
+[[refusal]]
+code = "FA-REF-171"
+name = "BATES_RANGE_FIXED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §13.2 (a document's Bates range in a matter is assigned once and never changes)"
+fix = "produce the document again without --pages or --designation to receive its recorded range, or record the corrected document with fa document add and produce the new document"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-145"

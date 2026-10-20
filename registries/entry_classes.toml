@@ -206,6 +206,20 @@ name = "ScenarioControl"
 kind = "control"
 supersession = "none"
 
+# A matter's litigation production (plan §13.2, Appendix A `ProductionProfile`;
+# fa-6l9): book-scoped and undated; ControlPayload::LifecycleTransition on the
+# matter's ProductionProfile — Open (the profile in extension 13
+# `fa:production-profile:v1`: Bates prefix, first number, load-file format and
+# the optional protective order, which is also the record's proof ref), Produce
+# (the Bates ranges it assigns in extension 14 `fa:production-bates:v1`; the
+# produced documents are its proof refs). A Bates number is never reassigned:
+# producing a document again in its matter returns its existing range.
+[[class]]
+tag = 27
+name = "ProductionControl"
+kind = "control"
+supersession = "none"
+
 # ---- Control kinds (fa-g23) ---------------------------------------------------
 # `EntryOrigin::Control.control_kind`: the act that minted a control record. It
 # is durable in every control record's origin, so it is registered here rather
@@ -297,3 +311,9 @@ id = 13
 name = "period_creation"
 class = "SchemaControl"
 minted_by = "fa-journal period_creation::create_periods (SchemaChange kind 13; Book scope; schema-period-create SoD rule)"
+
+[[control_kind]]
+id = 14
+name = "production_transition"
+class = "ProductionControl"
+minted_by = "fa-journal production::open_production, production::produce"

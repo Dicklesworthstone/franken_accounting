@@ -42,6 +42,7 @@ pub mod period_history;
 pub mod plan;
 pub mod policy;
 pub mod post;
+pub mod production;
 pub mod projections;
 pub mod rea;
 pub mod redaction;
@@ -129,6 +130,11 @@ pub use policy::{
 pub use post::{
     Capability, PostPreparation, PostRequest, Posted, PreparedPost, decide_admissibility_cell,
     explain_entry_lineage, post, post_replacement_pair, prepare_post, superseded_by,
+};
+pub use production::{
+    BatesRange, Produced, ProducedDocument, ProducedRange, ProductionOpened, ProductionProfile,
+    ProductionRequest, ProductionState, ProductionView, RecordedRange, document_ranges,
+    list_productions, open_production, produce, read_production,
 };
 pub use rea::{
     DIMENSION_KIND_PARTY, EventRow, ExternalIdRow, InstrumentRow, LegalEntityRow, PartyRow,
