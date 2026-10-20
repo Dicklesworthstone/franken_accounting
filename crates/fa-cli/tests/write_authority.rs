@@ -124,6 +124,11 @@ const HOST_ONLY: &[(&str, Option<&str>, &str)] = &[
         Some("unmatch"),
         "always dangerous: confirmed on the host",
     ),
+    (
+        "recover",
+        Some("projections"),
+        "needs schema_change on trunk and --yes, outside every launch ceiling",
+    ),
     ("demo", Some("init"), "creates a sandbox book"),
 ];
 
