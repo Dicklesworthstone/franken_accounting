@@ -55,7 +55,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 use crate::checkpoint::{
     CheckpointBody, SignError, TransparencyCheckpoint, checkpoint_oid, checkpoint_vid,
 };
-use crate::journal::Journal;
+use crate::journal::{Journal, LeafKinds};
 use crate::scope::{ScopeIndex, ScopeRequest};
 use crate::sign::CheckpointSigner;
 use crate::tree::Digest;
@@ -502,6 +502,8 @@ fn drift(message: String) -> Refusal {
 pub struct Checkpointed {
     pub stored: StoredState,
     pub checkpoint: StoredCheckpoint,
+    /// The new state's leaves by record kind.
+    pub leaf_kinds: LeafKinds,
 }
 
 /// The evidence boundary of a book's state given its predecessor on the
@@ -740,6 +742,7 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
                 checkpoint: cp,
                 bytes: cp_bytes,
             },
+            leaf_kinds: journal.leaf_kinds(),
         })),
         Err(WriteTxnError::Write(
             fgdb::WriteError::FirstCommitterWins { .. }
@@ -763,6 +766,11 @@ pub struct StateCheck {
     pub through_seq: CommitSeq,
     pub leaf_count: u64,
     pub recorded_at: CommitSeq,
+    /// The state's evidence boundary (`None`: entries alone).
+    pub evidence_after: Option<CommitSeq>,
+    /// The recomputed prefix's leaves by kind; `None` when the prefix was
+    /// not read (the state was refused before recomputation).
+    pub leaf_kinds: Option<LeafKinds>,
     /// `None` when green; otherwise what failed.
     pub finding: Option<String>,
 }
@@ -824,6 +832,7 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
     for (i, s) in chain.iter().enumerate() {
         let st = &s.state;
         let prev = chain.get(i + 1).map(|p| &p.state);
+        let mut leaf_kinds = None;
         let mut finding = if st.book_id != book.book_id || st.branch_id != Id128::TRUNK {
             Some("the state names another book or branch".to_string())
         } else if s.recorded_at <= st.through_seq {
@@ -842,6 +851,7 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
             match Journal::read(db, book, Some(st.through_seq), st.evidence_after)? {
                 Err(r) => Some(r.message),
                 Ok(journal) => {
+                    leaf_kinds = Some(journal.leaf_kinds());
                     let expected = AccumulatorState::of_journal(&journal, st.prev_state_oid);
                     if expected == *st {
                         if let Err(refusal) = journal.verify_unchanged_at(db, at)? {
@@ -888,6 +898,8 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
             through_seq: st.through_seq,
             leaf_count: st.leaf_count,
             recorded_at: s.recorded_at,
+            evidence_after: st.evidence_after,
+            leaf_kinds,
             finding,
         });
     }

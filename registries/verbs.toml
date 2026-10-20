@@ -1390,8 +1390,8 @@ fields = ["account:string?", "count:int", "items:[open_item]"]
 [[event]]
 name = "checkpoint_created"
 book = true
-doc = "An AccumulatorState over every entry in the named book/branch prefix through through_seq, recorded in a later commit. It may be the unsigned raw statement, or its TransparencyCheckpoint (checkpoint_oid) signed by the book's Ed25519 key public_key; signatures is ed25519 for the signed checkpoint and unsigned for the raw statement. prev_state_oid links its predecessor. The scope excludes document receipts, attestations, signatures, and bundles; `fa proof signed-checkpoint` exports the signed checkpoint for fa-verify --key."
-fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "checkpoint_oid:hex", "public_key:hex", "scope:string"]
+doc = "An AccumulatorState over every entry in the named book/branch prefix through through_seq, and every journaled evidence record (attestation, import receipt, custody transfer, supplemental evidence) created after evidence_after_seq, recorded in a later commit. evidence_after_seq is null only for a state from before evidence records were accumulated; leaf_kinds counts leaf_count by record kind. It may be the unsigned raw statement, or its TransparencyCheckpoint (checkpoint_oid) signed by the book's Ed25519 key public_key; signatures is ed25519 for the signed checkpoint and unsigned for the raw statement. prev_state_oid links its predecessor. scope entry_prefix names this accumulator prefix in commit order; signatures and bundles are not leaves. `fa proof signed-checkpoint` exports the signed checkpoint for fa-verify --key."
+fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "evidence_after_seq:seq?", "leaf_kinds:accumulator_leaf_kinds", "root:hex", "prev_state_oid:hex?", "signatures:string", "checkpoint_oid:hex", "public_key:hex", "scope:string"]
 
 [[event]]
 name = "rea_recorded"
@@ -1463,7 +1463,7 @@ fields = ["command:string?", "why:string?"]
 [[event]]
 name = "accumulator_verified"
 book = true
-doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is ed25519 when each state's signed TransparencyCheckpoint was reproduced from the journal prefix and the book's key, and unsigned when the stored state is the raw accumulator statement. scope is entry_prefix. States are newest first."
+doc = "Every existing accumulator state was recomputed from its journal prefix (entries, and evidence records after the state's evidence boundary) and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is ed25519 when each state's signed TransparencyCheckpoint was reproduced from the journal prefix and the book's key, and unsigned when the stored state is the raw accumulator statement. scope is entry_prefix, the accumulator prefix in commit order. States are newest first."
 fields = ["status:string", "signatures:string", "scope:string", "states_checked:int", "broken:string?", "verified_through:seq?", "states:[accumulator_state_check]", "unchained:[hex]"]
 
 [[event]]
@@ -1793,8 +1793,13 @@ fields = ["name:string", "status:string", "detail:string", "fix:string?"]
 
 [[shape]]
 name = "accumulator_state_check"
-doc = "One state's recomputation result. finding is null on success; verification failure reports the same shape in its detail."
-fields = ["oid:hex", "through_seq:seq", "recorded_at:seq", "leaf_count:int", "finding:string?"]
+doc = "One state's recomputation result. evidence_after_seq is the state's evidence boundary (null: entries alone); it must be the boundary the state's place on the chain implies. leaf_kinds is the recomputed prefix's leaves by record kind, null when the state was refused before its prefix was read. finding is null on success; verification failure reports the same shape in its detail."
+fields = ["oid:hex", "through_seq:seq", "recorded_at:seq", "leaf_count:int", "evidence_after_seq:seq?", "leaf_kinds:accumulator_leaf_kinds?", "finding:string?"]
+
+[[shape]]
+name = "accumulator_leaf_kinds"
+doc = "An accumulator prefix's leaves by record kind (fa-va02); the counts sum to its leaf_count."
+fields = ["entries:int", "attestations:int", "import_receipts:int", "custody_transfers:int", "supplemental_evidence:int"]
 
 [[event]]
 name = "procedure_list"

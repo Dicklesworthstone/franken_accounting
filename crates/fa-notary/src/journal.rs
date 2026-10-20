@@ -403,6 +403,16 @@ impl Leaf {
     }
 }
 
+/// How many leaves of each record kind a journal prefix holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LeafKinds {
+    pub entries: u64,
+    pub attestations: u64,
+    pub import_receipts: u64,
+    pub custody_transfers: u64,
+    pub supplemental_evidence: u64,
+}
+
 /// The journal prefix through `through_seq`, with its accumulator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Journal {
@@ -626,6 +636,23 @@ impl Journal {
     #[must_use]
     pub fn len(&self) -> u64 {
         self.leaves.len() as u64
+    }
+
+    /// The prefix's leaves counted by record kind.
+    #[must_use]
+    pub fn leaf_kinds(&self) -> LeafKinds {
+        let mut kinds = LeafKinds::default();
+        for leaf in &self.leaves {
+            let slot = match leaf.envelope.kind {
+                KIND_ATTESTATION => &mut kinds.attestations,
+                KIND_IMPORT_RECEIPT => &mut kinds.import_receipts,
+                KIND_CUSTODY_TRANSFER => &mut kinds.custody_transfers,
+                KIND_SUPPLEMENTAL_EVIDENCE => &mut kinds.supplemental_evidence,
+                _ => &mut kinds.entries,
+            };
+            *slot += 1;
+        }
+        kinds
     }
 
     #[must_use]

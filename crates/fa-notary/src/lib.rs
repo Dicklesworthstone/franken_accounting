@@ -58,7 +58,7 @@ pub use bundle::{
     MAX_INLINE_DOCUMENT_BYTES, ProductionReceipt, ReceiptBody,
 };
 pub use checkpoint::TransparencyCheckpoint;
-pub use journal::{Journal, Leaf, LeafEnvelope, Record};
+pub use journal::{Journal, Leaf, LeafEnvelope, LeafKinds, Record};
 pub use migration_balance::prove_balance_with_migrations;
 pub use production::{
     BatesAssignment, ConfidentialityDesignation, ExhibitMark, Fre902Package, LoadFileFormat,

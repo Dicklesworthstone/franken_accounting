@@ -922,6 +922,8 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
             ("recorded_at", Json::Int(i128::from(stored.recorded_at.0))),
             ("through_seq", Json::Int(i128::from(state.through_seq.0))),
             ("leaf_count", Json::Int(i128::from(state.leaf_count))),
+            ("evidence_after_seq", evidence_after(state.evidence_after)),
+            ("leaf_kinds", leaf_kinds(&created.leaf_kinds)),
             ("root", s(hex(&state.root))),
             ("prev_state_oid", state.prev_state_oid.map_or(Json::Null, |oid| s(hex(&oid.0)))),
             ("signatures", s("ed25519")),
@@ -930,13 +932,39 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
             ("scope", s("entry_prefix")),
         ],
         &format!(
-            "Created entry accumulator checkpoint {}: {} entries through sequence {}, recorded at {}. Root {}.\nSigned TransparencyCheckpoint {} (Ed25519 public key {}); export it with `fa proof signed-checkpoint` and check it with `fa-verify checkpoint <file> --key <public key>`.",
-            hex(&stored.oid.0), state.leaf_count, state.through_seq.0,
+            "Created entry accumulator checkpoint {}: {} leaves ({} entries, {} evidence records) through sequence {}, recorded at {}. Root {}.\nSigned TransparencyCheckpoint {} (Ed25519 public key {}); export it with `fa proof signed-checkpoint` and check it with `fa-verify checkpoint <file> --key <public key>`.",
+            hex(&stored.oid.0), state.leaf_count, created.leaf_kinds.entries,
+            state.leaf_count.saturating_sub(created.leaf_kinds.entries), state.through_seq.0,
             stored.recorded_at.0, hex(&state.root),
             hex(&created.checkpoint.oid.0), hex(&book.checkpoint_public_key()),
         ),
     );
     Ok(())
+}
+
+/// A state's evidence boundary: null for an entries-only state.
+fn evidence_after(boundary: Option<fgdb_types::CommitSeq>) -> Json {
+    boundary.map_or(Json::Null, |seq| Json::Int(i128::from(seq.0)))
+}
+
+/// An accumulator prefix's leaves by record kind.
+fn leaf_kinds(kinds: &fa::LeafKinds) -> Json {
+    obj(vec![
+        ("entries", Json::Int(i128::from(kinds.entries))),
+        ("attestations", Json::Int(i128::from(kinds.attestations))),
+        (
+            "import_receipts",
+            Json::Int(i128::from(kinds.import_receipts)),
+        ),
+        (
+            "custody_transfers",
+            Json::Int(i128::from(kinds.custody_transfers)),
+        ),
+        (
+            "supplemental_evidence",
+            Json::Int(i128::from(kinds.supplemental_evidence)),
+        ),
+    ])
 }
 
 pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -965,6 +993,11 @@ pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
                 ("through_seq", Json::Int(i128::from(state.through_seq.0))),
                 ("recorded_at", Json::Int(i128::from(state.recorded_at.0))),
                 ("leaf_count", Json::Int(i128::from(state.leaf_count))),
+                ("evidence_after_seq", evidence_after(state.evidence_after)),
+                (
+                    "leaf_kinds",
+                    state.leaf_kinds.as_ref().map_or(Json::Null, leaf_kinds),
+                ),
                 ("finding", state.finding.as_ref().map_or(Json::Null, s)),
             ])
         })

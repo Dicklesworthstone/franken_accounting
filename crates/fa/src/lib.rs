@@ -147,7 +147,8 @@ pub use fa_money::allocation::{
     AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
 };
 pub use fa_notary::{
-    AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, ScopeRequest,
+    AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, LeafKinds,
+    ScopeRequest,
 };
 pub use fa_policy::{
     BenefitInterval, Capability, DECISION_CARD_DOMAIN, DecisionCandidate, DecisionCard,

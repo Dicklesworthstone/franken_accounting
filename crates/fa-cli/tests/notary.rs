@@ -109,6 +109,18 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     assert_eq!(text(&first, "checkpoint_oid").len(), 64);
     assert_eq!(text(&first, "scope"), "entry_prefix");
     assert_eq!(integer(&first, "leaf_count"), 0);
+    // A fresh book's first state accumulates evidence after the first commit.
+    assert_eq!(integer(&first, "evidence_after_seq"), 1);
+    let kinds = get(&first, "leaf_kinds").expect("leaf_kinds");
+    for kind in [
+        "entries",
+        "attestations",
+        "import_receipts",
+        "custody_transfers",
+        "supplemental_evidence",
+    ] {
+        assert_eq!(integer(kinds, kind), 0, "{kind}");
+    }
     assert_eq!(get(&first, "prev_state_oid"), Some(&Json::Null));
     assert!(integer(&first, "recorded_at") > integer(&first, "through_seq"));
     let once = parsed(&ok(&book, &["verify", "accumulator", "--json"]));
@@ -181,6 +193,11 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     // leaf since fa-va02), and posting. Book creation, the document vertex
     // itself, and accumulator states are not leaves.
     assert_eq!(integer(&second, "leaf_count"), 5);
+    assert_eq!(integer(&second, "evidence_after_seq"), 1);
+    let kinds = get(&second, "leaf_kinds").expect("leaf_kinds");
+    assert_eq!(integer(kinds, "entries"), 4);
+    assert_eq!(integer(kinds, "import_receipts"), 1);
+    assert_eq!(integer(kinds, "attestations"), 0);
     assert!(integer(&second, "through_seq") >= integer(&posted, "recorded_at"));
     let verified_bytes = ok(&book, &["verify", "accumulator", "--json"]);
     let verified = parsed(&verified_bytes);
@@ -189,6 +206,20 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     assert_eq!(text(&verified, "scope"), "entry_prefix");
     assert_eq!(get(&verified, "broken"), Some(&Json::Null));
     assert_eq!(integer(&verified, "states_checked"), 2);
+    for state in array(&verified, "states") {
+        assert_eq!(integer(state, "evidence_after_seq"), 1);
+        assert_eq!(
+            integer(
+                get(state, "leaf_kinds").expect("leaf_kinds"),
+                "import_receipts"
+            ),
+            if text(state, "oid") == text(&second, "oid") {
+                1
+            } else {
+                0
+            }
+        );
+    }
     assert_eq!(
         integer(&verified, "verified_through"),
         integer(&second, "through_seq")
