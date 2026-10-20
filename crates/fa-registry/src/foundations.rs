@@ -373,6 +373,215 @@ pub fn pin_drift(lock: &Document, cargo_toml: &str) -> Vec<(String, String, Stri
     out
 }
 
+const STACK_LOCK_SOURCE: &str = include_str!("../../../franken-stack.lock");
+
+const EPOCH_REGISTRIES: &[(&str, &str)] = &[
+    (
+        "account_types",
+        include_str!("../../../registries/account_types.toml"),
+    ),
+    (
+        "admissibility",
+        include_str!("../../../registries/admissibility.toml"),
+    ),
+    (
+        "entry_classes",
+        include_str!("../../../registries/entry_classes.toml"),
+    ),
+    (
+        "exit_codes",
+        include_str!("../../../registries/exit_codes.toml"),
+    ),
+    (
+        "foundation_dependencies",
+        include_str!("../../../registries/foundation_dependencies.toml"),
+    ),
+    (
+        "invariants",
+        include_str!("../../../registries/invariants.toml"),
+    ),
+    ("limits", include_str!("../../../registries/limits.toml")),
+    (
+        "procedures",
+        include_str!("../../../registries/procedures.toml"),
+    ),
+    (
+        "reason_codes",
+        include_str!("../../../registries/reason_codes.toml"),
+    ),
+    (
+        "rounding_laws",
+        include_str!("../../../registries/rounding_laws.toml"),
+    ),
+    ("symbols", include_str!("../../../registries/symbols.toml")),
+    ("units", include_str!("../../../registries/units.toml")),
+    ("verbs", include_str!("../../../registries/verbs.toml")),
+    ("foundations", STACK_LOCK_SOURCE),
+];
+
+/// A pinned upstream foundation entry from `franken-stack.lock` (bead `fa-eqk`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoundationPin {
+    pub name: String,
+    pub source: String,
+    pub rev: Option<String>,
+    pub version: String,
+    pub checksum: Option<String>,
+    pub role: String,
+}
+
+impl FoundationPin {
+    /// Short revision or version pin (`<name>@<short-rev>` or `<name>@<version>`).
+    #[must_use]
+    pub fn short_pin(&self) -> String {
+        match &self.rev {
+            Some(rev) => {
+                let short = &rev[..rev.len().min(8)];
+                format!("{}@{short}", self.name)
+            }
+            None => format!("{}@{}", self.name, self.version),
+        }
+    }
+}
+
+/// The binary's embedded schema epoch and canonical byte representation for one registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegistryEpoch {
+    pub name: &'static str,
+    pub schema_version: i128,
+    pub canonical_bytes: Vec<u8>,
+}
+
+/// Embedded `franken-stack.lock` foundation revisions and registry epochs (`fa-eqk`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoundationStack {
+    pub schema_version: i128,
+    pub taken_on: String,
+    pub foundations: Vec<FoundationPin>,
+    pub registry_epochs: Vec<RegistryEpoch>,
+}
+
+impl FoundationStack {
+    pub fn embedded() -> Result<Self, RegistryError> {
+        Self::parse(STACK_LOCK_SOURCE)
+    }
+
+    pub fn parse(lock_text: &str) -> Result<Self, RegistryError> {
+        const R: &str = "franken-stack.lock";
+        let doc =
+            toml::parse(lock_text).map_err(|error| RegistryError::Toml { registry: R, error })?;
+        let schema_version = doc
+            .root
+            .get("schema_version")
+            .and_then(Value::as_int)
+            .ok_or_else(|| RegistryError::Invalid {
+                registry: R,
+                message: "missing integer `schema_version`".into(),
+            })?;
+        if schema_version != 1 {
+            return Err(RegistryError::Invalid {
+                registry: R,
+                message: format!("expected schema_version = 1, got {schema_version}"),
+            });
+        }
+        let taken_on = doc
+            .root
+            .get("taken_on")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RegistryError::Invalid {
+                registry: R,
+                message: "missing string `taken_on`".into(),
+            })?
+            .to_string();
+
+        let empty = Vec::new();
+        let mut foundations = Vec::new();
+        let mut seen = BTreeSet::new();
+        for f in doc.arrays.get("foundation").unwrap_or(&empty) {
+            let req = |key: &str| -> Result<String, RegistryError> {
+                f.get(key)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| RegistryError::Invalid {
+                        registry: R,
+                        message: format!("foundation row: missing non-empty string `{key}`"),
+                    })
+            };
+            let name = req("name")?;
+            if !seen.insert(name.clone()) {
+                return Err(RegistryError::Invalid {
+                    registry: R,
+                    message: format!("duplicate foundation `{name}`"),
+                });
+            }
+            let source = req("source")?;
+            let version = req("version")?;
+            let role = req("role")?;
+            let rev = f.get("rev").and_then(Value::as_str).map(str::to_string);
+            let checksum = f
+                .get("checksum")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if rev.is_none() && checksum.is_none() {
+                return Err(RegistryError::Invalid {
+                    registry: R,
+                    message: format!("foundation `{name}` must specify either `rev` or `checksum`"),
+                });
+            }
+            foundations.push(FoundationPin {
+                name,
+                source,
+                rev,
+                version,
+                checksum,
+                role,
+            });
+        }
+        if foundations.is_empty() {
+            return Err(RegistryError::Invalid {
+                registry: R,
+                message: "no [[foundation]] rows in franken-stack.lock".into(),
+            });
+        }
+
+        let mut registry_epochs = Vec::with_capacity(EPOCH_REGISTRIES.len());
+        for &(name, text) in EPOCH_REGISTRIES {
+            let reg_doc = toml::parse(text).map_err(|error| RegistryError::Toml {
+                registry: name,
+                error,
+            })?;
+            let epoch = reg_doc
+                .root
+                .get("schema_version")
+                .and_then(Value::as_int)
+                .unwrap_or(1);
+            registry_epochs.push(RegistryEpoch {
+                name,
+                schema_version: epoch,
+                canonical_bytes: reg_doc.canonical_bytes(),
+            });
+        }
+
+        Ok(Self {
+            schema_version,
+            taken_on,
+            foundations,
+            registry_epochs,
+        })
+    }
+
+    /// Concise space-separated foundation pin list (`asupersync@78b64636 frankengraphdb@b323bd17 ...`).
+    #[must_use]
+    pub fn foundations_summary(&self) -> String {
+        self.foundations
+            .iter()
+            .map(FoundationPin::short_pin)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,5 +753,34 @@ mod tests {
             let err = Ledger::parse(&text).expect_err(law);
             println!("judged planted `{law}`: refused ({err})");
         }
+    }
+
+    #[test]
+    fn foundation_stack_reports_all_foundation_pins_and_registry_epochs() {
+        let stack = FoundationStack::embedded().expect("franken-stack.lock parses");
+        assert_eq!(stack.schema_version, 1);
+        assert_eq!(stack.taken_on, "2026-10-10");
+        assert_eq!(stack.foundations.len(), 5);
+        let summary = stack.foundations_summary();
+        assert!(summary.contains("asupersync@78b64636"), "{summary}");
+        assert!(summary.contains("frankengraphdb@b323bd17"), "{summary}");
+        assert!(summary.contains("franken_networkx@9d710b1c"), "{summary}");
+        assert!(summary.contains("fastmcp-rust@=0.12.0"), "{summary}");
+        assert!(summary.contains("frankensympy@bd1ad68a"), "{summary}");
+        assert_eq!(stack.registry_epochs.len(), 14);
+        for epoch in &stack.registry_epochs {
+            assert_eq!(epoch.schema_version, 1, "{}", epoch.name);
+            assert!(!epoch.canonical_bytes.is_empty(), "{}", epoch.name);
+        }
+
+        // Planted negatives: missing rev/checksum or duplicate foundation fails parse.
+        let missing_pin = STACK_LOCK.replacen(
+            "rev = \"78b64636e99fea4ea2d868096576021dd3b8e519\"\n",
+            "",
+            1,
+        );
+        assert!(FoundationStack::parse(&missing_pin).is_err());
+        let dup_name = STACK_LOCK.replacen("name = \"frankengraphdb\"", "name = \"asupersync\"", 1);
+        assert!(FoundationStack::parse(&dup_name).is_err());
     }
 }

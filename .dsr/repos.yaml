@@ -1,0 +1,38 @@
+# Portable DSR registry entry for franken_accounting (bead fa-eqk, gate G4).
+#
+# Doodlestein Self-Releaser (dsr) is the quality/build/release authority
+# for this repository (README.md: "Releases will ship through the suite's
+# self-releaser (dsr), never GitHub Actions").
+#
+#   DSR_REPOS_FILE=.dsr/repos.yaml dsr quality --tool franken_accounting
+#
+# Gate G4 release checklist:
+#   - G4.1: fa-verify built as a static std-only binary and verified against golden proofs
+#   - G4.2: Two independent builds of fa-verify are byte-identical (scripts/check_reproducible_verify.sh)
+#   - G4.3: fa --version and fad --version report foundation revisions from franken-stack.lock and registry epochs
+#   - G4.4: Papers match the proven scope (every cited invariant clause in docs/ and papers/ is live in registries/invariants.toml with its stated evidence_class and no-claim boundary)
+
+schema_version: "1.0.0"
+
+tools:
+  franken_accounting:
+    repo: Dicklesworthstone/franken_accounting
+    local_path: /data/projects/franken_accounting
+    language: rust
+    binary_name: fa
+    binaries:
+      - fa
+      - fad
+      - fa-mcp
+      - fa-verify
+    targets:
+      - linux/amd64
+      - linux/arm64
+      - darwin/arm64
+      - darwin/amd64
+      - windows/amd64
+    checks:
+      - bash scripts/doctrine_check.sh
+      - bash scripts/check_reproducible_verify.sh
+      - RCH_QUEUE_WHEN_BUSY=1 rch exec -- cargo clippy -j 2 --workspace --all-targets --config profile.dev.debug=0 --config profile.test.debug=0 -- -D warnings
+      - RCH_QUEUE_WHEN_BUSY=1 rch exec -- cargo test -j 2 --workspace --no-fail-fast --config profile.dev.debug=0 --config profile.test.debug=0

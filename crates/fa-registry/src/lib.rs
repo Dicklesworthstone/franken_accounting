@@ -27,6 +27,7 @@ pub mod toml;
 pub mod topology;
 
 pub use admissibility_plan::{ALL_KINDS, DispositionFamily, PlanAdmissibility};
+pub use foundations::{FoundationPin, FoundationStack, RegistryEpoch};
 pub use g0::{
     ApplicationDifferenceKindRow, ConversionLawRow, ConversionLaws, FormatRow, Formats, FxLawRow,
     FxLaws, IfrsRuleRow, IntradayOrderRow, LotLawRow, LotLaws, ReplenishmentModeRow, TracingLawRow,
