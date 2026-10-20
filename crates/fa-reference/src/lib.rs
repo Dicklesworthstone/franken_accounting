@@ -54,6 +54,7 @@ pub const CONTROL_KINDS: &[(u16, &str, &str)] = &[
     (13, "period_creation", "SchemaControl"),
     (14, "production_transition", "ProductionControl"),
     (15, "statement_issuance", "IssuanceControl"),
+    (16, "engagement_transition", "EngagementControl"),
     (17, "case_transition", "CaseControl"),
 ];
 
