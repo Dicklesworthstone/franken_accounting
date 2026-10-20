@@ -330,6 +330,36 @@ fn derived_state(book: &Book) -> Vec<Check> {
             "fa verify registers --json",
         )
     }));
+    // Leg mirrors and projection edges at HEAD (FA-INV-16). The repair is a
+    // previewed, confirmed recovery from the journal, never this check's.
+    checks.push(match book.verify_projections(None) {
+        Ok(v) if v.is_green() => Check::ok(
+            "projections",
+            Class::Verification,
+            format!(
+                "{} legs and {} projection edges equal their entry payloads",
+                v.legs_checked, v.edges_checked
+            ),
+        ),
+        Ok(v) => Check::not_ok(
+            "projections",
+            Class::Verification,
+            Status::Fail,
+            format!(
+                "{} leg projection finding(s) differ from the entry payloads",
+                v.drift.len()
+            ),
+            "fa verify projections --json lists them; fa recover projections --dry-run --json previews the repair from the journal",
+        )
+        .with_command("fa recover projections --dry-run --json"),
+        Err(e) => Check::not_ok(
+            "projections",
+            Class::Verification,
+            Status::Fail,
+            e.to_string(),
+            "fa verify projections --json",
+        ),
+    });
     checks.push(match book.verify_availability() {
         Ok(v) if v.drift.is_empty() => Check::ok(
             "availability",
@@ -453,7 +483,7 @@ pub(crate) fn doctor_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         describe(&fail),
                         "check --book and --keys; `fa book info --json` repeats the error",
                     ));
-                    for name in ["registers", "availability", "accumulator"] {
+                    for name in ["registers", "projections", "availability", "accumulator"] {
                         checks.push(Check::skipped(
                             name,
                             Class::Verification,
