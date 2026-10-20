@@ -325,33 +325,56 @@ fn fragmented_outer_artifacts_have_one_birth_and_cannot_be_rewritten_or_repaired
         .block_on(h.book.db.write(&cx.commit(), batch))
         .unwrap();
     let changed = h.head();
-    assert!(read(&h, artifact.digest()).is_err());
-    assert!(
-        h.runtime
-            .block_on(h.book.retain_report_artifact(
-                &cx,
+    let assert_corrupt = |h: &Harness| {
+        let error = h
+            .runtime
+            .block_on(h.book.read_report_artifact(
+                &h.cx(),
                 PRINCIPAL,
-                &cap(&["read", "produce"]),
-                &artifact.canonical_bytes().unwrap(),
-                Some(artifact.digest()),
+                &cap(&["read"]),
+                artifact.digest(),
             ))
-            .unwrap()
-            .is_err()
-    );
+            .unwrap_err();
+        assert_eq!(error.exit(), fa_journal::refusal::exit::FOUNDATION);
+        assert!(
+            matches!(error, crate::BookError::Kernel(KernelError::Corrupt(ref message))
+                if message.contains(&format!("{:032x}", root.0))),
+            "{error}"
+        );
+    };
+    assert_corrupt(&h);
+    let error = h
+        .runtime
+        .block_on(h.book.retain_report_artifact(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &artifact.canonical_bytes().unwrap(),
+            Some(artifact.digest()),
+        ))
+        .unwrap_err();
+    assert_eq!(error.exit(), fa_journal::refusal::exit::FOUNDATION);
+    assert!(matches!(
+        error,
+        crate::BookError::Kernel(KernelError::Corrupt(_))
+    ));
     assert_eq!(h.head(), changed, "retry must not repair the fragment");
     let mut restore = WriteBatch::new(relation::DERIVED_FROM);
     restore.set_vertex_property(
         part.vid,
         property::FA_DIGEST,
-        Some(fgdb_types::CanonicalScalar::bytes(artifact.digest().to_vec()).unwrap()),
+        Some(
+            fa_journal::rows::prop(part, property::FA_DIGEST)
+                .unwrap()
+                .clone(),
+        ),
     );
     h.runtime
         .block_on(h.book.db.write(&cx.commit(), restore))
         .unwrap();
-    assert!(
-        read(&h, artifact.digest()).is_err(),
-        "byte-identical restoration still violates original birth"
-    );
+    // Restore the original object digest, not the report's distinct public
+    // digest. Byte-identical restoration still violates original birth.
+    assert_corrupt(&h);
 }
 
 #[test]
