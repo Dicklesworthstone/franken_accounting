@@ -427,6 +427,18 @@ usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<se
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
+name = "search"
+summary = "Full-text search over entry descriptions and leg memos at a recorded frontier, ranked by exact fixed-point BM25 from an index rebuilt from the journal for each query and never stored (plan §9)."
+writes = false
+subcommands = []
+flags = ["--as-known-at", "--limit"]
+switches = []
+events = ["search_results"]
+exits = [0, 2, 3, 4, 5, 7]
+usage = ["search <query> [--as-known-at HEAD|<seq>|<RFC3339>] [--limit N]   (quote a phrase; terms match whole tokens; hits are best first, at most --limit of them, default 20, 1..=200)", "The index is rebuilt from the journal at the frontier for this query alone (never stored, so it cannot drift from the journal; index_digest names it). Each committed entry's description and leg memos are indexed, opened with the book's key: erased text, or text sealed under a subject's own key, is never indexed and never appears in a snippet. Documents and findings are not indexed yet. A whole-book read: a token carrying any scope caveat is refused. No amount is parsed from a hit; fa entry show <id> reads the entry itself."]
+example = "fa search \"office rent\" --book ./books/myco --json"
+
+[[verb]]
 name = "procedure"
 summary = "Lantern (plan §11): list the registered forensic and audit procedures, or run one over the book's trunk at a recorded sequence and, for the historical folds, through an effective date. A finding is a statistic with typed citations, never an accusation."
 writes = false
@@ -1430,6 +1442,12 @@ doc = "A report rendered as a document by --render (fa-cet), from its determinis
 fields = ["format:string", "ir_digest:hex", "digest:hex", "bytes:int", "out:string?", "created:string?", "tick:hex?", "pdfa_valid:bool?", "markdown:string?"]
 
 [[event]]
+name = "search_results"
+book = true
+doc = "A full-text search at known_at (fa search): records is how many entries carried searchable text, index_digest names the index rebuilt from that journal prefix (the same prefix rebuilds the same index), total counts every hit and hits holds the first --limit of them, best first. A hit's snippet is the matched text; its score is exact fixed-point BM25 (micro-units), a ranking and never a finding."
+fields = ["query:string", "known_at:seq", "records:int", "index_digest:hex", "total:int", "hits:[search_hit]"]
+
+[[event]]
 name = "statement_issuance_plan"
 book = true
 doc = "A statement issuance was planned (plan §12.5, IssueStatements); nothing was written. The issuance names the retained statement certificate, the period it reports, its known-at (certified_at) and the audience, at the period's next ordinal. bytes is the complete canonical IssuancePlan in hex, with its description sealed once; approvals bind proposal_digest. Scope is statement-issuance-proposal: commit checks authority, approvals, the certificate and the ordinal again."
@@ -2391,6 +2409,11 @@ fields = ["period:string", "green:bool", "cache_status:string", "verified_throug
 name = "entity_check"
 doc = "One period's per-entity refold: known_at is the frontier it was proved at, cells_checked the (account, unit, entity) cells, entries_checked the period's committed entries, fold_digest the refold's digest, findings each drift found (empty when green)."
 fields = ["period:string", "green:bool", "known_at:seq", "cells_checked:int", "entries_checked:int", "fold_digest:hex", "findings:[string]"]
+
+[[shape]]
+name = "search_hit"
+doc = "One ranked search hit: kind (entry), id (the entry's vid as 32-hex, for fa entry show), recorded_at (its creating sequence), score_micro (BM25 in micro-units), the query terms it matched, and a snippet of its text."
+fields = ["kind:string", "id:hex", "recorded_at:seq", "score_micro:int", "matched_terms:[string]", "snippet:string"]
 
 [[shape]]
 name = "cell_drift"
@@ -3836,6 +3859,17 @@ dont = ["Don't invent a procedure id or a parameter name: `action: \"list\"` ret
 mistakes = ["Passing a parameter in display units (10000.00) instead of the unit's mantissa (1000000 at scale 2); the listing's `meaning` says which.", "Running aging.* or trace.* without effective_through (they are historical folds and are refused naming it).", "Running trace.* without account and source (the commingled account and the deposit entry).", "Overriding a parameter with a float; parameters are integers in the registered unit."]
 
 [[mcp.tool]]
+cluster = "fa.forensics"
+name = "search"
+verb = "search"
+subcommands = []
+positionals = ["query"]
+flags = ["--as-known-at", "--limit"]
+required = ["query"]
+dont = ["Don't read a high score as evidence of anything: BM25 ranks text, it states no finding, and no amount is parsed from a hit.", "Use the hit's id with the read tools (show entry, explain lineage) to read the entry itself; the snippet is only its matched text."]
+mistakes = ["Expecting documents or findings among the hits: this build indexes entry descriptions and leg memos only.", "Expecting erased or subject-sealed text to match: it is never indexed."]
+
+[[mcp.tool]]
 cluster = "fa.audit"
 name = "sample"
 verb = "sample"
@@ -4102,6 +4136,11 @@ reach = "judged"
 
 [[bound]]
 verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor"]
+ops = ["read"]
+
+# A search reads every entry: the whole book.
+[[bound]]
+verbs = ["search"]
 ops = ["read"]
 
 [[bound]]

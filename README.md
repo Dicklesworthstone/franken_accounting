@@ -77,6 +77,8 @@ fa tb --book ./books/acme --as-of 2026-03-15 --as-known-at 42 --json
 fa verify registers --book ./books/acme --period FY2026-P03 --json
 # A multi-entity book: each legal entity's register refolds against the journal.
 fa verify entities --book ./books/acme --period FY2026-P03 --json
+# Find entries by their description or leg memos (an index rebuilt from the journal per query).
+fa search "office rent" --book ./books/acme --json
 fa registers materialize --book ./books/acme --period FY2026-P03 --json
 # General-ledger lines, lead schedules, open-item aging and cash flow at one recorded snapshot.
 fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book ./books/acme --json

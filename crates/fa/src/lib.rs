@@ -78,6 +78,7 @@ pub mod proof;
 pub mod report_artifact;
 pub mod roll_forward;
 pub mod scenario;
+pub mod search;
 pub mod settlement;
 pub mod settlement_group;
 pub mod settlement_group_review;
@@ -123,6 +124,7 @@ pub use certificate::{
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
 pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
+pub use fa_docket::search::{SearchHit, SearchRecordId, SearchRecordKind};
 pub use fa_intents::{
     IntentError, MAX_BATCH_BYTES, MAX_PLAN_BYTES, PlanCertificate, PostBatch, PostIntent, PostPlan,
     ReplacementPlan,
@@ -220,6 +222,7 @@ pub use scenario::{
     SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioBook, ScenarioDiff,
     ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
 };
+pub use search::SearchResults;
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,

@@ -3426,6 +3426,18 @@ impl Book {
         with_store!(&self.store, core => core.explain_balance(&self.purposes(), account, period_code, known_at))
     }
 
+    /// Rank the entries visible at `known_at` (the head when `None`) whose
+    /// description or memos match `query` (`fa search`; see
+    /// [`crate::search`]): an index rebuilt from the journal for this query
+    /// and never stored.
+    pub fn search_entries(
+        &self,
+        query: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Result<crate::SearchResults, BookError> {
+        with_store!(&self.store, core => core.search_entries(&self.purposes(), query, known_at))
+    }
+
     /// Run a registered Lantern procedure over the trunk as known at
     /// `known_at` (the head when `None`) and, for the historical folds,
     /// through `effective_through`: a pure read (plan §11).

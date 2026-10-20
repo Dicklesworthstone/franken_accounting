@@ -5834,6 +5834,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["tb", "--period", "FY2026-P03", "--render", "md"]).0,
         0
     );
+    assert_eq!(run(true, &["search", "rent"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(
         run(
@@ -15452,5 +15453,121 @@ fn explaining_a_summary_account_points_at_its_roll_up_which_runs() -> std::io::R
     let argv: Vec<&str> = suggested.split(' ').skip(1).collect();
     let (code, out, _) = fa(Some(&book), &argv);
     assert_eq!(code, 0, "{out}");
+    Ok(())
+}
+
+/// `fa search` ranks entries by their description and leg memos, from an
+/// index rebuilt from the journal at the selected frontier: an entry
+/// recorded later is not found at an earlier frontier, the same prefix
+/// rebuilds the same index, and a query nothing matches is an empty
+/// success.
+#[test]
+fn search_finds_entries_by_their_text_at_a_recorded_frontier() -> std::io::Result<()> {
+    let dir = tmp("search")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    assert_eq!(run(&["book", "create", "--name", "Search Co"]).0, 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let source = write(&dir, "evidence.txt", "Lease and sales evidence");
+    let (code, out, _) = run(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let evidence = text(&doc(&out), "oid").to_string();
+    let post = |key: &str, description: &str, memo: &str, debit: &str, credit: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"idempotency_key":"{key}","effective_date":"2026-03-10","description":"{description}","legs":[{{"side":"debit","account":"{debit}","amount":"9.00 USD","memo":"{memo}"}},{{"side":"credit","account":"{credit}","amount":"9.00 USD"}}]}}"#
+            ),
+        );
+        let (code, out, _) = run(&["post", "--intent", &intent, "--evidence", &evidence]);
+        assert_eq!(code, 0, "{out}");
+        text(&doc(&out), "vid").to_string()
+    };
+    let rent = post(
+        "rent",
+        "Office rent for March",
+        "Harbor Street lease",
+        "6000",
+        "1000",
+    );
+    let (_, info, _) = run(&["book", "info"]);
+    let before_sale = json::parse(info.lines().last().unwrap_or_default())
+        .ok()
+        .and_then(|line| line.get("coordinate").and_then(|c| int(c, "known_at")))
+        .unwrap_or_default()
+        .to_string();
+    let sale = post(
+        "sale",
+        "Consulting sale to Acme",
+        "Invoice A-17",
+        "1000",
+        "4000",
+    );
+
+    let search = |args: &[&str]| -> Json {
+        let mut argv = vec!["search"];
+        argv.extend_from_slice(args);
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 0, "{argv:?}: {out}");
+        doc(&out)
+    };
+    let ids = |found: &Json| -> Vec<String> {
+        arr(found, "hits")
+            .iter()
+            .map(|hit| text(hit, "id").to_string())
+            .collect()
+    };
+    // A description and a leg memo are both searchable, and each entry is
+    // found by its own text only (control entries may carry text too).
+    let found = search(&["rent"]);
+    let hits = ids(&found);
+    assert_eq!(hits.first(), Some(&rent), "{found:?}");
+    assert!(!hits.contains(&sale), "{found:?}");
+    for (query, wanted, other) in [
+        ("harbor", &rent, &sale),
+        ("acme", &sale, &rent),
+        ("A-17", &sale, &rent),
+    ] {
+        let hits = ids(&search(&[query]));
+        assert!(hits.contains(wanted), "{query}: {hits:?}");
+        assert!(!hits.contains(other), "{query}: {hits:?}");
+    }
+    // The same journal prefix rebuilds the same index.
+    assert_eq!(
+        text(&search(&["acme"]), "index_digest"),
+        text(&found, "index_digest")
+    );
+    // At a frontier before the sale, the sale is not there to be found.
+    let early = search(&["acme", "--as-known-at", &before_sale]);
+    assert!(!ids(&early).contains(&sale), "{early:?}");
+    assert_eq!(
+        int(&found, "records").unwrap_or_default() - int(&early, "records").unwrap_or_default(),
+        1,
+        "exactly the sale was recorded after the earlier frontier"
+    );
+    // A query nothing matches is an empty success; a bad request is usage.
+    assert!(ids(&search(&["zeppelin"])).is_empty());
+    assert_eq!(run(&["search"]).0, 2);
+    assert_eq!(run(&["search", "rent", "--limit", "0"]).0, 2);
     Ok(())
 }

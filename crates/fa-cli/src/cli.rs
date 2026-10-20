@@ -101,6 +101,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("open-items", open_items_cmd),
     ("gl", gl_cmd),
     ("explain", explain_cmd),
+    ("search", search_cmd),
     ("procedure", procedure_cmd),
     ("sample", crate::sample::sample_cmd),
     ("checkpoint", notary::checkpoint_cmd),
@@ -18334,6 +18335,89 @@ fn event_detail_json(ev: &fa_journal::EventRow, book: &Book) -> Result<Json, Fai
         ("event_digest", s(hex(&ev.event_digest))),
         ("recorded_at", Json::Int(i128::from(ev.created_at.0))),
     ]))
+}
+
+/// `fa search <query>` (plan §9, fa-qip): rank the entries whose
+/// description or memos match the query, from a BM25 index rebuilt from the
+/// journal at the selected frontier for this query alone and never stored.
+/// It reads every entry, so it is admitted as a whole-book read; text the
+/// book's key does not open (erased, or sealed under a subject's key) is
+/// never indexed.
+fn search_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str =
+        "fa search \"office rent\" [--as-known-at HEAD|<seq>] [--limit 20] --book <dir> --json";
+    let query = match args.positional.as_slice() {
+        [_, query] => query.as_str(),
+        _ => {
+            return Err(usage(
+                "fa search takes exactly one query (quote a phrase)",
+                EXAMPLE,
+            ));
+        }
+    };
+    if query.trim().is_empty() || query.len() > 1024 {
+        return Err(usage("a search query is 1..=1024 bytes of text", EXAMPLE));
+    }
+    if args.flag_all("--limit").len() > 1 {
+        return Err(usage("--limit may be supplied only once", EXAMPLE));
+    }
+    let limit = match args.flag("--limit") {
+        None => 20,
+        Some(raw) => raw
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=200).contains(n))
+            .ok_or_else(|| usage(format!("--limit `{raw}` is not 1..=200"), EXAMPLE))?,
+    };
+    let capability = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        admit_whole_book_read(book, &capability, &[], "searching the journal")
+    })?;
+    let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
+    let results = book.search_entries(query, known_at)?;
+    ctx.out.known_at(results.known_at);
+    let shown = &results.hits[..results.hits.len().min(limit)];
+    let hits: Vec<Json> = shown
+        .iter()
+        .map(|hit| {
+            obj(vec![
+                ("kind", s(hit.kind.as_str())),
+                ("id", s(hit.id.canonical_hex())),
+                ("recorded_at", Json::Int(i128::from(hit.recorded_at))),
+                ("score_micro", Json::Int(i128::from(hit.score_micro))),
+                (
+                    "matched_terms",
+                    Json::Arr(hit.matched_terms.iter().map(s).collect()),
+                ),
+                ("snippet", s(&hit.snippet)),
+            ])
+        })
+        .collect();
+    let human = if shown.is_empty() {
+        format!(
+            "no entry matches `{query}` at {} ({} entries carry searchable text)",
+            results.known_at.0, results.records
+        )
+    } else {
+        shown
+            .iter()
+            .map(|hit| format!("{}  {}", hit.id.canonical_hex(), hit.snippet))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    ctx.out.event(
+        "search_results",
+        vec![
+            ("query", s(query)),
+            ("known_at", Json::Int(i128::from(results.known_at.0))),
+            ("records", Json::Int(results.records as i128)),
+            ("index_digest", s(hex(&results.index_digest))),
+            ("total", Json::Int(results.hits.len() as i128)),
+            ("hits", Json::Arr(hits)),
+        ],
+        &human,
+    );
+    Ok(())
 }
 
 fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
