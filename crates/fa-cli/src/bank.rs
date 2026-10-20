@@ -7,9 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa::bank::{
-    BankConfirmationRequest, BankDecisionRef, BankFormat, BankImportManifest, BankImportRequest,
-    BankMatchRecorded, BankMatchRequest, BankStatusRequest, BankUnmatchRecorded,
-    BankUnmatchRequest,
+    BankCashAmounts, BankConfirmationRequest, BankDecisionRef, BankFormat, BankImportManifest,
+    BankImportRequest, BankMatchRecorded, BankMatchRequest, BankReconciliationProgress,
+    BankStatusRequest, BankUnmatchRecorded, BankUnmatchRequest,
 };
 use fa_model::{Oid, account_vid};
 use fa_money::{Amount, Side};
@@ -133,6 +133,58 @@ fn money(mantissa: i128, unit: fa_money::UnitId, book: &fa::Book) -> Result<Json
                 format!("bank result has an unrenderable exact amount: {e}"),
             )))
         })
+}
+
+fn cash_amounts_json(
+    amounts: BankCashAmounts,
+    unit: fa_money::UnitId,
+    book: &fa::Book,
+) -> Result<Json, Fail> {
+    Ok(obj(vec![
+        ("inflow", money(amounts.inflow, unit, book)?),
+        ("outflow", money(amounts.outflow, unit, book)?),
+    ]))
+}
+
+fn progress_json(
+    progress: &BankReconciliationProgress,
+    unit: fa_money::UnitId,
+    book: &fa::Book,
+) -> Result<Json, Fail> {
+    Ok(obj(vec![
+        (
+            "confirmed",
+            cash_amounts_json(progress.confirmed, unit, book)?,
+        ),
+        (
+            "occupied",
+            cash_amounts_json(progress.occupied, unit, book)?,
+        ),
+        (
+            "remaining",
+            cash_amounts_json(progress.remaining, unit, book)?,
+        ),
+        (
+            "proposed",
+            cash_amounts_json(progress.proposed, unit, book)?,
+        ),
+        (
+            "unmatched",
+            cash_amounts_json(progress.unmatched, unit, book)?,
+        ),
+        (
+            "outstanding",
+            cash_amounts_json(progress.outstanding, unit, book)?,
+        ),
+        (
+            "all_statement_lines_confirmed",
+            Json::Bool(progress.all_statement_lines_confirmed),
+        ),
+        (
+            "closing_balances_equal",
+            Json::Bool(progress.closing_balances_equal),
+        ),
+    ]))
 }
 
 fn predecessor_json(manifest: &BankImportManifest, book: &fa::Book) -> Result<Json, Fail> {
@@ -574,6 +626,10 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("line_count", Json::Int(report.lines.len() as i128)),
         ("proposed_count", Json::Int(matched as i128)),
         ("confirmed_count", Json::Int(confirmed_count as i128)),
+        (
+            "remaining_count",
+            Json::Int((report.lines.len() - confirmed_count) as i128),
+        ),
         ("occupied_count", Json::Int(occupied_count as i128)),
         ("ambiguous_count", Json::Int(ambiguous_count as i128)),
         ("unmatched_count", Json::Int(unmatched_count as i128)),
@@ -589,6 +645,10 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         (
             "closing_difference",
             money(report.closing_difference, report.manifest.unit, &book)?,
+        ),
+        (
+            "progress",
+            progress_json(&report.progress, report.manifest.unit, &book)?,
         ),
         ("proposals", Json::Arr(rows)),
         ("outstanding", Json::Arr(outstanding)),

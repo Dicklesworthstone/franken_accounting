@@ -34,6 +34,49 @@ fn rows<'a>(value: &'a Json, key: &str) -> &'a [Json] {
     }
 }
 
+fn assert_progress(
+    output: &Json,
+    expected: [(&str, &str); 6],
+    remaining_count: i128,
+    all_statement_lines_confirmed: bool,
+    closing_balances_equal: bool,
+) {
+    let report = data(output);
+    let progress = report.get("progress").expect("reconciliation progress");
+    for (name, (inflow, outflow)) in [
+        "confirmed",
+        "occupied",
+        "remaining",
+        "proposed",
+        "unmatched",
+        "outstanding",
+    ]
+    .into_iter()
+    .zip(expected)
+    {
+        let flow = progress.get(name).expect(name);
+        assert_eq!(
+            text(flow, "inflow"),
+            format!("{inflow} USD"),
+            "{name} inflow"
+        );
+        assert_eq!(
+            text(flow, "outflow"),
+            format!("{outflow} USD"),
+            "{name} outflow"
+        );
+    }
+    assert_eq!(integer(report, "remaining_count"), remaining_count);
+    assert_eq!(
+        progress.get("all_statement_lines_confirmed"),
+        Some(&Json::Bool(all_statement_lines_confirmed))
+    );
+    assert_eq!(
+        progress.get("closing_balances_equal"),
+        Some(&Json::Bool(closing_balances_equal))
+    );
+}
+
 fn run(book: &Path, args: &[&str]) -> (i32, Json) {
     let output = Command::new(env!("CARGO_BIN_EXE_fa"))
         .arg("--book")
@@ -91,6 +134,12 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_chart(
+            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expenses","type":"Expense","unit":"USD"}]}"#,
+        )
+    }
+
+    fn with_chart(chart_json: &str) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = loop {
             let dir = std::env::temp_dir().join(format!(
@@ -107,7 +156,7 @@ impl Fixture {
         let book = dir.join("book");
         ok(&book, &["book", "create", "--name", "Bank intake"]);
         let chart = dir.join("chart.json");
-        std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expenses","type":"Expense","unit":"USD"}]}"#).unwrap();
+        std::fs::write(&chart, chart_json).unwrap();
         ok(&book, &["chart", "import", chart.to_str().unwrap()]);
         ok(&book, &["period", "create", "--fiscal-year", "2026"]);
         ok(&book, &["period", "open", "FY2026-P03"]);
@@ -678,6 +727,20 @@ fn exact_matches_reopen_with_bound_account_and_parser_and_never_confirm_or_post_
     assert_eq!(result.get("outstanding_complete"), Some(&Json::Bool(false)));
     assert_eq!(text(result, "book_closing_balance"), "120.00 USD");
     assert_eq!(text(result, "closing_difference"), "-25.00 USD");
+    assert_progress(
+        &matched,
+        [
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("150.00", "55.00"),
+            ("150.00", "50.00"),
+            ("0.00", "5.00"),
+            ("20.00", "0.00"),
+        ],
+        3,
+        false,
+        false,
+    );
     let proposals = rows(result, "proposals");
     assert_eq!(text(&proposals[0], "direction"), "inflow");
     assert_eq!(text(&proposals[1], "direction"), "outflow");
@@ -1655,6 +1718,23 @@ fn explicit_unmatch_retains_history_retries_and_allows_a_fresh_confirmation() {
     let manifest = text(data(&imported), "manifest_oid");
     let money_before = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
     let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    let available_progress = [
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("100.00", "0.00"),
+        ("100.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+    ];
+    let confirmed_progress = [
+        ("100.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+    ];
+    assert_progress(&matched, available_progress, 1, false, true);
     let initial_proposal = &rows(data(&matched), "proposals")[0];
     let original_args = confirmation_args(&matched, 0, "release-reviewer");
     let first = confirm_selection(&f.book, &original_args);
@@ -1684,6 +1764,7 @@ fn explicit_unmatch_retains_history_retries_and_allows_a_fresh_confirmation() {
     assert_eq!(integer(data(&claimed), "confirmed_count"), 1);
     assert_eq!(integer(data(&claimed), "unmatched_count"), 0);
     assert_eq!(integer(data(&claimed), "outstanding_count"), 0);
+    assert_progress(&claimed, confirmed_progress, 0, true, true);
     let retained = &rows(data(&claimed), "proposals")[0];
     assert_eq!(text(retained, "status"), "confirmed");
     assert_eq!(retained.get("confirmation_command"), Some(&Json::Null));
@@ -1801,8 +1882,21 @@ fn explicit_unmatch_retains_history_retries_and_allows_a_fresh_confirmation() {
     );
     assert_eq!(integer(data(&historical), "active_count"), 1);
     assert_eq!(integer(data(&historical), "unmatch_count"), 0);
+    let historical_match = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            manifest,
+            "--as-known-at",
+            &first_at.to_string(),
+        ],
+    );
+    assert_progress(&historical_match, confirmed_progress, 0, true, true);
 
     let fresh = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_progress(&fresh, available_progress, 1, false, true);
     assert_eq!(integer(data(&fresh), "confirmed_count"), 0);
     assert_eq!(
         text(&rows(data(&fresh), "proposals")[0], "status"),
@@ -1822,6 +1916,20 @@ fn explicit_unmatch_retains_history_retries_and_allows_a_fresh_confirmation() {
         rows(data(&history), "active")[0].get("match_vid"),
         data(&second).get("match_vid")
     );
+    let rematched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_progress(&rematched, confirmed_progress, 0, true, true);
+    let historical_release = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            manifest,
+            "--as-known-at",
+            &released_at.to_string(),
+        ],
+    );
+    assert_progress(&historical_release, available_progress, 1, false, true);
 
     let current_head = head(&f.book);
     let retry_old_release = ok(&f.book, &release_argv);
@@ -1881,6 +1989,22 @@ fn reports_exclude_other_statements_cash_claims_until_an_explicit_release() {
     assert_eq!(row.get("confirmation_command"), Some(&Json::Null));
     assert_eq!(integer(data(&occupied), "confirmed_count"), 0);
     assert_eq!(integer(data(&occupied), "outstanding_count"), 0);
+    // A cash leg used by another statement makes this line unmatched. It
+    // does not confirm or occupy this distinct retained source identity.
+    assert_progress(
+        &occupied,
+        [
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("50.00", "0.00"),
+            ("0.00", "0.00"),
+            ("50.00", "0.00"),
+            ("0.00", "0.00"),
+        ],
+        1,
+        false,
+        true,
+    );
     let mut release_args = unmatch_args(&first);
     release_args.push("--yes".into());
     ok(
@@ -1899,6 +2023,20 @@ fn reports_exclude_other_statements_cash_claims_until_an_explicit_release() {
     assert_eq!(head(&f.book), before);
 
     let fresh = ok_privileged(&f.book, &["bank", "match", "--import", second_manifest]);
+    assert_progress(
+        &fresh,
+        [
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("50.00", "0.00"),
+            ("50.00", "0.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+        ],
+        1,
+        false,
+        true,
+    );
     assert_eq!(
         integer(
             &rows(data(&fresh), "proposals")[0],
@@ -1928,4 +2066,204 @@ fn reports_exclude_other_statements_cash_claims_until_an_explicit_release() {
     assert_eq!(integer(data(&all_history), "confirmation_count"), 2);
     assert_eq!(integer(data(&all_history), "unmatch_count"), 1);
     assert_eq!(integer(data(&all_history), "active_count"), 1);
+}
+
+#[test]
+fn equal_closing_balances_do_not_clear_offsetting_unconfirmed_flows() {
+    let f = Fixture::new();
+    f.post("offset-in", "2026-03-05", "debit", "10.00", "OFFSET-IN");
+    f.post("offset-out", "2026-03-06", "credit", "10.00", "OFFSET-OUT");
+    let source = format!(
+        "{CSV_HEADER}1,BANK-OFFSET,USD,2026-03-31,0.00,0.00,2026-03-05,2026-03-05,CRDT,10.00,Customer,OFFSET-IN\n1,BANK-OFFSET,USD,2026-03-31,0.00,0.00,2026-03-06,2026-03-06,DBIT,10.00,Vendor,OFFSET-OUT\n"
+    );
+    let imported = f.import("offset.csv", "csv", &source);
+    let manifest = text(data(&imported), "manifest_oid");
+    let money_before = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    let before_confirmation = integer(data(&matched), "known_at");
+    assert_eq!(
+        text(data(&matched), "statement_closing_balance"),
+        "0.00 USD"
+    );
+    assert_eq!(text(data(&matched), "book_closing_balance"), "0.00 USD");
+    assert_eq!(text(data(&matched), "closing_difference"), "0.00 USD");
+    assert_progress(
+        &matched,
+        [
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("10.00", "10.00"),
+            ("10.00", "10.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+        ],
+        2,
+        false,
+        true,
+    );
+
+    confirm_selection(&f.book, &confirmation_args(&matched, 0, "inflow-reviewer"));
+    let partial = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_progress(
+        &partial,
+        [
+            ("10.00", "0.00"),
+            ("0.00", "0.00"),
+            ("0.00", "10.00"),
+            ("0.00", "10.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+        ],
+        1,
+        false,
+        true,
+    );
+    confirm_selection(&f.book, &confirmation_args(&partial, 1, "outflow-reviewer"));
+    let complete = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_progress(
+        &complete,
+        [
+            ("10.00", "10.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+            ("0.00", "0.00"),
+        ],
+        0,
+        true,
+        true,
+    );
+    let historical = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            manifest,
+            "--as-known-at",
+            &before_confirmation.to_string(),
+        ],
+    );
+    assert_eq!(
+        data(&historical).get("progress"),
+        data(&matched).get("progress")
+    );
+    assert_eq!(integer(data(&historical), "remaining_count"), 2);
+    let money_after = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    for key in ["rows", "unit_totals", "pending_unit_totals", "balanced"] {
+        assert_eq!(data(&money_after).get(key), data(&money_before).get(key));
+    }
+}
+
+#[test]
+fn the_same_statement_under_another_cash_mapping_remains_occupied_until_release() {
+    let f = Fixture::with_chart(
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1010","name":"Alternate cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expenses","type":"Expense","unit":"USD"}]}"#,
+    );
+    f.post("mapped-cash", "2026-03-05", "debit", "40.00", "MAPPED");
+    let alternate = f.file(
+        "alternate-cash.json",
+        r#"{"effective_date":"2026-03-05","idempotency_key":"alternate-cash","legs":[{"side":"debit","account":"1010","amount":"40.00 USD","memo":"MAPPED"},{"side":"credit","account":"4000","amount":"40.00 USD"}]}"#,
+    );
+    ok(
+        &f.book,
+        &["post", "--intent", &alternate, "--evidence", &f.evidence],
+    );
+    let source = format!(
+        "{CSV_HEADER}1,BANK-MAPPED,USD,2026-03-31,0.00,40.00,2026-03-05,2026-03-05,CRDT,40.00,Customer,MAPPED\n"
+    );
+    let original_import = f.import("original-mapping.csv", "csv", &source);
+    let alternate_source = f.file("alternate-mapping.csv", &source);
+    let alternate_import = ok(
+        &f.book,
+        &[
+            "bank",
+            "import",
+            &alternate_source,
+            "--bank-format",
+            "csv",
+            "--account",
+            "1010",
+        ],
+    );
+    let original_manifest = text(data(&original_import), "manifest_oid");
+    let alternate_manifest = text(data(&alternate_import), "manifest_oid");
+    assert_ne!(original_manifest, alternate_manifest);
+    assert_eq!(
+        text(data(&original_import), "statement_oid"),
+        text(data(&alternate_import), "statement_oid")
+    );
+    let money_before = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    let original = ok_privileged(&f.book, &["bank", "match", "--import", original_manifest]);
+    let alternate = ok_privileged(&f.book, &["bank", "match", "--import", alternate_manifest]);
+    let available_progress = [
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("40.00", "0.00"),
+        ("40.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+    ];
+    let occupied_progress = [
+        ("0.00", "0.00"),
+        ("40.00", "0.00"),
+        ("40.00", "0.00"),
+        ("0.00", "0.00"),
+        ("0.00", "0.00"),
+        ("40.00", "0.00"),
+    ];
+    assert_progress(&alternate, available_progress, 1, false, true);
+    let original_at = integer(data(&alternate), "known_at");
+    let first = confirm_selection(
+        &f.book,
+        &confirmation_args(&original, 0, "original-reviewer"),
+    );
+    let occupied = ok_privileged(&f.book, &["bank", "match", "--import", alternate_manifest]);
+    assert_eq!(text(data(&occupied), "account"), "1010");
+    assert_eq!(integer(data(&occupied), "confirmed_count"), 0);
+    assert_eq!(integer(data(&occupied), "occupied_count"), 1);
+    assert_eq!(integer(data(&occupied), "proposed_count"), 0);
+    assert_eq!(integer(data(&occupied), "unmatched_count"), 0);
+    assert_eq!(integer(data(&occupied), "outstanding_count"), 1);
+    let row = &rows(data(&occupied), "proposals")[0];
+    assert_eq!(text(row, "status"), "occupied");
+    assert_eq!(row.get("confirmation_command"), Some(&Json::Null));
+    assert_progress(&occupied, occupied_progress, 1, false, true);
+    let historical = ok_privileged(
+        &f.book,
+        &[
+            "bank",
+            "match",
+            "--import",
+            alternate_manifest,
+            "--as-known-at",
+            &original_at.to_string(),
+        ],
+    );
+    assert_progress(&historical, available_progress, 1, false, true);
+
+    let mut release_args = unmatch_args(&first);
+    release_args.push("--yes".into());
+    ok(
+        &f.book,
+        &release_args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let available = ok_privileged(&f.book, &["bank", "match", "--import", alternate_manifest]);
+    assert_progress(&available, available_progress, 1, false, true);
+    let second = confirm_selection(
+        &f.book,
+        &confirmation_args(&available, 0, "alternate-reviewer"),
+    );
+    assert_ne!(
+        data(&first).get("entry_ref"),
+        data(&second).get("entry_ref")
+    );
+    let occupied_original =
+        ok_privileged(&f.book, &["bank", "match", "--import", original_manifest]);
+    assert_progress(&occupied_original, occupied_progress, 1, false, true);
+    let money_after = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    for key in ["rows", "unit_totals", "pending_unit_totals", "balanced"] {
+        assert_eq!(data(&money_after).get(key), data(&money_before).get(key));
+    }
 }

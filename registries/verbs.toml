@@ -1017,8 +1017,8 @@ fields = ["manifest_oid:hex","statement_oid:hex","statement_commit:hex","bank_fo
 [[event]]
 name = "bank_matches_proposed"
 book = true
-doc = "Bank-line proposals and retained active confirmations after source-closure verification at one known-at prefix. confirmed_count counts this manifest interpretation; occupied_count counts lines claimed under another interpretation. Native active claims exclude occupied resources before eligibility, without changing candidate ordinals. Outstanding rows are remaining available cash-leg candidates inside the inclusive window, not a complete reconciliation inventory. Empty statements have null window bounds. Closing balances are exact journal/statement amounts; this read publishes no confirmation or monetary entry. continuity and predecessor describe structural source links only."
-fields = ["manifest_oid:hex","statement_oid:hex","account:string","account_ref:hex","unit:string","known_at:seq","statement_date:date","date_window:int","candidate_from:string?","candidate_through:string?","outstanding_scope:string","outstanding_complete:bool","decision_epoch:hex","method:string","confirmed:bool","line_count:int","proposed_count:int","confirmed_count:int","occupied_count:int","ambiguous_count:int","unmatched_count:int","outstanding_count:int","statement_closing_balance:amount","book_closing_balance:amount","closing_difference:amount","proposals:[bank_match_proposal]","outstanding:[bank_outstanding_leg]","continuity:string","verified_predecessors:int","predecessor:bank_import_predecessor?"]
+doc = "Bank-line proposals and retained active confirmations after complete relevant source-closure verification at one known-at prefix. confirmed_count counts this manifest interpretation; occupied_count counts lines claimed under another interpretation; remaining_count counts every source line not confirmed under this manifest, including occupied lines. progress retains exact gross inflow and outflow in each category; remaining equals occupied plus proposed plus unmatched separately by direction. Native active claims exclude occupied resources before eligibility, without changing candidate ordinals. Outstanding rows and amounts cover remaining available cash-leg candidates inside the inclusive window, not a complete reconciliation inventory. Empty statements have null window bounds. Confirmation completeness and closing-balance equality are independent observations, neither an attestation nor a reconciled-through posting lock. This read publishes no confirmation or monetary entry. continuity and predecessor describe structural source links only."
+fields = ["manifest_oid:hex","statement_oid:hex","account:string","account_ref:hex","unit:string","known_at:seq","statement_date:date","date_window:int","candidate_from:string?","candidate_through:string?","outstanding_scope:string","outstanding_complete:bool","decision_epoch:hex","method:string","confirmed:bool","line_count:int","proposed_count:int","confirmed_count:int","remaining_count:int","occupied_count:int","ambiguous_count:int","unmatched_count:int","outstanding_count:int","statement_closing_balance:amount","book_closing_balance:amount","closing_difference:amount","progress:bank_reconciliation_progress","proposals:[bank_match_proposal]","outstanding:[bank_outstanding_leg]","continuity:string","verified_predecessors:int","predecessor:bank_import_predecessor?"]
 
 [[event]]
 name = "bank_match_confirmed"
@@ -2342,6 +2342,16 @@ fields = ["unmatch_vid:hex","unmatch_digest:hex","recorded_at:seq","target:bank_
 name = "bank_outstanding_leg"
 doc = "A cash leg in the named candidate window that is neither claimed by an active native confirmation nor consumed by a fresh proposal. This is a candidate-window observation, not a full outstanding-item inventory."
 fields = ["entry_ref:bank_entry_ref", "leg_ordinal:int", "effective_date:date", "side:string", "amount:amount"]
+
+[[shape]]
+name = "bank_cash_amounts"
+doc = "Exact gross cash movements in the statement's unit. Inflow and outflow remain separate, so offsetting unresolved items cannot cancel. Bank credits and book debits are inflows."
+fields = ["inflow:amount", "outflow:amount"]
+
+[[shape]]
+name = "bank_reconciliation_progress"
+doc = "Active progress at the selected prefix. confirmed applies to this manifest; occupied means the original source line is claimed under another interpretation. remaining includes occupied, proposed and unmatched lines. outstanding covers only available cash legs inside the declared candidate window. all_statement_lines_confirmed and closing_balances_equal are independent observations; they do not attest a balance or establish a posting lock."
+fields = ["confirmed:bank_cash_amounts", "occupied:bank_cash_amounts", "remaining:bank_cash_amounts", "proposed:bank_cash_amounts", "unmatched:bank_cash_amounts", "outstanding:bank_cash_amounts", "all_statement_lines_confirmed:bool", "closing_balances_equal:bool"]
 
 [[shape]]
 name = "untrusted_text"
