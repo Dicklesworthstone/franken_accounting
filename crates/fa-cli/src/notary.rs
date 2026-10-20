@@ -519,6 +519,7 @@ fn has_workpaper(family: ReportArtifactFamily, detail_view: bool, aging_expected
         ReportArtifactFamily::CashFlow
         | ReportArtifactFamily::AgingReconciliation
         | ReportArtifactFamily::AgingPortfolio
+        | ReportArtifactFamily::StatementDiff
         | ReportArtifactFamily::StatementTrace => true,
         _ => false,
     }
@@ -530,7 +531,7 @@ fn unsupported_workpaper(family: ReportArtifactFamily) -> Fail {
             "{} certificates have no JSONL workpaper export",
             family.name()
         ),
-        "--workpaper-out exports ledger detail (replay a roll-forward source with --view detail), effective-date aging (with its aging --expect), cash-flow, aging-reconciliation, aging-portfolio and statement-trace certificates",
+        "--workpaper-out exports ledger detail (replay a roll-forward source with --view detail), effective-date aging (with its aging --expect), cash-flow, aging-reconciliation, aging-portfolio, statement-diff and statement-trace certificates",
     )
 }
 
@@ -589,6 +590,16 @@ fn workpaper_jsonl(
                 capability,
                 &fa::StatementTraceCertificate::decode(bytes)?,
             )??,
+        // The library's statement review package also renders Markdown; the
+        // replay surface exports its JSONL, like every other family.
+        (ReportArtifactFamily::StatementDiff, Expected::AsSupplied, _) => book
+            .statement_diff_workpaper(
+                principal,
+                capability,
+                &fa::StatementDiffCertificate::decode(bytes)?,
+            )??
+            .jsonl()
+            .to_string(),
         (family, _, _) => return Err(unsupported_workpaper(family)),
     })
 }

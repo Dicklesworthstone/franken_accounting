@@ -696,6 +696,65 @@ fn retained_statement_certificates_bridge_and_trace_without_reselecting_head() {
         vec![trace[0].clone()]
     );
 
+    // The comparison and its trace export the library's own workpapers, to a
+    // new file or inline, and exporting is a read.
+    let at = head();
+    let diff_path = fixture.dir.join("bridge.jsonl");
+    let trace_path = fixture.dir.join("trace.jsonl");
+    for (handle, path, family) in [
+        (&diff_handle, &diff_path, "statement-diff"),
+        (&trace_handle, &trace_path, "statement-trace"),
+    ] {
+        let events = ok(
+            &fixture.book,
+            &["replay", handle, "--workpaper-out", path.to_str().unwrap()],
+        );
+        let exported = events.last().unwrap();
+        assert_eq!(text(exported, "event"), "workpaper_exported");
+        assert_eq!(text(data(exported), "family"), family);
+        let written = std::fs::read_to_string(path).unwrap();
+        assert!(written.lines().count() > 1, "{family}: {written}");
+        let inline = ok(&fixture.book, &["replay", handle, "--workpaper"]);
+        assert_eq!(
+            text(data(inline.last().unwrap()), "text"),
+            written,
+            "{family}: the inline text is the file's text"
+        );
+    }
+    {
+        let keys = fa::BookKeys::load(&fixture.book.join("book.keys")).unwrap();
+        let book =
+            fa::Book::open_dir(&fixture.book, keys, fa::Entropy::deterministic(119)).unwrap();
+        let reviewer = fa_model::principal_vid("statement-reviewer");
+        let capability = fa::Capability::embedded(reviewer, &["read", "produce"]).unwrap();
+        let package = book
+            .statement_diff_workpaper(reviewer, &capability, &comparison)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&diff_path).unwrap(),
+            package.jsonl()
+        );
+        let trace_jsonl = book
+            .statement_trace_jsonl(reviewer, &capability, &attributed)
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&trace_path).unwrap(), trace_jsonl);
+    }
+    assert_eq!(head(), at, "workpaper exports publish nothing");
+    let refused = fixture.dir.join("bridge-again.jsonl");
+    std::fs::copy(&diff_path, &refused).unwrap();
+    let (exit, _, _) = run(
+        &fixture.book,
+        &[
+            "replay",
+            &diff_handle,
+            "--workpaper-out",
+            refused.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(exit, 2, "an existing workpaper file is never replaced");
+
     let at = head();
     for (args, exit, needle) in [
         (
