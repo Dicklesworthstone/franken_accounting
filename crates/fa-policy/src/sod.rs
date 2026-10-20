@@ -7,7 +7,8 @@
 //! 1. every exclusion and vocabulary item of the rule must be decidable
 //!    (fail closed);
 //! 2. each approval in transcript order: not the preparer, a permitted
-//!    profile, the rule's op, a principal not already counted;
+//!    profile, the rule's op, a principal not already counted, and (under
+//!    `case_preparer`) no preparer of an entry in the case;
 //! 3. at least `max(matrix approvals, rule approvers)` approvals;
 //! 4. agent-prepared work: at least `agent_prepared_human_approvers` Human
 //!    approvers.
@@ -93,7 +94,8 @@ pub fn control_key(class: &str, state: Option<PeriodState>, transition: &str) ->
 
 /// Evaluate rule `rule` (`req`) over the preparer and the witnessed
 /// approvals. `matrix_approvals` is the admissibility cell's count (0 for
-/// `admit` cells and for controls).
+/// `admit` cells and for controls). No case is in scope, so a rule with the
+/// `case_preparer` exclusion refuses ([`evaluate_in`] decides it).
 pub fn evaluate(
     rule: &str,
     req: &SodRequirement,
@@ -101,8 +103,26 @@ pub fn evaluate(
     preparer: Party,
     approvers: &[Approver],
 ) -> Result<(), Denial> {
+    evaluate_in(rule, req, matrix_approvals, preparer, approvers, None)
+}
+
+/// [`evaluate`] for work that belongs to a case: `case_preparers` are the
+/// principals who prepared any entry in it, which decides the
+/// `case_preparer` exclusion (an approver is none of them). `None` leaves
+/// that exclusion undecidable, so a rule naming it refuses (fail closed).
+pub fn evaluate_in(
+    rule: &str,
+    req: &SodRequirement,
+    matrix_approvals: u8,
+    preparer: Party,
+    approvers: &[Approver],
+    case_preparers: Option<&BTreeSet<VId>>,
+) -> Result<(), Denial> {
+    let in_case = req.exclusions.iter().any(|e| e == "case_preparer");
     for exclusion in &req.exclusions {
-        if !DECIDED_EXCLUSIONS.contains(&exclusion.as_str()) {
+        let decided = DECIDED_EXCLUSIONS.contains(&exclusion.as_str())
+            || (exclusion == "case_preparer" && case_preparers.is_some());
+        if !decided {
             return Err(Denial::UnsupportedExclusion {
                 rule: rule.to_string(),
                 exclusion: exclusion.clone(),
@@ -151,6 +171,12 @@ pub fn evaluate(
         }
         if !counted.insert(a.principal) {
             return Err(Denial::DuplicateApprover {
+                rule: rule.to_string(),
+                approver: a.principal,
+            });
+        }
+        if in_case && case_preparers.is_some_and(|p| p.contains(&a.principal)) {
+            return Err(Denial::CasePreparer {
                 rule: rule.to_string(),
                 approver: a.principal,
             });
@@ -1495,6 +1521,29 @@ mod tests {
         assert_eq!(
             (d.code(), d.kind()),
             ("FA-REF-008", "unsupported_exclusion")
+        );
+        // With the case's preparers known the exclusion is decided: an
+        // approver who prepared a case entry is refused, others count.
+        let preparers: BTreeSet<VId> = [VId(3)].into_iter().collect();
+        let d =
+            evaluate_in("x", &case, 0, PREP, &[human(2), human(3)], Some(&preparers)).unwrap_err();
+        assert_eq!((d.code(), d.kind()), ("FA-REF-008", "case_preparer"));
+        assert_eq!(
+            evaluate_in("x", &case, 0, PREP, &[human(2), human(4)], Some(&preparers)),
+            Ok(())
+        );
+        // A rule without the exclusion ignores the case's preparers.
+        let plain = req(2, 0, &["duplicate", "preparer"]);
+        assert_eq!(
+            evaluate_in(
+                "x",
+                &plain,
+                0,
+                PREP,
+                &[human(2), human(3)],
+                Some(&preparers)
+            ),
+            Ok(())
         );
     }
 

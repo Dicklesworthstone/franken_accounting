@@ -23,7 +23,8 @@ pub struct Approval {
     pub op: String,
 }
 
-/// The oracle's verdict: `None` admits; otherwise `(code, kind)`.
+/// The oracle's verdict: `None` admits; otherwise `(code, kind)`. No case is
+/// in scope.
 pub fn verdict(
     req: &SodRequirement,
     matrix_approvals: u8,
@@ -31,8 +32,32 @@ pub fn verdict(
     preparer_profile: &str,
     approvals: &[Approval],
 ) -> Option<(&'static str, &'static str)> {
+    verdict_in(
+        req,
+        matrix_approvals,
+        preparer,
+        preparer_profile,
+        approvals,
+        None,
+    )
+}
+
+/// The verdict for work in a case whose entries `case_preparers` prepared:
+/// with them, the `case_preparer` exclusion is decidable, and an approver
+/// among them is refused.
+pub fn verdict_in(
+    req: &SodRequirement,
+    matrix_approvals: u8,
+    preparer: u128,
+    preparer_profile: &str,
+    approvals: &[Approval],
+    case_preparers: Option<&[u128]>,
+) -> Option<(&'static str, &'static str)> {
     // 1. The rule must be decidable as written.
-    let decidable = |e: &String| e == "preparer" || e == "duplicate";
+    let decidable = |e: &String| {
+        e == "preparer" || e == "duplicate" || (e == "case_preparer" && case_preparers.is_some())
+    };
+    let case_bound = req.exclusions.iter().any(|e| e == "case_preparer");
     if !req.exclusions.iter().all(decidable) {
         return Some((SOD, "unsupported_exclusion"));
     }
@@ -82,6 +107,8 @@ pub fn verdict(
             Some("approver_op")
         } else if times_seen.get(&a.principal).copied().unwrap_or(0) > 0 {
             Some("duplicate_approver")
+        } else if case_bound && case_preparers.is_some_and(|p| p.contains(&a.principal)) {
+            Some("case_preparer")
         } else {
             None
         };

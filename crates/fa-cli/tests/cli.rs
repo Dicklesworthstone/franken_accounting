@@ -1969,7 +1969,7 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         out.contains("\"refusal_id\":\"FA-REF-008\"")
             && out.contains("case_preparer")
             && out.contains("sod_policy.toml#period-reopen-closed")
-            && out.contains("fa-oz3"),
+            && out.contains("fa case approve"),
         "{out}"
     );
 
@@ -8910,6 +8910,10 @@ fn policy_refusal_fixes_name_only_registered_verbs_and_flags() {
             rule: rule(),
             approver: VId(1),
         },
+        Denial::CasePreparer {
+            rule: rule(),
+            approver: VId(1),
+        },
         Denial::ApproverProfile {
             rule: rule(),
             approver: VId(1),
@@ -8969,6 +8973,7 @@ fn policy_refusal_fixes_name_only_registered_verbs_and_flags() {
             | Denial::UnboundedUnit { .. }
             | Denial::SelfApproval { .. }
             | Denial::DuplicateApprover { .. }
+            | Denial::CasePreparer { .. }
             | Denial::ApproverProfile { .. }
             | Denial::ApproverOp { .. }
             | Denial::HumanApproversRequired { .. }

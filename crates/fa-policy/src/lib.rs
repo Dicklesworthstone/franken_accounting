@@ -86,8 +86,28 @@ impl Steward {
         preparer: Party,
         approvers: &[Approver],
     ) -> Result<(), Denial> {
+        self.segregate_in(key, matrix_approvals, preparer, approvers, None)
+    }
+
+    /// [`Self::segregate`] for work in a case whose entries `case_preparers`
+    /// prepared ([`sod::evaluate_in`]).
+    pub fn segregate_in(
+        &self,
+        key: &SodKey,
+        matrix_approvals: u8,
+        preparer: Party,
+        approvers: &[Approver],
+        case_preparers: Option<&std::collections::BTreeSet<fgdb_types::VId>>,
+    ) -> Result<(), Denial> {
         let (rule, req) = self.sod.requirement(key);
-        sod::evaluate(rule, req, matrix_approvals, preparer, approvers)
+        sod::evaluate_in(
+            rule,
+            req,
+            matrix_approvals,
+            preparer,
+            approvers,
+            case_preparers,
+        )
     }
 
     /// The op a control rule requires of its preparer (`None` when no rule
