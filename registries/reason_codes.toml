@@ -167,3 +167,31 @@ code = 4
 scope = "period_reopen"
 name = "Restatement"
 meaning = "reopened under a restatement case"
+
+# Scope `adjustment_pass` (plan §11.12, bead fa-zgn) records why a proposed
+# audit adjustment is left uncorrected. It names the mechanical basis the
+# engagement stated, never a materiality judgment; the summary of
+# uncorrected misstatements aggregates passed items by these reasons.
+[[reason]]
+code = 1
+scope = "adjustment_pass"
+name = "ClearlyTrivial"
+meaning = "passed because the misstatement is below the engagement's stated clearly trivial threshold"
+
+[[reason]]
+code = 2
+scope = "adjustment_pass"
+name = "BelowPerformanceMateriality"
+meaning = "passed because, with the other uncorrected misstatements, it stays below the engagement's stated performance materiality"
+
+[[reason]]
+code = 3
+scope = "adjustment_pass"
+name = "ManagementDeclined"
+meaning = "passed because management declined to record the proposed correction"
+
+[[reason]]
+code = 4
+scope = "adjustment_pass"
+name = "Other"
+meaning = "passed for another reason; the record's description carries the particulars"
