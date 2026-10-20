@@ -163,9 +163,17 @@ pub use fa_registers::{
     Advance, EntityCell, EntityCellKey, EntityFold, EntityVerification, LotDisposalPlan,
     LotDisposalRequest, LotDisposalSlice, LotItem, LotReliefEdge, LotsReport, RegisterEquals,
 };
+pub use fa_statements::markdown::{
+    StatementMarkdownIr, TrialBalanceIrInput, TrialBalanceIrRow, UnitFormatSpec,
+    render_statement_ir, render_trial_balance_ir,
+};
+pub use fa_statements::render::{
+    StatementRenderFormat, format_utc_epoch_iso8601, render_html, render_pdf, render_pdfa,
+    render_svg, validate_pdfa2b,
+};
 pub use fa_statements::{
-    AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementKind,
-    StatementLine,
+    AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementError,
+    StatementKind, StatementLine,
 };
 pub use findings::{RecordedFindings, finding_run_vid, finding_vid};
 pub use fx::{FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms};

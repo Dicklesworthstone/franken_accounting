@@ -9327,6 +9327,18 @@ fn prepare_native_certificate_history(
 }
 
 fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const RENDER_EXAMPLE: &str = "fa tb --period FY2026-P03 --render pdf --out trial-balance.pdf";
+    let render = render_request(args, RENDER_EXAMPLE)?;
+    if render.is_some()
+        && (args.switch("--summary")
+            || args.switch("--functional")
+            || args.flag("--branch").is_some())
+    {
+        return Err(usage(
+            "--render renders a trunk trial balance of native leaf accounts; it does not combine with --summary, --functional or --branch",
+            RENDER_EXAMPLE,
+        ));
+    }
     if args.switch("--functional") {
         return crate::fx::functional_tb(ctx, args);
     }
@@ -9574,6 +9586,16 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
     };
     validate_trial_balance_units(&tb, &book.context().units)?;
+    // A requested document is rendered (a missing clock tick refused) and
+    // written before a certificate is retained or the report emitted.
+    let rendering = render
+        .as_ref()
+        .map(|request| {
+            let rendering = render_trial_balance_document(&book, &tb, &selection, request)?;
+            write_rendering(&ctx.files, request, &rendering)?;
+            Ok::<_, Fail>(rendering)
+        })
+        .transpose()?;
     let retained = certificate
         .as_ref()
         .zip(certify_cap.as_ref())
@@ -9595,7 +9617,63 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
         notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
     }
+    if let (Some(request), Some(rendering)) = (render.as_ref(), rendering) {
+        emit_rendering(out, request, rendering);
+    }
     Ok(())
+}
+
+/// A trunk trial balance (stock, activity or as-of) as a rendered document
+/// (fa-cet): one table per native unit, each row an account's debits,
+/// credits and net, exactly as `fa tb` reports them.
+fn render_trial_balance_document(
+    book: &Book,
+    tb: &fa_registers::TrialBalance,
+    selection: &TrialBalanceSelection,
+    request: &RenderRequest<'_>,
+) -> Result<Rendering, Fail> {
+    let specs = unit_format_specs(
+        &book.context().units,
+        tb.rows
+            .iter()
+            .map(|row| row.unit_id)
+            .chain(tb.unit_totals.keys().copied()),
+    )?;
+    if specs.is_empty() {
+        return Err(usage(
+            "the trial balance has no rows, so there is no document to render",
+            "post entries first, or read it without --render",
+        ));
+    }
+    let effective_label = match selection {
+        TrialBalanceSelection::AsOf(day) => format!("as of {}", day.render()),
+        TrialBalanceSelection::Activity(periods) => format!("activity {}", periods.join(", ")),
+        TrialBalanceSelection::Periods(periods) => match tb.effective_through {
+            Some(day) => format!("{} (through {})", periods.join(", "), day.render()),
+            None => periods.join(", "),
+        },
+    };
+    let input = fa::TrialBalanceIrInput {
+        book_id: book.context().book_id,
+        branch_id: Id128::TRUNK,
+        known_at: tb.known_at.0,
+        effective_label,
+        activity_only: tb.activity,
+        rows: tb
+            .rows
+            .iter()
+            .map(|row| fa::TrialBalanceIrRow {
+                account_code: row.code.clone(),
+                account_name: row.name.clone(),
+                unit_id: row.unit_id,
+                debits: row.debits,
+                credits: row.credits,
+            })
+            .collect(),
+    };
+    let ir = fa::render_trial_balance_ir(&input, &specs)
+        .map_err(|e| Fail::Internal(format!("trial balance IR: {e}")))?;
+    render_ir(book, request, &ir)
 }
 
 pub(crate) fn render_summary_trial_balance(
@@ -9756,10 +9834,21 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ));
         }
     }
-    if ["--before-certificate", "--after-certificate", "--from-diff"]
+    const RENDER_EXAMPLE: &str =
+        "fa statement balance-sheet --for FY2026-P03 --render pdf --out balance-sheet.pdf";
+    let render = render_request(args, RENDER_EXAMPLE)?;
+    let from_certificates = ["--before-certificate", "--after-certificate", "--from-diff"]
         .iter()
-        .any(|flag| args.flag(flag).is_some())
+        .any(|flag| args.flag(flag).is_some());
+    if render.is_some()
+        && (from_certificates || matches!(args.positional[1].as_str(), "diff" | "trace"))
     {
+        return Err(usage(
+            "--render renders one statement; a diff or trace is not rendered",
+            RENDER_EXAMPLE,
+        ));
+    }
+    if from_certificates {
         return statement_from_certificates(ctx, args);
     }
     let period = args.require("--for", "<period>, for example FY2026-P03")?;
@@ -9893,6 +9982,7 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .map(String::from)
             .collect(),
     };
+    let render_definition = render.as_ref().map(|_| selection.definition.clone());
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let originally = as_originally_reported(
         args,
@@ -9934,6 +10024,22 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // Render every amount, column and mapping before retaining a certificate
     // or emitting a success. Missing units never become printable fallbacks.
     let rendered = statement_presentation(&statement, &book.context().units)?;
+    // A requested document is rendered (a missing clock tick refused) and
+    // written before a certificate is retained or the report emitted.
+    let rendering = match (render.as_ref(), render_definition.as_ref()) {
+        (Some(request), Some(definition)) => {
+            let specs = unit_format_specs(
+                &book.context().units,
+                statement.lines.iter().map(|line| line.unit_id),
+            )?;
+            let ir = fa::render_statement_ir(&statement, definition, &specs)
+                .map_err(|e| Fail::Internal(format!("statement IR: {e}")))?;
+            let rendering = render_ir(&book, request, &ir)?;
+            write_rendering(&ctx.files, request, &rendering)?;
+            Some(rendering)
+        }
+        _ => None,
+    };
     let retained = certificate
         .as_ref()
         .map(|certificate| {
@@ -9946,6 +10052,9 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     emit_statement(&ctx.out, &statement, rendered, digest.as_deref());
     if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
         notary::emit_report_certificate(&ctx.out, args, certificate, &bytes, &retained);
+    }
+    if let (Some(request), Some(rendering)) = (render.as_ref(), rendering) {
+        emit_rendering(&ctx.out, request, rendering);
     }
     Ok(())
 }
@@ -10664,6 +10773,198 @@ fn validate_trial_balance_units(
         registered_unit_code(fa_money::UnitId(unit), units)?;
     }
     Ok(())
+}
+
+/// A report's `--render md|html|svg|pdf|pdfa [--out <new-file>]` request
+/// (fa-cet), checked before the book is read.
+struct RenderRequest<'a> {
+    format: fa::StatementRenderFormat,
+    out: Option<&'a str>,
+}
+
+fn render_request<'a>(args: &'a Args, example: &str) -> Result<Option<RenderRequest<'a>>, Fail> {
+    if args.flag_all("--render").len() > 1 || args.flag_all("--out").len() > 1 {
+        return Err(usage(
+            "--render and --out may each be supplied only once",
+            example,
+        ));
+    }
+    let Some(raw) = args.flag("--render") else {
+        if args.flag("--out").is_some() {
+            return Err(usage("--out names the file --render writes", example));
+        }
+        return Ok(None);
+    };
+    let format =
+        fa::StatementRenderFormat::parse(raw).map_err(|e| usage(e.to_string(), example))?;
+    let out = args.flag("--out");
+    if out.is_some_and(|path| path.is_empty() || path == "-") {
+        return Err(usage(
+            "--out names a new file; - is not an output file",
+            example,
+        ));
+    }
+    if out.is_none() && format != fa::StatementRenderFormat::Markdown {
+        return Err(usage(
+            format!(
+                "--render {} writes a document file: name a new one with --out",
+                format.as_str()
+            ),
+            example,
+        ));
+    }
+    Ok(Some(RenderRequest { format, out }))
+}
+
+/// The registered display metadata (code, scale) of each unit `ids` names.
+fn unit_format_specs(
+    units: &fa_money::UnitRegistry,
+    ids: impl IntoIterator<Item = u32>,
+) -> Result<Vec<fa::UnitFormatSpec>, Fail> {
+    let mut specs: Vec<fa::UnitFormatSpec> = Vec::new();
+    for id in ids {
+        if specs.iter().any(|spec| spec.unit_id == id) {
+            continue;
+        }
+        let code = registered_unit_code(fa_money::UnitId(id), units)?;
+        let scale = units
+            .get(fa_money::UnitId(id))
+            .map(|unit| unit.scale)
+            .ok_or_else(|| Fail::Internal(format!("unit {id} has no registered scale")))?;
+        specs.push(fa::UnitFormatSpec {
+            unit_id: id,
+            code,
+            scale,
+        });
+    }
+    Ok(specs)
+}
+
+/// A report rendered as its `--render` request asks (fa-cet), before
+/// anything is written: HTML, SVG and PDF are dated by the latest
+/// corroborated TimeEvidence tick known at the report's own frontier, never
+/// the wall clock, so one report renders to the same bytes whenever it is
+/// rendered; with no such tick only Markdown, which carries no date,
+/// renders. A PDF/A is checked by the PDF/A-2b validator.
+struct Rendering {
+    bytes: Vec<u8>,
+    tick: Option<fa_journal::Tick>,
+    pdfa_valid: bool,
+    ir_digest: [u8; 32],
+    markdown: String,
+}
+
+fn render_ir(
+    book: &Book,
+    request: &RenderRequest<'_>,
+    ir: &fa::StatementMarkdownIr,
+) -> Result<Rendering, Fail> {
+    use fa::StatementRenderFormat as Format;
+    type Renderer = fn(&fa::StatementMarkdownIr, u64) -> Result<Vec<u8>, fa::StatementError>;
+    let dated = |render: Renderer| -> Result<(Vec<u8>, Option<fa_journal::Tick>), Fail> {
+        let tick = book
+            .corroborated_tick_at(CommitSeq(ir.known_at))?
+            .ok_or_else(|| {
+                Fail::Environment(format!(
+                    "--render {} dates the document by the book's latest corroborated clock tick known at {}, and none is retained; render Markdown (--render md), which carries no date, or let fad's timed work journal TimeEvidence ticks first",
+                    request.format.as_str(),
+                    ir.known_at
+                ))
+            })?;
+        let bytes = render(ir, tick.observed_utc_ns / 1_000_000_000)
+            .map_err(|e| Fail::Internal(format!("rendering {}: {e}", request.format.as_str())))?;
+        Ok((bytes, Some(tick)))
+    };
+    let (bytes, tick) = match request.format {
+        Format::Markdown => (ir.markdown.as_bytes().to_vec(), None),
+        Format::Html => dated(fa::render_html)?,
+        Format::Svg => dated(fa::render_svg)?,
+        Format::Pdf => dated(fa::render_pdf)?,
+        Format::Pdfa2b => dated(fa::render_pdfa)?,
+    };
+    let pdfa_valid = request.format == Format::Pdfa2b;
+    if pdfa_valid {
+        fa::validate_pdfa2b(&bytes).map_err(|e| Fail::Verification {
+            message: format!("the rendered PDF/A-2b fails its validator: {e}"),
+            detail: Json::Null,
+            cite: Some("ISO 19005-2 (PDF/A-2b), fa-cet".into()),
+            fix: Some("render --render pdf instead, and report this as a defect".into()),
+        })?;
+    }
+    let ir_digest = ir
+        .digest()
+        .map_err(|e| Fail::Internal(format!("rendering IR digest: {e}")))?
+        .0;
+    Ok(Rendering {
+        bytes,
+        tick,
+        pdfa_valid,
+        ir_digest,
+        markdown: ir.markdown.clone(),
+    })
+}
+
+/// Write a rendering to its new `--out` file, before the report is emitted
+/// or its certificate retained, so a path that cannot be written refuses
+/// the whole command.
+fn write_rendering(
+    files: &Files,
+    request: &RenderRequest<'_>,
+    rendering: &Rendering,
+) -> Result<(), Fail> {
+    match request.out {
+        Some(path) => write_new_output_file(files, path, &rendering.bytes, "rendering", "--out"),
+        None => Ok(()),
+    }
+}
+
+/// Emit `rendered` after the report; without `--out` (Markdown only) the
+/// document travels inline.
+fn emit_rendering(out: &Out, request: &RenderRequest<'_>, rendering: Rendering) {
+    let digest = fa_model::domain_digest(b"fa:rendering-file:v1", &[&rendering.bytes]);
+    let inline = request.out.is_none().then_some(rendering.markdown);
+    let human = match (&inline, request.out) {
+        (Some(markdown), _) => markdown.trim_end().to_string(),
+        (None, path) => format!(
+            "rendered {} ({} bytes) to {}",
+            request.format.as_str(),
+            rendering.bytes.len(),
+            path.unwrap_or_default()
+        ),
+    };
+    let tick = rendering.tick.as_ref();
+    out.event(
+        "rendered",
+        vec![
+            ("format", s(request.format.as_str())),
+            ("ir_digest", s(hex(&rendering.ir_digest))),
+            ("digest", s(hex(&digest))),
+            ("bytes", Json::Int(rendering.bytes.len() as i128)),
+            ("out", request.out.map_or(Json::Null, s)),
+            (
+                "created",
+                tick.map_or(Json::Null, |tick| {
+                    s(fa::format_utc_epoch_iso8601(
+                        tick.observed_utc_ns / 1_000_000_000,
+                    ))
+                }),
+            ),
+            (
+                "tick",
+                tick.map_or(Json::Null, |tick| s(format!("{:032x}", tick.entry.0))),
+            ),
+            (
+                "pdfa_valid",
+                if rendering.pdfa_valid {
+                    Json::Bool(true)
+                } else {
+                    Json::Null
+                },
+            ),
+            ("markdown", inline.map_or(Json::Null, s)),
+        ],
+        &human,
+    );
 }
 
 /// The same renderer serves both an original report and its verified replay.

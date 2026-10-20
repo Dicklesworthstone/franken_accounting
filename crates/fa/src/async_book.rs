@@ -1381,6 +1381,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, _| Ok(fa_journal::latest_tick(db)?))
     }
 
+    /// The latest corroborated TimeEvidence tick known at recorded frontier
+    /// `at` (fa-psz): its `TimeControl` entry carries `monotonic_ok`.
+    pub fn corroborated_tick_at(
+        &self,
+        cx: &PurposeContexts,
+        at: CommitSeq,
+    ) -> Result<Option<fa_journal::Tick>, BookError> {
+        self.query(cx, |db, _| {
+            Ok(fa_journal::sweep::latest_corroborated_tick(db, Some(at))?)
+        })
+    }
+
     /// Journal the caller's daemon-clock observation as TimeEvidence.
     /// The capability's holder is the principal; the kernel enforces the
     /// `witness` authority and monotonicity law. This adapter reads no clock.

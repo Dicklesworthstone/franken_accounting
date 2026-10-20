@@ -2038,6 +2038,16 @@ impl Book {
         with_store!(&self.store, core => core.latest_tick(&self.purposes()))
     }
 
+    /// The latest corroborated TimeEvidence tick known at recorded frontier
+    /// `at`: what a rendering of a report read at `at` is dated by, so the
+    /// same report renders to the same bytes whenever it is rendered.
+    pub fn corroborated_tick_at(
+        &self,
+        at: CommitSeq,
+    ) -> Result<Option<fa_journal::Tick>, BookError> {
+        with_store!(&self.store, core => core.corroborated_tick_at(&self.purposes(), at))
+    }
+
     /// Journal the caller's clock observation under its context and
     /// capability. This adapter reads no clock and creates no runtime.
     pub async fn record_tick(
