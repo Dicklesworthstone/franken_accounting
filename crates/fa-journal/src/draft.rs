@@ -50,6 +50,13 @@ use crate::post::Admission;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{bytes, edge_id, prop, scalar_bytes, scalar_text};
 
+mod rehearsal;
+pub(crate) use rehearsal::Rehearsing;
+pub use rehearsal::{
+    DraftRehearsal, DraftRehearsalRequest, DraftRehearsalSource, DraftSourceRecord,
+    rehearse_draft_into,
+};
+
 /// Canonical bytes of a draft body: `u16 version ‖ book_id[16] ‖ str name ‖
 /// u128 owner_principal` (extension 8).
 pub const DRAFT_BODY_VERSION: u16 = 1;

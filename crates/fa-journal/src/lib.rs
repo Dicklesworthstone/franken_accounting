@@ -71,9 +71,10 @@ pub use chart::{
 };
 pub use custody::{CustodyBody, CustodyEvent, CustodyMoved, custody_chain, transfer_custody};
 pub use draft::{
-    DraftBody, DraftClosure, DraftPlanned, DraftPromoted, DraftRecorded, DraftRequest, DraftState,
+    DraftBody, DraftClosure, DraftPlanned, DraftPromoted, DraftRecorded, DraftRehearsal,
+    DraftRehearsalRequest, DraftRehearsalSource, DraftRequest, DraftSourceRecord, DraftState,
     DraftView, PlannedIntent, discard_draft, list_drafts, open_draft, plan_into_draft,
-    promote_draft, read_draft,
+    promote_draft, read_draft, rehearse_draft_into,
 };
 pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{

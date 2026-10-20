@@ -526,6 +526,7 @@ fn contains_reconciled_claim(batches: &[LogicalDeltaBatch]) -> bool {
 enum ReplayPolicy {
     ProtectedCoordinates,
     LegacyScenarioV1,
+    PreserveAllPublications,
 }
 
 /// Re-commit `batches` into the empty `target` and return the [`SeqMap`].
@@ -575,8 +576,9 @@ async fn replay_batches_with_policy<W: asupersync::fs::Vfs + Clone>(
             "replay into a newly opened, empty database",
         )));
     }
-    let preserve_sequences =
-        matches!(policy, ReplayPolicy::ProtectedCoordinates) && contains_reconciled_claim(batches);
+    let preserve_sequences = matches!(policy, ReplayPolicy::PreserveAllPublications)
+        || (matches!(policy, ReplayPolicy::ProtectedCoordinates)
+            && contains_reconciled_claim(batches));
     let mut maintenance = Maintenance::default();
     let mut pairs = Vec::new();
     for batch in batches {
@@ -725,6 +727,33 @@ where
         book,
         prefix,
         ReplayPolicy::LegacyScenarioV1,
+    )
+    .await
+}
+
+/// New draft rehearsals preserve the selected prefix exactly: capability
+/// expiry, statement issuance and native claims all retain their original
+/// sequence coordinates. Maintenance rows are still omitted; each omitted
+/// publication is a real normalized no-op against the replayed book root.
+/// Existing public scenario replay policies and durable bytes are unchanged.
+pub(crate) async fn replay_into_preserving_publications<V, W>(
+    source: &mut Database<V>,
+    target: &mut Database<W>,
+    ctx: &PurposeContexts,
+    book: &crate::genesis::BookContext,
+    prefix: CommitSeq,
+) -> Outcome<SeqMap>
+where
+    V: asupersync::fs::Vfs + Clone,
+    W: asupersync::fs::Vfs + Clone,
+{
+    replay_into_with_policy(
+        source,
+        target,
+        ctx,
+        book,
+        Some(prefix),
+        ReplayPolicy::PreserveAllPublications,
     )
     .await
 }

@@ -28,6 +28,10 @@ on:
       - 'crates/fa-journal/tests/bank_matches/**'
       - 'crates/fa-journal/src/attestation.rs'
       - 'crates/fa-journal/src/draft.rs'
+      - 'crates/fa-journal/src/draft/**'
+      - 'crates/fa-journal/src/scratch.rs'
+      - 'crates/fa-journal/tests/draft_rehearsal.rs'
+      - 'crates/fa-journal/tests/draft_rehearsal/**'
       - 'crates/fa-journal/src/migration.rs'
       - 'crates/fa-journal/src/schedule.rs'
       - 'crates/fa-notary/src/journal.rs'
@@ -291,6 +295,12 @@ jobs:
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-policy --lib capability --jobs 2 -- --nocapture
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test usage --jobs 2 -- --nocapture
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test closing_history --jobs 2
+      - name: Test atomic draft rehearsal, retained planner authority and source integrity
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test draft_rehearsal --jobs 2 -- --nocapture
       - name: Test native bank claims, statement closes and protected cash history
         if: ${{ !cancelled() }}
         shell: bash

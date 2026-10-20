@@ -722,6 +722,11 @@ pub(crate) enum Admission {
     /// admitted and witnesses in this transaction. Only that module can
     /// make the token.
     Promote(crate::draft::Promoting),
+    /// One retained draft intent in an owned, freshly replayed memory book.
+    /// Only the draft rehearsal factory can make this token; no source book
+    /// is published or promoted. Original planner authority and every other
+    /// posting law remain in force at the exact selected source coordinate.
+    ScratchDraft(crate::draft::Rehearsing),
 }
 
 pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
@@ -741,10 +746,13 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
         .collect();
     // A dry run writes nothing, so an Agent may rehearse a trunk post
     // (plan §15.3); a promoted intent reaches trunk on its Human promoter's
-    // authority (§15.2). Every other admission check still runs.
+    // authority (§15.2). An owned scratch draft publishes only a rehearsal.
+    // Every other admission check still runs with the unchanged capability.
     let admit_base = match admission {
         Admission::Commit => fa_policy::admit_base,
-        Admission::Plan | Admission::Promote(_) => fa_policy::admit_base_for_plan,
+        Admission::Plan | Admission::Promote(_) | Admission::ScratchDraft(_) => {
+            fa_policy::admit_base_for_plan
+        }
     };
     if let Err(denial) = admit_base(
         &req.capability,
@@ -1119,7 +1127,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         if let Err(refusal) = crate::closing::authorize(db, book, &req.capability, true)? {
             return Ok(Err(refusal));
         }
-        if carried.is_some() || matches!(admission, Admission::Promote(_)) {
+        if carried.is_some()
+            || matches!(
+                admission,
+                Admission::Promote(_) | Admission::ScratchDraft(_)
+            )
+        {
             return Ok(Err(Refusal::new(
                 code::CLASS_NOT_IMPLEMENTED,
                 exit::REFUSAL,
@@ -1140,7 +1153,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
             return Ok(Err(refusal));
         }
-        if carried.is_some() || matches!(admission, Admission::Promote(_)) {
+        if carried.is_some()
+            || matches!(
+                admission,
+                Admission::Promote(_) | Admission::ScratchDraft(_)
+            )
+        {
             return Ok(Err(crate::revaluation::unsupported_batch()));
         }
     }
