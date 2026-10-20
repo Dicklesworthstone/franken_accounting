@@ -1631,3 +1631,301 @@ fn an_unlinked_import_recorded_before_its_statement_was_linked_retries_to_its_re
     assert_eq!(text(data(&repeated), "continuity"), "unlinked");
     assert_eq!(head(&f.book), after);
 }
+
+fn unmatch_args(confirmed: &Json) -> Vec<String> {
+    let recorded = data(confirmed);
+    vec![
+        "bank".into(),
+        "unmatch".into(),
+        "--match".into(),
+        text(recorded, "match_vid").into(),
+        "--digest".into(),
+        text(recorded, "match_digest").into(),
+    ]
+}
+
+#[test]
+fn explicit_unmatch_retains_history_retries_and_allows_a_fresh_confirmation() {
+    let f = Fixture::new();
+    f.post("release-sale", "2026-03-05", "debit", "100.00", "RELEASE");
+    let source = format!(
+        "{CSV_HEADER}1,BANK-RELEASE,USD,2026-03-31,0.00,100.00,2026-03-05,2026-03-05,CRDT,100.00,Customer,RELEASE\n"
+    );
+    let imported = f.import("release.csv", "csv", &source);
+    let manifest = text(data(&imported), "manifest_oid");
+    let money_before = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    let initial_proposal = &rows(data(&matched), "proposals")[0];
+    let original_args = confirmation_args(&matched, 0, "release-reviewer");
+    let first = confirm_selection(&f.book, &original_args);
+    let first_at = integer(data(&first), "recorded_at");
+    let before = head(&f.book);
+
+    // History is an authorized metadata fold; full source status keeps its
+    // separate governed disclosure requirement.
+    let history = ok(&f.book, &["bank", "history", "--import", manifest]);
+    assert_eq!(text(&history, "event"), "bank_match_history");
+    assert_eq!(text(data(&history), "scope"), "match_history");
+    assert_eq!(integer(data(&history), "confirmation_count"), 1);
+    assert_eq!(integer(data(&history), "unmatch_count"), 0);
+    assert_eq!(integer(data(&history), "active_count"), 1);
+    assert_eq!(
+        rows(data(&history), "active")[0].get("match_vid"),
+        data(&first).get("match_vid")
+    );
+    let (status, _) = run(&f.book, &["bank", "status", "--import", manifest]);
+    assert_ne!(
+        status, 0,
+        "full-source status still requires governed disclosure"
+    );
+    assert_eq!(head(&f.book), before);
+
+    let claimed = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_eq!(integer(data(&claimed), "confirmed_count"), 1);
+    assert_eq!(integer(data(&claimed), "unmatched_count"), 0);
+    assert_eq!(integer(data(&claimed), "outstanding_count"), 0);
+    let retained = &rows(data(&claimed), "proposals")[0];
+    assert_eq!(text(retained, "status"), "confirmed");
+    assert_eq!(retained.get("confirmation_command"), Some(&Json::Null));
+    for key in [
+        "entry_ref",
+        "leg_ordinal",
+        "candidate_ordinal",
+        "decision_card",
+        "decision_card_digest",
+        "proposal_digest",
+        "proposer",
+    ] {
+        assert_eq!(
+            retained.get(key),
+            initial_proposal.get(key),
+            "original {key}"
+        );
+    }
+    assert_eq!(
+        retained.get("confirmed_match").unwrap().get("match_vid"),
+        data(&first).get("match_vid")
+    );
+
+    let args = unmatch_args(&first);
+    let argv: Vec<_> = args.iter().map(String::as_str).collect();
+    let (status, refusal) = run(&f.book, &argv);
+    assert_ne!(status, 0, "unmatch must be explicitly acknowledged");
+    assert!(refusal.render().contains("--yes"));
+    assert_eq!(head(&f.book), before);
+    let wrong_digest = "ab".repeat(32);
+    let (status, _) = run(
+        &f.book,
+        &[
+            "bank",
+            "unmatch",
+            "--match",
+            text(data(&first), "match_vid"),
+            "--digest",
+            &wrong_digest,
+            "--yes",
+        ],
+    );
+    assert_ne!(
+        status, 0,
+        "a release must bind the exact original match digest"
+    );
+    assert_eq!(head(&f.book), before);
+
+    let mut release_args = args.clone();
+    release_args.push("--yes".into());
+    let release_argv: Vec<_> = release_args.iter().map(String::as_str).collect();
+    let release = ok(&f.book, &release_argv);
+    assert_eq!(text(&release, "event"), "bank_match_unmatched");
+    let released = data(&release);
+    assert_eq!(integer(released, "recorded_at"), before + 1);
+    assert_eq!(released.get("already_recorded"), Some(&Json::Bool(false)));
+    assert_eq!(
+        released.get("target").unwrap().get("vid"),
+        data(&first).get("match_vid")
+    );
+    assert_eq!(
+        released.get("target").unwrap().get("digest"),
+        data(&first).get("match_digest")
+    );
+    let released_at = head(&f.book);
+    let retry = ok(&f.book, &release_argv);
+    assert_eq!(
+        data(&retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    for key in [
+        "unmatch_vid",
+        "unmatch_digest",
+        "recorded_at",
+        "target",
+        "unmatched_by",
+    ] {
+        assert_eq!(
+            data(&retry).get(key),
+            released.get(key),
+            "release retry {key}"
+        );
+    }
+    assert_eq!(head(&f.book), released_at);
+
+    let original_retry = confirm_selection(&f.book, &original_args);
+    assert_eq!(
+        data(&original_retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        data(&original_retry).get("match_vid"),
+        data(&first).get("match_vid")
+    );
+    assert_eq!(head(&f.book), released_at);
+    let released_history = ok(&f.book, &["bank", "history", "--import", manifest]);
+    assert_eq!(integer(data(&released_history), "confirmation_count"), 1);
+    assert_eq!(integer(data(&released_history), "unmatch_count"), 1);
+    assert_eq!(integer(data(&released_history), "active_count"), 0);
+    let historical = ok(
+        &f.book,
+        &[
+            "bank",
+            "history",
+            "--import",
+            manifest,
+            "--as-known-at",
+            &first_at.to_string(),
+        ],
+    );
+    assert_eq!(integer(data(&historical), "known_at"), first_at);
+    assert_eq!(
+        integer(historical.get("coordinate").unwrap(), "known_at"),
+        first_at
+    );
+    assert_eq!(integer(data(&historical), "active_count"), 1);
+    assert_eq!(integer(data(&historical), "unmatch_count"), 0);
+
+    let fresh = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_eq!(integer(data(&fresh), "confirmed_count"), 0);
+    assert_eq!(
+        text(&rows(data(&fresh), "proposals")[0], "status"),
+        "proposed"
+    );
+    let second = confirm_selection(&f.book, &confirmation_args(&fresh, 0, "fresh-reviewer"));
+    assert_ne!(
+        data(&second).get("match_vid"),
+        data(&first).get("match_vid")
+    );
+    assert!(integer(data(&second), "source_known_at") >= released_at);
+    let history = ok(&f.book, &["bank", "history", "--import", manifest]);
+    assert_eq!(integer(data(&history), "confirmation_count"), 2);
+    assert_eq!(integer(data(&history), "unmatch_count"), 1);
+    assert_eq!(integer(data(&history), "active_count"), 1);
+    assert_eq!(
+        rows(data(&history), "active")[0].get("match_vid"),
+        data(&second).get("match_vid")
+    );
+
+    let current_head = head(&f.book);
+    let retry_old_release = ok(&f.book, &release_argv);
+    assert_eq!(
+        data(&retry_old_release).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(head(&f.book), current_head);
+    let source_status = ok_privileged(&f.book, &["bank", "status", "--import", manifest]);
+    assert_eq!(
+        text(data(&source_status), "scope"),
+        "recorded_confirmations"
+    );
+    assert_eq!(integer(data(&source_status), "line_count"), 1);
+    assert_eq!(integer(data(&source_status), "confirmed_lines"), 1);
+    assert_eq!(integer(data(&source_status), "remaining_lines"), 0);
+    assert_eq!(rows(data(&source_status), "confirmations").len(), 2);
+    assert_eq!(
+        data(&source_status).get("reconciled_through"),
+        Some(&Json::Null)
+    );
+    let money_after = ok(&f.book, &["tb", "--period", "FY2026-P03"]);
+    for key in ["rows", "unit_totals", "pending_unit_totals", "balanced"] {
+        assert_eq!(
+            data(&money_after).get(key),
+            data(&money_before).get(key),
+            "unchanged {key}"
+        );
+    }
+}
+
+#[test]
+fn reports_exclude_other_statements_cash_claims_until_an_explicit_release() {
+    let f = Fixture::new();
+    f.post("global-cash", "2026-03-05", "debit", "50.00", "GLOBAL");
+    let source = |sequence| {
+        format!(
+            "{CSV_HEADER}{sequence},BANK-GLOBAL,USD,2026-03-31,0.00,50.00,2026-03-05,2026-03-05,CRDT,50.00,Customer,GLOBAL\n"
+        )
+    };
+    let first_import = f.import("global-first.csv", "csv", &source(1));
+    let second_import = f.import("global-second.csv", "csv", &source(2));
+    let first_manifest = text(data(&first_import), "manifest_oid");
+    let second_manifest = text(data(&second_import), "manifest_oid");
+    let first_report = ok_privileged(&f.book, &["bank", "match", "--import", first_manifest]);
+    let second_report = ok_privileged(&f.book, &["bank", "match", "--import", second_manifest]);
+    let stale_args = confirmation_args(&second_report, 0, "other-reviewer");
+    let first = confirm_selection(
+        &f.book,
+        &confirmation_args(&first_report, 0, "first-reviewer"),
+    );
+
+    let occupied = ok_privileged(&f.book, &["bank", "match", "--import", second_manifest]);
+    let row = &rows(data(&occupied), "proposals")[0];
+    assert_eq!(text(row, "status"), "unmatched");
+    assert_eq!(integer(row, "eligible_candidate_count"), 0);
+    assert_eq!(row.get("confirmation_command"), Some(&Json::Null));
+    assert_eq!(integer(data(&occupied), "confirmed_count"), 0);
+    assert_eq!(integer(data(&occupied), "outstanding_count"), 0);
+    let mut release_args = unmatch_args(&first);
+    release_args.push("--yes".into());
+    ok(
+        &f.book,
+        &release_args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let before = head(&f.book);
+    let (status, _) = run_privileged(
+        &f.book,
+        &stale_args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_ne!(
+        status, 0,
+        "the new cash generation requires a post-release review"
+    );
+    assert_eq!(head(&f.book), before);
+
+    let fresh = ok_privileged(&f.book, &["bank", "match", "--import", second_manifest]);
+    assert_eq!(
+        integer(
+            &rows(data(&fresh), "proposals")[0],
+            "eligible_candidate_count"
+        ),
+        1
+    );
+    let second = confirm_selection(&f.book, &confirmation_args(&fresh, 0, "other-reviewer"));
+    assert_eq!(
+        data(&second).get("entry_ref"),
+        data(&first).get("entry_ref")
+    );
+    assert_eq!(
+        data(&second).get("leg_ordinal"),
+        data(&first).get("leg_ordinal")
+    );
+    let first_history = ok(&f.book, &["bank", "history", "--import", first_manifest]);
+    assert_eq!(integer(data(&first_history), "confirmation_count"), 1);
+    assert_eq!(integer(data(&first_history), "unmatch_count"), 1);
+    assert_eq!(integer(data(&first_history), "active_count"), 0);
+    let second_history = ok(&f.book, &["bank", "history", "--import", second_manifest]);
+    assert_eq!(integer(data(&second_history), "confirmation_count"), 1);
+    assert_eq!(integer(data(&second_history), "unmatch_count"), 0);
+    assert_eq!(integer(data(&second_history), "active_count"), 1);
+    let all_history = ok(&f.book, &["bank", "history", "--account", "1000"]);
+    assert_eq!(text(data(&all_history), "account"), "1000");
+    assert_eq!(integer(data(&all_history), "confirmation_count"), 2);
+    assert_eq!(integer(data(&all_history), "unmatch_count"), 1);
+    assert_eq!(integer(data(&all_history), "active_count"), 1);
+}

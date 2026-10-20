@@ -1815,7 +1815,7 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
         ("checkpoint", _) => &[Op::Witness],
         ("proof" | "bundle" | "export", _) => &[Op::Read, Op::Produce],
         ("bank", Some("import")) => &[Op::Read, Op::Post, Op::Reconcile],
-        ("bank", Some("match" | "confirm" | "status")) => &[Op::Read, Op::Reconcile],
+        ("bank", Some("match" | "confirm" | "status" | "history")) => &[Op::Read, Op::Reconcile],
         ("finding", Some("record" | "export")) => &[Op::Read, Op::Produce],
         ("finding", Some("runs" | "list" | "show" | "replay")) => &[Op::Read],
         ("finding", Some("review")) => &[Op::Read, Op::Approve],

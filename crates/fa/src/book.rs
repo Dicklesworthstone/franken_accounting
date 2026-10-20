@@ -1552,6 +1552,46 @@ impl Book {
         )))
     }
 
+    /// Admit an explicit metadata history selector without hydrating the
+    /// retained prefix. Current authority precedes the host's book stamp.
+    pub fn admit_bank_match_history(
+        &self,
+        capability: &fa_journal::Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<CommitSeq> {
+        with_store!(&self.store, core => core.admit_bank_match_history(
+            &self.purposes(), capability, known_at,
+        ))
+    }
+
+    /// Metadata-only immutable match and unmatch history. Current Read and
+    /// Reconcile authority must reach the selected prefix before native
+    /// history is hydrated; source document bytes are not disclosed.
+    pub fn bank_match_history(
+        &mut self,
+        capability: &fa_journal::Capability,
+        known_at: Option<CommitSeq>,
+        statement_oid: Option<fa_model::Oid>,
+    ) -> Outcome<crate::bank::BankMatchHistory> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.bank_match_history(
+            &purposes, capability, known_at, statement_oid,
+        )))
+    }
+
+    /// Append an attributable release of one exact bank confirmation without
+    /// modifying the original fact or posting a monetary journal entry.
+    pub fn unmatch_bank_match(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankUnmatchRequest,
+    ) -> Outcome<crate::bank::BankUnmatchRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.unmatch_bank_match(
+            &purposes, capability, request,
+        )))
+    }
+
     /// The receipt of the import run whose control entry is `run`.
     pub fn read_run(&self, run: VId) -> Result<Option<fa_journal::RunReceipt>, BookError> {
         with_store!(&self.store, core => core.read_run(&self.purposes(), run))

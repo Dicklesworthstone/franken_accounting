@@ -92,7 +92,9 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             // The reviewed closing map and intrinsic close need schema_change
             // or close, outside both launch templates and issued-token ceilings.
             || (e.verb == "close"
-                && matches!(e.subcommand.as_deref(), Some("map" | "year-end")));
+                && matches!(e.subcommand.as_deref(), Some("map" | "year-end")))
+            // Releasing a bank claim requires explicit Human host confirmation.
+            || (e.verb == "bank" && e.subcommand.as_deref() == Some("unmatch"));
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"
@@ -499,4 +501,72 @@ fn closing_reads_lower_to_exact_history_and_mutations_remain_host_only() {
             assert!(!profile.ceiling().iter().any(|op| op.name() == operation));
         }
     }
+}
+
+#[test]
+fn bank_history_preserves_existing_tools_and_keeps_unmatch_host_only() {
+    let (mcp, reg) = embedded();
+    assert!(mcp.cluster("fa.bank").unwrap().on_demand);
+    let history = mcp.tool_for("bank", Some("history")).unwrap();
+    assert_eq!(history.wire_name(), "fa_bank_history");
+    assert!(!history.is_dangerous(reg));
+    let manifest = "ab".repeat(32);
+    let arguments = json!({
+        "account": "1000", "import": manifest, "as_known_at": "17",
+    });
+    let invocation = history.invocation(&mcp, reg, &arguments).unwrap();
+    assert!(invocation.stdin.is_none());
+    let parsed =
+        fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(parsed.positional, vec!["bank", "history"]);
+    assert_eq!(parsed.flag("--account"), Some("1000"));
+    assert_eq!(parsed.flag("--import"), Some(manifest.as_str()));
+    assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("bank", &parsed)
+            .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+        Some(vec!["read", "reconcile"]),
+    );
+    let translated = mcp
+        .command_to_call(
+            reg,
+            &format!("fa bank history --account 1000 --import {manifest} --as-known-at 17 --json"),
+        )
+        .unwrap();
+    assert_eq!(translated.tool, "fa_bank_history");
+    assert_eq!(translated.arguments, arguments);
+
+    let schema = history.input_schema(&mcp, reg);
+    for property in ["account", "import", "as_known_at"] {
+        assert_eq!(schema["properties"][property]["type"], json!("string"));
+    }
+    for property in ["file", "text", "yes", "grant", "principal", "profile"] {
+        assert!(schema["properties"].get(property).is_none(), "{property}");
+    }
+    for forbidden in [
+        json!({"grant": ["privileged"]}),
+        json!({"yes": true}),
+        json!({"text": "governed source bytes"}),
+        json!({"file": "/outside-launch-root/bank.csv"}),
+    ] {
+        assert!(history.invocation(&mcp, reg, &forbidden).is_err());
+    }
+
+    for (subcommand, wire) in [("confirm", "fa_bank_confirm"), ("status", "fa_bank_status")] {
+        let tool = mcp.tool_for("bank", Some(subcommand)).unwrap();
+        assert_eq!(tool.wire_name(), wire);
+        assert!(!tool.is_dangerous(reg));
+        assert!(!mcp.excluded.iter().any(|excluded| {
+            excluded.verb == "bank" && excluded.subcommand.as_deref() == Some(subcommand)
+        }));
+    }
+    assert!(mcp.tool_for("bank", Some("unmatch")).is_none());
+    assert!(mcp.excluded.iter().any(|excluded| {
+        excluded.verb == "bank"
+            && excluded.subcommand.as_deref() == Some("unmatch")
+            && excluded.reason.contains("host-only")
+    }));
+    assert!(reg.dangerous.iter().any(|dangerous| {
+        dangerous.verb == "bank" && dangerous.subcommand.as_deref() == Some("unmatch")
+    }));
 }

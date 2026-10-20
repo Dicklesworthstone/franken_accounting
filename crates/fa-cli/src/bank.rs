@@ -4,11 +4,12 @@
 //! complete evidence closure on every match. This surface supplies no grades,
 //! inferred exchange rates or balancing entries. Confirmation is explicit.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa::bank::{
-    BankConfirmationRequest, BankFormat, BankImportManifest, BankImportRequest, BankMatchRecorded,
-    BankMatchRequest, BankStatusRequest,
+    BankConfirmationRequest, BankDecisionRef, BankFormat, BankImportManifest, BankImportRequest,
+    BankMatchRecorded, BankMatchRequest, BankStatusRequest, BankUnmatchRecorded,
+    BankUnmatchRequest,
 };
 use fa_model::{Oid, account_vid};
 use fa_money::{Amount, Side};
@@ -23,6 +24,8 @@ const IMPORT_EXAMPLE: &str = "fa bank import <statement|-> --bank-format camt053
 const MATCH_EXAMPLE: &str = "fa bank match --import <manifest_oid> --grant privileged [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>] --json (embedded-owner CLI with explicit full-source authority)";
 const CONFIRM_EXAMPLE: &str = "fa bank confirm --import <manifest_oid> --line-ordinal <ordinal> --proposal-digest <hex64> --source-known-at <seq> --proposer <hex32> --date-window <days> --grant privileged --json (use the exact confirmation_command printed by bank match)";
 const STATUS_EXAMPLE: &str = "fa bank status --import <manifest_oid> --grant privileged [--as-known-at HEAD|<seq>|<RFC3339>] --json";
+const HISTORY_EXAMPLE: &str = "fa bank history [--account <code>] [--import <manifest_oid>] [--as-known-at HEAD|<seq>] --json";
+const UNMATCH_EXAMPLE: &str = "fa bank unmatch --match <hex32> --digest <hex64> --yes --json";
 
 pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let sub = args.positional.get(1).map(String::as_str);
@@ -38,6 +41,8 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--proposer",
         ],
         Some("status") => &["--import", "--as-known-at"],
+        Some("history") => &["--account", "--import", "--as-known-at"],
+        Some("unmatch") => &["--match", "--digest"],
         _ => &[],
     };
     for flag in [
@@ -51,11 +56,13 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--proposal-digest",
         "--source-known-at",
         "--proposer",
+        "--match",
+        "--digest",
     ] {
         if args.flag(flag).is_some() && !allowed.contains(&flag) {
             return Err(usage(
                 format!("{flag} does not apply to bank {}", sub.unwrap_or("")),
-                "bank import binds the parser and cash account; match and status select the retained manifest; confirm selects one exact replayed proposal",
+                "bank import binds the parser and cash account; match and status select a manifest; confirm selects a proposal; unmatch selects an exact confirmation; history filters native decisions",
             ));
         }
         one_flag(
@@ -65,13 +72,15 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 Some("match") => MATCH_EXAMPLE,
                 Some("confirm") => CONFIRM_EXAMPLE,
                 Some("status") => STATUS_EXAMPLE,
+                Some("history") => HISTORY_EXAMPLE,
+                Some("unmatch") => UNMATCH_EXAMPLE,
                 _ => IMPORT_EXAMPLE,
             },
         )?;
     }
     if args.switch("--dry-run") {
         return Err(usage(
-            "bank does not support --dry-run; match and status already read without publishing",
+            "bank does not support --dry-run; match, status and history already read without publishing",
             "review bank match before explicitly confirming its exact selected proposal",
         ));
     }
@@ -80,8 +89,10 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("match") => match_statement(ctx, args),
         Some("confirm") => confirm_statement(ctx, args),
         Some("status") => confirmation_status(ctx, args),
+        Some("history") => match_history(ctx, args),
+        Some("unmatch") => unmatch_statement(ctx, args),
         _ => Err(usage(
-            "bank has the subcommands import, match, confirm and status",
+            "bank has the subcommands import, match, confirm, unmatch, history and status",
             IMPORT_EXAMPLE,
         )),
     }
@@ -262,15 +273,29 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             date_window_days,
         },
     )??;
-    // Compute ambiguity before greedy consumption, so a losing statement
-    // line still exposes its competition for an otherwise eligible cash leg.
+    // Only native active claims can remove resources from eligibility. Greedy
+    // proposals must not manufacture uniqueness for another statement line.
+    let consumed_cash_legs: BTreeSet<_> = report.consumed_cash_legs.iter().copied().collect();
+    let occupied_bank_lines: BTreeSet<_> = report.occupied_bank_lines.iter().copied().collect();
+    let confirmed_by_line: BTreeMap<_, _> = report
+        .confirmed_matches
+        .iter()
+        .map(|recorded| (recorded.confirmation.line_ordinal, recorded))
+        .collect();
     let mut eligible_counts = vec![0_usize; report.lines.len()];
     let mut competing = vec![false; report.lines.len()];
     let window = i32::try_from(report.date_window_days)
         .map_err(|_| Fail::Internal("admitted bank date window exceeds i32".into()))?;
     for candidate in &report.candidates {
+        if consumed_cash_legs.contains(&(candidate.candidate.entry_ref.vid, candidate.leg_ordinal))
+        {
+            continue;
+        }
         let mut first_line = None;
         for (index, line) in report.lines.iter().enumerate() {
+            if occupied_bank_lines.contains(&(report.manifest.statement_oid, line.line_ordinal)) {
+                continue;
+            }
             if pinned_bank_candidate(line, &candidate.candidate, window)
                 .map_err(|error| Fail::Internal(format!("bank candidate law: {error}")))?
             {
@@ -290,22 +315,62 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .filter(|(count, contested)| **count > 1 || **contested)
         .count();
     let mut consumed = BTreeSet::new();
+    let mut confirmed_count = 0_usize;
+    let mut occupied_count = 0_usize;
+    let mut unmatched_count = 0_usize;
     let mut rows = Vec::with_capacity(report.lines.len());
     for (index, (line, proposal)) in report.lines.iter().zip(&report.proposals).enumerate() {
-        let selected = proposal.matched_entry_ordinal.and_then(|ordinal| {
-            usize::try_from(ordinal)
-                .ok()
-                .and_then(|index| report.candidates.get(index))
-        });
-        if let Some(ordinal) = proposal.matched_entry_ordinal {
-            consumed.insert(ordinal);
+        let recorded = confirmed_by_line.get(&line.line_ordinal).copied();
+        let occupied =
+            occupied_bank_lines.contains(&(report.manifest.statement_oid, line.line_ordinal));
+        let selected = if recorded.is_none() && !occupied {
+            proposal.matched_entry_ordinal.and_then(|ordinal| {
+                usize::try_from(ordinal)
+                    .ok()
+                    .and_then(|index| report.candidates.get(index))
+            })
+        } else {
+            None
+        };
+        if let Some(candidate) = selected {
+            consumed.insert(candidate.candidate.entry_ordinal);
         }
-        let card = proposal
-            .decision_card
+        let status = if recorded.is_some() {
+            confirmed_count += 1;
+            "confirmed"
+        } else if occupied {
+            occupied_count += 1;
+            "occupied"
+        } else if selected.is_some() {
+            "proposed"
+        } else {
+            unmatched_count += 1;
+            "unmatched"
+        };
+        let decision_card = recorded.map_or(&proposal.decision_card, |recorded| {
+            &recorded.confirmation.decision_card
+        });
+        let card = decision_card
             .canonical_bytes()
             .map_err(|e| Fail::Internal(format!("bank decision card: {e}")))?;
-        let proposal_digest = hex(&proposal.oid().map_err(|e| Fail::Internal(e.to_string()))?.0);
-        let proposer = format!("{:032x}", proposal.principal.0);
+        let proposal_digest = if let Some(recorded) = recorded {
+            hex(&recorded.confirmation.proposal_digest)
+        } else {
+            hex(&proposal.oid().map_err(|e| Fail::Internal(e.to_string()))?.0)
+        };
+        let proposal_principal = recorded.map_or(proposal.principal, |recorded| {
+            recorded.confirmation.proposer
+        });
+        let proposer = format!("{:032x}", proposal_principal.0);
+        let entry_ref = recorded
+            .map(|recorded| recorded.confirmation.entry_ref)
+            .or_else(|| selected.map(|candidate| candidate.candidate.entry_ref));
+        let leg_ordinal = recorded
+            .map(|recorded| recorded.confirmation.leg_ordinal)
+            .or_else(|| selected.map(|candidate| candidate.leg_ordinal));
+        let candidate_ordinal = recorded
+            .map(|recorded| recorded.confirmation.candidate_ordinal)
+            .or_else(|| selected.map(|candidate| candidate.candidate.entry_ordinal));
         let confirmation_command = if selected.is_some()
             && eligible_counts[index] == 1
             && !competing[index]
@@ -370,57 +435,46 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     format!("D:{}", hex(&report.manifest.line_oids[index].0)),
                 ),
             ),
-            (
-                "status",
-                s(if selected.is_some() {
-                    "proposed"
-                } else {
-                    "unmatched"
-                }),
-            ),
+            ("status", s(status)),
             (
                 "entry_ref",
-                selected.map_or(Json::Null, |candidate| {
+                entry_ref.map_or(Json::Null, |entry| {
                     obj(vec![
-                        (
-                            "vid",
-                            s(format!("{:032x}", candidate.candidate.entry_ref.vid.0)),
-                        ),
-                        (
-                            "entry_digest",
-                            s(hex(&candidate.candidate.entry_ref.entry_digest)),
-                        ),
+                        ("vid", s(format!("{:032x}", entry.vid.0))),
+                        ("entry_digest", s(hex(&entry.entry_digest))),
                     ])
                 }),
             ),
             (
                 "leg_ordinal",
-                selected.map_or(Json::Null, |candidate| {
-                    Json::Int(i128::from(candidate.leg_ordinal))
-                }),
+                leg_ordinal.map_or(Json::Null, |ordinal| Json::Int(i128::from(ordinal))),
             ),
             (
                 "candidate_ordinal",
-                proposal
-                    .matched_entry_ordinal
-                    .map_or(Json::Null, |n| Json::Int(i128::from(n))),
+                candidate_ordinal.map_or(Json::Null, |ordinal| Json::Int(i128::from(ordinal))),
             ),
             ("decision_card", s(hex(&card))),
             (
                 "decision_card_digest",
-                s(hex(&proposal
-                    .decision_card
+                s(hex(&decision_card
                     .digest()
                     .map_err(|e| Fail::Internal(e.to_string()))?)),
             ),
             ("proposal_digest", s(proposal_digest)),
             ("proposer", s(proposer)),
             ("confirmation_command", confirmation_command),
+            (
+                "confirmed_match",
+                recorded.map_or(Json::Null, |recorded| obj(confirmation_fields(recorded))),
+            ),
         ]));
     }
     let mut outstanding = Vec::new();
     for candidate in &report.candidates {
-        if consumed.contains(&candidate.candidate.entry_ordinal) {
+        if consumed.contains(&candidate.candidate.entry_ordinal)
+            || consumed_cash_legs
+                .contains(&(candidate.candidate.entry_ref.vid, candidate.leg_ordinal))
+        {
             continue;
         }
         outstanding.push(obj(vec![
@@ -461,6 +515,7 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ]));
     }
     let matched = consumed.len();
+    let outstanding_count = outstanding.len();
     let unit_code = book
         .context()
         .units
@@ -518,12 +573,11 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("predecessor", predecessor_json(&report.manifest, &book)?),
         ("line_count", Json::Int(report.lines.len() as i128)),
         ("proposed_count", Json::Int(matched as i128)),
+        ("confirmed_count", Json::Int(confirmed_count as i128)),
+        ("occupied_count", Json::Int(occupied_count as i128)),
         ("ambiguous_count", Json::Int(ambiguous_count as i128)),
-        (
-            "unmatched_count",
-            Json::Int((report.lines.len() - matched) as i128),
-        ),
-        ("outstanding_count", Json::Int(outstanding.len() as i128)),
+        ("unmatched_count", Json::Int(unmatched_count as i128)),
+        ("outstanding_count", Json::Int(outstanding_count as i128)),
         (
             "statement_closing_balance",
             money(report.manifest.closing_balance, report.manifest.unit, &book)?,
@@ -563,9 +617,8 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         _ => "none (the statement contains no bank lines)".into(),
     };
     ctx.out.event("bank_matches_proposed", fields, &format!(
-        "bank statement for {} at {}: {matched} exact proposals, {ambiguous_count} ambiguous bank lines requiring review, {} unmatched bank lines, {} unmatched book candidates; candidate search: {candidate_window}; outstanding inventory completeness is unestablished; proposals are unconfirmed",
-        report.account_code, report.known_at.0, report.lines.len() - matched,
-        report.candidates.len() - matched,
+        "bank statement for {} at {}: {matched} exact proposals, {confirmed_count} active confirmations, {occupied_count} lines claimed under another retained interpretation, {ambiguous_count} ambiguous bank lines requiring review, {unmatched_count} unmatched bank lines, {outstanding_count} unmatched book candidates; candidate search: {candidate_window}; outstanding inventory completeness is unestablished",
+        report.account_code, report.known_at.0,
     ));
     Ok(())
 }
@@ -621,6 +674,40 @@ fn confirmation_fields(recorded: &BankMatchRecorded) -> Vec<(&'static str, Json)
             Json::Int(i128::from(confirmation.date_window_days)),
         ),
         ("proposal_digest", s(hex(&confirmation.proposal_digest))),
+        (
+            "line_generation",
+            Json::Int(i128::from(
+                confirmation
+                    .lineage
+                    .as_ref()
+                    .map_or(0, |lineage| lineage.line_generation),
+            )),
+        ),
+        (
+            "leg_generation",
+            Json::Int(i128::from(
+                confirmation
+                    .lineage
+                    .as_ref()
+                    .map_or(0, |lineage| lineage.leg_generation),
+            )),
+        ),
+        (
+            "previous_line_unmatch",
+            confirmation
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.previous_line_unmatch.as_ref())
+                .map_or(Json::Null, decision_ref_json),
+        ),
+        (
+            "previous_leg_unmatch",
+            confirmation
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.previous_leg_unmatch.as_ref())
+                .map_or(Json::Null, decision_ref_json),
+        ),
         ("method", s("pinned_exact_one_to_one")),
     ]
 }
@@ -724,7 +811,12 @@ fn confirmation_status(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         },
     )??;
     let line_count = status.manifest.line_oids.len();
-    let confirmed = status.confirmations.len();
+    let confirmed = status
+        .confirmations
+        .iter()
+        .map(|recorded| recorded.confirmation.line_ordinal)
+        .collect::<BTreeSet<_>>()
+        .len();
     let fields = vec![
         ("manifest_oid", s(hex(&status.manifest_oid.0))),
         ("statement_oid", s(hex(&status.manifest.statement_oid.0))),
@@ -768,6 +860,202 @@ fn confirmation_status(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     ctx.out.event("bank_confirmation_status", fields, &format!(
         "{confirmed} of {line_count} bank lines have recorded confirmations at {}; {} remain; a closing-balance attestation and reconciliation lock are not established by these facts",
         status.known_at.0, line_count - confirmed,
+    ));
+    Ok(())
+}
+
+fn decision_ref_json(reference: &BankDecisionRef) -> Json {
+    obj(vec![
+        ("vid", s(format!("{:032x}", reference.vid.0))),
+        ("digest", s(hex(&reference.digest))),
+    ])
+}
+
+fn unmatch_fields(recorded: &BankUnmatchRecorded) -> Vec<(&'static str, Json)> {
+    let unmatch = &recorded.unmatch;
+    vec![
+        ("unmatch_vid", s(format!("{:032x}", recorded.unmatch_vid.0))),
+        ("unmatch_digest", s(hex(&recorded.unmatch_digest))),
+        ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
+        ("target", decision_ref_json(&unmatch.target)),
+        (
+            "unmatched_by",
+            s(format!("{:032x}", unmatch.unmatched_by.0)),
+        ),
+        ("unmatching_profile", s(unmatch.unmatching_profile.name())),
+        (
+            "capability_commitment",
+            s(hex(&unmatch.capability_commitment)),
+        ),
+        (
+            "security_policy_epoch",
+            Json::Int(i128::from(unmatch.security_policy_epoch)),
+        ),
+        ("already_recorded", Json::Bool(recorded.already_recorded)),
+    ]
+}
+
+fn unmatch_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "bank unmatch selects one exact confirmation through --match and --digest",
+            UNMATCH_EXAMPLE,
+        ));
+    }
+    let match_text = required(args, "--match", UNMATCH_EXAMPLE)?;
+    if match_text.len() != 32 || !match_text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(usage(
+            "--match must be the confirmation's 32-hex VID",
+            UNMATCH_EXAMPLE,
+        ));
+    }
+    let target = BankDecisionRef {
+        vid: crate::cli::parse_vid(match_text, "--match")?,
+        digest: crate::document::hex32(required(args, "--digest", UNMATCH_EXAMPLE)?, "--digest")?,
+    };
+    let capability = ctx.capability(args, &["read", "reconcile"])?;
+    admit(&capability, false)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(capability.holder(), &capability)??;
+        Ok(())
+    })?;
+    let recorded = book.unmatch_bank_match(&capability, BankUnmatchRequest { target })??;
+    ctx.out.at_book(&book)?;
+    ctx.out.event("bank_match_unmatched", unmatch_fields(&recorded), &format!(
+        "{} release {:032x} for bank match {:032x}; released by {:032x} at {}; the original decision remains in history",
+        if recorded.already_recorded { "already recorded" } else { "recorded" },
+        recorded.unmatch_vid.0, recorded.unmatch.target.vid.0,
+        recorded.unmatch.unmatched_by.0, recorded.recorded_at.0,
+    ));
+    Ok(())
+}
+
+fn match_history(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "bank history selects native decisions through optional --account and --import filters",
+            HISTORY_EXAMPLE,
+        ));
+    }
+    let account_code = one_flag(args, "--account", HISTORY_EXAMPLE)?;
+    if account_code == Some("") {
+        return Err(usage(
+            "--account must name a cash account code",
+            HISTORY_EXAMPLE,
+        ));
+    }
+    let manifest_oid = one_flag(args, "--import", HISTORY_EXAMPLE)?
+        .map(|value| crate::document::hex32(value, "--import").map(Oid))
+        .transpose()?;
+    // Parse the numeric prefix before opening the book. Unlike source replay,
+    // decision history needs no timestamp resolver or governed document reads.
+    let known_at = match one_flag(args, "--as-known-at", HISTORY_EXAMPLE)? {
+        None | Some("HEAD") => None,
+        Some(value) => Some(fgdb_types::CommitSeq(value.parse::<u64>().map_err(
+            |_| {
+                usage(
+                    "--as-known-at must be HEAD or a numeric commit sequence",
+                    HISTORY_EXAMPLE,
+                )
+            },
+        )?)),
+    };
+    let capability = ctx.capability(args, &["read", "reconcile"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        // Native admission checks current revocation and the selected reach
+        // before history hydration or response metadata is available.
+        book.admit_bank_match_history(&capability, known_at)??;
+        Ok(())
+    })?;
+    let history = book.bank_match_history(&capability, known_at, None)??;
+    let account = account_code.map(|code| account_vid(book.context().book_id, code));
+    let in_scope = |recorded: &BankMatchRecorded| {
+        account.is_none_or(|account| recorded.confirmation.account == account)
+            && manifest_oid.is_none_or(|manifest| recorded.confirmation.manifest_oid == manifest)
+    };
+    let confirmations: Vec<_> = history
+        .confirmations
+        .iter()
+        .filter(|recorded| in_scope(recorded))
+        .collect();
+    let targets: BTreeSet<_> = confirmations
+        .iter()
+        .map(|recorded| (recorded.match_vid, recorded.match_digest))
+        .collect();
+    let unmatches: Vec<_> = history
+        .unmatches
+        .iter()
+        .filter(|recorded| {
+            targets.contains(&(recorded.unmatch.target.vid, recorded.unmatch.target.digest))
+        })
+        .collect();
+    let active: Vec<_> = history
+        .active
+        .iter()
+        .filter(|recorded| in_scope(recorded))
+        .collect();
+    let confirmation_count = confirmations.len();
+    let unmatch_count = unmatches.len();
+    let active_count = active.len();
+    let fields = vec![
+        ("known_at", Json::Int(i128::from(history.known_at.0))),
+        ("scope", s("match_history")),
+        ("account", account_code.map_or(Json::Null, s)),
+        (
+            "account_ref",
+            account.map_or(Json::Null, |account| s(format!("{:032x}", account.0))),
+        ),
+        (
+            "manifest_oid",
+            manifest_oid.map_or(Json::Null, |manifest| s(hex(&manifest.0))),
+        ),
+        ("confirmation_count", Json::Int(confirmation_count as i128)),
+        ("unmatch_count", Json::Int(unmatch_count as i128)),
+        ("active_count", Json::Int(active_count as i128)),
+        (
+            "confirmations",
+            Json::Arr(
+                confirmations
+                    .into_iter()
+                    .map(|recorded| obj(confirmation_fields(recorded)))
+                    .collect(),
+            ),
+        ),
+        (
+            "unmatches",
+            Json::Arr(
+                unmatches
+                    .into_iter()
+                    .map(|recorded| obj(unmatch_fields(recorded)))
+                    .collect(),
+            ),
+        ),
+        (
+            "active",
+            Json::Arr(
+                active
+                    .into_iter()
+                    .map(|recorded| obj(confirmation_fields(recorded)))
+                    .collect(),
+            ),
+        ),
+    ];
+    let max_inline = crate::verbs::registry()
+        .map_err(|error| Fail::Internal(error.into()))?
+        .daemon
+        .max_frame_bytes
+        .saturating_sub(128 * 1024);
+    if obj(fields.clone()).render().len() > max_inline {
+        return Err(usage(
+            "the complete bank decision history exceeds the inline transport bound; no decisions were omitted",
+            "select --account, --import or an earlier numeric --as-known-at prefix",
+        ));
+    }
+    ctx.out.at_book(&book)?;
+    ctx.out.known_at(history.known_at);
+    ctx.out.event("bank_match_history", fields, &format!(
+        "bank decision history at {}: {confirmation_count} confirmations, {unmatch_count} releases, {active_count} active matches",
+        history.known_at.0,
     ));
     Ok(())
 }

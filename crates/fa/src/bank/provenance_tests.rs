@@ -787,3 +787,5 @@ fn a_caller_cannot_substitute_an_asserted_predecessor_receipt_for_the_native_wit
             .is_none()
     );
 }
+
+mod correction_tests;

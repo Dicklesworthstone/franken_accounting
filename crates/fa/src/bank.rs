@@ -35,7 +35,10 @@ pub use fa_journal::import::{BankFormat, BankImportManifest, BankImportPredecess
 
 mod confirmation;
 pub use confirmation::{BankConfirmationRequest, BankConfirmationStatus, BankStatusRequest};
-pub use fa_journal::bank::{BankMatchConfirmation, BankMatchRecorded};
+pub use fa_journal::bank::{
+    BankDecisionRef, BankMatchConfirmation, BankMatchHistory, BankMatchLineage, BankMatchRecorded,
+    BankUnmatchRecorded, BankUnmatchRequest,
+};
 
 const PARSER_REVISION: u16 = 1;
 
@@ -99,6 +102,15 @@ pub struct BankMatchReport {
     pub decision_epoch: [u8; 32],
     pub lines: Vec<BankStatementLine>,
     pub candidates: Vec<BankMatchCandidate>,
+    /// Active immutable confirmations for this exact retained interpretation.
+    /// Their original proposal and attribution remain in the native record.
+    pub confirmed_matches: Vec<BankMatchRecorded>,
+    /// Every active cash-leg claim in the book at `known_at`, including claims
+    /// from other statements. Candidate ordinals still index the full vector.
+    pub consumed_cash_legs: Vec<(VId, u16)>,
+    /// Every active source-line claim at `known_at`, independent of parser or
+    /// account remapping. Keys are original statement identities and ordinals.
+    pub occupied_bank_lines: Vec<(Oid, u32)>,
     pub proposals: Vec<ReconciliationMatch>,
     pub book_closing_balance: i128,
     /// Statement closing less posted book closing, in the bound unit.
@@ -853,6 +865,62 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let verified_predecessors = predecessors.len().saturating_sub(1);
         let manifest = verified.manifest;
         let lines = verified.lines;
+        let context = self.context().clone();
+        let active_claims = match fa_journal::bank::read_bank_match_claims(
+            &mut self.db,
+            cx,
+            &context,
+            capability,
+            Some(seq),
+        )
+        .await?
+        {
+            Ok(claims) => claims,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let consumed_cash_legs: BTreeSet<_> = active_claims
+            .iter()
+            .map(|recorded| {
+                (
+                    recorded.confirmation.entry_ref.vid,
+                    recorded.confirmation.leg_ordinal,
+                )
+            })
+            .collect();
+        let occupied_bank_lines: BTreeSet<_> = active_claims
+            .iter()
+            .map(|recorded| {
+                (
+                    recorded.confirmation.statement_oid,
+                    recorded.confirmation.line_ordinal,
+                )
+            })
+            .collect();
+        let mut confirmed_matches = Vec::new();
+        for recorded in active_claims {
+            let confirmation = &recorded.confirmation;
+            if confirmation.statement_oid != manifest.statement_oid
+                || confirmation.manifest_oid != request.manifest_oid
+            {
+                continue;
+            }
+            let Some(index) = lines
+                .iter()
+                .position(|line| line.line_ordinal == confirmation.line_ordinal)
+            else {
+                return Ok(Err(closure_drift(
+                    "an active confirmation names a line absent from its retained statement",
+                )));
+            };
+            if confirmation.account != manifest.account
+                || confirmation.line_document_oid != manifest.line_oids[index]
+            {
+                return Ok(Err(closure_drift(
+                    "an active confirmation disagrees with its retained manifest's account or line document",
+                )));
+            }
+            confirmed_matches.push(recorded);
+        }
         let unit = manifest.unit;
         let account = match self.bank_account(cx, manifest.account, unit, seq)? {
             Ok(account) => account,
@@ -924,6 +992,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         );
         let native: Vec<_> = candidates
             .iter()
+            .filter(|candidate| {
+                !consumed_cash_legs
+                    .contains(&(candidate.candidate.entry_ref.vid, candidate.leg_ordinal))
+            })
             .map(|candidate| candidate.candidate.clone())
             .collect();
         let config = MatcherConfig {
@@ -933,8 +1005,37 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             pinned_fallback_only: true,
             advisory_learned_scores_bps: BTreeMap::new(),
         };
-        let proposals = match_bank_lines(&lines, &native, &config, proposer)
-            .map_err(|e| corrupt(e.to_string()))?;
+        let available_lines: Vec<_> = lines
+            .iter()
+            .filter(|line| !occupied_bank_lines.contains(&(line.statement_oid, line.line_ordinal)))
+            .cloned()
+            .collect();
+        let mut available_proposals =
+            match_bank_lines(&available_lines, &native, &config, proposer)
+                .map_err(|e| corrupt(e.to_string()))?
+                .into_iter();
+        let mut proposals = Vec::with_capacity(lines.len());
+        for line in &lines {
+            let proposal = if occupied_bank_lines.contains(&(line.statement_oid, line.line_ordinal))
+            {
+                // Preserve one position per source line. Consumers display
+                // the retained fact in `confirmed_matches` for these rows.
+                match_bank_lines(core::slice::from_ref(line), &[], &config, proposer)
+                    .map_err(|e| corrupt(e.to_string()))?
+                    .pop()
+                    .ok_or_else(|| corrupt("the matcher omitted an occupied source line"))?
+            } else {
+                available_proposals
+                    .next()
+                    .ok_or_else(|| corrupt("the matcher omitted an available source line"))?
+            };
+            proposals.push(proposal);
+        }
+        if available_proposals.next().is_some() {
+            return Err(corrupt(
+                "the matcher produced an extra source-line proposal",
+            ));
+        }
         let bank_by_id = lines
             .iter()
             .map(|line| {
@@ -990,6 +1091,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             decision_epoch,
             lines,
             candidates,
+            confirmed_matches,
+            consumed_cash_legs: consumed_cash_legs.into_iter().collect(),
+            occupied_bank_lines: occupied_bank_lines.into_iter().collect(),
             proposals,
             book_closing_balance,
             closing_difference,

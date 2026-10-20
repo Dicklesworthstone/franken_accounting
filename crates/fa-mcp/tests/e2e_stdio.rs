@@ -712,7 +712,10 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
             "expect":wrong_units.to_string()
         }),
     );
-    assert!(error, "freshness refuses recipient currency substitution: {output}");
+    assert!(
+        error,
+        "freshness refuses recipient currency substitution: {output}"
+    );
     assert_eq!(structured_error(&output)["refusal_id"], json!("FA-REF-150"));
     assert_eq!(producer.finish(), 0);
 }
@@ -2618,4 +2621,314 @@ fn an_agent_plans_into_a_draft_and_a_host_controller_promotes_it() {
         "the promoted entry is on trunk: {text}"
     );
     assert_eq!(mcp.finish(), 0);
+}
+
+#[test]
+fn bank_history_over_stdio_preserves_releases_and_source_authority() {
+    let dir = tmp("bank-history");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Bank history MCP",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#).unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        chart.to_str().unwrap(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let evidence = source_document(&dir, &b);
+    let reference = "MCP-PRIVATE-BANK-REFERENCE";
+    let counterparty = "MCP-PRIVATE-BANK-COUNTERPARTY";
+    let intent = dir.join("cash.json");
+    std::fs::write(
+        &intent,
+        format!(r#"{{"effective_date":"2026-03-15","idempotency_key":"mcp-bank-cash","legs":[{{"side":"debit","account":"1000","amount":"50.00 USD","memo":"{reference}"}},{{"side":"credit","account":"4000","amount":"50.00 USD"}}]}}"#),
+    ).unwrap();
+    cli_data(&[
+        "post",
+        "--intent",
+        intent.to_str().unwrap(),
+        "--evidence",
+        &evidence,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let statement = dir.join("statement.csv");
+    std::fs::write(
+        &statement,
+        format!("sequence_number,instrument_id,currency,statement_date,opening_balance,closing_balance,booking_date,value_date,side,amount,counterparty,reference\n1,MCP-BANK-123,USD,2026-03-31,0.00,50.00,2026-03-15,2026-03-15,CRDT,50.00,{counterparty},{reference}\n"),
+    ).unwrap();
+    let imported = cli_data(&[
+        "bank",
+        "import",
+        statement.to_str().unwrap(),
+        "--bank-format",
+        "csv",
+        "--account",
+        "1000",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let imported: JsonValue = fastmcp_rust::serde_json::from_str(&imported).unwrap();
+    let manifest = imported["manifest_oid"].as_str().unwrap();
+    let history_args = [
+        "bank",
+        "history",
+        "--account",
+        "1000",
+        "--import",
+        manifest,
+        "--book",
+        &b,
+        "--json",
+    ];
+    let before = cli_data(&history_args);
+    let before_data: JsonValue = fastmcp_rust::serde_json::from_str(&before).unwrap();
+    assert_eq!(before_data["confirmation_count"], json!(0));
+    assert_eq!(before_data["unmatch_count"], json!(0));
+    assert_eq!(before_data["active_count"], json!(0));
+    let before_pin = before_data["known_at"].as_u64().unwrap().to_string();
+
+    // Preserve the existing confirmation selection API. Only the host can
+    // disclose governed source bytes and confirm as an admitted Human.
+    let proposed = cli_data(&[
+        "bank",
+        "match",
+        "--import",
+        manifest,
+        "--date-window",
+        "3",
+        "--grant",
+        "privileged",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let proposed: JsonValue = fastmcp_rust::serde_json::from_str(&proposed).unwrap();
+    assert_eq!(proposed["proposed_count"], json!(1));
+    let proposal = &proposed["proposals"][0];
+    let line = proposal["line_ordinal"].as_u64().unwrap().to_string();
+    let digest = proposal["proposal_digest"].as_str().unwrap();
+    let proposer = proposal["proposer"].as_str().unwrap();
+    let source_pin = proposed["known_at"].as_u64().unwrap().to_string();
+    let confirm_args = [
+        "bank",
+        "confirm",
+        "--import",
+        manifest,
+        "--line-ordinal",
+        &line,
+        "--proposal-digest",
+        digest,
+        "--source-known-at",
+        &source_pin,
+        "--proposer",
+        proposer,
+        "--date-window",
+        "3",
+        "--grant",
+        "privileged",
+        "--as",
+        "bank-reviewer",
+        "--book",
+        &b,
+        "--json",
+    ];
+    let confirmed = cli_data(&confirm_args);
+    let confirmed: JsonValue = fastmcp_rust::serde_json::from_str(&confirmed).unwrap();
+    assert_eq!(confirmed["already_recorded"], json!(false));
+    assert_eq!(confirmed["line_generation"], json!(0));
+    assert_eq!(confirmed["leg_generation"], json!(0));
+    let target = json!({"vid": confirmed["match_vid"], "digest": confirmed["match_digest"]});
+    let active = cli_data(&history_args);
+    let active_data: JsonValue = fastmcp_rust::serde_json::from_str(&active).unwrap();
+    assert_eq!(active_data["scope"], json!("match_history"));
+    assert_eq!(active_data["manifest_oid"], json!(manifest));
+    assert_eq!(active_data["confirmation_count"], json!(1));
+    assert_eq!(active_data["unmatch_count"], json!(0));
+    assert_eq!(active_data["active_count"], json!(1));
+    assert_eq!(
+        active_data["active"][0]["match_vid"],
+        confirmed["match_vid"]
+    );
+    assert_eq!(
+        active_data["active"][0]["match_digest"],
+        confirmed["match_digest"]
+    );
+    assert_eq!(
+        active_data["active"][0]["statement_oid"],
+        imported["statement_oid"]
+    );
+    let active_pin = active_data["known_at"].as_u64().unwrap().to_string();
+    assert_ne!(active_pin, before_pin);
+
+    let inspect = |mcp: &mut Mcp, arguments: JsonValue, expected: &str| {
+        let (error, output, metadata) = call_tool(mcp, "fa_bank_history", arguments);
+        assert!(!error, "{output}");
+        assert_eq!(output, expected);
+        assert!(
+            !output.contains(reference),
+            "source reference disclosed: {output}"
+        );
+        assert!(
+            !output.contains(counterparty),
+            "source counterparty disclosed: {output}"
+        );
+        let envelope: JsonValue =
+            fastmcp_rust::serde_json::from_str(metadata["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        let data: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+        assert_eq!(envelope["events"], json!(["bank_match_history"]));
+        assert_eq!(envelope["authority"]["profile"], json!("agent"));
+        assert_eq!(envelope["coordinate"]["known_at"], data["known_at"]);
+    };
+    let launch = [
+        "--cluster",
+        "fa.bank",
+        "--grant",
+        "read",
+        "--grant",
+        "reconcile",
+    ];
+    let mut mcp = Mcp::start_with(&book, &launch);
+    mcp.discover();
+    inspect(
+        &mut mcp,
+        json!({"account": "1000", "import": manifest}),
+        &active,
+    );
+    inspect(
+        &mut mcp,
+        json!({"account": "1000", "import": manifest, "as_known_at": before_pin}),
+        &before,
+    );
+
+    // Existing source-bearing tools remain present and keep their original
+    // privilege/Human boundary. Metadata history does not widen that authority.
+    for (tool, arguments) in [
+        ("fa_bank_match", json!({"import": manifest})),
+        ("fa_bank_status", json!({"import": manifest})),
+        (
+            "fa_bank_confirm",
+            json!({
+                "import": manifest, "line_ordinal": line, "proposal_digest": digest,
+                "source_known_at": source_pin, "proposer": proposer, "date_window": 3,
+            }),
+        ),
+    ] {
+        let (error, output, _) = call_tool(&mut mcp, tool, arguments);
+        assert!(
+            error,
+            "{tool} must retain its source/confirmation authority: {output}"
+        );
+        let refused = structured_error(&output);
+        assert_eq!(refused["exit"], json!(7));
+        assert_eq!(refused["authority"]["profile"], json!("agent"));
+    }
+    for forbidden in [json!({"grant": ["privileged"]}), json!({"yes": true})] {
+        let (error, output, _) = call_tool(&mut mcp, "fa_bank_history", forbidden);
+        assert!(error, "{output}");
+        assert_eq!(
+            structured_error(&output)["type"],
+            json!("forbidden_argument")
+        );
+    }
+    assert_eq!(mcp.finish(), 0);
+    assert_eq!(
+        cli_data(&history_args),
+        active,
+        "reads and refusals must not publish"
+    );
+
+    // A release preserves the original decision and its prior active prefix.
+    let released = cli_data(&[
+        "bank",
+        "unmatch",
+        "--match",
+        confirmed["match_vid"].as_str().unwrap(),
+        "--digest",
+        confirmed["match_digest"].as_str().unwrap(),
+        "--yes",
+        "--as",
+        "bank-reviewer",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let released: JsonValue = fastmcp_rust::serde_json::from_str(&released).unwrap();
+    assert_eq!(released["target"], target);
+    assert_eq!(released["already_recorded"], json!(false));
+    let after = cli_data(&history_args);
+    let after_data: JsonValue = fastmcp_rust::serde_json::from_str(&after).unwrap();
+    assert_eq!(after_data["confirmation_count"], json!(1));
+    assert_eq!(after_data["unmatch_count"], json!(1));
+    assert_eq!(after_data["active_count"], json!(0));
+    assert_eq!(
+        after_data["confirmations"][0]["match_vid"],
+        confirmed["match_vid"]
+    );
+    assert_eq!(
+        after_data["unmatches"][0]["unmatch_vid"],
+        released["unmatch_vid"]
+    );
+    assert_eq!(after_data["unmatches"][0]["target"], target);
+    let mut mcp = Mcp::start_with(&book, &launch);
+    mcp.discover();
+    inspect(
+        &mut mcp,
+        json!({"account": "1000", "import": manifest}),
+        &after,
+    );
+    inspect(
+        &mut mcp,
+        json!({"account": "1000", "import": manifest, "as_known_at": active_pin}),
+        &active,
+    );
+    assert_eq!(mcp.finish(), 0);
+
+    let mut reader = Mcp::start_with(&book, &["--cluster", "fa.bank", "--grant", "read"]);
+    reader.discover();
+    for arguments in [
+        json!({"account": "1000", "import": manifest}),
+        json!({"account": "1000", "import": manifest, "as_known_at": active_pin}),
+    ] {
+        let (error, output, _) = call_tool(&mut reader, "fa_bank_history", arguments);
+        assert!(
+            error,
+            "reconcile authority is required for metadata too: {output}"
+        );
+        let refused = structured_error(&output);
+        assert_eq!(refused["refusal_id"], json!("FA-REF-011"));
+        assert_eq!(refused["exit"], json!(7));
+        assert!(output.contains("reconcile"), "{output}");
+    }
+    assert_eq!(reader.finish(), 0);
+    assert_eq!(
+        cli_data(&history_args),
+        after,
+        "history reads and denials must not publish"
+    );
 }

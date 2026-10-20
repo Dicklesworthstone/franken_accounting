@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
     paths:
+      - 'registries/object_schemas/bank_unmatch.toml'
+      - 'registries/object_schemas/bank_match.toml'
+      - 'crates/fa-mcp/tests/parity.rs'
+      - 'crates/fa-policy/src/lib.rs'
+      - 'crates/fa-policy/src/bank_matching.rs'
+      - 'crates/fa/Cargo.toml'
+      - 'Cargo.lock'
       - 'crates/fa-lantern/**'
       - 'crates/fa-cli/tests/network.rs'
       - 'crates/fa/src/procedure_certificate.rs'
@@ -240,6 +247,12 @@ jobs:
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-policy --lib capability --jobs 2 -- --nocapture
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test usage --jobs 2 -- --nocapture
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test closing_history --jobs 2
+      - name: Test native bank claims, immutable releases and generation history
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test bank_matches --jobs 2 -- --nocapture
       - name: Test bank statement parsers, retained intake, matching and native confirmations
         if: ${{ !cancelled() }}
         shell: bash
@@ -249,7 +262,6 @@ jobs:
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --lib reconciliation --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib bank --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib import --jobs 2
-          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test bank_matches --jobs 2 -- --nocapture
       - name: Test legacy formats and secure native migration proposals
         if: ${{ !cancelled() }}
         shell: bash
@@ -283,6 +295,12 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --test e2e_stdio financial_statements_and_retained_replay_use_the_same_agent_bound_surface --jobs 2 -- --exact --nocapture
+      - name: Test metadata bank history and immutable releases over MCP stdio
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --test e2e_stdio bank_history_over_stdio_preserves_releases_and_source_authority --jobs 2 -- --exact --nocapture
       - name: Regress existing native certificate replay through the CLI
         if: ${{ !cancelled() }}
         shell: bash

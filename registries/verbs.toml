@@ -525,14 +525,14 @@ example = "fa finding record jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
 name = "bank"
-summary = "Retain bank statements, replay exact cash-leg proposals, explicitly confirm reviewed selections, and inspect immutable confirmation history."
+summary = "Retain bank statements, propose available cash-leg matches, confirm reviewed selections, release exact decisions and inspect immutable match history."
 writes = true
-subcommands = ["import", "match", "confirm", "status"]
-flags = ["--previous-import", "--bank-format", "--account", "--import", "--date-window", "--as-known-at", "--grant", "--line-ordinal", "--proposal-digest", "--source-known-at", "--proposer"]
+subcommands = ["import", "match", "confirm", "unmatch", "history", "status"]
+flags = ["--previous-import", "--bank-format", "--account", "--import", "--date-window", "--as-known-at", "--grant", "--line-ordinal", "--proposal-digest", "--source-known-at", "--proposer", "--match", "--digest"]
 switches = []
-events = ["bank_imported", "bank_matches_proposed", "bank_match_confirmed", "bank_confirmation_status"]
+events = ["bank_imported", "bank_matches_proposed", "bank_match_confirmed", "bank_match_unmatched", "bank_match_history", "bank_confirmation_status"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code> [--previous-import <manifest_oid> --grant privileged]", "bank match --import <manifest_oid> [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>]", "bank confirm --import <manifest_oid> --line-ordinal <ordinal> --proposal-digest <hex64> --source-known-at <exact-seq> --proposer <hex32> [--date-window <days>] --grant privileged", "bank status --import <manifest_oid> --grant privileged [--as-known-at HEAD|<seq>|<RFC3339>]", "Import requires read, post and reconcile and one debit-normal Asset leaf in the statement currency. Original bytes, canonical lines and the parser/account manifest are retained atomically with the native import receipt; an exact repeat returns the existing receipt.", "Match requires read and reconcile. It reopens and verifies the retained source closure, then proposes exact amount, date and reference matches against cash-leg memos; the default date window is 3 days. Complete decision cards and stable leg identities explain every proposal. eligible_candidate_count and competing_bank_lines expose ties before consumption; ambiguous proposals and unmatched lines competing for one cash leg require review. Proposals remain unconfirmed and create no monetary entry or match confirmation.", "Matching replays the complete original BankStatement and requires authority to disclose its full source; a redacted view is insufficient. An embedded-owner operator explicitly opts in with fa bank match --import <manifest_oid> --grant privileged. Reading the original source similarly uses fa document read <statement_oid> --grant privileged. Current MCP launch templates cannot hold privileged: fa_bank_match refuses governed BankStatement sources, so an independently authorized operator must perform those matches.", "The response names its inclusive candidate window. Outstanding means unmatched cash legs in that window, never a complete reconciliation inventory; an empty statement has no candidate window. The closing difference separately compares the statement balance with the journal's closing balance. Wire formats accept the bounded profiles documented by fa-formats and refuse ambiguous sources; unlinked imports remain explicitly unlinked.", "An explicit previous import replays its complete retained chain before publication. The bank/instrument identity, mapped cash account, currency, checked next sequence, opening-to-prior-closing balance and statement date order must agree. Cross-uploader exact repeats return the original receipt; a competing predecessor for the same statement/account refuses atomically. The bounded chain ends at an explicitly unlinked retained statement. continuity=verified_predecessor is structural evidence, never a confirmed match or reconciliation.", "An unambiguous match row includes proposer and confirmation_command. Confirmation reconstructs the complete selected proposal at source_known_at, verifies its digest and source closure, then atomically records the exact original cash-leg ordinal and an exclusive line/leg claim. Current Human read, reconcile and full-source authority are required. The recorded confirmer is distinct from the proposer preserved in the proposal bytes; those bytes are not a separate signed preparation event. An exact retry returns the original immutable receipt even under a different authorized reviewer. Conflicting or ambiguous selections refuse; no amount, fee or residual is posted.", "Status replays the retained source and inventories native confirmation births at the selected prefix. It reports original confirming principals, exact source coordinates and remaining lines. Removed or edited records fail verification. Later reversals do not erase a recorded confirmation; scope remains recorded_confirmations and reconciled_through remains null. A complete live reconciliation, closing-balance attestation, supersession and posting soft lock require their own native operations.", "Confirm and status also need complete governed BankStatement replay. An embedded owner must explicitly opt into --grant privileged. Current MCP launch ceilings cannot hold privileged, so the on-demand tools refuse these governed sources; per-call arguments cannot widen launch authority."]
+usage = ["bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code> [--previous-import <manifest_oid> --grant privileged]", "bank match --import <manifest_oid> [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>]", "bank confirm --import <manifest_oid> --line-ordinal <ordinal> --proposal-digest <hex64> --source-known-at <exact-seq> --proposer <hex32> [--date-window <days>] --grant privileged", "bank status --import <manifest_oid> --grant privileged [--as-known-at HEAD|<seq>|<RFC3339>]", "bank unmatch --match <hex32> --digest <hex64> --yes", "bank history [--account <code>] [--import <manifest_oid>] [--as-known-at HEAD|<seq>]", "Import requires read, post and reconcile and one debit-normal Asset leaf in the statement currency. Original bytes, canonical lines and the parser/account manifest are retained atomically with the native import receipt; an exact repeat returns the existing receipt.", "Match requires read and reconcile. It reopens and verifies the retained source closure, then proposes exact amount, date and reference matches against cash-leg memos; the default date window is 3 days. Complete decision cards and stable leg identities explain every proposal. Active native claims remove occupied lines and cash legs before eligibility is computed; candidate ordinals remain stable. eligible_candidate_count and competing_bank_lines expose ties before greedy proposal consumption. Existing confirmations retain their original card, proposer and exact reference with status=confirmed; lines claimed under another retained interpretation have status=occupied. Available ambiguous proposals and unmatched lines competing for one cash leg require review. This read creates no monetary entry or match confirmation.", "Matching replays the complete original BankStatement and requires authority to disclose its full source; a redacted view is insufficient. An embedded-owner operator explicitly opts in with fa bank match --import <manifest_oid> --grant privileged. Reading the original source similarly uses fa document read <statement_oid> --grant privileged. Current MCP launch templates cannot hold privileged: fa_bank_match refuses governed BankStatement sources, so an independently authorized operator must perform those matches.", "The response names its inclusive candidate window. Outstanding means available cash legs in that window left unmatched by proposals, excluding active native claims across statements; it is never a complete reconciliation inventory; an empty statement has no candidate window. The closing difference separately compares the statement balance with the journal's closing balance. Wire formats accept the bounded profiles documented by fa-formats and refuse ambiguous sources; unlinked imports remain explicitly unlinked.", "An explicit previous import replays its complete retained chain before publication. The bank/instrument identity, mapped cash account, currency, checked next sequence, opening-to-prior-closing balance and statement date order must agree. Cross-uploader exact repeats return the original receipt; a competing predecessor for the same statement/account refuses atomically. The bounded chain ends at an explicitly unlinked retained statement. continuity=verified_predecessor is structural evidence, never a confirmed match or reconciliation.", "An unambiguous match row includes proposer and confirmation_command. Confirmation reconstructs the complete selected proposal at source_known_at, verifies its digest and source closure, then atomically records the exact original cash-leg ordinal and an exclusive line/leg claim. Current Human read, reconcile and full-source authority are required. The recorded confirmer is distinct from the proposer preserved in the proposal bytes; those bytes are not a separate signed preparation event. An exact retry returns the original immutable receipt even under a different authorized reviewer or after release and rematching; it cannot reactivate a released generation. Conflicting or ambiguous selections refuse; no amount, fee or residual is posted.", "Status replays the retained source and inventories native confirmation births at the selected prefix. It reports original confirming principals and exact source coordinates for every recorded generation; confirmed_lines counts distinct source lines ever confirmed at that prefix and remaining_lines counts those never confirmed. Removed or edited records fail verification. Later reversals do not erase a recorded confirmation; scope remains recorded_confirmations and reconciled_through remains null. A complete live reconciliation, closing-balance attestation and posting soft lock require their own native operations.", "Unmatch requires current Human read and reconcile authority and an exact match VID plus digest. With --yes it appends an attributed release of that confirmation and its cash-leg claim; prior records and amounts remain unchanged. The two resources may then be confirmed in independent later generations that cite their releases. An exact release retry returns the original release and never affects a later generation.", "History requires current read and reconcile authority and verifies native confirmation, claim and release births without opening statement or manifest bytes, including externally stored manifests. It reports all selected decisions plus active claims at the numeric --as-known-at prefix or HEAD. Optional account and manifest filters select metadata; history establishes neither a live balance attestation nor a reconciliation lock. Revocation is checked against current authority even for older prefixes. The history tool is available to appropriately scoped MCP sessions; unmatch remains a Human host operation.", "Confirm and status also need complete governed BankStatement replay. An embedded owner must explicitly opt into --grant privileged. Current MCP launch ceilings cannot hold privileged, so the on-demand tools refuse these governed sources; per-call arguments cannot widen launch authority."]
 example = "fa bank import statement.xml --bank-format camt053 --account 1000 --book ./books/myco --json"
 
 [[verb]]
@@ -729,6 +729,12 @@ expands = ["gl", "lots"]
 # already has materialized register cells). Gate: every operation the plan
 # names dangerous has a row (fa-cli dangerous-operation test), and every row
 # is refused without --yes and admitted with it.
+
+[[dangerous]]
+verb = "bank"
+subcommand = "unmatch"
+condition = "always"
+safe = "inspect bank history and select the exact match VID and digest before releasing its line and cash-leg claim"
 
 [[dangerous]]
 verb = "close"
@@ -957,19 +963,31 @@ fields = ["manifest_oid:hex","statement_oid:hex","statement_commit:hex","bank_fo
 [[event]]
 name = "bank_matches_proposed"
 book = true
-doc = "Exact, unconfirmed bank-line proposals after source-closure verification at one known-at prefix. Outstanding rows are unmatched cash-leg candidates inside the named inclusive window, not a complete reconciliation inventory. Empty statements have null window bounds. Closing balances and their difference are exact journal/statement amounts; no confirmation or monetary posting occurs. continuity is unlinked or verified_predecessor; verified_predecessors counts replayed links ending at an unlinked root. predecessor binds the immediately preceding retained receipt and statement. This is not match confirmation."
-fields = ["manifest_oid:hex","statement_oid:hex","account:string","account_ref:hex","unit:string","known_at:seq","statement_date:date","date_window:int","candidate_from:string?","candidate_through:string?","outstanding_scope:string","outstanding_complete:bool","decision_epoch:hex","method:string","confirmed:bool","line_count:int","proposed_count:int","ambiguous_count:int","unmatched_count:int","outstanding_count:int","statement_closing_balance:amount","book_closing_balance:amount","closing_difference:amount","proposals:[bank_match_proposal]","outstanding:[bank_outstanding_leg]","continuity:string","verified_predecessors:int","predecessor:bank_import_predecessor?"]
+doc = "Bank-line proposals and retained active confirmations after source-closure verification at one known-at prefix. confirmed_count counts this manifest interpretation; occupied_count counts lines claimed under another interpretation. Native active claims exclude occupied resources before eligibility, without changing candidate ordinals. Outstanding rows are remaining available cash-leg candidates inside the inclusive window, not a complete reconciliation inventory. Empty statements have null window bounds. Closing balances are exact journal/statement amounts; this read publishes no confirmation or monetary entry. continuity and predecessor describe structural source links only."
+fields = ["manifest_oid:hex","statement_oid:hex","account:string","account_ref:hex","unit:string","known_at:seq","statement_date:date","date_window:int","candidate_from:string?","candidate_through:string?","outstanding_scope:string","outstanding_complete:bool","decision_epoch:hex","method:string","confirmed:bool","line_count:int","proposed_count:int","confirmed_count:int","occupied_count:int","ambiguous_count:int","unmatched_count:int","outstanding_count:int","statement_closing_balance:amount","book_closing_balance:amount","closing_difference:amount","proposals:[bank_match_proposal]","outstanding:[bank_outstanding_leg]","continuity:string","verified_predecessors:int","predecessor:bank_import_predecessor?"]
 
 [[event]]
 name = "bank_match_confirmed"
 book = true
 doc = "One immutable native confirmation of a replayed exact bank-line proposal. The source manifest, original line and actual EntryRef plus leg ordinal remain bound to the original native receipt. confirmed_by is the currently admitted Human confirmer; proposer is the principal selected in proposal bytes, not a separate authenticated preparation event. Repeating the exact selection returns its original receipt with already_recorded=true and no publication. Confirmation changes no monetary amount and creates no reconciliation lock."
-fields = ["match_vid:hex", "match_digest:hex", "recorded_at:seq", "manifest_oid:hex", "statement_oid:hex", "line_ordinal:int", "line_document_oid:hex", "bank_line_oid:hex", "account_ref:hex", "entry_ref:bank_entry_ref", "leg_ordinal:int", "proposer:hex", "confirmed_by:hex", "confirming_profile:string", "capability_commitment:hex", "source_known_at:seq", "date_window:int", "proposal_digest:hex", "method:string", "already_recorded:bool"]
+fields = ["match_vid:hex","match_digest:hex","recorded_at:seq","manifest_oid:hex","statement_oid:hex","line_ordinal:int","line_document_oid:hex","bank_line_oid:hex","account_ref:hex","entry_ref:bank_entry_ref","leg_ordinal:int","proposer:hex","confirmed_by:hex","confirming_profile:string","capability_commitment:hex","source_known_at:seq","date_window:int","proposal_digest:hex","line_generation:int","leg_generation:int","previous_line_unmatch:bank_decision_ref?","previous_leg_unmatch:bank_decision_ref?","method:string","already_recorded:bool"]
+
+[[event]]
+name = "bank_match_unmatched"
+book = true
+doc = "An attributed immutable release of one exact bank confirmation. Its target VID and digest identify the original decision; the releasing Human and current capability commitment remain recorded. The target confirmation and cash-leg claim are preserved. Exact retries return this same release after later rematching and cannot affect a new generation. No monetary entry is posted."
+fields = ["unmatch_vid:hex","unmatch_digest:hex","recorded_at:seq","target:bank_decision_ref","unmatched_by:hex","unmatching_profile:string","capability_commitment:hex","security_policy_epoch:int","already_recorded:bool"]
+
+[[event]]
+name = "bank_match_history"
+book = true
+doc = "Complete native decision metadata at a selected prefix under current Read and Reconcile authority. Confirmations, exact releases and active claims are authenticated from retained creation history without opening statement or manifest bytes. Optional account and manifest filters select confirmation coordinates and their releases. Counts describe these selected records; active state is a claim fold, not a closing-balance attestation or reconciled-through lock."
+fields = ["known_at:seq", "scope:string", "account:string?", "account_ref:hex?", "manifest_oid:hex?", "confirmation_count:int", "unmatch_count:int", "active_count:int", "confirmations:[bank_confirmation]", "unmatches:[bank_unmatch]", "active:[bank_confirmation]"]
 
 [[event]]
 name = "bank_confirmation_status"
 book = true
-doc = "The complete immutable confirmation inventory for one retained bank statement at known_at, admitted under current full-source authority. Native creation history detects removed or rewritten confirmations and occupied-leg claims. Remaining lines have no confirmation at this prefix; later reversals do not erase historical confirmation facts. scope is recorded_confirmations and reconciled_through is null: this is not a live reconciliation register or a closing-balance attestation."
+doc = "The complete immutable confirmation inventory for one retained bank statement at known_at, admitted under current full-source authority. Native creation history detects removed or rewritten confirmations and occupied-leg claims. confirmed_lines counts distinct source lines with any recorded generation at this prefix; remaining_lines counts those never confirmed. Releases and later reversals do not erase historical confirmation facts. scope is recorded_confirmations and reconciled_through is null: this is not a live reconciliation register or a closing-balance attestation."
 fields = ["manifest_oid:hex", "statement_oid:hex", "account_ref:hex", "known_at:seq", "line_count:int", "confirmed_lines:int", "remaining_lines:int", "scope:string", "reconciled_through:date?", "confirmations:[bank_confirmation]"]
 
 [[event]]
@@ -2194,17 +2212,27 @@ fields = ["vid:hex", "entry_digest:hex"]
 
 [[shape]]
 name = "bank_match_proposal"
-doc = "One retained bank line and its exact unconfirmed candidate, or an unmatched result. Complete canonical DecisionCard bytes and their digest explain selection; proposal_digest binds the proposal. Imported counterparty and reference text remain explicitly untrusted. Eligibility and ambiguity are computed before any other bank line consumes a candidate; deterministic tie-breaking does not resolve accounting ambiguity."
-fields = ["line_ordinal:int", "eligible_candidate_count:int", "competing_bank_lines:bool", "ambiguous:bool", "line_document_oid:hex", "bank_line_id:hex", "booking_date:date", "value_date:date", "direction:string", "amount:amount", "counterparty:untrusted_text?", "reference:untrusted_text?", "status:string", "entry_ref:bank_entry_ref?", "leg_ordinal:int?", "candidate_ordinal:int?", "decision_card:hex", "decision_card_digest:hex", "proposal_digest:hex", "proposer:hex", "confirmation_command:string?"]
+doc = "One retained bank line with status proposed, unmatched, confirmed or occupied. Confirmed rows preserve the original DecisionCard, proposal digest, proposer, cash-leg coordinates and confirmed_match reference. Occupied means another retained interpretation already claims this original source line. Available eligibility excludes only native active claims and is computed before greedy proposal consumption; deterministic tie-breaking does not resolve ambiguity. Imported counterparty and reference text remain explicitly untrusted."
+fields = ["line_ordinal:int", "eligible_candidate_count:int", "competing_bank_lines:bool", "ambiguous:bool", "line_document_oid:hex", "bank_line_id:hex", "booking_date:date", "value_date:date", "direction:string", "amount:amount", "counterparty:untrusted_text?", "reference:untrusted_text?", "status:string", "entry_ref:bank_entry_ref?", "leg_ordinal:int?", "candidate_ordinal:int?", "decision_card:hex", "decision_card_digest:hex", "proposal_digest:hex", "proposer:hex", "confirmation_command:string?", "confirmed_match:bank_confirmation?"]
 
 [[shape]]
 name = "bank_confirmation"
 doc = "An immutable exact-match confirmation with original native publication identity, retained source lineage and actual cash-leg ordinal. Proposer is preserved from proposal bytes; confirmed_by and capability_commitment identify the admitted confirmer. These recorded facts survive later reversals and establish neither a live matched balance nor reconciled-through date."
-fields = ["match_vid:hex", "match_digest:hex", "recorded_at:seq", "manifest_oid:hex", "statement_oid:hex", "line_ordinal:int", "line_document_oid:hex", "bank_line_oid:hex", "account_ref:hex", "entry_ref:bank_entry_ref", "leg_ordinal:int", "proposer:hex", "confirmed_by:hex", "confirming_profile:string", "capability_commitment:hex", "source_known_at:seq", "date_window:int", "proposal_digest:hex", "method:string"]
+fields = ["match_vid:hex","match_digest:hex","recorded_at:seq","manifest_oid:hex","statement_oid:hex","line_ordinal:int","line_document_oid:hex","bank_line_oid:hex","account_ref:hex","entry_ref:bank_entry_ref","leg_ordinal:int","proposer:hex","confirmed_by:hex","confirming_profile:string","capability_commitment:hex","source_known_at:seq","date_window:int","proposal_digest:hex","line_generation:int","leg_generation:int","previous_line_unmatch:bank_decision_ref?","previous_leg_unmatch:bank_decision_ref?","method:string"]
+
+[[shape]]
+name = "bank_decision_ref"
+doc = "An exact immutable bank decision identified by its native VID and canonical payload digest."
+fields = ["vid:hex", "digest:hex"]
+
+[[shape]]
+name = "bank_unmatch"
+doc = "An immutable release referring to one exact confirmation, retaining its original releasing principal, current authority commitment and native publication sequence."
+fields = ["unmatch_vid:hex","unmatch_digest:hex","recorded_at:seq","target:bank_decision_ref","unmatched_by:hex","unmatching_profile:string","capability_commitment:hex","security_policy_epoch:int","already_recorded:bool"]
 
 [[shape]]
 name = "bank_outstanding_leg"
-doc = "A cash leg in the explicitly named candidate date window that was not consumed by an exact proposal. This is a candidate-window observation, not a full outstanding-item inventory."
+doc = "A cash leg in the named candidate window that is neither claimed by an active native confirmation nor consumed by a fresh proposal. This is a candidate-window observation, not a full outstanding-item inventory."
 fields = ["entry_ref:bank_entry_ref", "leg_ordinal:int", "effective_date:date", "side:string", "amount:amount"]
 
 [[shape]]
@@ -2467,7 +2495,7 @@ doc = "Discover recorded forensic runs with bounded cursor pages, then inspect r
 [[mcp.cluster]]
 name = "fa.bank"
 on_demand = true
-doc = "Bank source intake, reproducible exact proposals, immutable line-to-cash-leg confirmations and recorded confirmation history. Parser/account manifests and complete evidence closures bind every selection. Governed BankStatement replay requires full disclosure authority that current MCP launch templates cannot hold; an independently authorized operator performs those operations. Confirmation records the admitted Human principal and exclusive line/leg claims without posting money or establishing a reconciliation lock."
+doc = "Bank source intake, exact available-leg proposals, immutable confirmations and metadata history with explicit release generations. History requires Read and Reconcile and verifies native decisions without opening bank files. Source replay for matching, confirmation and status requires full disclosure authority that current MCP launch templates cannot hold. Human host operators perform explicit releases. No match decision posts money or establishes a reconciliation lock."
 
 [[mcp.cluster]]
 name = "fa.close"
@@ -2478,6 +2506,11 @@ doc = "Inspect journaled fiscal-year closing routes and verify the last mechanic
 name = "fa.notary"
 on_demand = true
 doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements) and evidence bundles, checked independently without book keys (plan §15.4: discoverable on demand)."
+
+[[mcp.excluded]]
+verb = "bank"
+subcommand = "unmatch"
+reason = "host-only: an independently authorized Human explicitly releases one exact confirmation with --yes; launch-bound sessions may inspect native metadata history but cannot release claims"
 
 [[mcp.excluded]]
 verb = "fad"
@@ -3016,7 +3049,7 @@ flags = ["--import", "--line-ordinal", "--proposal-digest", "--source-known-at",
 switches = []
 required = ["--import", "--line-ordinal", "--proposal-digest", "--source-known-at", "--proposer"]
 dont = ["Select the exact unambiguous proposal returned by matching, preserving its proposer, numeric source_known_at, date window and digest. Confirmer identity comes only from the current Human launch capability with read and reconcile.", "Complete governed BankStatement replay requires privileged. Current MCP launch templates cannot hold privileged, so this tool refuses such sources; an independently authorized embedded-owner operator must run the printed confirmation_command. Per-call grants or identity changes cannot expand launch authority.", "Confirmation consumes exactly one retained source line and one actual cash leg atomically. It does not post a fee, change amounts, resolve an ambiguous selection or establish a reconciled-through date."]
-mistakes = ["Replacing source_known_at with HEAD, or proposer with the confirming principal: the original proposal must replay exactly.", "Reusing an occupied line or cash leg with a new parser, account, principal or digest: its immutable claim remains occupied."]
+mistakes = ["Replacing source_known_at with HEAD, or proposer with the confirming principal: the original proposal must replay exactly.", "Reusing an occupied line or cash leg with a new parser, account, principal or digest: an explicit immutable release is required before a new generation can claim it."]
 
 [[mcp.tool]]
 cluster = "fa.bank"
@@ -3029,6 +3062,18 @@ switches = []
 required = ["--import"]
 dont = ["The inventory covers immutable recorded confirmations for one retained statement under current read, reconcile and full-source authority. It is not a live reconciliation register or complete outstanding-item inventory.", "Current MCP launch templates cannot hold privileged for complete governed BankStatement replay; use an independently authorized embedded-owner operator with explicit --grant privileged. Historical selectors do not restore expired or revoked authority."]
 mistakes = ["Treating an original confirmation as proof that its cash entry remains unreversed today.", "Interpreting remaining_lines=0 as a closing-balance assertion or reconciliation lock; reconciled_through remains null."]
+
+[[mcp.tool]]
+cluster = "fa.bank"
+name = "history"
+verb = "bank"
+subcommands = ["history"]
+positionals = []
+flags = ["--account", "--import", "--as-known-at"]
+switches = []
+required = []
+dont = ["The launch capability must hold read and reconcile at the selected prefix. Current revocation is checked before any metadata or retained-history hydration; a historical selector never restores authority.", "This tool reads native confirmation and release metadata without opening BankStatement or manifest bytes, including external documents. Optional account and import filters select exact recorded coordinates.", "Active means an unreleased native claim at known_at. It is not a cash-balance attestation, proof that a source entry remains unreversed, a complete outstanding-item inventory or a reconciled-through lock."]
+mistakes = ["Passing an RFC3339 instant: metadata history accepts HEAD or a numeric commit sequence only.", "Treating old confirmations as active after a release; inspect active and unmatches together."]
 
 [[mcp.tool]]
 cluster = "fa.notary"

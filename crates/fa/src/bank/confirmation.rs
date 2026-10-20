@@ -40,7 +40,7 @@ fn selection_refusal(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §5.7 (a confirmed bank match binds the exact retained source and actual cash leg)",
-        "run fa bank match under current full-source authority, review an unambiguous proposal, and pass its exact confirmation_command; occupied lines and legs cannot be reused",
+        "run fa bank match under current full-source authority, review an unambiguous proposal, and pass its exact confirmation_command; an occupied line or leg requires an explicit authorized unmatch before a fresh review can reuse it",
     )
 }
 
@@ -97,40 +97,61 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         };
         let context = self.context().clone();
-        let match_vid = native::bank_match_vid(
-            context.book_id,
-            verified.manifest.statement_oid,
-            request.line_ordinal,
-        );
-        match native::read_bank_match(
+        let history = match native::bank_match_history(
             &mut self.db,
             cx,
             &context,
             capability,
-            match_vid,
             None,
-            Some(&verified.manifest),
+            Some(verified.manifest.statement_oid),
         )
         .await?
         {
             Err(refusal) => return Ok(Err(refusal)),
-            Ok(Some(mut recorded)) => {
-                let prior = &recorded.confirmation;
-                if prior.manifest_oid != request.manifest_oid
-                    || prior.line_ordinal != request.line_ordinal
-                    || prior.proposal_digest != request.proposal_digest
-                    || prior.source_known_at != request.source_known_at
-                    || prior.date_window_days != request.date_window_days
-                    || prior.proposer != request.proposer
-                {
-                    return Ok(Err(selection_refusal(
-                        "this bank line already has a different immutable confirmation",
+            Ok(history) => history,
+        };
+        // Search every immutable generation before replaying a fresh report.
+        // Retrying an old review after its explicit unmatch returns that same
+        // historical fact; it cannot reactivate the released claims.
+        if let Some(recorded) = history.confirmations.iter().find(|recorded| {
+            let prior = &recorded.confirmation;
+            prior.manifest_oid == request.manifest_oid
+                && prior.line_ordinal == request.line_ordinal
+                && prior.proposal_digest == request.proposal_digest
+                && prior.source_known_at == request.source_known_at
+                && prior.date_window_days == request.date_window_days
+                && prior.proposer == request.proposer
+        }) {
+            match native::read_bank_match(
+                &mut self.db,
+                cx,
+                &context,
+                capability,
+                recorded.match_vid,
+                None,
+                Some(&verified.manifest),
+            )
+            .await?
+            {
+                Err(refusal) => return Ok(Err(refusal)),
+                Ok(Some(mut original)) => {
+                    original.already_recorded = true;
+                    return Ok(Ok(original));
+                }
+                Ok(None) => {
+                    return Ok(Err(closure_drift(
+                        "an immutable confirmation disappeared during exact retry",
                     )));
                 }
-                recorded.already_recorded = true;
-                return Ok(Ok(recorded));
             }
-            Ok(None) => {}
+        }
+        if history.active.iter().any(|recorded| {
+            recorded.confirmation.statement_oid == verified.manifest.statement_oid
+                && recorded.confirmation.line_ordinal == request.line_ordinal
+        }) {
+            return Ok(Err(selection_refusal(
+                "this bank line still has a different active confirmation; explicitly unmatch it before selecting a fresh proposal",
+            )));
         }
         let report = match self
             .match_bank_statement_for(
@@ -182,6 +203,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let line = &report.lines[index];
         let mut eligible = 0_usize;
         for item in &report.candidates {
+            if report
+                .consumed_cash_legs
+                .contains(&(item.candidate.entry_ref.vid, item.leg_ordinal))
+            {
+                continue;
+            }
             if pinned_bank_candidate(line, &item.candidate, window)
                 .map_err(|error| corrupt(error.to_string()))?
             {
@@ -190,6 +217,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let mut competitors = 0_usize;
         for other in &report.lines {
+            if report
+                .occupied_bank_lines
+                .contains(&(other.statement_oid, other.line_ordinal))
+            {
+                continue;
+            }
             if pinned_bank_candidate(other, &candidate.candidate, window)
                 .map_err(|error| corrupt(error.to_string()))?
             {
@@ -263,26 +296,46 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refusal));
         }
         let context = self.context().clone();
+        let history = match self
+            .bank_match_history(
+                cx,
+                capability,
+                Some(seq),
+                Some(verified.manifest.statement_oid),
+            )
+            .await?
+        {
+            Ok(history) => history,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let mut confirmations = Vec::new();
-        for (index, line) in verified.lines.iter().enumerate() {
-            let vid = native::bank_match_vid(
-                context.book_id,
-                verified.manifest.statement_oid,
-                line.line_ordinal,
-            );
+        for fact in history.confirmations {
+            let Some(index) = verified
+                .lines
+                .iter()
+                .position(|line| line.line_ordinal == fact.confirmation.line_ordinal)
+            else {
+                return Ok(Err(closure_drift(
+                    "a recorded confirmation names a line absent from its retained statement",
+                )));
+            };
             match native::read_bank_match(
                 &mut self.db,
                 cx,
                 &context,
                 capability,
-                vid,
+                fact.match_vid,
                 Some(seq),
                 Some(&verified.manifest),
             )
             .await?
             {
                 Err(refusal) => return Ok(Err(refusal)),
-                Ok(None) => {}
+                Ok(None) => {
+                    return Ok(Err(closure_drift(
+                        "an immutable confirmation disappeared during source verification",
+                    )));
+                }
                 Ok(Some(recorded)) => {
                     if recorded.confirmation.account != verified.manifest.account
                         || recorded.confirmation.line_document_oid
@@ -302,5 +355,56 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             known_at: seq,
             confirmations,
         }))
+    }
+
+    /// Admit a metadata-only history selector without loading retained
+    /// history. Hosts use this before observing or stamping book metadata.
+    pub fn admit_bank_match_history(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<CommitSeq> {
+        self.query(cx, |db, book| {
+            Ok(native::admit_bank_match_history(
+                db, book, capability, known_at,
+            )?)
+        })
+    }
+
+    /// Verify immutable confirmation and unmatch history at one journal
+    /// prefix. This metadata-only read requires current Read and Reconcile
+    /// authority, including reach to the explicit prefix, before hydration.
+    /// It neither opens governed source bytes nor claims full reconciliation.
+    pub async fn bank_match_history(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        known_at: Option<CommitSeq>,
+        statement_oid: Option<Oid>,
+    ) -> Outcome<BankMatchHistory> {
+        let context = self.context().clone();
+        Ok(native::bank_match_history(
+            &mut self.db,
+            cx,
+            &context,
+            capability,
+            known_at,
+            statement_oid,
+        )
+        .await?)
+    }
+
+    /// Release exactly one active confirmation through a new immutable
+    /// decision. The original match, its source bindings and every monetary
+    /// Entry remain retained. Exact retries return the original release.
+    pub async fn unmatch_bank_match(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        request: BankUnmatchRequest,
+    ) -> Outcome<BankUnmatchRecorded> {
+        let context = self.context().clone();
+        Ok(native::unmatch_bank_match(&mut self.db, cx, &context, capability, request).await?)
     }
 }

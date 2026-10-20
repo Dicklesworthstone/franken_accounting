@@ -5233,6 +5233,37 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         confirmation_status.get("reconciled_through"),
         Some(&Json::Null)
     );
+    let (code, out) = run(true, &["bank", "history", "--import", &manifest]);
+    assert_eq!(code, 0, "{out}");
+    let history = doc(&out);
+    assert_eq!(int(&history, "confirmation_count"), Some(1));
+    assert_eq!(int(&history, "active_count"), Some(1));
+    let (code, out) = run(
+        true,
+        &[
+            "bank",
+            "unmatch",
+            "--match",
+            text(&confirmed, "match_vid"),
+            "--digest",
+            text(&confirmed, "match_digest"),
+            "--yes",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        text(
+            doc(&out).get("target").expect("exact released confirmation"),
+            "vid"
+        ),
+        text(&confirmed, "match_vid")
+    );
+    let (code, out) = run(true, &["bank", "history", "--import", &manifest]);
+    assert_eq!(code, 0, "{out}");
+    let history = doc(&out);
+    assert_eq!(int(&history, "confirmation_count"), Some(1));
+    assert_eq!(int(&history, "unmatch_count"), Some(1));
+    assert_eq!(int(&history, "active_count"), Some(0));
     let certificate = dir.join("events.cert").display().to_string();
     assert_eq!(
         run(
@@ -6870,6 +6901,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("period", Some("lock"), "always"),
     ("period", Some("reopen"), "always"),
     ("close", Some("year-end"), "always"),
+    ("bank", Some("unmatch"), "always"),
     ("post", None, "grant:post_closed"),
     ("reverse", None, "grant:post_closed"),
     // Every verb that posts to trunk is dangerous under a post_closed grant.

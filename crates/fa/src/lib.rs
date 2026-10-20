@@ -103,6 +103,11 @@ pub use balance_allocation::{
     BalanceAllocationRequest, MAX_BALANCE_ALLOCATION_CONTRIBUTIONS, PreparedBalanceAllocation,
 };
 pub use balance_allocation_review::{BalanceAllocationReview, MAX_BALANCE_ALLOCATION_REVIEW_BYTES};
+pub use bank::{
+    BankConfirmationRequest, BankConfirmationStatus, BankDecisionRef, BankMatchConfirmation,
+    BankMatchHistory, BankMatchLineage, BankMatchRecorded, BankStatusRequest, BankUnmatchRecorded,
+    BankUnmatchRequest,
+};
 pub use book::{Book, BookError, BookKeys, Entropy, Outcome, ProducedBundle, ReadScope};
 pub use cash_flow_certificate::{
     CASH_FLOW_CERTIFICATE_FORMAT, CashFlowCertificate, CertifiedCashFlow,
