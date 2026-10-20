@@ -22,7 +22,7 @@ use fa_time::DateDay;
 use fgdb_types::VId;
 
 use crate::args::Args;
-use crate::cli::{Ctx, Fail, control_date, registered_unit_code, render_amount, usage};
+use crate::cli::{Ctx, Fail, Out, control_date, registered_unit_code, render_amount, usage};
 use crate::json::{Json, obj, s};
 
 const OPEN_EXAMPLE: &str = "fa engagement open <id> --kind audit|review|examination|investigation|litigation --period <code>... --overall \"<amount> <UNIT>\" --performance \"<amount> <UNIT>\" --clearly-trivial \"<amount> <UNIT>\" [--report-release YYYY-MM-DD] --json";
@@ -639,7 +639,7 @@ fn propose(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         key.as_bytes(),
     )??;
     emit_proposal(
-        ctx,
+        &ctx.out,
         &book,
         &engagement,
         proposed.proposal.ordinal,
@@ -652,7 +652,7 @@ fn propose(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 #[allow(clippy::too_many_arguments)]
 fn emit_proposal(
-    ctx: &Ctx<'_>,
+    out: &Out,
     book: &fa::Book,
     engagement: &str,
     ordinal: u32,
@@ -671,8 +671,8 @@ fn emit_proposal(
         .ok_or_else(|| Fail::Internal(format!("proposal {ordinal} vanished from its view")))?;
     let units = book.context().units.clone();
     let codes = account_codes(book)?;
-    ctx.out.at_book(book)?;
-    ctx.out.event(
+    out.at_book(book)?;
+    out.event(
         event,
         vec![
             ("proposal", proposal_json(proposal, &codes, &units)?),
@@ -784,7 +784,7 @@ fn decide(ctx: &mut Ctx<'_>, args: &Args, book_it: bool) -> Result<(), Fail> {
         key.as_bytes(),
     )??;
     emit_proposal(
-        ctx,
+        &ctx.out,
         &book,
         &engagement,
         ordinal,
