@@ -541,7 +541,7 @@ fn connection_session_token_is_bound_for_lifetime_and_refuses_mid_connection_swi
     for seed in 0..8 {
         // 1. Token-bound connection: frame 0 binds token-a, frame 1 omits token (inherits token-a),
         //    frame 2 tries to switch to token-b (refused FA-REF-011), frame 3 omits token (still token-a).
-        let sent_bound = vec![
+        let sent_bound = [
             req_with_token(0, Some(b"token-a")),
             req_with_token(1, None),
             req_with_token(2, Some(b"token-b")),
@@ -612,12 +612,19 @@ fn connection_session_token_is_bound_for_lifetime_and_refuses_mid_connection_swi
         }
 
         // 2. Unbound connection: frame 0 has no token, frame 1 tries to bind token-a mid-connection (refused FA-REF-011).
-        let sent_unbound = vec![req_with_token(10, None), req_with_token(11, Some(b"token-a"))];
+        let sent_unbound = [
+            req_with_token(10, None),
+            req_with_token(11, Some(b"token-a")),
+        ];
         let bytes_unbound: Vec<u8> = sent_unbound.iter().flat_map(frame).collect();
         let ((seen, ended_u, frames_u), _) =
             run_async_under_lab(seed, move |cx| exchange(cx, bytes_unbound));
         assert_eq!(ended_u, Ended::Closed, "seed {seed}");
-        assert_eq!(seen.len(), 1, "seed {seed}: mid-connection bind refused before handler");
+        assert_eq!(
+            seen.len(),
+            1,
+            "seed {seed}: mid-connection bind refused before handler"
+        );
         schema_checked(&frames_u);
         let replies_u = responses(&frames_u);
         assert_eq!(replies_u.len(), 2, "seed {seed}");
