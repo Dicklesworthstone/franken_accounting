@@ -1219,9 +1219,16 @@ mod tests {
             (
                 "a dangerous verb that cannot exit 7",
                 with(|s| {
+                    // `recover` shares this exit set, so find the registers
+                    // verb's own row rather than the first match.
                     let exits = "exits = [0, 2, 4, 5, 7, 8]";
-                    assert_eq!(s.matches(exits).count(), 1, "the registers exit row");
-                    s.replacen(exits, "exits = [0, 2, 4, 5, 8]", 1)
+                    let verb = s.find("name = \"registers\"").expect("the registers verb");
+                    let at = verb + s[verb..].find(exits).expect("the registers exit row");
+                    format!(
+                        "{}exits = [0, 2, 4, 5, 8]{}",
+                        &s[..at],
+                        &s[at + exits.len()..]
+                    )
                 }),
             ),
             (
