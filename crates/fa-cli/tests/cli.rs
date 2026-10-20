@@ -905,6 +905,25 @@ fn capabilities_and_robot_docs_are_in_tool() {
         .collect();
     assert!(live.contains(&"FA-INV-01.per-unit"), "{live:?}");
     assert_eq!(arr(invariants, "gate_g1").len(), 18, "{out}");
+    // Every registered procedure with its claim class (fa-vpk): the same
+    // set `fa procedure list` reports, and a digit test is statistical.
+    let procedures = arr(&caps, "procedures");
+    let registered = fa_lantern::catalog::registered().unwrap();
+    assert_eq!(procedures.len(), registered.len(), "{out}");
+    for (listed, row) in procedures.iter().zip(&registered) {
+        assert_eq!(text(listed, "id"), row.id);
+        assert_eq!(text(listed, "claim"), row.claim.name(), "{}", row.id);
+    }
+    let claim_of = |id: &str| {
+        procedures
+            .iter()
+            .find(|row| text(row, "id") == id)
+            .map(|row| text(row, "claim").to_string())
+    };
+    assert_eq!(
+        claim_of("jet.round_amounts").as_deref(),
+        Some("statistical")
+    );
     let model = caps.get("capability").expect("capability section");
     let ops: Vec<&str> = arr(model, "ops").iter().filter_map(Json::as_str).collect();
     assert_eq!(ops.len(), 21, "{ops:?}");
