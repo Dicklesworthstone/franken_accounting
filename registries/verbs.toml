@@ -4173,6 +4173,15 @@ verbs = ["statement"]
 ops = ["read"]
 reach = "judged"
 
+# Plain detail and roll-forward judge a complete recorded prefix. Their
+# account/date selections project the result, so account/period/effective
+# caveats still refuse. Certification keeps the earlier whole-head rule.
+[[bound]]
+verbs = ["gl"]
+subcommands = ["detail", "roll-forward"]
+ops = ["read"]
+reach = "judged"
+
 [[bound]]
 verbs = ["gl", "replay", "certificate", "procedure", "sample", "triage", "next", "doctor"]
 ops = ["read"]

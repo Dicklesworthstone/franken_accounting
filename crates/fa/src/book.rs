@@ -4460,6 +4460,38 @@ impl ReadScope<'_> {
         Ok(self.authority.whole_book(seq).map(|()| seq))
     }
 
+    /// The book's genesis specification at an admitted recorded frontier.
+    /// Historical readers use this for defaults such as the base unit instead
+    /// of loading the current Book row after admitting an earlier prefix.
+    pub fn spec_at(&self, known_at: Option<CommitSeq>) -> Outcome<Option<BookSpec>> {
+        let seq = match self.admit_whole_book(known_at)? {
+            Ok(seq) => seq,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let purposes = self.book.purposes();
+        with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
+            let Some(row) = db
+                .vertex_at(fa_journal::rows::book_root(), seq)
+                .map_err(KernelError::from)?
+                .filter(|row| row.labels.contains(&fa_model::symbols::label::BOOK))
+            else {
+                return Ok(Ok(None));
+            };
+            let payload = fa_journal::rows::bytes(
+                &row,
+                fa_model::symbols::property::FA_PAYLOAD,
+                "book._fa_payload",
+            )?;
+            let spec = BookSpec::decode(&payload)?;
+            if spec.book_id != book.book_id {
+                return Err(KernelError::Corrupt(
+                    "historical Book specification belongs to another book".into(),
+                ).into());
+            }
+            Ok(Ok(Some(spec)))
+        }))
+    }
+
     /// [`Book::explain_balance`] under the scope caveats: it reaches its one
     /// period.
     pub fn explain_balance(

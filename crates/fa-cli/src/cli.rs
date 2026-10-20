@@ -12213,10 +12213,15 @@ fn gl_known_at(args: &Args, book: &Book, out: &Out) -> Result<Option<CommitSeq>,
 pub(crate) fn parse_gl_scope(
     args: &Args,
     book: &Book,
+    capability: &Capability,
     out: &Out,
     default_label: &str,
     example: &str,
 ) -> Result<RollForwardRequest, Fail> {
+    let known_at = gl_known_at(args, book, out)?;
+    if let Some(seq) = known_at {
+        out.known_at(seq);
+    }
     let accounts: Vec<VId> = args
         .flag_all("--account")
         .into_iter()
@@ -12236,7 +12241,13 @@ pub(crate) fn parse_gl_scope(
         .filter(|s| !s.is_empty())
         .collect();
     let units: Vec<u32> = if unit_codes.is_empty() {
-        vec![book.spec()?.base_unit.0]
+        vec![
+            book.read_scope(capability.holder(), capability)??
+                .spec_at(known_at)??
+                .ok_or(BookError::NoBook)?
+                .base_unit
+                .0,
+        ]
     } else {
         unit_codes
             .into_iter()
@@ -12267,7 +12278,6 @@ pub(crate) fn parse_gl_scope(
         )
     })?;
     let label = args.flag("--label").unwrap_or(default_label).to_string();
-    let known_at = gl_known_at(args, book, out)?;
     out.effective(format!("between:{from}..{to}"));
     Ok(RollForwardRequest {
         accounts,
@@ -13970,6 +13980,15 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let admit_report = |book: &mut Book| -> Result<(), Fail> {
         if certify {
             gl_certificate_preflight(book, &ctx.files, args, &capability)?;
+        } else if matches!(sub, Some("detail" | "roll-forward")) {
+            // These plain reports read one complete recorded prefix before
+            // projecting their account/date selection. Admit that prefix,
+            // never the selected output rows, and keep all non-temporal
+            // scopes fail-closed. Instant resolution still needs head access.
+            book.read_scope(who, &capability)??;
+            let (known_at, _) = known_at_read_flag(args, book, out, &capability)?;
+            book.prepare_report_history(who, &capability, known_at)??;
+            return Ok(());
         } else {
             fa_policy::admit_read(&capability, who, book.context().book_id)
                 .and_then(|()| {
@@ -13993,6 +14012,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let req = parse_gl_scope(
                 args,
                 &book,
+                &capability,
                 out,
                 "gl-detail",
                 "fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book <dir>",
@@ -14046,6 +14066,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let req = parse_gl_scope(
                 args,
                 &book,
+                &capability,
                 out,
                 "roll-forward",
                 "fa gl roll-forward --account 1000 --from 2026-03-01 --to 2026-03-31 --book <dir>",
@@ -14658,6 +14679,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let mut req = parse_gl_scope(
                 args,
                 &book,
+                &capability,
                 out,
                 "cash-flow",
                 "fa gl cash-flow --account 1000 --from 2026-03-01 --to 2026-03-31 --policy policy.json --book <dir>",

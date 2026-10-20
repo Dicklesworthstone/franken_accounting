@@ -2899,8 +2899,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Prepare retained history for an admitted report without publishing.
     /// An older label registry needs its native Book creation record; an
     /// explicit historical selector may also require loading past a checkpoint.
-    /// Current whole-book Read authority is checked before observation and
-    /// again after loading. Selected context integrity remains the report's
+    /// Current authority to read the whole book at the selected recorded
+    /// prefix is checked before observation and again after loading. A
+    /// known-at caveat permits an explicit prefix within its bound; account,
+    /// period and effective scopes still refuse whole-history hydration.
+    /// Selected context integrity remains the report's
     /// responsibility: a later forged mirror cannot invalidate an intact
     /// earlier selected prefix. Current compiled-registry HEAD reads do not
     /// load history.
@@ -2914,7 +2917,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
         if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
-            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+            .and_then(|()| {
+                fa_policy::reach(
+                    capability,
+                    &fa_policy::Reach {
+                        observes: known_at
+                            .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                        ..fa_policy::Reach::whole_book(true)
+                    },
+                    None,
+                )
+            })
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }

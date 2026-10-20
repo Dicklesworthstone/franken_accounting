@@ -836,6 +836,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some(view) => Some(crate::cli::parse_gl_scope(
             args,
             &book,
+            &capability,
             &ctx.out,
             if view == "detail" {
                 "gl-detail"

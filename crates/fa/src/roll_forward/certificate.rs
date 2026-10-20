@@ -107,13 +107,20 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
     produce: bool,
 ) -> Outcome<CommitSeq> {
     let context = book.context();
-    let admitted = fa_policy::admit_read(capability, principal, context.book_id).and_then(|()| {
-        if produce {
-            fa_policy::require(capability, Op::Produce, "certifying account roll-forwards")
-        } else {
-            Ok(())
-        }
-    });
+    // Native certificates contain a whole-book source closure, and replay
+    // verifies that closure against current retained history. Until that
+    // verification has a narrower admission contract it requires whole-book
+    // authority at the head, even when the rendered schedule selects fewer
+    // accounts or an older prefix.
+    let admitted = fa_policy::admit_read(capability, principal, context.book_id)
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| {
+            if produce {
+                fa_policy::require(capability, Op::Produce, "certifying account roll-forwards")
+            } else {
+                Ok(())
+            }
+        });
     if let Err(denial) = admitted {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
     }
