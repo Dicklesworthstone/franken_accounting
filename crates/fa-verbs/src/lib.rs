@@ -1792,6 +1792,8 @@ mod bound_tests {
             ("export", Some("csv-gl")),
             ("event", Some("show")),
             ("event", Some("list")),
+            ("sample", Some("mus")),
+            ("sample", Some("evaluate")),
         ] {
             assert_eq!(judged(verb, sub, &[]), Some(true), "{verb} {sub:?}");
         }
