@@ -431,8 +431,23 @@ details, and never writes. The same target is available through
 
 Ordinary postings and scheduled reversals now publish unit and dimension
 edges together with the entry. Prefixes created by older versions can report
-those previously omitted edges as missing. Automatic projection rebuilding
-remains unfinished; verification reports that condition without repairing it.
+those previously omitted edges as missing. Verification reports that
+condition without repairing it. Recovery is explicit, never automatic on
+open:
+
+```bash
+fa recover projections --dry-run --book ./books/acme --json
+fa recover projections --yes --book ./books/acme --json
+```
+
+The dry run loads the complete native history, checks every source entry
+against its creation, and previews the mirror and edge changes at that head
+without writing. Publishing needs `--yes` and read, verify and schema_change
+authority (never an Agent profile on trunk, and host-only over MCP). It
+rechecks the exact head, publishes every change in one commit, and then runs
+both the projection and the open-item checkers again. A clean book publishes
+nothing. Orphan legs, occupied identities and deleted edges, whose spent
+identities the substrate cannot re-create, are refused with nothing written.
 Applied counters and settlement edges retain their separate
 `fa verify open-items` check.
 

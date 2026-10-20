@@ -112,6 +112,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("export", crate::export::export_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
+    ("recover", recover_cmd),
     ("entry", entry_cmd),
     ("doctor", crate::triage::doctor_cmd),
     ("triage", crate::triage::triage_cmd),
@@ -1811,6 +1812,12 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             || args.flag("--review-out").is_some())
 }
 
+/// `fa recover projections --dry-run` derives the repair and returns before any
+/// write; only publishing it needs confirmation.
+fn recovery_preview_only(verb: &str, args: &Args) -> bool {
+    verb == "recover" && args.switch("--dry-run")
+}
+
 /// Required capability operations for a command on the launch-bound surface, or
 /// `None` when the command/subcommand is owner-only and never admitted on a
 /// bound session.
@@ -2377,7 +2384,10 @@ fn gate_from_argv(
     };
     let mut rows = reg.dangerous_for(&verb.name, sub).peekable();
     // Planning commits nothing: the commit from the plan is what confirms.
-    if period_plan_only(&verb.name, args) || post_plan_only(&verb.name, args) {
+    if period_plan_only(&verb.name, args)
+        || post_plan_only(&verb.name, args)
+        || recovery_preview_only(&verb.name, args)
+    {
         return Ok(());
     }
     if authority.is_none() && confirmed(args) {
@@ -10994,7 +11004,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     detail: obj(fields),
                     cite: Some("FA-INV-16 (leg projections equal entry payloads)".into()),
                     fix: Some(
-                        "retain this finding with fa verify projections --json and the same --book; projection recovery is not implemented".into(),
+                        "retain this finding with fa verify projections --json and the same --book; then preview the repair from the journal with fa recover projections --dry-run --json, and publish it with --yes if intended".into(),
                     ),
                 })
             }
@@ -16112,6 +16122,107 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         }
         other => Err(unhandled("registers", other)),
+    }
+}
+
+/// `fa recover projections`: explicit leg-projection recovery (plan §4.2,
+/// FA-INV-16, fa-avx). Every mirror and edge is derived from the immutable
+/// entry payloads after each source Entry is checked against its native
+/// creation history; no caller value enters the repair. A dry run previews
+/// the exact changes; publishing needs --yes (gated from argv by verbs.toml
+/// [[dangerous]] before this handler runs) and rechecks everything.
+fn recover_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    match args.positional.get(1).map(String::as_str) {
+        Some("projections") => {
+            if args.positional.len() != 2 {
+                return Err(usage(
+                    "unexpected recover projections argument",
+                    "fa recover projections --dry-run --book <dir> --json",
+                ));
+            }
+            let dry_run = args.switch("--dry-run");
+            let principal = ctx.principal(args);
+            let capability = ctx.capability(args, &["read", "verify", "schema_change"])?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                admit_whole_book_read(
+                    book,
+                    &capability,
+                    &[fa_policy::Op::Verify, fa_policy::Op::SchemaChange],
+                    "rebuilding leg projections",
+                )
+            })?;
+            let outcome = if dry_run {
+                book.prepare_projection_rebuild(principal, &capability)
+                    .map(|prepared| prepared.map(|p| p.preview().clone()))
+            } else {
+                book.rebuild_projections(principal, &capability)
+            };
+            let report = match outcome {
+                Ok(report) => report?,
+                // Orphans, occupied identities, incompatible endpoints, and a
+                // publication that does not verify: nothing is repaired around them.
+                Err(BookError::Kernel(fa_journal::KernelError::Corrupt(problem))) => {
+                    return Err(Fail::Verification {
+                        message: format!("leg projections cannot be recovered from the journal: {problem}"),
+                        detail: obj(vec![("problem", s(&problem))]),
+                        cite: Some("FA-INV-16 (leg projections equal entry payloads)".into()),
+                        fix: Some("retain this finding with fa verify projections --json and fa verify open-items --json; preserve the book, since the journal does not determine this repair".into()),
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+            out.at_book(&book)?;
+            let changes = report.legs_created
+                + report.legs_repaired
+                + report.edges_created
+                + report.edges_repaired
+                + report.edges_retired;
+            out.event(
+                "projections_rebuilt",
+                vec![
+                    ("dry_run", Json::Bool(dry_run)),
+                    ("basis", Json::Int(i128::from(report.basis.0))),
+                    (
+                        "recorded_at",
+                        if report.wrote {
+                            Json::Int(i128::from(report.published_at.0))
+                        } else {
+                            Json::Null
+                        },
+                    ),
+                    ("wrote", Json::Bool(report.wrote)),
+                    ("entries_checked", Json::Int(report.entries_checked as i128)),
+                    ("legs_checked", Json::Int(report.legs_checked as i128)),
+                    ("legs_created", Json::Int(report.legs_created as i128)),
+                    ("legs_repaired", Json::Int(report.legs_repaired as i128)),
+                    ("edges_created", Json::Int(report.edges_created as i128)),
+                    ("edges_repaired", Json::Int(report.edges_repaired as i128)),
+                    ("edges_retired", Json::Int(report.edges_retired as i128)),
+                ],
+                &format!(
+                    "{} {} projection changes over {} entries and {} legs at {}{}",
+                    if dry_run {
+                        "would publish"
+                    } else {
+                        "published"
+                    },
+                    changes,
+                    report.entries_checked,
+                    report.legs_checked,
+                    report.basis.0,
+                    if report.wrote {
+                        format!(" (recorded at {})", report.published_at.0)
+                    } else if dry_run && changes > 0 {
+                        "; publishing with --yes rechecks authority and this exact head".to_string()
+                    } else {
+                        "; projections already equal the journal".to_string()
+                    }
+                ),
+            );
+            Ok(())
+        }
+        other => Err(unhandled("recover", other)),
     }
 }
 

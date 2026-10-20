@@ -4874,6 +4874,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["verify", "accumulator"]).0, 0);
+    assert_eq!(run(true, &["recover", "projections", "--dry-run"]).0, 0);
     assert_eq!(run(true, &["proof", "signed-checkpoint"]).0, 0);
     assert_eq!(run(true, &["bundle", "produce"]).0, 0);
     let chart = write(
@@ -7082,6 +7083,8 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("settle", None, "grant:post_closed"),
     ("resolve", None, "disposition:voids"),
     ("registers", Some("materialize"), "existing-cells"),
+    // Recovery rewrites projection rows at HEAD; its dry run writes nothing.
+    ("recover", Some("projections"), "always"),
     ("capability", Some("revoke"), "always"),
     ("draft", Some("promote"), "always"),
 ];
@@ -8117,7 +8120,7 @@ fn projection_verification_case(plant: &str) -> std::io::Result<()> {
     let repeated = fa(Some(&book), &verify);
     assert_eq!(repeated.0, 8, "{}\n{}", repeated.1, repeated.2);
     assert_eq!(repeated.1, red, "red verification is deterministic too");
-    let handle = Book::open_dir(&book, keys, Entropy::deterministic(91)).unwrap();
+    let handle = Book::open_dir(&book, keys.clone(), Entropy::deterministic(91)).unwrap();
     assert_eq!(
         handle.head().unwrap(),
         damaged_at,
@@ -8128,6 +8131,189 @@ fn projection_verification_case(plant: &str) -> std::io::Result<()> {
         handle.verify_projections(Some(prefix)).unwrap().is_green(),
         "the earlier committed projection remains independently verifiable"
     );
+    drop(handle);
+
+    // The finding names its recovery, which derives every change from the
+    // journal: unconfirmed it writes nothing, a dry run previews at this head,
+    // and a bound session can do neither.
+    assert!(
+        text(&error, "fix").contains("fa recover projections --dry-run --json"),
+        "{red}"
+    );
+    let head = || {
+        Book::open_dir(&book, keys.clone(), Entropy::deterministic(91))
+            .unwrap()
+            .head()
+            .unwrap()
+    };
+    let (code, out, err) = fa(Some(&book), &["recover", "projections", "--json"]);
+    assert_eq!(code, 7, "{out}\n{err}");
+    let unconfirmed = doc(&out);
+    assert_eq!(text(&unconfirmed, "refusal_id"), "FA-REF-007", "{out}");
+    assert!(
+        text(&unconfirmed, "fix").contains("fa recover projections --dry-run --json"),
+        "{out}"
+    );
+    assert_eq!(head(), damaged_at, "an unconfirmed recovery wrote nothing");
+    let dry_run = ["recover", "projections", "--dry-run", "--json"];
+    let preview = ok(&dry_run);
+    assert_eq!(preview.lines().count(), 1, "{preview}");
+    assert_eq!(field(&preview, "event"), Some("projections_rebuilt"));
+    let planned = doc(&preview);
+    assert_eq!(planned.get("dry_run"), Some(&Json::Bool(true)), "{preview}");
+    assert_eq!(planned.get("wrote"), Some(&Json::Bool(false)), "{preview}");
+    assert_eq!(planned.get("recorded_at"), Some(&Json::Null), "{preview}");
+    assert_eq!(int(&planned, "basis"), Some(i128::from(damaged_at.0)));
+    assert!(int(&planned, "entries_checked").unwrap() >= 1, "{preview}");
+    assert_eq!(int(&planned, "legs_checked"), Some(2), "{preview}");
+    // A changed mirror repairs its one leg; a deleted HAS_LEG edge is the
+    // one edge the journal says should exist.
+    let (legs_repaired, edges_created) = if plant == "missing-has-leg" {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    assert_eq!(
+        int(&planned, "legs_repaired"),
+        Some(legs_repaired),
+        "{preview}"
+    );
+    assert_eq!(
+        int(&planned, "edges_created"),
+        Some(edges_created),
+        "{preview}"
+    );
+    for untouched in ["legs_created", "edges_repaired", "edges_retired"] {
+        assert_eq!(int(&planned, untouched), Some(0), "{untouched}: {preview}");
+    }
+    assert_eq!(ok(&dry_run), preview, "a preview is deterministic");
+    assert_eq!(head(), damaged_at, "a preview wrote nothing");
+
+    let publish = ["recover", "projections", "--yes", "--json"];
+    if plant == "missing-has-leg" {
+        // The substrate never re-creates a spent edge identity: the repair
+        // fails before publication and the finding stays reported.
+        let (code, out, err) = fa(Some(&book), &publish);
+        assert_eq!(code, 5, "{out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("error"), "{out}");
+        assert_eq!(head(), damaged_at, "a failed repair published nothing");
+        assert_eq!(fa(Some(&book), &verify).0, 8);
+    } else {
+        let repaired = ok(&publish);
+        assert_eq!(field(&repaired, "event"), Some("projections_rebuilt"));
+        let data = doc(&repaired);
+        assert_eq!(data.get("dry_run"), Some(&Json::Bool(false)), "{repaired}");
+        assert_eq!(data.get("wrote"), Some(&Json::Bool(true)), "{repaired}");
+        assert_eq!(int(&data, "basis"), Some(i128::from(damaged_at.0)));
+        let published = i128::from(damaged_at.0) + 1;
+        assert_eq!(int(&data, "recorded_at"), Some(published), "{repaired}");
+        for counter in [
+            "entries_checked",
+            "legs_checked",
+            "legs_created",
+            "legs_repaired",
+            "edges_created",
+            "edges_repaired",
+            "edges_retired",
+        ] {
+            assert_eq!(
+                int(&data, counter),
+                int(&planned, counter),
+                "{counter}: the publication is the previewed repair"
+            );
+        }
+        assert_eq!(
+            int(robot_line(&repaired).get("coordinate").unwrap(), "known_at"),
+            Some(published)
+        );
+        let repaired_head = head();
+        assert_eq!(i128::from(repaired_head.0), published);
+        let green = ok(&verify);
+        assert_eq!(field(&green, "event"), Some("projections_verified"));
+        assert!(arr(&doc(&green), "drift").is_empty(), "{green}");
+        let db = runtime
+            .block_on(Database::open(
+                &cx.commit(),
+                &book.join("store"),
+                DatabaseKeys::new([91; 32], DatabaseSecurityNamespaceId([92; 32]), [93; 32]),
+            ))
+            .unwrap();
+        assert_eq!(
+            fa_journal::rows::bytes(
+                &db.vertex(entry).unwrap().unwrap(),
+                property::FA_PAYLOAD,
+                "authoritative entry",
+            )
+            .unwrap(),
+            payload,
+            "{plant}: recovery never rewrites the journal payload"
+        );
+        drop(db);
+        let handle = Book::open_dir(&book, keys.clone(), Entropy::deterministic(91)).unwrap();
+        assert!(
+            !handle
+                .verify_projections(Some(damaged_at))
+                .unwrap()
+                .is_green(),
+            "the damaged prefix stays on the record"
+        );
+        drop(handle);
+        let again = doc(&ok(&publish));
+        assert_eq!(again.get("wrote"), Some(&Json::Bool(false)));
+        assert_eq!(again.get("recorded_at"), Some(&Json::Null));
+        assert_eq!(int(&again, "legs_repaired"), Some(0));
+        assert_eq!(head(), repaired_head, "a clean book publishes nothing");
+    }
+
+    // Host-only: no launch ceiling holds schema_change, so a token-bound
+    // session (here a Human preparer with read and verify) can neither
+    // preview a recovery nor confirm one.
+    let token = dir.join("repairer.token").display().to_string();
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "repairer",
+            "--profile",
+            "human",
+            "--op",
+            "read",
+            "--op",
+            "verify",
+            "--out",
+            &token,
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+            "--grant",
+            "verify",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let issued = head();
+    let mut bound = vec!["--token", token.as_str()];
+    bound.extend_from_slice(&dry_run);
+    let (code, out, err) = fa(Some(&book), &bound);
+    assert_eq!(code, 7, "{out}\n{err}");
+    let refused = doc(&out);
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-011", "{out}");
+    assert!(
+        text(&refused, "message").contains("not admitted by the launch-bound"),
+        "{out}"
+    );
+    let mut bound = vec!["--token", token.as_str()];
+    bound.extend_from_slice(&publish);
+    let (code, out, err) = fa(Some(&book), &bound);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(
+        text(&doc(&out), "message").contains("--yes cannot override launch-bound authority"),
+        "{out}"
+    );
+    assert_eq!(head(), issued, "a bound session recovers nothing");
     Ok(())
 }
 
