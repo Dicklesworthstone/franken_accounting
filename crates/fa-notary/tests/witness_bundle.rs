@@ -4,7 +4,7 @@
 use fa_model::{Id128, Oid};
 use fa_notary::bundle::{BundleRequest, BundleScope, ProductionReceipt, ReceiptBody, assemble};
 use fa_notary::checkpoint::{CheckpointBody, TransparencyCheckpoint};
-use fa_notary::{CheckpointSigner, Journal, ScopeIndex, SigningKey, StoredCheckpoint};
+use fa_notary::{Journal, ScopeIndex, SigningKey, StoredCheckpoint};
 use fa_verify::checkpoint::witness::bundle::{BundleExpectation, verify_witnessed_bundle_for};
 use fa_verify::checkpoint::witness::{RecipientWitnessPolicy, verify_witnessed_checkpoint};
 use fgdb_types::{CommitSeq, VId};

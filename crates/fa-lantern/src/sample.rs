@@ -1399,9 +1399,9 @@ mod tests {
         for j in 0..=n {
             let term = &(&power * &tens[n - j]) * &falling[j];
             if j <= k {
-                partial = partial + &term;
+                partial += &term;
             }
-            total = total + &term;
+            total += &term;
             power = &power * &big(a);
         }
         (partial, total)

@@ -1056,8 +1056,9 @@ impl BenchRunReport {
 /// What running one §17 benchmark produced.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BenchOutcome {
-    /// A measured run of the named workload.
-    Measured(BenchRunReport),
+    /// A measured run of the named workload (boxed: a report is far larger
+    /// than the unmeasured variant).
+    Measured(Box<BenchRunReport>),
     /// No bench executes this workload at its stated scale yet; no number is claimed.
     Unmeasured {
         slo_id: String,
