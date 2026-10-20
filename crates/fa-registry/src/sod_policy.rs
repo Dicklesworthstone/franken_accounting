@@ -49,6 +49,8 @@ const DRAFT_TRANSITIONS: &[&str] = &["Open", "Plan", "Promote", "Discard"];
 const SCENARIO_TRANSITIONS: &[&str] = &["Open", "Plan", "Discard"];
 /// A matter's litigation production (plan §13.2; fa-6l9).
 const PRODUCTION_TRANSITIONS: &[&str] = &["Open", "Produce"];
+/// An audit engagement's mechanics (plan §11.12; fa-zgn).
+const ENGAGEMENT_TRANSITIONS: &[&str] = &["Open", "Propose", "Book", "Pass"];
 const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "SchemaControl",
     "PolicyControl",
@@ -61,6 +63,7 @@ const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "DraftControl",
     "ScenarioControl",
     "ProductionControl",
+    "EngagementControl",
 ];
 /// A MigrationRun's lifecycle (plan §8.6).
 const MIGRATION_TRANSITIONS: &[&str] = &["Open", "Finalize", "Abandon"];
@@ -325,6 +328,7 @@ impl SodPolicy {
                         "DraftControl" => DRAFT_TRANSITIONS,
                         "ScenarioControl" => SCENARIO_TRANSITIONS,
                         "ProductionControl" => PRODUCTION_TRANSITIONS,
+                        "EngagementControl" => ENGAGEMENT_TRANSITIONS,
                         other => {
                             return Err(invalid(
                                 R,
