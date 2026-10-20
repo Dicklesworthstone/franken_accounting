@@ -4049,8 +4049,15 @@ verbs = ["checkpoint"]
 ops = ["witness"]
 
 [[bound]]
-verbs = ["proof", "bundle", "export"]
+verbs = ["proof", "bundle"]
 ops = ["read", "produce"]
+
+# Exports judge their cumulative stock boundary and selected known-at prefix
+# before resolving periods, reading the journal, or writing output.
+[[bound]]
+verbs = ["export"]
+ops = ["read", "produce"]
+reach = "judged"
 
 [[bound]]
 verbs = ["production"]
@@ -4067,15 +4074,15 @@ verbs = ["produce"]
 ops = ["read", "produce"]
 
 [[bound]]
-verbs = ["bank"]
-subcommands = ["import"]
-ops = ["read", "post", "reconcile"]
-
-[[bound]]
 verbs = ["fx"]
 subcommands = ["rate"]
 args = ["add"]
 ops = ["post"]
+
+[[bound]]
+verbs = ["bank"]
+subcommands = ["import"]
+ops = ["read", "post", "reconcile"]
 
 [[bound]]
 verbs = ["bank"]
@@ -4191,6 +4198,7 @@ ops = ["post"]
 verbs = ["event"]
 subcommands = ["show", "list"]
 ops = ["read"]
+reach = "judged"
 
 [[bound]]
 verbs = ["migrate"]
