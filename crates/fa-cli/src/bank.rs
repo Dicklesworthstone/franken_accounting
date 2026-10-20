@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa::bank::{
     BankCashAmounts, BankConfirmationRequest, BankDecisionRef, BankFormat, BankImportManifest,
     BankImportRequest, BankMatchRecorded, BankMatchRequest, BankReconciliationProgress,
+    BankReconciliationRecorded, BankReconciliationRequest, BankReconciliationState,
     BankStatusRequest, BankUnmatchRecorded, BankUnmatchRequest,
 };
 use fa_model::{Oid, account_vid};
@@ -26,6 +27,9 @@ const CONFIRM_EXAMPLE: &str = "fa bank confirm --import <manifest_oid> --line-or
 const STATUS_EXAMPLE: &str = "fa bank status --import <manifest_oid> --grant privileged [--as-known-at HEAD|<seq>|<RFC3339>] --json";
 const HISTORY_EXAMPLE: &str = "fa bank history [--account <code>] [--import <manifest_oid>] [--as-known-at HEAD|<seq>] --json";
 const UNMATCH_EXAMPLE: &str = "fa bank unmatch --match <hex32> --digest <hex64> --yes --json";
+const RECONCILE_EXAMPLE: &str = "fa bank reconcile --import <manifest_oid> --source-known-at <reviewed-seq> --grant privileged --yes --json";
+const RECONCILIATION_EXAMPLE: &str =
+    "fa bank reconciliation --import <manifest_oid> [--as-known-at HEAD|<seq>] --json";
 
 pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let sub = args.positional.get(1).map(String::as_str);
@@ -41,6 +45,8 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--proposer",
         ],
         Some("status") => &["--import", "--as-known-at"],
+        Some("reconcile") => &["--import", "--source-known-at"],
+        Some("reconciliation") => &["--import", "--as-known-at"],
         Some("history") => &["--account", "--import", "--as-known-at"],
         Some("unmatch") => &["--match", "--digest"],
         _ => &[],
@@ -74,6 +80,8 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 Some("status") => STATUS_EXAMPLE,
                 Some("history") => HISTORY_EXAMPLE,
                 Some("unmatch") => UNMATCH_EXAMPLE,
+                Some("reconcile") => RECONCILE_EXAMPLE,
+                Some("reconciliation") => RECONCILIATION_EXAMPLE,
                 _ => IMPORT_EXAMPLE,
             },
         )?;
@@ -91,8 +99,10 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("status") => confirmation_status(ctx, args),
         Some("history") => match_history(ctx, args),
         Some("unmatch") => unmatch_statement(ctx, args),
+        Some("reconcile") => reconcile_statement(ctx, args),
+        Some("reconciliation") => reconciliation_status(ctx, args),
         _ => Err(usage(
-            "bank has the subcommands import, match, confirm, unmatch, history and status",
+            "bank has the subcommands import, match, confirm, unmatch, history, status, reconcile and reconciliation",
             IMPORT_EXAMPLE,
         )),
     }
@@ -870,6 +880,18 @@ fn confirmation_status(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             known_at,
         },
     )??;
+    let reconciliation = book.bank_reconciliation_status(
+        &capability,
+        BankStatusRequest {
+            manifest_oid,
+            known_at: Some(status.known_at),
+        },
+    )??;
+    let drifted = reconciliation
+        .reconciliations
+        .iter()
+        .filter(|state| state.cash_drift || state.match_drift)
+        .count();
     let line_count = status.manifest.line_oids.len();
     let confirmed = status
         .confirmations
@@ -892,7 +914,23 @@ fn confirmation_status(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Json::Int((line_count - confirmed) as i128),
         ),
         ("scope", s("recorded_confirmations")),
-        ("reconciled_through", Json::Null),
+        (
+            "reconciled_through",
+            reconciliation
+                .reconciled_through
+                .map_or(Json::Null, |day| s(day.render())),
+        ),
+        ("drifted_reconciliations", Json::Int(drifted as i128)),
+        (
+            "reconciliations",
+            Json::Arr(
+                reconciliation
+                    .reconciliations
+                    .iter()
+                    .map(|state| reconciliation_state_json(state, &book))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+        ),
         (
             "confirmations",
             Json::Arr(
@@ -918,8 +956,9 @@ fn confirmation_status(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     ctx.out.at_book(&book)?;
     ctx.out.known_at(status.known_at);
     ctx.out.event("bank_confirmation_status", fields, &format!(
-        "{confirmed} of {line_count} bank lines have recorded confirmations at {}; {} remain; a closing-balance attestation and reconciliation lock are not established by these facts",
-        status.known_at.0, line_count - confirmed,
+        "{confirmed} of {line_count} bank lines have recorded confirmations at {}; {} have never been confirmed; {} immutable statement closes, {drifted} with cash or match drift; reconciliation cutoff {}",
+        status.known_at.0, line_count - confirmed, reconciliation.reconciliations.len(),
+        reconciliation.reconciled_through.map_or_else(|| "not established".into(), |day| day.render()),
     ));
     Ok(())
 }
@@ -929,6 +968,215 @@ fn decision_ref_json(reference: &BankDecisionRef) -> Json {
         ("vid", s(format!("{:032x}", reference.vid.0))),
         ("digest", s(hex(&reference.digest))),
     ])
+}
+
+fn entry_ref_json(reference: &fa_model::EntryRef) -> Json {
+    obj(vec![
+        ("vid", s(format!("{:032x}", reference.vid.0))),
+        ("entry_digest", s(hex(&reference.entry_digest))),
+    ])
+}
+
+fn reconciliation_record_json(
+    recorded: &BankReconciliationRecorded,
+    book: &fa::Book,
+) -> Result<Json, Fail> {
+    let claim = &recorded.claim;
+    let manifest = &claim.manifest;
+    Ok(obj(vec![
+        (
+            "attestation_vid",
+            s(format!("{:032x}", recorded.attestation_vid.0)),
+        ),
+        ("attestation_digest", s(hex(&recorded.attestation_digest))),
+        ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
+        ("already_recorded", Json::Bool(recorded.already_recorded)),
+        ("principal", s(format!("{:032x}", recorded.principal.0))),
+        ("manifest_oid", s(hex(&claim.manifest_oid.0))),
+        ("statement_oid", s(hex(&manifest.statement_oid.0))),
+        ("account_ref", s(format!("{:032x}", manifest.account.0))),
+        ("unit_id", Json::Int(i128::from(manifest.unit.0))),
+        ("statement_date", s(manifest.statement_date.render())),
+        (
+            "evaluated_known_at",
+            Json::Int(i128::from(claim.evaluated_known_at.0)),
+        ),
+        (
+            "cash_balance",
+            money(claim.cash_balance, manifest.unit, book)?,
+        ),
+        ("cash_fold_digest", s(hex(&claim.cash_fold_digest))),
+        (
+            "matches",
+            Json::Arr(claim.matches.iter().map(decision_ref_json).collect()),
+        ),
+        ("scope", s("exact_statement_close")),
+    ]))
+}
+
+fn reconciliation_state_json(
+    state: &BankReconciliationState,
+    book: &fa::Book,
+) -> Result<Json, Fail> {
+    Ok(obj(vec![
+        (
+            "reconciliation",
+            reconciliation_record_json(&state.recorded, book)?,
+        ),
+        ("historical_claim_verified", Json::Bool(true)),
+        (
+            "cash_balance",
+            money(state.cash_balance, state.recorded.claim.manifest.unit, book)?,
+        ),
+        ("cash_fold_digest", s(hex(&state.cash_fold_digest))),
+        (
+            "active_matches",
+            Json::Arr(state.active_matches.iter().map(decision_ref_json).collect()),
+        ),
+        ("balance_drift", Json::Bool(state.balance_drift)),
+        ("cash_drift", Json::Bool(state.cash_drift)),
+        ("match_drift", Json::Bool(state.match_drift)),
+        (
+            "changed_entries",
+            Json::Arr(state.changed_entries.iter().map(entry_ref_json).collect()),
+        ),
+        (
+            "citing_entries",
+            Json::Arr(state.citing_entries.iter().map(entry_ref_json).collect()),
+        ),
+    ]))
+}
+
+fn reconcile_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "bank reconcile selects one reviewed statement through flags",
+            RECONCILE_EXAMPLE,
+        ));
+    }
+    let manifest_oid = Oid(crate::document::hex32(
+        required(args, "--import", RECONCILE_EXAMPLE)?,
+        "--import",
+    )?);
+    let evaluated_known_at = required(args, "--source-known-at", RECONCILE_EXAMPLE)?
+        .parse::<u64>()
+        .map(fgdb_types::CommitSeq)
+        .map_err(|_| {
+            usage(
+                "--source-known-at must be the reviewed numeric sequence, never HEAD or an instant",
+                RECONCILE_EXAMPLE,
+            )
+        })?;
+    let capability = ctx.capability(args, &["read", "reconcile"])?;
+    admit(&capability, false)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(capability.holder(), &capability)??;
+        Ok(())
+    })?;
+    let recorded = book.reconcile_bank_statement(
+        &capability,
+        BankReconciliationRequest {
+            manifest_oid,
+            evaluated_known_at,
+        },
+    )??;
+    let fields = vec![(
+        "reconciliation",
+        reconciliation_record_json(&recorded, &book)?,
+    )];
+    ctx.out.at_book(&book)?;
+    ctx.out.event("bank_reconciled", fields, &format!(
+        "{} exact statement close {:032x} through {} at reviewed prefix {}; backdated cash postings require reconcile authority and retain this attestation",
+        if recorded.already_recorded { "already recorded" } else { "recorded" },
+        recorded.attestation_vid.0, recorded.claim.manifest.statement_date.render(),
+        recorded.claim.evaluated_known_at.0,
+    ));
+    Ok(())
+}
+
+fn reconciliation_status(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "bank reconciliation selects retained close metadata through flags",
+            RECONCILIATION_EXAMPLE,
+        ));
+    }
+    let manifest_oid = Oid(crate::document::hex32(
+        required(args, "--import", RECONCILIATION_EXAMPLE)?,
+        "--import",
+    )?);
+    let known_at = match one_flag(args, "--as-known-at", RECONCILIATION_EXAMPLE)? {
+        None | Some("HEAD") => None,
+        Some(value) => Some(fgdb_types::CommitSeq(value.parse::<u64>().map_err(
+            |_| {
+                usage(
+                    "--as-known-at must be HEAD or a numeric commit sequence",
+                    RECONCILIATION_EXAMPLE,
+                )
+            },
+        )?)),
+    };
+    let capability = ctx.capability(args, &["read", "reconcile"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_bank_match_history(&capability, known_at)??;
+        Ok(())
+    })?;
+    let status = book.bank_reconciliation_status(
+        &capability,
+        BankStatusRequest {
+            manifest_oid,
+            known_at,
+        },
+    )??;
+    let drifted = status
+        .reconciliations
+        .iter()
+        .filter(|state| state.cash_drift || state.match_drift)
+        .count();
+    let fields = vec![
+        ("manifest_oid", s(hex(&status.manifest_oid.0))),
+        ("known_at", Json::Int(i128::from(status.known_at.0))),
+        (
+            "reconciled_through",
+            status
+                .reconciled_through
+                .map_or(Json::Null, |day| s(day.render())),
+        ),
+        (
+            "reconciliation_count",
+            Json::Int(status.reconciliations.len() as i128),
+        ),
+        ("drifted_count", Json::Int(drifted as i128)),
+        (
+            "reconciliations",
+            Json::Arr(
+                status
+                    .reconciliations
+                    .iter()
+                    .map(|state| reconciliation_state_json(state, &book))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+        ),
+    ];
+    let max_inline = crate::verbs::registry()
+        .map_err(|error| Fail::Internal(error.into()))?
+        .daemon
+        .max_frame_bytes
+        .saturating_sub(128 * 1024);
+    if obj(fields.clone()).render().len() > max_inline {
+        return Err(usage(
+            "the complete statement-close history exceeds the inline transport bound; no closes or drift citations were omitted",
+            "select an earlier retained prefix or inspect a smaller statement history",
+        ));
+    }
+    ctx.out.at_book(&book)?;
+    ctx.out.known_at(status.known_at);
+    ctx.out.event("bank_reconciliation_status", fields, &format!(
+        "{} verified historical statement closes at {}; {drifted} have later cash or match drift; reconciliation cutoff {}",
+        status.reconciliations.len(), status.known_at.0,
+        status.reconciled_through.map_or_else(|| "not established".into(), |day| day.render()),
+    ));
+    Ok(())
 }
 
 fn unmatch_fields(recorded: &BankUnmatchRecorded) -> Vec<(&'static str, Json)> {

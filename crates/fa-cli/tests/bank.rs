@@ -262,6 +262,333 @@ fn confirm_selection(book: &Path, args: &[String]) -> Json {
     ok_privileged(book, &args.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
+fn reconciliation_args(manifest: &str, reviewed: i128) -> Vec<String> {
+    vec![
+        "bank".into(),
+        "reconcile".into(),
+        "--import".into(),
+        manifest.into(),
+        "--source-known-at".into(),
+        reviewed.to_string(),
+        "--as".into(),
+        "statement-reviewer".into(),
+        "--yes".into(),
+    ]
+}
+
+fn reconcile_selection(book: &Path, args: &[String]) -> Json {
+    ok_privileged(book, &args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+fn reconciliation_state(status: &Json) -> &Json {
+    let states = rows(data(status), "reconciliations");
+    assert_eq!(states.len(), 1, "one immutable statement close: {status:?}");
+    &states[0]
+}
+
+#[test]
+fn exact_bank_reconciliation_carries_opening_cash_and_survives_reopen_retry_and_drift() {
+    let f = Fixture::new();
+    ok(&f.book, &["period", "open", "FY2026-P02"]);
+    f.post("opening-cash", "2026-02-28", "debit", "500.00", "OPENING");
+    f.post(
+        "statement-sale",
+        "2026-03-10",
+        "debit",
+        "100.00",
+        "MIDMONTH",
+    );
+    // Already recorded activity after the statement date must be excluded
+    // even though it belongs to the same accounting period.
+    f.post("after-statement", "2026-03-25", "debit", "25.00", "LATER");
+    let imported = f.import("midmonth.csv", "csv", &format!(
+        "{CSV_HEADER}1,BANK-MIDMONTH,USD,2026-03-15,500.00,600.00,2026-03-10,2026-03-10,CRDT,100.00,Private customer,MIDMONTH\n"
+    ));
+    let manifest = text(data(&imported), "manifest_oid");
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    let confirmed = confirm_selection(&f.book, &confirmation_args(&matched, 0, "cash-reviewer"));
+    let reviewed = head(&f.book);
+    let args = reconciliation_args(manifest, reviewed);
+    let argv: Vec<_> = args.iter().map(String::as_str).collect();
+    let before_tb = ok(&f.book, &["tb", "--as-of", "2026-03-15"]);
+
+    let without_yes: Vec<_> = argv.iter().copied().filter(|arg| *arg != "--yes").collect();
+    let (exit, refused) = run_privileged(&f.book, &without_yes);
+    assert_eq!(exit, 7, "{refused:?}");
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-007");
+    assert_eq!(head(&f.book), reviewed);
+    for selector in [None, Some("HEAD"), Some("2026-03-15T00:00:00Z")] {
+        let mut invalid = vec!["bank", "reconcile", "--import", manifest, "--yes"];
+        if let Some(selector) = selector {
+            invalid.extend(["--source-known-at", selector]);
+        }
+        let (exit, refused) = run_privileged(&f.book, &invalid);
+        assert_eq!(exit, 2, "{selector:?}: {refused:?}");
+        assert_eq!(head(&f.book), reviewed);
+    }
+    let (exit, refused) = run(&f.book, &argv);
+    assert_eq!(
+        exit, 3,
+        "governed source is not implicitly disclosed: {refused:?}"
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-142");
+    assert_eq!(head(&f.book), reviewed);
+
+    let closed = reconcile_selection(&f.book, &args);
+    assert_eq!(text(&closed, "event"), "bank_reconciled");
+    let original = data(&closed).get("reconciliation").unwrap();
+    assert_eq!(text(original, "scope"), "exact_statement_close");
+    assert_eq!(text(original, "statement_date"), "2026-03-15");
+    assert_eq!(text(original, "cash_balance"), "600.00 USD");
+    assert_eq!(integer(original, "evaluated_known_at"), reviewed);
+    assert_eq!(integer(original, "recorded_at"), reviewed + 1);
+    assert_eq!(original.get("already_recorded"), Some(&Json::Bool(false)));
+    assert_eq!(rows(original, "matches").len(), 1);
+    assert_eq!(
+        rows(original, "matches")[0].get("vid"),
+        data(&confirmed).get("match_vid")
+    );
+    let closed_at = head(&f.book);
+    let after_tb = ok(&f.book, &["tb", "--as-of", "2026-03-15"]);
+    assert_eq!(data(&after_tb).get("rows"), data(&before_tb).get("rows"));
+
+    // Every command opens a fresh process. This metadata read requires no
+    // privileged source access and must independently verify the old claim.
+    let status = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    assert_eq!(text(&status, "event"), "bank_reconciliation_status");
+    assert_eq!(text(data(&status), "reconciled_through"), "2026-03-15");
+    assert_eq!(integer(data(&status), "drifted_count"), 0);
+    let clean = reconciliation_state(&status);
+    for (field, expected) in [
+        ("historical_claim_verified", true),
+        ("balance_drift", false),
+        ("cash_drift", false),
+        ("match_drift", false),
+    ] {
+        assert_eq!(
+            clean.get(field),
+            Some(&Json::Bool(expected)),
+            "{field}: {status:?}"
+        );
+    }
+    assert!(rows(clean, "changed_entries").is_empty());
+    assert!(rows(clean, "citing_entries").is_empty());
+    assert!(!status.render().contains("Private customer"));
+    let retry = reconcile_selection(&f.book, &args);
+    let retry = data(&retry).get("reconciliation").unwrap();
+    assert_eq!(retry.get("already_recorded"), Some(&Json::Bool(true)));
+    for field in [
+        "attestation_vid",
+        "attestation_digest",
+        "recorded_at",
+        "cash_fold_digest",
+        "matches",
+    ] {
+        assert_eq!(
+            retry.get(field),
+            original.get(field),
+            "retry preserves {field}"
+        );
+    }
+    assert_eq!(head(&f.book), closed_at);
+
+    // Unprotected later dates remain ordinary postings and do not create
+    // drift in the statement's earlier cash prefix.
+    f.post("future-cash", "2026-03-20", "debit", "7.00", "FUTURE");
+    let future = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    assert_eq!(integer(data(&future), "drifted_count"), 0);
+
+    let late = f.file("late-cash.json", r#"{"effective_date":"2026-03-12","idempotency_key":"late-cash","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#);
+    let before = head(&f.book);
+    let (exit, refused) = run(
+        &f.book,
+        &["post", "--intent", &late, "--evidence", &f.evidence],
+    );
+    assert_eq!(exit, 7, "{refused:?}");
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+    assert!(text(data(&refused), "message").contains("reconcile"));
+    assert_eq!(head(&f.book), before);
+    let posted = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &late,
+            "--evidence",
+            &f.evidence,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let drifted = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    let state = reconciliation_state(&drifted);
+    assert_eq!(text(state, "cash_balance"), "601.00 USD");
+    assert_eq!(
+        state.get("historical_claim_verified"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(state.get("balance_drift"), Some(&Json::Bool(true)));
+    assert_eq!(state.get("cash_drift"), Some(&Json::Bool(true)));
+    assert_eq!(state.get("match_drift"), Some(&Json::Bool(false)));
+    assert_eq!(
+        rows(state, "changed_entries")[0].get("vid"),
+        data(&posted).get("vid")
+    );
+    assert_eq!(
+        rows(state, "citing_entries")[0].get("vid"),
+        data(&posted).get("vid")
+    );
+
+    // Returning to the same amount does not erase changed contributions.
+    let offset = f.file("late-offset.json", r#"{"effective_date":"2026-03-12","idempotency_key":"late-offset","legs":[{"side":"credit","account":"1000","amount":"1.00 USD"},{"side":"debit","account":"6000","amount":"1.00 USD"}]}"#);
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &offset,
+            "--evidence",
+            &f.evidence,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let offset_status = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    let state = reconciliation_state(&offset_status);
+    assert_eq!(text(state, "cash_balance"), "600.00 USD");
+    assert_eq!(state.get("balance_drift"), Some(&Json::Bool(false)));
+    assert_eq!(state.get("cash_drift"), Some(&Json::Bool(true)));
+    assert_eq!(rows(state, "changed_entries").len(), 2);
+    assert_eq!(rows(state, "citing_entries").len(), 2);
+
+    let mut release = unmatch_args(&confirmed);
+    release.push("--yes".into());
+    ok(
+        &f.book,
+        &release.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let released = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    assert_eq!(
+        reconciliation_state(&released).get("match_drift"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(text(data(&released), "reconciled_through"), "2026-03-15");
+    let historical = ok(
+        &f.book,
+        &[
+            "bank",
+            "reconciliation",
+            "--import",
+            manifest,
+            "--as-known-at",
+            &closed_at.to_string(),
+        ],
+    );
+    assert_eq!(data(&historical), data(&status));
+    assert_eq!(
+        integer(historical.get("coordinate").unwrap(), "known_at"),
+        closed_at
+    );
+    let before = head(&f.book);
+    let retry = reconcile_selection(&f.book, &args);
+    assert_eq!(
+        data(&retry)
+            .get("reconciliation")
+            .unwrap()
+            .get("attestation_digest"),
+        original.get("attestation_digest")
+    );
+    assert_eq!(
+        head(&f.book),
+        before,
+        "retry never reactivates released matches or rewrites the close"
+    );
+}
+
+#[test]
+fn bank_reconciliation_refuses_unmatched_stale_unbalanced_and_postdated_closes() {
+    let f = Fixture::new();
+    f.post("unclosed-sale", "2026-03-10", "debit", "100.00", "UNCLOSED");
+    let imported = f.import("unclosed.csv", "csv", &format!(
+        "{CSV_HEADER}1,BANK-UNCLOSED,USD,2026-03-15,0.00,100.00,2026-03-10,2026-03-10,CRDT,100.00,Customer,UNCLOSED\n"
+    ));
+    let manifest = text(data(&imported), "manifest_oid");
+    let before = head(&f.book);
+    let args = reconciliation_args(manifest, before);
+    let (exit, refused) = run_privileged(
+        &f.book,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(exit, 3, "{refused:?}");
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-168");
+    assert!(text(data(&refused), "message").contains("active confirmation"));
+    assert_eq!(head(&f.book), before);
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    confirm_selection(
+        &f.book,
+        &confirmation_args(&matched, 0, "statement-confirmer"),
+    );
+    let (exit, refused) = run_privileged(
+        &f.book,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        exit, 6,
+        "a new close cannot borrow an old reviewed prefix: {refused:?}"
+    );
+    f.post(
+        "unreported-cash",
+        "2026-03-11",
+        "debit",
+        "1.00",
+        "DIFFERENCE",
+    );
+    let before = head(&f.book);
+    let args = reconciliation_args(manifest, before);
+    let (exit, refused) = run_privileged(
+        &f.book,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(exit, 3, "{refused:?}");
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-168");
+    assert!(text(data(&refused), "message").contains("cumulative posted cash"));
+    assert_eq!(head(&f.book), before);
+    let status = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    assert_eq!(integer(data(&status), "reconciliation_count"), 0);
+    assert_eq!(data(&status).get("reconciled_through"), Some(&Json::Null));
+
+    // The cumulative amount happens to tie, but the matched leg itself is
+    // effective after the close. A matching date window cannot authorize it.
+    let f = Fixture::new();
+    f.post("earlier-cash", "2026-03-01", "debit", "100.00", "EARLIER");
+    f.post(
+        "postdated-cash",
+        "2026-03-16",
+        "debit",
+        "100.00",
+        "POSTDATED",
+    );
+    let imported = f.import("postdated.csv", "csv", &format!(
+        "{CSV_HEADER}1,BANK-POSTDATED,USD,2026-03-15,0.00,100.00,2026-03-15,2026-03-15,CRDT,100.00,Customer,POSTDATED\n"
+    ));
+    let manifest = text(data(&imported), "manifest_oid");
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    confirm_selection(
+        &f.book,
+        &confirmation_args(&matched, 0, "postdate-confirmer"),
+    );
+    let before = head(&f.book);
+    let args = reconciliation_args(manifest, before);
+    let (exit, refused) = run_privileged(
+        &f.book,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(exit, 3, "{refused:?}");
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-168");
+    assert!(text(data(&refused), "message").contains("after the statement close date"));
+    assert_eq!(head(&f.book), before);
+}
+
 #[test]
 fn exact_confirmations_reopen_and_retry_without_changing_cash_or_reconciliation_state() {
     let f = Fixture::new();

@@ -1611,6 +1611,34 @@ impl Book {
         )))
     }
 
+    /// Attest a retained statement's exact cumulative cash closing at the
+    /// explicitly reviewed prefix. The native commit establishes the account's
+    /// reconciliation cutoff without posting or modifying any amount.
+    pub fn reconcile_bank_statement(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankReconciliationRequest,
+    ) -> Outcome<crate::bank::BankReconciliationRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.reconcile_bank_statement(
+            &purposes, capability, request,
+        )))
+    }
+
+    /// Reverify each original closing claim and compare its cash contribution
+    /// and active match sets with one selected prefix under current authority.
+    /// No governed statement or counterparty text is disclosed.
+    pub fn bank_reconciliation_status(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankStatusRequest,
+    ) -> Outcome<crate::bank::BankReconciliationStatus> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.bank_reconciliation_status(
+            &purposes, capability, request,
+        )))
+    }
+
     /// Admit an explicit metadata history selector without hydrating the
     /// retained prefix. Current authority precedes the host's book stamp.
     pub fn admit_bank_match_history(

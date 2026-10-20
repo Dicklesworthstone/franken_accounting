@@ -6735,6 +6735,116 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
         "staging remains invisible until native finalization"
     );
 
+    // An exact statement close is exercised in its own book, so the preceding
+    // event fixtures do not accidentally contribute unrelated cash activity.
+    let book5 = dir.join("bank-close-events-book");
+    let mut run5 = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(book5.as_path()), &argv);
+        assert_eq!(code, 0, "{argv:?}: {out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        out
+    };
+    run5(&["book", "create", "--name", "Bank close events"]);
+    let close_chart = write(
+        &dir,
+        "bank-close-chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    run5(&["chart", "import", &close_chart]);
+    run5(&["period", "create", "--fiscal-year", "2026"]);
+    run5(&["period", "open", "FY2026-P03"]);
+    let close_source = write(
+        &dir,
+        "bank-close-source.txt",
+        "Receipt for the bank close fixture",
+    );
+    let close_evidence = doc(&run5(&[
+        "document",
+        "add",
+        &close_source,
+        "--kind",
+        "Receipt",
+        "--grade",
+        "HumanUpload",
+    ]));
+    let close_evidence = text(&close_evidence, "oid");
+    let close_cash = write(
+        &dir,
+        "bank-close-cash.json",
+        r#"{"effective_date":"2026-03-05","idempotency_key":"events-bank-close-cash","legs":[{"side":"debit","account":"1000","amount":"10.00 USD","memo":"RECON-EVENT"},{"side":"credit","account":"4000","amount":"10.00 USD"}]}"#,
+    );
+    run5(&[
+        "post",
+        "--intent",
+        &close_cash,
+        "--evidence",
+        close_evidence,
+    ]);
+    let close_statement = write(
+        &dir,
+        "bank-close-statement.csv",
+        "sequence_number,instrument_id,currency,statement_date,opening_balance,closing_balance,booking_date,value_date,side,amount,counterparty,reference\n\
+1,BANK-CLOSE,USD,2026-03-31,0.00,10.00,2026-03-05,2026-03-05,CRDT,10.00,Payer,RECON-EVENT\n",
+    );
+    let close_import = doc(&run5(&[
+        "bank",
+        "import",
+        &close_statement,
+        "--bank-format",
+        "csv",
+        "--account",
+        "1000",
+    ]));
+    let close_manifest = text(&close_import, "manifest_oid");
+    let close_matches = doc(&run5(&[
+        "bank",
+        "match",
+        "--import",
+        close_manifest,
+        "--grant",
+        "privileged",
+    ]));
+    let [close_proposal] = arr(&close_matches, "proposals") else {
+        panic!("one closing statement line: {}", close_matches.render());
+    };
+    let mut close_confirmation_args: Vec<_> = text(close_proposal, "confirmation_command")
+        .strip_prefix("fa ")
+        .expect("the proposal supplies its native confirmation command")
+        .split_ascii_whitespace()
+        .filter(|argument| *argument != "--json")
+        .collect();
+    close_confirmation_args.extend(["--as", "event-close-reviewer"]);
+    let close_confirmation = doc(&run5(&close_confirmation_args));
+    let close_reviewed = int(&close_confirmation, "recorded_at").unwrap().to_string();
+    let closed = doc(&run5(&[
+        "bank",
+        "reconcile",
+        "--import",
+        close_manifest,
+        "--source-known-at",
+        &close_reviewed,
+        "--grant",
+        "privileged",
+        "--yes",
+    ]));
+    let reconciliation = closed.get("reconciliation").unwrap();
+    assert_eq!(text(reconciliation, "cash_balance"), "10.00 USD");
+    assert_eq!(
+        reconciliation.get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+    let close_status = doc(&run5(&[
+        "bank",
+        "reconciliation",
+        "--import",
+        close_manifest,
+    ]));
+    assert_eq!(int(&close_status, "reconciliation_count"), Some(1));
+    assert_eq!(int(&close_status, "drifted_count"), Some(0));
+    assert_eq!(text(&close_status, "reconciled_through"), "2026-03-31");
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events
@@ -7601,6 +7711,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("period", Some("lock"), "always"),
     ("period", Some("reopen"), "always"),
     ("close", Some("year-end"), "always"),
+    ("bank", Some("reconcile"), "always"),
     ("bank", Some("unmatch"), "always"),
     ("post", None, "grant:post_closed"),
     ("reverse", None, "grant:post_closed"),

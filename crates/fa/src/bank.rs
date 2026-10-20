@@ -34,11 +34,14 @@ use fa_journal::import::bank::{BANK_LINE_MIME as LINE_MIME, BANK_MANIFEST_MIME a
 pub use fa_journal::import::{BankFormat, BankImportManifest, BankImportPredecessor};
 
 mod confirmation;
+mod reconciliation;
 pub use confirmation::{BankConfirmationRequest, BankConfirmationStatus, BankStatusRequest};
 pub use fa_journal::bank::{
     BankDecisionRef, BankMatchConfirmation, BankMatchHistory, BankMatchLineage, BankMatchRecorded,
+    BankReconciliationRecorded, BankReconciliationState, BankReconciliationStatus,
     BankUnmatchRecorded, BankUnmatchRequest,
 };
+pub use reconciliation::BankReconciliationRequest;
 
 const PARSER_REVISION: u16 = 1;
 

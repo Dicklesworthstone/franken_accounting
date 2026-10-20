@@ -2989,6 +2989,53 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
     assert_eq!(confirmed["line_generation"], json!(0));
     assert_eq!(confirmed["leg_generation"], json!(0));
     let target = json!({"vid": confirmed["match_vid"], "digest": confirmed["match_digest"]});
+    // The Human host closes the reviewed statement. The agent receives only
+    // the independent metadata reader, never implicit source privilege or a
+    // statement-close write tool.
+    let reviewed = confirmed["recorded_at"].as_u64().unwrap().to_string();
+    let closed = cli_data(&[
+        "bank",
+        "reconcile",
+        "--import",
+        manifest,
+        "--source-known-at",
+        &reviewed,
+        "--grant",
+        "privileged",
+        "--as",
+        "bank-reviewer",
+        "--yes",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let closed: JsonValue = fastmcp_rust::serde_json::from_str(&closed).unwrap();
+    assert_eq!(closed["reconciliation"]["cash_balance"], json!("50.00 USD"));
+    assert_eq!(closed["reconciliation"]["already_recorded"], json!(false));
+    let reconciliation_args = [
+        "bank",
+        "reconciliation",
+        "--import",
+        manifest,
+        "--book",
+        &b,
+        "--json",
+    ];
+    let active_reconciliation = cli_data(&reconciliation_args);
+    let active_reconciliation_data: JsonValue =
+        fastmcp_rust::serde_json::from_str(&active_reconciliation).unwrap();
+    assert_eq!(active_reconciliation_data["reconciliation_count"], json!(1));
+    assert_eq!(active_reconciliation_data["drifted_count"], json!(0));
+    assert_eq!(
+        active_reconciliation_data["reconciled_through"],
+        json!("2026-03-31")
+    );
+    let mut before_reconciliation_args = reconciliation_args.to_vec();
+    before_reconciliation_args.extend(["--as-known-at", before_pin.as_str()]);
+    let before_reconciliation = cli_data(&before_reconciliation_args);
+    let before_reconciliation_data: JsonValue =
+        fastmcp_rust::serde_json::from_str(&before_reconciliation).unwrap();
+    assert_eq!(before_reconciliation_data["reconciliation_count"], json!(0));
     let active = cli_data(&history_args);
     let active_data: JsonValue = fastmcp_rust::serde_json::from_str(&active).unwrap();
     assert_eq!(active_data["scope"], json!("match_history"));
@@ -3031,6 +3078,26 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         assert_eq!(envelope["authority"]["profile"], json!("agent"));
         assert_eq!(envelope["coordinate"]["known_at"], data["known_at"]);
     };
+    let inspect_reconciliation = |mcp: &mut Mcp, arguments: JsonValue, expected: &str| {
+        let (error, output, metadata) = call_tool(mcp, "fa_bank_reconciliation", arguments);
+        assert!(!error, "{output}");
+        assert_eq!(output, expected, "CLI/MCP metadata parity");
+        assert!(
+            !output.contains(reference),
+            "source reference disclosed: {output}"
+        );
+        assert!(
+            !output.contains(counterparty),
+            "source counterparty disclosed: {output}"
+        );
+        let envelope: JsonValue =
+            fastmcp_rust::serde_json::from_str(metadata["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        let data: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+        assert_eq!(envelope["events"], json!(["bank_reconciliation_status"]));
+        assert_eq!(envelope["authority"]["profile"], json!("agent"));
+        assert_eq!(envelope["coordinate"]["known_at"], data["known_at"]);
+    };
     let launch = [
         "--cluster",
         "fa.bank",
@@ -3050,6 +3117,16 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         &mut mcp,
         json!({"account": "1000", "import": manifest, "as_known_at": before_pin}),
         &before,
+    );
+    inspect_reconciliation(
+        &mut mcp,
+        json!({"import": manifest}),
+        &active_reconciliation,
+    );
+    inspect_reconciliation(
+        &mut mcp,
+        json!({"import": manifest, "as_known_at": before_pin}),
+        &before_reconciliation,
     );
 
     // Existing source-bearing tools remain present and keep their original
@@ -3098,6 +3175,18 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
             json!("forbidden_argument")
         );
     }
+    for forbidden in [
+        json!({"import": manifest, "grant": ["privileged"]}),
+        json!({"import": manifest, "yes": true}),
+        json!({"import": manifest, "principal": "bank-reviewer"}),
+    ] {
+        let (error, output, _) = call_tool(&mut mcp, "fa_bank_reconciliation", forbidden);
+        assert!(error, "{output}");
+        assert_eq!(
+            structured_error(&output)["type"],
+            json!("forbidden_argument")
+        );
+    }
     assert_eq!(mcp.finish(), 0);
     assert_eq!(
         cli_data(&history_args),
@@ -3137,6 +3226,20 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         released["unmatch_vid"]
     );
     assert_eq!(after_data["unmatches"][0]["target"], target);
+    let after_reconciliation = cli_data(&reconciliation_args);
+    let after_reconciliation_data: JsonValue =
+        fastmcp_rust::serde_json::from_str(&after_reconciliation).unwrap();
+    assert_eq!(after_reconciliation_data["reconciliation_count"], json!(1));
+    assert_eq!(after_reconciliation_data["drifted_count"], json!(1));
+    assert_eq!(
+        after_reconciliation_data["reconciled_through"],
+        json!("2026-03-31")
+    );
+    let state = &after_reconciliation_data["reconciliations"][0];
+    assert_eq!(state["historical_claim_verified"], json!(true));
+    assert_eq!(state["match_drift"], json!(true));
+    assert_eq!(state["cash_drift"], json!(false));
+    assert_eq!(state["balance_drift"], json!(false));
     let mut mcp = Mcp::start_with(&book, &launch);
     mcp.discover();
     inspect(
@@ -3148,6 +3251,12 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         &mut mcp,
         json!({"account": "1000", "import": manifest, "as_known_at": active_pin}),
         &active,
+    );
+    inspect_reconciliation(&mut mcp, json!({"import": manifest}), &after_reconciliation);
+    inspect_reconciliation(
+        &mut mcp,
+        json!({"import": manifest, "as_known_at": active_pin}),
+        &active_reconciliation,
     );
     assert_eq!(mcp.finish(), 0);
 
@@ -3167,6 +3276,16 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         assert_eq!(refused["exit"], json!(7));
         assert!(output.contains("reconcile"), "{output}");
     }
+    let (error, output, _) = call_tool(
+        &mut reader,
+        "fa_bank_reconciliation",
+        json!({"import": manifest}),
+    );
+    assert!(error, "{output}");
+    let refused = structured_error(&output);
+    assert_eq!(refused["refusal_id"], json!("FA-REF-011"));
+    assert_eq!(refused["exit"], json!(7));
+    assert!(output.contains("reconcile"), "{output}");
     assert_eq!(reader.finish(), 0);
     assert_eq!(
         cli_data(&history_args),
@@ -3244,7 +3363,10 @@ fn agent_upload_is_self_sourced_and_forged_human_grade_is_refused() {
             "grade": "HumanUpload"
         }),
     );
-    assert!(err, "forged HumanUpload grade must be refused: {forged_out}");
+    assert!(
+        err,
+        "forged HumanUpload grade must be refused: {forged_out}"
+    );
     let refused = structured_error(&forged_out);
     assert_eq!(refused["refusal_id"], json!("FA-REF-011"));
 
@@ -3330,12 +3452,7 @@ fn agent_upload_is_self_sourced_and_forged_human_grade_is_refused() {
     // and require an independent Human `Reviewed` attestation before posting.
     let mut mcp_prep = Mcp::start_with(
         &book,
-        &[
-            "--profile",
-            "preparer",
-            "--principal",
-            "mcp-preparer",
-        ],
+        &["--profile", "preparer", "--principal", "mcp-preparer"],
     );
     mcp_prep.discover();
     let (err, prep_upload_out, _) = call_tool(
@@ -3388,4 +3505,3 @@ fn agent_upload_is_self_sourced_and_forged_human_grade_is_refused() {
     );
     assert_eq!(mcp_prep.finish(), 0);
 }
-

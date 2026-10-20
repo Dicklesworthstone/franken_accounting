@@ -3150,6 +3150,56 @@ mod tests {
     }
 
     #[test]
+    fn bank_reconciliation_metadata_tool_preserves_scope_without_exposing_the_close_write() {
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_by_wire("fa_bank_reconciliation")
+            .expect("bank reconciliation metadata");
+        assert!(
+            mcp.tool_by_wire("fa_bank_reconcile").is_none(),
+            "statement closing remains a host operation"
+        );
+        let selection = json!({"import": "ab".repeat(32), "as_known_at": "17"});
+        let invocation = tool
+            .invocation(&mcp, reg, &selection)
+            .expect("historical reconciliation metadata");
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.positional, vec!["bank", "reconciliation"]);
+        assert_eq!(parsed.flag("--import"), Some("ab".repeat(32).as_str()));
+        assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("bank", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read", "reconcile"])
+        );
+        assert!(invocation.stdin.is_none());
+        for authority in [
+            "grant",
+            "as",
+            "principal",
+            "profile",
+            "token",
+            "book",
+            "yes",
+            "file",
+            "source_known_at",
+        ] {
+            let mut injected = selection.clone();
+            injected[authority] = json!("caller-controlled");
+            assert!(
+                tool.invocation(&mcp, reg, &injected).is_err(),
+                "{authority}"
+            );
+        }
+        assert!(
+            tool.invocation(&mcp, reg, &json!({"as_known_at": "17"}))
+                .is_err(),
+            "the retained manifest is required"
+        );
+    }
+
+    #[test]
     fn findings_route_review_actions_and_complete_inline_workpapers_with_bound_ops() {
         let (mcp, reg) = embedded();
         let cases: &[(&str, JsonValue, &[&str])] = &[
