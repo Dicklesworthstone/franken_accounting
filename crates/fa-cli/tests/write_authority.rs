@@ -455,7 +455,13 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         ),
         row(&["checkpoint", "create"], &[Op::Witness], Reaches),
         row(
-            &["production", "open", "matrix-matter", "--bates-prefix", "MTX"],
+            &[
+                "production",
+                "open",
+                "matrix-matter",
+                "--bates-prefix",
+                "MTX",
+            ],
             &[Op::Produce],
             Succeeds,
         ),
