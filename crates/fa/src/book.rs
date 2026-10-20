@@ -1183,6 +1183,69 @@ impl Book {
         with_store!(&self.store, core => core.document_bates_ranges(&self.purposes(), document))
     }
 
+    /// Open the engagement `profile.engagement` (plan §11.12, bead fa-zgn):
+    /// its kind, scope periods and stated materiality parameters.
+    pub fn open_engagement(
+        &mut self,
+        capability: fa_journal::Capability,
+        profile: fa_journal::EngagementProfile,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::EngagementOpened> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.open_engagement(
+            &purposes, capability, profile, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Propose a draft correcting entry in `engagement`; it never posts.
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_adjustment(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        effective_date: DateDay,
+        legs: Vec<fa_journal::ProposalLeg>,
+        description: &str,
+        record_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::AdjustmentProposed> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.propose_adjustment(
+            &purposes, capability, engagement, effective_date, legs, description, record_date,
+            idempotency_key,
+        )))
+    }
+
+    /// Book or pass proposal `ordinal` of `engagement`, once.
+    pub fn decide_adjustment(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        ordinal: u32,
+        decision: fa_journal::AdjustmentDecision,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::AdjustmentDecided> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.decide_adjustment(
+            &purposes, capability, engagement, ordinal, decision, effective_date, idempotency_key,
+        )))
+    }
+
+    /// The engagement `engagement` and every proposal it journaled.
+    pub fn engagement(
+        &self,
+        engagement: &str,
+    ) -> Result<Option<fa_journal::EngagementView>, BookError> {
+        with_store!(&self.store, core => core.engagement(&self.purposes(), engagement))
+    }
+
+    /// Every engagement of the book.
+    pub fn engagements(&self) -> Result<Vec<fa_journal::EngagementView>, BookError> {
+        with_store!(&self.store, core => core.engagements(&self.purposes()))
+    }
+
     /// Fork the scenario `name` over the trunk prefix at `fork.at` (the head
     /// when absent): plan §15.2, Appendix B `ForkScenario`, fa-k07b.
     pub fn open_scenario(

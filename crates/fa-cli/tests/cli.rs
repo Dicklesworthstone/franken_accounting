@@ -5695,6 +5695,68 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["production", "list"]).0, 0);
     assert_eq!(run(true, &["production", "show", "events-matter"]).0, 0);
     assert_eq!(run(true, &["production", "document", &ev]).0, 0);
+    // Audit engagements (fa-zgn): open, propose, pass, list and show.
+    assert_eq!(
+        run(
+            true,
+            &[
+                "engagement",
+                "open",
+                "events-engagement",
+                "--kind",
+                "audit",
+                "--period",
+                "FY2026-P03",
+                "--overall",
+                "100.00 USD",
+                "--performance",
+                "75.00 USD",
+                "--clearly-trivial",
+                "5.00 USD"
+            ]
+        )
+        .0,
+        0
+    );
+    let adjustment = write(
+        &dir,
+        "adjustment.json",
+        r#"{"effective_date":"2026-03-20","description":"Unrecorded rent","legs":[{"side":"debit","account":"6000","amount":"5.00 USD"},{"side":"credit","account":"1000","amount":"5.00 USD"}]}"#,
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "adjustment",
+                "propose",
+                "--engagement",
+                "events-engagement",
+                "--intent",
+                &adjustment
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "adjustment",
+                "pass",
+                "--engagement",
+                "events-engagement",
+                "--proposal",
+                "1",
+                "--reason",
+                "ClearlyTrivial"
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["engagement", "list"]).0, 0);
+    assert_eq!(run(true, &["engagement", "show", "events-engagement"]).0, 0);
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(
