@@ -506,6 +506,188 @@ fn exact_bank_reconciliation_carries_opening_cash_and_survives_reopen_retry_and_
 }
 
 #[test]
+fn reconciled_cash_scenarios_preserve_native_coordinates_and_planner_authority() {
+    let f = Fixture::new();
+    let certified_events = |args: &[&str]| -> Vec<Json> {
+        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .arg("--book")
+            .arg(&f.book)
+            .args(args)
+            .arg("--json")
+            .env_remove("FA_BOOK")
+            .env_remove("FA_TOKEN")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{args:?}: {stdout}\n{stderr}");
+        stdout
+            .lines()
+            .map(|line| {
+                fa_cli::verbs::registry()
+                    .unwrap()
+                    .check_line(line)
+                    .unwrap_or_else(|error| panic!("{args:?}: {error}\n{stdout}"));
+                json::parse(line).unwrap()
+            })
+            .collect()
+    };
+    f.post("scenario-source", "2026-03-10", "debit", "100.00", "SOURCE");
+
+    // Retained certificates and checkpoints are omitted accounting objects,
+    // but their real source sequences precede the import, confirmations and
+    // close. A compressed replay would invalidate the immutable native claim.
+    let retained = certified_events(&["tb", "--as-of", "2026-03-15", "--certify"]);
+    assert_eq!(retained.len(), 2);
+    assert_eq!(text(&retained[1], "event"), "report_certificate");
+    let retained_locator = format!("C:{}", text(data(&retained[1]), "oid"));
+    let retained_at = head(&f.book);
+    ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
+    assert!(head(&f.book) > retained_at);
+    let imported = f.import("scenario-statement.csv", "csv", &format!(
+        "{CSV_HEADER}1,BANK-SCENARIO,USD,2026-03-15,0.00,100.00,2026-03-10,2026-03-10,CRDT,100.00,Customer,SOURCE\n"
+    ));
+    let manifest = text(data(&imported), "manifest_oid");
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    confirm_selection(
+        &f.book,
+        &confirmation_args(&matched, 0, "scenario-reviewer"),
+    );
+    // The evaluated prefix itself may be maintenance. It must exist as an
+    // actual native scratch sequence even though SeqMap floors to equivalent
+    // accounting state and never pairs the source checkpoint as accounting.
+    ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
+    let reviewed = head(&f.book);
+    let close_args = reconciliation_args(manifest, reviewed);
+    let closed = reconcile_selection(&f.book, &close_args);
+    let original = data(&closed).get("reconciliation").unwrap();
+    assert_eq!(integer(original, "evaluated_known_at"), reviewed);
+    assert_eq!(integer(original, "recorded_at"), reviewed + 1);
+    let before_tb = ok(&f.book, &["tb", "--as-of", "2026-03-15"]);
+    let forked = ok(
+        &f.book,
+        &[
+            "scenario",
+            "fork",
+            "protected-cash",
+            "--from",
+            "2026-03-01",
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let fork_at = integer(data(&forked), "fork_at");
+    let intent = f.file("scenario-late.json", r#"{"effective_date":"2026-03-12","idempotency_key":"scenario-late","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#);
+    let before = head(&f.book);
+    let (exit, denied) = run(
+        &f.book,
+        &[
+            "scenario",
+            "run",
+            "protected-cash",
+            "--intent",
+            &intent,
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    assert_eq!(exit, 7, "{denied:?}");
+    assert_eq!(text(data(&denied), "refusal_id"), "FA-REF-011");
+    assert!(text(data(&denied), "message").contains("reconcile"));
+    assert_eq!(head(&f.book), before, "a refused rehearsal records nothing");
+
+    let authorized = [
+        "scenario",
+        "run",
+        "protected-cash",
+        "--intent",
+        &intent,
+        "--evidence",
+        &f.evidence,
+        "--grant",
+        "reconcile",
+    ];
+    let planned = ok(&f.book, &authorized);
+    assert_eq!(data(&planned).get("rehearsed"), Some(&Json::Bool(true)));
+    assert_eq!(integer(data(&planned), "ordinal"), 1);
+    assert_eq!(
+        head(&f.book),
+        before + 1,
+        "only the scenario record publishes"
+    );
+    let retried = ok(&f.book, &authorized);
+    assert_eq!(
+        data(&retried).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(head(&f.book), before + 1);
+
+    // Each command cold-opens the book. A read-only diff uses the authority
+    // retained with the planner's intent, not authority invented for a reader.
+    let diff = ok(
+        &f.book,
+        &[
+            "scenario",
+            "diff",
+            "protected-cash",
+            "--period",
+            "FY2026-P03",
+        ],
+    );
+    assert_eq!(integer(data(&diff), "fork_at"), fork_at);
+    assert_eq!(integer(data(&diff), "scenario_known_at"), fork_at + 1);
+    let deltas: Vec<_> = rows(data(&diff), "rows")
+        .iter()
+        .map(|row| (text(row, "code"), text(row, "delta")))
+        .collect();
+    assert_eq!(deltas, [("1000", "1.00 USD"), ("4000", "-1.00 USD")]);
+    let certified = certified_events(&[
+        "scenario",
+        "diff",
+        "protected-cash",
+        "--period",
+        "FY2026-P03",
+        "--certify",
+    ]);
+    assert_eq!(certified.len(), 2);
+    assert_eq!(data(&certified[0]), data(&diff));
+    let locator = format!("C:{}", text(data(&certified[1]), "oid"));
+    let before_replay = head(&f.book);
+    let replayed = ok(&f.book, &["replay", &locator]);
+    assert_eq!(data(&replayed), data(&diff));
+    assert_eq!(head(&f.book), before_replay);
+    let original_report = ok(&f.book, &["replay", &retained_locator]);
+    assert_eq!(
+        data(&original_report).get("rows"),
+        data(&retained[0]).get("rows")
+    );
+
+    let after_tb = ok(&f.book, &["tb", "--as-of", "2026-03-15"]);
+    assert_eq!(data(&after_tb).get("rows"), data(&before_tb).get("rows"));
+    let status = ok(&f.book, &["bank", "reconciliation", "--import", manifest]);
+    assert_eq!(integer(data(&status), "drifted_count"), 0);
+    let state = reconciliation_state(&status);
+    assert_eq!(
+        state.get("historical_claim_verified"),
+        Some(&Json::Bool(true))
+    );
+    assert!(rows(state, "changed_entries").is_empty());
+    assert!(rows(state, "citing_entries").is_empty());
+    let retry = reconcile_selection(&f.book, &close_args);
+    let retry = data(&retry).get("reconciliation").unwrap();
+    for field in [
+        "attestation_vid",
+        "attestation_digest",
+        "cash_fold_digest",
+        "evaluated_known_at",
+        "recorded_at",
+        "matches",
+    ] {
+        assert_eq!(retry.get(field), original.get(field), "immutable {field}");
+    }
+}
+
+#[test]
 fn bank_drift_becomes_typed_recorded_findings_with_replayable_original_workpapers() {
     const PROCEDURE: &str = "recon.bank_statement_drift";
     let f = Fixture::new();

@@ -32,6 +32,8 @@ use crate::{
 
 /// Domain separator for functional-value register fold digests (`FA-INV-04.functional-fold`).
 pub const FUNCTIONAL_FOLD_DIGEST_DOMAIN: &[u8] = b"fa:register-functional-fold:v1";
+/// Domain separator for inception-to-date functional stock folds.
+pub const FUNCTIONAL_STOCK_DIGEST_DOMAIN: &[u8] = b"fa:register-functional-stock:v1";
 /// Domain separator for current-rate translation certificates (`plan §12.4`, `fa-rn6g`).
 pub const TRANSLATION_CERTIFICATE_DOMAIN: &[u8] = b"fa:fx-translation-cert:v1";
 /// Domain separator for temporal-method remeasurement certificates (`plan §12.4`, `fa-rn6g`).
@@ -103,6 +105,64 @@ impl FunctionalFold {
                 .ok_or(RegisterError::Overflow)?;
         }
         Ok(sum)
+    }
+}
+
+/// A cumulative functional stock cell, without a period discriminator.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FunctionalStockCellKey {
+    pub account: VId,
+    pub unit_id: u32,
+    pub entity: Option<String>,
+}
+
+/// Gross inception-to-date debits and credits in the book's functional unit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionalStockCell {
+    pub key: FunctionalStockCellKey,
+    pub debits: i128,
+    pub credits: i128,
+    pub entry_count: u64,
+}
+
+impl FunctionalStockCell {
+    #[must_use]
+    pub fn net(&self) -> Option<i128> {
+        self.debits.checked_sub(self.credits)
+    }
+}
+
+/// Functional stock through an inclusive civil date at one recorded prefix.
+/// Posted amounts and outstanding reservations are separate columns. Debits
+/// and credits are cumulative gross contributions; their difference is stock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionalStockFold {
+    pub effective_through: DateDay,
+    pub base_unit: UnitId,
+    pub known_at: CommitSeq,
+    pub cells: Vec<FunctionalStockCell>,
+    pub pending: Vec<FunctionalStockCell>,
+    pub watermark: Option<CommitSeq>,
+    pub entries: u64,
+    pub fold_digest: [u8; 32],
+}
+
+impl FunctionalStockFold {
+    #[must_use]
+    pub fn cell(&self, key: &FunctionalStockCellKey) -> Option<&FunctionalStockCell> {
+        self.cells.iter().find(|cell| cell.key == *key)
+    }
+
+    pub fn total_debits(&self) -> Result<i128, RegisterError> {
+        self.cells.iter().try_fold(0i128, |sum, cell| {
+            sum.checked_add(cell.debits).ok_or(RegisterError::Overflow)
+        })
+    }
+
+    pub fn total_credits(&self) -> Result<i128, RegisterError> {
+        self.cells.iter().try_fold(0i128, |sum, cell| {
+            sum.checked_add(cell.credits).ok_or(RegisterError::Overflow)
+        })
     }
 }
 
@@ -426,6 +486,239 @@ pub fn verify_functional_fold<V: asupersync::fs::Vfs + Clone>(
         return Err(RegisterError::ProjectionDrift(format!(
             "functional fold drift on period `{period_code}` at seq {}: expected digest {:02x?}, got {:02x?}",
             claimed.known_at.0, refolded.fold_digest, claimed.fold_digest
+        )));
+    }
+    Ok(())
+}
+
+fn add_functional_stock_entry(
+    cells: &mut BTreeMap<FunctionalStockCellKey, FunctionalStockCell>,
+    spec: &BookSpec,
+    entry_vid: VId,
+    entry: &Entry,
+) -> Result<(), RegisterError> {
+    let mut touched = BTreeSet::new();
+    let mut by_entity: BTreeMap<Option<String>, (i128, i128)> = BTreeMap::new();
+    for (ordinal, leg) in entry.proposal.legs.iter().enumerate() {
+        let mantissa = functional_mantissa(spec, entry_vid, ordinal, leg)?;
+        let entity = entity_of(spec, leg);
+        let key = FunctionalStockCellKey {
+            account: leg.account_ref,
+            unit_id: spec.base_unit.0,
+            entity: entity.clone(),
+        };
+        let cell = cells
+            .entry(key.clone())
+            .or_insert_with(|| FunctionalStockCell {
+                key: key.clone(),
+                debits: 0,
+                credits: 0,
+                entry_count: 0,
+            });
+        let totals = by_entity.entry(entity).or_insert((0i128, 0i128));
+        let (amount, total) = match leg.side {
+            Side::Debit => (&mut cell.debits, &mut totals.0),
+            Side::Credit => (&mut cell.credits, &mut totals.1),
+        };
+        *amount = amount
+            .checked_add(mantissa)
+            .ok_or(RegisterError::Overflow)?;
+        *total = total.checked_add(mantissa).ok_or(RegisterError::Overflow)?;
+        touched.insert(key);
+    }
+    for (entity, (debits, credits)) in by_entity {
+        if debits != credits {
+            let entity = entity.as_deref().unwrap_or("<default>");
+            return Err(RegisterError::ProjectionDrift(format!(
+                "entry {:032x} functional stock amounts do not balance in entity `{entity}`: debits {debits} != credits {credits}",
+                entry_vid.0
+            )));
+        }
+    }
+    for key in touched {
+        let cell = cells
+            .get_mut(&key)
+            .ok_or_else(|| KernelError::Corrupt("missing functional stock cell".into()))?;
+        cell.entry_count = cell
+            .entry_count
+            .checked_add(1)
+            .ok_or(RegisterError::Overflow)?;
+    }
+    Ok(())
+}
+
+/// Cumulative functional stock at `effective_date <= effective_through`,
+/// independent of account type or posting period (plan §5.2, §5.4, §7.5).
+/// Historical valuations remain exactly as committed; newer Rate documents
+/// never revalue an old leg. An unvalued foreign contribution refuses.
+///
+/// The effective cutoff selects a hold's original date. Any resolution visible
+/// at `known_at` releases that hold, including a later-effective void, expiry,
+/// or posting. A Posts resolution's legs contribute only at its own effective
+/// date. This is the same two-coordinate rule as [`crate::balance_as_of`].
+/// Staged or abandoned migrations are invisible; a finalized chunk's watermark
+/// includes its activation commit. The source digest binds the complete native
+/// entry digests, retaining valuation laws, rate references and residuals.
+pub fn fold_functional_stock<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    effective_through: DateDay,
+    known_at: Option<CommitSeq>,
+) -> Result<FunctionalStockFold, RegisterError> {
+    let seq = resolve_known_at(db, known_at)?;
+    let root = db
+        .vertex_at(book_root(), seq)?
+        .filter(|row| row.labels.contains(&label::BOOK))
+        .ok_or_else(|| {
+            RegisterError::InvalidSelection(format!(
+                "the book does not exist at sequence {}",
+                seq.0
+            ))
+        })?;
+    let spec_bytes = bytes(&root, property::FA_PAYLOAD, "functional stock book payload")?;
+    let spec = BookSpec::decode(&spec_bytes)?;
+    if spec.book_id != book.book_id || spec.calendar != book.calendar {
+        return Err(KernelError::Corrupt(
+            "functional stock context differs from the book at its selected sequence".into(),
+        )
+        .into());
+    }
+    if book.units.get(spec.base_unit).is_none() {
+        return Err(RegisterError::ProjectionDrift(
+            "functional stock book has an unregistered base unit".into(),
+        ));
+    }
+
+    fa_journal::migration::verify_run_visibility_at(db, book, seq)?;
+    let entries = entries_at(db, book, seq)?;
+    let resolved = resolutions(&entries)?;
+    let activated = migration_activations(&entries)?;
+    let mut release_sources = BTreeMap::new();
+    let mut activation_sources = BTreeMap::new();
+    for (vid, entry, at) in &entries {
+        if entry.proposal.class == EntryClass::RESOLUTION {
+            let target = entry
+                .proposal
+                .pending
+                .as_ref()
+                .and_then(|pending| pending.resolution_of)
+                .ok_or_else(|| KernelError::Corrupt("resolution has no pending target".into()))?;
+            release_sources.insert(target.vid, (*at, *vid, entry.entry_digest));
+        }
+        if let Some(fa_model::ControlPayload::MigrationControl { run_ref, kind, .. }) =
+            &entry.proposal.control
+            && *kind == fa_journal::migration::kind::FINALIZE
+        {
+            activation_sources.insert(*run_ref, (*at, *vid, entry.entry_digest));
+        }
+    }
+
+    let mut cells = BTreeMap::new();
+    let mut pending = BTreeMap::new();
+    let mut watermark: Option<CommitSeq> = None;
+    let mut entries_count = 0u64;
+    let mut source = Hasher::new();
+    source.update(b"fa:register-functional-stock-sources:v1");
+    for (vid, entry, created_at) in &entries {
+        if entry.proposal.legs.is_empty() || entry.proposal.effective_date > effective_through {
+            continue;
+        }
+        let contribution = contribution_seq(entry, *created_at, &activated)?;
+        watermark = Some(watermark.map_or(contribution, |prior| prior.max(contribution)));
+        source.update(&created_at.0.to_le_bytes());
+        source.update(&vid.0.to_le_bytes());
+        source.update(&entry.entry_digest);
+        source.update(&contribution.0.to_le_bytes());
+        let activation = match &entry.proposal.origin {
+            fa_model::EntryOrigin::Migration { run_ref, .. } => {
+                Some(activation_sources.get(run_ref).ok_or_else(|| {
+                    KernelError::Corrupt("visible migration lacks a source activation".into())
+                })?)
+            }
+            _ => None,
+        };
+        let release = if entry.proposal.class == EntryClass::PENDING {
+            release_sources.get(vid)
+        } else {
+            None
+        };
+        for witness in [activation, release] {
+            match witness {
+                Some((at, witness_vid, digest)) => {
+                    source.update(&[1]);
+                    source.update(&at.0.to_le_bytes());
+                    source.update(&witness_vid.0.to_le_bytes());
+                    source.update(digest);
+                }
+                None => {
+                    source.update(&[0]);
+                }
+            }
+        }
+        if entry.proposal.class == EntryClass::PENDING {
+            if let Some(release_at) = resolved.get(vid) {
+                watermark = Some(watermark.map_or(*release_at, |prior| prior.max(*release_at)));
+            } else {
+                add_functional_stock_entry(&mut pending, &spec, *vid, entry)?;
+            }
+        } else {
+            add_functional_stock_entry(&mut cells, &spec, *vid, entry)?;
+            entries_count = entries_count
+                .checked_add(1)
+                .ok_or(RegisterError::Overflow)?;
+        }
+    }
+    let cells: Vec<_> = cells.into_values().collect();
+    let pending: Vec<_> = pending.into_values().collect();
+    let mut w = Writer::new();
+    w.bytes(&spec_bytes)
+        .i32(effective_through.0)
+        .u32(spec.base_unit.0)
+        .u64(entries_count)
+        .opt(watermark.as_ref(), |w, at| {
+            w.u64(at.0);
+        })
+        .fixed(&source.finalize().0);
+    for column in [&cells, &pending] {
+        w.list(column, |w, cell| {
+            w.u128(cell.key.account.0)
+                .u32(cell.key.unit_id)
+                .opt(cell.key.entity.as_ref(), |w, entity| {
+                    w.str(entity);
+                })
+                .i128(cell.debits)
+                .i128(cell.credits)
+                .u64(cell.entry_count);
+        });
+    }
+    let mut digest = Hasher::new();
+    digest.update(FUNCTIONAL_STOCK_DIGEST_DOMAIN);
+    digest.update(&w.finish().map_err(RegisterError::Encoding)?);
+    Ok(FunctionalStockFold {
+        effective_through,
+        base_unit: spec.base_unit,
+        known_at: seq,
+        cells,
+        pending,
+        watermark,
+        entries: entries_count,
+        fold_digest: digest.finalize().0,
+    })
+}
+
+/// Recompute a stock claim at its exact effective and recorded coordinates.
+pub fn verify_functional_stock<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    claimed: &FunctionalStockFold,
+) -> Result<(), RegisterError> {
+    let actual =
+        fold_functional_stock(db, book, claimed.effective_through, Some(claimed.known_at))?;
+    if actual != *claimed {
+        return Err(RegisterError::ProjectionDrift(format!(
+            "functional stock drift through {} at seq {}",
+            claimed.effective_through.render(),
+            claimed.known_at.0
         )));
     }
     Ok(())

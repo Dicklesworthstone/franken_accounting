@@ -67,6 +67,9 @@ use crate::policy::{
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{bytes, edge_id, prop, scalar_bytes, scalar_text};
 
+mod visibility;
+pub use visibility::verify_run_visibility_at;
+
 /// Canonical bytes of a run body: `u16 version ‖ book_id[16] ‖ str run_key
 /// ‖ str source_system ‖ u8 mode ‖ trial_balance oid[32] ‖ i32 opening_date
 /// ‖ list(str account_code ‖ u32 unit ‖ i128 mantissa)`, then for

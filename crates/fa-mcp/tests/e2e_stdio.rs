@@ -3655,6 +3655,37 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
     assert_eq!(activity["totals"]["debits"], json!("110.00 USD"));
     assert_eq!(activity["totals"]["credits"], json!("110.00 USD"));
     assert_eq!(activity["balanced"], json!(true));
+    let expected_stock = cli_data(&[
+        "tb",
+        "--functional",
+        "--as-of",
+        "2026-04-30",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let (error, stock, _) = call_tool(
+        &mut mcp,
+        "fa_read_trial_balance",
+        json!({"functional": true, "as_of": "2026-04-30"}),
+    );
+    assert!(!error, "cumulative functional stock through MCP: {stock}");
+    assert_eq!(stock, expected_stock, "MCP and CLI stock data must agree");
+    let stock: JsonValue = fastmcp_rust::serde_json::from_str(&stock).unwrap();
+    assert_eq!(stock["scope"], json!("stock"));
+    assert_eq!(stock["effective_through"], json!("2026-04-30"));
+    assert_eq!(stock["totals"]["debits"], json!("110.00 USD"));
+    assert_eq!(stock["totals"]["credits"], json!("110.00 USD"));
+    assert_eq!(stock["entries"], json!(1));
+    let (error, before_invoice, _) = call_tool(
+        &mut mcp,
+        "fa_read_trial_balance",
+        json!({"functional": true, "as_of": "2026-03-04"}),
+    );
+    assert!(!error, "stock before recognition: {before_invoice}");
+    let before_invoice: JsonValue = fastmcp_rust::serde_json::from_str(&before_invoice).unwrap();
+    assert_eq!(before_invoice["totals"]["debits"], json!("0.00 USD"));
+    assert_eq!(before_invoice["entries"], json!(0));
     assert_eq!(mcp.finish(), 0);
     assert_eq!(
         cli_data(&["book", "info", "--book", &b, "--json"]),

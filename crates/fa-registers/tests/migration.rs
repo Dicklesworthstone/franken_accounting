@@ -1592,10 +1592,9 @@ fn replay(
     prefix: CommitSeq,
 ) -> Result<SeqMap, Refusal> {
     let ctx = k.ctx();
-    let id = k.book.book_id;
-    let (db, runtime) = (&mut k.db, &k.runtime);
+    let (db, book, runtime) = (&mut k.db, &k.book, &k.runtime);
     runtime
-        .block_on(async move { replay_into(db, target, &ctx, id, Some(prefix)).await })
+        .block_on(async move { replay_into(db, target, &ctx, book, Some(prefix)).await })
         .expect("kernel")
 }
 

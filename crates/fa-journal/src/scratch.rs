@@ -18,8 +18,14 @@
 //!   vertices, and every row on them or their edges — property moves and
 //!   removals, label flips, deletes — are maintenance and are dropped, as
 //!   are moves of a maintenance property wherever it sits (the notary's
-//!   checkpoint head on the book root); a source commit that is only
-//!   maintenance yields no scratch commit;
+//!   checkpoint head on the book root). Ordinarily a source commit that is
+//!   only maintenance yields no scratch commit;
+//! - a prefix containing a native `Reconciled` attestation preserves every
+//!   source sequence through a real scratch publication. Its immutable claim,
+//!   source receipts and cash-fold digest bind original commit sequences.
+//!   Maintenance-only publications become normalized no-op writes against an
+//!   already replayed book root, retaining no maintenance objects and changing
+//!   no accounting row. No timestamp or payload is rewritten;
 //! - on an accounting object, a removal or a delete (the journal is
 //!   append-only), and anywhere a row family fa never writes (valid time,
 //!   counters, escrow, sketches, schema, constraints), refuses FA-REF-134,
@@ -35,7 +41,7 @@
 use std::collections::BTreeSet;
 
 use fa_model::Id128;
-use fa_model::symbols::{label, property};
+use fa_model::symbols::{label, property, relation};
 pub use fa_palimpsest::{
     SCOPE_ACCOUNTING_OBJECTS_ONLY, SEQ_MAP_DOMAIN, SEQ_MAP_VERSION, SeqPair, encode_seq_map,
     seq_map_digest, seq_pairs_are_monotone, translate_seq,
@@ -105,6 +111,9 @@ impl SeqMap {
     /// before it. `None` before the first replayed commit (nothing known)
     /// and past `source_prefix`, whose history the scratch book does not
     /// hold: a floor is only lawful inside `[0, source_prefix]`.
+    /// Maintenance-only publications remain absent from the accounting map,
+    /// even when a protected replay publishes native no-ops at those sequences:
+    /// their accounting state equals that of the preceding mapped commit.
     #[must_use]
     pub fn translate(&self, source_known_at: CommitSeq) -> Option<CommitSeq> {
         translate_seq(self.source_prefix, &self.pairs, source_known_at)
@@ -464,8 +473,66 @@ pub fn source_batches<V: asupersync::fs::Vfs + Clone>(
     Ok(Ok((prefix, batches)))
 }
 
-/// Re-commit `batches` into the empty `target`, one scratch transaction per
-/// source commit that carries accounting objects, and return the [`SeqMap`].
+/// Inspect native history, not current labels or code mirrors. Also recognize
+/// attempted tag-3 manufacture or restoration: maintenance filtering must not
+/// erase a fabricated attestation before the source verifier can reject it.
+fn contains_reconciled_claim(batches: &[LogicalDeltaBatch]) -> bool {
+    let mut attestations = BTreeSet::new();
+    for batch in batches {
+        for coordinate in batch.coordinate_entries() {
+            for row in &coordinate.rows {
+                match row {
+                    DeltaRow::CreateVertex { vid, labels, .. }
+                        if labels.contains(&label::ATTESTATION) =>
+                    {
+                        attestations.insert(*vid);
+                    }
+                    DeltaRow::LabelMembership { vid, label, .. }
+                        if *label == label::ATTESTATION =>
+                    {
+                        attestations.insert(*vid);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let reconciled = |value: &CanonicalScalar| {
+        matches!(value, CanonicalScalar::Bytes(bytes)
+            if bytes.as_slice().get(18) == Some(&crate::attestation::claim::RECONCILED))
+    };
+    batches.iter().any(|batch| {
+        batch.coordinate_entries().iter().any(|coordinate| {
+            coordinate.rows.iter().any(|row| match row {
+                DeltaRow::CreateVertex { vid, props, .. } if attestations.contains(vid) => props
+                    .iter()
+                    .any(|(key, value)| *key == property::FA_PAYLOAD && reconciled(value)),
+                DeltaRow::Property {
+                    elem: ElementId::Vertex(vid),
+                    property: key,
+                    before,
+                    after,
+                } if attestations.contains(vid) && *key == property::FA_PAYLOAD => {
+                    before.as_ref().is_some_and(reconciled)
+                        || after.as_ref().is_some_and(reconciled)
+                }
+                _ => false,
+            })
+        })
+    })
+}
+
+/// Re-commit `batches` into the empty `target` and return the [`SeqMap`].
+/// Ordinarily only accounting publications consume scratch sequences. A
+/// prefix containing a Reconciled claim instead preserves every source
+/// sequence, including real native no-op publications for omitted maintenance.
+/// This keeps immutable claim, receipt and cash-contribution coordinates
+/// valid without copying source-bound certificates or weakening their laws.
+/// The map still names exactly the accounting publications; its floor on a
+/// maintenance sequence selects the same accounting state. Histories without
+/// such claims retain their original replay and certificate bytes.
+/// This low-level copier trusts its supplied batches: use [`replay_into`] to
+/// verify protected source history before any maintenance filtering occurs.
 pub async fn replay_batches<W: asupersync::fs::Vfs + Clone>(
     target: &mut Database<W>,
     ctx: &PurposeContexts,
@@ -483,15 +550,43 @@ pub async fn replay_batches<W: asupersync::fs::Vfs + Clone>(
             "replay into a newly opened, empty database",
         )));
     }
+    let preserve_sequences = contains_reconciled_claim(batches);
     let mut maintenance = Maintenance::default();
     let mut pairs = Vec::new();
     for batch in batches {
-        let writes = match replayable(batch, &mut maintenance) {
+        let mut writes = match replayable(batch, &mut maintenance) {
             Ok(w) => w,
             Err(r) => return Ok(Err(r)),
         };
-        if writes.is_empty() {
-            continue;
+        let accounting = !writes.is_empty();
+        if !accounting {
+            if !preserve_sequences {
+                continue;
+            }
+            let Some(root) = target.vertex(crate::rows::book_root())? else {
+                return Ok(Err(unsupported(
+                    batch.commit_seq(),
+                    "maintenance before an already replayed book root",
+                )));
+            };
+            if !root.labels.contains(&label::BOOK) {
+                return Ok(Err(unsupported(
+                    batch.commit_seq(),
+                    "maintenance without a live replayed book root",
+                )));
+            }
+            // A nonempty ENSURE of an existing vertex normalizes to no rows
+            // but still commits a real native marker/sequence. An empty batch
+            // would refuse. The checked root is never created or modified.
+            let mut noop = WriteBatch::new(relation::IN_BOOK);
+            noop.ensure_vertex(root.vid, Vec::new(), Vec::new());
+            writes.push(noop);
+        }
+        if preserve_sequences && target.frontier()?.0.checked_add(1) != Some(batch.commit_seq().0) {
+            return Ok(Err(unsupported(
+                batch.commit_seq(),
+                "a gap in the native prefix required by reconciliation evidence",
+            )));
         }
         let diverged = || {
             Refusal::new(
@@ -522,11 +617,25 @@ pub async fn replay_batches<W: asupersync::fs::Vfs + Clone>(
             }
             Err(e) => return Err(e.into()),
         };
-        pairs.push(SeqPair {
-            source_seq: batch.commit_seq(),
-            source_marker: batch.commit_marker_identity().marker_oid.0,
-            scratch_seq: seq,
-        });
+        if preserve_sequences && seq != batch.commit_seq() {
+            return Ok(Err(unsupported(
+                batch.commit_seq(),
+                "a native publication that changed a reconciliation coordinate",
+            )));
+        }
+        if accounting {
+            pairs.push(SeqPair {
+                source_seq: batch.commit_seq(),
+                source_marker: batch.commit_marker_identity().marker_oid.0,
+                scratch_seq: seq,
+            });
+        }
+    }
+    if preserve_sequences && target.frontier()? != prefix {
+        return Ok(Err(unsupported(
+            prefix,
+            "an incomplete native prefix required by reconciliation evidence",
+        )));
     }
     Ok(Ok(SeqMap {
         source_book,
@@ -536,12 +645,14 @@ pub async fn replay_batches<W: asupersync::fs::Vfs + Clone>(
 }
 
 /// The whole replay under one runtime: make the source's history readable,
-/// read it through `prefix`, and re-commit it into `target`.
+/// read it through `prefix`, verify any native reconciliation history there,
+/// and re-commit it into `target`. Verification precedes maintenance filtering:
+/// relabelling a protected source as maintenance cannot hide its damage.
 pub async fn replay_into<V, W>(
     source: &mut Database<V>,
     target: &mut Database<W>,
     ctx: &PurposeContexts,
-    source_book: Id128,
+    book: &crate::genesis::BookContext,
     prefix: Option<CommitSeq>,
 ) -> Outcome<SeqMap>
 where
@@ -555,7 +666,13 @@ where
         Ok(read) => read,
         Err(r) => return Ok(Err(r)),
     };
-    replay_batches(target, ctx, source_book, prefix, &batches).await
+    if contains_reconciled_claim(&batches)
+        && let Err(refusal) =
+            crate::bank::verify_reconciliation_history_at(source, ctx, book, prefix)?
+    {
+        return Ok(Err(refusal));
+    }
+    replay_batches(target, ctx, book.book_id, prefix, &batches).await
 }
 
 #[cfg(test)]

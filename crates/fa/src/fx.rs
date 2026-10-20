@@ -17,7 +17,7 @@ use fa_model::{EntryPayload, Oid};
 use fa_money::rate::ArithmeticBudget;
 use fa_money::{UnitKind, UnitRegistry};
 use fa_policy::{Capability, Observes, Op, Reach};
-use fa_registers::FunctionalFold;
+use fa_registers::{FunctionalFold, FunctionalStockFold};
 use fa_time::{DateDay, FiscalCalendar};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
@@ -370,6 +370,61 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 db,
                 book,
                 period_code,
+                Some(selected),
+            )?)
+        })?;
+        if let Err(refusal) =
+            self.authorize_fx_read(cx, capability, capability.holder(), false, Some(selected))?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(Ok(result))
+    }
+
+    /// Cumulative functional-currency balances through a civil date at one
+    /// retained prefix. Includes opening history across fiscal years and
+    /// preserves the journal's committed valuations. Outstanding holds remain
+    /// separate; this read neither revalues entries nor issues a certificate.
+    pub async fn functional_balance_as_of(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        effective_through: DateDay,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<FunctionalStockFold> {
+        let head =
+            match self.authorize_fx_read(cx, capability, capability.holder(), false, known_at)? {
+                Ok(head) => head,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        let selected = known_at.unwrap_or(head);
+        if selected > head {
+            return Ok(Err(Refusal::new(
+                code::STRUCTURE,
+                exit::USAGE,
+                format!(
+                    "functional stock prefix {} exceeds the current head {}",
+                    selected.0, head.0
+                ),
+                "plan §5.3 / §7.1 (cumulative balances at one retained prefix)",
+                format!("select a recorded sequence at or before {}", head.0),
+            )));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) =
+            self.authorize_fx_read(cx, capability, capability.holder(), false, Some(selected))?
+        {
+            return Ok(Err(refusal));
+        }
+        let result = self.query(cx, |db, book| {
+            crate::certificate::context_at(db, book, selected)?;
+            fa_journal::entry_history::verify_entry_history(db, cx, book, Some(selected))?;
+            Ok(fa_registers::fold_functional_stock(
+                db,
+                book,
+                effective_through,
                 Some(selected),
             )?)
         })?;

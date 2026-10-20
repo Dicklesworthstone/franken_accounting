@@ -2323,10 +2323,9 @@ fn a_scratch_replay_carries_no_notary_checkpoint_and_verifies() {
         .runtime
         .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
         .expect("a fresh scratch database");
-    let id = h.book.book_id;
-    let (db, runtime) = (&mut h.db, &h.runtime);
+    let (db, book, runtime) = (&mut h.db, &h.book, &h.runtime);
     let map = runtime
-        .block_on(async { replay_into(db, &mut scratch, &ctx, id, Some(head)).await })
+        .block_on(async { replay_into(db, &mut scratch, &ctx, book, Some(head)).await })
         .expect("kernel")
         .expect("replays");
     for checkpoint in [first.recorded_at, second.recorded_at] {

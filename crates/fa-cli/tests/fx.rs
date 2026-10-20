@@ -485,8 +485,13 @@ fn conversion_residual_stays_in_the_converted_leg_and_reversal_preserves_it() {
 fn functional_activity_requires_its_explicit_scope_and_refuses_unvalued_foreign_entries() {
     let f = Fixture::new();
     let before = head(&f.book);
+    let stock = ok(&f.book, &["tb", "--functional", "--period", "FY2026-P03"]);
+    assert_eq!(text(&stock, "event"), "functional_stock_balance");
+    assert_eq!(text(data(&stock), "scope"), "stock");
+    assert_eq!(text(data(&stock), "effective_through"), "2026-03-31");
+    assert_eq!(head(&f.book), before);
     for selection in [
-        vec!["--functional", "--period", "FY2026-P03"],
+        vec!["--functional"],
         vec![
             "--functional",
             "--activity",

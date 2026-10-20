@@ -875,7 +875,7 @@ mod tests {
                 &mut h.db,
                 &mut scratch,
                 &cx,
-                h.book.book_id,
+                &h.book,
                 None,
             ))
             .unwrap()
