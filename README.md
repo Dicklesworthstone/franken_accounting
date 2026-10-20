@@ -784,6 +784,8 @@ fa procedure run graph.related_party_exposure --param max_depth=4 --book acme.fa
 
 # Audit samples reproducible from a declared seed, over an account's open items at one recorded coordinate, and the Stringer bound over the audited values (available today).
 fa sample mus --account 1200 --seed 20260115 --interval "5000.00 USD" --as-of 2025-12-31 --book acme.fabook --json
+# Stratified over book-value bands the auditor declares; allocation is proportional (the decision card's pinned fallback) until a sampling policy is activated.
+fa sample stratified --account 1200 --seed 20260115 --size 40 --band "1000.00 USD" --band "10000.00 USD" --book acme.fabook --json
 fa sample evaluate --account 1200 --seed 20260115 --interval "5000.00 USD" --as-of 2025-12-31 --as-known-at <seq> --audited audited.json --confidence 95 --book acme.fabook --json
 
 # Proofs an outsider can check without the book (`fa bundle produce` and `fa-verify bundle` available today).
