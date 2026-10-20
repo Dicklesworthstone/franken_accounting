@@ -556,12 +556,12 @@ example = "fa sample uniform --account 1200 --seed 20260115 --size 25 --book ./b
 name = "engagement"
 summary = "Audit engagements (plan §11.12, §0.4 decision 3): open an engagement (its kind, scope periods and the materiality parameters the auditor states, journaled once by an EngagementControl record under produce authority), list the book's engagements, or show one with every proposed adjustment and its decision."
 writes = true
-subcommands = ["open", "list", "show"]
+subcommands = ["open", "list", "show", "sud"]
 flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date", "--grant"]
 switches = []
-events = ["engagement_opened", "engagements", "engagement_detail"]
+events = ["engagement_opened", "engagements", "engagement_detail", "engagement_sud"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["engagement open <id> --kind audit|review|examination|investigation|litigation --period <code>... --overall \"<amount> <UNIT>\" --performance \"<amount> <UNIT>\" --clearly-trivial \"<amount> <UNIT>\" [--report-release YYYY-MM-DD] [--key K] [--date YYYY-MM-DD]   (journals the engagement once, under produce authority; the parameters are in the book's base unit with 0 <= clearly trivial <= performance <= overall, and are stated, never judged; every scope period must exist)", "engagement list   (every engagement of the book, under read authority)", "engagement show <id>   (the engagement and each proposed adjustment: its legs, its state proposed|booked|passed, and its decision)"]
+usage = ["engagement open <id> --kind audit|review|examination|investigation|litigation --period <code>... --overall \"<amount> <UNIT>\" --performance \"<amount> <UNIT>\" --clearly-trivial \"<amount> <UNIT>\" [--report-release YYYY-MM-DD] [--key K] [--date YYYY-MM-DD]   (journals the engagement once, under produce authority; the parameters are in the book's base unit with 0 <= clearly trivial <= performance <= overall, and are stated, never judged; every scope period must exist)", "engagement list   (every engagement of the book, under read authority)", "engagement show <id>   (the engagement and each proposed adjustment: its legs, its state proposed|booked|passed, and its decision)", "engagement sud <id>   (plan §11.12 audit.sud, the summary of uncorrected misstatements: every passed proposal's effect had it been booked, on income, assets, liabilities and equity in the engagement's unit, legs in other units listed and never converted; the rollover (period income) and iron-curtain (period-end balance sheet) totals, which sum the same items while no prior-period engagement is carried forward; and mechanical comparisons with the stated clearly trivial, performance and overall parameters. Materiality is the auditor's judgment, not this report's)"]
 example = "fa engagement open FY2026-audit --kind audit --period FY2026-P01 --period FY2026-P02 --overall \"50000.00 USD\" --performance \"37500.00 USD\" --clearly-trivial \"2500.00 USD\" --book ./books/myco --json"
 
 [[verb]]
@@ -2334,6 +2334,12 @@ doc = "One engagement and every proposed adjustment it journaled, by number, eac
 fields = ["engagement:engagement_summary", "proposals:[proposal_row]"]
 
 [[event]]
+name = "engagement_sud"
+book = true
+doc = "The summary of uncorrected misstatements of one engagement (plan §11.12 audit.sud): each passed proposal's effect had it been booked, the rollover and iron-curtain totals (no prior-period carry-forward in this build: prior_period_carry_forward is false, and the two totals sum the same items), and mechanical comparisons with the stated parameters. The materiality judgment is the auditor's, not this report's."
+fields = ["engagement:engagement_summary", "unit:string", "items:[sud_item]", "rollover_income:amount", "iron_curtain:statement_effect", "prior_period_carry_forward:bool", "exceeds_performance:bool", "exceeds_overall:bool"]
+
+[[event]]
 name = "adjustment_proposed"
 book = true
 doc = "A draft correcting entry was journaled in an engagement by an EngagementControl Propose record (or the identical proposal was already recorded). It never posts; it is booked or passed later, once."
@@ -2360,6 +2366,16 @@ fields = ["item_id:string", "book_value:amount", "audited_value:amount", "overst
 name = "engagement_summary"
 doc = "One engagement: its id and vertex, kind, firm principal, scope periods, the stated materiality parameters in its unit, the report release day, state, who opened it and when, its next proposal number, and how many proposals are proposed, booked and passed."
 fields = ["engagement:string", "vid:hex", "kind:string", "firm_principal:hex", "scope_periods:[string]", "unit:string", "overall:amount", "performance:amount", "clearly_trivial:amount", "report_release:date?", "state:string", "opened_at:seq", "opened_by:hex", "next_proposal:int", "proposed:int", "booked:int", "passed:int"]
+
+[[shape]]
+name = "statement_effect"
+doc = "What booking a correction would change, in one unit: net income (positive raises it), assets (debits less credits), liabilities and equity (credits less debits)."
+fields = ["income:amount", "assets:amount", "liabilities:amount", "equity:amount"]
+
+[[shape]]
+name = "sud_item"
+doc = "One passed proposal in the summary of uncorrected misstatements: its number and date, the registered reason it was passed, its statement effect in the engagement's unit, whether every line is within the stated clearly trivial threshold, and the other units its legs carry (listed, never converted)."
+fields = ["number:int", "effective_date:date", "reason:string", "effect:statement_effect", "clearly_trivial:bool", "other_units:[string]"]
 
 [[shape]]
 name = "proposal_leg"
@@ -4462,7 +4478,7 @@ mistakes = ["Passing --interval as a bare number: it is an amount with its unit,
 cluster = "fa.audit"
 name = "engagement"
 verb = "engagement"
-subcommands = ["open", "list", "show"]
+subcommands = ["open", "list", "show", "sud"]
 selector = "action"
 positionals = ["engagement?"]
 flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date"]
@@ -5029,7 +5045,7 @@ ops = ["produce"]
 
 [[bound]]
 verbs = ["engagement"]
-subcommands = ["list", "show"]
+subcommands = ["list", "show", "sud"]
 ops = ["read"]
 
 [[bound]]
