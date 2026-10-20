@@ -74,6 +74,7 @@ symbols!(
         (USAGE_DEBIT, "UsageDebit", 46),
         (BANK_MATCH, "BankMatch", 47),
         (BANK_MATCHED_LEG, "BankMatchedLeg", 48),
+        (BANK_UNMATCH, "BankUnmatch", 49),
     ]
 );
 

@@ -6,8 +6,11 @@ use std::path::Path;
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::bank::{
-    BankMatchPreparation, BankMatchRequest, bank_match_vid, bank_matched_leg_vid,
+    BankDecisionRef, BankMatchConfirmation, BankMatchHistory, BankMatchPreparation,
+    BankMatchRecorded, BankMatchRequest, BankUnmatch, BankUnmatchRecorded, BankUnmatchRequest,
+    admit_bank_match_history, bank_match_history, bank_match_vid, bank_matched_leg_vid,
     confirm_bank_match, prepare_bank_match, read_bank_match, read_bank_match_claims,
+    unmatch_bank_match,
 };
 use fa_journal::blob::DurableDirectory;
 use fa_journal::evidence::{Storage, document_record, fetch_document};
@@ -706,6 +709,21 @@ fn a_maximum_statement_confirms_with_a_compact_record_and_a_real_external_manife
     );
     assert!(h.confirm(&cap(VId(9)), request).unwrap().already_recorded);
     assert_eq!(h.head(), recorded.recorded_at);
+    let lower = metadata_cap(VId(11));
+    let history = h.history(&lower, None).unwrap();
+    assert_eq!(history.active, vec![recorded.clone()]);
+    let released = h.unmatch(&lower, decision_ref(&recorded)).unwrap();
+    let history = h.history(&lower, None).unwrap();
+    assert_eq!(history.confirmations, vec![recorded.clone()]);
+    assert_eq!(history.unmatches, vec![released]);
+    assert!(history.active.is_empty());
+    assert_eq!(
+        h.history(&lower, Some(recorded.recorded_at))
+            .unwrap()
+            .active,
+        vec![recorded],
+        "metadata history and correction need no external-manifest bytes or Privileged"
+    );
 }
 
 #[test]
@@ -1269,4 +1287,689 @@ fn deleting_a_later_native_reversal_cannot_revive_an_old_cash_proposal() {
         refusal::code::BANK_MATCH_DRIFT
     );
     assert_eq!(h.head(), before);
+}
+
+impl Harness {
+    fn history(
+        &mut self,
+        capability: &Capability,
+        at: Option<CommitSeq>,
+    ) -> Result<BankMatchHistory, Refusal> {
+        let cx = self.cx();
+        self.runtime
+            .block_on(bank_match_history(
+                &mut self.db,
+                &cx,
+                &self.book,
+                capability,
+                at,
+                None,
+            ))
+            .unwrap()
+    }
+
+    fn unmatch(
+        &mut self,
+        capability: &Capability,
+        target: BankDecisionRef,
+    ) -> Result<BankUnmatchRecorded, Refusal> {
+        let cx = self.cx();
+        self.runtime
+            .block_on(unmatch_bank_match(
+                &mut self.db,
+                &cx,
+                &self.book,
+                capability,
+                BankUnmatchRequest { target },
+            ))
+            .unwrap()
+    }
+}
+
+fn decision_ref(recorded: &BankMatchRecorded) -> BankDecisionRef {
+    BankDecisionRef {
+        vid: recorded.match_vid,
+        digest: recorded.match_digest,
+    }
+}
+
+fn release_ref(recorded: &BankUnmatchRecorded) -> BankDecisionRef {
+    BankDecisionRef {
+        vid: recorded.unmatch_vid,
+        digest: recorded.unmatch_digest,
+    }
+}
+
+fn metadata_cap(principal: VId) -> Capability {
+    Capability::embedded(principal, &["read", "reconcile"]).unwrap()
+}
+
+#[test]
+fn explicit_unmatch_preserves_original_facts_and_reconfirms_with_immutable_generations() {
+    let mut h = Harness::new();
+    let entry = h.entry(&[10_000], "WIRE", b"cash");
+    let (import, line) = h.imported("WIRE", 10_000, b"statement");
+    let request = h.request(import, line, entry, 0);
+    let first = h.confirm(&cap(CONFIRMER), request.clone()).unwrap();
+    let original_match = h.db.vertex(first.match_vid).unwrap().unwrap();
+    let original_claim =
+        h.db.vertex(first.confirmation.leg_claim_vid())
+            .unwrap()
+            .unwrap();
+
+    let released = h
+        .unmatch(&metadata_cap(VId(9)), decision_ref(&first))
+        .unwrap();
+    assert_eq!(released.recorded_at.0, first.recorded_at.0 + 1);
+    assert_eq!(released.unmatch.unmatched_by, VId(9));
+    assert_eq!(released.unmatch.unmatching_profile, Profile::Human);
+    assert_eq!(released.unmatch.canonical_bytes().unwrap().len(), 140);
+    assert_eq!(
+        BankUnmatch::decode(&released.unmatch.canonical_bytes().unwrap()).unwrap(),
+        released.unmatch
+    );
+    let publications: Vec<_> = h.db.delta_since(first.recorded_at).unwrap().collect();
+    assert_eq!(publications.len(), 1);
+    let mut vertices = 0;
+    let mut edges = Vec::new();
+    for coordinate in publications[0].coordinate_entries() {
+        for row in &coordinate.rows {
+            match row {
+                DeltaRow::CreateVertex { labels, .. } => {
+                    vertices += 1;
+                    assert_eq!(labels.as_slice(), [label::BANK_UNMATCH]);
+                }
+                DeltaRow::CreateEdge { relation, .. } => edges.push(*relation),
+                other => panic!("Unmatch changed an earlier native fact: {other:?}"),
+            }
+        }
+    }
+    edges.sort();
+    let mut expected = vec![relation::SUPERSEDES, relation::CITES, relation::IN_BOOK];
+    expected.sort();
+    assert_eq!((vertices, edges), (1, expected));
+    assert!(
+        h.history(&metadata_cap(OWNER), None)
+            .unwrap()
+            .active
+            .is_empty()
+    );
+    assert_eq!(
+        h.history(&metadata_cap(OWNER), Some(first.recorded_at))
+            .unwrap()
+            .active,
+        vec![first.clone()]
+    );
+
+    let mut fresh = request.clone();
+    fresh.source_known_at = h.head();
+    let second = h.confirm(&cap(CONFIRMER), fresh).unwrap();
+    assert_eq!(
+        (
+            second.confirmation.line_generation(),
+            second.confirmation.leg_generation()
+        ),
+        (1, 1)
+    );
+    let lineage = second.confirmation.lineage.as_ref().unwrap();
+    assert_eq!(lineage.previous_line_unmatch, Some(release_ref(&released)));
+    assert_eq!(lineage.previous_leg_unmatch, Some(release_ref(&released)));
+    assert_ne!(first.match_vid, second.match_vid);
+    assert_ne!(
+        first.confirmation.leg_claim_vid(),
+        second.confirmation.leg_claim_vid()
+    );
+    assert_eq!(
+        h.db.vertex(first.match_vid).unwrap().unwrap(),
+        original_match
+    );
+    assert_eq!(
+        h.db.vertex(first.confirmation.leg_claim_vid())
+            .unwrap()
+            .unwrap(),
+        original_claim
+    );
+    assert_eq!(h.read(first.match_vid, None).unwrap().unwrap(), first);
+    assert_eq!(h.read(second.match_vid, None).unwrap().unwrap(), second);
+    let state = h.history(&metadata_cap(OWNER), None).unwrap();
+    assert_eq!(state.confirmations, vec![first.clone(), second.clone()]);
+    assert_eq!(state.unmatches, vec![released.clone()]);
+    assert_eq!(state.active, vec![second.clone()]);
+
+    let before = h.head();
+    let retry = h.confirm(&cap(VId(10)), request).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.match_vid, first.match_vid);
+    assert_eq!(retry.confirmation, first.confirmation);
+    assert_eq!(retry.recorded_at, first.recorded_at);
+    let retry = h
+        .unmatch(&metadata_cap(VId(10)), decision_ref(&first))
+        .unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.unmatch, released.unmatch);
+    assert_eq!(retry.recorded_at, released.recorded_at);
+    assert_eq!(h.head(), before);
+    assert_eq!(
+        h.history(&metadata_cap(OWNER), None).unwrap().active,
+        vec![second]
+    );
+}
+
+#[test]
+fn line_and_cash_generations_advance_independently_across_statement_reassignment() {
+    let mut h = Harness::new();
+    let entry = h.entry(&[10_000], "WIRE", b"cash");
+    let (a_import, a_line) = h.imported("WIRE", 10_000, b"a");
+    let (b_import, b_line) = h.imported("WIRE", 10_000, b"b");
+    let a_request = h.request(a_import, a_line, entry, 0);
+    let a = h.confirm(&cap(CONFIRMER), a_request.clone()).unwrap();
+    let released_a = h.unmatch(&metadata_cap(OWNER), decision_ref(&a)).unwrap();
+    let b_request = h.request(b_import, b_line, entry, 0);
+    let b = h.confirm(&cap(CONFIRMER), b_request).unwrap();
+    assert_eq!(
+        (
+            b.confirmation.line_generation(),
+            b.confirmation.leg_generation()
+        ),
+        (0, 1)
+    );
+    let lineage = b.confirmation.lineage.as_ref().unwrap();
+    assert_eq!(lineage.previous_line_unmatch, None);
+    assert_eq!(lineage.previous_leg_unmatch, Some(release_ref(&released_a)));
+    let released_b = h.unmatch(&metadata_cap(OWNER), decision_ref(&b)).unwrap();
+    let mut request = a_request;
+    request.source_known_at = h.head();
+    let a_again = h.confirm(&cap(CONFIRMER), request).unwrap();
+    assert_eq!(
+        (
+            a_again.confirmation.line_generation(),
+            a_again.confirmation.leg_generation()
+        ),
+        (1, 2)
+    );
+    let lineage = a_again.confirmation.lineage.as_ref().unwrap();
+    assert_eq!(
+        lineage.previous_line_unmatch,
+        Some(release_ref(&released_a))
+    );
+    assert_eq!(lineage.previous_leg_unmatch, Some(release_ref(&released_b)));
+    let latest =
+        h.db.delta_since(released_b.recorded_at)
+            .unwrap()
+            .next()
+            .unwrap();
+    let mut edges = 0;
+    for coordinate in latest.coordinate_entries() {
+        for row in &coordinate.rows {
+            if matches!(row, DeltaRow::CreateEdge { .. }) {
+                edges += 1;
+            }
+        }
+    }
+    assert_eq!(
+        edges, 11,
+        "both distinct preceding releases have strong CITES"
+    );
+    let state = h.history(&metadata_cap(OWNER), None).unwrap();
+    assert_eq!(state.confirmations.len(), 3);
+    assert_eq!(state.unmatches.len(), 2);
+    assert_eq!(state.active, vec![a_again]);
+}
+
+#[test]
+fn released_cash_still_has_one_atomic_next_claim_under_competing_preparations() {
+    let mut h = Harness::new();
+    let entry = h.entry(&[10_000], "WIRE", b"cash");
+    let (a_import, a_line) = h.imported("WIRE", 10_000, b"a");
+    let (b_import, b_line) = h.imported("WIRE", 10_000, b"b");
+    let mut a_request = h.request(a_import, a_line, entry, 0);
+    let first = h.confirm(&cap(CONFIRMER), a_request.clone()).unwrap();
+    h.unmatch(&metadata_cap(OWNER), decision_ref(&first))
+        .unwrap();
+    a_request.source_known_at = h.head();
+    let b_request = h.request(b_import, b_line, entry, 0);
+    let cx = h.cx();
+    let BankMatchPreparation::Ready(a) =
+        prepare_bank_match(&mut h.db, &cx, &h.book, &cap(CONFIRMER), a_request)
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("released line should prepare its next generation")
+    };
+    let BankMatchPreparation::Ready(b) =
+        prepare_bank_match(&mut h.db, &cx, &h.book, &cap(CONFIRMER), b_request)
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("new line should prepare against the released cash")
+    };
+    let winner = h
+        .runtime
+        .block_on(b.commit(&mut h.db, &cx))
+        .unwrap()
+        .unwrap();
+    let refused = h
+        .runtime
+        .block_on(a.commit(&mut h.db, &cx))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, refusal::code::CONFLICT);
+    assert_eq!(h.head(), winner.recorded_at);
+    let history = h.history(&metadata_cap(OWNER), None).unwrap();
+    assert_eq!(
+        history.confirmations.len(),
+        2,
+        "the loser publishes neither line nor cash claim"
+    );
+    assert_eq!(history.active, vec![winner]);
+}
+
+#[test]
+fn correction_requires_exact_target_and_fresh_review_but_old_requests_remain_retries() {
+    let mut h = Harness::new();
+    let entry = h.entry(&[10_000], "WIRE", b"cash");
+    let (import, line) = h.imported("WIRE", 10_000, b"statement");
+    let request = h.request(import, line, entry, 0);
+    let first = h.confirm(&cap(CONFIRMER), request.clone()).unwrap();
+    let mut wrong = decision_ref(&first);
+    wrong.digest[0] ^= 1;
+    let before = h.head();
+    assert_eq!(
+        h.unmatch(&metadata_cap(OWNER), wrong).unwrap_err().code,
+        refusal::code::BANK_MATCH
+    );
+    let system = Capability::new(
+        CONFIRMER,
+        Profile::System,
+        &[Op::Read, Op::Reconcile],
+        OWNER,
+    )
+    .unwrap();
+    assert!(
+        h.unmatch(&system, decision_ref(&first))
+            .unwrap_err()
+            .message
+            .contains("Human")
+    );
+    assert_eq!(h.head(), before);
+    h.unmatch(&metadata_cap(OWNER), decision_ref(&first))
+        .unwrap();
+    let mut stale = request.clone();
+    stale.proposer = VId(11);
+    rebind(&mut stale);
+    let before = h.head();
+    assert_eq!(
+        h.confirm(&cap(CONFIRMER), stale).unwrap_err().code,
+        refusal::code::BANK_MATCH
+    );
+    assert_eq!(h.head(), before);
+    assert!(
+        h.confirm(&cap(CONFIRMER), request)
+            .unwrap()
+            .already_recorded
+    );
+    assert!(
+        h.history(&metadata_cap(OWNER), None)
+            .unwrap()
+            .active
+            .is_empty()
+    );
+    assert_eq!(h.head(), before);
+}
+
+#[test]
+fn deleted_relabelled_rewritten_or_restored_corrections_cannot_change_claim_history() {
+    for attack in 0..4 {
+        let mut h = Harness::new();
+        let entry = h.entry(&[10_000], "WIRE", b"cash");
+        let (import, line) = h.imported("WIRE", 10_000, b"statement");
+        let request = h.request(import, line, entry, 0);
+        let first = h.confirm(&cap(CONFIRMER), request.clone()).unwrap();
+        let released = h
+            .unmatch(&metadata_cap(OWNER), decision_ref(&first))
+            .unwrap();
+        let mut fresh = request.clone();
+        fresh.source_known_at = h.head();
+        let original = h.db.vertex(released.unmatch_vid).unwrap().unwrap();
+        let mut damage = WriteBatch::new(relation::SUPERSEDES);
+        match attack {
+            0 => {
+                damage.delete_vertex(released.unmatch_vid);
+            }
+            1 => {
+                damage.set_vertex_label(released.unmatch_vid, label::BANK_UNMATCH, false);
+            }
+            _ => {
+                let mut forged = released.unmatch.clone();
+                forged.unmatched_by = VId(99);
+                damage.set_vertex_property(
+                    released.unmatch_vid,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(forged.canonical_bytes().unwrap()).unwrap()),
+                );
+                damage.set_vertex_property(
+                    released.unmatch_vid,
+                    property::FA_DIGEST,
+                    Some(CanonicalScalar::bytes(forged.digest().unwrap().to_vec()).unwrap()),
+                );
+            }
+        }
+        h.write(damage);
+        if attack == 3 {
+            let mut restore = WriteBatch::new(relation::SUPERSEDES);
+            for (key, value) in original.props {
+                restore.set_vertex_property(released.unmatch_vid, key, Some(value));
+            }
+            h.write(restore);
+        }
+        let damaged_at = h.head();
+        let prior = h
+            .history(&metadata_cap(OWNER), Some(released.recorded_at))
+            .unwrap();
+        assert!(prior.active.is_empty());
+        assert_eq!(prior.unmatches, vec![released.clone()]);
+        assert_eq!(
+            h.history(&metadata_cap(OWNER), None).unwrap_err().code,
+            refusal::code::BANK_MATCH_DRIFT
+        );
+        assert_eq!(
+            h.unmatch(&metadata_cap(OWNER), decision_ref(&first))
+                .unwrap_err()
+                .code,
+            refusal::code::BANK_MATCH_DRIFT,
+            "even an exact correction retry authenticates complete immutable births"
+        );
+        assert_eq!(
+            h.confirm(&cap(CONFIRMER), fresh).unwrap_err().code,
+            refusal::code::BANK_MATCH_DRIFT
+        );
+        assert_eq!(
+            h.confirm(&cap(CONFIRMER), request).unwrap_err().code,
+            refusal::code::BANK_MATCH_DRIFT
+        );
+        assert_eq!(h.head(), damaged_at);
+    }
+}
+
+#[test]
+fn metadata_history_honors_pinned_read_scope_and_current_revocation_without_privileged() {
+    let mut h = Harness::new();
+    let entry = h.entry(&[10_000], "WIRE", b"cash");
+    let (import, line) = h.imported("WIRE", 10_000, b"statement");
+    let request = h.request(import, line, entry, 0);
+    let first = h.confirm(&cap(CONFIRMER), request).unwrap();
+    let pinned = metadata_cap(VId(9)).known_at_most(first.recorded_at);
+    assert_eq!(
+        admit_bank_match_history(&h.db, &h.book, &pinned, Some(first.recorded_at))
+            .unwrap()
+            .unwrap(),
+        first.recorded_at
+    );
+    assert!(
+        admit_bank_match_history(&h.db, &h.book, &pinned, None)
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(
+        h.history(&pinned, Some(first.recorded_at)).unwrap().active,
+        vec![first.clone()]
+    );
+    h.unmatch(&metadata_cap(OWNER), decision_ref(&first))
+        .unwrap();
+    assert!(h.history(&pinned, None).is_err());
+    assert!(h.unmatch(&pinned, decision_ref(&first)).is_err());
+    assert_eq!(
+        h.history(&pinned, Some(first.recorded_at)).unwrap().active,
+        vec![first.clone()]
+    );
+    let cx = h.cx();
+    let revocation = RevocationRequest {
+        capability: Capability::embedded(OWNER, &["issue_capability"]).unwrap(),
+        revoked: pinned.commitment().unwrap(),
+        effective_date: day(),
+        idempotency_key: b"revoke-bank-metadata-reader".to_vec(),
+        description: seal(&h.book, "revoke bank metadata reader"),
+    };
+    h.runtime
+        .block_on(revoke_capability(&mut h.db, &cx, &h.book, revocation))
+        .unwrap()
+        .unwrap();
+    let before = h.head();
+    let refusal = h.history(&pinned, Some(first.recorded_at)).unwrap_err();
+    assert!(refusal.message.contains("revoked"));
+    assert_eq!(refusal.exit, refusal::exit::SAFETY);
+    assert_eq!(h.head(), before);
+}
+
+fn candidate_at(request: &mut BankMatchRequest, ordinal: u64) {
+    let line = Oid(domain_digest(LINE_DOMAIN, &[&request.line.bytes]));
+    request.candidate_ordinal = ordinal;
+    request.decision_card = fa_policy::decide_bank_match(
+        None,
+        [0; 32],
+        line.0,
+        vec![DecisionCandidate {
+            action: "match_entry_ordinal".into(),
+            parameter: i128::from(ordinal),
+            analytic_score: 1_500_000_000 - i128::from(ordinal),
+        }],
+        vec![
+            DecisionFeature {
+                name: format!("cand.{ordinal}.date_delta_days"),
+                value: 0,
+                advisory: false,
+            },
+            DecisionFeature {
+                name: format!("cand.{ordinal}.ref_exact"),
+                value: 1,
+                advisory: false,
+            },
+            DecisionFeature {
+                name: format!("cand.{ordinal}.cp_exact"),
+                value: 0,
+                advisory: false,
+            },
+        ],
+        BenefitInterval {
+            lower_bps: 0,
+            upper_bps: 2_000,
+        },
+    );
+    rebind(request);
+}
+
+#[test]
+fn prior_active_claims_filter_eligibility_without_changing_native_candidate_ordinals() {
+    let mut h = Harness::new();
+    let old_cash = h.entry(&[10_000], "WIRE", b"old-cash");
+    let (import, line) = h.imported("WIRE", 10_000, b"old-statement");
+    let mut old_request = h.request(import, line, old_cash, 0);
+    let old = h.confirm(&cap(CONFIRMER), old_request.clone()).unwrap();
+
+    // This second, otherwise identical cash leg appears only after the first
+    // was independently confirmed. Its full-universe coordinate is still one.
+    let new_cash = h.entry(&[10_000], "WIRE", b"new-cash");
+    let (import, line) = h.imported("WIRE", 10_000, b"new-statement");
+    let mut new_request = h.request(import, line, new_cash, 0);
+    candidate_at(&mut new_request, 1);
+    let new = h.confirm(&cap(CONFIRMER), new_request).unwrap();
+    assert_eq!(new.confirmation.candidate_ordinal, 1);
+    assert_eq!(new.confirmation.leg_ordinal, 0);
+    h.unmatch(&metadata_cap(OWNER), decision_ref(&old)).unwrap();
+    old_request.source_known_at = h.head();
+    let old_again = h.confirm(&cap(CONFIRMER), old_request).unwrap();
+    assert_eq!(old_again.confirmation.candidate_ordinal, 0);
+    let history = h.history(&metadata_cap(OWNER), None).unwrap();
+    assert_eq!(history.active, vec![new, old_again]);
+}
+
+#[test]
+fn published_v1_zero_generation_graphs_remain_readable_correctable_and_reconfirmable() {
+    // This fixture publishes the original v1.0 graph shape, including the old
+    // line-to-leg MATCHES identity. Its first publication is deliberately not
+    // made by the new v1.1 writer: compatibility must exercise an older fact.
+    use fa_journal::evidence::document_vid;
+    use fa_journal::rows::{book_root, edge_id, leg_vid, scalar_bytes, scalar_text};
+
+    let mut h = Harness::new();
+    let entry = h.entry(&[10_000], "WIRE", b"legacy-cash");
+    let (import, line) = h.imported("WIRE", 10_000, b"legacy-statement");
+    let mut request = h.request(import, line, entry, 0);
+    let manifest = request.import.manifest();
+    let capability = cap(CONFIRMER);
+    let legacy = BankMatchConfirmation {
+        book_id: h.book.book_id,
+        manifest_oid: request.import.manifest_oid(),
+        manifest_commit: request.import.predecessor().manifest_commit,
+        statement_oid: manifest.statement_oid,
+        statement_commit: manifest.statement_commit,
+        import_run: request.import.receipt().run,
+        import_receipt_hash: request.import.receipt().receipt_hash,
+        import_recorded_at: request.import.receipt().recorded_at,
+        account: manifest.account,
+        line_document_oid: request.line.oid(),
+        bank_line_oid: Oid(domain_digest(LINE_DOMAIN, &[&request.line.bytes])),
+        line_ordinal: 1,
+        entry_ref: entry,
+        leg_ordinal: 0,
+        source_known_at: request.source_known_at,
+        date_window_days: request.date_window_days,
+        candidate_ordinal: request.candidate_ordinal,
+        proposer: request.proposer,
+        proposal_digest: request.proposal_digest,
+        decision_card: request.decision_card.clone(),
+        confirmed_by: CONFIRMER,
+        confirming_profile: Profile::Human,
+        capability_commitment: capability.commitment().unwrap(),
+        security_policy_epoch: fa_journal::policy::security_policy_epoch(&h.db).unwrap(),
+        lineage: None,
+    };
+    let bytes = legacy.canonical_bytes().unwrap();
+    assert_eq!(&bytes[..17], b"FA-BANK-MATCH\x01\0\0\0");
+    assert_eq!(BankMatchConfirmation::decode(&bytes).unwrap(), legacy);
+    let vid = bank_match_vid(h.book.book_id, legacy.statement_oid, 1);
+    let claim = bank_matched_leg_vid(h.book.book_id, entry.vid, 0);
+    assert_eq!((legacy.vid(), legacy.leg_claim_vid()), (vid, claim));
+    let digest = legacy.digest().unwrap();
+    let mut props = vec![
+        (property::FA_PAYLOAD, scalar_bytes("legacy", bytes).unwrap()),
+        (
+            property::FA_DIGEST,
+            scalar_bytes("legacy", digest.to_vec()).unwrap(),
+        ),
+        (
+            property::BOOK_ID,
+            scalar_bytes("legacy", h.book.book_id.0.to_vec()).unwrap(),
+        ),
+        (
+            property::CODE,
+            scalar_text("legacy", "pinned-exact-one-to-one").unwrap(),
+        ),
+    ];
+    props.sort_by_key(|(key, _)| key.0);
+    let mut wire = Writer::new();
+    wire.u16(1)
+        .fixed(&h.book.book_id.0)
+        .u128(vid.0)
+        .fixed(&digest)
+        .u128(entry.vid.0)
+        .fixed(&entry.entry_digest)
+        .u16(0);
+    let mut claim_props = vec![
+        (
+            property::FA_PAYLOAD,
+            scalar_bytes("legacy", wire.finish().unwrap()).unwrap(),
+        ),
+        (
+            property::FA_DIGEST,
+            scalar_bytes("legacy", digest.to_vec()).unwrap(),
+        ),
+        (
+            property::BOOK_ID,
+            scalar_bytes("legacy", h.book.book_id.0.to_vec()).unwrap(),
+        ),
+    ];
+    claim_props.sort_by_key(|(key, _)| key.0);
+    let mut edge_props = vec![
+        (
+            property::FA_DIGEST,
+            scalar_bytes("legacy", digest.to_vec()).unwrap(),
+        ),
+        (
+            property::CODE,
+            scalar_text("legacy", "pinned-exact-one-to-one").unwrap(),
+        ),
+    ];
+    edge_props.sort_by_key(|(key, _)| key.0);
+    let src = document_vid(&legacy.line_document_oid);
+    let dst = leg_vid(entry.vid, 0);
+    let old_edge = edge_id(relation::MATCHES, src, dst);
+    let cx = h.cx();
+    let mut txn = h.db.begin(&cx.txn()).unwrap();
+    let mut matches = WriteBatch::new(relation::MATCHES);
+    matches.create_vertex(vid, vec![label::BANK_MATCH], props);
+    matches.create_vertex(claim, vec![label::BANK_MATCHED_LEG], claim_props);
+    matches.add_edge(old_edge, src, dst, edge_props);
+    let mut citations = WriteBatch::new(relation::CITES);
+    for target in [
+        document_vid(&legacy.manifest_oid),
+        document_vid(&legacy.statement_oid),
+        document_vid(&legacy.line_document_oid),
+        legacy.import_run,
+        legacy.entry_ref.vid,
+    ] {
+        citations.add_edge(edge_id(relation::CITES, vid, target), vid, target, vec![]);
+    }
+    citations.add_edge(edge_id(relation::CITES, claim, vid), claim, vid, vec![]);
+    let mut membership = WriteBatch::new(relation::IN_BOOK);
+    for source in [vid, claim] {
+        membership.add_edge(
+            edge_id(relation::IN_BOOK, source, book_root()),
+            source,
+            book_root(),
+            vec![],
+        );
+    }
+    txn.write_ordered(&mut h.db, vec![matches, citations, membership])
+        .unwrap();
+    let recorded_at = h
+        .runtime
+        .block_on(txn.commit(&mut h.db, &cx.commit()))
+        .unwrap();
+    let recorded = BankMatchRecorded {
+        match_vid: vid,
+        match_digest: digest,
+        recorded_at,
+        already_recorded: false,
+        confirmation: legacy,
+    };
+    assert_eq!(h.read(vid, None).unwrap().unwrap(), recorded);
+    assert_eq!(
+        h.history(&metadata_cap(OWNER), None).unwrap().active,
+        vec![recorded.clone()]
+    );
+    let original_edge = h.db.edge_at(old_edge, recorded_at).unwrap().unwrap();
+    let retry = h.confirm(&cap(VId(9)), request.clone()).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.confirmation, recorded.confirmation);
+    h.unmatch(&metadata_cap(OWNER), decision_ref(&recorded))
+        .unwrap();
+    request.source_known_at = h.head();
+    let new = h.confirm(&cap(CONFIRMER), request).unwrap();
+    assert_eq!(
+        (
+            new.confirmation.line_generation(),
+            new.confirmation.leg_generation()
+        ),
+        (1, 1)
+    );
+    assert_eq!(
+        h.db.edge_at(old_edge, h.head()).unwrap().unwrap(),
+        original_edge
+    );
+    assert_eq!(h.read(vid, None).unwrap().unwrap(), recorded);
+    assert_eq!(
+        h.history(&metadata_cap(OWNER), None).unwrap().active,
+        vec![new]
+    );
 }

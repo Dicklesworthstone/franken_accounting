@@ -1,0 +1,29 @@
+# Attributed append-only release of one exact bank confirmation (fa-zbne).
+schema_version = 1
+name = "BankUnmatch"
+owner = "fa-journal::bank"
+major = 1
+minor = 0
+externally_verifiable = false
+
+format = "FA-BANK-UNMATCH"
+canonical_bytes = 140
+digest_domain = "fa:bank-unmatch-record:v1"
+identity_domain = "fa:vid:bank-unmatch:v1"
+identity = "book_id + exact target BankMatch VID + target digest; the retry holder is not an identity input"
+target_fields = ["book_id:u128", "target:BankDecisionRef"]
+attribution_fields = ["unmatched_by:u128", "unmatching_profile:Human", "capability_commitment:bytes32", "security_policy_epoch:u64"]
+
+[[decision]]
+field = "BankUnmatch"
+appendix_a = "Immutable bank-match correction and human attribution; plan §5.7 / §9.5"
+code_type = "fa-journal::bank::BankUnmatch; label BankUnmatch=49"
+rationale = "Current Human Read and Reconcile authority admits an exact match VID and digest. One new native object, its SUPERSEDES edge to that confirmation, its CITES edge to the corresponding cash-leg claim and its IN_BOOK edge publish together. The prior confirmation and claim remain unchanged and verifiable. An exact retry returns the original releasing principal and commit, even after another generation claims either resource. This decision releases matching resources only; it posts no money and asserts no reconciled-through date."
+tracking_bead = "fa-zbne"
+
+[[decision]]
+field = "BankMatchHistory"
+appendix_a = "Recorded-prefix replay and current disclosure authority; plan §5.7 / §9.3"
+code_type = "fa-journal::bank::BankMatchHistory"
+rationale = "Current Read and Reconcile authority precedes native-history hydration and prefix selection. The complete retained prefix authenticates immutable confirmation, cash-leg claim and release births, canonical payloads and exact strong edges, then folds active claims in publication order. Line and cash-leg generations advance independently after explicit releases. Earlier prefixes retain their earlier active state. Source manifests and bank files are not opened by this metadata view, including when stored externally. Full-source bank status remains a separate governed replay."
+tracking_bead = "fa-zbne"

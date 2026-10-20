@@ -173,6 +173,10 @@ name = "BankMatch"
 id = 48
 name = "BankMatchedLeg"
 
+[[label]]
+id = 49
+name = "BankUnmatch"
+
 # ---- property keys --------------------------------------------------------
 [[property]]
 id = 1

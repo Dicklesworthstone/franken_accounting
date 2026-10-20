@@ -3,17 +3,18 @@ schema_version = 1
 name = "BankMatchConfirmation"
 owner = "fa-journal::bank"
 major = 1
-minor = 0
+minor = 1
 externally_verifiable = false
 
 format = "FA-BANK-MATCH"
 digest_domain = "fa:bank-match-confirmation:v1"
-line_identity = "book_id + original statement Document OID + one-based source line ordinal"
-leg_identity = "book_id + original cash Entry VID + actual leg ordinal; Entry digest is not an identity input"
+line_identity = "Generation 0 preserves book_id + original statement Document OID + one-based source line ordinal; later identities also bind the independent line generation under fa:vid:bank-match-generation:v1"
+leg_identity = "Generation 0 preserves book_id + original cash Entry VID + actual leg ordinal; later identities also bind the independent leg generation under fa:vid:bank-matched-leg-generation:v1; Entry digest is not an identity input"
 method = "pinned-exact-one-to-one"
 source_fields = ["manifest_oid:bytes32", "manifest_commit:bytes32", "statement_oid:bytes32", "statement_commit:bytes32", "import_run:u128", "import_receipt_hash:bytes32", "import_recorded_at:u64", "account:u128", "line_document_oid:bytes32", "bank_line_oid:bytes32", "line_ordinal:u32", "entry_ref:EntryRef", "leg_ordinal:u16"]
 decision_fields = ["source_known_at:u64", "date_window_days:u32", "candidate_ordinal:u64", "proposer:u128", "proposal_digest:bytes32", "decision_card:DecisionCard"]
 confirmation_fields = ["confirmed_by:u128", "confirming_profile:Human", "capability_commitment:bytes32", "security_policy_epoch:u64"]
+lineage_fields_v1_1 = ["line_generation:u64", "leg_generation:u64", "previous_line_unmatch:optional BankDecisionRef", "previous_leg_unmatch:optional BankDecisionRef"]
 
 [[decision]]
 field = "BankMatch"
@@ -26,5 +27,11 @@ tracking_bead = "fa-zbne"
 field = "BankMatchedLeg"
 appendix_a = "One-to-one bank reconciliation claims; plan §5.7 / FA-INV-04"
 code_type = "fa-journal::bank::bank_matched_leg_vid; label BankMatchedLeg=48"
-rationale = "The unique cash-leg claim and source-line confirmation publish together with MATCHES, CITES and IN_BOOK edges. Native creation records bind both immutable payloads and strong edges to the original transaction; changing, relabelling or deleting them cannot reset a spent source or leg. Exact retries preserve the original confirming principal and publication sequence. A later reversal does not erase the historical confirmation. This bounded increment supports neither supersession nor a reconciled-through lock, which require separate native lineage and balance-assertion laws. Resumable reviews verify the complete native confirmation and occupied-leg history at the selected prefix, then exclude spent source lines and physical cash legs before making new proposals. New candidate ordinals index the filtered list. A saved v1 proposal may retain its original raw ordinal only when its complete digest and exact EntryRef plus actual leg still agree; no stored confirmation bytes are reinterpreted. Confirmed totals, remaining inflows/outflows and cumulative closing equality are separate observations, never a balance attestation."
+rationale = "The unique cash-leg claim and source-line confirmation publish together with MATCHES, CITES and IN_BOOK edges. Native creation records bind both immutable payloads and strong edges to the original transaction; changing, relabelling or deleting them cannot reset a spent source or leg. Exact retries preserve the original confirming principal and publication sequence. A later reversal does not erase the historical confirmation. An exact BankUnmatch release frees both resources for independent later generations. A rematch cites each distinct prior release and uses a MATCHES edge identity bound to the new confirmation. A reconciled-through lock still requires its own balance-assertion laws. Resumable reviews authenticate the complete decision history at the selected prefix and exclude actively occupied source lines and physical cash legs before calculating bidirectional eligibility. Candidate ordinals remain indices into the complete original candidate list; filtering never renumbers a saved selection or manufactures uniqueness through greedy proposal consumption. Confirmed totals, remaining inflows/outflows and cumulative closing equality are separate observations, never a balance attestation."
+tracking_bead = "fa-zbne"
+[[decision]]
+field = "BankMatchLineage"
+appendix_a = "Append-only reconciliation correction and replay; plan §5.7 / §9.5"
+code_type = "fa-journal::bank::BankMatchLineage"
+rationale = "Version 1.0 retains its exact bytes, digest domain and generation-zero identities. Version 1.1 records independent line and cash-leg generations and exact references to their immediately preceding immutable releases. Both line and leg must be unoccupied at the chosen source prefix and at publication. A retry of an earlier selection returns its original generation and cannot resurrect a released decision. Complete native creation history authenticates every generation, release and strong edge; current capability admission precedes historical reads. Metadata history checks those native facts without reopening source-document bytes."
 tracking_bead = "fa-zbne"

@@ -4,9 +4,12 @@ use fa_money::{Amount, Side, UnitId};
 use fa_policy::{Capability, DecisionCard, DecisionKind, Profile};
 use fa_time::DateDay;
 use fgdb_delta_types::PropertyKeyId;
-use fgdb_types::{CanonicalScalar, CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, EId, VId};
 
-use super::{BankMatchRecorded, BankMatchRequest, bank_match_vid, invalid};
+use super::{
+    BankDecisionRef, BankMatchLineage, BankMatchRecorded, BankMatchRequest, invalid,
+    leg_generation_vid, match_generation_vid, short_id,
+};
 use crate::evidence::document_vid;
 use crate::genesis::BookContext;
 use crate::refusal::{KernelError, Outcome};
@@ -51,6 +54,9 @@ pub struct BankMatchConfirmation {
     pub confirming_profile: Profile,
     pub capability_commitment: [u8; 32],
     pub security_policy_epoch: u64,
+    /// None encodes the exact published v1.0 value. v1.1 retains independent
+    /// resource generations and the explicit releases that authorize reuse.
+    pub lineage: Option<BankMatchLineage>,
 }
 
 impl BankMatchConfirmation {
@@ -62,7 +68,7 @@ impl BankMatchConfirmation {
         let mut w = Writer::new();
         w.fixed(MATCH_MAGIC)
             .u16(1)
-            .u16(0)
+            .u16(u16::from(self.lineage.is_some()))
             .fixed(&self.book_id.0)
             .fixed(&self.manifest_oid.0)
             .fixed(&self.manifest_commit)
@@ -88,16 +94,28 @@ impl BankMatchConfirmation {
             .u8(self.confirming_profile.tag())
             .fixed(&self.capability_commitment)
             .u64(self.security_policy_epoch);
+        if let Some(lineage) = &self.lineage {
+            w.u64(lineage.line_generation)
+                .u64(lineage.leg_generation)
+                .opt(lineage.previous_line_unmatch.as_ref(), |w, reference| {
+                    w.u128(reference.vid.0).fixed(&reference.digest);
+                })
+                .opt(lineage.previous_leg_unmatch.as_ref(), |w, reference| {
+                    w.u128(reference.vid.0).fixed(&reference.digest);
+                });
+        }
         w.finish().map_err(|e| KernelError::Model(e.into()))
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
         let mut r = Reader::new(bytes);
         let decoded = (|| -> Result<Self, DecodeError> {
-            if r.fixed::<13>("bank_match.magic")? != *MATCH_MAGIC
-                || r.u16("bank_match.major")? != 1
-                || r.u16("bank_match.minor")? != 0
+            if r.fixed::<13>("bank_match.magic")? != *MATCH_MAGIC || r.u16("bank_match.major")? != 1
             {
+                return Err(r.invalid("bank_match.version"));
+            }
+            let minor = r.u16("bank_match.minor")?;
+            if minor > 1 {
                 return Err(r.invalid("bank_match.version"));
             }
             let result = Self {
@@ -132,6 +150,26 @@ impl BankMatchConfirmation {
                     .ok_or_else(|| r.invalid("bank_match.confirming_profile"))?,
                 capability_commitment: r.fixed("bank_match.capability_commitment")?,
                 security_policy_epoch: r.u64("bank_match.security_policy_epoch")?,
+                lineage: if minor == 0 {
+                    None
+                } else {
+                    Some(BankMatchLineage {
+                        line_generation: r.u64("bank_match.line_generation")?,
+                        leg_generation: r.u64("bank_match.leg_generation")?,
+                        previous_line_unmatch: r.opt("bank_match.previous_line_unmatch", |r| {
+                            Ok(BankDecisionRef {
+                                vid: VId(r.u128("bank_match.previous_line_unmatch.vid")?),
+                                digest: r.fixed("bank_match.previous_line_unmatch.digest")?,
+                            })
+                        })?,
+                        previous_leg_unmatch: r.opt("bank_match.previous_leg_unmatch", |r| {
+                            Ok(BankDecisionRef {
+                                vid: VId(r.u128("bank_match.previous_leg_unmatch.vid")?),
+                                digest: r.fixed("bank_match.previous_leg_unmatch.digest")?,
+                            })
+                        })?,
+                    })
+                },
             };
             if result.import_recorded_at.0 == 0
                 || result.line_ordinal == 0
@@ -142,6 +180,12 @@ impl BankMatchConfirmation {
             }
             if result.confirming_profile != Profile::Human {
                 return Err(r.invalid("bank_match.confirming_profile"));
+            }
+            if result.lineage.as_ref().is_some_and(|lineage| {
+                (lineage.line_generation == 0) != lineage.previous_line_unmatch.is_none()
+                    || (lineage.leg_generation == 0) != lineage.previous_leg_unmatch.is_none()
+            }) {
+                return Err(r.invalid("bank_match.generation_lineage"));
             }
             r.finish()?;
             Ok(result)
@@ -161,7 +205,54 @@ impl BankMatchConfirmation {
 
     #[must_use]
     pub fn vid(&self) -> VId {
-        bank_match_vid(self.book_id, self.statement_oid, self.line_ordinal)
+        match_generation_vid(
+            self.book_id,
+            self.statement_oid,
+            self.line_ordinal,
+            self.line_generation(),
+        )
+    }
+
+    #[must_use]
+    pub fn line_generation(&self) -> u64 {
+        self.lineage
+            .as_ref()
+            .map_or(0, |lineage| lineage.line_generation)
+    }
+
+    #[must_use]
+    pub fn leg_generation(&self) -> u64 {
+        self.lineage
+            .as_ref()
+            .map_or(0, |lineage| lineage.leg_generation)
+    }
+
+    #[must_use]
+    pub fn leg_claim_vid(&self) -> VId {
+        leg_generation_vid(
+            self.book_id,
+            self.entry_ref.vid,
+            self.leg_ordinal,
+            self.leg_generation(),
+        )
+    }
+
+    pub(super) fn match_edge_id(&self) -> EId {
+        let source = document_vid(&self.line_document_oid);
+        let target = crate::rows::leg_vid(self.entry_ref.vid, self.leg_ordinal);
+        if self.lineage.is_none() {
+            return crate::rows::edge_id(fa_model::symbols::relation::MATCHES, source, target);
+        }
+        EId(short_id(domain_digest(
+            b"fa:eid:bank-match-generation:v1",
+            &[
+                &self.book_id.0,
+                &self.vid().0.to_le_bytes(),
+                &source.0.to_le_bytes(),
+                &target.0.to_le_bytes(),
+            ],
+        ))
+        .0)
     }
 
     pub(super) fn from_request(
@@ -170,6 +261,7 @@ impl BankMatchConfirmation {
         security_policy_epoch: u64,
         request: BankMatchRequest,
         line: BankLine,
+        lineage: BankMatchLineage,
     ) -> Result<Self, KernelError> {
         let manifest = request.import.manifest();
         let binding = request.import.predecessor();
@@ -201,6 +293,7 @@ impl BankMatchConfirmation {
             confirming_profile: cap.profile(),
             capability_commitment,
             security_policy_epoch,
+            lineage: Some(lineage),
         })
     }
 
@@ -248,6 +341,14 @@ impl BankMatchConfirmation {
             self.import_run,
             self.entry_ref.vid,
         ];
+        if let Some(lineage) = &self.lineage {
+            sources.extend(
+                [lineage.previous_line_unmatch, lineage.previous_leg_unmatch]
+                    .into_iter()
+                    .flatten()
+                    .map(|reference| reference.vid),
+            );
+        }
         sources.sort();
         sources.dedup();
         sources

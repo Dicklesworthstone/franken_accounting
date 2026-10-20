@@ -8,9 +8,10 @@
 //! it. No amount, Entry payload, balance register, or reconciliation-through date
 //! is changed.
 //!
-//! Two derived identities claim the source statement line and the actual cash
-//! leg in one transaction. They are immutable, including after a reversal;
-//! supersession/unmatching requires a future explicit lineage contract.
+//! Each confirmation claims a source line and an actual cash leg in one
+//! transaction. An immutable Unmatch releases those claims in the history fold;
+//! later confirmations use independent line and cash-leg generations. Original
+//! v1.0 records, claims and source edges remain unchanged.
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, relation};
@@ -26,6 +27,7 @@ use crate::import::{BankImportManifest, BankImportWitness};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{book_root, edge_id, leg_vid, reversal_vid};
 
+mod lifecycle;
 mod verify;
 mod wire;
 
@@ -33,8 +35,30 @@ mod wire;
 pub const SCHEMA_REGISTRY: &str =
     include_str!("../../../registries/object_schemas/bank_match.toml");
 
+pub use lifecycle::{
+    BankMatchHistory, BankUnmatch, BankUnmatchRecorded, BankUnmatchRequest,
+    UNMATCH_SCHEMA_REGISTRY, admit_bank_match_history, bank_match_history, unmatch_bank_match,
+};
 pub use wire::BankMatchConfirmation;
 use wire::{BankLine, claim_props, match_props};
+
+/// Exact reference to one immutable native confirmation or correction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BankDecisionRef {
+    pub vid: VId,
+    pub digest: [u8; 32],
+}
+
+/// Independent resource histories permit a released cash leg to move to a new
+/// line and a released line to select another cash leg. Generation zero keeps
+/// the resource identities already published by v1.0.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BankMatchLineage {
+    pub line_generation: u64,
+    pub leg_generation: u64,
+    pub previous_line_unmatch: Option<BankDecisionRef>,
+    pub previous_leg_unmatch: Option<BankDecisionRef>,
+}
 
 /// A previously replayed exact proposal. `line` must be the complete retained
 /// line document, not caller-entered monetary fields. The opaque import witness
@@ -92,6 +116,36 @@ pub fn bank_matched_leg_vid(book: Id128, entry: VId, ordinal: u16) -> VId {
     ))
 }
 
+fn match_generation_vid(book: Id128, statement: Oid, ordinal: u32, generation: u64) -> VId {
+    if generation == 0 {
+        return bank_match_vid(book, statement, ordinal);
+    }
+    short_id(domain_digest(
+        b"fa:vid:bank-match-generation:v1",
+        &[
+            &book.0,
+            &statement.0,
+            &ordinal.to_le_bytes(),
+            &generation.to_le_bytes(),
+        ],
+    ))
+}
+
+fn leg_generation_vid(book: Id128, entry: VId, ordinal: u16, generation: u64) -> VId {
+    if generation == 0 {
+        return bank_matched_leg_vid(book, entry, ordinal);
+    }
+    short_id(domain_digest(
+        b"fa:vid:bank-matched-leg-generation:v1",
+        &[
+            &book.0,
+            &entry.0.to_le_bytes(),
+            &ordinal.to_le_bytes(),
+            &generation.to_le_bytes(),
+        ],
+    ))
+}
+
 fn short_id(digest: [u8; 32]) -> VId {
     let mut short = [0; 16];
     short.copy_from_slice(&digest[..16]);
@@ -104,7 +158,7 @@ fn invalid(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §5.7 / §9.5 (confirmed exact retained bank line and immutable cash leg)",
-        "replay the retained statement at its explicit source sequence and confirm the exact proposal; residuals, unmatching and account reconciliation require separate supported operations",
+        "replay the retained statement at its explicit source sequence and confirm the exact proposal; explicitly unmatch an active decision before reviewing a new confirmation; residuals and account reconciliation require separate supported operations",
     )
 }
 
@@ -123,8 +177,8 @@ fn conflict(message: impl Into<String>) -> Refusal {
         code::IDEMPOTENCY_CONFLICT,
         exit::CONFLICT,
         message,
-        "plan §5.7 (one immutable confirmed match per statement line and cash leg)",
-        "use the originally recorded confirmation; selecting another parser, principal or proposal cannot replace it",
+        "plan §5.7 (one active immutable match per statement line and cash leg)",
+        "use the originally recorded confirmation, or explicitly unmatch it and review a fresh source prefix; another parser, principal or proposal cannot replace an active decision",
     )
 }
 
@@ -289,29 +343,63 @@ pub fn prepare_bank_match<V: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     let epoch = crate::policy::epoch_witness(&txn, db)?;
-    let vid = bank_match_vid(book.book_id, line.statement_oid, line.line_ordinal);
-    if let Some(row) = txn.vertex(db, vid)? {
+    let state = match lifecycle::history_at(db, cx, book, head)? {
+        Ok(state) => state,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    // An exact retry remains the original fact, even after an explicit release
+    // and a later generation, and even under another authorized Human holder.
+    if let Some(prior) = state.confirmations.iter().find(|recorded| {
+        recorded.confirmation.statement_oid == line.statement_oid
+            && recorded.confirmation.line_ordinal == line.line_ordinal
+            && recorded.confirmation.same_request(&request, &line)
+    }) {
+        let Some(row) = txn.vertex(db, prior.match_vid)? else {
+            return Ok(Err(drift(
+                "an immutable confirmation disappeared during retry",
+            )));
+        };
         let mut recorded =
             match verify::read_record(db, cx, book, &row, head, Some(request.import.manifest()))? {
                 Ok(recorded) => recorded,
                 Err(refusal) => return Ok(Err(refusal)),
             };
         txn.abort();
-        if !recorded.confirmation.same_request(&request, &line) {
-            return Ok(Err(conflict(
-                "this statement line already has a different immutable confirmation",
-            )));
-        }
         recorded.already_recorded = true;
         return Ok(Ok(BankMatchPreparation::AlreadyRecorded(Box::new(
             recorded,
         ))));
     }
-    let claim = bank_matched_leg_vid(book.book_id, request.entry_ref.vid, request.leg_ordinal);
-    if txn.vertex(db, claim)?.is_some() {
+    let lineage = match lifecycle::next_lineage(
+        &state,
+        line.statement_oid,
+        line.line_ordinal,
+        request.entry_ref.vid,
+        request.leg_ordinal,
+        request.source_known_at,
+    ) {
+        Ok(lineage) => lineage,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if let Err(refusal) = lifecycle::witness_lineage(db, &txn, &lineage)? {
+        return Ok(Err(refusal));
+    }
+    let vid = match_generation_vid(
+        book.book_id,
+        line.statement_oid,
+        line.line_ordinal,
+        lineage.line_generation,
+    );
+    let claim = leg_generation_vid(
+        book.book_id,
+        request.entry_ref.vid,
+        request.leg_ordinal,
+        lineage.leg_generation,
+    );
+    if txn.vertex(db, vid)?.is_some() || txn.vertex(db, claim)?.is_some() {
         txn.abort();
-        return Ok(Err(conflict(
-            "this exact cash leg is already claimed by another bank statement line",
+        return Ok(Err(drift(
+            "the next line or cash-leg generation already exists; no claim can be reset",
         )));
     }
     if let Err(refusal) = request.import.retain(&txn, db, book.book_id)? {
@@ -381,11 +469,22 @@ pub fn prepare_bank_match<V: Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
-    if let Err(refusal) = verify::unique_selection(db, &txn, cx, book, &request, &line)? {
+    let source_state = if request.source_known_at == head {
+        state
+    } else {
+        match lifecycle::history_at(db, cx, book, request.source_known_at)? {
+            Ok(state) => state,
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+    };
+    if let Err(refusal) =
+        verify::unique_selection(db, &txn, cx, book, &request, &line, &source_state)?
+    {
         txn.abort();
         return Ok(Err(refusal));
     }
-    let confirmation = BankMatchConfirmation::from_request(book, capability, epoch, request, line)?;
+    let confirmation =
+        BankMatchConfirmation::from_request(book, capability, epoch, request, line, lineage)?;
     let mut batch = WriteBatch::new(relation::MATCHES);
     batch.create_vertex(vid, vec![label::BANK_MATCH], match_props(&confirmation)?);
     batch.create_vertex(
@@ -396,7 +495,7 @@ pub fn prepare_bank_match<V: Vfs + Clone>(
     let source = document_vid(&confirmation.line_document_oid);
     let cash_leg = leg_vid(confirmation.entry_ref.vid, confirmation.leg_ordinal);
     batch.add_edge(
-        edge_id(relation::MATCHES, source, cash_leg),
+        confirmation.match_edge_id(),
         source,
         cash_leg,
         wire::match_edge_props(&confirmation)?,
@@ -415,8 +514,7 @@ pub fn prepare_bank_match<V: Vfs + Clone>(
             vec![],
         );
     }
-    // Stage every relation partition together so the unique line/leg claims
-    // and their strong references share one publication and witness set.
+    // All relation partitions form one staging operation and publication.
     if let Err(error) = txn.write_ordered(db, vec![batch, references, membership]) {
         txn.abort();
         return match error {
@@ -451,6 +549,9 @@ pub async fn read_bank_match<V: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     let at = known_at.unwrap_or(db.frontier()?);
+    if let Err(refusal) = lifecycle::history_at(db, cx, book, at)? {
+        return Ok(Err(refusal));
+    }
     let Some(row) = db.vertex_at(match_vid, at)? else {
         if verify::was_created(db, cx, match_vid, at)? {
             return Ok(Err(drift(

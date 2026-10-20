@@ -786,7 +786,7 @@ impl ClaimsLintConfig {
 // The 19 Appendix G classes plus the registered native bank-import extension.
 // Require their identities, not merely a row count: an unrelated class cannot
 // replace an existing operation's cost contract.
-const REQUIRED_OPERATION_CLASS_IDS: [&str; 23] = [
+const REQUIRED_OPERATION_CLASS_IDS: [&str; 24] = [
     "balance_read_at_watermark",
     "certified_report",
     "single_entry_post",
@@ -808,6 +808,7 @@ const REQUIRED_OPERATION_CLASS_IDS: [&str; 23] = [
     "bulk_migration",
     "bank_statement_import",
     "bank_match_confirmation",
+    "bank_match_unmatch",
     "closing_routes_record",
     "year_end_close",
 ];
@@ -2712,7 +2713,7 @@ mod tests {
 
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         assert_eq!(op_costs.hot_object_exceptions.len(), 2);
-        assert_eq!(op_costs.classes.len(), 23);
+        assert_eq!(op_costs.classes.len(), 24);
         assert_eq!(op_costs.kernel_op_witnesses.len(), 9);
 
         let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
@@ -2765,6 +2766,7 @@ mod tests {
             "closing_routes_record",
             "year_end_close",
             "bank_match_confirmation",
+            "bank_match_unmatch",
         ] {
             let closing = op_costs.class(id).expect("native closing cost contract");
             assert_eq!(closing.today_transactions, 1);

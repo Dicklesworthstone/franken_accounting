@@ -11,15 +11,15 @@ use fa_policy::{BenefitInterval, DecisionCandidate, DecisionFeature};
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_time::DateDay;
 use fgdb::{Database, VertexRow, WriteTxn};
-use fgdb_delta_types::{DeltaRow, ElementId, LabelId, PropertyKeyId, RelationId};
+use fgdb_delta_types::{DeltaRow, LabelId, PropertyKeyId, RelationId};
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CanonicalScalar, CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, EId, VId};
 
 use super::wire::{
     BankLine, claim_props, match_edge_props, match_props, proposal_digest, validate_card,
 };
 use super::{
-    BankMatchConfirmation, BankMatchRecorded, BankMatchRequest, bank_matched_leg_vid, checkpoint,
+    BankMatchConfirmation, BankMatchHistory, BankMatchRecorded, BankMatchRequest, checkpoint,
     drift, invalid,
 };
 use crate::evidence::{Document, DocumentRecord, Storage, doc_commit, document_vid, verify_row};
@@ -42,7 +42,7 @@ fn kind(policy: &EvidencePolicy, name: &str) -> Result<u8, KernelError> {
         })
 }
 
-fn payload(row: &VertexRow) -> Result<&[u8], KernelError> {
+pub(super) fn payload(row: &VertexRow) -> Result<&[u8], KernelError> {
     match prop(row, property::FA_PAYLOAD) {
         Some(CanonicalScalar::Bytes(bytes)) => Ok(bytes.as_slice()),
         _ => Err(KernelError::Corrupt(
@@ -53,7 +53,7 @@ fn payload(row: &VertexRow) -> Result<&[u8], KernelError> {
 
 /// A content version's `created_at` is not itself a birth proof. Bind it to
 /// the actual CreateVertex record, including labels, ordinal and properties.
-fn native_birth<V: Vfs + Clone>(
+pub(super) fn native_birth<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     row: &VertexRow,
@@ -302,8 +302,6 @@ pub(super) fn exact_cash_leg(
 struct Candidate {
     entry_ref: EntryRef,
     ordinal: u16,
-    /// Saved legacy proposals use the index before occupied legs were removed.
-    raw_candidate_ordinal: u64,
     effective: DateDay,
     amount: Amount,
     side: Side,
@@ -330,6 +328,7 @@ pub(super) fn unique_selection<V: Vfs + Clone>(
     book: &BookContext,
     request: &BankMatchRequest,
     selected_line: &BankLine,
+    availability: &BankMatchHistory,
 ) -> Outcome<()> {
     let manifest = request.import.manifest();
     if request.lines.len() != manifest.line_oids.len()
@@ -381,29 +380,13 @@ pub(super) fn unique_selection<V: Vfs + Clone>(
             "bank candidate history cannot be verified: {error}"
         ))));
     }
-    let occupied = match claims_at(db, cx, book, request.source_known_at)? {
-        Ok(occupied) => occupied,
-        Err(refusal) => return Ok(Err(refusal)),
-    };
-    let claimed_lines: BTreeSet<_> = occupied
-        .iter()
-        .map(|recorded| {
-            let value = &recorded.confirmation;
-            (value.statement_oid, value.line_ordinal)
-        })
-        .collect();
-    let claimed_legs: BTreeSet<_> = occupied
-        .iter()
-        .map(|recorded| {
-            let value = &recorded.confirmation;
-            (value.entry_ref.vid, value.leg_ordinal)
-        })
-        .collect();
+    if let Err(refusal) = verify_active_entries(db, cx, book, availability)? {
+        return Ok(Err(refusal));
+    }
     let mut entries = db.vertices_at(request.source_known_at)?;
     entries.retain(|row| row.labels.contains(&label::ENTRY));
     entries.sort_by_key(|row| (row.created_at, row.vid.0));
     let mut candidates = Vec::new();
-    let mut raw_candidate_ordinal = 0_u64;
     let mut migrations = BTreeMap::new();
     for row in entries {
         checkpoint(cx)?;
@@ -421,16 +404,6 @@ pub(super) fn unique_selection<V: Vfs + Clone>(
             if leg.account_ref != manifest.account || leg.amount.unit != manifest.unit {
                 continue;
             }
-            let ordinal = u16::try_from(ordinal).map_err(|_| {
-                KernelError::Corrupt("native cash leg ordinal exceeds Entry schema".into())
-            })?;
-            let raw_ordinal = raw_candidate_ordinal;
-            raw_candidate_ordinal = raw_candidate_ordinal.checked_add(1).ok_or_else(|| {
-                KernelError::Corrupt("native bank candidate index exceeds u64".into())
-            })?;
-            if claimed_legs.contains(&(row.vid, ordinal)) {
-                continue;
-            }
             let reference = match &leg.memo {
                 Some(memo) => memo
                     .open(&book.seal_key, fa_model::limits::MAX_MEMO_BYTES)
@@ -443,8 +416,9 @@ pub(super) fn unique_selection<V: Vfs + Clone>(
             };
             candidates.push(Candidate {
                 entry_ref: entry.entry_ref(row.vid),
-                ordinal,
-                raw_candidate_ordinal: raw_ordinal,
+                ordinal: u16::try_from(ordinal).map_err(|_| {
+                    KernelError::Corrupt("native cash leg ordinal exceeds Entry schema".into())
+                })?,
                 effective: day,
                 amount: leg.amount,
                 side: leg.side,
@@ -452,38 +426,81 @@ pub(super) fn unique_selection<V: Vfs + Clone>(
             });
         }
     }
-    // Accept the new available index or a saved legacy raw index only when
-    // that index binds the explicitly supplied immutable Entry and actual leg.
+    // Only already recorded active claims at the reviewed prefix remove a
+    // resource. Earlier greedy proposals in this report cannot create
+    // uniqueness; the complete candidate vector and ordinals stay unchanged.
+    let claimed_cash: BTreeSet<_> = availability
+        .active
+        .iter()
+        .map(|recorded| {
+            (
+                recorded.confirmation.entry_ref.vid,
+                recorded.confirmation.leg_ordinal,
+            )
+        })
+        .collect();
+    let claimed_lines: BTreeSet<_> = availability
+        .active
+        .iter()
+        .map(|recorded| {
+            (
+                recorded.confirmation.statement_oid,
+                recorded.confirmation.line_ordinal,
+            )
+        })
+        .collect();
+    // Fresh reports retain the complete original coordinate. Previously
+    // published available-index proposals remain admissible only when the
+    // pinned index also binds their explicit immutable Entry and actual leg.
+    let binds = |candidate: &&Candidate| {
+        candidate.entry_ref == request.entry_ref && candidate.ordinal == request.leg_ordinal
+    };
     let Some(selected) = usize::try_from(request.candidate_ordinal)
         .ok()
         .and_then(|ordinal| candidates.get(ordinal))
-        .filter(|candidate| {
-            candidate.entry_ref == request.entry_ref && candidate.ordinal == request.leg_ordinal
-        })
+        .filter(binds)
         .or_else(|| {
-            candidates.iter().find(|candidate| {
-                candidate.raw_candidate_ordinal == request.candidate_ordinal
-                    && candidate.entry_ref == request.entry_ref
-                    && candidate.ordinal == request.leg_ordinal
-            })
+            usize::try_from(request.candidate_ordinal)
+                .ok()
+                .and_then(|ordinal| {
+                    candidates
+                        .iter()
+                        .filter(|candidate| {
+                            !claimed_cash.contains(&(candidate.entry_ref.vid, candidate.ordinal))
+                        })
+                        .nth(ordinal)
+                        .filter(binds)
+                })
         })
     else {
         return Ok(Err(invalid(
-            "neither the available nor original cash-candidate index binds this exact unclaimed Entry and leg",
+            "neither the original nor saved available candidate index binds this exact Entry and cash leg",
         )));
     };
+    if claimed_cash.contains(&(selected.entry_ref.vid, selected.ordinal))
+        || claimed_lines.contains(&(selected_line.statement_oid, selected_line.line_ordinal))
+    {
+        return Ok(Err(invalid(
+            "the selected line or cash leg was already active at the reviewed prefix",
+        )));
+    }
     let candidate_count = candidates
         .iter()
-        .filter(|candidate| eligible(selected_line, candidate, request.date_window_days))
+        .filter(|candidate| {
+            !claimed_cash.contains(&(candidate.entry_ref.vid, candidate.ordinal))
+                && eligible(selected_line, candidate, request.date_window_days)
+        })
         .count();
     let line_count = lines
         .iter()
-        .filter(|line| !claimed_lines.contains(&(line.statement_oid, line.line_ordinal)))
-        .filter(|line| eligible(line, selected, request.date_window_days))
+        .filter(|line| {
+            !claimed_lines.contains(&(line.statement_oid, line.line_ordinal))
+                && eligible(line, selected, request.date_window_days)
+        })
         .count();
     if candidate_count != 1 || line_count != 1 {
         return Ok(Err(invalid(
-            "the complete retained proposal is ambiguous: exact confirmation requires one eligible unclaimed cash leg and one eligible unconfirmed bank line at the reviewed prefix",
+            "the complete retained proposal is ambiguous: exact confirmation requires one eligible cash leg and one eligible bank line before candidate consumption",
         )));
     }
     let days =
@@ -824,7 +841,7 @@ fn confirmed_entry<V: Vfs + Clone>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn edge<V: Vfs + Clone>(
+pub(super) fn edge<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     relation: RelationId,
@@ -833,8 +850,8 @@ fn edge<V: Vfs + Clone>(
     expected_props: &[(PropertyKeyId, CanonicalScalar)],
     born: CommitSeq,
     at: CommitSeq,
+    eid: EId,
 ) -> Outcome<()> {
-    let eid = edge_id(relation, src, dst);
     let Some(edge) = db.edge_at(eid, at)? else {
         return Ok(Err(drift(
             "a confirmed match's strong source edge is absent",
@@ -844,7 +861,7 @@ fn edge<V: Vfs + Clone>(
         || edge.entry.dst != dst
         || edge.entry.relation != relation
         || edge.entry.created_at != born
-        || edge.entry.retired_at.is_some()
+        || edge.entry.retired_at.is_some_and(|retired| retired <= at)
         || edge.props != expected_props
     {
         return Ok(Err(drift(
@@ -886,13 +903,17 @@ fn edge<V: Vfs + Clone>(
     )))
 }
 
-fn confirmed_fact<V: Vfs + Clone>(
+/// Authenticate recorded native facts and their same-publication claim/edges.
+/// This intentionally does not fetch or replay the original statement bytes.
+pub(super) fn read_metadata_record<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
     row: &VertexRow,
     at: CommitSeq,
 ) -> Outcome<BankMatchRecorded> {
+    let visible = row.clone().seen_at(at);
+    let row = &visible;
     if let Err(refusal) = native_birth(db, cx, row, label::BANK_MATCH)? {
         return Ok(Err(refusal));
     }
@@ -920,8 +941,8 @@ fn confirmed_fact<V: Vfs + Clone>(
     if let Err(error) = validate_card(&value.decision_card, value.bank_line_oid) {
         return Ok(Err(drift(error.to_string())));
     }
-    let claim = bank_matched_leg_vid(book.book_id, value.entry_ref.vid, value.leg_ordinal);
-    let Some(claim_row) = db.vertex_at(claim, at)? else {
+    let claim = value.leg_claim_vid();
+    let Some(claim_row) = db.vertex_at(claim, at)?.map(|row| row.seen_at(at)) else {
         return Ok(Err(drift(
             "the confirmed match's unique cash-leg claim is absent",
         )));
@@ -947,136 +968,19 @@ fn confirmed_fact<V: Vfs + Clone>(
     edges.push((relation::IN_BOOK, claim, book_root(), vec![]));
     edges.push((relation::IN_BOOK, value.vid(), book_root(), vec![]));
     for (relation, src, dst, props) in edges {
-        if let Err(refusal) = edge(db, cx, relation, src, dst, &props, row.created_at, at)? {
+        let eid = if relation == relation::MATCHES {
+            value.match_edge_id()
+        } else {
+            edge_id(relation, src, dst)
+        };
+        if let Err(refusal) = edge(db, cx, relation, src, dst, &props, row.created_at, at, eid)? {
             return Ok(Err(refusal));
         }
     }
     Ok(Ok(value.recorded(row.created_at, false)?))
 }
 
-/// Native births define the complete occupied set. Removing both sides of a
-/// claim cannot make cash available or manufacture a unique remaining pair.
-pub(super) fn claims_at<V: Vfs + Clone>(
-    db: &Database<V>,
-    cx: &PurposeContexts,
-    book: &BookContext,
-    at: CommitSeq,
-) -> Outcome<Vec<BankMatchRecorded>> {
-    let mut matches = BTreeMap::new();
-    let mut claims = BTreeMap::new();
-    let mut through = CommitSeq(0);
-    for batch in db.delta_since(CommitSeq(0))? {
-        let seq = batch.commit_seq();
-        if seq > at {
-            break;
-        }
-        if through.0.checked_add(1) != Some(seq.0) {
-            return Ok(Err(drift(
-                "complete retained history is required to establish available bank lines and cash legs",
-            )));
-        }
-        // Native coordinates sort canonically, not causally. Collect
-        // every birth before checking this commit's label memberships.
-        for coordinate in batch.coordinate_entries() {
-            for delta in &coordinate.rows {
-                checkpoint(cx)?;
-                if let DeltaRow::CreateVertex { vid, labels, .. } = delta {
-                    for (label, births) in [
-                        (label::BANK_MATCH, &mut matches),
-                        (label::BANK_MATCHED_LEG, &mut claims),
-                    ] {
-                        if labels.contains(&label) && births.insert(*vid, seq).is_some() {
-                            return Ok(Err(drift(
-                                "an occupied bank identity has more than one native birth",
-                            )));
-                        }
-                    }
-                }
-            }
-        }
-        for coordinate in batch.coordinate_entries() {
-            for delta in &coordinate.rows {
-                checkpoint(cx)?;
-                if let DeltaRow::LabelMembership {
-                    vid,
-                    label: changed,
-                    after: true,
-                    ..
-                } = delta
-                    && ((*changed == label::BANK_MATCH && !matches.contains_key(vid))
-                        || (*changed == label::BANK_MATCHED_LEG && !claims.contains_key(vid)))
-                {
-                    return Ok(Err(drift(
-                        "a later label cannot manufacture an occupied bank identity",
-                    )));
-                }
-                let touched = match delta {
-                    DeltaRow::Property {
-                        elem: ElementId::Vertex(vid),
-                        ..
-                    }
-                    | DeltaRow::LabelMembership { vid, .. }
-                    | DeltaRow::DeleteVertex { vid, .. } => Some(vid),
-                    _ => None,
-                };
-                if touched.is_some_and(|vid| {
-                    matches
-                        .get(vid)
-                        .or_else(|| claims.get(vid))
-                        .is_some_and(|born| *born < seq)
-                }) {
-                    return Ok(Err(drift(
-                        "an occupied bank identity was changed after publication; restoring it cannot release its original claim",
-                    )));
-                }
-            }
-        }
-        through = seq;
-    }
-    if through != at {
-        return Ok(Err(drift(
-            "retained history does not cover the selected bank-claim prefix",
-        )));
-    }
-    let mut result = Vec::with_capacity(matches.len());
-    let mut expected_claims = BTreeSet::new();
-    for (vid, born) in matches {
-        checkpoint(cx)?;
-        let Some(row) = db.vertex_at(vid, at)? else {
-            return Ok(Err(drift(
-                "a previously published bank confirmation is absent",
-            )));
-        };
-        if row.created_at != born {
-            return Ok(Err(drift(
-                "a bank confirmation differs from its native publication coordinate",
-            )));
-        }
-        let recorded = match confirmed_fact(db, cx, book, &row, at)? {
-            Ok(recorded) => recorded,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        let value = &recorded.confirmation;
-        let claim = bank_matched_leg_vid(book.book_id, value.entry_ref.vid, value.leg_ordinal);
-        if claims.get(&claim) != Some(&born) || !expected_claims.insert(claim) {
-            return Ok(Err(drift(
-                "an occupied cash leg lacks its unique same-publication native claim",
-            )));
-        }
-        if let Err(refusal) = confirmed_entry(db, cx, book, value, at)? {
-            return Ok(Err(refusal));
-        }
-        result.push(recorded);
-    }
-    if expected_claims.len() != claims.len() {
-        return Ok(Err(drift(
-            "an occupied cash-leg claim has no original confirmed source line",
-        )));
-    }
-    result.sort_by_key(|recorded| (recorded.recorded_at, recorded.match_vid));
-    Ok(Ok(result))
-}
-
+/// Existing full source verification remains separate from metadata history.
 pub(super) fn read_record<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -1085,7 +989,7 @@ pub(super) fn read_record<V: Vfs + Clone>(
     at: CommitSeq,
     manifest: Option<&BankImportManifest>,
 ) -> Outcome<BankMatchRecorded> {
-    let recorded = match confirmed_fact(db, cx, book, row, at)? {
+    let recorded = match read_metadata_record(db, cx, book, row, at)? {
         Ok(recorded) => recorded,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -1131,4 +1035,40 @@ pub(super) fn read_record<V: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     Ok(Ok(recorded))
+}
+
+/// Preserve the source-bound occupied-pair reader while explicit corrections
+/// determine which immutable generations currently claim resources. Metadata
+/// history is a separate scope and intentionally does not reopen source bytes.
+pub(super) fn claims_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    at: CommitSeq,
+) -> Outcome<Vec<BankMatchRecorded>> {
+    let history = match super::lifecycle::history_at(db, cx, book, at)? {
+        Ok(history) => history,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if let Err(refusal) = verify_active_entries(db, cx, book, &history)? {
+        return Ok(Err(refusal));
+    }
+    Ok(Ok(history.active))
+}
+
+pub(super) fn verify_active_entries<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    history: &BankMatchHistory,
+) -> Outcome<()> {
+    for recorded in &history.active {
+        checkpoint(cx)?;
+        if let Err(refusal) =
+            confirmed_entry(db, cx, book, &recorded.confirmation, history.known_at)?
+        {
+            return Ok(Err(refusal));
+        }
+    }
+    Ok(Ok(()))
 }
