@@ -116,7 +116,6 @@ impl Fixture {
             PeriodTransition::Open,
             PRINCIPAL,
             1,
-            day(),
             b"open",
             &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
         )

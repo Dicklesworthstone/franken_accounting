@@ -662,7 +662,6 @@ fn build_golden_seeds() -> GoldenSeeds {
         PeriodTransition::Open,
         who,
         1,
-        date,
         b"open-p03",
         &close_cap,
     )

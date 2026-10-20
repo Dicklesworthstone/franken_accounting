@@ -1324,6 +1324,20 @@ impl Oracle {
         self.epoch
     }
 
+    /// The effective date the period law gives the `PeriodControl` entry
+    /// of `t` on period `code` (plan §7.3, fa-87r), read from the oracle's
+    /// own period table: an Open is dated on the period's first day, every
+    /// other transition on its last day (the day before its exclusive end).
+    /// `None` for a period the oracle does not hold.
+    #[must_use]
+    pub fn transition_date(&self, code: &str, t: PeriodTransition) -> Option<DateDay> {
+        let (def, _) = self.periods.get(code)?;
+        Some(match t {
+            PeriodTransition::Open => def.start,
+            _ => DateDay(def.end.0 - 1),
+        })
+    }
+
     /// [`Oracle::transition_minting`] without its mint lists.
     pub fn transition(
         &mut self,

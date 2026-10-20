@@ -303,7 +303,6 @@ fn harness_with(opening_date: Option<DateDay>) -> Harness {
                 PeriodTransition::Open,
                 PRINCIPAL,
                 1,
-                day,
                 b"open",
                 Erasable::seal(&"open".to_string(), None, &book.seal_key, [3; 32], [4; 24]),
                 &Capability::embedded(PRINCIPAL, &["close"]).expect("close"),
@@ -1349,12 +1348,12 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
         let approvals = if matches!(t, PeriodTransition::Lock) {
             let digest = transition_proposal(
                 &h.book,
-                "FY2026-OPEN",
+                &fa_journal::policy::calendar_period(&h.book, "FY2026-OPEN")
+                    .expect("calendar period"),
                 PeriodState::Closed,
                 PeriodState::Locked,
                 PRINCIPAL,
                 1,
-                opening,
                 key.as_bytes(),
                 desc(&h),
             )
@@ -1378,7 +1377,6 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
                     t,
                     PRINCIPAL,
                     1,
-                    opening,
                     key.as_bytes(),
                     desc,
                     &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
@@ -1635,7 +1633,7 @@ fn seal_text(h: &Harness, text: &str) -> Erasable<String> {
 
 /// Walk FY2026's Opening period to Locked, where migration chunks land
 /// (Lock is dual-controlled and legal only from Closed).
-fn lock_opening(h: &mut Harness, opening: DateDay) {
+fn lock_opening(h: &mut Harness) {
     for (i, t) in [
         PeriodTransition::Open,
         PeriodTransition::SoftClose,
@@ -1649,12 +1647,12 @@ fn lock_opening(h: &mut Harness, opening: DateDay) {
         let approvals = if matches!(t, PeriodTransition::Lock) {
             let digest = transition_proposal(
                 &h.book,
-                "FY2026-OPEN",
+                &fa_journal::policy::calendar_period(&h.book, "FY2026-OPEN")
+                    .expect("calendar period"),
                 PeriodState::Closed,
                 PeriodState::Locked,
                 PRINCIPAL,
                 1,
-                opening,
                 key.as_bytes(),
                 seal_text(h, "period"),
             )
@@ -1677,7 +1675,6 @@ fn lock_opening(h: &mut Harness, opening: DateDay) {
                     t,
                     PRINCIPAL,
                     1,
-                    opening,
                     key.as_bytes(),
                     desc,
                     &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
@@ -1791,7 +1788,7 @@ fn finalized_full_detail_history_before_the_opening_date_never_counts() {
         })
         .expect("FY2025 periods, born Historical")
         .expect("admitted");
-    lock_opening(&mut h, opening);
+    lock_opening(&mut h);
     h.post(h.utilities, 250, b"utilities");
 
     let line = |code: &str, mantissa: i128| TrialBalanceLine {

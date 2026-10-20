@@ -337,7 +337,6 @@ fn build_fixture_book_vectors() -> BookVectorDigests {
         PeriodTransition::Open,
         principal,
         1,
-        day,
         b"open-march",
         &close_cap,
     )
@@ -568,11 +567,10 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     // Every book pin at once: a deliberate format or registry change is then
     // reviewed as one measured set, never discovered one assertion per run.
-    // Since the prior pins at 2e630879, symbols alone changed in the report
-    // registry closure: UsageCell/UsageDebit and BankMatch/BankMatchedLeg/
-    // BankUnmatch added labels 45..49. The native book birth and registry
-    // commitments change the three certificates and evidence bundle; all
-    // arithmetic, register-fold and report-byte pins remain unchanged.
+    // fa-87r: the period law now dates the fixture's March Open control on
+    // March 1 (the fixture used to pass March 15). That changes the control
+    // entry's digest, so the three certificates and the evidence bundle
+    // move; every arithmetic, register-fold and report-byte pin is unchanged.
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -599,7 +597,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "f2c5c07141308fc14094f9aab2efc82da1df775849928a08d2ed719a67cbda0b",
+        "cdaccd2c3f5190d95e980a181a3de49b439faf0852039770fac61d7cba3c42b0",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -611,7 +609,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "d5322a8086ee01371c47b0c20883c11ee8c697f7176f2dec7ca27b56adc56d1a",
+        "b6df012e5308403e42dd4d0d4dbdffc45bcc863ea0ec85c21d0da41ba3a33526",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -623,13 +621,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "dc0a98ab606badab697627de3e86c8ca22bbb48cc98174703eea265d07d54fef",
+        "bd835b149520d6cd0d6874fc275626a509231e7c779baf3b1b8d322d0726c98e",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "de6fb3858a2a3971fde00beb61b928056b9353acdf1cbe16a8f304040cef5cf4",
+        "402fee06d692a8e7bf8b1b68411be172e22a46eefb11bc24d5080e782c6a3f42",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );

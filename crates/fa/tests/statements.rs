@@ -100,18 +100,12 @@ impl Fixture {
             .unwrap()
             .unwrap();
         let close = Capability::embedded(PRINCIPAL, &["close"]).unwrap();
-        for (period, date) in [
-            (DECEMBER, day(2025, 12, 1)),
-            (JANUARY, day(2026, 1, 1)),
-            (FEBRUARY, day(2026, 2, 1)),
-            (MARCH, day(2026, 3, 1)),
-        ] {
+        for period in [DECEMBER, JANUARY, FEBRUARY, MARCH] {
             book.transition_period(
                 period,
                 PeriodTransition::Open,
                 PRINCIPAL,
                 1,
-                date,
                 period.as_bytes(),
                 &close,
             )

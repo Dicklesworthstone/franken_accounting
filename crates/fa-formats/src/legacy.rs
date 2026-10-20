@@ -1740,12 +1740,12 @@ SAP-501,2025-12-28,2025-12-28T20:00:00Z,0000800000,-1900.25,Year-end AR billing,
             let approvals = if matches!(t, PeriodTransition::Lock) {
                 let digest = fa_journal::transition_proposal(
                     &book,
-                    "FY2026-OPEN",
+                    &fa_journal::policy::calendar_period(&book, "FY2026-OPEN")
+                        .expect("calendar period"),
                     fa_time::PeriodState::Closed,
                     fa_time::PeriodState::Locked,
                     PRINCIPAL,
                     1,
-                    opening_date,
                     key.as_bytes(),
                     desc.clone(),
                 )
@@ -1782,7 +1782,6 @@ SAP-501,2025-12-28,2025-12-28T20:00:00Z,0000800000,-1900.25,Year-end AR billing,
                         t,
                         PRINCIPAL,
                         1,
-                        opening_date,
                         key.as_bytes(),
                         desc,
                         &Capability::embedded(PRINCIPAL, &["close"]).expect("close"),

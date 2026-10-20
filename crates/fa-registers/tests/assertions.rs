@@ -255,7 +255,6 @@ fn book() -> Book {
                 PeriodTransition::Open,
                 PREPARER,
                 1,
-                day,
                 b"open",
                 Erasable::seal(&"open".to_string(), None, &book.seal_key, [3; 32], [4; 24]),
                 &Capability::embedded(PREPARER, &["close"]).expect("close"),

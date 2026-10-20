@@ -717,7 +717,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         t: PeriodTransition,
         principal: VId,
         reason_code: u16,
-        effective_date: DateDay,
         idempotency_key: &[u8],
         capability: &fa_journal::Capability,
     ) -> Outcome<Transitioned> {
@@ -730,7 +729,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             t,
             principal,
             reason_code,
-            effective_date,
             idempotency_key,
             description,
             capability,
@@ -747,7 +745,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         t: PeriodTransition,
         principal: VId,
         reason_code: u16,
-        effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::TransitionPlan> {
         let description = self.seal_text(cx, &format!("period {period_code}: {t:?}"))?;
@@ -759,14 +756,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 t,
                 principal,
                 reason_code,
-                effective_date,
                 idempotency_key,
                 description,
             )?)
         })
     }
 
-    pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Result<[u8; 32], BookError> {
+    pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Outcome<[u8; 32]> {
         Ok(plan.proposal_digest(&self.context)?)
     }
 
@@ -787,7 +783,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             t,
             plan.principal_ref,
             plan.reason_code,
-            plan.effective_date,
             &plan.idempotency_key,
             plan.description.clone(),
             capability,

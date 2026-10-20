@@ -228,7 +228,6 @@ impl Harness {
     fn transition(&mut self, period: &str, transition: PeriodTransition, key: &[u8]) {
         let description = self.seal("period transition");
         let ctx = self.ctx();
-        let date = day(2026, 1, 1);
         self.runtime
             .block_on(async {
                 transition_period(
@@ -239,7 +238,6 @@ impl Harness {
                     transition,
                     PREPARER,
                     1,
-                    date,
                     key,
                     description,
                     &Capability::embedded(PREPARER, &["close"]).expect("close"),
@@ -2586,7 +2584,6 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
                         PeriodTransition::Open,
                         PREPARER,
                         1,
-                        jan1,
                         format!("open-{}", p.code).as_bytes(),
                         desc,
                         &Capability::embedded(PREPARER, &["close"]).unwrap(),
@@ -2745,7 +2742,6 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
                         t.transition,
                         PREPARER,
                         1,
-                        t.effective_date,
                         format!("trans-{t_idx}").as_bytes(),
                         desc,
                         &Capability::embedded(PREPARER, &["close"]).unwrap(),

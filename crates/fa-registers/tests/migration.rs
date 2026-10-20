@@ -283,12 +283,11 @@ fn transition(k: &mut Kernel, code: &str, t: PeriodTransition, key: &str) {
     let approvals = if matches!(t, PeriodTransition::Lock) {
         let digest = transition_proposal(
             &k.book,
-            code,
+            &fa_journal::policy::calendar_period(&k.book, code).expect("calendar period"),
             PeriodState::Closed,
             PeriodState::Locked,
             PRINCIPAL,
             1,
-            opening_date(),
             key.as_bytes(),
             sealed(&k.book, "period"),
         )
@@ -312,7 +311,6 @@ fn transition(k: &mut Kernel, code: &str, t: PeriodTransition, key: &str) {
                 t,
                 PRINCIPAL,
                 1,
-                opening_date(),
                 key.as_bytes(),
                 desc,
                 &capability(&["close"]),
@@ -2288,7 +2286,6 @@ fn period_balances_tie_out_cumulatively_and_historical_periods_admit_only_migrat
                     PeriodTransition::Open,
                     PRINCIPAL,
                     1,
-                    day(2, 1),
                     b"open-history",
                     desc,
                     &capability(&["close"]),
@@ -3206,7 +3203,6 @@ fn a_prior_year_close_lands_in_its_closing_period_and_ties_the_opening() {
                     PeriodTransition::Open,
                     PRINCIPAL,
                     1,
-                    day(2025, 12, 31),
                     b"open-the-close",
                     desc,
                     &capability(&["close"]),

@@ -1434,9 +1434,20 @@ fn kernel_request(k: &Kernel, intent: &Intent, usd: UnitId, refs: &[EntryRef]) -
     }
 }
 
-/// The date every generated transition is journaled on.
-fn transition_day() -> DateDay {
+/// The date the generated revocations, activations and drafts carry. A
+/// period transition carries none: its period dates it (fa-87r).
+fn control_day() -> DateDay {
     DateDay::from_ymd(2026, 1, 1).unwrap()
+}
+
+/// The effective date the kernel journaled on control entry `vid`.
+fn journaled_date(k: &Kernel, vid: VId) -> DateDay {
+    fa_journal::post::read_entry(&k.db, vid)
+        .expect("read")
+        .expect("control entry")
+        .0
+        .proposal
+        .effective_date
 }
 
 fn period_description(k: &Kernel) -> Erasable<String> {
@@ -1460,12 +1471,11 @@ fn period_digest(
 ) -> [u8; 32] {
     transition_proposal(
         &k.book,
-        code,
+        &fa_journal::policy::calendar_period(&k.book, code).expect("calendar period"),
         from,
         to,
         PRINCIPAL,
         1,
-        transition_day(),
         format!("t-{step}").as_bytes(),
         period_description(k),
     )
@@ -1508,7 +1518,7 @@ fn kernel_revoke(k: &mut Kernel, revoked: &Capability, step: u64) {
     let req = RevocationRequest {
         capability: Capability::embedded(VId(90), &["issue_capability"]).expect("issuer"),
         revoked: revoked.commitment().expect("commitment"),
-        effective_date: transition_day(),
+        effective_date: control_day(),
         idempotency_key: format!("revoke-{step}").into_bytes(),
         description: Erasable::seal(
             &"revoke".to_string(),
@@ -1537,7 +1547,7 @@ fn kernel_activate(k: &mut Kernel, step: u64) {
         &k.book,
         PRINCIPAL,
         fa_journal::policy::steward().expect("policy").policy_oid,
-        transition_day(),
+        control_day(),
         key.as_bytes(),
         Erasable::seal(
             &"activate".to_string(),
@@ -1598,7 +1608,6 @@ fn kernel_transition_under(
                 t,
                 PRINCIPAL,
                 1,
-                transition_day(),
                 key.as_bytes(),
                 description,
                 capability,
@@ -1768,11 +1777,21 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
             let kernel = kernel_transition(&mut k, &code, t, step);
             let model = oracle.transition(&code, t);
             match (kernel, model) {
-                (Ok(tr), Ok((from, to))) => assert_eq!(
-                    (tr.from, tr.to),
-                    (from, to),
-                    "step {step}: transition {code} {t:?}"
-                ),
+                (Ok(tr), Ok((from, to))) => {
+                    assert_eq!(
+                        (tr.from, tr.to),
+                        (from, to),
+                        "step {step}: transition {code} {t:?}"
+                    );
+                    // fa-87r: both engines date the control by its period.
+                    if !tr.already_recorded {
+                        assert_eq!(
+                            Some(journaled_date(&k, tr.control_entry)),
+                            oracle.transition_date(&code, t),
+                            "step {step}: transition {code} {t:?} control date"
+                        );
+                    }
+                }
                 (Err(r), Err(c)) => {
                     assert_eq!(r.code, c, "step {step}: transition refusal {code} {t:?}")
                 }
@@ -4707,6 +4726,11 @@ fn close_and_maybe_lock(k: &mut Kernel, oracle: &mut Oracle, code: &str, lock: b
         let kernel = kernel_transition(k, code, t, step * 10 + i as u64).expect("transition");
         let model = oracle.transition(code, t).expect("oracle transition");
         assert_eq!((kernel.from, kernel.to), model, "{code} {t:?}");
+        assert_eq!(
+            Some(journaled_date(k, kernel.control_entry)),
+            oracle.transition_date(code, t),
+            "{code} {t:?} control date"
+        );
     }
 }
 
@@ -8925,7 +8949,7 @@ const CLERK: VId = VId(71);
 fn draft_request(k: &Kernel, capability: Capability) -> DraftRequest {
     DraftRequest {
         capability,
-        effective_date: transition_day(),
+        effective_date: control_day(),
         description: fresh_seal(&k.book.seal_key, "draft record"),
     }
 }

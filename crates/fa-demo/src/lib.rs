@@ -1194,7 +1194,6 @@ pub fn init_dir(
             transition,
             controller,
             1,
-            opening_date,
             format!("demo:opening-{idx}:FY2026-OPEN:s{seed}").as_bytes(),
             &close_cap,
         )??;
@@ -1204,10 +1203,9 @@ pub fn init_dir(
         PeriodTransition::Lock,
         controller,
         1,
-        opening_date,
         format!("demo:lock:FY2026-OPEN:s{seed}").as_bytes(),
     )??;
-    let lock_digest = book.plan_digest(&lock_plan)?;
+    let lock_digest = book.plan_digest(&lock_plan)??;
     let lock_approval = book
         .approve(
             Capability::embedded(operator, &["approve"])
@@ -1223,14 +1221,11 @@ pub fn init_dir(
     )??;
     for m in 1..=12 {
         let code = format!("FY2026-P{m:02}");
-        let start = DateDay::from_ymd(2026, m, 1)
-            .map_err(|e| BookError::KeyFile(format!("period start: {e:?}")))?;
         book.transition_period(
             &code,
             PeriodTransition::Open,
             controller,
             1,
-            start,
             format!("demo:open:{code}:s{seed}").as_bytes(),
             &close_cap,
         )??;
@@ -1664,13 +1659,11 @@ pub fn init_dir(
     entry_count += 1;
 
     // Transition FY2026-P01: Open -> SoftClosed -> Closed.
-    let p01_end = DateDay::from_ymd(2026, 1, 31).unwrap();
     let p01_sc = book.transition_period(
         "FY2026-P01",
         PeriodTransition::SoftClose,
         controller,
         1,
-        p01_end,
         format!("demo:p01:softclose:s{seed}").as_bytes(),
         &close_cap,
     )??;
@@ -1679,7 +1672,6 @@ pub fn init_dir(
         PeriodTransition::Close,
         controller,
         1,
-        p01_end,
         format!("demo:p01:close:s{seed}").as_bytes(),
         &close_cap,
     )??;
@@ -1692,13 +1684,11 @@ pub fn init_dir(
     });
 
     // Transition FY2026-P02: Open -> SoftClosed -> Closed -> Locked (with independent SoD approval).
-    let p02_end = DateDay::from_ymd(2026, 2, 28).unwrap();
     let p02_sc = book.transition_period(
         "FY2026-P02",
         PeriodTransition::SoftClose,
         controller,
         1,
-        p02_end,
         format!("demo:p02:softclose:s{seed}").as_bytes(),
         &close_cap,
     )??;
@@ -1707,7 +1697,6 @@ pub fn init_dir(
         PeriodTransition::Close,
         controller,
         1,
-        p02_end,
         format!("demo:p02:close:s{seed}").as_bytes(),
         &close_cap,
     )??;
@@ -1716,10 +1705,9 @@ pub fn init_dir(
         PeriodTransition::Lock,
         controller,
         1,
-        p02_end,
         format!("demo:p02:lock:s{seed}").as_bytes(),
     )??;
-    let lock_digest = book.plan_digest(&lock_plan)?;
+    let lock_digest = book.plan_digest(&lock_plan)??;
     let auditor_approve_cap = Capability::embedded(auditor, &["approve"])
         .map_err(|e| BookError::KeyFile(e.to_string()))?;
     let lock_approval: Approved = book.approve(auditor_approve_cap, lock_digest)??;

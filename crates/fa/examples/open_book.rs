@@ -89,7 +89,6 @@ fn run() -> Result<(), BookError> {
         PeriodTransition::Open,
         principal,
         1,
-        day,
         b"open-march",
         &Capability::embedded(principal, &["close"]).expect("close is a registered op"),
     )? {

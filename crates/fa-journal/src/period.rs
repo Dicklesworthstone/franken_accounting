@@ -26,7 +26,7 @@ use fa_model::{
 };
 use fa_policy::{Capability, Intent, Party};
 use fa_time::period::transition;
-use fa_time::{DateDay, PeriodKind, PeriodState, PeriodTransition};
+use fa_time::{DateDay, PeriodDef, PeriodKind, PeriodState, PeriodTransition};
 use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
@@ -204,29 +204,44 @@ pub fn transition_name(t: PeriodTransition) -> &'static str {
     }
 }
 
+/// The effective date of the `PeriodControl` entry that moves `period` out
+/// of `from` (plan §7.3, fa-87r). The period fixes it; no caller supplies
+/// it. Opening a `Future` period is dated on the period's first day. Every
+/// later transition (soft close, close, lock, reopen) acts at the period's
+/// closing boundary and is dated on its last day. Both days lie inside the
+/// period, so the control resolves to the period it names.
+#[must_use]
+pub fn transition_date(period: &PeriodDef, from: PeriodState) -> DateDay {
+    if from == PeriodState::Future {
+        period.start
+    } else {
+        period.last_day()
+    }
+}
+
 /// The `PeriodControl` proposal a transition commits, deterministic in its
 /// inputs, so an approver can compute the `proposal_digest` it approves:
-/// the same period, from/to states, preparer, reason, date, key and
-/// description bytes the preparer will submit.
+/// the same period, from/to states, preparer, reason, key and description
+/// bytes the preparer will submit. The date is [`transition_date`]'s.
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn transition_proposal(
     book: &BookContext,
-    period_code: &str,
+    period: &PeriodDef,
     from: PeriodState,
     to: PeriodState,
     principal_ref: VId,
     reason_code: u16,
-    effective_date: DateDay,
     idempotency_key: &[u8],
     description: Erasable<String>,
 ) -> EntryPayload {
+    let period_code = period.code.as_str();
     EntryPayload {
         schema_minor: fa_model::entry::SCHEMA_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::PERIOD_CONTROL,
-        effective_date,
+        effective_date: transition_date(period, from),
         document_date: None,
         description,
         effective_period: Some(PeriodRef {
@@ -318,14 +333,14 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     row: &fgdb::VertexRow,
-    period_code: &str,
+    period: &PeriodDef,
     t: PeriodTransition,
     principal_ref: VId,
     reason_code: u16,
-    effective_date: DateDay,
     idempotency_key: &[u8],
     description: &Erasable<String>,
 ) -> Outcome<Transitioned> {
+    let period_code = period.code.as_str();
     let stored = match crate::rows::prop(row, property::FA_PAYLOAD) {
         Some(CanonicalScalar::Bytes(b)) => fa_model::Entry::decode(b.as_slice())?,
         other => {
@@ -378,12 +393,11 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     }
     let candidate = transition_proposal(
         book,
-        period_code,
+        period,
         stored_from,
         stored_to,
         principal_ref,
         reason_code,
-        effective_date,
         idempotency_key,
         description.clone(),
     );
@@ -583,40 +597,45 @@ pub struct TransitionPlan {
     pub to: PeriodState,
     pub principal_ref: VId,
     pub reason_code: u16,
-    pub effective_date: DateDay,
     pub idempotency_key: Vec<u8>,
     pub description: Erasable<String>,
 }
 
 /// The plan file's leading domain tag; the format is versioned after it.
 pub const PLAN_DOMAIN: &[u8; 14] = b"fa:period-plan";
-const PLAN_VERSION: u16 = 1;
+/// Version 2 dropped version 1's caller-supplied date: the period fixes the
+/// control's date (fa-87r), so a version 1 plan is refused.
+const PLAN_VERSION: u16 = 2;
 
 impl TransitionPlan {
-    /// The proposal this plan commits.
-    #[must_use]
-    pub fn proposal(&self, book: &BookContext) -> EntryPayload {
-        transition_proposal(
+    /// The proposal this plan commits, dated by its period
+    /// ([`transition_date`]); refused when the book's calendar has no such
+    /// period.
+    pub fn proposal(&self, book: &BookContext) -> Result<EntryPayload, Refusal> {
+        let period = policy::calendar_period(book, &self.period_code)
+            .ok_or_else(|| unknown_period(book, &self.period_code))?;
+        Ok(transition_proposal(
             book,
-            &self.period_code,
+            &period,
             self.from,
             self.to,
             self.principal_ref,
             self.reason_code,
-            self.effective_date,
             &self.idempotency_key,
             self.description.clone(),
-        )
+        ))
     }
 
     /// The digest an approval of this plan binds.
-    pub fn proposal_digest(&self, book: &BookContext) -> Result<[u8; 32], KernelError> {
-        Ok(self.proposal(book).proposal_digest()?)
+    pub fn proposal_digest(&self, book: &BookContext) -> Outcome<[u8; 32]> {
+        match self.proposal(book) {
+            Ok(proposal) => Ok(Ok(proposal.proposal_digest()?)),
+            Err(refusal) => Ok(Err(refusal)),
+        }
     }
 
     /// `"fa:period-plan" ‖ u16 version ‖ str period ‖ u8 from ‖ u8 to ‖
-    /// u128 principal ‖ u16 reason ‖ i32 date ‖ bytes key ‖ erasable
-    /// description`.
+    /// u128 principal ‖ u16 reason ‖ bytes key ‖ erasable description`.
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
         let mut w = Writer::new();
         w.fixed(PLAN_DOMAIN)
@@ -626,7 +645,6 @@ impl TransitionPlan {
             .u8(self.to.tag())
             .u128(self.principal_ref.0)
             .u16(self.reason_code)
-            .i32(self.effective_date.0)
             .bytes(&self.idempotency_key);
         self.description.encode(&mut w);
         w.finish()
@@ -658,7 +676,6 @@ impl TransitionPlan {
             to,
             principal_ref: VId(r.u128("plan.principal")?),
             reason_code: r.u16("plan.reason")?,
-            effective_date: DateDay(r.i32("plan.date")?),
             idempotency_key: r
                 .bytes(limits::MAX_IDEMPOTENCY_KEY_BYTES, "plan.key")?
                 .to_vec(),
@@ -687,7 +704,6 @@ pub fn plan_transition<V: asupersync::fs::Vfs + Clone>(
     t: PeriodTransition,
     principal_ref: VId,
     reason_code: u16,
-    effective_date: DateDay,
     idempotency_key: &[u8],
     description: Erasable<String>,
 ) -> Outcome<TransitionPlan> {
@@ -709,7 +725,6 @@ pub fn plan_transition<V: asupersync::fs::Vfs + Clone>(
         to,
         principal_ref,
         reason_code,
-        effective_date,
         idempotency_key: idempotency_key.to_vec(),
         description,
     }))
@@ -726,7 +741,6 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
     t: PeriodTransition,
     principal_ref: VId,
     reason_code: u16,
-    effective_date: DateDay,
     idempotency_key: &[u8],
     description: Erasable<String>,
     capability: &Capability,
@@ -740,7 +754,6 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
         t,
         principal_ref,
         reason_code,
-        effective_date,
         idempotency_key,
         description,
         capability,
@@ -757,7 +770,6 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
             t,
             principal_ref,
             reason_code,
-            effective_date,
             idempotency_key,
         )?
         .ok_or(refusal)),
@@ -767,8 +779,8 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
 
 /// The recorded outcome of this exact request, when the control entry at
 /// its identity (principal, key) moved `period_code` along `t` with the
-/// same reason and date; `None` otherwise (the caller's refusal stands).
-#[allow(clippy::too_many_arguments)]
+/// same reason, dated as the period law dates it; `None` otherwise (the
+/// caller's refusal stands).
 fn recorded_transition<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -776,7 +788,6 @@ fn recorded_transition<V: asupersync::fs::Vfs + Clone>(
     t: PeriodTransition,
     principal_ref: VId,
     reason_code: u16,
-    effective_date: DateDay,
     idempotency_key: &[u8],
 ) -> Result<Option<Transitioned>, KernelError> {
     let evid = entry_vid(
@@ -803,7 +814,8 @@ fn recorded_transition<V: asupersync::fs::Vfs + Clone>(
     let same = period_ref.code == period_code
         && entry.proposal.principal_ref == principal_ref
         && *recorded_reason == reason_code
-        && entry.proposal.effective_date == effective_date
+        && policy::calendar_period(book, period_code)
+            .is_some_and(|p| entry.proposal.effective_date == transition_date(&p, from))
         && transition(from, t).ok() == Some(to);
     Ok(same.then(|| Transitioned {
         period: period_code.to_string(),
@@ -829,7 +841,6 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
     t: PeriodTransition,
     principal_ref: VId,
     reason_code: u16,
-    effective_date: DateDay,
     idempotency_key: &[u8],
     description: Erasable<String>,
     capability: &Capability,
@@ -847,20 +858,14 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
                 "sod_policy.toml registers no PeriodControl {name} rule; the transition is refused, never unconstrained"
             ))
         })?;
-    // A transition reaches its period and its own control date (CobaltGull
-    // 3570): both periods' codes under a `periods` caveat, the later of the
-    // period's last day and the control date (from the calendar alone)
-    // under `effective`, and every account (a close binds the whole book),
-    // so an `accounts`, `known_at` or `branch` caveat refuses it.
-    let mut reached: Vec<&str> = vec![period_code];
-    let dated = policy::resolved_period(book, effective_date, None);
-    if let Some(code) = dated.as_deref()
-        && code != period_code
-    {
-        reached.push(code);
-    }
-    let through =
-        policy::calendar_period(book, period_code).map(|p| p.last_day().max(effective_date));
+    // A transition reaches its own period (CobaltGull 3570): the period's
+    // code under a `periods` caveat, its last day (from the calendar alone;
+    // the control is dated inside the period, fa-87r) under `effective`, and
+    // every account (a close binds the whole book), so an `accounts`,
+    // `known_at` or `branch` caveat refuses it.
+    let calendar_period = policy::calendar_period(book, period_code);
+    let reached = [period_code];
+    let through = calendar_period.as_ref().map(PeriodDef::last_day);
     if let Err(d) = fa_policy::admit_within(
         capability,
         &Intent {
@@ -873,7 +878,7 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         &fa_policy::Reach {
             branch: Some(Id128::TRUNK),
             observes: fa_policy::Observes::Head,
-            periods: Some(&reached),
+            periods: Some(&reached[..]),
             through,
             accounts: None,
         },
@@ -911,12 +916,21 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    // Period creation generates every period a book holds from its
+    // calendar, so the calendar dates this control.
+    let Some(period) = calendar_period else {
+        txn.abort();
+        return Err(KernelError::Corrupt(format!(
+            "period `{period_code}` is held but calendar `{}` does not define it",
+            book.calendar.id
+        )));
+    };
     let Ok(to) = transition(from, t) else {
         // When `t` is not admissible from the period's current state `from`,
         // check whether `evid` already recorded this `(period_code, t)`
         // transition (FA-INV-09, fa-l93 D13): if so, return the recorded
         // outcome on an identical retry or an idempotency conflict when the
-        // retry changed date/reason/description; if `evid` is absent or
+        // retry changed its reason or description; if `evid` is absent or
         // recorded a different transition, the state-machine refusal stands.
         if let Some(existing) = txn.vertex(db, evid)?
             && existing_names_transition(&existing, book, period_code, t)?
@@ -927,11 +941,10 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
                 db,
                 book,
                 &existing,
-                period_code,
+                &period,
                 t,
                 principal_ref,
                 reason_code,
-                effective_date,
                 idempotency_key,
                 &description,
             )? {
@@ -951,11 +964,10 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
             db,
             book,
             &existing,
-            period_code,
+            &period,
             t,
             principal_ref,
             reason_code,
-            effective_date,
             idempotency_key,
             &description,
         )? {
@@ -968,12 +980,11 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
 
     let proposal = transition_proposal(
         book,
-        period_code,
+        &period,
         from,
         to,
         principal_ref,
         reason_code,
-        effective_date,
         idempotency_key,
         description,
     );
@@ -1409,6 +1420,24 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
                 let to_state = PeriodState::from_tag(*to);
                 match (from_state, to_state) {
                     (Some(f), Some(t)) => {
+                        // The period law dates the control (fa-87r).
+                        match policy::calendar_period(book, &period_ref.code) {
+                            Some(def)
+                                if entry.proposal.effective_date == transition_date(&def, f) => {}
+                            Some(def) => drift.push(format!(
+                                "period transition entry {:032x} is dated {}; the period law dates `{}` {} -> {} on {}",
+                                row.vid.0,
+                                entry.proposal.effective_date.render(),
+                                period_ref.code,
+                                f.name(),
+                                t.name(),
+                                transition_date(&def, f).render()
+                            )),
+                            None => drift.push(format!(
+                                "period transition entry {:032x} names period `{}`, which calendar `{}` does not define",
+                                row.vid.0, period_ref.code, book.calendar.id
+                            )),
+                        }
                         transitions_by_period
                             .entry(period_ref.code.clone())
                             .or_default()

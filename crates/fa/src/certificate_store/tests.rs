@@ -173,7 +173,6 @@ impl Harness {
                 PeriodTransition::Open,
                 PRINCIPAL,
                 1,
-                DateDay::from_ymd(2026, 1, 1).unwrap(),
                 b"open",
                 &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
             ))

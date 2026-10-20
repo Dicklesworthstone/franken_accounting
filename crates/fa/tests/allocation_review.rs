@@ -102,7 +102,6 @@ impl Harness {
                 PeriodTransition::Open,
                 AUTHOR,
                 1,
-                day("2026-03-01"),
                 b"open-march",
                 &Capability::embedded(AUTHOR, &["close"]).unwrap(),
             ))

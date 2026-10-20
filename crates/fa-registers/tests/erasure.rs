@@ -243,7 +243,6 @@ fn harness() -> Harness {
                 PeriodTransition::Open,
                 PRINCIPAL,
                 1,
-                day,
                 b"open",
                 Erasable::seal(
                     &"period".to_string(),

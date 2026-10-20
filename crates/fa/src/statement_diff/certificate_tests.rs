@@ -113,11 +113,7 @@ impl Harness {
                 .unwrap()
                 .unwrap();
         }
-        for (period, date) in [
-            ("FY2025-P03", "2025-03-01"),
-            ("FY2026-P03", "2026-03-01"),
-            ("FY2026-P04", "2026-04-01"),
-        ] {
+        for period in ["FY2025-P03", "FY2026-P03", "FY2026-P04"] {
             runtime
                 .block_on(book.transition_period(
                     &cx,
@@ -125,7 +121,6 @@ impl Harness {
                     PeriodTransition::Open,
                     PRINCIPAL,
                     1,
-                    day(date),
                     period.as_bytes(),
                     &cap(&["close"]),
                 ))

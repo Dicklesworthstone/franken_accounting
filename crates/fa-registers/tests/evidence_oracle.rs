@@ -455,7 +455,6 @@ fn book() -> Book {
                 PeriodTransition::Open,
                 principal,
                 1,
-                day,
                 b"open",
                 Erasable::seal(
                     &"period".to_string(),

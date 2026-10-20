@@ -917,7 +917,6 @@ mod tests {
                     fa_time::PeriodTransition::Open,
                     PRINCIPAL,
                     1,
-                    period.start,
                     period.code.as_bytes(),
                     description,
                     &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),

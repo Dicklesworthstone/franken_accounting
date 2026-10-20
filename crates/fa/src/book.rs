@@ -933,7 +933,9 @@ impl Book {
     }
 
     /// Move a period along the state machine under `capability` (plan §14:
-    /// it must be `principal`'s and hold the transition's op). The facade
+    /// it must be `principal`'s and hold the transition's op). The period
+    /// dates the control entry (`fa_journal::period::transition_date`); no
+    /// caller supplies a date. The facade
     /// seals the description with fresh salt, so it cites no approvals:
     /// transitions that need approvers (Lock, SoftClosed→Reopen) are planned
     /// with [`Book::plan_transition`], approved with [`Book::approve`], and
@@ -945,13 +947,12 @@ impl Book {
         t: PeriodTransition,
         principal: VId,
         reason_code: u16,
-        effective_date: DateDay,
         idempotency_key: &[u8],
         capability: &fa_journal::Capability,
     ) -> Outcome<Transitioned> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.transition_period(
-            &purposes, period_code, t, principal, reason_code, effective_date, idempotency_key, capability,
+            &purposes, period_code, t, principal, reason_code, idempotency_key, capability,
         )))
     }
 
@@ -966,16 +967,16 @@ impl Book {
         t: PeriodTransition,
         principal: VId,
         reason_code: u16,
-        effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::TransitionPlan> {
         with_store!(&self.store, core => core.plan_transition(
-            &self.purposes(), period_code, t, principal, reason_code, effective_date, idempotency_key,
+            &self.purposes(), period_code, t, principal, reason_code, idempotency_key,
         ))
     }
 
-    /// The digest an approval of `plan` binds.
-    pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Result<[u8; 32], BookError> {
+    /// The digest an approval of `plan` binds; refused when the book's
+    /// calendar has no period `plan` names.
+    pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Outcome<[u8; 32]> {
         with_store!(&self.store, core => core.plan_digest(plan))
     }
 

@@ -292,7 +292,6 @@ impl Harness {
         t: PeriodTransition,
         key: &[u8],
     ) -> Result<Transitioned, Refusal> {
-        let day = DateDay::from_ymd(2026, 3, 1).unwrap();
         let seal_key = self.book.seal_key.clone();
         let description =
             || Erasable::seal(&"period".to_string(), None, &seal_key, [3; 32], [4; 24]);
@@ -311,14 +310,15 @@ impl Harness {
         });
         let approvals = match (t, legal) {
             (PeriodTransition::Lock | PeriodTransition::Reopen { .. }, Some((from, to))) => {
+                let period =
+                    fa_journal::policy::calendar_period(&self.book, code).expect("calendar period");
                 let digest = transition_proposal(
                     &self.book,
-                    code,
+                    &period,
                     from,
                     to,
                     PRINCIPAL,
                     1,
-                    day,
                     key,
                     description(),
                 )
@@ -342,7 +342,6 @@ impl Harness {
                     t,
                     PRINCIPAL,
                     1,
-                    day,
                     key,
                     description,
                     &Capability::embedded(PRINCIPAL, &["close", "reopen"]).expect("ops"),
@@ -6855,6 +6854,7 @@ fn period_verification_detects_planted_state_and_topology_drift_without_mutation
         "missing-state",
         "missing-in-period",
         "missing-in-book",
+        "misdated-control",
     ] {
         let mut h = harness();
         let clean_seq = h.db.frontier().unwrap();
@@ -6886,6 +6886,21 @@ fn period_verification_detects_planted_state_and_topology_drift_without_mutation
             "missing-in-book" => {
                 let mut batch = fgdb::WriteBatch::new(relation::IN_BOOK);
                 batch.delete_edge(edge_id(relation::IN_BOOK, pvid, book_root()));
+                h.write_raw(batch);
+            }
+            "misdated-control" => {
+                // March's Open control, re-sealed one day later (still inside
+                // March) with every mirror rewritten to match, so only the
+                // period law's date (fa-87r) can tell it apart.
+                let (entry, _) = read_entry(&h.db, evid).unwrap().expect("control entry");
+                let mut proposal = entry.proposal.clone();
+                assert_eq!(proposal.effective_date, transitions[0].effective_date);
+                proposal.effective_date = DateDay(proposal.effective_date.0 + 1);
+                let misdated = proposal.seal(entry.approvals.clone(), None).unwrap();
+                let mut batch = fgdb::WriteBatch::new(relation::IN_PERIOD);
+                for (key, value) in fa_model::entry_mirrors(&misdated).unwrap() {
+                    batch.set_vertex_property(evid, key, Some(value));
+                }
                 h.write_raw(batch);
             }
             _ => unreachable!(),
@@ -6940,6 +6955,17 @@ fn period_verification_detects_planted_state_and_topology_drift_without_mutation
                     v.drift
                         .iter()
                         .any(|d| d.contains("IN_BOOK") && d.contains(&h.march)),
+                    "{:?}",
+                    v.drift
+                );
+            }
+            "misdated-control" => {
+                assert_eq!(v.drift.len(), 1, "{:?}", v.drift);
+                assert!(
+                    v.drift[0].contains("period law dates")
+                        && v.drift[0].contains(&h.march)
+                        && v.drift[0].contains("2026-03-02")
+                        && v.drift[0].contains("2026-03-01"),
                     "{:?}",
                     v.drift
                 );

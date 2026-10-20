@@ -449,7 +449,6 @@ mod tests {
                     PeriodTransition::Open,
                     PRINCIPAL,
                     1,
-                    day(1),
                     b"roll-open",
                     &cap(&["close"]),
                 ))

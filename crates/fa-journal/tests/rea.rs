@@ -173,7 +173,6 @@ fn setup_book() -> (
             PeriodTransition::Open,
             controller,
             1,
-            d_jan1,
             b"open-p01",
             seal_str("open P01", &book.seal_key, 2),
             &cap,

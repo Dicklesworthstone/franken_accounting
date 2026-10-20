@@ -202,7 +202,6 @@ fn uploaded_agent_evidence_cannot_post_until_a_different_human_reviews_it() {
             PeriodTransition::Open,
             principal,
             1,
-            date,
             b"open",
             &controller,
         )

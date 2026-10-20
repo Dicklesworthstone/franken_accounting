@@ -713,6 +713,57 @@ fn void_dry_run_keeps_the_hold_until_the_exact_plan_is_committed() {
     assert_eq!(head(&f.book), committed_head);
 }
 
+/// fa-87r: the period dates its control, never the caller. `--date` is not
+/// a flag of `fa period` (exit 2 before the book is touched), and the
+/// journaled controls carry the period law's dates: March opens on its
+/// first day and soft-closes and closes on its last.
+#[test]
+fn period_controls_are_dated_by_their_period_never_by_the_caller() {
+    let f = Fixture::new();
+    let before = head(&f.book);
+    for transition in ["soft-close", "close"] {
+        let (code, refused) = run(
+            &f.book,
+            &[
+                "period",
+                transition,
+                "FY2026-P03",
+                "--date",
+                "2026-04-15",
+                "--yes",
+            ],
+            None,
+        );
+        assert_eq!(code, 2, "{}", refused.render());
+        assert_eq!(text(&refused, "class"), "usage", "{}", refused.render());
+        assert!(
+            text(&refused, "message").contains("--date"),
+            "{}",
+            refused.render()
+        );
+        assert_eq!(head(&f.book), before, "{transition}: nothing written");
+    }
+    ok(&f.book, &["period", "soft-close", "FY2026-P03"]);
+    ok(&f.book, &["period", "close", "FY2026-P03", "--yes"]);
+    let explained = ok(&f.book, &["explain", "period", "FY2026-P03"]);
+    let dated: Vec<(&str, &str)> = get(&explained, "transitions")
+        .as_arr()
+        .expect("transitions")
+        .iter()
+        .map(|row| (text(row, "to"), text(row, "effective_date")))
+        .collect();
+    assert_eq!(
+        dated,
+        vec![
+            ("Open", "2026-03-01"),
+            ("SoftClosed", "2026-03-31"),
+            ("Closed", "2026-03-31"),
+        ],
+        "{}",
+        explained.render()
+    );
+}
+
 #[test]
 fn inline_period_plan_survives_independent_approval_and_exact_stdin_commit() {
     let f = Fixture::new();

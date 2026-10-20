@@ -126,7 +126,6 @@ async fn fixture(root: &Cx, seed: u8) -> Fixture {
             PeriodTransition::Open,
             principal,
             1,
-            day,
             period.as_bytes(),
             &controller,
         )

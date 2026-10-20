@@ -92,7 +92,6 @@ fn sync_fixture() -> (
         PeriodTransition::Open,
         PRINCIPAL,
         1,
-        day(1),
         b"sync-open",
         &cap(&["close"]),
     )

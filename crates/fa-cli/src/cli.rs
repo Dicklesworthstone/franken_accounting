@@ -4162,14 +4162,6 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .flag("--key")
                 .map(|k| k.as_bytes().to_vec())
                 .unwrap_or_else(|| format!("period:{code}:{current}:{t}").into_bytes());
-            let date = date_flag(
-                args,
-                book.periods()?
-                    .into_iter()
-                    .find(|p| &p.code == code)
-                    .map(|p| p.start)
-                    .unwrap_or(DateDay(0)),
-            )?;
             let approval_flags = args.flag_all("--approval");
             // A plan seals the description once (R4), so an approval
             // recorded by another principal, in another process, binds the
@@ -4177,8 +4169,8 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             // resolve against the caller's working directory, as every file
             // argument does (a daemon writes and reads the client's).
             if args.switch("--dry-run") {
-                let plan = book.plan_transition(code, transition, who, reason, date, &key)??;
-                let digest = book.plan_digest(&plan)?;
+                let plan = book.plan_transition(code, transition, who, reason, &key)??;
+                let digest = book.plan_digest(&plan)??;
                 let bytes = plan
                     .encode()
                     .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
@@ -4213,8 +4205,8 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "use --dry-run to receive the complete plan bytes as hex on stdout",
                     ));
                 }
-                let plan = book.plan_transition(code, transition, who, reason, date, &key)??;
-                let digest = book.plan_digest(&plan)?;
+                let plan = book.plan_transition(code, transition, who, reason, &key)??;
+                let digest = book.plan_digest(&plan)??;
                 let bytes = plan
                     .encode()
                     .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
@@ -4259,7 +4251,7 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             "commit a plan with the subcommand and period it was made for",
                         ));
                     }
-                    let digest = book.plan_digest(&plan)?;
+                    let digest = book.plan_digest(&plan)??;
                     let approvals = approval_flags
                         .iter()
                         .map(|v| {
@@ -4280,7 +4272,7 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ));
                 }
                 None => {
-                    book.transition_period(code, transition, who, reason, date, &key, &capability)??
+                    book.transition_period(code, transition, who, reason, &key, &capability)??
                 }
             };
             out.at_book(&book)?;

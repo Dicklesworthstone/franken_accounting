@@ -132,7 +132,6 @@ impl Harness {
                 PeriodTransition::Open,
                 OWNER,
                 1,
-                day(),
                 b"open",
                 seal(&book, "open"),
                 &Capability::embedded(OWNER, &["close"]).unwrap(),
