@@ -1021,6 +1021,22 @@ exit = "refusal"
 cite = "plan §12.5 (a StatementIssuance names the retained statement certificate it issued, for the period it reports; bead fa-wrrw)"
 fix = "certify the statement first with fa statement balance-sheet|income-statement --for <period> --certify, then issue its C:<oid> for that period"
 
+[[refusal]]
+code = "FA-REF-173"
+name = "NOT_ISSUED_TO"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §7.4 (AS ISSUED TO <audience> selects a specific issuance; bead fa-wrrw)"
+fix = "list the period's issuances with fa statement issuances --for <period>, or read it as originally reported with --as-originally-reported"
+
+[[refusal]]
+code = "FA-REF-174"
+name = "NOT_REPORTED_IN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §7.4 (AS REPORTED IN <statement certificate> pins exactly the closure a published statement used; bead fa-wrrw)"
+fix = "name the C:<oid> of a retained statement certificate that reports the period, or read it as originally reported with --as-originally-reported"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-145"

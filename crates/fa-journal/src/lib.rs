@@ -107,7 +107,7 @@ pub use import::{
 };
 pub use issuance::{
     IssuancePlan, IssuanceRecord, IssuedTo, StatementIssuance, StatementsIssued, first_issuance,
-    issuances, issue_statements, list_issuances, plan_issuance,
+    first_issued_to, issuances, issue_statements, list_issuances, plan_issuance,
 };
 pub use legal_hold::{
     LegalHold, LegalHoldPlaced, LegalHoldReleased, LegalHoldRequest, Pinned, ReleasePlan,

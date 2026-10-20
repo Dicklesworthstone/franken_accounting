@@ -3571,8 +3571,24 @@ fn statement_issue_pins_as_originally_reported_to_the_issued_certificate() -> st
     assert_eq!(code, 0, "{at_certificate}");
     assert_eq!(reported, at_certificate);
 
-    // A second issuance (to the lender) is ordinal 2; the pin stays.
-    let mut lender = plan_args(&issued_oid);
+    // The restated statements (rent-2 included), issued to the lender, are
+    // the period's second issuance; the pin stays on the first.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "statement",
+            "income-statement",
+            "--for",
+            march,
+            "--certify",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let restated_oid = field(&out, "oid").unwrap_or_default().to_string();
+    let restated_at = field(&out, "known_at").unwrap_or_default().to_string();
+    assert_ne!(restated_at, certified_at);
+    let mut lender = plan_args(&restated_oid);
     lender[5] = "lender".into();
     let (code, out, _) = run(&lender);
     assert_eq!(code, 0, "{out}");
@@ -3627,6 +3643,185 @@ fn statement_issue_pins_as_originally_reported_to_the_issued_certificate() -> st
             .collect::<Vec<_>>(),
         [(Some(1), "auditor", Some(1)), (Some(2), "lender", Some(1))]
     );
+
+    // AS ISSUED TO and AS REPORTED IN pin the coordinate the issued or
+    // named certificate reported, on tb, statement and explain balance.
+    let view = |args: &[&str], at: &str, rent: &str| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        assert_eq!(field(&out, "known_at"), Some(at), "{args:?}\n{out}");
+        assert!(out.contains(rent), "{args:?}\n{out}");
+        out
+    };
+    let restated_ref = format!("C:{restated_oid}");
+    let issued_ref = format!("C:{issued_oid}");
+    view(
+        &[
+            "tb",
+            "--period",
+            march,
+            "--as-issued-to",
+            "auditor",
+            "--json",
+        ],
+        &certified_at,
+        "10.00 USD",
+    );
+    let to_lender = view(
+        &[
+            "tb",
+            "--period",
+            march,
+            "--as-issued-to",
+            "lender",
+            "--json",
+        ],
+        &restated_at,
+        "15.00 USD",
+    );
+    let (code, at_restated, _) = fa(
+        Some(&book),
+        &[
+            "tb",
+            "--period",
+            march,
+            "--as-known-at",
+            &restated_at,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{at_restated}");
+    assert_eq!(
+        to_lender, at_restated,
+        "byte-identical to the same known-at"
+    );
+    view(
+        &[
+            "statement",
+            "income-statement",
+            "--for",
+            march,
+            "--as-reported-in",
+            &restated_ref,
+            "--json",
+        ],
+        &restated_at,
+        "15.00 USD",
+    );
+    view(
+        &[
+            "explain",
+            "balance",
+            "6000",
+            "--period",
+            march,
+            "--as-reported-in",
+            &issued_ref,
+            "--json",
+        ],
+        &certified_at,
+        "10.00 USD",
+    );
+    let tb_ref = format!("C:{tb_oid}");
+    for (args, refusal) in [
+        (
+            vec!["tb", "--period", march, "--as-issued-to", "board", "--json"],
+            "FA-REF-173",
+        ),
+        (
+            vec![
+                "tb",
+                "--period",
+                "FY2026-P04",
+                "--as-reported-in",
+                &issued_ref,
+                "--json",
+            ],
+            "FA-REF-174",
+        ),
+        (
+            vec![
+                "tb",
+                "--period",
+                march,
+                "--as-reported-in",
+                &tb_ref,
+                "--json",
+            ],
+            "FA-REF-174",
+        ),
+    ] {
+        let (code, out, _) = fa(Some(&book), &args);
+        assert_eq!(code, 3, "{args:?}\n{out}");
+        assert_eq!(field(&out, "refusal_id"), Some(refusal), "{args:?}\n{out}");
+    }
+    for args in [
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-issued-to",
+            "auditor",
+            "--as-originally-reported",
+            "--json",
+        ],
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-reported-in",
+            &issued_ref,
+            "--as-known-at",
+            "HEAD",
+            "--json",
+        ],
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-issued-to",
+            "shareholders",
+            "--json",
+        ],
+        vec![
+            "explain",
+            "register",
+            "6000",
+            "--period",
+            march,
+            "--as-issued-to",
+            "auditor",
+            "--json",
+        ],
+        vec![
+            "statement",
+            "diff",
+            "--definition",
+            "income-statement",
+            "--for",
+            march,
+            "--before",
+            "1",
+            "--as-reported-in",
+            &issued_ref,
+            "--json",
+        ],
+        vec![
+            "statement",
+            "issue",
+            "--certificate",
+            &issued_oid,
+            "--issued-to",
+            "auditor",
+            "--as-issued-to",
+            "auditor",
+            "--dry-run",
+            "--json",
+        ],
+    ] {
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
+    }
     Ok(())
 }
 

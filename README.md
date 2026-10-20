@@ -666,7 +666,7 @@ foundation revision are recorded with the implementation landing.
 |---|---|
 | Truth | The journal. There are no balance rows; registers, trial balances, statements, agings, and findings are derived folds, never authoritative, always verifiable by recomputation (`fa verify registers` — available now). |
 | Immutability | Append-only. Corrections are `Reverse` and one-step `Replace` (`fa reverse --replace-with`) entries with `SUPERSEDES` lineage (available now); a typed `fa reclass` verb is target (`fa-i7e`), and restatement cases are target (`fa-75j4`). Period close, reopen, and lock are journaled, approved control entries — never a flag (available now). |
-| Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied (available now). Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence (available now). GQL selectors `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03` (`fa-5c1`), `AS ORIGINALLY REPORTED`, `AS CURRENTLY STATED` and `AS REPORTED IN <certificate>` (`fa-wrrw`) are target selectors, not backups; `--as-originally-reported` on `fa tb`, `fa statement` and `fa explain balance` already reads one period as first reported: at the certificate its first journaled `StatementIssuance` (`fa statement issue`) issued, else at its first Lock. |
+| Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied (available now). Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence (available now). GQL selectors `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03` (`fa-5c1`), `AS ORIGINALLY REPORTED`, `AS ISSUED TO <audience>`, `AS REPORTED IN <certificate>` and `AS CURRENTLY STATED` (`fa-wrrw`) are target GQL selectors, not backups. On `fa tb`, `fa statement` and `fa explain balance` the first three are available now as flags reading one period: `--as-originally-reported` at the certificate its first journaled `StatementIssuance` (`fa statement issue`) issued, else at its first Lock; `--as-issued-to <audience>` at its first issuance to that audience; `--as-reported-in C:<oid>` at that retained statement certificate's known-at. |
 | Exactness | `Amount { unit, mantissa: i128 }` at the unit's registered scale; every rounding, allocation, and FX conversion names a registered law and exact error bound (available now). Native residual postings are explicit where the law requires them; base-valuation residuals are recorded and absorbed under plan §5.2 (`fa-s3c`). No float ever touches an amount. No tolerance. No auto-balancing. |
 | Evidence | Nothing posts without a why: documents, attestations, supplements, REA events (`fa event record`), and `fa explain evidence <entry-vid>` are available now; posting-rule versions (`fa-c34`) complete the target content-addressed provenance closure. |
 | Proofs | A journal-level Merkle accumulator with signed `TransparencyCheckpoint`s, `.fab` evidence bundles with signed production receipts, and `fa-verify`, a dependency-free static verifier a regulator runs on an air-gapped laptop (available now; an external witness quorum is target, `fa-qtfd`). |
@@ -875,9 +875,20 @@ A period's issuances are numbered in commit order, and the approved plan
 names its number. The first issuance is what `--as-originally-reported` reads
 from then on: the known-at of the certificate it issued, ahead of the period's
 Lock. A later issuance of restated statements is recorded beside it and never
-moves that coordinate. An issuance is never withdrawn. `AS REPORTED IN
-<certificate>`, `AS ISSUED TO <audience>` and `AS CURRENTLY STATED` remain
-target selectors (`fa-wrrw`).
+moves that coordinate. An issuance is never withdrawn.
+
+Two more restatement views read a period at a reported coordinate. On `fa tb`,
+`fa statement` and `fa explain balance`:
+
+- `--as-issued-to <audience>` reads the period as issued to that audience: at
+  the certificate of its first issuance to it (FA-REF-173 when it never was);
+- `--as-reported-in C:<oid>` reads it as reported in that retained trunk
+  statement certificate, which must report the period in a current or
+  comparative column (FA-REF-174 otherwise).
+
+Only one restatement view applies at a time, and none combines with a known-at
+selector. `AS CURRENTLY STATED` with supersession netting remains a target
+(`fa-wrrw`, after `fa-oz3`).
 
 ## The six bets
 

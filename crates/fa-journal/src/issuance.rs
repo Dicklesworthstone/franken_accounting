@@ -880,6 +880,53 @@ pub fn issuances<V: asupersync::fs::Vfs + Clone>(
     Ok(out)
 }
 
+/// The period's first issuance to `audience`: what `AS ISSUED TO <audience>`
+/// reads (plan §7.4). A period never issued to it is a refusal, never its
+/// first issuance to someone else.
+pub fn first_issued_to<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    audience: IssuedTo,
+) -> Outcome<IssuanceRecord> {
+    if db.vertex(period_vid(&book.calendar.id, period))?.is_none() {
+        return Ok(Err(crate::period::unknown_period(book, period)));
+    }
+    Ok(
+        match issuances(db, book, period)?
+            .into_iter()
+            .find(|r| r.issuance.issued_to == audience)
+        {
+            Some(record) => Ok(record),
+            None => Err(Refusal::new(
+                code::NOT_ISSUED_TO,
+                exit::REFUSAL,
+                format!(
+                    "period `{period}` has no statement issuance to {}",
+                    audience.name()
+                ),
+                "plan §7.4 (AS ISSUED TO <audience> selects a specific issuance)",
+                format!(
+                    "list the period's issuances with `fa statement issuances --for {period} --json`, or read it as originally reported with --as-originally-reported"
+                ),
+            )),
+        },
+    )
+}
+
+/// `AS REPORTED IN` names a certificate that is not a retained trunk
+/// statement certificate reporting the period.
+#[must_use]
+pub fn not_reported_in(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::NOT_REPORTED_IN,
+        exit::REFUSAL,
+        message.into(),
+        "plan §7.4 (AS REPORTED IN <statement certificate> pins exactly the closure a published statement used)",
+        "name the C:<oid> of a retained statement certificate that reports the period (`fa statement issuances --for <period> --json` lists the issued ones), or read it as originally reported with --as-originally-reported",
+    )
+}
+
 /// The period's first issuance: what `AS ORIGINALLY REPORTED` reads.
 pub fn first_issuance<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,

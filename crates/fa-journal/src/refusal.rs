@@ -106,6 +106,13 @@ pub mod code {
     /// one that is not a statement certificate, or one that does not report
     /// the named period (plan §12.5, bead fa-wrrw).
     pub const NOT_ISSUABLE: &str = "FA-REF-172";
+    /// `AS ISSUED TO <audience>` names an audience the period was never
+    /// issued to (plan §7.4, bead fa-wrrw).
+    pub const NOT_ISSUED_TO: &str = "FA-REF-173";
+    /// `AS REPORTED IN <certificate>` names a certificate that is not a
+    /// retained trunk statement certificate reporting the period (plan §7.4,
+    /// bead fa-wrrw).
+    pub const NOT_REPORTED_IN: &str = "FA-REF-174";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

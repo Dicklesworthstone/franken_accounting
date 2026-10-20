@@ -998,32 +998,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })? {
             return Ok(Err(r));
         }
-        let artifact = match self
-            .read_report_artifact(cx, capability.holder(), capability, certificate)
-            .await?
-        {
-            Ok(artifact) => artifact,
-            Err(r) => return Ok(Err(r)),
-        };
+        let (certified_at, selection) =
+            match self.trunk_statement(cx, capability, certificate).await? {
+                Ok(Ok(found)) => found,
+                Ok(Err(why)) => return Ok(Err(not_issuable(why))),
+                Err(r) => return Ok(Err(r)),
+            };
         let digest = fa_journal::evidence::hex(certificate);
-        if artifact.family() != crate::ReportArtifactFamily::Native {
-            return Ok(Err(not_issuable(format!(
-                "certificate {digest} is a {} certificate; only a statement certificate is issued",
-                artifact.family().name()
-            ))));
-        }
-        let source = artifact.source_certificate();
-        let crate::ReportSelection::Statement(selection) = &source.selection else {
-            return Ok(Err(not_issuable(format!(
-                "certificate {digest} certifies a {} report, not a statement",
-                source.selection.output_format()
-            ))));
-        };
-        if source.book_id != self.context.book_id || source.branch_id != fa_model::Id128::TRUNK {
-            return Ok(Err(not_issuable(format!(
-                "certificate {digest} does not certify this book's trunk"
-            ))));
-        }
         let period = match (period, selection.periods.as_slice()) {
             (Some(p), periods) if periods.iter().any(|q| q == p) => p.to_string(),
             (Some(p), periods) => {
@@ -1052,10 +1033,96 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             definition_name: definition.name().to_string(),
             definition_version: definition.version(),
             certificate: *certificate,
-            certified_at: source.known_at,
+            certified_at,
             issued_to,
             document,
         }))
+    }
+
+    /// The retained trunk statement certificate `digest` of this book, read
+    /// under `capability`'s whole-book `read` (fa-wrrw): its known-at and
+    /// statement selection, or `Ok(Err(why))` saying what it is instead.
+    async fn trunk_statement(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        digest: &[u8; 32],
+    ) -> Outcome<Result<(CommitSeq, crate::StatementSelection), String>> {
+        let artifact = match self
+            .read_report_artifact(cx, capability.holder(), capability, digest)
+            .await?
+        {
+            Ok(artifact) => artifact,
+            Err(r) => return Ok(Err(r)),
+        };
+        let hex = fa_journal::evidence::hex(digest);
+        if artifact.family() != crate::ReportArtifactFamily::Native {
+            return Ok(Ok(Err(format!(
+                "certificate {hex} is a {} certificate, not a statement certificate",
+                artifact.family().name()
+            ))));
+        }
+        let source = artifact.source_certificate();
+        let crate::ReportSelection::Statement(selection) = &source.selection else {
+            return Ok(Ok(Err(format!(
+                "certificate {hex} certifies a {} report, not a statement",
+                source.selection.output_format()
+            ))));
+        };
+        if source.book_id != self.context.book_id || source.branch_id != fa_model::Id128::TRUNK {
+            return Ok(Ok(Err(format!(
+                "certificate {hex} does not certify this book's trunk"
+            ))));
+        }
+        Ok(Ok(Ok((source.known_at, (**selection).clone()))))
+    }
+
+    /// Where `AS ISSUED TO <audience>` pins `period`'s reads (plan §7.4,
+    /// bead fa-wrrw): the period's first issuance to `audience`, whose
+    /// `certified_at` is the coordinate.
+    pub fn issued_to(
+        &self,
+        cx: &PurposeContexts,
+        period: &str,
+        audience: fa_journal::IssuedTo,
+    ) -> Outcome<fa_journal::IssuanceRecord> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::first_issued_to(db, book, period, audience)?)
+        })
+    }
+
+    /// Where `AS REPORTED IN <certificate>` pins `period`'s reads (plan §7.4,
+    /// bead fa-wrrw): the known-at of the retained trunk statement
+    /// certificate `certificate`, which must report `period` in one of its
+    /// columns (current or comparative). Whole-book `read` is admitted
+    /// before the certificate is read.
+    pub async fn reported_in(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        certificate: &[u8; 32],
+        period: &str,
+    ) -> Outcome<CommitSeq> {
+        use fa_journal::issuance::not_reported_in;
+        let (known_at, selection) = match self.trunk_statement(cx, capability, certificate).await? {
+            Ok(Ok(found)) => found,
+            Ok(Err(why)) => return Ok(Err(not_reported_in(why))),
+            Err(r) => return Ok(Err(r)),
+        };
+        let columns: Vec<&str> = selection
+            .periods
+            .iter()
+            .chain(&selection.comparative)
+            .map(String::as_str)
+            .collect();
+        if !columns.contains(&period) {
+            return Ok(Err(not_reported_in(format!(
+                "certificate {} reports {}, not period `{period}`",
+                fa_journal::evidence::hex(certificate),
+                columns.join(", ")
+            ))));
+        }
+        Ok(Ok(known_at))
     }
 
     /// Plan the issuance of the retained statement certificate `certificate`

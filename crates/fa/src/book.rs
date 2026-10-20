@@ -1170,6 +1170,31 @@ impl Book {
         )))
     }
 
+    /// Where `AS ISSUED TO <audience>` pins `period`'s reads (plan §7.4): the
+    /// period's first issuance to `audience` (FA-REF-173 when there is none).
+    pub fn issued_to(
+        &self,
+        period: &str,
+        audience: fa_journal::IssuedTo,
+    ) -> Outcome<fa_journal::IssuanceRecord> {
+        with_store!(&self.store, core => core.issued_to(&self.purposes(), period, audience))
+    }
+
+    /// Where `AS REPORTED IN <certificate>` pins `period`'s reads (plan
+    /// §7.4): the known-at of a retained trunk statement certificate that
+    /// reports `period` (FA-REF-174 otherwise), read under `capability`.
+    pub fn reported_in(
+        &self,
+        capability: &fa_journal::Capability,
+        certificate: &[u8; 32],
+        period: &str,
+    ) -> Outcome<fgdb_types::CommitSeq> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.reported_in(
+            &purposes, capability, certificate, period,
+        )))
+    }
+
     /// Every statement issuance of `period`, by ordinal, or of the book.
     pub fn statement_issuances(
         &self,

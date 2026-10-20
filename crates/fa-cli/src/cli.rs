@@ -842,11 +842,11 @@ fn select_branch<'b>(
     if trunk_selector
         || args.switch("--certify")
         || args.flag("--certificate-out").is_some()
-        || args.switch("--as-originally-reported")
+        || crate::issuance::view_flag(args).is_some()
     {
         return Err(usage(
             "a scenario read is not certified yet, and trunk known-at selectors do not apply to its replay",
-            "drop --certify, --certificate-out, --as-originally-reported and any known-at, --before or --after selector, or read trunk without --branch",
+            "drop --certify, --certificate-out, --as-originally-reported, --as-issued-to, --as-reported-in and any known-at, --before or --after selector, or read trunk without --branch",
         ));
     }
     let scenario = book.materialize_scenario(name)??;
@@ -3104,7 +3104,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 16. Correct an entry in one step: `fa reverse <vid> --reason WrongAmount --replace-with corrected.json --json` posts the exact reversal and the corrected entry together, both or neither, citing the target under one reason (event corrected). corrected.json is an ordinary entry intent (legs, optional effective_date and description); its date and period default to the target's.\n\
 17. Export for an auditor or another ledger: `fa export ads|saft|csv-gl|beancount|hledger|ndjson --period FY2026-P03 [--out <new path>] --json` writes what the trial balance folds (pending holds excluded) with its export coordinate certificate; ads writes four tables into a new directory. It needs read and produce. Over MCP the fa.io cluster is on demand.\n\
 18. Maintain the chart and the REA graph: `fa chart open <account.json> --opened <day>`, `fa chart close <code> --on <day>`, `fa chart promote <code> --on <day>`; `fa party add <party.json>`, `fa party relate <from> <to> --kind owns --basis equity_voting --valid-from <day> --pct 51/100`, `fa instrument add <instrument.json>`, `fa entity add <entity.json>` (a legal entity's jurisdiction, functional unit and life span; a code declared at book creation is lifted), `fa party bind <code> --external-id qbo:55`, `fa party identifiers <code> --identifier bank_account=<value>... --key <change-id>` (replaces the party's identifier set under a named change; values sealed, never echoed; host-only over MCP). Each is a journaled schema change (schema_change authority) and no date defaults to today. Events then name parties with --participant and instruments with --resource <label>:<amount>:<instrument>.\n\
-19. Read a period as it was first reported: `fa tb --period FY2026-P03 --as-originally-reported --json` pins known-at to the period's first Lock (never its first Close, never HEAD); a period never locked is refused with FA-REF-161.\n\
+19. Read a period as it was first reported: `fa tb --period FY2026-P03 --as-originally-reported --json` pins known-at to the certificate its first StatementIssuance issued, else to its first Lock (never its first Close, never HEAD); a period neither issued nor locked is refused with FA-REF-161. `--as-issued-to <audience>` reads it as issued to that audience (FA-REF-173 when it never was) and `--as-reported-in C:<oid>` as reported in that retained statement certificate (FA-REF-174 when the certificate does not report the period). Record an issuance with `fa statement issue`.\n\
 20. Typed documents: `fa invoice --party C-17 --number 10442 --date 2026-03-14 --receivable 1200 --revenue 4000 --line 'qty=10 unit_price=\"125.00 USD\" item=SKU-9' --evidence <oid> --dry-run --json` (and `fa bill ... --payable 2000 --expense 6000`) builds the entry from its lines and posts through fa post's path (--dry-run, --plan-out, --draft, --scenario); `fa receipt --party C-17 --number WIRE-IN-1 --date 2026-03-20 --cash 1000 --receivable 1200 --amount \"1290.00 USD\" --applies <invoice vid>` (and `fa payment`) settles it, its number becoming the cash leg's memo that fa bank match compares with a statement line's reference. You name every account; there is no tax or posting rule yet. An intent leg may name `entity` and `party` codes; in a multi-entity book every leg names its entity. `fa document list [--kind BankStatement]` lists held documents as metadata.\n\
 21. Ask what-if or but-for (plan §15.2, §15.6.5): `fa scenario fork but-for-breach --from 2025-07-01 [--at HEAD|<seq>] --evidence <assumption oid>` forks a counterfactual over the trunk prefix at that sequence; `fa scenario run but-for-breach --intent receipt.json` (or fa post, invoice, bill, receipt or payment with --scenario but-for-breach) rehearses each intent on the scenario and journals it there, never on trunk; `fa scenario diff but-for-breach --period FY2025-P12 --json` is the exact change per account and unit against trunk as known at the fork (the damages schedule). Each run and diff replays the trunk prefix into a scratch book and posts every intent again under every posting law. `fa tb|statement|explain|open-items|gl ... --branch scenario:but-for-breach` runs the same read on the scenario's replay (uncertified; the coordinate names the branch). `fa scenario diff ... --certify` retains the diff as a certificate bound to trunk at the fork and the intents it covers: `fa replay C:<oid>` reproduces it byte for byte, and `fa certificate status C:<oid>` names the intents run since.\n";
 
@@ -9402,22 +9402,7 @@ pub(crate) fn known_at_read_flag(
     known_at_flag(args, book, out)
 }
 
-/// Whether `--as-originally-reported` (plan §7.4) selects this read. It
-/// fixes the known-at coordinate itself (the period's first StatementIssuance,
-/// else its first Lock; never HEAD, never a Close), so a known-at selector
-/// beside it is refused before either is resolved.
-fn as_originally_reported(args: &Args, example: &str) -> Result<bool, Fail> {
-    let originally = args.switch("--as-originally-reported");
-    if originally
-        && (!args.flag_all("--as-known-at").is_empty() || !args.flag_all("--known-at").is_empty())
-    {
-        return Err(usage(
-            "--as-originally-reported fixes the known-at coordinate itself; it cannot be combined with --as-known-at or --known-at",
-            example,
-        ));
-    }
-    Ok(originally)
-}
+const TB_VIEW_EXAMPLE: &str = "fa tb --period FY2026-P03 --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>";
 
 fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
     if args.flag_all("--fiscal-year").len() > 1
@@ -9599,8 +9584,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa tb --period <code> --summary --root <code> --json",
         ));
     }
-    let originally =
-        as_originally_reported(args, "fa tb --period FY2026-P03 --as-originally-reported")?;
+    let view = crate::issuance::reported_view(args, TB_VIEW_EXAMPLE)?;
     let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
     let selection = if let Some(date) = args.flag("--as-of") {
         if args.flag("--period").is_some()
@@ -9627,9 +9611,11 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             TrialBalanceSelection::Periods(periods)
         }
     };
-    // Plan §7.4: the period as it was first reported, pinned to its first
-    // StatementIssuance or else its first Lock (never HEAD, never a Close).
-    if originally {
+    // Plan §7.4: a restatement view pins the period's known-at: as
+    // originally reported (its first StatementIssuance, else its first Lock;
+    // never HEAD, never a Close), as issued to an audience, or as reported in
+    // a retained statement certificate.
+    if let Some(view) = &view {
         let period = match &selection {
             TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods)
                 if periods.len() == 1 =>
@@ -9638,16 +9624,19 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             _ => {
                 return Err(usage(
-                    "--as-originally-reported reads one period as it was first reported; select exactly one --period",
-                    "fa tb --period FY2026-P03 --as-originally-reported",
+                    "a restatement view reads one period as it was reported; select exactly one --period",
+                    TB_VIEW_EXAMPLE,
                 ));
             }
         };
-        // The period's scope is judged before its transitions are read; the
-        // pinned coordinate is judged again before the fold.
+        // The period's scope is judged before its issuances, transitions or
+        // certificate are read; the pinned coordinate is judged again before
+        // the fold.
         book.read_scope(who, &read_cap)??
             .admit_report(&selection.clone().into(), known_at)??;
-        known_at = Some(book.originally_reported(&period)??.known_at);
+        known_at = Some(crate::issuance::reported_known_at(
+            &book, &read_cap, view, &period,
+        )?);
     }
     if let Some(capability) = summary_cap {
         book.prepare_report_history(who, &capability, known_at)??;
@@ -10196,10 +10185,10 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if matches!(mode, "diff" | "trace") {
         if args.flag("--known-at").is_some()
             || args.flag("--as-known-at").is_some()
-            || args.switch("--as-originally-reported")
+            || crate::issuance::view_flag(args).is_some()
         {
             return Err(usage(
-                "statement diff and trace select two frontiers with --before and --after; --known-at, --as-known-at and --as-originally-reported do not select this workflow",
+                "statement diff and trace select two frontiers with --before and --after; --known-at, --as-known-at and the restatement views (--as-originally-reported, --as-issued-to, --as-reported-in) do not select this workflow",
                 "fa statement diff --definition balance-sheet --for <period> --before <seq> --after <seq> --json",
             ));
         }
@@ -10318,9 +10307,9 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let render_definition = render.as_ref().map(|_| selection.definition.clone());
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
-    let originally = as_originally_reported(
+    let view = crate::issuance::reported_view(
         args,
-        "fa statement balance-sheet --for FY2026-P03 --as-originally-reported",
+        "fa statement balance-sheet --for FY2026-P03 --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>",
     )?;
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
@@ -10334,12 +10323,18 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // period's transitions or any column is read (doctrine 8, fa-0x0), and
     // the pinned coordinate is judged again before the fold.
     let reach = ReportSelection::from(selection.clone());
-    // Plan §7.4: the statement as it stood when its --for period was first
-    // reported; a --compare column is read at that same snapshot.
-    if originally {
+    // Plan §7.4: the statement as its --for period was reported (first, to
+    // an audience, or in a retained certificate); a --compare column is read
+    // at that same snapshot.
+    if let Some(view) = &view {
         book.read_scope(who, &capability)??
             .admit_report(&reach, known_at)??;
-        known_at = Some(book.originally_reported(period)??.known_at);
+        known_at = Some(crate::issuance::reported_known_at(
+            &book,
+            &capability,
+            view,
+            period,
+        )?);
     }
     book.read_scope(who, &capability)??
         .admit_report(&reach, known_at)??;
@@ -10518,9 +10513,11 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
             ));
         }
     }
-    if args.switch("--as-originally-reported") {
+    if let Some(flag) = crate::issuance::view_flag(args) {
         return Err(usage(
-            "--as-originally-reported selects a frontier; certificate inputs already fix both frontiers on trunk",
+            format!(
+                "{flag} selects a frontier; certificate inputs already fix both frontiers on trunk"
+            ),
             STATEMENT_CERTIFICATES_EXAMPLE,
         ));
     }
@@ -15555,9 +15552,10 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // verbs.toml registers flags per verb, so the other subcommands would
     // otherwise accept these and silently answer without them.
     if sub.is_some_and(|sub| sub != "balance") {
-        let balance_only = ["--certify", "--as-originally-reported"]
+        let balance_only = ["--certify"]
             .into_iter()
             .find(|switch| args.switch(switch))
+            .or_else(|| crate::issuance::view_flag(args))
             .or_else(|| {
                 args.flag("--certificate-out")
                     .is_some()
@@ -15566,7 +15564,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         if let Some(flag) = balance_only {
             return Err(usage(
                 format!("{flag} applies only to `fa explain balance`"),
-                "fa explain balance <account> --period <code> [--as-originally-reported] [--certify]",
+                "fa explain balance <account> --period <code> [--as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>] [--certify]",
             ));
         }
     }
@@ -16552,9 +16550,9 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let period = args.require("--period", "FY2026-P03")?;
-    let originally = as_originally_reported(
+    let view = crate::issuance::reported_view(
         args,
-        "fa explain balance 1000 --period FY2026-P03 --as-originally-reported",
+        "fa explain balance 1000 --period FY2026-P03 --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>",
     )?;
     let who = ctx.principal(args);
     let read_cap = ctx.capability(args, &["read"])?;
@@ -16575,9 +16573,9 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
     let account = account_vid(book.context().book_id, code);
-    if originally {
-        // The period's scope is judged before its transitions are read; the
-        // pinned coordinate is judged again below.
+    if let Some(view) = &view {
+        // The period's scope is judged before its issuances, transitions or
+        // certificate are read; the pinned coordinate is judged again below.
         book.read_scope(who, &read_cap)??.admit_report(
             &ReportSelection::ExplainBalance {
                 account,
@@ -16585,7 +16583,9 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             },
             known_at,
         )??;
-        known_at = Some(book.originally_reported(period)??.known_at);
+        known_at = Some(crate::issuance::reported_known_at(
+            &book, &read_cap, view, period,
+        )?);
     }
     if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;
