@@ -575,6 +575,11 @@ pub struct RecordedDecision {
     pub record: VId,
     pub recorded_at: CommitSeq,
     pub decided_by: VId,
+    /// For a booking: the entry that has since reversed or replaced the
+    /// booked entry, at the view's sequence. The correction no longer
+    /// stands, so the proposal is uncorrected again (the decision itself
+    /// stays on the record).
+    pub superseded_by: Option<VId>,
 }
 
 /// A proposal as the journal states it.
@@ -972,7 +977,7 @@ pub async fn open_engagement<V: asupersync::fs::Vfs + Clone>(
             txn.abort();
             return Ok(Err(Refusal::new(
                 code::PERIOD_UNKNOWN,
-                exit::REFUSAL,
+                exit::SAFETY,
                 format!("scope period `{code_text}` does not exist in this book"),
                 "plan §7.2 (periods are created per fiscal year), §11.12 (an engagement's scope periods)",
                 "list the book's periods with `fa period list --json`",
@@ -1423,7 +1428,7 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
         if reasons.get("adjustment_pass", reason_code).is_none() {
             return Ok(Err(Refusal::new(
                 code::REASON_CODE,
-                exit::REFUSAL,
+                exit::USAGE,
                 format!("reason {reason_code} is not a registered adjustment_pass reason"),
                 "reason_codes.toml scope adjustment_pass (plan §11.12)",
                 format!("pass with one of: {}", reasons.listing("adjustment_pass")),
@@ -1433,6 +1438,17 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
     let kind = decision.kind();
     if let Err(r) = admit(db, book, &req.capability, kind)? {
         return Ok(Err(r));
+    }
+    // Booking reads the entry it names (its legs, date, class and
+    // supersession): authorization precedes that observation.
+    if matches!(decision, AdjustmentDecision::Book { .. })
+        && let Err(d) = fa_policy::require(
+            &req.capability,
+            fa_policy::Op::Read,
+            "booking a proposed adjustment reads the entry it names",
+        )
+    {
+        return Ok(Err(denial(&d)));
     }
     let vid = engagement_vid(book.book_id, engagement);
     let pvid = proposed_adjustment_vid(book.book_id, engagement, ordinal);
@@ -1444,10 +1460,10 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    if engagement_row(&txn, db, vid)?.is_none() {
+    let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
         txn.abort();
         return Ok(Err(unknown(engagement)));
-    }
+    };
     let Some(prow) = txn.vertex(db, pvid)? else {
         txn.abort();
         return Ok(Err(unknown_proposal(engagement, ordinal)));
@@ -1534,7 +1550,7 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
                 "names a vertex that is not an entry",
             )));
         }
-        let (booked, _) = crate::post::entry_of(&row)?;
+        let (booked, booked_at) = crate::post::entry_of(&row)?;
         if booked.proposal.book_id != book.book_id
             || booked.proposal.branch_id != Id128::TRUNK
             || booked.proposal.class.is_control()
@@ -1546,6 +1562,18 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
                 "names an entry that is not a committed trunk posting",
             )));
         }
+        // A pending entry can still be voided or expire, and a migration
+        // chunk carries history in: neither is the correction itself.
+        if booked.proposal.class == EntryClass::PENDING
+            || booked.proposal.class == EntryClass::MIGRATION
+        {
+            txn.abort();
+            return Ok(Err(differs(
+                engagement,
+                ordinal,
+                "names a pending or migrated entry, which is not a correction: book the posting that makes it",
+            )));
+        }
         let mut wanted = proposal.legs.clone();
         wanted.sort_by_key(leg_key);
         if posted_legs(&booked) != wanted {
@@ -1555,6 +1583,60 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
                 ordinal,
                 "names an entry whose legs differ from the proposal's",
             )));
+        }
+        // The correction follows its proposal, in the period it corrects.
+        if booked_at <= prow.created_at {
+            txn.abort();
+            return Ok(Err(differs(
+                engagement,
+                ordinal,
+                &format!(
+                    "names an entry recorded at sequence {}, before the proposal (sequence {}): a correction follows what it corrects",
+                    booked_at.0, prow.created_at.0
+                ),
+            )));
+        }
+        let Some(period) = scope_period_of(&txn, db, book, &profile, proposal.effective_date)?
+        else {
+            txn.abort();
+            return Err(KernelError::Corrupt(format!(
+                "proposal {:032x} is dated outside its engagement's scope periods",
+                pvid.0
+            )));
+        };
+        if scope_period_of(&txn, db, book, &profile, booked.proposal.effective_date)?.as_ref()
+            != Some(&period)
+        {
+            txn.abort();
+            return Ok(Err(differs(
+                engagement,
+                ordinal,
+                &format!(
+                    "names an entry effective {}, outside the proposal's period {period}",
+                    booked.proposal.effective_date.render()
+                ),
+            )));
+        }
+        // A reversed or replaced entry no longer makes the correction. Both
+        // identities are point reads, so a concurrent reversal conflicts at
+        // commit (first committer wins).
+        for identity in [
+            crate::rows::reversal_vid(entry),
+            crate::rows::replacement_vid(entry),
+        ] {
+            if let Some(superseder) = txn.vertex(db, identity)?
+                && superseder.labels.contains(&label::ENTRY)
+            {
+                txn.abort();
+                return Ok(Err(differs(
+                    engagement,
+                    ordinal,
+                    &format!(
+                        "names an entry superseded by entry {:032x}: book the correction that stands",
+                        superseder.vid.0
+                    ),
+                )));
+            }
         }
         // One committed entry makes one correction: it books no other
         // proposal of the engagement. Each other proposal's state is a
@@ -1643,7 +1725,7 @@ fn differs(engagement: &str, ordinal: u32, why: &str) -> Refusal {
         format!("booking engagement `{engagement}` proposal {ordinal} {why}"),
         "plan §11.12 (Booked names the committed entry that makes the proposed correction)",
         format!(
-            "book it with the committed trunk entry that posts exactly its legs (`fa engagement show {engagement} --json` lists them), or pass it with `fa adjustment pass`"
+            "book it with the standing trunk entry, recorded after the proposal and effective in its period, that posts exactly its legs (`fa engagement show {engagement} --json` lists them), or pass it with `fa adjustment pass`"
         ),
     )
 }
@@ -1686,21 +1768,20 @@ pub fn list_engagements<V: asupersync::fs::Vfs + Clone>(
 
 /// The `EngagementControl` records with an `IN_CASE` edge to `object`, at
 /// `seq`: each record's entry, sequence and transition.
+/// One EngagementControl record about an object: its vertex, the entry, the
+/// sequence that recorded it, and the transition it journals (from, to).
+type Record = (VId, fa_model::Entry, CommitSeq, u8, u8);
+
 fn records_into<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     object: VId,
     seq: CommitSeq,
-) -> Result<Vec<(VId, fa_model::Entry, CommitSeq, u8, u8)>, KernelError> {
+) -> Result<Vec<Record>, KernelError> {
     let mut out = Vec::new();
-    for edge in db.edges_at(seq)? {
-        let e = &edge.entry;
-        if e.dst != object
-            || e.relation != relation::IN_CASE
-            || e.eid != edge_id(relation::IN_CASE, e.src, object)
-        {
-            continue;
-        }
-        let Some(src) = db.vertex_at(e.src, seq)? else {
+    // Only the object's own IN_CASE sources: a view reads its records, never
+    // a scan of every edge in the store.
+    for source in db.in_neighbours_at(object, relation::IN_CASE, seq)? {
+        let Some(src) = db.vertex_at(source, seq)? else {
             continue;
         };
         if !src.labels.contains(&label::ENTRY) {
@@ -1714,11 +1795,11 @@ fn records_into<V: asupersync::fs::Vfs + Clone>(
         else {
             return Err(KernelError::Corrupt(format!(
                 "engagement record {:032x} carries no LifecycleTransition",
-                e.src.0
+                source.0
             )));
         };
         let (from, to) = (*from, *to);
-        out.push((e.src, entry, recorded_at, from, to));
+        out.push((source, entry, recorded_at, from, to));
     }
     out.sort_by_key(|(vid, _, seq, _, _)| (*seq, vid.0));
     Ok(out)
@@ -1881,14 +1962,40 @@ fn decision_of<V: asupersync::fs::Vfs + Clone>(
                 pvid.0
             )));
         }
+        let superseded_by = match decision {
+            AdjustmentDecision::Book { entry } => superseder_at(db, entry, seq)?,
+            AdjustmentDecision::Pass { .. } => None,
+        };
         decided = Some(RecordedDecision {
             decision,
             record,
             recorded_at,
             decided_by: entry.proposal.principal_ref,
+            superseded_by,
         });
     }
     Ok(decided)
+}
+
+/// The entry that reversed or replaced `entry` at `seq`, if any. Only a
+/// reversal or a replacement supersedes, each at an identity derived from
+/// its target (plan §4.9), so two point reads decide it.
+fn superseder_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    entry: VId,
+    seq: CommitSeq,
+) -> Result<Option<VId>, KernelError> {
+    for identity in [
+        crate::rows::reversal_vid(entry),
+        crate::rows::replacement_vid(entry),
+    ] {
+        if let Some(row) = db.vertex_at(identity, seq)?
+            && row.labels.contains(&label::ENTRY)
+        {
+            return Ok(Some(row.vid));
+        }
+    }
+    Ok(None)
 }
 
 /// A correction's effect on the statements, in one unit: what booking it
@@ -1928,12 +2035,22 @@ impl StatementEffect {
     }
 }
 
-/// One passed proposal in the summary of uncorrected misstatements.
+/// Why a proposal is an uncorrected misstatement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Uncorrected {
+    /// Passed, for its registered `adjustment_pass` reason.
+    Passed { reason_code: u16 },
+    /// Booked, but the booked entry has since been reversed or replaced
+    /// (`by`), so the correction no longer stands.
+    Superseded { entry: VId, by: VId },
+}
+
+/// One uncorrected proposal in the summary of uncorrected misstatements.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UncorrectedItem {
     pub ordinal: u32,
     pub effective_date: DateDay,
-    pub reason_code: u16,
+    pub basis: Uncorrected,
     /// Its effect in the engagement's unit.
     pub effect: StatementEffect,
     /// Every line's effect is at most the stated clearly trivial threshold.
@@ -1943,8 +2060,10 @@ pub struct UncorrectedItem {
 }
 
 /// The summary of uncorrected misstatements (plan §11.12, `audit.sud`):
-/// every passed proposal's effect had it been booked, in the engagement's
-/// unit, and mechanical comparisons with the stated parameters. With no
+/// the effect of every passed proposal, and of every booked one whose entry
+/// has since been reversed or replaced, had it been booked and stood, in
+/// the engagement's unit, and mechanical comparisons with the stated
+/// parameters. With no
 /// prior-period engagement linked there is no carry-forward, so the rollover
 /// (current-period income) and iron-curtain (period-end balance sheet)
 /// quantifications sum the same items; both are reported.
@@ -1974,14 +2093,23 @@ pub fn uncorrected_misstatements(
     let mut items = Vec::new();
     let mut total = StatementEffect::default();
     for p in &view.proposals {
-        let Some(RecordedDecision {
-            decision: AdjustmentDecision::Pass { reason_code },
-            ..
-        }) = &p.decision
-        else {
-            continue;
+        let basis = match &p.decision {
+            Some(RecordedDecision {
+                decision: AdjustmentDecision::Pass { reason_code },
+                ..
+            }) => Uncorrected::Passed {
+                reason_code: *reason_code,
+            },
+            Some(RecordedDecision {
+                decision: AdjustmentDecision::Book { entry },
+                superseded_by: Some(by),
+                ..
+            }) => Uncorrected::Superseded {
+                entry: *entry,
+                by: *by,
+            },
+            _ => continue,
         };
-        let reason_code = *reason_code;
         let mut effect = StatementEffect::default();
         let mut other_units = Vec::new();
         for leg in &p.proposal.legs {
@@ -2034,7 +2162,7 @@ pub fn uncorrected_misstatements(
         items.push(UncorrectedItem {
             ordinal: p.proposal.ordinal,
             effective_date: p.proposal.effective_date,
-            reason_code,
+            basis,
             effect,
             clearly_trivial: effect.largest()
                 <= view.profile.materiality.clearly_trivial.unsigned_abs(),
@@ -2226,7 +2354,17 @@ mod tests {
             record: VId(300),
             recorded_at: CommitSeq(4),
             decided_by: VId(9),
+            superseded_by: None,
         });
+        p
+    }
+
+    /// A booking whose entry was later reversed by `by`.
+    fn superseded(p: ProposalView, entry: VId, by: VId) -> ProposalView {
+        let mut p = decided(p, AdjustmentDecision::Book { entry });
+        if let Some(d) = p.decision.as_mut() {
+            d.superseded_by = Some(by);
+        }
         p
     }
 
@@ -2248,14 +2386,17 @@ mod tests {
         match account.0 {
             1 => Some(AccountType::ASSET),
             2 => Some(AccountType::LIABILITY),
+            3 => Some(AccountType::EQUITY),
             4 => Some(AccountType::REVENUE),
             5 => Some(AccountType::EXPENSE),
             _ => None,
         }
     }
 
-    /// Passed corrections only, each line in its own sign, other units
-    /// listed and never converted, and the totals compared mechanically
+    /// Passed corrections, and booked ones whose entry was since reversed,
+    /// never a standing booking or an undecided proposal; each line in its
+    /// own sign (equity included), other units listed and never converted,
+    /// and the totals compared mechanically
     /// with the stated parameters (performance 37,500.00, overall
     /// 50,000.00, clearly trivial 2,500.00).
     #[test]
@@ -2305,6 +2446,17 @@ mod tests {
             ),
             // Still proposed: not summarized.
             proposal_view(4, vec![leg(Side::Debit, 5, 1), leg(Side::Credit, 2, 1)]),
+            // A declared dividend booked to equity, then the booking entry
+            // reversed: uncorrected again (equity down 20.00, liabilities
+            // up 20.00).
+            superseded(
+                proposal_view(
+                    5,
+                    vec![leg(Side::Debit, 3, 2_000), leg(Side::Credit, 2, 2_000)],
+                ),
+                VId(78),
+                VId(79),
+            ),
         ]);
         let summary = uncorrected_misstatements(&view, chart).unwrap();
         assert_eq!(summary.unit, usd());
@@ -2312,9 +2464,19 @@ mod tests {
             summary
                 .items
                 .iter()
-                .map(|i| (i.ordinal, i.reason_code))
+                .map(|i| (i.ordinal, i.basis))
                 .collect::<Vec<_>>(),
-            [(1, 3), (3, 1)]
+            [
+                (1, Uncorrected::Passed { reason_code: 3 }),
+                (3, Uncorrected::Passed { reason_code: 1 }),
+                (
+                    5,
+                    Uncorrected::Superseded {
+                        entry: VId(78),
+                        by: VId(79)
+                    }
+                ),
+            ]
         );
         assert_eq!(
             summary.items[0].effect,
@@ -2333,6 +2495,14 @@ mod tests {
             }
         );
         assert_eq!(summary.items[1].other_units, [eur]);
+        assert_eq!(
+            summary.items[2].effect,
+            StatementEffect {
+                liabilities: 2_000,
+                equity: -2_000,
+                ..StatementEffect::default()
+            }
+        );
         assert!(summary.items.iter().all(|i| i.clearly_trivial));
         assert_eq!(summary.rollover_income, -3_900);
         assert_eq!(
@@ -2340,8 +2510,8 @@ mod tests {
             StatementEffect {
                 income: -3_900,
                 assets: 100,
-                liabilities: 4_000,
-                equity: 0
+                liabilities: 6_000,
+                equity: -2_000
             }
         );
         assert!(!summary.exceeds_performance && !summary.exceeds_overall);
