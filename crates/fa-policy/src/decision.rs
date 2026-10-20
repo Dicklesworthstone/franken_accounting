@@ -136,8 +136,8 @@ impl DecisionPolicyRow {
             },
             DecisionKind::SamplingStratification => Self {
                 kind,
-                pinned_fallback_action: "monetary_unit_fixed_strata",
-                pinned_fallback_parameter: 4,
+                pinned_fallback_action: "proportional_allocation",
+                pinned_fallback_parameter: 0,
                 max_interval_width_bps: 1_500,
                 min_lower_benefit_bps: 50,
             },
