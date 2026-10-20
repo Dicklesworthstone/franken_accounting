@@ -14,7 +14,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, known_at_flag, usage, write_new_output_file};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa export ads|saft|csv-gl|beancount|hledger|ndjson (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
+const EXAMPLE: &str = "fa export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
 
 /// One output file of an export: its name in the package and its bytes.
 struct ExportFile {
@@ -24,7 +24,7 @@ struct ExportFile {
 
 pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let format = match args.positional.get(1).map(String::as_str) {
-        Some(format @ ("ads" | "saft" | "csv-gl" | "beancount" | "hledger" | "ndjson"))
+        Some(format @ ("ads" | "saft" | "csv-gl" | "beancount" | "hledger" | "ndjson" | "xbrl"))
             if args.positional.len() == 2 =>
         {
             format
@@ -120,6 +120,10 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "ndjson" => vec![ExportFile {
             name: "gl.ndjson",
             content: fa_formats::csv_gl::write_ndjson_gl_stream(&journal).map_err(written)?,
+        }],
+        "xbrl" => vec![ExportFile {
+            name: "instance.xbrl",
+            content: fa_formats::xbrl::write_format_journal_xbrl_xml(&journal).map_err(written)?,
         }],
         _ => vec![ExportFile {
             name: "journal.hledger",

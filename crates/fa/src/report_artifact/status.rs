@@ -96,7 +96,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .map_err(|error| BookError::Kernel(KernelError::Model(error.into())))?;
         self.query(cx, |db, book| {
             let query = cx.query();
-            let journal = match Journal::read(db, book, Some(head))? {
+            let journal = match Journal::read(db, book, Some(head), None)? {
                 Ok(journal) => journal,
                 Err(refusal) => return Ok(Err(refusal)),
             };

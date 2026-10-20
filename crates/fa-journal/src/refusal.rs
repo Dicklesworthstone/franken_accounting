@@ -96,6 +96,12 @@ pub mod code {
     /// A scenario intent is effective before the scenario's counterfactual
     /// start (`--from`).
     pub const SCENARIO_BEFORE_START: &str = "FA-REF-164";
+    /// The book has no production profile for the matter (plan §13.2, bead
+    /// fa-6l9).
+    pub const PRODUCTION_UNKNOWN: &str = "FA-REF-170";
+    /// A production asks for another page count or designation for a
+    /// document its matter already produced: a Bates range never changes.
+    pub const BATES_RANGE_FIXED: &str = "FA-REF-171";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.
@@ -112,6 +118,9 @@ pub mod code {
     pub const PERIOD_MOVED: &str = "FA-REF-031";
     /// The requested period transition is not a legal edge of the state machine.
     pub const TRANSITION: &str = "FA-REF-040";
+    /// A period transition's reason is not registered in its
+    /// `reason_codes.toml` scope (`period_control`, or `period_reopen` for a reopen).
+    pub const PERIOD_REASON: &str = "FA-REF-041";
     /// The payload violates the schema's structural rules.
     pub const STRUCTURE: &str = "FA-REF-100";
     /// A control class was sent through `post`.

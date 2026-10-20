@@ -94,7 +94,14 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             || (e.verb == "close"
                 && matches!(e.subcommand.as_deref(), Some("map" | "year-end")))
             // Releasing a bank claim requires explicit Human host confirmation.
-            || (e.verb == "bank" && e.subcommand.as_deref() == Some("unmatch"));
+            || (e.verb == "bank" && e.subcommand.as_deref() == Some("unmatch"))
+            // Leg-projection recovery needs schema_change on trunk, outside
+            // both launch templates and issued-token ceilings, and --yes.
+            || (e.verb == "recover" && e.subcommand.as_deref() == Some("projections"))
+            // fa-6l9: a production writes its volume (load files and
+            // natives) into a new host directory, like `fa demo init`; MCP
+            // output is inline only. Its profiles stay MCP tools.
+            || (e.verb == "produce" && e.subcommand.is_none());
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"

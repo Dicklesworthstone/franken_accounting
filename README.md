@@ -82,6 +82,9 @@ fa gl roll-forward --account 1000,1200 --from 2026-03-01 --to 2026-03-31 --book 
 # Tie open items to the control balance: one leaf, a list, or every posting leaf.
 fa gl aging --account 1200 --as-of 2026-03-31 --reconcile --book ./books/acme --json
 fa gl aging --all-posting --as-of 2026-03-31 --reconcile --book ./books/acme --json
+# Reconcile exactly the aging and as-of trial balance certificates already handed out.
+fa gl aging --reconcile --account 1200 --as-of 2026-03-31 --as-known-at 42 \
+  --aging-certificate C:<aging-oid> --control-certificate C:<tb-oid> --certify --book ./books/acme --json
 # Cash flow under an explicit policy: per-leg assignments, or account_rules plus overrides.
 fa gl cash-flow --account 1000 --from 2026-03-01 --to 2026-03-31 --policy cash-policy.json --book ./books/acme --json
 ```
@@ -428,8 +431,23 @@ details, and never writes. The same target is available through
 
 Ordinary postings and scheduled reversals now publish unit and dimension
 edges together with the entry. Prefixes created by older versions can report
-those previously omitted edges as missing. Automatic projection rebuilding
-remains unfinished; verification reports that condition without repairing it.
+those previously omitted edges as missing. Verification reports that
+condition without repairing it. Recovery is explicit, never automatic on
+open:
+
+```bash
+fa recover projections --dry-run --book ./books/acme --json
+fa recover projections --yes --book ./books/acme --json
+```
+
+The dry run loads the complete native history, checks every source entry
+against its creation, and previews the mirror and edge changes at that head
+without writing. Publishing needs `--yes` and read, verify and schema_change
+authority (never an Agent profile on trunk, and host-only over MCP). It
+rechecks the exact head, publishes every change in one commit, and then runs
+both the projection and the open-item checkers again. A clean book publishes
+nothing. Orphan legs, occupied identities and deleted edges, whose spent
+identities the substrate cannot re-create, are refused with nothing written.
 Applied counters and settlement edges retain their separate
 `fa verify open-items` check.
 
@@ -451,12 +469,16 @@ checkpoints it returns `status: "no_checkpoints"` and a null
 finding; checkpoint creation refuses a corrupt predecessor. Verification
 and proof generation also reject later rewrites or retirements of checkpointed
 entries, even when the original historical snapshot is still readable.
-These states cover entries, including control entries. The library also signs
+These states cover entries, including control entries, and every journaled
+attestation, import receipt, custody transfer and supplemental-evidence record
+after the state's recorded evidence boundary. A state from before this boundary
+existed covers entries alone and stays valid; the next state extends it. A
+rewrite of any covered record fails `fa verify accumulator`. The library also signs
 each published checkpoint with the book's Ed25519 key
 (`Book::checkpoint_public_key`) as a `TransparencyCheckpoint` and produces
 evidence bundles with detached production receipts (`Book::produce_bundle`);
 `fa-verify checkpoint|scope|bundle` check them. The CLI exports both (see
-below); document-receipt coverage, witnesses and key rotation remain
+below); witnesses and key rotation remain
 unfinished. The
 [CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
 postings, authorization and real storage corruption.
@@ -535,6 +557,60 @@ capability must include `--grant read --grant produce`; per-call authority
 and host output paths are refused. Complete-prefix and balance proofs disclose
 every journal envelope, so they require whole-book read authority.
 
+### Litigation productions
+
+A matter's Bates numbering is journaled, so it never restarts and never
+reuses a number. `fa production open` records the matter's profile once: its
+Bates prefix, its first number and an optional protective order the book
+holds. `fa produce` gives each document the matter has not produced the next
+numbers, journaled by one `ProductionControl` record, and writes the volume
+into a new directory: a Concordance `.dat`, an Opticon `.opt` and each
+document's native. A document the matter already produced keeps its range.
+The same document produced in another matter gets that matter's range, and
+its `doc_commit` never changes.
+
+```bash
+fa production open SEC-v-Acme --bates-prefix ACME-SEC --protective-order <order_oid> --book ./books/acme --json
+fa produce --matter SEC-v-Acme --document <oid>:12:confidential --document <oid> --out ./prod-001 --book ./books/acme --json
+fa production show SEC-v-Acme --json       # every range, with the record that assigned it
+fa production document <oid> --json        # the document's range in every matter
+```
+
+Both writes need `produce`, and an Agent-profile capability can prepare
+neither. Every document's read is judged before any number is journaled.
+A governed document (a bank statement) that the producer can see only through
+its redacted view is listed as `REDACTED`, with its contract, and ships no
+bytes. The default key is the request itself: running the identical command
+again returns the recorded production, and it can write the same volume into
+another new directory.
+
+The volume's `PRIVILEGE_LOG.md` has two kinds of row. The first is each
+produced document whose redacted view withholds bytes. The second is each
+document withheld in full with `--withhold <oid>`; that document is never
+produced and takes no Bates number. `--privilege <claims.json>` states each
+claim's date, author, recipients, description and basis. A withheld document
+must have a claim. A redacted row without a claim states no date. Claims are
+checked before anything is journaled.
+
+`fa produce --bundle` is the plan's `Produce`. It makes an evidence bundle
+over a scope against a recorded checkpoint, exactly as `fa bundle produce`
+does, and numbers the documents its in-scope entries cite, in journal order.
+On top of the load files, privilege log and natives above, the volume then
+adds three things. First, `<VOLUME>.fab` and its signed `<VOLUME>.receipt`,
+which `fa-verify bundle` checks offline. Second, EDRM XML (`<VOLUME>.xml`)
+when the matter was opened with `--load-file edrm|both`; it binds the
+bundle's digest. Third, the FRE 902(13)/(14) declaration, verification
+procedure and notice templates over the journaled ranges.
+
+```bash
+fa checkpoint create --grant witness --book ./books/acme --json
+fa production open Doe-v-Acme --bates-prefix DOE --load-file both --book ./books/acme --json
+fa produce --matter Doe-v-Acme --bundle --account 1000 --from 2026-03-01 --to 2026-03-31 --out ./prod-002 --book ./books/acme --json
+```
+
+The FRE 902 package states technical predicates; admissibility is counsel's
+call. `fa exhibit mark` is not wired yet (`fa-6l9`).
+
 ### Exact arithmetic available now
 
 `fa-money` supports the full signed `i128` amount range, including parsing,
@@ -585,14 +661,14 @@ foundation revision are recorded with the implementation landing.
 | | `franken_accounting` |
 |---|---|
 | Truth | The journal. There are no balance rows; registers, trial balances, statements, agings, and findings are derived folds, never authoritative, always verifiable by recomputation (`fa verify registers` — available now). |
-| Immutability | Append-only. Corrections are `Reverse` (available now) and `Replace`/`Reclass`/`Restate` (`fa-oz3`) entries with `SUPERSEDES` lineage. Period close, reopen, and lock are journaled, approved control entries — never a flag (available now). |
-| Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied (available now). Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence (available now). GQL selectors `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03` (`fa-x8n`), `AS ORIGINALLY REPORTED` (`fa-9ae`), `AS CURRENTLY STATED` (`fa-oz3`), `AS REPORTED IN <certificate>` (`fa-9ae`) are target selectors, not backups. |
+| Immutability | Append-only. Corrections are `Reverse` and one-step `Replace` (`fa reverse --replace-with`) entries with `SUPERSEDES` lineage (available now); a typed `fa reclass` verb is target (`fa-i7e`), and restatement cases are target (`fa-75j4`). Period close, reopen, and lock are journaled, approved control entries — never a flag (available now). |
+| Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied (available now). Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence (available now). GQL selectors `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03` (`fa-5c1`), `AS ORIGINALLY REPORTED`, `AS CURRENTLY STATED` and `AS REPORTED IN <certificate>` (`fa-wrrw`) are target selectors, not backups; `--as-originally-reported` on `fa tb`, `fa statement` and `fa explain balance` already reads one period as of its first Lock. |
 | Exactness | `Amount { unit, mantissa: i128 }` at the unit's registered scale; every rounding, allocation, and FX conversion names a registered law and exact error bound (available now). Native residual postings are explicit where the law requires them; base-valuation residuals are recorded and absorbed under plan §5.2 (`fa-s3c`). No float ever touches an amount. No tolerance. No auto-balancing. |
-| Evidence | Nothing posts without a why: documents, attestations, supplements, and `fa explain evidence <entry-vid>` are available now; REA events (`fa-bvx`) and posting-rule versions (`fa-c34`) complete the target content-addressed provenance closure. |
-| Proofs | A journal-level Merkle accumulator with signed `TransparencyCheckpoint`s, `.fab` evidence bundles with signed production receipts, and `fa-verify`, a dependency-free static verifier a regulator runs on an air-gapped laptop (available now; external witness quorum `fa-l3c`). |
-| Graph | Accounts, entities, parties, instruments, documents, periods, findings are vertices; legs, approvals, ownership, settlement, intercompany pairs, supersession are edges. Journal-entry tests, Benford, duplicates, sequence gaps, cutoff, aging, round-trips, structuring, and LIBR/FIFO/pro-rata/taint tracing run via `fa procedure run` today; related-party exposure, layering, kiting, and Ponzi motifs are target (`fa-412`, `fa-q2e`). |
+| Evidence | Nothing posts without a why: documents, attestations, supplements, REA events (`fa event record`), and `fa explain evidence <entry-vid>` are available now; posting-rule versions (`fa-c34`) complete the target content-addressed provenance closure. |
+| Proofs | A journal-level Merkle accumulator with signed `TransparencyCheckpoint`s, `.fab` evidence bundles with signed production receipts, and `fa-verify`, a dependency-free static verifier a regulator runs on an air-gapped laptop (available now; an external witness quorum is target, `fa-qtfd`). |
+| Graph | Accounts, entities, parties, instruments, documents, periods, findings are vertices; legs, approvals, ownership, settlement, intercompany pairs, supersession are edges. Journal-entry tests, Benford, duplicates, sequence gaps, cutoff, aging, round-trips, structuring, circular flows, layering, communities, related-party exposure, shell signatures, concentration, identity resolution, LIBR/FIFO/LIFO/pro-rata tracing of tainted value (single-account and network), court-ordered restitution schedules, Ponzi net investment, balance-sheet and cash-flow solvency, preference and fraudulent-transfer lookback, rising-tide and pro-rata distribution, and but-for damages run via `fa procedure run` today; check kiting has no procedure or bead yet. |
 | Determinism | Same closure ⇒ byte-identical output, with a certificate (`fa tb|statement|explain|open-items --certify`, `fa replay` — available now; cross-registry-version certificate survival `fa-vdc`). |
-| Agents | Dry-run plans (`fa post --dry-run --plan-out` / `fa commit --plan`), refusals that name the law and the exact fix, `fa triage` in one call, robot-mode NDJSON, and `fa-mcp` with the same verbs (available now); domain intent verbs (`fa-we7`) and drafts with authorized promotion (`fa-s7x`) are target. |
+| Agents | Dry-run plans (`fa post --dry-run --plan-out` / `fa commit --plan`), refusals that name the law and the exact fix, `fa triage` in one call, robot-mode NDJSON, `fa-mcp` with the same verbs, drafts with authorized promotion (`fa draft new|plan|promote`), and the typed `fa invoice|bill|receipt|payment` verbs (available now); the remaining typed verbs (`fa-i7e`), plan certificates (`fa-we7`) and the rest of the draft life cycle (`fa-s7x`) are target. |
 | Safety | `unsafe_code = "forbid"` everywhere, zero unsafe islands. Dependencies are `std`, the pinned nightly and suitable Franken-suite foundations with exact pins and recorded transitive paths. Unrelated third-party crates are not imported directly by accounting code. FrankenGraphDB is the sole book storage engine. |
 
 ---
@@ -624,14 +700,15 @@ fa explain balance 1200 --period FY2026-P03 --as-known-at '2026-04-02T00:00:00Z'
 
 # The books as they stood on a date, for a period — a selector, not a restore (available today with `--period` / `--fiscal-year`).
 fa tb --fiscal-year 2025 --as-known-at '2026-02-01T00:00:00Z' --book acme.fabook --json
-# As originally reported: one period at its first Lock (available today; the StatementIssuance basis is target fa-wrrw).
+# As originally reported: one period at its first Lock, on tb, statements and balance explanations (available today; the StatementIssuance basis is target fa-wrrw).
 fa tb --period FY2025-P12 --as-originally-reported --book acme.fabook --json
+fa statement balance-sheet --for FY2025-P12 --compare FY2024-P12 --as-originally-reported --certify --book acme.fabook --json
 
 # Corrections are lineage. The original stays (`fa reverse <vid> --reason <name|code>` available today).
 fa reverse <vid> --reason WrongAccount --book acme.fabook --json
 # One-step correction: the reversal and the corrected entry commit together, both or neither (available today).
 fa reverse <vid> --reason WrongAmount --replace-with corrected.json --book acme.fabook --json
-# Target (fa-oz3): `fa case` for restatement cases.
+# Target (fa-75j4): `fa case` for restatement cases.
 fa case open --kind Restatement --periods FY2024-Q4 --narrative restatement-memo.pdf
 
 # Rehearse the close on a draft, diff it, let a human promote it (drafts available today; close dry-run and diff are target fa-4o0 / fa-s7x).
@@ -641,13 +718,14 @@ fa close dry-run --period 2026-03 --draft close-2026-03 --json
 # Target (fa-s7x):
 fa diff --from draft:close-2026-03 --to trunk --json
 
-# Forensics, in the database, certified (`fa procedure run` available today; `fa jet` / `fa trace` aliases and `graph.related_party_exposure` are target fa-412 / fa-q2e).
-# Target (fa-412):
-fa jet --period FY2025 --json
-# Target (fa-q2e):
-fa trace libr --source P-412 --from 2025-01-01 --to 2025-12-31 --max-hops 8 --json
-# Target (fa-412):
-fa procedure run graph.related_party_exposure --param entity=ACME --json
+# Forensics, in the database, certified (available today; `fa procedure list` names every registered procedure and its parameters).
+fa procedure run jet.weekend --book acme.fabook --json
+fa procedure run trace.libr --effective-through 2025-12-31 --account 1010 --source <deposit entry vid> --book acme.fabook --json
+fa procedure run graph.related_party_exposure --param max_depth=4 --book acme.fabook --json
+
+# Audit samples reproducible from a declared seed, over an account's open items at one recorded coordinate, and the Stringer bound over the audited values (available today).
+fa sample mus --account 1200 --seed 20260115 --interval "5000.00 USD" --as-of 2025-12-31 --book acme.fabook --json
+fa sample evaluate --account 1200 --seed 20260115 --interval "5000.00 USD" --as-of 2025-12-31 --as-known-at <seq> --audited audited.json --confidence 95 --book acme.fabook --json
 
 # Proofs an outsider can check without the book (`fa bundle produce` and `fa-verify bundle` available today).
 fa bundle produce --account 1000 --from 2025-01-01 --to 2025-12-31 --inline-documents --out fy2025-cash.fab --receipt-out fy2025-cash.receipt --book acme.fabook --json
@@ -684,7 +762,7 @@ fa chart open office-supplies.json --opened 2026-03-01 --book acme.fabook --json
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.
 
 ```gql
--- Target (fa-x8n): GQL through the substrate, plus the FrankenAccounting profile.
+-- Target (fa-5c1): GQL through the substrate, plus the FrankenAccounting profile.
 MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code:'1200'}), (l)-[:FOR]->(:DimensionValue)<-[:IS]-(p:Party)
 WHERE EXISTS { MATCH (p)-[:RELATED_TO|OWNS|CONTROLS*1..3]-(:LegalEntity {code:'ACME'}) EFFECTIVE AT l.effective_date }
 FOR PERIOD 'FY2025' AS KNOWN AT '2026-02-01T00:00:00Z'
@@ -708,6 +786,8 @@ fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 \
 fa statement income-statement --for FY2026-P03 --compare FY2026-P02 \
   --known-at HEAD --certify --book ./books/myco --json
 fa replay C:<oid-from-report_certificate> --book ./books/myco --json
+fa statement diff --before-certificate C:<oid-as-reported> \
+  --after-certificate C:<oid-as-restated> --for FY2026-P03 --book ./books/myco --json
 ```
 
 Balance sheets include opening history through the selected period and show
@@ -724,6 +804,15 @@ also writes a binary copy without replacing an existing file. Replay uses the
 same checked presentation and preserves both columns after subsequent postings.
 MCP exposes this as `fa_read_statement`, under the fixed launch authority, with
 inline certification and no caller-selected output paths.
+
+Two retained certificates of the same statement compare directly. The
+`--before-certificate` and `--after-certificate` form replays both and bridges
+them, so the statement as reported (the certificate that was handed out) and as
+restated (a later certificate) are compared without selecting anything from
+HEAD. A stated `--for`, `--compare` or `--definition` is checked against the
+certificates. With `--certify` the comparison keeps those exact source
+certificates, and `fa statement trace --from-diff C:<oid> --certify` attributes
+it to each intermediate publication.
 
 This slice covers one book and native units. Custom company layouts, cash-flow
 and equity-roll-forward statements, consolidation, FX translation, and

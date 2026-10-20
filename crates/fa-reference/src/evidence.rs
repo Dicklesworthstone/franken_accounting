@@ -54,6 +54,7 @@ pub const ATTESTATION_SUBJECT: &str = "FA-REF-110";
 pub const SELF_REVIEW: &str = "FA-REF-111";
 pub const REASON_CODE: &str = "FA-REF-112";
 pub const DOCUMENT_INTAKE: &str = "FA-REF-083";
+pub const GRADE_UNVERIFIED: &str = "FA-REF-084";
 pub const CUSTODY_INCOMPLETE: &str = "FA-REF-114";
 pub const RECEIPT_MISMATCH: &str = "FA-REF-115";
 pub const NOT_CUSTODIAN: &str = "FA-REF-119";
@@ -366,6 +367,33 @@ pub fn manual_verdict(law: &Law, class: &str, reason: u16) -> Option<&'static st
     } else {
         None
     }
+}
+
+/// The oracle's verdict on a capability-bound upload (plan §9.3, fa-vwf):
+/// the provenance grade is derived from the session profile (`HumanUpload`
+/// when `is_human`, else `AgentUpload`), and any caller assertion that
+/// differs from the derived grade is refused with `GRADE_UNVERIFIED`.
+pub fn upload_verdict(
+    law: &Law,
+    is_human: bool,
+    asserted_grade: Option<&str>,
+) -> Result<&'static str, &'static str> {
+    let derived = if is_human {
+        "HumanUpload"
+    } else {
+        "AgentUpload"
+    };
+    if !law
+        .policy
+        .grade_by_name(derived)
+        .is_some_and(|g| g.intake)
+    {
+        return Err(DOCUMENT_INTAKE);
+    }
+    if asserted_grade.is_some_and(|asserted| asserted != derived) {
+        return Err(GRADE_UNVERIFIED);
+    }
+    Ok(derived)
 }
 
 #[cfg(test)]

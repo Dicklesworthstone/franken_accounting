@@ -161,7 +161,6 @@ fn closed_period_requires_real_proposal_approval_and_separate_post_closed_author
             PeriodTransition::Close,
             AUTHOR,
             1,
-            day("2026-03-31"),
             b"close-march",
             &Capability::embedded(AUTHOR, &["close"]).unwrap(),
         ))
@@ -431,7 +430,6 @@ fn synchronous_book_completes_the_same_review_approval_and_native_plan_workflow(
         PeriodTransition::Open,
         AUTHOR,
         1,
-        day("2026-03-01"),
         b"open",
         &Capability::embedded(AUTHOR, &["close"]).unwrap(),
     )

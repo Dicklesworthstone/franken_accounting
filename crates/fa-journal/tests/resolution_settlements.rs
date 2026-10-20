@@ -127,7 +127,6 @@ impl Fixture {
                     PeriodTransition::Open,
                     ACTOR,
                     1,
-                    day,
                     key,
                     seal("open"),
                     &closer,

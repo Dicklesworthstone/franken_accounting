@@ -363,6 +363,13 @@ impl ReportCertificate {
     pub(crate) fn legacy_registry_closure(&self) -> [u8; 32] {
         legacy_registry_digest(&self.selection)
     }
+
+    /// The pre-narrowing 8/9-registry v2 canonical closure a certificate
+    /// retained before fa-t8gk narrowed the bound registry set carries.
+    pub(crate) fn legacy_v2_registry_closure(&self) -> [u8; 32] {
+        legacy_v2_registry_digest(&self.selection)
+            .expect("embedded registries parse canonically")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -409,8 +416,26 @@ fn encoding(e: fa_model::EncodeError) -> BookError {
     fa_journal::KernelError::from(fa_model::EntryError::from(e)).into()
 }
 
-/// The registries every report certificate binds, in commitment order.
+/// The registries every report fold reads, in commitment order (fa-t8gk).
+/// Post-time admissibility, limits, and rounding laws are not read by literal
+/// report folds, and symbol IDs are already bound per book at genesis
+/// (`Book.symbols_digest`, checked with additive-prefix compatibility in
+/// `symbols_match_at`) and per query in `NativeResultCertificate`.
 const REPORT_REGISTRIES: &[(&str, &str)] = &[
+    (
+        "account_types",
+        include_str!("../../../registries/account_types.toml"),
+    ),
+    (
+        "entry_classes",
+        include_str!("../../../registries/entry_classes.toml"),
+    ),
+    ("units", include_str!("../../../registries/units.toml")),
+    ("foundations", include_str!("../../../franken-stack.lock")),
+];
+/// The pre-narrowing 8-registry list retained certificates bound before
+/// fa-t8gk narrowed `REPORT_REGISTRIES` to the registries each report reads.
+const LEGACY_REPORT_REGISTRIES: &[(&str, &str)] = &[
     (
         "account_types",
         include_str!("../../../registries/account_types.toml"),
@@ -432,8 +457,8 @@ const REPORT_REGISTRIES: &[(&str, &str)] = &[
     ("units", include_str!("../../../registries/units.toml")),
     ("foundations", include_str!("../../../franken-stack.lock")),
 ];
-/// Explanation display includes the committed supersession reason name, so
-/// every report but the trial balance also binds the reason codes.
+/// Balance-explanation rendering resolves committed supersession reason codes
+/// through `reason_codes.toml`; trial balances, open items, and statements do not.
 const REASON_CODES: (&str, &str) = (
     "reason_codes",
     include_str!("../../../registries/reason_codes.toml"),
@@ -441,6 +466,14 @@ const REASON_CODES: (&str, &str) = (
 
 fn report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static str)> {
     let mut sources = REPORT_REGISTRIES.to_vec();
+    if matches!(selection, ReportSelection::ExplainBalance { .. }) {
+        sources.push(REASON_CODES);
+    }
+    sources
+}
+
+fn legacy_report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static str)> {
+    let mut sources = LEGACY_REPORT_REGISTRIES.to_vec();
     if !matches!(selection, ReportSelection::TrialBalance(_)) {
         sources.push(REASON_CODES);
     }
@@ -461,8 +494,9 @@ pub(crate) fn canonical_registry_digest(name: &str, text: &str) -> Result<[u8; 3
 /// Registry identities are explicit inputs, not inferred from the executable's
 /// version. A changed law or native engine pin requires the original environment
 /// to replay this version; it cannot silently substitute new semantics. The v2
-/// closure commits to each registry's canonical content, so a comment or layout
-/// edit leaves every certificate and its replay unchanged (bead fa-t8gk).
+/// closure commits to each read registry's canonical content, so a comment or
+/// layout edit, or an edit to a registry the report does not read, leaves the
+/// certificate and its replay unchanged (bead fa-t8gk).
 fn registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Refusal> {
     canonical_closure(
         b"fa:report-registry-closure:v2",
@@ -470,11 +504,21 @@ fn registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Refusal> {
     )
 }
 
+/// The pre-narrowing 8/9-registry v2 closure, kept so certificates retained
+/// before fa-t8gk narrowed the bound registry set still replay while those
+/// registries' canonical content is unchanged.
+fn legacy_v2_registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Refusal> {
+    canonical_closure(
+        b"fa:report-registry-closure:v2",
+        &legacy_report_registries(selection),
+    )
+}
+
 /// The v1 closure over raw file text, comments included. New certificates
 /// never carry it; it is kept only so certificates retained before fa-t8gk
 /// still replay while their registry text is unchanged.
 fn legacy_registry_digest(selection: &ReportSelection) -> [u8; 32] {
-    let leaves: Vec<(&str, [u8; 32])> = report_registries(selection)
+    let leaves: Vec<(&str, [u8; 32])> = legacy_report_registries(selection)
         .into_iter()
         .map(|(name, text)| (name, digest(b"fa:report-registry:v1", text.as_bytes())))
         .collect();
@@ -1070,7 +1114,7 @@ fn certify_selected<V: Vfs + Clone>(
             .map_err(BookError::CertifiedRead)?;
         inputs.push(certificate);
     }
-    let journal = match Journal::read(db, book, Some(at))? {
+    let journal = match Journal::read(db, book, Some(at), None)? {
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -1180,7 +1224,12 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         Ok(closure) => closure,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let legacy_v2 = match legacy_v2_registry_digest(&certificate.selection) {
+        Ok(closure) => closure,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     if certificate.registry_digest != current
+        && certificate.registry_digest != legacy_v2
         && certificate.registry_digest != legacy_registry_digest(&certificate.selection)
     {
         return Ok(Err(registry_unavailable(
@@ -1233,7 +1282,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
             "the certified historical book context is unavailable: {error}"
         ))));
     }
-    let journal = match Journal::read(db, book, Some(certificate.known_at))? {
+    let journal = match Journal::read(db, book, Some(certificate.known_at), None)? {
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -1288,7 +1337,7 @@ pub(crate) fn status<V: Vfs + Clone>(
             "the current book context no longer matches the certified context: {error}"
         ))));
     }
-    let journal = match Journal::read(db, book, Some(head))? {
+    let journal = match Journal::read(db, book, Some(head), None)? {
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -2293,19 +2342,67 @@ mod tests {
         assert_eq!(without_time.last(), Some(&0));
     }
 
-    /// fa-t8gk planted negatives: the v2 closure ignores a comment-only and
-    /// layout-only registry edit (the v1 raw-text closure did not), and a
-    /// changed normal side always moves it.
+    /// fa-t8gk planted negatives: the v2 closure binds only the registries the
+    /// report's computation reads, ignores a comment-only and layout-only
+    /// registry edit (the v1 raw-text closure did not), and a changed normal
+    /// side always moves it.
     #[test]
     fn registry_closure_binds_canonical_content_not_file_text() {
         let trial = ReportSelection::TrialBalance(TrialBalanceSelection::AsOf(DateDay(0)));
         let open_items = ReportSelection::OpenItems { account: None };
+        let statement = ReportSelection::from(crate::StatementSelection {
+            definition: crate::StatementDefinition::embedded("balance-sheet").unwrap(),
+            periods: vec!["FY2026-P01".into()],
+            comparative: Vec::new(),
+        });
+        let explain = ReportSelection::ExplainBalance {
+            account: VId(9),
+            period: "FY2026-P01".into(),
+        };
+        // Trial balance, open items, and statements bind the same 4 read
+        // registries (account_types, entry_classes, units, foundations); only
+        // balance explanations also bind reason_codes.
+        assert_eq!(
+            report_registries(&trial)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>(),
+            vec!["account_types", "entry_classes", "units", "foundations"]
+        );
+        assert_eq!(report_registries(&open_items), report_registries(&trial));
+        assert_eq!(report_registries(&statement), report_registries(&trial));
+        assert_eq!(
+            report_registries(&explain)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>(),
+            vec![
+                "account_types",
+                "entry_classes",
+                "units",
+                "foundations",
+                "reason_codes",
+            ]
+        );
+        assert_eq!(
+            registry_digest(&trial).unwrap(),
+            registry_digest(&open_items).unwrap()
+        );
+        assert_eq!(
+            registry_digest(&trial).unwrap(),
+            registry_digest(&statement).unwrap()
+        );
+        assert_ne!(
+            registry_digest(&trial).unwrap(),
+            registry_digest(&explain).unwrap()
+        );
+
         fn with<'a>(
             name: &str,
             text: &'a str,
-            selection: &ReportSelection,
+            sources: Vec<(&'a str, &'a str)>,
         ) -> Vec<(&'a str, &'a str)> {
-            report_registries(selection)
+            sources
                 .into_iter()
                 .map(|(n, t)| (n, if n == name { text } else { t }))
                 .collect()
@@ -2333,14 +2430,21 @@ mod tests {
                 }
             })
             .collect();
-        for selection in [&trial, &open_items] {
+        for selection in [&trial, &open_items, &statement, &explain] {
             let current = registry_digest(selection).unwrap();
             let v2 = |sources: &[(&str, &str)]| {
                 canonical_closure(b"fa:report-registry-closure:v2", sources).unwrap()
             };
             assert_eq!(v2(&report_registries(selection)), current);
-            assert_eq!(v2(&with(name, &restyled, selection)), current);
-            assert_ne!(v2(&with(name, &flipped, selection)), current);
+            assert_eq!(
+                v2(&with(name, &restyled, report_registries(selection))),
+                current
+            );
+            assert_ne!(
+                v2(&with(name, &flipped, report_registries(selection))),
+                current
+            );
+            assert_ne!(current, legacy_v2_registry_digest(selection).unwrap());
             // The defect: the raw-text closure moved on the same cosmetic edit.
             let raw = |sources: &[(&str, &str)]| {
                 let leaves: Vec<(&str, [u8; 32])> = sources
@@ -2350,17 +2454,17 @@ mod tests {
                 registry_closure(b"fa:report-registry-closure:v1", &leaves)
             };
             assert_eq!(
-                raw(&report_registries(selection)),
+                raw(&legacy_report_registries(selection)),
                 legacy_registry_digest(selection)
             );
             assert_ne!(
-                raw(&with(name, &restyled, selection)),
+                raw(&with(name, &restyled, legacy_report_registries(selection))),
                 legacy_registry_digest(selection)
             );
             assert_ne!(current, legacy_registry_digest(selection));
         }
-        // Every embedded registry parses, so no certificate is refused for it.
-        for (name, text) in report_registries(&open_items) {
+        // Every embedded registry (current and legacy) parses, so no certificate is refused for it.
+        for (name, text) in legacy_report_registries(&explain) {
             canonical_registry_digest(name, text).unwrap();
         }
     }

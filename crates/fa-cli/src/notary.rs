@@ -8,8 +8,9 @@ mod expectations;
 mod procedure;
 
 pub(crate) use expectations::{
-    cash_flow_expectation_json, indirect_expectation_json, policy_cash_flow_expectation_json,
-    portfolio_expectation_json, reconciliation_expectation_json, split_cash_flow_expectation_json,
+    aging_expectation_json, cash_flow_expectation_json, indirect_expectation_json,
+    policy_cash_flow_expectation_json, portfolio_expectation_json, reconciliation_expectation_json,
+    split_cash_flow_expectation_json,
 };
 
 use std::io::Read;
@@ -48,6 +49,13 @@ fn prepare_artifact_history(
     artifact: &ReportArtifact,
     bytes: &[u8],
 ) -> Result<(), Fail> {
+    // Another book's prefix means nothing here: refuse the certificate as
+    // another book's before selecting any prefix of this one.
+    if artifact.book_id() != book.context().book_id {
+        return Err(certificate_invalid(
+            "report artifact belongs to another book",
+        ));
+    }
     let known_at = match artifact.family() {
         ReportArtifactFamily::StatementDiff => {
             let certificate = fa::StatementDiffCertificate::decode(bytes)?;
@@ -194,6 +202,23 @@ fn read_certificate_bytes(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(decoded)
+}
+
+/// One certificate a command names in `flag` (a retained `C:<oid>`, a
+/// canonical file, or `-` for stdin), decoded as the family `decode` reads.
+/// A certificate of another family is refused under the flag that named it.
+pub(crate) fn certificate_input<T>(
+    book: &Book,
+    files: &Files,
+    flag: &str,
+    value: &str,
+    principal: VId,
+    capability: &Capability,
+    decode: impl FnOnce(&[u8]) -> Result<T, fa_journal::Refusal>,
+) -> Result<T, Fail> {
+    let bytes = read_certificate_bytes(book, files, value, principal, capability)?;
+    decode(&bytes)
+        .map_err(|refusal| certificate_invalid(format!("{flag} `{value}`: {}", refusal.message)))
 }
 
 /// Save an optional external copy, then retain the immutable certificate in
@@ -484,6 +509,109 @@ fn emit_certificate(
     );
 }
 
+/// Families with a recipient-bound JSONL workpaper export (`--workpaper-out`).
+/// A roll-forward source needs `--view detail` (ledger lines) or `--view
+/// roll-forward` (the lead schedule); effective-date aging needs an aging
+/// `--expect`, because each export binds the recipient's own request.
+fn has_workpaper(family: ReportArtifactFamily, view_bound: bool, aging_expected: bool) -> bool {
+    match family {
+        ReportArtifactFamily::RollForward => view_bound,
+        ReportArtifactFamily::EffectiveDateAging => aging_expected,
+        ReportArtifactFamily::CashFlow
+        | ReportArtifactFamily::AgingReconciliation
+        | ReportArtifactFamily::AgingPortfolio
+        | ReportArtifactFamily::StatementDiff
+        | ReportArtifactFamily::StatementTrace => true,
+        _ => false,
+    }
+}
+
+fn unsupported_workpaper(family: ReportArtifactFamily) -> Fail {
+    usage(
+        format!(
+            "{} certificates have no JSONL workpaper export",
+            family.name()
+        ),
+        "--workpaper-out exports a roll-forward source's ledger detail or lead schedule (replay it with --view detail or --view roll-forward), effective-date aging (with its aging --expect), cash-flow, aging-reconciliation, aging-portfolio, statement-diff and statement-trace certificates",
+    )
+}
+
+/// The library's workpaper export for one replayed family. Each export
+/// replays the certificate again against the same independent request under
+/// current read+produce authority and returns all of its text or none.
+fn workpaper_jsonl(
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+    family: ReportArtifactFamily,
+    bytes: &[u8],
+    expected: &expectations::Expected,
+    view: Option<(&str, &fa::RollForwardRequest)>,
+) -> Result<String, Fail> {
+    use expectations::Expected;
+    Ok(match (family, expected, view) {
+        (ReportArtifactFamily::RollForward, _, Some(("detail", request))) => book
+            .general_ledger_jsonl(
+                principal,
+                capability,
+                &fa::RollForwardCertificate::decode(bytes)?,
+                request,
+            )??,
+        (ReportArtifactFamily::RollForward, _, Some((_, request))) => book.roll_forward_jsonl(
+            principal,
+            capability,
+            &fa::RollForwardCertificate::decode(bytes)?,
+            request,
+        )??,
+        (ReportArtifactFamily::CashFlow, Expected::CashFlow(request, definition), _) => book
+            .cash_flow_jsonl(
+                principal,
+                capability,
+                &fa::CashFlowCertificate::decode(bytes)?,
+                request,
+                definition,
+            )??,
+        (ReportArtifactFamily::AgingReconciliation, Expected::Reconciliation(request), _) => book
+            .effective_date_aging_reconciliation_jsonl(
+                principal,
+                capability,
+                &fa::AgingReconciliationCertificate::decode(bytes)?,
+                request,
+            )??,
+        (ReportArtifactFamily::AgingPortfolio, Expected::Portfolio(request), _) => book
+            .aging_portfolio_jsonl(
+                principal,
+                capability,
+                &fa::aging::portfolio::AgingPortfolioCertificate::decode(bytes)?,
+                request,
+            )??,
+        (ReportArtifactFamily::EffectiveDateAging, Expected::Aging(request), _) => book
+            .effective_date_aging_jsonl(
+                principal,
+                capability,
+                &fa::AgingCertificate::decode(bytes)?,
+                request,
+            )??,
+        (ReportArtifactFamily::StatementTrace, Expected::AsSupplied, _) => book
+            .statement_trace_jsonl(
+                principal,
+                capability,
+                &fa::StatementTraceCertificate::decode(bytes)?,
+            )??,
+        // The library's statement review package also renders Markdown; the
+        // replay surface exports its JSONL, like every other family.
+        (ReportArtifactFamily::StatementDiff, Expected::AsSupplied, _) => book
+            .statement_diff_workpaper(
+                principal,
+                capability,
+                &fa::StatementDiffCertificate::decode(bytes)?,
+            )??
+            .jsonl()
+            .to_string(),
+        (family, _, _) => return Err(unsupported_workpaper(family)),
+    })
+}
+
 pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
         return Err(usage(
@@ -501,19 +629,45 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa replay C:<oid> --output <new-file> --json",
         ));
     }
-    let detail_view = match args.flag("--view") {
-        None => false,
-        Some("detail") if args.flag_all("--view").len() == 1 => true,
+    if args.flag_all("--workpaper-out").len() > 1
+        || args
+            .flag("--workpaper-out")
+            .is_some_and(|path| path.is_empty() || path == "-")
+    {
+        return Err(usage(
+            "--workpaper-out names exactly one new file for the replayed JSONL workpaper",
+            "fa replay C:<oid> --expect '<JSON>' --workpaper-out <new-file> --json",
+        ));
+    }
+    let workpaper_out = args.flag("--workpaper-out");
+    // --workpaper returns the same text inline (the only form MCP can carry,
+    // since it accepts no host paths); --workpaper-out writes a file.
+    let workpaper_inline = args.switch("--workpaper");
+    if workpaper_inline && workpaper_out.is_some() {
+        return Err(usage(
+            "--workpaper returns the workpaper inline and --workpaper-out writes it to a file; choose one",
+            "fa replay C:<oid> --expect '<JSON>' --workpaper --json",
+        ));
+    }
+    let workpaper_requested = workpaper_inline || workpaper_out.is_some();
+    // A view binds a roll-forward source to an explicitly stated request and
+    // replays its ledger lines (detail) or its lead schedule (roll-forward).
+    let view = match args.flag("--view") {
+        None => None,
+        Some(view @ ("detail" | "roll-forward")) if args.flag_all("--view").len() == 1 => {
+            Some(view)
+        }
         Some(_) => {
             return Err(usage(
-                "--view accepts only detail",
-                "fa replay C:<oid> --view detail --account <code> --unit <CODE> --from YYYY-MM-DD --to YYYY-MM-DD --label <label> --as-known-at <seq>",
+                "--view accepts detail or roll-forward",
+                "fa replay C:<oid> --view detail|roll-forward --account <code> --unit <CODE> --from YYYY-MM-DD --to YYYY-MM-DD --label <label> --as-known-at <seq>",
             ));
         }
     };
-    if detail_view && args.flag("--expect").is_some() {
+    let detail_view = view == Some("detail");
+    if view.is_some() && args.flag("--expect").is_some() {
         return Err(usage(
-            "--view detail and --expect are separate request formats and cannot be combined",
+            "--view and --expect are separate request formats and cannot be combined",
             "use the complete replay_command from the original certified ledger",
         ));
     }
@@ -525,17 +679,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--label",
         "--as-known-at",
     ];
-    if !detail_view && detail_flags.iter().any(|flag| args.flag(flag).is_some()) {
+    if view.is_none() && detail_flags.iter().any(|flag| args.flag(flag).is_some()) {
         return Err(usage(
-            "explicit ledger-view expectations require --view detail",
+            "explicit ledger-view expectations require --view detail or --view roll-forward",
             "use the complete replay_command from the original certified ledger",
         ));
     }
-    if detail_view {
+    if let Some(view) = view {
         for flag in ["--from", "--to", "--label", "--as-known-at"] {
             if args.flag_all(flag).len() != 1 {
                 return Err(usage(
-                    format!("detail replay requires exactly one {flag}"),
+                    format!("{view} replay requires exactly one {flag}"),
                     "use the independently reviewed account, unit, dates, label and recorded sequence from the original ledger request",
                 ));
             }
@@ -551,34 +705,66 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .is_none()
         {
             return Err(usage(
-                "detail replay requires explicit units and a numeric --as-known-at sequence, never HEAD",
+                format!(
+                    "{view} replay requires explicit units and a numeric --as-known-at sequence, never HEAD"
+                ),
                 "use the complete replay_command from the original certified ledger",
             ));
         }
     }
     let principal = ctx.principal(args);
-    let capability = ctx.capability(args, &["read"])?;
+    // A workpaper is a produced deliverable: it needs produce as well as read.
+    let capability = ctx.capability(
+        args,
+        if workpaper_requested {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
     // Saved provenance grants no current authority. Admission precedes
     // stamping book metadata, fetching retained bytes or reading a file.
     let mut book = ctx.books.open_admitted(args, |book| {
         fa_policy::admit_read(&capability, principal, book.context().book_id)
             .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+            .and_then(|()| {
+                if workpaper_requested {
+                    fa_policy::require(
+                        &capability,
+                        fa_policy::Op::Produce,
+                        "exporting a replayed report workpaper",
+                    )
+                } else {
+                    Ok(())
+                }
+            })
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
         book.read_scope(principal, &capability)??;
         book.prepare_report_history(principal, &capability, None)??;
         Ok(())
     })?;
+    if let Some(path) = workpaper_out
+        && std::fs::symlink_metadata(ctx.files.resolve(path)).is_ok()
+    {
+        return Err(usage(
+            format!("workpaper output {path} already exists"),
+            "choose a new --workpaper-out path; an existing file is never overwritten",
+        ));
+    }
     let expected = expectations::parse(args, &book, principal, &capability)?;
-    let detail_expected = if detail_view {
-        Some(crate::cli::parse_gl_scope(
+    let view_request = match view {
+        Some(view) => Some(crate::cli::parse_gl_scope(
             args,
             &book,
             &ctx.out,
-            "gl-detail",
+            if view == "detail" {
+                "gl-detail"
+            } else {
+                "roll-forward"
+            },
             "use the complete replay_command from the original certified ledger",
-        )?)
-    } else {
-        None
+        )?),
+        None => None,
     };
     let bytes = read_certificate_bytes(
         &book,
@@ -589,10 +775,22 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     )?;
     let artifact = ReportArtifact::decode(&bytes)?;
     prepare_artifact_history(&mut book, principal, &capability, &artifact, &bytes)?;
-    if detail_view && artifact.family() != ReportArtifactFamily::RollForward {
-        return Err(certificate_invalid(
-            "--view detail requires a roll-forward source certificate",
-        ));
+    if let Some(view) = view
+        && artifact.family() != ReportArtifactFamily::RollForward
+    {
+        return Err(certificate_invalid(format!(
+            "--view {view} requires a roll-forward source certificate"
+        )));
+    }
+    let aging_expected = matches!(expected, expectations::Expected::Aging(_));
+    if aging_expected && artifact.family() != ReportArtifactFamily::EffectiveDateAging {
+        return Err(certificate_invalid(format!(
+            "an aging expectation names an effective-date-aging certificate, not {}",
+            artifact.family().name()
+        )));
+    }
+    if workpaper_requested && !has_workpaper(artifact.family(), view.is_some(), aging_expected) {
+        return Err(unsupported_workpaper(artifact.family()));
     }
     if artifact.family() == ReportArtifactFamily::ScenarioDiff {
         // Its replay re-materializes the scenario with exactly the intents it
@@ -625,6 +823,21 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some(artifact.digest()),
         expected.borrowed(),
     )??;
+    // The workpaper export replays the same certificate against the same
+    // independent request; it is complete before any file is written.
+    let workpaper = workpaper_requested
+        .then(|| {
+            workpaper_jsonl(
+                &book,
+                principal,
+                &capability,
+                artifact.family(),
+                &bytes,
+                &expected,
+                view.zip(view_request.as_ref()),
+            )
+        })
+        .transpose()?;
     // Resolve typed reports before an output file or success event is emitted.
     // A generic receipt always identifies the original family's exact bytes.
     let native = if artifact.family() == ReportArtifactFamily::Native {
@@ -652,21 +865,38 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let roll_forward = if !detail_view && artifact.family() == ReportArtifactFamily::RollForward {
         let certificate = fa::RollForwardCertificate::decode(&bytes)?;
-        Some(book.replay_roll_forward(principal, &capability, &certificate)??)
+        // --view roll-forward binds the lead schedule to the stated request.
+        Some(match &view_request {
+            Some(expected) => {
+                book.replay_roll_forward_for(principal, &capability, &certificate, expected)??
+            }
+            None => book.replay_roll_forward(principal, &capability, &certificate)??,
+        })
     } else {
         None
     };
-    let detail = if let Some(expected) = detail_expected {
-        let source = fa::RollForwardCertificate::decode(&bytes)?;
-        let report = book.replay_general_ledger(principal, &capability, &source, &expected)??;
-        let presentation = crate::cli::general_ledger_presentation(&book, &report)?;
-        Some((report, presentation))
-    } else {
-        None
+    let detail = match view_request {
+        Some(expected) if detail_view => {
+            let source = fa::RollForwardCertificate::decode(&bytes)?;
+            let report =
+                book.replay_general_ledger(principal, &capability, &source, &expected)??;
+            let presentation = crate::cli::general_ledger_presentation(&book, &report)?;
+            Some((report, presentation))
+        }
+        _ => None,
     };
     let aging = if artifact.family() == ReportArtifactFamily::EffectiveDateAging {
         let certificate = fa::AgingCertificate::decode(&bytes)?;
-        Some(book.replay_effective_date_aging(principal, &capability, &certificate)??)
+        Some(match &expected {
+            // A supplied request binds the replay to the recipient's question.
+            expectations::Expected::Aging(request) => book.replay_effective_date_aging_for(
+                principal,
+                &capability,
+                &certificate,
+                request,
+            )??,
+            _ => book.replay_effective_date_aging(principal, &capability, &certificate)??,
+        })
     } else {
         None
     };
@@ -686,13 +916,22 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--output",
         )?;
     }
+    if let (Some(path), Some(text)) = (workpaper_out, &workpaper) {
+        crate::cli::write_new_output_file(
+            &ctx.files,
+            path,
+            text.as_bytes(),
+            "replayed workpaper",
+            "--workpaper-out",
+        )?;
+    }
     let digest = hex(artifact.digest());
     let rendered = if let Some(report) = native {
         let certificate = artifact.source_certificate();
         ctx.out.time_selection(certificate.time_selection.as_ref());
         match (&report, &certificate.selection) {
             (ReportOutput::TrialBalance(report), ReportSelection::TrialBalance(selection)) => {
-                render_trial_balance(&ctx.out, &book, report, selection, Some(&digest))?
+                render_trial_balance(&ctx.out, &book, report, selection, Some(&digest), None)?
             }
             (ReportOutput::ExplainBalance(report), ReportSelection::ExplainBalance { .. }) => {
                 render_balance_explanation(&ctx.out, &book, report, Some(&digest))?
@@ -776,7 +1015,50 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Some(&digest),
         );
     }
+    if let Some(text) = workpaper {
+        let lines = text.lines().count();
+        let human = match workpaper_out {
+            Some(path) => format!(
+                "Wrote the {} JSONL workpaper ({lines} lines) to {path}",
+                replayed.family.name()
+            ),
+            None => format!(
+                "{} JSONL workpaper ({lines} lines):\n{text}",
+                replayed.family.name()
+            ),
+        };
+        ctx.out.event_with_certificate(
+            "workpaper_exported",
+            vec![
+                ("family", s(replayed.family.name())),
+                ("file", workpaper_out.map_or(Json::Null, s)),
+                ("bytes", Json::Int(text.len() as i128)),
+                ("lines", Json::Int(lines as i128)),
+                (
+                    "text",
+                    if workpaper_inline {
+                        s(&text)
+                    } else {
+                        Json::Null
+                    },
+                ),
+            ],
+            &human,
+            Some(&digest),
+        );
+    }
     Ok(())
+}
+
+/// An entry-relevance status as the `certificate_status` event reports it.
+fn entry_status(status: CertificateStatus) -> (&'static str, fgdb_types::CommitSeq, Vec<VId>) {
+    match status {
+        CertificateStatus::Current { checked_at } => ("Current", checked_at, Vec::new()),
+        CertificateStatus::SupersededBy {
+            checked_at,
+            later_entries,
+        } => ("SupersededBy", checked_at, later_entries),
+    }
 }
 
 pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -808,8 +1090,27 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     // Status is meaningful only after the WHOLE artifact verifies. For a
     // comparison or trace, relevance starts at its final statement frontier;
     // a scenario diff is superseded only by Plan records its scenario gained
-    // after the certified prefix (its trunk is fixed at the fork).
+    // after the certified prefix (its trunk is fixed at the fork). A summary
+    // trial balance is Changed when its selector no longer reproduces it at
+    // HEAD; that law compares the report, so it names no later entries.
     let status = match artifact.family() {
+        ReportArtifactFamily::Summary => {
+            if args.flag("--expect").is_some() {
+                return Err(usage(
+                    "summary status compares the certificate's own root and selector and does not accept report-policy expectations",
+                    "fa certificate status C:<summary-certificate> --json",
+                ));
+            }
+            let certificate = fa::SummaryCertificate::decode(&bytes)?;
+            match book.summary_certificate_status(principal, &capability, &certificate)?? {
+                fa::SummaryCertificateStatus::Current { checked_at } => {
+                    ("Current", checked_at, Vec::new())
+                }
+                fa::SummaryCertificateStatus::Changed { checked_at, .. } => {
+                    ("Changed", checked_at, Vec::new())
+                }
+            }
+        }
         ReportArtifactFamily::ScenarioDiff => {
             if args.flag("--expect").is_some() {
                 return Err(usage(
@@ -818,27 +1119,31 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
                 ));
             }
             let certificate = fa::ScenarioDiffCertificate::decode(&bytes)?;
-            book.scenario_diff_status(principal, &capability, &certificate)??
+            entry_status(book.scenario_diff_status(principal, &capability, &certificate)??)
         }
         _ => {
             let expected = expectations::parse(args, &book, principal, &capability)?;
-            book.report_artifact_status(
+            // The shared verifier replays aging as supplied, so a mismatched
+            // aging question must be refused here rather than ignored.
+            if matches!(expected, expectations::Expected::Aging(_))
+                && artifact.family() != ReportArtifactFamily::EffectiveDateAging
+            {
+                return Err(certificate_invalid(format!(
+                    "an aging expectation names an effective-date-aging certificate, not {}",
+                    artifact.family().name()
+                )));
+            }
+            entry_status(book.report_artifact_status(
                 principal,
                 &capability,
                 &bytes,
                 Some(artifact.digest()),
                 expected.borrowed(),
-            )??
+            )??)
         }
     };
     let certificate = artifact.source_certificate();
-    let (name, checked_at, later_entries) = match status {
-        CertificateStatus::Current { checked_at } => ("Current", checked_at, Vec::new()),
-        CertificateStatus::SupersededBy {
-            checked_at,
-            later_entries,
-        } => ("SupersededBy", checked_at, later_entries),
-    };
+    let (name, checked_at, later_entries) = status;
     ctx.out.known_at(checked_at);
     match &certificate.selection {
         ReportSelection::TrialBalance(selection) => {
@@ -922,6 +1227,8 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
             ("recorded_at", Json::Int(i128::from(stored.recorded_at.0))),
             ("through_seq", Json::Int(i128::from(state.through_seq.0))),
             ("leaf_count", Json::Int(i128::from(state.leaf_count))),
+            ("evidence_after_seq", evidence_after(state.evidence_after)),
+            ("leaf_kinds", leaf_kinds(&created.leaf_kinds)),
             ("root", s(hex(&state.root))),
             ("prev_state_oid", state.prev_state_oid.map_or(Json::Null, |oid| s(hex(&oid.0)))),
             ("signatures", s("ed25519")),
@@ -930,13 +1237,39 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
             ("scope", s("entry_prefix")),
         ],
         &format!(
-            "Created entry accumulator checkpoint {}: {} entries through sequence {}, recorded at {}. Root {}.\nSigned TransparencyCheckpoint {} (Ed25519 public key {}); export it with `fa proof signed-checkpoint` and check it with `fa-verify checkpoint <file> --key <public key>`.",
-            hex(&stored.oid.0), state.leaf_count, state.through_seq.0,
+            "Created entry accumulator checkpoint {}: {} leaves ({} entries, {} evidence records) through sequence {}, recorded at {}. Root {}.\nSigned TransparencyCheckpoint {} (Ed25519 public key {}); export it with `fa proof signed-checkpoint` and check it with `fa-verify checkpoint <file> --key <public key>`.",
+            hex(&stored.oid.0), state.leaf_count, created.leaf_kinds.entries,
+            state.leaf_count.saturating_sub(created.leaf_kinds.entries), state.through_seq.0,
             stored.recorded_at.0, hex(&state.root),
             hex(&created.checkpoint.oid.0), hex(&book.checkpoint_public_key()),
         ),
     );
     Ok(())
+}
+
+/// A state's evidence boundary: null for an entries-only state.
+fn evidence_after(boundary: Option<fgdb_types::CommitSeq>) -> Json {
+    boundary.map_or(Json::Null, |seq| Json::Int(i128::from(seq.0)))
+}
+
+/// An accumulator prefix's leaves by record kind.
+fn leaf_kinds(kinds: &fa::LeafKinds) -> Json {
+    obj(vec![
+        ("entries", Json::Int(i128::from(kinds.entries))),
+        ("attestations", Json::Int(i128::from(kinds.attestations))),
+        (
+            "import_receipts",
+            Json::Int(i128::from(kinds.import_receipts)),
+        ),
+        (
+            "custody_transfers",
+            Json::Int(i128::from(kinds.custody_transfers)),
+        ),
+        (
+            "supplemental_evidence",
+            Json::Int(i128::from(kinds.supplemental_evidence)),
+        ),
+    ])
 }
 
 pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -965,6 +1298,11 @@ pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
                 ("through_seq", Json::Int(i128::from(state.through_seq.0))),
                 ("recorded_at", Json::Int(i128::from(state.recorded_at.0))),
                 ("leaf_count", Json::Int(i128::from(state.leaf_count))),
+                ("evidence_after_seq", evidence_after(state.evidence_after)),
+                (
+                    "leaf_kinds",
+                    state.leaf_kinds.as_ref().map_or(Json::Null, leaf_kinds),
+                ),
                 ("finding", state.finding.as_ref().map_or(Json::Null, s)),
             ])
         })

@@ -1,0 +1,2 @@
+DP_Acct_Identifier|PD_Pending_ID|PD_Right_Capacity|PD_Hold_Reason|PD_Amount|PD_Currency|PD_Effective_Date
+DEP-4001|PND-9001|BUS|RECEIVERSHIP_HOLD|15000.00|USD|2026-04-10

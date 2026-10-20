@@ -1210,6 +1210,32 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
         let commitment = field(&issued, "commitment").unwrap_or_default().to_string();
         tokens.push((holder, path, commitment));
     }
+    let mut prep_tokens = Vec::new();
+    for holder in ["prep-a", "prep-b"] {
+        let path = dir.join(format!("{holder}.token")).display().to_string();
+        ok(&[
+            "capability",
+            "issue",
+            "--holder",
+            holder,
+            "--profile",
+            "preparer",
+            "--out",
+            &path,
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+            "--grant",
+            "post",
+            "--grant",
+            "verify",
+            "--book",
+            &b,
+            "--json",
+        ]);
+        prep_tokens.push((holder, path));
+    }
     let daemon = start(&book);
     // Token sessions name host files relative to the daemon's --files-root.
     write(
@@ -1334,8 +1360,292 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
         drafts.contains("agent-a-draft") && drafts.contains("agent-b-draft"),
         "{drafts}"
     );
+
+    // `--as <principal>` on the daemon path without a token is refused with FA-REF-011 (exit 7).
+    let (code, out, _) = fa(&[
+        "--as",
+        "controller",
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-011"), "{out}");
+    assert!(
+        out.contains("present a token: fa capability issue --holder <principal> --out <file>"),
+        "{out}"
+    );
+
+    // Both Preparers post to trunk through fad: prep-a via `--token`, prep-b via `FA_TOKEN` fallback.
+    write(
+        &dir,
+        "prep-a-post.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"prep-a-trunk","legs":[{"side":"debit","account":"6000","amount":"4.00 USD"},{"side":"credit","account":"1000","amount":"4.00 USD"}]}"#,
+    );
+    write(
+        &dir,
+        "prep-b-post.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"prep-b-trunk","legs":[{"side":"debit","account":"6000","amount":"5.00 USD"},{"side":"credit","account":"1000","amount":"5.00 USD"}]}"#,
+    );
+    let posted_a = ok(&[
+        "--token",
+        &prep_tokens[0].1,
+        "post",
+        "--intent",
+        "prep-a-post.json",
+        "--evidence",
+        &oid,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert!(posted_a.contains("\"principal\":\"prep-a\""), "{posted_a}");
+    let entry_a = field(&posted_a, "vid").unwrap_or_default().to_string();
+    let argv_b: Vec<String> = [
+        "post",
+        "--intent",
+        "prep-b-post.json",
+        "--evidence",
+        &oid,
+        "--book",
+        &b,
+        "--json",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    let (code_b, out_b) = fa_cli::entry::fa_with_env_token(
+        &argv_b,
+        Some(&prep_tokens[1].1),
+        fa_cli::cli::Files::default(),
+        true,
+    );
+    assert_eq!(code_b, 0, "{}\n{}", out_b.stdout, out_b.stderr);
+    checked(&out_b.stdout);
+    assert!(out_b.stdout.contains("\"principal\":\"prep-b\""), "{}", out_b.stdout);
+    let entry_b = field(&out_b.stdout, "vid").unwrap_or_default().to_string();
+
+    // Provenance & SoD across sessions through fad:
+    // 1) agent-a uploads a document through fad -> graded AgentUpload automatically (retrieved_by = agent-a).
+    // 2) prep-a attempts to post to trunk citing the unreviewed AgentUpload -> refused (FA-REF-012).
+    // 3) operator (a distinct principal from agent-a) reviews agent-a's upload through fad -> succeeds,
+    //    whereas operator reviewing its own AgentUpload is refused by SoD (FA-REF-111).
+    // 4) prep-a now posts to trunk citing the reviewed document -> succeeds.
+    write(&dir, "agent-invoice.txt", "Agent-uploaded invoice 6.00 USD");
+    let uploaded = ok(&[
+        "--token",
+        &tokens[0].1,
+        "document",
+        "add",
+        "agent-invoice.txt",
+        "--kind",
+        "Invoice",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert!(uploaded.contains("\"grade\":\"AgentUpload\""), "{uploaded}");
+    let agent_doc_oid = field(&uploaded, "oid").unwrap_or_default().to_string();
+    write(
+        &dir,
+        "prep-a-agent-doc.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"prep-a-agent-doc","legs":[{"side":"debit","account":"6000","amount":"6.00 USD"},{"side":"credit","account":"1000","amount":"6.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(&[
+        "--token",
+        &prep_tokens[0].1,
+        "post",
+        "--intent",
+        "prep-a-agent-doc.json",
+        "--evidence",
+        &agent_doc_oid,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 3, "unreviewed AgentUpload must be refused: {out}");
+    assert!(out.contains("FA-REF-086"), "{out}");
+
+    write(&dir, "op-self.txt", "Operator self-uploaded schedule");
+    let op_uploaded = ok(&[
+        "document",
+        "add",
+        "op-self.txt",
+        "--kind",
+        "Invoice",
+        "--grade",
+        "AgentUpload",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let op_doc_oid = field(&op_uploaded, "oid").unwrap_or_default().to_string();
+    let (code, out, _) = fa(&[
+        "document",
+        "attest",
+        "review",
+        &op_doc_oid,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 7, "self-review must be refused by SoD: {out}");
+    assert!(out.contains("FA-REF-111"), "{out}");
+
+    let reviewed = ok(&[
+        "document",
+        "attest",
+        "review",
+        &agent_doc_oid,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(field(&reviewed, "event"), Some("attestation_recorded"), "{reviewed}");
+    let posted_after_review = ok(&[
+        "--token",
+        &prep_tokens[0].1,
+        "post",
+        "--intent",
+        "prep-a-agent-doc.json",
+        "--evidence",
+        &agent_doc_oid,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(field(&posted_after_review, "event"), Some("posted"), "{posted_after_review}");
+
+    // A valid token issued in another book is refused by fad with FA-REF-156 (exit 7).
+    let other_dir = tmp("other-book");
+    let (other_book, _) = self::book(&other_dir);
+    let other_b = other_book.display().to_string();
+    let foreign_token = dir.join("foreign.token").display().to_string();
+    ok(&[
+        "capability",
+        "issue",
+        "--holder",
+        "prep-a",
+        "--profile",
+        "preparer",
+        "--out",
+        &foreign_token,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "post",
+        "--grant",
+        "verify",
+        "--book",
+        &other_b,
+        "--json",
+    ]);
+    let (code, out, _) = fa(&[
+        "--token",
+        &foreign_token,
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-156"), "{out}");
+
+    // Per-connection session token binding over the live Unix socket:
+    // Frame 1 binds prep-a; Frame 2 with token=None inherits prep-a; Frame 3 with prep-b is refused FA-REF-011.
+    {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        let reg = registry().expect("verbs.toml");
+        let socket = book.join(&reg.daemon.socket);
+        let tok_a_bytes = std::fs::read(&prep_tokens[0].1).unwrap();
+        let tok_b_bytes = std::fs::read(&prep_tokens[1].1).unwrap();
+        let req1 = Request {
+            op: Op::Run,
+            argv: vec![
+                "--period=FY2026-P03".into(),
+                "--json".into(),
+                "--".into(),
+                "tb".into(),
+            ],
+            cwd: None,
+            stdin: None,
+            token: Some(tok_a_bytes),
+        };
+        let req2 = Request {
+            op: Op::Run,
+            argv: vec![
+                "--period=FY2026-P03".into(),
+                "--json".into(),
+                "--".into(),
+                "tb".into(),
+            ],
+            cwd: None,
+            stdin: None,
+            token: None,
+        };
+        let req3 = Request {
+            op: Op::Run,
+            argv: vec![
+                "--period=FY2026-P03".into(),
+                "--json".into(),
+                "--".into(),
+                "tb".into(),
+            ],
+            cwd: None,
+            stdin: None,
+            token: Some(tok_b_bytes),
+        };
+        let mut stream = UnixStream::connect(&socket).expect("connect to fad");
+        for req in [&req1, &req2, &req3] {
+            let encoded =
+                fa_cli::wire::encode(req.to_json(1).render().as_bytes(), reg.daemon.max_frame_bytes)
+                    .unwrap();
+            stream.write_all(&encoded).unwrap();
+        }
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).unwrap();
+        let mut dec = fa_cli::wire::Decoder::new(reg.daemon.max_frame_bytes);
+        dec.push(&raw);
+        let mut replies = Vec::new();
+        while let Ok(Some(frame)) = dec.next_frame() {
+            let v = fa_cli::wire::canonical(&frame).unwrap();
+            replies.push(fa_cli::wire::Response::from_json(&v, 1).unwrap());
+        }
+        assert_eq!(replies.len(), 3);
+        assert_eq!(replies[0].exit, 0, "{}", replies[0].stdout);
+        assert!(replies[0].stdout.contains("\"principal\":\"prep-a\""), "{}", replies[0].stdout);
+        assert_eq!(replies[1].exit, 0, "{}", replies[1].stdout);
+        assert!(
+            replies[1].stdout.contains("\"principal\":\"prep-a\""),
+            "subsequent frame on same connection inherits bound token: {}",
+            replies[1].stdout
+        );
+        assert_eq!(replies[2].exit, 7, "{}", replies[2].stdout);
+        assert!(replies[2].stdout.contains("FA-REF-011"), "{}", replies[2].stdout);
+    }
+
     let (code, stopped, err) = fad(&["stop", "--book", &b, "--json"]);
     assert_eq!(code, 0, "{stopped}\n{err}");
     let (exit, rest) = daemon.finish();
     assert_eq!(exit, 0, "{rest}");
+
+    // Verify journal attribution in the committed entries on disk: each token's holder is recorded as preparer.
+    let keys = fa::book::BookKeys::load(&book.join("book.keys")).expect("load keys");
+    let reopened =
+        fa::book::Book::open_dir(&book, keys, fa::book::Entropy::production()).expect("open book");
+    let vid_a = fgdb_types::VId(u128::from_str_radix(&entry_a, 16).expect("entry_a vid"));
+    let vid_b = fgdb_types::VId(u128::from_str_radix(&entry_b, 16).expect("entry_b vid"));
+    let (committed_a, _) = reopened.read_entry(vid_a).expect("read_entry a").expect("entry a");
+    let (committed_b, _) = reopened.read_entry(vid_b).expect("read_entry b").expect("entry b");
+    assert_eq!(committed_a.proposal.principal_ref, fa_model::principal_vid("prep-a"));
+    assert_eq!(committed_b.proposal.principal_ref, fa_model::principal_vid("prep-b"));
 }

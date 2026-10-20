@@ -113,11 +113,7 @@ impl Harness {
                 .unwrap()
                 .unwrap();
         }
-        for (period, date) in [
-            ("FY2025-P03", "2025-03-01"),
-            ("FY2026-P03", "2026-03-01"),
-            ("FY2026-P04", "2026-04-01"),
-        ] {
+        for period in ["FY2025-P03", "FY2026-P03", "FY2026-P04"] {
             runtime
                 .block_on(book.transition_period(
                     &cx,
@@ -125,7 +121,6 @@ impl Harness {
                     PeriodTransition::Open,
                     PRINCIPAL,
                     1,
-                    day(date),
                     period.as_bytes(),
                     &cap(&["close"]),
                 ))
@@ -366,6 +361,20 @@ fn kernel_posted_two_frontier_bridge_certifies_replays_and_survives_reopen() {
         .unwrap()
         .unwrap();
     assert_eq!(reused.certificate, decoded);
+    let read_only = h
+        .book
+        .diff_statement_certificates(&h.cx(), PRINCIPAL, &cap(&["read"]), a, b)
+        .unwrap()
+        .unwrap();
+    assert_eq!(read_only, certified.report);
+    assert_ne!(a.known_at, b.known_at);
+    assert!(
+        h.book
+            .diff_statement_certificates(&h.cx(), PRINCIPAL, &cap(&["read"]), b, a)
+            .unwrap()
+            .is_err(),
+        "reversed retained frontiers are refused, not bridged backwards"
+    );
     assert_eq!(h.head(), after);
 }
 
@@ -588,6 +597,14 @@ fn authorization_precedes_frontier_chart_and_certificate_observation() {
             .code,
         fa_journal::refusal::code::CAPABILITY
     );
+    assert_eq!(
+        h.book
+            .diff_statement_certificates(&cx, PRINCIPAL, &cap(&["produce"]), &c.before, &c.after)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY
+    );
     assert_eq!(h.head(), at);
 }
 
@@ -658,6 +675,18 @@ fn future_reversed_and_changed_report_questions_refuse_without_writes() {
                 &h.cx(),
                 PRINCIPAL,
                 &cap(&["read", "produce"]),
+                &good.certificate.before,
+                &income.certificate.after
+            )
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        h.book
+            .diff_statement_certificates(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read"]),
                 &good.certificate.before,
                 &income.certificate.after
             )

@@ -247,7 +247,6 @@ impl Harness {
                     PeriodTransition::Open,
                     PRINCIPAL,
                     1,
-                    date,
                     b"open-april",
                     Erasable::seal(
                         &"April".to_string(),
@@ -401,7 +400,6 @@ fn harness() -> Harness {
                 PeriodTransition::Open,
                 PRINCIPAL,
                 1,
-                day,
                 b"open",
                 Erasable::seal(
                     &"period".to_string(),
@@ -1838,7 +1836,6 @@ fn as_of_and_activity_semantics_across_all_account_types_and_memo_footing() {
                     PeriodTransition::Open,
                     PRINCIPAL,
                     1,
-                    dec_2025,
                     b"open-2025-p12",
                     desc,
                     &cap,

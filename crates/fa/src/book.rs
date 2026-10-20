@@ -585,6 +585,11 @@ pub struct ProducedBundle {
     pub bundle: fa_notary::Bundle,
     /// The `ProductionReceipt`'s canonical bytes, signed by the book's key.
     pub receipt: Vec<u8>,
+    /// The signed checkpoint the bundle was produced against.
+    pub checkpoint: fa_notary::StoredCheckpoint,
+    /// The documents its in-scope entries cite, each once, in journal order
+    /// (a litigation production numbers them in this order; fa-6l9).
+    pub documents: Vec<fa_model::Oid>,
 }
 
 /// One open book.
@@ -933,7 +938,9 @@ impl Book {
     }
 
     /// Move a period along the state machine under `capability` (plan §14:
-    /// it must be `principal`'s and hold the transition's op). The facade
+    /// it must be `principal`'s and hold the transition's op). The period
+    /// dates the control entry (`fa_journal::period::transition_date`); no
+    /// caller supplies a date. The facade
     /// seals the description with fresh salt, so it cites no approvals:
     /// transitions that need approvers (Lock, SoftClosed→Reopen) are planned
     /// with [`Book::plan_transition`], approved with [`Book::approve`], and
@@ -945,13 +952,12 @@ impl Book {
         t: PeriodTransition,
         principal: VId,
         reason_code: u16,
-        effective_date: DateDay,
         idempotency_key: &[u8],
         capability: &fa_journal::Capability,
     ) -> Outcome<Transitioned> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.transition_period(
-            &purposes, period_code, t, principal, reason_code, effective_date, idempotency_key, capability,
+            &purposes, period_code, t, principal, reason_code, idempotency_key, capability,
         )))
     }
 
@@ -966,16 +972,16 @@ impl Book {
         t: PeriodTransition,
         principal: VId,
         reason_code: u16,
-        effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::TransitionPlan> {
         with_store!(&self.store, core => core.plan_transition(
-            &self.purposes(), period_code, t, principal, reason_code, effective_date, idempotency_key,
+            &self.purposes(), period_code, t, principal, reason_code, idempotency_key,
         ))
     }
 
-    /// The digest an approval of `plan` binds.
-    pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Result<[u8; 32], BookError> {
+    /// The digest an approval of `plan` binds; refused when the book's
+    /// calendar has no period `plan` names.
+    pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Outcome<[u8; 32]> {
         with_store!(&self.store, core => core.plan_digest(plan))
     }
 
@@ -1122,6 +1128,59 @@ impl Book {
     /// Every draft of the book.
     pub fn drafts(&self) -> Result<Vec<fa_journal::DraftView>, BookError> {
         with_store!(&self.store, core => core.drafts(&self.purposes()))
+    }
+
+    /// Open the production profile of `profile.matter` (plan §13.2, bead
+    /// fa-6l9): its Bates prefix and first number, journaled once per matter.
+    pub fn open_production(
+        &mut self,
+        capability: fa_journal::Capability,
+        profile: fa_journal::ProductionProfile,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::ProductionOpened> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.open_production(
+            &purposes, capability, profile, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Produce `documents` in `matter`: each document the matter has not
+    /// produced receives the next Bates numbers, journaled by one Produce
+    /// record; a produced document keeps its range.
+    pub fn produce(
+        &mut self,
+        capability: fa_journal::Capability,
+        matter: &str,
+        documents: Vec<fa_journal::ProducedDocument>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::Produced> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce(
+            &purposes, capability, matter, documents, effective_date, idempotency_key,
+        )))
+    }
+
+    /// The production profile of `matter` and every range it assigned.
+    pub fn production(
+        &self,
+        matter: &str,
+    ) -> Result<Option<fa_journal::ProductionView>, BookError> {
+        with_store!(&self.store, core => core.production(&self.purposes(), matter))
+    }
+
+    /// Every matter's production profile.
+    pub fn productions(&self) -> Result<Vec<fa_journal::ProductionView>, BookError> {
+        with_store!(&self.store, core => core.productions(&self.purposes()))
+    }
+
+    /// Every matter's Bates range for `document`.
+    pub fn document_bates_ranges(
+        &self,
+        document: &fa_model::Oid,
+    ) -> Result<Vec<(fa_journal::ProductionProfile, fa_journal::RecordedRange)>, BookError> {
+        with_store!(&self.store, core => core.document_bates_ranges(&self.purposes(), document))
     }
 
     /// Fork the scenario `name` over the trunk prefix at `fork.at` (the head
@@ -2398,6 +2457,101 @@ impl Book {
         ))
     }
 
+    /// Selected cash detail as bounded JSONL, only after replaying the
+    /// certificate against the independently expected request and definition.
+    pub fn cash_flow_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::CashFlowCertificate,
+        expected: &crate::RollForwardRequest,
+        expected_definition: &crate::CashFlowDefinition,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.cash_flow_jsonl(
+            &self.purposes(), principal, capability, certificate, expected, expected_definition
+        ))
+    }
+
+    /// The aging workpaper plus control rows and conclusion, as bounded JSONL,
+    /// only after both sources replay against the expected question.
+    pub fn effective_date_aging_reconciliation_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::AgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.effective_date_aging_reconciliation_jsonl(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// Complete selected-account portfolio detail as bounded JSONL, only after
+    /// both sources, scope and coverage replay against the expected request.
+    pub fn aging_portfolio_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::aging::portfolio::AgingPortfolioCertificate,
+        expected: &crate::aging::portfolio::AgingPortfolioRequest,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.aging_portfolio_jsonl(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// Replay an aging certificate only for the recipient's own fixed question:
+    /// account (or the whole book), cutoff, recorded sequence and buckets.
+    pub fn replay_effective_date_aging_for(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::AgingCertificate,
+        expected: &crate::AgingRequest,
+    ) -> Outcome<crate::EffectiveDateAging> {
+        with_store!(&self.store, core => core.replay_effective_date_aging_for(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// The aging workpaper as bounded JSONL, only after the recipient-bound replay.
+    pub fn effective_date_aging_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::AgingCertificate,
+        expected: &crate::AgingRequest,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.effective_date_aging_jsonl(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// A statement trace as bounded JSONL, only after every source and link replays.
+    pub fn statement_trace_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::StatementTraceCertificate,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.statement_trace_jsonl(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// A statement comparison's bounded review package (JSONL and Markdown),
+    /// only after the comparison and both of its sources replay.
+    pub fn statement_diff_workpaper(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::StatementDiffCertificate,
+    ) -> Outcome<crate::StatementDiffWorkpaper> {
+        with_store!(&self.store, core => core.statement_diff_workpaper(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
     /// Produce a historical account lead schedule under current whole-book read authority.
     pub fn roll_forward(
         &self,
@@ -2431,6 +2585,34 @@ impl Book {
     ) -> Outcome<crate::RollForward> {
         with_store!(&self.store, core => core.replay_roll_forward(
             &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Replay a certified roll-forward only after binding it to an
+    /// independently supplied expected request with a fixed prefix.
+    pub fn replay_roll_forward_for(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::RollForwardCertificate,
+        expected: &crate::RollForwardRequest,
+    ) -> Outcome<crate::RollForward> {
+        with_store!(&self.store, core => core.replay_roll_forward_for(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// The lead schedule as bounded JSONL, only after the certificate replays
+    /// against the expected request. Produce authority is required by the core.
+    pub fn roll_forward_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::RollForwardCertificate,
+        expected: &crate::RollForwardRequest,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.roll_forward_jsonl(
+            &self.purposes(), principal, capability, certificate, expected
         ))
     }
 
@@ -2471,6 +2653,20 @@ impl Book {
         ))
     }
 
+    /// Age a retained OpenItems certificate at its own prefix, keeping it as the source.
+    pub fn certify_effective_date_aging_from_source(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        source: &crate::ReportCertificate,
+        effective_through: DateDay,
+        buckets: &crate::AgingBuckets,
+    ) -> Outcome<crate::CertifiedAging> {
+        with_store!(&self.store, core => core.certify_effective_date_aging_from_source(
+            &self.purposes(), principal, capability, source, effective_through, buckets
+        ))
+    }
+
     /// Replay a certified effective-date aging report under current read authority.
     pub fn replay_effective_date_aging(
         &self,
@@ -2504,6 +2700,21 @@ impl Book {
     ) -> Outcome<crate::CertifiedAgingReconciliation> {
         with_store!(&self.store, core => core.certify_effective_date_aging_reconciliation(
             &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify a reconciliation from retained aging and control certificates,
+    /// reused byte-for-byte, against the recipient's fixed request.
+    pub fn certify_effective_date_aging_reconciliation_from_sources(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        aging: &crate::AgingCertificate,
+        control: &crate::ReportCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<crate::CertifiedAgingReconciliation> {
+        with_store!(&self.store, core => core.certify_effective_date_aging_reconciliation_from_sources(
+            &self.purposes(), principal, capability, aging, control, expected
         ))
     }
 
@@ -2542,6 +2753,21 @@ impl Book {
     ) -> Outcome<crate::aging::portfolio::CertifiedAgingPortfolio> {
         with_store!(&self.store, core => core.certify_aging_portfolio(
             &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify a portfolio from retained whole-book aging and control
+    /// certificates, reused byte-for-byte, against the recipient's fixed request.
+    pub fn certify_aging_portfolio_from_sources(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        aging: &crate::AgingCertificate,
+        control: &crate::ReportCertificate,
+        expected: &crate::aging::portfolio::AgingPortfolioRequest,
+    ) -> Outcome<crate::aging::portfolio::CertifiedAgingPortfolio> {
+        with_store!(&self.store, core => core.certify_aging_portfolio_from_sources(
+            &self.purposes(), principal, capability, aging, control, expected
         ))
     }
 
@@ -2611,6 +2837,18 @@ impl Book {
         ))
     }
 
+    /// Replay a summary certificate, then compare its selector at HEAD.
+    pub fn summary_certificate_status(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::SummaryCertificate,
+    ) -> Outcome<crate::SummaryCertificateStatus> {
+        with_store!(&self.store, core => core.summary_certificate_status(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
     /// Read the same stock/activity statement at two fixed recorded frontiers.
     pub fn statement_diff(
         &self,
@@ -2647,6 +2885,34 @@ impl Book {
         ))
     }
 
+    /// Bridge two retained statement certificates under current read
+    /// authority, replaying both in full; nothing is certified or written.
+    pub fn diff_statement_certificates(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        before: &crate::ReportCertificate,
+        after: &crate::ReportCertificate,
+    ) -> Outcome<crate::StatementDiff> {
+        with_store!(&self.store, core => core.diff_statement_certificates(
+            &self.purposes(), principal, capability, before, after
+        ))
+    }
+
+    /// Certify the bridge between two retained statement certificates, keeping
+    /// both original sources rather than re-certifying their frontiers.
+    pub fn compare_statement_certificates(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        before: &crate::ReportCertificate,
+        after: &crate::ReportCertificate,
+    ) -> Outcome<crate::CertifiedStatementDiff> {
+        with_store!(&self.store, core => core.compare_statement_certificates(
+            &self.purposes(), principal, capability, before, after
+        ))
+    }
+
     /// Reconcile a complete adjacent-publication trace to its net statement comparison.
     pub fn statement_trace(
         &self,
@@ -2680,6 +2946,20 @@ impl Book {
     ) -> Outcome<crate::StatementTrace> {
         with_store!(&self.store, core => core.replay_statement_trace(
             &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Attribute a saved statement comparison to every intermediate
+    /// publication, keeping its original endpoint certificates.
+    pub fn certify_statement_trace_from_diff(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        comparison: &crate::StatementDiffCertificate,
+        max_publications: usize,
+    ) -> Outcome<crate::CertifiedStatementTrace> {
+        with_store!(&self.store, core => core.certify_statement_trace_from_diff(
+            &self.purposes(), principal, capability, comparison, max_publications
         ))
     }
 
@@ -2811,6 +3091,36 @@ impl Book {
         known_at: Option<CommitSeq>,
     ) -> Result<fa_journal::ProjectionVerification, BookError> {
         with_store!(&self.store, core => core.verify_projections(&self.purposes(), known_at))
+    }
+
+    /// Preview an explicit leg-projection recovery without writing (fa-avx):
+    /// admission first, then the complete native history, then every source
+    /// Entry checked against its creation before any change is derived. The
+    /// preview is bound to this exact head and partition root.
+    pub fn prepare_projection_rebuild(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::PreparedProjectionRebuild> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_projection_rebuild_with_history(&purposes, principal, capability)
+        ))
+    }
+
+    /// Rebuild every leg mirror and projection edge from the journal in one
+    /// commit, then recheck projections and open items independently. A clean
+    /// book is a true no-op. Read, verify and schema_change are required, and
+    /// no caller value enters the repair.
+    pub fn rebuild_projections(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::ProjectionRebuild> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.rebuild_projections(&purposes, principal, capability)
+        ))
     }
 
     /// Compare every posted leg's `applied` mirror with the open-item fold.
@@ -2994,6 +3304,21 @@ impl Book {
         )))
     }
 
+    /// Review an explicit selection from one retained finding run in ONE
+    /// native transaction: any refused request refuses the whole set.
+    pub fn review_finding_run(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+        requests: &[crate::findings::review::FindingReviewRequest],
+    ) -> Outcome<Vec<crate::findings::review::FindingReview>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.review_finding_run(
+            &purposes, principal, capability, certificate, requests
+        )))
+    }
+
     /// Produce the original numbered workpaper from a replayed recorded run.
     pub fn finding_workpaper(
         &self,
@@ -3075,6 +3400,37 @@ impl Book {
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
         with_store!(&self.store, core => core.trial_balance_at(&self.purposes(), periods, known_at))
+    }
+
+    /// Load the delta window back to the oldest maintained register cursor
+    /// so head reads in this process can fold just the tail after each
+    /// cursor (fa-715; see [`AsyncBook::prepare_head_reads`]).
+    pub fn prepare_head_reads(
+        &mut self,
+        principal: VId,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_head_reads(
+            &purposes, principal, capability,
+        )))
+    }
+
+    /// The trial balance at the head and how it was served: maintained
+    /// cells plus the exact tail, or the literal fold and why (plan §17).
+    pub fn trial_balance_served(
+        &self,
+        periods: &[String],
+    ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
+        with_store!(&self.store, core => core.trial_balance_served(&self.purposes(), periods))
+    }
+
+    /// The period activity at the head and how it was served (plan §17).
+    pub fn period_activity_served(
+        &self,
+        periods: &[String],
+    ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
+        with_store!(&self.store, core => core.period_activity_served(&self.purposes(), periods))
     }
 
     /// Stock balances through an inclusive civil date, including opening history.
@@ -3467,6 +3823,69 @@ impl ReadScope<'_> {
         }))
     }
 
+    /// Admit a native report at its recorded frontier under the scope
+    /// caveats, before its query is constructed, and return the frontier.
+    /// Stock balances run from inception, so a trial balance reaches every
+    /// period through its latest selected one (a `periods` caveat refuses
+    /// it; an `effective` caveat admits it only through that period's last
+    /// day); period activity and an explanation reach exactly their
+    /// periods; open items reach the whole book. A statement is admitted by
+    /// its own family, so here it reaches the whole book.
+    pub fn admit_report(
+        &self,
+        selection: &crate::ReportSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<CommitSeq> {
+        use crate::{ReportSelection, TrialBalanceSelection};
+        fn codes(periods: &[String]) -> Vec<&str> {
+            periods.iter().map(String::as_str).collect()
+        }
+        let seq = self.frontier(known_at)?;
+        let book = self.book.context();
+        let admitted = match selection {
+            ReportSelection::TrialBalance(TrialBalanceSelection::Periods(periods)) => {
+                self.authority.stock_through(book, seq, &codes(periods))
+            }
+            ReportSelection::TrialBalance(TrialBalanceSelection::Activity(periods)) => {
+                self.authority.periods(book, seq, &codes(periods))
+            }
+            ReportSelection::TrialBalance(TrialBalanceSelection::AsOf(day)) => {
+                self.authority.as_of(seq, *day)
+            }
+            ReportSelection::ExplainBalance { period, .. } => {
+                self.authority.periods(book, seq, &[period.as_str()])
+            }
+            ReportSelection::OpenItems { .. } | ReportSelection::Statement(_) => {
+                self.authority.whole_book(seq)
+            }
+        };
+        Ok(admitted.map(|()| seq))
+    }
+
+    /// Admit a stock read as of civil `day` (every period that starts by
+    /// then, such as an open-items snapshot): a `periods` caveat refuses it.
+    pub fn admit_as_of(&self, day: DateDay, known_at: Option<CommitSeq>) -> Outcome<CommitSeq> {
+        let seq = self.frontier(known_at)?;
+        Ok(self.authority.as_of(seq, day).map(|()| seq))
+    }
+
+    /// Admit a read of exactly the periods `codes` (a period's history, or
+    /// one register in it) at its recorded frontier.
+    pub fn admit_periods(&self, codes: &[&str], known_at: Option<CommitSeq>) -> Outcome<CommitSeq> {
+        let seq = self.frontier(known_at)?;
+        Ok(self
+            .authority
+            .periods(self.book.context(), seq, codes)
+            .map(|()| seq))
+    }
+
+    /// Admit a read of the whole book at its recorded frontier: an entry,
+    /// its lineage or its evidence, whose period is known only once read.
+    pub fn admit_whole_book(&self, known_at: Option<CommitSeq>) -> Outcome<CommitSeq> {
+        let seq = self.frontier(known_at)?;
+        Ok(self.authority.whole_book(seq).map(|()| seq))
+    }
+
     /// [`Book::explain_balance`] under the scope caveats: it reaches its one
     /// period.
     pub fn explain_balance(
@@ -3475,13 +3894,14 @@ impl ReadScope<'_> {
         period_code: &str,
         known_at: Option<CommitSeq>,
     ) -> Outcome<BalanceExplanation> {
-        let seq = self.frontier(known_at)?;
-        if let Err(r) = self
-            .authority
-            .periods(self.book.context(), seq, &[period_code])
-        {
-            return Ok(Err(r));
-        }
+        let selection = crate::ReportSelection::ExplainBalance {
+            account,
+            period: period_code.to_string(),
+        };
+        let seq = match self.admit_report(&selection, known_at)? {
+            Ok(seq) => seq,
+            Err(r) => return Ok(Err(r)),
+        };
         Ok(Ok(self.book.explain_balance(
             account,
             period_code,
@@ -3489,23 +3909,18 @@ impl ReadScope<'_> {
         )?))
     }
 
-    /// [`Book::trial_balance_at`] under the scope caveats. Stock balances
-    /// run from inception, so the read reaches every period before the
-    /// latest selected one: a `periods` caveat refuses it, and an
-    /// `effective` caveat admits it only through that period's last day.
+    /// [`Book::trial_balance_at`] under the scope caveats (see
+    /// [`Self::admit_report`]).
     pub fn trial_balance_at(
         &self,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
-        let seq = self.frontier(known_at)?;
-        let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
-        if let Err(r) = self
-            .authority
-            .stock_through(self.book.context(), seq, &codes)
-        {
-            return Ok(Err(r));
-        }
+        let selection = crate::TrialBalanceSelection::Periods(periods.to_vec());
+        let seq = match self.admit_report(&selection.into(), known_at)? {
+            Ok(seq) => seq,
+            Err(r) => return Ok(Err(r)),
+        };
         Ok(Ok(self.book.trial_balance_at(periods, Some(seq))?))
     }
 
@@ -3516,10 +3931,10 @@ impl ReadScope<'_> {
         day: DateDay,
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
-        let seq = self.frontier(known_at)?;
-        if let Err(r) = self.authority.as_of(seq, day) {
-            return Ok(Err(r));
-        }
+        let seq = match self.admit_as_of(day, known_at)? {
+            Ok(seq) => seq,
+            Err(r) => return Ok(Err(r)),
+        };
         Ok(Ok(self.book.balance_as_of(day, Some(seq))?))
     }
 
@@ -3530,11 +3945,11 @@ impl ReadScope<'_> {
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
-        let seq = self.frontier(known_at)?;
-        let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
-        if let Err(r) = self.authority.periods(self.book.context(), seq, &codes) {
-            return Ok(Err(r));
-        }
+        let selection = crate::TrialBalanceSelection::Activity(periods.to_vec());
+        let seq = match self.admit_report(&selection.into(), known_at)? {
+            Ok(seq) => seq,
+            Err(r) => return Ok(Err(r)),
+        };
         Ok(Ok(self.book.period_activity(periods, Some(seq))?))
     }
 }

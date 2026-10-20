@@ -64,28 +64,122 @@ pub fn mad_1e9(counts: &[u64; 9]) -> Result<i128, LanternError> {
 
 /// Pearson's chi-square at six decimal places: `Σ (O_d − E_d)² / E_d`.
 pub fn chi_square_1e6(counts: &[u64; 9]) -> Result<i128, LanternError> {
+    chi_square_table_1e6(counts, &BENFORD_1E9)
+}
+
+/// Exact-integer Benford expected counts (`n * P_d / 10^9`) law-rounded under
+/// LargestRemainder (ties broken by ascending bucket index) so that
+/// `sum(expected_counts) == n` (`fa-vpk`).
+pub fn expected_counts_1e9(n: u64, expected_1e9: &[i128]) -> Result<Vec<u64>, LanternError> {
+    let n_i = i128::from(n);
+    let mut floors: Vec<u64> = Vec::with_capacity(expected_1e9.len());
+    let mut remainders: Vec<(i128, usize)> = Vec::with_capacity(expected_1e9.len());
+    let mut floor_sum: u64 = 0;
+
+    for (idx, &p) in expected_1e9.iter().enumerate() {
+        let prod = n_i
+            .checked_mul(p)
+            .ok_or(LanternError::Overflow("benford expected count product"))?;
+        let q = u64::try_from(prod / 1_000_000_000)
+            .map_err(|_| LanternError::Overflow("benford expected count floor"))?;
+        let r = prod % 1_000_000_000;
+        floors.push(q);
+        floor_sum = floor_sum
+            .checked_add(q)
+            .ok_or(LanternError::Overflow("benford expected count sum"))?;
+        remainders.push((r, idx));
+    }
+
+    let deficit = n.saturating_sub(floor_sum) as usize;
+    remainders.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    for &(_, idx) in remainders.iter().take(deficit) {
+        floors[idx] += 1;
+    }
+    Ok(floors)
+}
+
+/// First-digit (`1..=9`) exact-integer Benford expected counts summing to `n`.
+pub fn first_digit_expected_counts(n: u64) -> Result<[u64; 9], LanternError> {
+    let vec = expected_counts_1e9(n, &BENFORD_1E9)?;
+    Ok(core::array::from_fn(|i| vec[i]))
+}
+
+/// Second-digit (`0..=9`) exact-integer Benford expected counts summing to `n`.
+pub fn second_digit_expected_counts(n: u64) -> Result<[u64; 10], LanternError> {
+    let vec = expected_counts_1e9(n, &BENFORD_SECOND_1E9)?;
+    Ok(core::array::from_fn(|i| vec[i]))
+}
+
+/// First-two-digits (`10..=99`) exact-integer Benford expected counts summing to `n`.
+pub fn first_two_digits_expected_counts(n: u64) -> Result<[u64; 90], LanternError> {
+    let vec = expected_counts_1e9(n, &BENFORD_FIRST_TWO_1E9)?;
+    Ok(core::array::from_fn(|i| vec[i]))
+}
+
+/// Kolmogorov-Smirnov supremum distance $D = \max_d |F_{\text{obs}}(d) - F_{\text{exp}}(d)|$
+/// at nine decimal places (`10^9` scale) for the first-digit distribution (`fa-vpk`).
+pub fn ks_1e9(counts: &[u64; 9]) -> Result<i128, LanternError> {
+    ks_table_1e9(counts, &BENFORD_1E9)
+}
+
+/// Kolmogorov-Smirnov supremum distance $D = \max_k |F_{\text{obs}}(k) - F_{\text{exp}}(k)|$
+/// at nine decimal places (`10^9` scale) over an expected-proportion table (`fa-vpk`).
+pub fn ks_table_1e9(counts: &[u64], expected_1e9: &[i128]) -> Result<i128, LanternError> {
     let total: u64 = counts.iter().sum();
-    if total == 0 {
+    if total == 0 || expected_1e9.is_empty() {
         return Ok(0);
     }
-    if total > MAX_POPULATION {
-        return Err(LanternError::Overflow("benford population above 10^6 legs"));
-    }
     let n = i128::from(total);
-    let mut sum: i128 = 0;
-    for (d, &c) in counts.iter().enumerate() {
-        // Work at 1e9: O·1e9 − N·P, squared, times 1e6, over N·P·1e9.
-        let diff = i128::from(c) * 1_000_000_000 - n * BENFORD_1E9[d];
-        let numerator = diff
-            .checked_mul(diff)
-            .and_then(|sq| sq.checked_mul(1_000_000))
-            .ok_or(LanternError::Overflow("chi-square numerator"))?;
-        let denominator = n * BENFORD_1E9[d] * 1_000_000_000;
-        sum = sum
-            .checked_add(numerator / denominator)
-            .ok_or(LanternError::Overflow("chi-square sum"))?;
+    let mut cum_obs: i128 = 0;
+    let mut cum_exp: i128 = 0;
+    let mut max_d: i128 = 0;
+    for (&c, &p) in counts.iter().zip(expected_1e9.iter()) {
+        cum_obs = cum_obs
+            .checked_add(i128::from(c))
+            .ok_or(LanternError::Overflow("ks cumulative observed"))?;
+        cum_exp = cum_exp
+            .checked_add(p)
+            .ok_or(LanternError::Overflow("ks cumulative expected"))?;
+        let obs_scaled = cum_obs
+            .checked_mul(1_000_000_000)
+            .ok_or(LanternError::Overflow("ks observed scale"))?;
+        let exp_scaled = n
+            .checked_mul(cum_exp)
+            .ok_or(LanternError::Overflow("ks expected scale"))?;
+        let diff = (obs_scaled - exp_scaled).abs() / n;
+        if diff > max_d {
+            max_d = diff;
+        }
     }
-    Ok(sum)
+    Ok(max_d)
+}
+
+/// Smirnov asymptotic critical value $c_\alpha / \sqrt{n}$ at `10^9` scale for
+/// `alpha_bps` in `{1000 (10%), 500 (5%), 100 (1%)}`, evaluated in exact integer
+/// arithmetic via `u128::isqrt`.
+pub fn ks_critical_1e9(n: u64, alpha_bps: u32) -> Result<i128, LanternError> {
+    if n == 0 {
+        return Err(LanternError::Parameter {
+            procedure: "benford.ks".into(),
+            name: "n".into(),
+            message: "population n must be positive".into(),
+        });
+    }
+    let c_1e9: u128 = match alpha_bps {
+        1_000 => 1_220_000_000,
+        500 => 1_360_000_000,
+        100 => 1_630_000_000,
+        _ => {
+            return Err(LanternError::Parameter {
+                procedure: "benford.ks".into(),
+                name: "alpha_bps".into(),
+                message: "supported alpha_bps values are 1000 (10%), 500 (5%), or 100 (1%)".into(),
+            });
+        }
+    };
+    let num_sq = c_1e9 * c_1e9;
+    let crit = (num_sq / u128::from(n)).isqrt();
+    Ok(crit as i128)
 }
 
 /// `benford.first_digit`.
@@ -175,17 +269,18 @@ impl Procedure for FirstDigit {
             )]);
         }
         let mad = mad_1e9(&counts)?;
-        // The chi-square rides in the narrative only; above the population
+        let ks = ks_1e9(&counts)?;
+        // The chi-square and KS ride in the narrative only; above the population
         // its exact i128 arithmetic admits, the scored MAD still stands and
         // the narrative says the chi-square was not computed.
         let chi = if population <= MAX_POPULATION {
             format!(
-                "chi-square {}e-6 with 8 degrees of freedom",
+                "chi-square {}e-6 with 8 degrees of freedom, KS {ks}e-9",
                 chi_square_1e6(&counts)?
             )
         } else {
             format!(
-                "chi-square not computed above {MAX_POPULATION} legs (its exact arithmetic bound); MAD is the scored statistic"
+                "chi-square not computed above {MAX_POPULATION} legs (its exact arithmetic bound); KS {ks}e-9; MAD is the scored statistic"
             )
         };
         let severity = if mad <= close {
@@ -424,15 +519,16 @@ impl Procedure for SecondDigit {
         }
         let mad = mad_table_1e9(&counts, &BENFORD_SECOND_1E9)?;
         let max_z = max_z_milli(&counts, &BENFORD_SECOND_1E9)?;
+        let ks = ks_table_1e9(&counts, &BENFORD_SECOND_1E9)?;
         let chi = if population <= MAX_POPULATION {
             format!(
-                "chi-square {}e-6 with 9 degrees of freedom, max Z {}e-3",
+                "chi-square {}e-6 with 9 degrees of freedom, KS {ks}e-9, max Z {}e-3",
                 chi_square_table_1e6(&counts, &BENFORD_SECOND_1E9)?,
                 max_z
             )
         } else {
             format!(
-                "chi-square not computed above {MAX_POPULATION} legs; max Z {max_z}e-3; MAD is the scored statistic"
+                "chi-square not computed above {MAX_POPULATION} legs; KS {ks}e-9; max Z {max_z}e-3; MAD is the scored statistic"
             )
         };
         let severity = if mad <= close {
@@ -552,15 +648,16 @@ impl Procedure for FirstTwoDigits {
         }
         let mad = mad_table_1e9(&counts, &BENFORD_FIRST_TWO_1E9)?;
         let max_z = max_z_milli(&counts, &BENFORD_FIRST_TWO_1E9)?;
+        let ks = ks_table_1e9(&counts, &BENFORD_FIRST_TWO_1E9)?;
         let chi = if population <= MAX_POPULATION {
             format!(
-                "chi-square {}e-6 with 89 degrees of freedom, max Z {}e-3",
+                "chi-square {}e-6 with 89 degrees of freedom, KS {ks}e-9, max Z {}e-3",
                 chi_square_table_1e6(&counts, &BENFORD_FIRST_TWO_1E9)?,
                 max_z
             )
         } else {
             format!(
-                "chi-square not computed above {MAX_POPULATION} legs; max Z {max_z}e-3; MAD is the scored statistic"
+                "chi-square not computed above {MAX_POPULATION} legs; KS {ks}e-9; max Z {max_z}e-3; MAD is the scored statistic"
             )
         };
         let severity = if mad <= close {
@@ -641,5 +738,64 @@ mod tests {
             chi_square_1e6(&too_many),
             Err(LanternError::Overflow(_))
         ));
+    }
+
+    #[test]
+    fn expected_counts_and_ks_match_naive_and_fsci_stats_reference_vectors() {
+        use fa_reference::lantern::{
+            naive_benford_expected_counts, naive_chi_square_table_1e6, naive_ks_table_1e9,
+            naive_mad_table_1e9,
+        };
+
+        // 1. LargestRemainder integer expected counts sum to n and match the naive oracle.
+        let exp_1000 = first_digit_expected_counts(1_000).unwrap();
+        assert_eq!(exp_1000, [301, 176, 125, 97, 79, 67, 58, 51, 46]);
+        assert_eq!(exp_1000.iter().sum::<u64>(), 1_000);
+        assert_eq!(
+            exp_1000.to_vec(),
+            naive_benford_expected_counts(1_000, &BENFORD_1E9)
+        );
+        let exp2_1000 = second_digit_expected_counts(1_000).unwrap();
+        assert_eq!(exp2_1000.iter().sum::<u64>(), 1_000);
+        assert_eq!(
+            exp2_1000.to_vec(),
+            naive_benford_expected_counts(1_000, &BENFORD_SECOND_1E9)
+        );
+        let exp12_1000 = first_two_digits_expected_counts(1_000).unwrap();
+        assert_eq!(exp12_1000.iter().sum::<u64>(), 1_000);
+        assert_eq!(
+            exp12_1000.to_vec(),
+            naive_benford_expected_counts(1_000, &BENFORD_FIRST_TWO_1E9)
+        );
+
+        // 2. Uniform 9-bucket population [100; 9] (n = 900):
+        // Pinned against `fsci_stats::chisquare` (361.528467 -> 361_528_467 at 1e6 scale;
+        // integer floor truncation across 9 buckets differs by at most 9 units at 1e-6).
+        let uniform = [100u64; 9];
+        let ks_uni = ks_1e9(&uniform).unwrap();
+        assert_eq!(ks_uni, 268_726_658);
+        assert_eq!(ks_uni, naive_ks_table_1e9(&uniform, &BENFORD_1E9));
+        let chi_uni = chi_square_1e6(&uniform).unwrap();
+        assert_eq!(chi_uni, naive_chi_square_table_1e6(&uniform, &BENFORD_1E9));
+        assert!((chi_uni - 361_528_467).abs() <= 9);
+
+        // 3. Skewed leading-1 heavy population (n = 1000):
+        // Pinned against `fsci_stats::chisquare` (198_818_611 at 1e6 scale) and step KS (198_970_004 at 1e9 scale).
+        let skewed = [500u64, 100, 80, 70, 60, 50, 50, 45, 45];
+        let ks_skew = ks_1e9(&skewed).unwrap();
+        assert_eq!(ks_skew, 198_970_004);
+        assert_eq!(ks_skew, naive_ks_table_1e9(&skewed, &BENFORD_1E9));
+        let chi_skew = chi_square_1e6(&skewed).unwrap();
+        assert_eq!(chi_skew, naive_chi_square_table_1e6(&skewed, &BENFORD_1E9));
+        assert!((chi_skew - 198_818_611).abs() <= 9);
+        assert_eq!(
+            mad_1e9(&skewed).unwrap(),
+            naive_mad_table_1e9(&skewed, &BENFORD_1E9)
+        );
+
+        // 4. Asymptotic Smirnov critical values at n = 10_000 (sqrt(n) = 100):
+        assert_eq!(ks_critical_1e9(10_000, 1_000).unwrap(), 12_200_000);
+        assert_eq!(ks_critical_1e9(10_000, 500).unwrap(), 13_600_000);
+        assert_eq!(ks_critical_1e9(10_000, 100).unwrap(), 16_300_000);
     }
 }

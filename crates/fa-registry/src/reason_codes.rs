@@ -1,6 +1,7 @@
 //! `registries/reason_codes.toml`: the registered reasons a principal may
-//! give, by scope (plan §8.2 and §9.2). Supersessions and ManualAssertions
-//! each require a reason registered for that scope.
+//! give, by scope (plan §7.3, §8.2 and §9.2). Supersessions,
+//! ManualAssertions and period transitions each require a reason registered
+//! for that scope.
 
 use std::collections::BTreeSet;
 
@@ -10,7 +11,12 @@ const REASON_CODES: &str = include_str!("../../../registries/reason_codes.toml")
 const R: &str = "reason_codes.toml";
 
 /// The closed set of scopes a reason may belong to.
-pub const SCOPES: [&str; 2] = ["manual_assertion", "supersession"];
+pub const SCOPES: [&str; 4] = [
+    "manual_assertion",
+    "supersession",
+    "period_control",
+    "period_reopen",
+];
 
 /// Stable supersession reason for the kernel's scheduled accrual reversal.
 pub const SCHEDULED_ACCRUAL_REVERSAL: u16 = 12;
@@ -126,6 +132,17 @@ mod tests {
             r.listing("manual_assertion")
                 .starts_with("1 NoDocumentIssued")
         );
+        assert_eq!(
+            r.get("period_control", 1).map(|x| x.name.as_str()),
+            Some("Scheduled")
+        );
+        assert_eq!(
+            r.get("period_reopen", 3).map(|x| x.name.as_str()),
+            Some("ErrorCorrection")
+        );
+        assert!(r.get("period_control", 0).is_none());
+        assert!(r.get("period_control", 4).is_none());
+        assert!(r.get("period_reopen", 0).is_none());
     }
 
     #[test]

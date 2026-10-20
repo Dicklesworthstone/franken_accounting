@@ -468,7 +468,7 @@ pub(super) fn admit<V: Vfs + Clone>(
     }
     let policy =
         EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
-    let derived_grade = crate::upload::upload_grade(&policy, capability.profile())?;
+    let derived_grade = crate::upload::upload_grade(&policy, capability.sod_profile())?;
     let machine_grade = crate::upload::upload_grade(&policy, fa_policy::Profile::Agent)?;
     let txn_cx = cx.txn();
     let txn = db.begin(&txn_cx)?;
@@ -505,10 +505,7 @@ pub(super) fn admit<V: Vfs + Clone>(
             recorded_or_conflict(book, &row, &proposal, &digest)?.map(Admission::AlreadyRecorded)
         );
     }
-    let preparer = Party {
-        principal: proposal.principal_ref,
-        profile: capability.profile(),
-    };
+    let preparer = Party::for_capability(proposal.principal_ref, capability);
     if let Err(refused) =
         authorize_approvals(&txn, db, book, &[], &digest, epoch, &key, 0, preparer)?
     {

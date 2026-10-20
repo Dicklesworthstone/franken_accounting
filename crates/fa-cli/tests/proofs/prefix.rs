@@ -38,7 +38,24 @@ fn native_prefixes_work_before_the_chart_and_preserve_historical_payload_coverag
     let checked =
         verify_prefix_with_records(&control_prefix, &checkpoint(&f, controls_oid)).unwrap();
     assert!(!checked.envelopes.is_empty());
-    assert!(checked.envelopes.iter().all(|entry| entry.class >= 16));
+    // The chart, fiscal-year and period controls, and the evidence document's
+    // import receipt: an evidence leaf (kind 3) since fa-va02.
+    assert!(
+        checked
+            .envelopes
+            .iter()
+            .filter(|leaf| leaf.kind == 1)
+            .all(|entry| entry.class >= 16)
+    );
+    assert_eq!(
+        checked
+            .envelopes
+            .iter()
+            .filter(|leaf| leaf.kind != 1)
+            .map(|leaf| leaf.kind)
+            .collect::<Vec<_>>(),
+        vec![3]
+    );
 
     let posted = f.post("native-prefix-sale", "2026-03-10", "12.34", &evidence);
     let state = f.checkpoint();

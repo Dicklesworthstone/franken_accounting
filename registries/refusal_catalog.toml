@@ -255,7 +255,7 @@ exit = "conflict"
 cite = "plan §5.1 / §14.2 / FA-INV-11 (authenticated posting plan, exact preparation basis and current authority)"
 fix = "rehearse the original intent again at the current book head under the acting capability, review its new certificate, then commit that exact plan"
 
-# ---- Period transitions (040) --------------------------------------------
+# ---- Period transitions (040–041) ----------------------------------------
 [[refusal]]
 code = "FA-REF-040"
 name = "TRANSITION"
@@ -263,6 +263,14 @@ owners = ["fa-journal"]
 exit = "safety"
 cite = "plan §7.3 period state machine"
 fix = "pick a legal transition: Future→Open, Open→SoftClose, SoftClosed→Close|Reopen, Closed→Lock|Reopen"
+
+[[refusal]]
+code = "FA-REF-041"
+name = "PERIOD_REASON"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §7.3 (every transition is journaled with its principal and reason); reason_codes.toml scopes period_control and period_reopen"
+fix = "give a registered reason: Scheduled, Reclose or AuditComplete for open, soft-close, close and lock; LateTransactions, AuditAdjustment, ErrorCorrection or Restatement for reopen"
 
 # ---- Certified replay (150) ---------------------------------------------
 [[refusal]]
@@ -381,7 +389,7 @@ name = "NOT_ORIGINALLY_REPORTED"
 owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §7.4 (AS ORIGINALLY REPORTED pins the first StatementIssuance, else the first Lock; never the first Close)"
-fix = "read the period as currently stated (omit --as-originally-reported), or lock it once it is final: fa period lock {period}"
+fix = "read the period as currently stated (omit --as-originally-reported), or lock it once it is final: fa period lock {period} --reason AuditComplete --yes"
 
 [[refusal]]
 code = "FA-REF-162"
@@ -987,6 +995,23 @@ owners = ["fa-journal"]
 exit = "verification"
 cite = "FA-INV-02 / FA-INV-04 / plan §5.7 (confirmation payload, source bindings and native creation records agree)"
 fix = "preserve the store and investigate the original confirmation, source ImportRun and documents, Entry and occupied-leg claim; do not reset or reuse a damaged identity"
+
+# ---- Litigation productions (fa-6l9) -------------------------------------------
+[[refusal]]
+code = "FA-REF-170"
+name = "PRODUCTION_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §13.2 (a ProductionProfile governs a matter's productions; bead fa-6l9)"
+fix = "list the book's matters with fa production list --json, or open one with fa production open <matter> --bates-prefix <PREFIX>"
+
+[[refusal]]
+code = "FA-REF-171"
+name = "BATES_RANGE_FIXED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §13.2 (a document's Bates range in a matter is assigned once and never changes)"
+fix = "produce the document again without --pages or --designation to receive its recorded range, or record the corrected document with fa document add and produce the new document"
 
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]

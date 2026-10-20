@@ -30,42 +30,255 @@ use crate::LanternError;
 const POPULATION_DIGEST_DOMAIN: &[u8] = b"fa:lantern:sample-population:v1";
 const SAMPLE_CERT_DOMAIN: &[u8] = b"fa:lantern:sample-certificate:v1";
 
-/// Deterministic PCG64-DXSM pseudo-number generator seeded from a declared `u64`
-/// input (no ambient entropy capability, Doctrine 3).
+const XSHIFT: u32 = 16;
+const INIT_A: u32 = 0x43b0_d7e5;
+const MULT_A: u32 = 0x931e_8875;
+const INIT_B: u32 = 0x8b51_f9dd;
+const MULT_B: u32 = 0x58f3_8ded;
+const MIX_MULT_L: u32 = 0xca01_f9dd;
+const MIX_MULT_R: u32 = 0x4973_f715;
+const POOL_SIZE: usize = 4;
+const CHEAP_MULTIPLIER: u64 = 0xda94_2042_e4dd_58b5;
+const DEFAULT_MULTIPLIER: u128 = 0x2360_ed05_1fc6_5da4_4385_df64_9fcc_f645;
+
+/// NumPy's default `SeedSequence` pool width in 32-bit words.
+pub const DEFAULT_SEED_SEQUENCE_POOL_SIZE: usize = POOL_SIZE;
+
+/// NumPy-compatible `SeedSequence` specialized to the canonical four-word pool
+/// (`fnp-random-core`, bead `fa-vpk`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedSequence {
+    pool: [u32; POOL_SIZE],
+}
+
+impl SeedSequence {
+    /// Construct `SeedSequence(seed)` from an unsigned 64-bit integer.
+    #[must_use]
+    pub fn from_seed(seed: u64) -> Self {
+        Self::assemble(&entropy_words(seed), &[])
+    }
+
+    /// Construct `SeedSequence(entropy=seed, spawn_key=spawn_key)`.
+    #[must_use]
+    pub fn with_spawn_key(seed: u64, spawn_key: &[u32]) -> Self {
+        Self::assemble(&entropy_words(seed), spawn_key)
+    }
+
+    /// Construct from NumPy-style little-endian entropy words.
+    ///
+    /// An empty entropy slice is normalized to the single word zero, matching
+    /// integer seed zero rather than creating an unseeded host-entropy path.
+    #[must_use]
+    pub fn from_entropy_words(entropy: &[u32], spawn_key: &[u32]) -> Self {
+        if entropy.is_empty() {
+            Self::assemble(&[0], spawn_key)
+        } else {
+            Self::assemble(entropy, spawn_key)
+        }
+    }
+
+    fn assemble(entropy: &[u32], spawn_key: &[u32]) -> Self {
+        let mut assembled = entropy.to_vec();
+        if !spawn_key.is_empty() && assembled.len() < POOL_SIZE {
+            assembled.resize(POOL_SIZE, 0);
+        }
+        assembled.extend_from_slice(spawn_key);
+
+        let mut pool = [0_u32; POOL_SIZE];
+        let mut hash_const = INIT_A;
+        for (index, slot) in pool.iter_mut().enumerate() {
+            *slot = hashmix(assembled.get(index).copied().unwrap_or(0), &mut hash_const);
+        }
+        for source in 0..POOL_SIZE {
+            for destination in 0..POOL_SIZE {
+                if source != destination {
+                    let hashed = hashmix(pool[source], &mut hash_const);
+                    pool[destination] = mix(pool[destination], hashed);
+                }
+            }
+        }
+        for &extra in assembled.iter().skip(POOL_SIZE) {
+            for slot in &mut pool {
+                let hashed = hashmix(extra, &mut hash_const);
+                *slot = mix(*slot, hashed);
+            }
+        }
+        Self { pool }
+    }
+
+    /// Generate NumPy-compatible 32-bit state words.
+    #[must_use]
+    pub fn generate_state(&self, word_count: usize) -> Vec<u32> {
+        let mut output = Vec::with_capacity(word_count);
+        let mut hash_const = INIT_B;
+        for index in 0..word_count {
+            let mut value = self.pool[index % POOL_SIZE];
+            value ^= hash_const;
+            hash_const = hash_const.wrapping_mul(MULT_B);
+            value = value.wrapping_mul(hash_const);
+            value ^= value >> XSHIFT;
+            output.push(value);
+        }
+        output
+    }
+
+    /// Generate NumPy-compatible 64-bit state words, pairing low word first.
+    #[must_use]
+    pub fn generate_state_u64(&self, word_count: usize) -> Vec<u64> {
+        let state_word_count = word_count
+            .checked_mul(2)
+            .expect("SeedSequence u64 output word count overflow");
+        let words = self.generate_state(state_word_count);
+        words
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u64::from(pair[0]) | (u64::from(pair[1]) << 32))
+            .collect()
+    }
+}
+
+/// Deterministic NumPy-compatible `PCG64DXSM` pseudo-number generator seeded
+/// from a declared `u64` input (`fnp-random-core`, no ambient entropy capability,
+/// Doctrine 3).
+///
+/// # Python / NumPy Reproducibility Snippet
+///
+/// Every raw 64-bit word and bounded 128-bit integer drawn by [`Pcg64Dxsm`] matches
+/// `numpy.random.PCG64DXSM(seed)` bit-for-bit:
+///
+/// ```text
+/// import numpy as np
+///
+/// def next_bounded_u128(bg: np.random.PCG64DXSM, bound: int) -> int:
+///     if bound <= 1:
+///         return 0
+///     u128_max = (1 << 128) - 1
+///     zone = u128_max - (u128_max % bound)
+///     while True:
+///         hi = int(bg.random_raw())
+///         lo = int(bg.random_raw())
+///         v = (hi << 64) | lo
+///         if v < zone:
+///             return v % bound
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pcg64Dxsm {
     state: u128,
-    inc: u128,
+    increment: u128,
 }
 
+/// Compatibility alias matching `fnp-random-core`.
+pub type Pcg64DxsmRng = Pcg64Dxsm;
+
 impl Pcg64Dxsm {
-    const MULTIPLIER: u128 = 0xda94_2042_e4dd_58b5;
-
-    /// Construct a deterministic `Pcg64Dxsm` stream from `seed`.
+    /// Construct a deterministic `Pcg64Dxsm` stream from `seed`, matching
+    /// `numpy.random.PCG64DXSM(seed)`.
     #[must_use]
-    pub const fn new(seed: u64) -> Self {
-        let inc = ((seed as u128) << 1) | 1;
-        let state0 = inc.wrapping_add(seed as u128);
-        let state1 = state0.wrapping_mul(Self::MULTIPLIER).wrapping_add(inc);
-        Self { state: state1, inc }
+    pub fn new(seed: u64) -> Self {
+        Self::from_seed(seed)
     }
 
-    /// Advance the state and return the next 64-bit output word using the DXSM
-    /// output permutation.
+    /// Seed from a NumPy-compatible [`SeedSequence`].
+    #[must_use]
+    pub fn from_seed_sequence(sequence: &SeedSequence) -> Self {
+        let words = sequence.generate_state_u64(4);
+        let initial_state = (u128::from(words[0]) << 64) | u128::from(words[1]);
+        let initial_sequence = (u128::from(words[2]) << 64) | u128::from(words[3]);
+        Self::seed(initial_state, initial_sequence)
+    }
+
+    /// Construct exactly as `numpy.random.PCG64DXSM(seed)`.
+    #[must_use]
+    pub fn from_seed(seed: u64) -> Self {
+        Self::from_seed_sequence(&SeedSequence::from_seed(seed))
+    }
+
+    /// Apply the standard PCG set-sequence seeding dance.
+    #[must_use]
+    pub fn seed(initial_state: u128, initial_sequence: u128) -> Self {
+        let increment = (initial_sequence << 1) | 1;
+        let mut generator = Self {
+            state: 0,
+            increment,
+        };
+        generator.seed_step();
+        generator.state = generator.state.wrapping_add(initial_state);
+        generator.seed_step();
+        generator
+    }
+
+    /// Restore an exact raw state without running the seeding transform.
+    #[must_use]
+    pub const fn from_raw_state(state: u128, increment: u128) -> Self {
+        Self { state, increment }
+    }
+
+    /// Return the exact `(state, increment)` pair.
+    #[must_use]
+    pub const fn raw_state(&self) -> (u128, u128) {
+        (self.state, self.increment)
+    }
+
+    /// Return the split state form used by portable journals and manifests.
+    #[must_use]
+    pub const fn split_state(&self) -> ([u64; 2], [u64; 2]) {
+        (
+            [(self.state >> 64) as u64, self.state as u64],
+            [(self.increment >> 64) as u64, self.increment as u64],
+        )
+    }
+
+    /// Restore a state emitted by [`Self::split_state`].
+    #[must_use]
+    pub const fn from_split_state(state: [u64; 2], increment: [u64; 2]) -> Self {
+        Self {
+            state: (state[0] as u128) << 64 | state[1] as u128,
+            increment: (increment[0] as u128) << 64 | increment[1] as u128,
+        }
+    }
+
+    fn seed_step(&mut self) {
+        self.state = self
+            .state
+            .wrapping_mul(DEFAULT_MULTIPLIER)
+            .wrapping_add(self.increment);
+    }
+
+    #[inline]
+    fn step(&mut self) {
+        self.state = self
+            .state
+            .wrapping_mul(u128::from(CHEAP_MULTIPLIER))
+            .wrapping_add(self.increment);
+    }
+
+    /// Generate the next raw 64-bit DXSM word, then advance the state.
+    #[inline]
     pub fn next_u64(&mut self) -> u64 {
-        let old = self.state;
-        self.state = old.wrapping_mul(Self::MULTIPLIER).wrapping_add(self.inc);
-
-        let mut hi = (old >> 64) as u64;
-        let lo = (old as u64) | 1;
-        hi ^= hi >> 32;
-        hi = hi.wrapping_mul(Self::MULTIPLIER as u64);
-        hi ^= hi >> 48;
-        hi = hi.wrapping_mul(lo);
-        hi
+        let low = (self.state as u64) | 1;
+        let mut high = (self.state >> 64) as u64;
+        high ^= high >> 32;
+        high = high.wrapping_mul(CHEAP_MULTIPLIER);
+        high ^= high >> 48;
+        high = high.wrapping_mul(low);
+        self.step();
+        high
     }
 
-    /// Draw an unbiased integer in `0..bound` via Lemire's rejection method.
+    /// Advance the state by `delta` steps (jump-ahead) in O(log delta)
+    /// multiplications: the stream continues exactly as if `delta` values had
+    /// been drawn.
+    pub fn advance(&mut self, delta: u128) {
+        self.state = lcg_advance_128(
+            self.state,
+            delta,
+            u128::from(CHEAP_MULTIPLIER),
+            self.increment,
+        );
+    }
+
+    /// Draw an unbiased integer in `0..bound` via rejection over 128-bit raw draws.
     pub fn next_bounded_u128(&mut self, bound: u128) -> u128 {
         if bound <= 1 {
             return 0;
@@ -80,6 +293,57 @@ impl Pcg64Dxsm {
             }
         }
     }
+}
+
+/// The state of the 128-bit LCG `state' = mult * state + inc` after `delta` steps:
+/// `mult^delta * state + (mult^delta - 1) / (mult - 1) * inc`, by repeated squaring in
+/// O(log delta) multiplications (Brown, "Random Number Generation with Arbitrary Strides").
+#[must_use]
+pub fn lcg_advance_128(state: u128, mut delta: u128, mult: u128, inc: u128) -> u128 {
+    let mut cur_mult: u128 = mult;
+    let mut cur_plus: u128 = inc;
+    let mut acc_mult: u128 = 1;
+    let mut acc_plus: u128 = 0;
+    while delta > 0 {
+        if delta & 1 != 0 {
+            acc_mult = acc_mult.wrapping_mul(cur_mult);
+            acc_plus = acc_plus.wrapping_mul(cur_mult).wrapping_add(cur_plus);
+        }
+        delta >>= 1;
+        if delta > 0 {
+            cur_plus = cur_mult.wrapping_add(1).wrapping_mul(cur_plus);
+            cur_mult = cur_mult.wrapping_mul(cur_mult);
+        }
+    }
+    acc_mult.wrapping_mul(state).wrapping_add(acc_plus)
+}
+
+fn entropy_words(seed: u64) -> Vec<u32> {
+    if seed == 0 {
+        return vec![0];
+    }
+    let mut words = Vec::with_capacity(2);
+    let mut value = seed;
+    while value != 0 {
+        words.push(value as u32);
+        value >>= 32;
+    }
+    words
+}
+
+fn hashmix(value: u32, hash_const: &mut u32) -> u32 {
+    let mut mixed = value ^ *hash_const;
+    *hash_const = hash_const.wrapping_mul(MULT_A);
+    mixed = mixed.wrapping_mul(*hash_const);
+    mixed ^ (mixed >> XSHIFT)
+}
+
+fn mix(left: u32, right: u32) -> u32 {
+    let mut mixed = left
+        .wrapping_mul(MIX_MULT_L)
+        .wrapping_sub(right.wrapping_mul(MIX_MULT_R));
+    mixed ^= mixed >> XSHIFT;
+    mixed
 }
 
 /// An item in an audit sampling population (an open item or GL detail leg).
@@ -933,6 +1197,93 @@ mod tests {
         assert_eq!(
             strat.decision_card.verify_replay(epoch).unwrap(),
             strat.decision_card.digest().unwrap()
+        );
+    }
+
+    #[test]
+    fn numpy_seed_sequence_and_pcg64dxsm_vectors_are_bit_exact() {
+        assert_eq!(
+            SeedSequence::from_seed(0).generate_state(8),
+            [
+                0xb0f4_78be,
+                0xdb2c_d7e7,
+                0x2c71_ba49,
+                0xabf4_641a,
+                0x9d7b_8d41,
+                0x20c6_ed6d,
+                0x223c_39d4,
+                0x2c40_99de,
+            ]
+        );
+        assert_eq!(
+            SeedSequence::from_seed(42).generate_state(8),
+            [
+                0xcd54_0ab7,
+                0x9f1e_2e6d,
+                0x79fb_94b6,
+                0xd578_73dc,
+                0x64d4_20b7,
+                0x7d28_2a1b,
+                0x4692_d5ff,
+                0x3365_7971,
+            ]
+        );
+        let mut generator = Pcg64Dxsm::from_seed(42);
+        let actual: Vec<u64> = (0..8).map(|_| generator.next_u64()).collect();
+        assert_eq!(
+            actual,
+            [
+                0xab1c_5033_8e63_481d,
+                0x01bd_f91d_548d_1872,
+                0xa872_905d_0418_d0a1,
+                0x5f0a_8427_0b80_eabc,
+                0x34e8_2505_4db5_f685,
+                0x319f_f93c_b20c_b433,
+                0xc24f_b90e_b5d6_26af,
+                0xf1c7_6bf8_e2e9_99a6,
+            ]
+        );
+
+        let mut jumped = Pcg64Dxsm::from_seed(42);
+        jumped.advance(8);
+        assert_eq!(jumped.raw_state(), generator.raw_state());
+        assert_eq!(jumped.next_u64(), generator.next_u64());
+
+        let (state, increment) = generator.split_state();
+        let mut restored = Pcg64Dxsm::from_split_state(state, increment);
+        assert_eq!(generator.next_u64(), restored.next_u64());
+        assert_eq!(generator.raw_state(), restored.raw_state());
+
+        let left = SeedSequence::with_spawn_key(7, &[1, 2, 3]).generate_state(16);
+        let repeated = SeedSequence::with_spawn_key(7, &[1, 2, 3]).generate_state(16);
+        let reordered = SeedSequence::with_spawn_key(7, &[3, 2, 1]).generate_state(16);
+        assert_eq!(left, repeated);
+        assert_ne!(left, reordered);
+        assert_eq!(
+            SeedSequence::from_entropy_words(&[], &[]),
+            SeedSequence::from_seed(0)
+        );
+    }
+
+    #[test]
+    fn sample_reproducibility_vectors_match_numpy_pcg64dxsm_snippet() {
+        let pop = fixture_population();
+        let usd = UnitId(1);
+        // Pinned against `np.random.PCG64DXSM(20260115)` with 128-bit Lemire rejection:
+        let mus = sample_mus(&pop, 20_260_115, Amount::new(usd, 50_000)).unwrap();
+        assert_eq!(mus.start_dollar_mantissa, 25_653);
+        let mus_indices: Vec<usize> = mus.selected.iter().map(|s| s.population_index).collect();
+        assert_eq!(mus_indices, vec![1, 3, 4, 5]);
+        assert_eq!(
+            mus.certificate.selected_item_ids,
+            vec!["AR-002", "AR-004", "AR-005", "AR-006"]
+        );
+
+        // Pinned against `np.random.PCG64DXSM(42)` partial Fisher-Yates (indices [0, 4, 5]):
+        let uni = sample_uniform(&pop, 42, 3).unwrap();
+        assert_eq!(
+            uni.certificate.selected_item_ids,
+            vec!["AR-001", "AR-005", "AR-006"]
         );
     }
 }

@@ -1355,6 +1355,89 @@ pub fn relative_size_factor_by_account(
     out
 }
 
+/// Independent reference oracle for Benford integer expected counts under
+/// LargestRemainder (`fa-vpk`): given population `n` and `expected_1e9`
+/// proportions summing to `10^9`, returns bucket counts summing to `n`.
+#[must_use]
+pub fn naive_benford_expected_counts(n: u64, expected_1e9: &[i128]) -> Vec<u64> {
+    let n_i = i128::from(n);
+    let mut floors: Vec<u64> = Vec::with_capacity(expected_1e9.len());
+    let mut rems: Vec<(i128, usize)> = Vec::with_capacity(expected_1e9.len());
+    let mut floor_sum: u64 = 0;
+    for (idx, &p) in expected_1e9.iter().enumerate() {
+        let prod = n_i * p;
+        let q = (prod / 1_000_000_000) as u64;
+        let r = prod % 1_000_000_000;
+        floors.push(q);
+        floor_sum += q;
+        rems.push((r, idx));
+    }
+    let deficit = n.saturating_sub(floor_sum) as usize;
+    rems.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    for &(_, idx) in rems.iter().take(deficit) {
+        floors[idx] += 1;
+    }
+    floors
+}
+
+/// Independent reference oracle for Nigrini MAD at `10^9` scale over an
+/// arbitrary expected-proportion table (`fa-vpk`).
+#[must_use]
+pub fn naive_mad_table_1e9(counts: &[u64], expected_1e9: &[i128]) -> i128 {
+    let k = expected_1e9.len() as i128;
+    let n: i128 = counts.iter().map(|c| i128::from(*c)).sum();
+    if n == 0 || k == 0 {
+        return 0;
+    }
+    let mut total = 0i128;
+    for (&c, &p) in counts.iter().zip(expected_1e9.iter()) {
+        let obs = i128::from(c) * 1_000_000_000;
+        let exp = n * p;
+        total += (obs - exp).abs();
+    }
+    total / (k * n)
+}
+
+/// Independent reference oracle for Pearson's chi-square at `10^6` scale over
+/// an arbitrary expected-proportion table (`fa-vpk`).
+#[must_use]
+pub fn naive_chi_square_table_1e6(counts: &[u64], expected_1e9: &[i128]) -> i128 {
+    let n: i128 = counts.iter().map(|c| i128::from(*c)).sum();
+    if n == 0 {
+        return 0;
+    }
+    let mut sum = 0i128;
+    for (&c, &p) in counts.iter().zip(expected_1e9.iter()) {
+        let diff = i128::from(c) * 1_000_000_000 - n * p;
+        let num = diff * diff * 1_000_000;
+        let den = n * p * 1_000_000_000;
+        sum += num / den;
+    }
+    sum
+}
+
+/// Independent reference oracle for Kolmogorov-Smirnov supremum distance
+/// $D = \max_k |F_{\text{obs}}(k) - F_{\text{exp}}(k)|$ at `10^9` scale (`fa-vpk`).
+#[must_use]
+pub fn naive_ks_table_1e9(counts: &[u64], expected_1e9: &[i128]) -> i128 {
+    let n: i128 = counts.iter().map(|c| i128::from(*c)).sum();
+    if n == 0 {
+        return 0;
+    }
+    let mut cum_obs = 0i128;
+    let mut cum_exp = 0i128;
+    let mut max_d = 0i128;
+    for (&c, &p) in counts.iter().zip(expected_1e9.iter()) {
+        cum_obs += i128::from(c);
+        cum_exp += p;
+        let diff = (cum_obs * 1_000_000_000 - n * cum_exp).abs() / n;
+        if diff > max_d {
+            max_d = diff;
+        }
+    }
+    max_d
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

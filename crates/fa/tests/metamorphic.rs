@@ -217,7 +217,6 @@ fn setup_book(seed: u64, key_seed: u8) -> FixtureBook {
         PeriodTransition::Open,
         principal,
         1,
-        day,
         b"open-march",
         &close_cap,
     )

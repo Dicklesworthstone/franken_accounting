@@ -1,0 +1,419 @@
+# Capability operations, caveat vocabulary, and profile templates (plan §14.2, §14.4, bead fa-v62).
+#
+# Every operation the admissibility matrix, SoD policy, or verb registry cites
+# resolves to `[[op]]` in durable tag order (`0..=20`). Every caveat carried by
+# `fa:capability:v1` / v2 is declared in `[[caveat]]` (`status = "live"` for
+# active header fields and v2 tags `1..=10`; `status = "dormant"` with
+# `tracking_bead` for planned caveats). Every §14.4 profile template is
+# declared in `[[profile]]` over one of the three base kernel profiles
+# (`Human`, `Agent`, `System`).
+
+schema_version = 1
+
+# ---------------------------------------------------------------------------
+# Closed operation vocabulary (`Op::ALL` in durable tag order 0..=20)
+# ---------------------------------------------------------------------------
+
+[[op]]
+tag = 0
+name = "read"
+agent_forbidden = false
+system_forbidden = false
+summary = "Observe book state, entries, registers, statements, and certificates within scope."
+
+[[op]]
+tag = 1
+name = "post"
+agent_forbidden = false
+system_forbidden = false
+summary = "Post or rehearse ordinary entries in Open periods (or on a draft for Agent profiles)."
+
+[[op]]
+tag = 2
+name = "post_softclosed"
+agent_forbidden = false
+system_forbidden = false
+summary = "Post Original or Pending entries into SoftClosed periods."
+
+[[op]]
+tag = 3
+name = "post_closed"
+agent_forbidden = false
+system_forbidden = false
+summary = "Post adjusting, reversal, replacement, reclassification, or resolution entries into Closed periods."
+
+[[op]]
+tag = 4
+name = "approve"
+agent_forbidden = true
+system_forbidden = true
+summary = "Record attributable approvals over proposal digests under current SoD policy."
+
+[[op]]
+tag = 5
+name = "reconcile"
+agent_forbidden = false
+system_forbidden = false
+summary = "Import statements, match bank lines, confirm matches, and record balance assertions."
+
+[[op]]
+tag = 6
+name = "close"
+agent_forbidden = true
+system_forbidden = false
+summary = "Transition periods to SoftClosed, Closed, or Locked and execute closing runs."
+
+[[op]]
+tag = 7
+name = "reopen"
+agent_forbidden = true
+system_forbidden = false
+summary = "Reopen SoftClosed, Closed, or Locked periods under authorized reopen rules."
+
+[[op]]
+tag = 8
+name = "restate"
+agent_forbidden = true
+system_forbidden = false
+summary = "Open and execute Revision, Restatement, and PriorPeriodAdjustment cases."
+
+[[op]]
+tag = 9
+name = "migrate"
+agent_forbidden = false
+system_forbidden = false
+summary = "Execute historical and opening migration runs into Locked Opening or Historical periods."
+
+[[op]]
+tag = 10
+name = "schema_change"
+agent_forbidden = true
+system_forbidden = false
+summary = "Modify book chart, units, periods, parties, instruments, or closing route maps."
+
+[[op]]
+tag = 11
+name = "rule_change"
+agent_forbidden = true
+system_forbidden = false
+summary = "Activate security policies, Canon rules, or intake mapping rules."
+
+[[op]]
+tag = 12
+name = "issue_capability"
+agent_forbidden = true
+system_forbidden = true
+summary = "Journal capability issuances and revocations within the issuer's own authority."
+
+[[op]]
+tag = 13
+name = "witness"
+agent_forbidden = false
+system_forbidden = false
+summary = "Countersign transparency checkpoints as an external or internal witness."
+
+[[op]]
+tag = 14
+name = "verify"
+agent_forbidden = false
+system_forbidden = false
+summary = "Run book, register, accumulator, close, certificate, and bundle verifiers."
+
+[[op]]
+tag = 15
+name = "produce"
+agent_forbidden = false
+system_forbidden = false
+summary = "Produce self-verifying bundles, retained findings runs, and disclosed document packages."
+
+[[op]]
+tag = 16
+name = "hold"
+agent_forbidden = false
+system_forbidden = false
+summary = "Place and release legal or receivership holds over book scopes."
+
+[[op]]
+tag = 17
+name = "erase"
+agent_forbidden = true
+system_forbidden = false
+summary = "Execute dual-control erasure cuts over erasable narrative fields not under legal hold."
+
+[[op]]
+tag = 18
+name = "privileged"
+agent_forbidden = true
+system_forbidden = false
+summary = "Observe unredacted privileged documents and workpapers."
+
+[[op]]
+tag = 19
+name = "receivership"
+agent_forbidden = true
+system_forbidden = false
+summary = "Operate a receivership branch and receivership cutover controls."
+
+[[op]]
+tag = 20
+name = "partial_view"
+agent_forbidden = false
+system_forbidden = false
+summary = "Admit partially visible balance explanations when cross-scope entries exist."
+
+# ---------------------------------------------------------------------------
+# Caveat vocabulary (plan §14.2)
+# ---------------------------------------------------------------------------
+
+[[caveat]]
+name = "ops"
+encoding = "field"
+status = "live"
+payload_type = "list(u8 op_tag, ascending)"
+attenuation_law = "subset"
+summary = "Closed operation set from [[op]]; an attenuated capability may keep only a subset of the issuer's ops."
+
+[[caveat]]
+name = "per_leg_ceilings"
+encoding = "field"
+status = "live"
+payload_type = "list(u32 unit, i128 positive_max, ascending)"
+attenuation_law = "unit_subset_and_mantissa_le"
+summary = "Per-entry, per-unit leg magnitude bound (amount <= A); when the issuer is bounded, an attenuated capability must stay within the issuer's bounded units and mantissas."
+
+[[caveat]]
+name = "expires_at"
+encoding = "field"
+status = "live"
+payload_type = "option(u64 commit_seq)"
+attenuation_law = "earlier_or_equal"
+summary = "CommitSeq admission bound (admits at head < expires_at); an attenuated capability cannot outlive its issuer."
+
+[[caveat]]
+tag = 1
+name = "books"
+encoding = "tagged"
+status = "live"
+payload_type = "list(id128 book_id, ascending)"
+attenuation_law = "subset"
+summary = "Book scope (books subset_of {...}); an attenuated capability may name only books the issuer can reach."
+
+[[caveat]]
+tag = 2
+name = "redaction"
+encoding = "tagged"
+status = "live"
+payload_type = "u16 contract_id"
+attenuation_law = "preserve_exact"
+summary = "Redaction contract id from redaction_contracts.toml; once attached, an attenuated capability must preserve the exact contract."
+
+[[caveat]]
+tag = 3
+name = "accounts"
+encoding = "tagged"
+status = "live"
+payload_type = "list(str account_code, ascending)"
+attenuation_law = "subtree_subset"
+summary = "Account subtree scope (accounts subset_of subtree(code)), compiled from the caveat's roots downward."
+
+[[caveat]]
+tag = 4
+name = "periods"
+encoding = "tagged"
+status = "live"
+payload_type = "list(str period_code, ascending)"
+attenuation_law = "subset"
+summary = "Fiscal period scope (periods subset_of {...}), judged against calendar period boundaries."
+
+[[caveat]]
+tag = 5
+name = "effective"
+encoding = "tagged"
+status = "live"
+payload_type = "i32 date_day"
+attenuation_law = "earlier_or_equal"
+summary = "Effective-date upper bound (effective <= date) in civil DateDay."
+
+[[caveat]]
+tag = 6
+name = "known_at"
+encoding = "tagged"
+status = "live"
+payload_type = "u64 commit_seq"
+attenuation_law = "earlier_or_equal"
+summary = "Known-at snapshot upper bound (known_at <= seq), pinning an auditor or examiner to fieldwork's snapshot."
+
+[[caveat]]
+tag = 7
+name = "branch"
+encoding = "tagged"
+status = "live"
+payload_type = "id128 branch_id"
+attenuation_law = "preserve_exact"
+summary = "Draft/branch confinement (branch = <draft>); confines writes and reads to the named non-trunk draft or scenario branch."
+
+[[caveat]]
+tag = 8
+name = "possession"
+encoding = "tagged"
+status = "live"
+payload_type = "bytes32 possession_digest"
+attenuation_law = "holder_bound_secret"
+summary = "Holder-bound secret commitment (possession = H(secret)); requires journaled issuance and proof of possession."
+
+[[caveat]]
+tag = 9
+name = "daily_totals"
+encoding = "tagged"
+status = "live"
+payload_type = "list(u32 unit, i128 positive_max, ascending)"
+attenuation_law = "unit_subset_and_mantissa_le"
+summary = "Cumulative daily gross-debit ceiling per unit (daily_total <= A) shared across the root issuance lineage."
+
+[[caveat]]
+tag = 10
+name = "daily_root"
+encoding = "tagged"
+status = "live"
+payload_type = "bytes32 root_commitment"
+attenuation_law = "preserve_root_commitment"
+summary = "Inherited root issuance commitment for shared daily_totals quota accounting; attenuation never resets a daily ceiling."
+
+[[caveat]]
+tag = 11
+name = "operator_kind"
+encoding = "tagged"
+status = "live"
+payload_type = "u8 operator_kind_tag"
+attenuation_law = "monotone_agent"
+summary = "Operator provenance kind (0 = Human, 1 = Agent); records an AI operator (e.g. MCP Preparer) without weakening Human-profile ops."
+
+[[caveat]]
+tag = 12
+name = "requires_dry_run"
+encoding = "tagged"
+status = "live"
+payload_type = "bool"
+attenuation_law = "monotone_true"
+summary = "Requires rehearsal plan certificate before any write commit."
+
+[[caveat]]
+tag = 13
+name = "classes"
+encoding = "tagged"
+status = "live"
+payload_type = "list(u16 class_tag, ascending)"
+attenuation_law = "subset"
+summary = "Admissible EntryClass subset (classes subset_of EntryClass)."
+
+[[caveat]]
+name = "entities"
+encoding = "planned"
+status = "dormant"
+tracking_bead = "fa-0x0"
+payload_type = "list(str entity_code, ascending)"
+attenuation_law = "subset"
+summary = "Legal-entity scope (entities subset_of {...}) for multi-entity books."
+
+[[caveat]]
+name = "dimensions"
+encoding = "planned"
+status = "dormant"
+tracking_bead = "fa-0x0"
+payload_type = "map(str dim, list(str value))"
+attenuation_law = "subset"
+summary = "Dimension-value scope (dimensions subset_of {...})."
+
+# ---------------------------------------------------------------------------
+# Registered profile templates (plan §14.4)
+# ---------------------------------------------------------------------------
+
+[[profile]]
+name = "Agent"
+base_profile = "Agent"
+external = false
+ops_ceiling = ["read", "post", "reconcile", "verify", "produce", "partial_view"]
+default_ops = ["read", "post", "verify"]
+required_caveats = ["ops"]
+summary = "Branch-confined AI operator: never writes trunk directly, never approves, closes, reopens, restates, changes schema or rules, issues capabilities, or erases."
+
+[[profile]]
+name = "Preparer"
+base_profile = "Human"
+external = false
+ops_ceiling = ["read", "post", "post_softclosed", "reconcile", "verify", "produce", "partial_view"]
+default_ops = ["read", "post", "verify"]
+required_caveats = ["ops"]
+summary = "Bounded human preparer for day-to-day posting, soft-close entries, reconciliation, and verification without approval or close authority."
+
+[[profile]]
+name = "Approver"
+base_profile = "Human"
+external = false
+ops_ceiling = ["read", "post", "post_softclosed", "post_closed", "approve", "reconcile", "verify", "produce", "partial_view"]
+default_ops = ["read", "approve", "verify"]
+required_caveats = ["ops"]
+summary = "Human reviewer authorized to record approvals over proposals and post reviewed adjustments."
+
+[[profile]]
+name = "Controller"
+base_profile = "Human"
+external = false
+ops_ceiling = ["read", "post", "post_softclosed", "post_closed", "approve", "reconcile", "close", "reopen", "restate", "migrate", "schema_change", "rule_change", "issue_capability", "verify", "produce", "hold", "erase", "privileged", "partial_view"]
+default_ops = ["read", "post", "post_softclosed", "post_closed", "approve", "reconcile", "close", "reopen", "restate", "schema_change", "rule_change", "issue_capability", "verify", "produce"]
+required_caveats = ["ops"]
+summary = "Accounting controller: period close and reopen, restatement cases, chart/rule governance, and capability issuance under SoD."
+
+[[profile]]
+name = "Auditor"
+base_profile = "Human"
+external = true
+ops_ceiling = ["read", "verify", "produce", "witness", "partial_view"]
+default_ops = ["read", "verify", "produce", "witness"]
+required_caveats = ["ops", "books", "redaction"]
+summary = "External auditor: read, verify, produce bundles, and countersign checkpoints over the full known-at range by default under a privilege redaction contract."
+
+[[profile]]
+name = "Regulator"
+base_profile = "Human"
+external = true
+ops_ceiling = ["read", "verify", "produce", "partial_view"]
+default_ops = ["read", "verify", "produce"]
+required_caveats = ["ops", "books", "expires_at", "redaction"]
+summary = "External regulator or examiner: scoped read, verification, and bundle production with mandatory examination expiry and access logging."
+
+[[profile]]
+name = "Investigator"
+base_profile = "Human"
+external = true
+ops_ceiling = ["read", "verify", "produce", "hold", "privileged", "partial_view"]
+default_ops = ["read", "verify", "produce", "hold"]
+required_caveats = ["ops", "books", "expires_at"]
+summary = "Forensic investigator: regulator read/verify/produce capabilities plus legal-hold placement."
+
+[[profile]]
+name = "Receiver"
+base_profile = "Human"
+external = true
+ops_ceiling = ["read", "post", "post_softclosed", "post_closed", "approve", "reconcile", "close", "reopen", "restate", "schema_change", "rule_change", "issue_capability", "verify", "produce", "hold", "receivership", "partial_view"]
+default_ops = ["read", "post", "reconcile", "close", "verify", "produce", "hold", "receivership"]
+required_caveats = ["ops", "books"]
+summary = "Receiver or trustee: controller operations plus legal/receivership holds on a receivership branch, never erase."
+
+[[profile]]
+name = "Production"
+base_profile = "Human"
+external = true
+ops_ceiling = ["read", "verify", "produce"]
+default_ops = ["read", "produce"]
+required_caveats = ["ops", "books", "known_at", "redaction", "expires_at"]
+summary = "One-shot litigation or regulatory production capability pinned to a snapshot and redaction contract."
+
+[[profile]]
+name = "Witness"
+base_profile = "Human"
+external = true
+ops_ceiling = ["read", "verify", "witness"]
+default_ops = ["witness"]
+required_caveats = ["ops", "books"]
+summary = "External checkpoint witness authorized only to verify and countersign transparency checkpoints."

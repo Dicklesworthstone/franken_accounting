@@ -177,6 +177,19 @@ name = "BankMatchedLeg"
 id = 49
 name = "BankUnmatch"
 
+# fa-6l9: a matter's litigation production profile (plan §13.2): its immutable
+# body, its state and the next Bates number; its records are ProductionControl
+# entries.
+[[label]]
+id = 50
+name = "ProductionProfile"
+
+# fa-6l9: one document's Bates range in one matter, staged by the Produce
+# record that assigned it.
+[[label]]
+id = 51
+name = "BatesRange"
+
 # ---- property keys --------------------------------------------------------
 [[property]]
 id = 1
@@ -361,6 +374,12 @@ name = "legal_holds"
 [[property]]
 id = 68
 name = "unit_table_digest"
+
+# fa-6l9: a ProductionProfile's next unassigned Bates number; every Produce
+# moves it by compare-and-set.
+[[property]]
+id = 69
+name = "next_bates"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]

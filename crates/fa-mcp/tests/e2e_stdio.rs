@@ -317,6 +317,29 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
     ]);
     cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
     let oid = source_document(&dir, &b);
+    // The March income statement retained before and after the rent posting,
+    // so an agent can bridge exactly those two certificates below.
+    let retain = || {
+        let (code, stdout) = cli(&[
+            "statement",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+            "--book",
+            &b,
+            "--json",
+        ]);
+        assert_eq!(code, 0, "{stdout}");
+        let receipt = fa_cli::json::parse(stdout.lines().last().unwrap()).unwrap();
+        let digest = receipt
+            .get("data")
+            .unwrap()
+            .get("oid")
+            .and_then(Json::as_str);
+        format!("C:{}", digest.unwrap())
+    };
+    let reported = retain();
     let intent = dir.join("rent.json");
     std::fs::write(&intent, r#"{"idempotency_key":"statement-rent","effective_date":"2026-03-15","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#).unwrap();
     cli_data(&[
@@ -325,6 +348,18 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         intent.to_str().unwrap(),
         "--evidence",
         &oid,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let restated = retain();
+    let expected_bridge = cli_data(&[
+        "statement",
+        "diff",
+        "--before-certificate",
+        &reported,
+        "--after-certificate",
+        &restated,
         "--book",
         &b,
         "--json",
@@ -493,6 +528,38 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
     let denied = structured_error(&output);
     assert_eq!(denied["type"], json!("forbidden_path"));
     assert_eq!(denied["authority"]["profile"], json!("agent"));
+    // Two retained statements bridge by their oids. The stated period is
+    // checked against them, and a certificate input is never a host path.
+    let bridge = |period: &str, after: &str| {
+        json!({
+            "name": "diff", "for": period,
+            "before_certificate": reported, "after_certificate": after,
+        })
+    };
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        bridge("FY2026-P03", &restated),
+    );
+    assert!(!error, "{output}");
+    assert_eq!(output, expected_bridge);
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        bridge("FY2026-P02", &restated),
+    );
+    assert!(error, "{output}");
+    assert_eq!(structured_error(&output)["exit"], json!(8), "{output}");
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        bridge("FY2026-P03", chart.to_str().unwrap()),
+    );
+    assert!(error, "{output}");
+    assert!(
+        output.contains("--after-certificate cannot name a host filesystem path"),
+        "{output}"
+    );
     // The default reader cannot acquire produce authority from a certify flag.
     for (tool, args) in [
         (
@@ -717,6 +784,148 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         "freshness refuses recipient currency substitution: {output}"
     );
     assert_eq!(structured_error(&output)["refusal_id"], json!("FA-REF-150"));
+    // The whole-book aging portfolio is reachable over MCP, and it replays
+    // only against the independently retained request its receipt prints.
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_proof_gl",
+        json!({"view": "aging", "all_posting": true, "reconcile": true, "as_of": "2026-03-31", "certify": true}),
+    );
+    assert!(!error, "{output}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(certified.as_array().unwrap().len(), 2, "{output}");
+    assert_eq!(certified[0]["scope"], json!("all-posting"));
+    assert_eq!(certified[0]["complete"], json!(true));
+    let portfolio = format!("C:{}", certified[1]["oid"].as_str().unwrap());
+    let expect = certified[1]["replay_command"]
+        .as_str()
+        .unwrap()
+        .split_once(" --expect '")
+        .unwrap()
+        .1
+        .split_once('\'')
+        .unwrap()
+        .0
+        .to_string();
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_replay",
+        json!({"certificate": portfolio, "expect": expect}),
+    );
+    assert!(!error, "{output}");
+    let replayed: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    // A portfolio replays to its report_replayed receipt alone (one event).
+    assert!(replayed.is_object(), "{output}");
+    let receipt = &replayed;
+    assert_eq!(receipt["family"], json!("aging-portfolio"), "{output}");
+    assert_eq!(receipt["output_digest"], certified[1]["output_digest"]);
+    // MCP accepts no host paths, so the recipient-bound workpaper comes back
+    // inline in workpaper_exported.text.
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_replay",
+        json!({"certificate": portfolio, "expect": expect, "workpaper": true}),
+    );
+    assert!(!error, "{output}");
+    let replayed: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    let exported = replayed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event.get("text").is_some_and(JsonValue::is_string))
+        .unwrap_or_else(|| panic!("no inline workpaper: {output}"));
+    assert_eq!(exported["family"], json!("aging-portfolio"));
+    assert_eq!(exported["file"], JsonValue::Null);
+    let workpaper = exported["text"].as_str().unwrap();
+    assert!(workpaper.lines().count() > 1, "{workpaper}");
+    assert_eq!(exported["lines"], json!(workpaper.lines().count()));
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_replay",
+        json!({"certificate": portfolio}),
+    );
+    assert!(
+        error,
+        "a portfolio never replays without its request: {output}"
+    );
+    assert!(output.contains("--expect"), "{output}");
+    // An agent reconciles from saved sources by their oids: an aging and a
+    // stock trial balance certified at one prefix are reused byte-for-byte.
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_proof_gl",
+        json!({"view": "aging", "account": "1000", "as_of": "2026-03-31", "bucket": ["0", "30", "60"], "certify": true}),
+    );
+    assert!(!error, "{output}");
+    let aged: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    let prefix = aged[0]["known_at"].to_string();
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_trial_balance",
+        json!({"as_of": "2026-03-31", "as_known_at": prefix, "certify": true}),
+    );
+    assert!(!error, "{output}");
+    let control: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    let question = json!({
+        "view": "aging", "reconcile": true, "account": "1000", "as_of": "2026-03-31",
+        "bucket": ["0", "30", "60"], "as_known_at": prefix,
+    });
+    let (error, plain, _) = call_tool(&mut producer, "fa_proof_gl", question.clone());
+    assert!(!error, "{plain}");
+    let mut saved = question.clone();
+    saved["aging_certificate"] = json!(format!("C:{}", aged[1]["oid"].as_str().unwrap()));
+    saved["control_certificate"] = json!(format!("C:{}", control[1]["oid"].as_str().unwrap()));
+    saved["certify"] = json!(true);
+    let (error, output, _) = call_tool(&mut producer, "fa_proof_gl", saved.clone());
+    assert!(!error, "{output}");
+    let reconciled: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    let plain: JsonValue = fastmcp_rust::serde_json::from_str(&plain).unwrap();
+    assert_eq!(
+        reconciled[0], plain,
+        "the saved sources answer the same question"
+    );
+    assert_eq!(
+        reconciled[1]["output_format"],
+        json!("fa:aging-control-reconciliation:v1")
+    );
+    saved["control_certificate"] = json!(chart.to_str().unwrap());
+    let (error, output, _) = call_tool(&mut producer, "fa_proof_gl", saved);
+    assert!(error, "{output}");
+    assert!(
+        output.contains("--control-certificate cannot name a host filesystem path"),
+        "{output}"
+    );
+    // A producer certifies the bridge between exactly those retained
+    // statements, then attributes it to each intermediate publication.
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_statement",
+        json!({
+            "name": "diff", "for": "FY2026-P03", "certify": true,
+            "before_certificate": reported, "after_certificate": restated,
+        }),
+    );
+    assert!(!error, "{output}");
+    let bridged: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(bridged.as_array().unwrap().len(), 2, "{output}");
+    let expected: JsonValue = fastmcp_rust::serde_json::from_str(&expected_bridge).unwrap();
+    assert_eq!(bridged[0], expected);
+    let comparison = format!("C:{}", bridged[1]["oid"].as_str().unwrap());
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_statement",
+        json!({"name": "trace", "for": "FY2026-P03", "from_diff": comparison, "certify": true}),
+    );
+    assert!(!error, "{output}");
+    let traced: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(traced.as_array().unwrap().len(), 2, "{output}");
+    let (error, replay, _) = call_tool(
+        &mut producer,
+        "fa_read_replay",
+        json!({"certificate": format!("C:{}", traced[1]["oid"].as_str().unwrap())}),
+    );
+    assert!(!error, "{replay}");
+    assert_eq!(replay, traced[0].to_string());
     assert_eq!(producer.finish(), 0);
 }
 
@@ -1437,6 +1646,21 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(bundle_res["bundle_id"], json!("bundle-1"));
     assert_eq!(bundle_res["accumulator"]["status"], json!("no_checkpoints"));
+    let read = mcp.result(
+        "resources/read",
+        json!({"uri": "resource://fa/capabilities/session"}),
+    );
+    let cap_session: JsonValue =
+        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(cap_session["authority"]["profile"], json!("preparer"));
+    assert_eq!(cap_session["issued"], JsonValue::Null);
+    let read = mcp.result(
+        "resources/read",
+        json!({"uri": "resource://fa/capabilities/list"}),
+    );
+    let cap_list: JsonValue =
+        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(cap_list["capabilities"], json!([]));
 
     // Workflow macros (§15.4): deterministic step-by-step execution and provenance.
     let (is_error, text, _) = call_tool(
@@ -1482,7 +1706,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(pkg_macro["macro"], json!("fa.macro.produce_audit_package"));
     assert_eq!(pkg_macro["step_count"], json!(4));
     assert_eq!(pkg_macro["certificates"].as_array().unwrap().len(), 3);
-    log("all 12 resources and 4 workflow macros verified over stdio");
+    log("all 13 resources and 4 workflow macros verified over stdio");
 
     // A portable plan runs under the actual launch capability. Rejected
     // overrides and other launch authorities cannot publish its effects.
@@ -2090,6 +2314,8 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
         "period",
         "close",
         "FY2026-P03",
+        "--reason",
+        "Scheduled",
         "--plan-out",
         &plan.display().to_string(),
         "--book",
@@ -2259,7 +2485,7 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
     let (error, text, result) = call_tool(
         &mut mcp,
         "fa_time_period_transition",
-        json!({"transition": "close", "code": "FY2026-P03", "dry_run": true}),
+        json!({"transition": "close", "code": "FY2026-P03", "reason": "Scheduled", "dry_run": true}),
     );
     assert!(!error, "read-authorized inline preparation: {text}");
     let planned: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
@@ -2828,15 +3054,30 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
 
     // Existing source-bearing tools remain present and keep their original
     // privilege/Human boundary. Metadata history does not widen that authority.
-    for (tool, arguments) in [
-        ("fa_bank_match", json!({"import": manifest})),
-        ("fa_bank_status", json!({"import": manifest})),
+    // Without `privileged` the governed statement has no redacted view
+    // (FA-REF-142, a refusal: exit 3, as the CLI's governed-source test pins);
+    // confirmation is the Human boundary (FA-REF-008), judged before the source.
+    for (tool, arguments, refusal_id, exit) in [
+        (
+            "fa_bank_match",
+            json!({"import": manifest}),
+            "FA-REF-142",
+            3,
+        ),
+        (
+            "fa_bank_status",
+            json!({"import": manifest}),
+            "FA-REF-142",
+            3,
+        ),
         (
             "fa_bank_confirm",
             json!({
                 "import": manifest, "line_ordinal": line, "proposal_digest": digest,
                 "source_known_at": source_pin, "proposer": proposer, "date_window": 3,
             }),
+            "FA-REF-008",
+            7,
         ),
     ] {
         let (error, output, _) = call_tool(&mut mcp, tool, arguments);
@@ -2845,7 +3086,8 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
             "{tool} must retain its source/confirmation authority: {output}"
         );
         let refused = structured_error(&output);
-        assert_eq!(refused["exit"], json!(7));
+        assert_eq!(refused["refusal_id"], json!(refusal_id), "{tool}: {output}");
+        assert_eq!(refused["exit"], json!(exit), "{tool}: {output}");
         assert_eq!(refused["authority"]["profile"], json!("agent"));
     }
     for forbidden in [json!({"grant": ["privileged"]}), json!({"yes": true})] {
@@ -2932,3 +3174,218 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         "history reads and denials must not publish"
     );
 }
+
+#[test]
+fn agent_upload_is_self_sourced_and_forged_human_grade_is_refused() {
+    let dir = tmp("e2e-agent-upload");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Agent Upload MCP",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    )
+    .unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        chart.to_str().unwrap(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+
+    let mut mcp = Mcp::start_with(&book, &["--principal", "agent-uploader"]);
+    mcp.discover();
+
+    // 1. Agent session uploads inline text -> AgentUpload, self_sourced = true.
+    let (err, text, _) = call_tool(
+        &mut mcp,
+        "fa_evidence_import_document",
+        json!({
+            "text": "INVOICE 901 uploaded by agent-uploader",
+            "kind": "Invoice",
+            "mime": "text/plain"
+        }),
+    );
+    assert!(!err, "agent upload must succeed: {text}");
+    let uploaded: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(uploaded["grade"], json!("AgentUpload"));
+    assert_eq!(uploaded["self_sourced"], json!(true));
+    let oid = uploaded["oid"].as_str().expect("oid").to_string();
+
+    // 2. Planted negative: declaring `--grade HumanUpload` from an Agent session is refused.
+    let (err, forged_out, _) = call_tool(
+        &mut mcp,
+        "fa_evidence_import_document",
+        json!({
+            "text": "INVOICE 902 forged grade",
+            "kind": "Invoice",
+            "mime": "text/plain",
+            "grade": "HumanUpload"
+        }),
+    );
+    assert!(err, "forged HumanUpload grade must be refused: {forged_out}");
+    let refused = structured_error(&forged_out);
+    assert_eq!(refused["refusal_id"], json!("FA-REF-011"));
+
+    // 3. Rehearsing a post citing the unreviewed AgentUpload document fails the self-sourced gate (FA-REF-086).
+    let intent = json!({
+        "idempotency_key": "vwf-self-sourced-post",
+        "class": "Original",
+        "effective_date": "2026-03-15",
+        "description": "Agent-uploaded invoice before review",
+        "evidence": [oid],
+        "legs": [
+            {"side": "debit", "account": "6100", "amount": "25.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "25.00 USD"}
+        ]
+    });
+    let (err, pre_review_out, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({
+            "intent": intent,
+            "dry_run": true
+        }),
+    );
+    assert!(
+        err,
+        "unreviewed AgentUpload must be refused by FA-REF-086: {pre_review_out}"
+    );
+    let refused_post = structured_error(&pre_review_out);
+    assert_eq!(refused_post["refusal_id"], json!("FA-REF-086"));
+
+    // 4. Planted negative: reviewer == uploader (`agent-uploader`) is refused (FA-REF-111).
+    let (self_code, self_out) = cli(&[
+        "document",
+        "attest",
+        "review",
+        "--document",
+        &oid,
+        "--as",
+        "agent-uploader",
+        "--grant",
+        "approve",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(self_code, 7, "self-review must be refused: {self_out}");
+    assert!(self_out.contains("FA-REF-111"), "{self_out}");
+
+    // 5. Independent Human reviewer records a Reviewed attestation -> post rehearsal succeeds.
+    let (rev_code, rev_out) = cli(&[
+        "document",
+        "attest",
+        "review",
+        "--document",
+        &oid,
+        "--as",
+        "human-reviewer",
+        "--grant",
+        "approve",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(rev_code, 0, "independent review must succeed: {rev_out}");
+
+    let (err, post_review_out, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({
+            "intent": intent,
+            "dry_run": true
+        }),
+    );
+    assert!(
+        !err,
+        "reviewed AgentUpload must satisfy the evidence minimum on rehearsal: {post_review_out}"
+    );
+
+    assert_eq!(mcp.finish(), 0);
+
+    // 6. fa-5npo: MCP Preparer is recorded as an AI operator (`OperatorKind::Agent`),
+    // never a Human: documents uploaded by an MCP Preparer receive `AgentUpload`
+    // and require an independent Human `Reviewed` attestation before posting.
+    let mut mcp_prep = Mcp::start_with(
+        &book,
+        &[
+            "--profile",
+            "preparer",
+            "--principal",
+            "mcp-preparer",
+        ],
+    );
+    mcp_prep.discover();
+    let (err, prep_upload_out, _) = call_tool(
+        &mut mcp_prep,
+        "fa_evidence_import_document",
+        json!({
+            "kind": "Invoice",
+            "mime": "text/plain",
+            "text": "Invoice #2026-888: 40.00 USD"
+        }),
+    );
+    assert!(
+        !err,
+        "MCP Preparer inline upload must succeed: {prep_upload_out}"
+    );
+    let prep_uploaded: JsonValue = fastmcp_rust::serde_json::from_str(&prep_upload_out).unwrap();
+    assert_eq!(
+        prep_uploaded["grade"],
+        json!("AgentUpload"),
+        "MCP Preparer must be recorded as an AI operator (AgentUpload), not HumanUpload"
+    );
+    assert_eq!(prep_uploaded["self_sourced"], json!(true));
+    let prep_oid = prep_uploaded["oid"].as_str().unwrap().to_string();
+    let prep_intent = json!({
+        "class": "Original",
+        "effective_date": "2026-03-15",
+        "description": "MCP Preparer self-uploaded invoice",
+        "idempotency_key": "fa-5npo-mcp-prep-post",
+        "evidence": [prep_oid],
+        "legs": [
+            {"side": "debit", "account": "6100", "amount": "40.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "40.00 USD"}
+        ]
+    });
+    let (err, unreviewed_prep_post, _) = call_tool(
+        &mut mcp_prep,
+        "fa_post_post",
+        json!({
+            "intent": prep_intent,
+            "dry_run": false
+        }),
+    );
+    assert!(
+        err,
+        "MCP Preparer self-uploaded evidence without Human review must be refused: {unreviewed_prep_post}"
+    );
+    assert_eq!(
+        structured_error(&unreviewed_prep_post)["refusal_id"],
+        json!("FA-REF-086")
+    );
+    assert_eq!(mcp_prep.finish(), 0);
+}
+

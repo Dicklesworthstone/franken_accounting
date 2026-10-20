@@ -237,7 +237,6 @@ fn complete_period_history_counts_one_prefix_and_admits_read_only_agents() {
             PeriodTransition::Open,
             PRINCIPAL,
             1,
-            periods[0].start,
             b"history-open",
             &cap(&["close"]),
         ))

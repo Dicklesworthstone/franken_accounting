@@ -145,12 +145,11 @@ impl Harness {
     fn period_proposal(&self, from: PeriodState, to: PeriodState, key: &[u8]) -> EntryPayload {
         transition_proposal(
             &self.book,
-            &self.march,
+            &fa_journal::policy::calendar_period(&self.book, &self.march).expect("March"),
             from,
             to,
             PREPARER,
             1,
-            DateDay::from_ymd(2026, 3, 1).unwrap(),
             key,
             self.period_description(),
         )
@@ -168,7 +167,6 @@ impl Harness {
         let db = &mut self.db;
         let book = &self.book;
         let code = self.march.clone();
-        let day = DateDay::from_ymd(2026, 3, 1).unwrap();
         self.runtime
             .block_on(async move {
                 transition_period(
@@ -179,7 +177,6 @@ impl Harness {
                     t,
                     PREPARER,
                     1,
-                    day,
                     key,
                     description,
                     capability,
@@ -1274,7 +1271,6 @@ fn close_without_close_and_reopen_without_reopen_are_refused_before_any_read() {
                 PeriodTransition::Close,
                 PREPARER,
                 1,
-                DateDay::from_ymd(2026, 3, 1).unwrap(),
                 b"nowhere",
                 description,
                 &poster,
@@ -2408,17 +2404,19 @@ impl Harness {
 
     fn open(&mut self, day: DateDay, key: &[u8]) {
         let code = self.period_of(day);
-        self.transition_dated(PeriodTransition::Open, key, &period_cap(), &code, day)
+        self.transition_of(PeriodTransition::Open, key, &period_cap(), &code, 1)
             .expect("opened");
     }
 
-    fn transition_dated(
+    /// `t` on period `code` with registered reason `reason`; the period
+    /// dates the control (fa-87r).
+    fn transition_of(
         &mut self,
         t: PeriodTransition,
         key: &[u8],
         capability: &Capability,
         code: &str,
-        day: DateDay,
+        reason: u16,
     ) -> Result<Transitioned, Refusal> {
         let ctx = self.ctx();
         let description = self.period_description();
@@ -2434,8 +2432,7 @@ impl Harness {
                     &code,
                     t,
                     PREPARER,
-                    1,
-                    day,
+                    reason,
                     key,
                     description,
                     capability,
@@ -2662,36 +2659,38 @@ fn a_scoped_token_cannot_apply_to_or_unapply_a_leg_outside_its_scope() {
     h.post_ok(undo(&h, applied, b"undo"), controller());
 }
 
-/// The transition's own date is in its footprint: a revoked token bounded
-/// to March gets FA-REF-011 for an April-dated control, not FA-REF-023 —
-/// the scope refusal precedes every read, the revocation's included — and
-/// a live bounded token transitions with a March date.
+/// The transition's own date is in its footprint, and the period law fixes
+/// it (fa-87r): a SoftClose of March is dated March 31, so a revoked token
+/// bounded short of that day, or to February, gets FA-REF-011, not
+/// FA-REF-023 — the scope refusal precedes every read, the revocation's
+/// included — and a live token bounded through March 31 transitions.
 #[test]
-fn a_transition_dated_outside_a_scope_is_refused_before_any_read() {
+fn a_transition_outside_a_scope_is_refused_before_any_read() {
     let mut h = harness();
     let march = h.march.clone();
-    let mid_april = DateDay::from_ymd(2026, 4, 15).unwrap();
     let issuer = human(ALICE, &["issue_capability"]);
-    let bounded = period_cap().effective_through(DateDay::from_ymd(2026, 3, 31).unwrap());
-    let march_only = period_cap().for_periods(&[march.as_str()]).unwrap();
+    let bounded = period_cap().effective_through(DateDay::from_ymd(2026, 3, 30).unwrap());
+    let february_only = period_cap().for_periods(&["FY2026-P02"]).unwrap();
     h.revoke(&issuer, &bounded, b"rv-bounded").expect("revoked");
-    h.revoke(&issuer, &march_only, b"rv-march")
+    h.revoke(&issuer, &february_only, b"rv-february")
         .expect("revoked");
     let before = h.db.frontier().unwrap();
-    for (cap, caveat) in [(bounded, "effective"), (march_only, "periods")] {
-        let r = h.transition_dated(PeriodTransition::SoftClose, b"sc", &cap, &march, mid_april);
+    for (cap, caveat) in [(bounded, "effective"), (february_only, "periods")] {
+        let r = h.transition_of(PeriodTransition::SoftClose, b"sc", &cap, &march, 1);
         assert_out_of_scope(&h, before, r, caveat);
     }
     let live = human(PREPARER, &["close", "reopen", "read"])
         .effective_through(DateDay::from_ymd(2026, 3, 31).unwrap());
-    h.transition_dated(
-        PeriodTransition::SoftClose,
-        b"sc",
-        &live,
-        &march,
-        DateDay::from_ymd(2026, 3, 20).unwrap(),
-    )
-    .expect("a March date inside the bound admits");
+    let done = h
+        .transition_of(PeriodTransition::SoftClose, b"sc", &live, &march, 1)
+        .expect("March's last day inside the bound admits");
+    let (control, _) = read_entry(&h.db, done.control_entry)
+        .unwrap()
+        .expect("control entry");
+    assert_eq!(
+        control.proposal.effective_date,
+        DateDay::from_ymd(2026, 3, 31).unwrap()
+    );
 }
 
 /// WhiteCreek 3571/3582: a scoped token never loads an entry outside its
@@ -2803,8 +2802,8 @@ impl Harness {
             .expect("mirror rewritten");
     }
 
-    fn open_code(&mut self, code: &str, day: DateDay, key: &[u8]) {
-        self.transition_dated(PeriodTransition::Open, key, &period_cap(), code, day)
+    fn open_code(&mut self, code: &str, key: &[u8]) {
+        self.transition_of(PeriodTransition::Open, key, &period_cap(), code, 1)
             .expect("opened");
     }
 }
@@ -2863,7 +2862,7 @@ fn ambiguous_dates_are_out_of_scope_until_the_period_mirror_exists() {
     let dec15 = DateDay::from_ymd(2026, 12, 15).unwrap();
     let dec31 = DateDay::from_ymd(2026, 12, 31).unwrap();
     h.open(dec15, b"open-p12");
-    h.open_code("FY2026-A1", dec31, b"open-a1");
+    h.open_code("FY2026-A1", b"open-a1");
     let legs = |h: &Harness| {
         vec![
             h.leg(Side::Debit, h.rent, 100),
@@ -2975,7 +2974,9 @@ fn identical_period_transition_and_period_create_retries_return_recorded_outcome
     assert_eq!(h.db.frontier().unwrap(), head_after_sc);
 
     // 3. Reusing the same idempotency key for a different transition (Close instead
-    //    of SoftClose) or different date is refused with FA-REF-032 (IDEMPOTENCY_CONFLICT).
+    //    of SoftClose) or a different reason is refused with FA-REF-032
+    //    (IDEMPOTENCY_CONFLICT). The period fixes the date (fa-87r), so a
+    //    retry cannot differ in it.
     let conflict_transition = h
         .transition_with(
             PeriodTransition::Close,
@@ -2995,22 +2996,22 @@ fn identical_period_transition_and_period_create_retries_return_recorded_outcome
     assert_eq!(h.db.frontier().unwrap(), head_after_sc);
 
     let march = h.march.clone();
-    let conflict_date = h
-        .transition_dated(
+    let conflict_reason = h
+        .transition_of(
             PeriodTransition::SoftClose,
             b"sc-march-idempotent",
             &closer,
             &march,
-            DateDay::from_ymd(2026, 3, 2).unwrap(),
+            2,
         )
-        .expect_err("reusing key with different date must conflict");
+        .expect_err("reusing key with a different reason must conflict");
     assert_eq!(
-        (conflict_date.code, conflict_date.exit),
+        (conflict_reason.code, conflict_reason.exit),
         (
             fa_journal::refusal::code::IDEMPOTENCY_CONFLICT,
             exit::CONFLICT
         ),
-        "{conflict_date}"
+        "{conflict_reason}"
     );
     assert_eq!(h.db.frontier().unwrap(), head_after_sc);
 
@@ -3018,22 +3019,22 @@ fn identical_period_transition_and_period_create_retries_return_recorded_outcome
     let apr1 = DateDay::from_ymd(2026, 4, 1).unwrap();
     let apr = h.period_of(apr1);
     let first_open = h
-        .transition_dated(
+        .transition_of(
             PeriodTransition::Open,
             b"open-apr-idempotent",
             &closer,
             &apr,
-            apr1,
+            1,
         )
         .expect("first Open");
     let head_after_open = h.db.frontier().unwrap();
     let retry_open = h
-        .transition_dated(
+        .transition_of(
             PeriodTransition::Open,
             b"open-apr-idempotent",
             &closer,
             &apr,
-            apr1,
+            1,
         )
         .expect("identical Open retry returns recorded Transitioned");
     assert_eq!(
@@ -3217,4 +3218,128 @@ fn an_issued_holder_bound_capability_is_admitted_only_against_its_journaled_issu
         .unwrap_err();
     assert_eq!(r.code, "FA-REF-013");
     assert_eq!(list_issued(&h.db, &h.book).unwrap().len(), 2);
+}
+
+/// fa-0x0: an issuance never drops its issuer's caveats. Issuance is a
+/// whole-book act, so an issuer confined by a scope caveat (here a period)
+/// issues nothing at all; an issuer confined to a redaction contract issues
+/// only grants that keep it.
+#[test]
+fn an_issuance_never_drops_its_issuers_caveats() {
+    let mut h = harness();
+    let grant = |holder| {
+        Capability::new(holder, Profile::Human, &[Op::Read], PREPARER)
+            .unwrap()
+            .holder_bound(possession_digest(&[3; 32]))
+    };
+    let head = h.db.frontier().unwrap();
+
+    let scoped = human(PREPARER, &["read", "issue_capability"])
+        .for_periods(&["FY2026-P03"])
+        .unwrap();
+    let narrow = grant(BOB).for_periods(&["FY2026-P03"]).unwrap();
+    let r = h.issue(&scoped, &narrow, b"scoped-issuer").unwrap_err();
+    eprintln!("issuance: scoped issuer -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY));
+    assert!(r.message.contains("`periods`"), "{}", r.message);
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let redacted = human(PREPARER, &["read", "issue_capability"])
+        .with_redaction(1)
+        .unwrap();
+    let r = h
+        .issue(&redacted, &grant(BOB), b"drops-redaction")
+        .unwrap_err();
+    eprintln!("issuance: redaction dropped -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY));
+    assert!(r.message.contains("redaction = 1"), "{}", r.message);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    let kept = grant(BOB).with_redaction(1).unwrap();
+    let issued = h
+        .issue(&redacted, &kept, b"keeps-redaction")
+        .expect("a grant that keeps the redaction caveat");
+    assert_eq!(issued.commitment, kept.commitment().unwrap());
+}
+
+/// fa-v62: revoking an issuer capability cascades to every capability it
+/// issued (and their descendants), refusing both writes and reads with
+/// FA-REF-023 and reporting `revoked_at` in `read_issued` / `list_issued`.
+#[test]
+fn revoking_an_issuer_cascades_to_revoke_its_issued_children_and_grandchildren() {
+    let mut h = harness();
+    let root_steward = human(PREPARER, &["read", "post", "issue_capability"]);
+    let other_steward = human(CAROL, &["read", "issue_capability"]);
+
+    // 1. Root steward issues a delegate capability to ALICE (holding read, post, issue_capability),
+    //    and ALICE issues an attenuated leaf capability to BOB (holding read, post).
+    let alice_delegate = Capability::new(
+        ALICE,
+        Profile::Human,
+        &[Op::Read, Op::Post, Op::IssueCapability],
+        PREPARER,
+    )
+    .unwrap()
+    .holder_bound(possession_digest(&[0x11; 32]));
+    let alice_issued = h
+        .issue(&root_steward, &alice_delegate, b"issue-alice-delegate")
+        .expect("issue alice delegate");
+
+    let bob_leaf = Capability::new(BOB, Profile::Human, &[Op::Read, Op::Post], ALICE)
+        .unwrap()
+        .holder_bound(possession_digest(&[0x22; 32]));
+    let bob_issued = h
+        .issue(&alice_delegate, &bob_leaf, b"issue-bob-leaf")
+        .expect("alice issues bob leaf");
+
+    // Both ALICE and BOB are admitted for reads and posts before revocation.
+    admit_reads(&h.db, &h.book, ALICE, &alice_delegate)
+        .unwrap()
+        .expect("alice reads admitted");
+    admit_reads(&h.db, &h.book, BOB, &bob_leaf)
+        .unwrap()
+        .expect("bob reads admitted");
+    h.post(
+        h.proposal(BOB, 500, b"bob-before-revoke", EntryClass::ORIGINAL),
+        bob_leaf.clone(),
+        Vec::new(),
+    )
+    .expect("bob posts before parent revocation");
+
+    // 2. Revoke the root_steward capability (an embedded issuer): both ALICE
+    //    (child) and BOB (grandchild) are immediately revoked by cascade!
+    let revoked = h
+        .revoke(&other_steward, &root_steward, b"revoke-root-steward")
+        .expect("revoke root steward");
+
+    for (who, cap, key) in [
+        (ALICE, &alice_delegate, &b"alice-after-cascade"[..]),
+        (BOB, &bob_leaf, &b"bob-after-cascade"[..]),
+    ] {
+        let write_refusal = h
+            .post(
+                h.proposal(who, 500, key, EntryClass::ORIGINAL),
+                cap.clone(),
+                Vec::new(),
+            )
+            .expect_err("write must be refused after ancestor issuer revocation");
+        assert_eq!(write_refusal.code, "FA-REF-023", "{write_refusal}");
+        assert!(
+            write_refusal
+                .message
+                .contains(&format!("sequence {}", revoked.recorded_at.0)),
+            "{}",
+            write_refusal.message
+        );
+        let read_refusal = admit_reads(&h.db, &h.book, who, cap)
+            .unwrap()
+            .expect_err("read must be refused after ancestor issuer revocation");
+        assert_eq!(read_refusal.code, "FA-REF-023", "{read_refusal}");
+    }
+
+    for commitment in [alice_issued.commitment, bob_issued.commitment] {
+        let info = read_issued(&h.db, &h.book, &commitment)
+            .unwrap()
+            .expect("issued record exists");
+        assert_eq!(info.revoked_at, Some(revoked.recorded_at));
+    }
 }

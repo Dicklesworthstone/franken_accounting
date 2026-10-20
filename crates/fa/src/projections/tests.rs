@@ -102,7 +102,6 @@ impl Harness {
                 PeriodTransition::Open,
                 PRINCIPAL,
                 1,
-                day(),
                 b"open",
                 &cap(&["close"]),
             ))

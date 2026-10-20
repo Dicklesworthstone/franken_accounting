@@ -452,7 +452,6 @@ fn report_families_match_reference_oracle_across_multiseed_campaign_and_kill_pla
                 PeriodTransition::Open,
                 PRINCIPAL,
                 1,
-                p1.start,
                 format!("open-{code}").as_bytes(),
                 &cap(PRINCIPAL, &["close"]),
             )

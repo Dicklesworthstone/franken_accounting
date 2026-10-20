@@ -7,11 +7,15 @@ schema_version = 1
 name = "LeafEnvelope"
 owner = "fa-notary::journal::LeafEnvelope"
 major = 1
-minor = 0
+minor = 1
 leaf_hash_domain = "fa:acc-leaf:v1"
 node_hash_domain = "fa:acc-node:v1"
 peaks_bag_domain = "fa:acc-peaks:v1"
 externally_verifiable = true
 
 fields = ["kind:u8", "book_id:bytes16", "branch_id:bytes16", "commit_seq:u64", "within_commit_ordinal:u32", "record_digest:bytes32", "class:u16", "effective_day:option<i32>", "account_vids:sorted_list<u128>", "unit_ids:sorted_list<u32>"]
-kind_tags = ["1:Entry"]
+# Minor 1 (fa-va02): evidence records are leaves after a state's evidence
+# boundary; the envelope's bytes are unchanged. For kinds 2-5 `class` is the
+# record's variant tag (claim, intake source, 2 transfer, 1 supplement), the
+# branch is the trunk, and there is no effective day and no selector.
+kind_tags = ["1:Entry", "2:Attestation", "3:ImportReceipt", "4:CustodyTransfer", "5:SupplementalEvidence"]

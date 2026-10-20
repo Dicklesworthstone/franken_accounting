@@ -344,7 +344,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             book_id: self.context().book_id,
             kind: policy_kind(&policy, "BankStatement")?,
             mime: request.format.mime().into(),
-            grade: fa_journal::upload::upload_grade(&policy, capability.profile())?,
+            grade: fa_journal::upload::upload_grade(&policy, capability.sod_profile())?,
             retrieved_by: capability.holder(),
             bytes: request.bytes,
         };

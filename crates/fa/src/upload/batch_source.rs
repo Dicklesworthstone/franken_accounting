@@ -101,7 +101,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let policy =
             EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
-        let grade = fa_journal::upload::upload_grade(&policy, capability.profile())?;
+        let grade = fa_journal::upload::upload_grade(&policy, capability.sod_profile())?;
         let book_id = self.context().book_id;
         let SourceImportRequest {
             idempotency_key,

@@ -33,7 +33,7 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
-use fa_model::{DecodeError, EncodeError, Id128, Reader, Writer, domain_digest};
+use fa_model::{DecodeError, EncodeError, EntryClass, Id128, Reader, Writer, domain_digest};
 use fa_money::UnitId;
 use fa_registry::redaction_contracts::RedactionContracts;
 use fa_time::DateDay;
@@ -76,6 +76,15 @@ pub const CAVEAT_DAILY_TOTALS: u8 = 9;
 /// issuance, `[u8; 32]`. Absent on a root issuance, whose own commitment
 /// identifies its quota; present on descendants and validated by the kernel.
 pub const CAVEAT_DAILY_ROOT: u8 = 10;
+/// `operator_kind = 1` (Agent): `u8` operator kind tag (`1`), emitted when a
+/// `Human`-profile capability is held by an AI operator (e.g. MCP `Preparer`,
+/// plan §14.4, bead fa-5npo).
+pub const CAVEAT_OPERATOR_KIND: u8 = 11;
+/// `requires_dry_run = true`: `u8` (`1`), emitted when a non-`Agent`
+/// capability requires rehearsal before any write commit (plan §14.2, §14.4).
+pub const CAVEAT_REQUIRES_DRY_RUN: u8 = 12;
+/// `classes ⊆ EntryClass`: non-empty `list(u16 class_tag, ascending)` (plan §14.2).
+pub const CAVEAT_CLASSES: u8 = 13;
 /// Domain of [`possession_digest`].
 pub const POSSESSION_DOMAIN: &[u8] = b"fa:capability-possession:v1";
 
@@ -100,6 +109,366 @@ pub const MAX_CAVEAT_BYTES: usize = 8 * 1024;
 pub const MAX_CEILINGS: usize = 256;
 /// Units a daily-total caveat may bound, checked before decoder allocation.
 pub const MAX_DAILY_TOTALS: usize = 256;
+/// Classes a `classes` caveat may name, checked before decoder allocation.
+pub const MAX_CLASSES: usize = 64;
+
+/// Whether a capability's operator is a human or an AI agent (plan §14.4).
+///
+/// A `Human`-profile capability held by an MCP `Preparer` carries
+/// `OperatorKind::Agent`: it retains the `Preparer` op ceiling (`post_softclosed`
+/// etc.), but SoD (`agent_prepared_human_approvers`) and document upload grading
+/// (`AgentUpload`) treat work performed under it as agent-prepared rather than
+/// human-authored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OperatorKind {
+    Human,
+    Agent,
+}
+
+impl OperatorKind {
+    pub const ALL: [Self; 2] = [Self::Human, Self::Agent];
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Human => "Human",
+            Self::Agent => "Agent",
+        }
+    }
+
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Human" | "human" => Some(Self::Human),
+            "Agent" | "agent" => Some(Self::Agent),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn tag(self) -> u8 {
+        match self {
+            Self::Human => 0,
+            Self::Agent => 1,
+        }
+    }
+
+    #[must_use]
+    pub fn from_tag(tag: u8) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.tag() == tag)
+    }
+}
+
+impl fmt::Display for OperatorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The ten registered profile templates of plan §14.4 (`capability_caveats.toml`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ProfileTemplate {
+    Agent,
+    Preparer,
+    Approver,
+    Controller,
+    Auditor,
+    Regulator,
+    Investigator,
+    Receiver,
+    Production,
+    Witness,
+}
+
+impl ProfileTemplate {
+    pub const ALL: [Self; 10] = [
+        Self::Agent,
+        Self::Preparer,
+        Self::Approver,
+        Self::Controller,
+        Self::Auditor,
+        Self::Regulator,
+        Self::Investigator,
+        Self::Receiver,
+        Self::Production,
+        Self::Witness,
+    ];
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Agent => "Agent",
+            Self::Preparer => "Preparer",
+            Self::Approver => "Approver",
+            Self::Controller => "Controller",
+            Self::Auditor => "Auditor",
+            Self::Regulator => "Regulator",
+            Self::Investigator => "Investigator",
+            Self::Receiver => "Receiver",
+            Self::Production => "Production",
+            Self::Witness => "Witness",
+        }
+    }
+
+    #[must_use]
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Preparer => "preparer",
+            Self::Approver => "approver",
+            Self::Controller => "controller",
+            Self::Auditor => "auditor",
+            Self::Regulator => "regulator",
+            Self::Investigator => "investigator",
+            Self::Receiver => "receiver",
+            Self::Production => "production",
+            Self::Witness => "witness",
+        }
+    }
+
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|t| t.name() == name || t.cli_name() == name)
+    }
+
+    #[must_use]
+    pub fn base_profile(self) -> Profile {
+        match self {
+            Self::Agent => Profile::Agent,
+            Self::Preparer
+            | Self::Approver
+            | Self::Controller
+            | Self::Auditor
+            | Self::Regulator
+            | Self::Investigator
+            | Self::Receiver
+            | Self::Production
+            | Self::Witness => Profile::Human,
+        }
+    }
+
+    #[must_use]
+    pub fn default_operator_kind(self) -> OperatorKind {
+        match self {
+            Self::Agent => OperatorKind::Agent,
+            Self::Preparer
+            | Self::Approver
+            | Self::Controller
+            | Self::Auditor
+            | Self::Regulator
+            | Self::Investigator
+            | Self::Receiver
+            | Self::Production
+            | Self::Witness => OperatorKind::Human,
+        }
+    }
+
+    #[must_use]
+    pub fn is_external(self) -> bool {
+        matches!(
+            self,
+            Self::Auditor
+                | Self::Regulator
+                | Self::Investigator
+                | Self::Receiver
+                | Self::Production
+                | Self::Witness
+        )
+    }
+
+    #[must_use]
+    pub fn ops_ceiling(self) -> &'static [Op] {
+        match self {
+            Self::Agent => &[
+                Op::Read,
+                Op::Post,
+                Op::Reconcile,
+                Op::Verify,
+                Op::Produce,
+                Op::PartialView,
+            ],
+            Self::Preparer => &[
+                Op::Read,
+                Op::Post,
+                Op::PostSoftclosed,
+                Op::Reconcile,
+                Op::Verify,
+                Op::Produce,
+                Op::PartialView,
+            ],
+            Self::Approver => &[
+                Op::Read,
+                Op::Post,
+                Op::PostSoftclosed,
+                Op::PostClosed,
+                Op::Approve,
+                Op::Reconcile,
+                Op::Verify,
+                Op::Produce,
+                Op::PartialView,
+            ],
+            Self::Controller => &[
+                Op::Read,
+                Op::Post,
+                Op::PostSoftclosed,
+                Op::PostClosed,
+                Op::Approve,
+                Op::Reconcile,
+                Op::Close,
+                Op::Reopen,
+                Op::Restate,
+                Op::Migrate,
+                Op::SchemaChange,
+                Op::RuleChange,
+                Op::IssueCapability,
+                Op::Verify,
+                Op::Produce,
+                Op::Hold,
+                Op::Erase,
+                Op::Privileged,
+                Op::PartialView,
+            ],
+            Self::Auditor => &[
+                Op::Read,
+                Op::Verify,
+                Op::Produce,
+                Op::Witness,
+                Op::PartialView,
+            ],
+            Self::Regulator => &[Op::Read, Op::Verify, Op::Produce, Op::PartialView],
+            Self::Investigator => &[
+                Op::Read,
+                Op::Verify,
+                Op::Produce,
+                Op::Hold,
+                Op::Privileged,
+                Op::PartialView,
+            ],
+            Self::Receiver => &[
+                Op::Read,
+                Op::Post,
+                Op::PostSoftclosed,
+                Op::PostClosed,
+                Op::Approve,
+                Op::Reconcile,
+                Op::Close,
+                Op::Reopen,
+                Op::Restate,
+                Op::SchemaChange,
+                Op::RuleChange,
+                Op::IssueCapability,
+                Op::Verify,
+                Op::Produce,
+                Op::Hold,
+                Op::Receivership,
+                Op::PartialView,
+            ],
+            Self::Production => &[Op::Read, Op::Verify, Op::Produce],
+            Self::Witness => &[Op::Read, Op::Verify, Op::Witness],
+        }
+    }
+
+    #[must_use]
+    pub fn default_ops(self) -> &'static [Op] {
+        match self {
+            Self::Agent | Self::Preparer => &[Op::Read, Op::Post, Op::Verify],
+            Self::Approver => &[Op::Read, Op::Approve, Op::Verify],
+            Self::Controller => &[
+                Op::Read,
+                Op::Post,
+                Op::PostSoftclosed,
+                Op::PostClosed,
+                Op::Approve,
+                Op::Reconcile,
+                Op::Close,
+                Op::Reopen,
+                Op::Restate,
+                Op::SchemaChange,
+                Op::RuleChange,
+                Op::IssueCapability,
+                Op::Verify,
+                Op::Produce,
+            ],
+            Self::Auditor => &[Op::Read, Op::Verify, Op::Produce, Op::Witness],
+            Self::Regulator => &[Op::Read, Op::Verify, Op::Produce],
+            Self::Investigator => &[Op::Read, Op::Verify, Op::Produce, Op::Hold],
+            Self::Receiver => &[
+                Op::Read,
+                Op::Post,
+                Op::Reconcile,
+                Op::Close,
+                Op::Verify,
+                Op::Produce,
+                Op::Hold,
+                Op::Receivership,
+            ],
+            Self::Production => &[Op::Read, Op::Produce],
+            Self::Witness => &[Op::Witness],
+        }
+    }
+
+    #[must_use]
+    pub fn required_caveats(self) -> &'static [&'static str] {
+        match self {
+            Self::Agent | Self::Preparer | Self::Approver | Self::Controller => &["ops"],
+            Self::Auditor => &["ops", "books", "redaction"],
+            Self::Regulator => &["ops", "books", "expires_at", "redaction"],
+            Self::Investigator => &["ops", "books", "expires_at"],
+            Self::Receiver | Self::Witness => &["ops", "books"],
+            Self::Production => &["ops", "books", "known_at", "redaction", "expires_at"],
+        }
+    }
+
+    /// Check that `cap` satisfies this template's base profile, ops ceiling,
+    /// and required caveats (`capability_caveats.toml`).
+    pub fn validate_capability(self, cap: &Capability) -> Result<(), CapabilityError> {
+        if cap.profile() != self.base_profile() {
+            return Err(CapabilityError::BadOperatorKind);
+        }
+        if self != Self::Agent
+            && self != Self::Preparer
+            && cap.operator_kind() != OperatorKind::Human
+        {
+            return Err(CapabilityError::BadOperatorKind);
+        }
+        let ceiling = self.ops_ceiling();
+        for op in cap.ops() {
+            if !ceiling.contains(op) {
+                return Err(CapabilityError::TemplateForbiddenOp {
+                    template: self,
+                    op: *op,
+                });
+            }
+        }
+        for cav in self.required_caveats() {
+            let present = match *cav {
+                "ops" => !cap.ops().is_empty(),
+                "books" => cap.books().is_some(),
+                "redaction" => cap.redaction().is_some(),
+                "expires_at" => cap.expires_at().is_some(),
+                "known_at" => cap.known_at_pin().is_some(),
+                "branch" => cap.branch().is_some(),
+                "requires_dry_run" => cap.requires_dry_run(),
+                _ => true,
+            };
+            if !present {
+                return Err(CapabilityError::MissingTemplateCaveat {
+                    template: self,
+                    caveat: cav,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for ProfileTemplate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
 
 /// The base profile templates (plan §14.4). Preparer/Approver/Controller and
 /// the external profiles are op sets over `Human`; `Agent` and `System` carry
@@ -190,6 +559,22 @@ pub enum CapabilityError {
         profile: Profile,
         op: Op,
     },
+    /// An op is outside the named profile template's `ops_ceiling` (plan §14.4).
+    TemplateForbiddenOp {
+        template: ProfileTemplate,
+        op: Op,
+    },
+    /// A profile template requires a caveat that the capability omits (plan §14.4).
+    MissingTemplateCaveat {
+        template: ProfileTemplate,
+        caveat: &'static str,
+    },
+    /// `operator_kind` is non-canonical or would escalate an Agent operator to Human.
+    BadOperatorKind,
+    /// `requires_dry_run` is non-canonical (e.g. redundant on `Profile::Agent`).
+    BadRequiresDryRun,
+    /// A `classes` caveat names no class, more than [`MAX_CLASSES`], or an unknown class tag.
+    BadClasses,
     /// A ceiling must be a positive mantissa.
     BadCeiling {
         unit: UnitId,
@@ -243,6 +628,36 @@ impl fmt::Display for CapabilityError {
                 write!(
                     f,
                     "a {profile}-profile capability can never hold `{op}` (plan §14.4)"
+                )
+            }
+            Self::TemplateForbiddenOp { template, op } => {
+                write!(
+                    f,
+                    "the `{template}` profile template can never hold `{op}` (plan §14.4)"
+                )
+            }
+            Self::MissingTemplateCaveat { template, caveat } => {
+                write!(
+                    f,
+                    "the `{template}` profile template requires caveat `{caveat}` (plan §14.4)"
+                )
+            }
+            Self::BadOperatorKind => {
+                write!(
+                    f,
+                    "invalid operator_kind caveat: an AI operator cannot escalate to Human, and Agent/System base profiles are already Agent operators"
+                )
+            }
+            Self::BadRequiresDryRun => {
+                write!(
+                    f,
+                    "invalid requires_dry_run caveat: payload must be 1 on a non-Agent profile"
+                )
+            }
+            Self::BadClasses => {
+                write!(
+                    f,
+                    "a classes caveat names 1..={MAX_CLASSES} registered EntryClass values, and narrowing keeps at least one held class"
                 )
             }
             Self::BadCeiling { unit, max_mantissa } => write!(
@@ -342,6 +757,15 @@ pub struct Capability {
     /// The inherited root issuance's commitment. `None` with daily totals
     /// means this capability is a root; the kernel validates that issuance.
     daily_root: Option<[u8; 32]>,
+    /// Operator provenance kind (`Human` or `Agent`, plan §14.4): an MCP
+    /// `Preparer` has `profile == Profile::Human` (so it can hold
+    /// `post_softclosed`) and `operator_kind == OperatorKind::Agent` (so SoD
+    /// and upload grading record an AI operator, never a human).
+    operator_kind: OperatorKind,
+    /// `requires_dry_run = true` caveat on a non-`Agent` capability.
+    requires_dry_run: bool,
+    /// `classes ⊆ EntryClass` caveat (`None` admits every class).
+    classes: Option<BTreeSet<EntryClass>>,
 }
 
 impl Capability {
@@ -356,6 +780,10 @@ impl Capability {
         if let Some(op) = profile.forbidden_ops().iter().find(|op| ops.contains(op)) {
             return Err(CapabilityError::ForbiddenOp { profile, op: *op });
         }
+        let operator_kind = match profile {
+            Profile::Human => OperatorKind::Human,
+            Profile::Agent | Profile::System => OperatorKind::Agent,
+        };
         Ok(Self {
             holder,
             profile,
@@ -373,7 +801,41 @@ impl Capability {
             possession: None,
             daily_totals: BTreeMap::new(),
             daily_root: None,
+            operator_kind,
+            requires_dry_run: false,
+            classes: None,
         })
+    }
+
+    /// Construct a capability from a registered §14.4 [`ProfileTemplate`],
+    /// defaulting `ops` to [`ProfileTemplate::default_ops`] when `None` and
+    /// refusing any op outside [`ProfileTemplate::ops_ceiling`].
+    pub fn from_template(
+        holder: VId,
+        template: ProfileTemplate,
+        ops: Option<&[Op]>,
+        issuer: VId,
+    ) -> Result<Self, CapabilityError> {
+        let ops = ops.unwrap_or_else(|| template.default_ops());
+        if ops.is_empty() {
+            return Err(CapabilityError::MissingTemplateCaveat {
+                template,
+                caveat: "ops",
+            });
+        }
+        let ceiling = template.ops_ceiling();
+        for op in ops {
+            if !ceiling.contains(op) {
+                return Err(CapabilityError::TemplateForbiddenOp { template, op: *op });
+            }
+        }
+        Self::new(holder, template.base_profile(), ops, issuer)
+    }
+
+    /// Validate that this capability satisfies `template`'s base profile,
+    /// ops ceiling, and required caveats (`capability_caveats.toml`).
+    pub fn validate_template(&self, template: ProfileTemplate) -> Result<(), CapabilityError> {
+        template.validate_capability(self)
     }
 
     /// The embedded posture's binding (`fa --as <principal> --grant <op>`):
@@ -643,6 +1105,102 @@ impl Capability {
         self.profile
     }
 
+    /// The operator provenance kind (`Human` or `Agent`, plan §14.4).
+    #[must_use]
+    pub fn operator_kind(&self) -> OperatorKind {
+        self.operator_kind
+    }
+
+    /// The effective profile for SoD (`agent_prepared_human_approvers`) and
+    /// document upload grading (`AgentUpload` vs `Unreviewed`): an MCP
+    /// `Preparer` (`Profile::Human` + `OperatorKind::Agent`) evaluates as
+    /// `Profile::Agent` so its work is recorded as AI-prepared, never human.
+    #[must_use]
+    pub fn sod_profile(&self) -> Profile {
+        if self.profile == Profile::Human && self.operator_kind == OperatorKind::Agent {
+            Profile::Agent
+        } else {
+            self.profile
+        }
+    }
+
+    /// Narrow or set `operator_kind` (monotone `Human -> Agent`, plan §14.4).
+    /// Setting `OperatorKind::Agent` refuses any op in
+    /// `Profile::Agent.forbidden_ops()`; attempting to set `OperatorKind::Human`
+    /// on an `Agent` or `System` capability (or after `OperatorKind::Agent`
+    /// was already set) is refused.
+    pub fn with_operator_kind(mut self, kind: OperatorKind) -> Result<Self, CapabilityError> {
+        match kind {
+            OperatorKind::Human => {
+                if self.profile != Profile::Human || self.operator_kind != OperatorKind::Human {
+                    return Err(CapabilityError::BadOperatorKind);
+                }
+                Ok(self)
+            }
+            OperatorKind::Agent => {
+                if let Some(op) = Profile::Agent
+                    .forbidden_ops()
+                    .iter()
+                    .find(|op| self.ops.contains(op))
+                {
+                    return Err(CapabilityError::ForbiddenOp {
+                        profile: Profile::Agent,
+                        op: *op,
+                    });
+                }
+                self.operator_kind = OperatorKind::Agent;
+                Ok(self)
+            }
+        }
+    }
+
+    /// Require a rehearsal dry-run certificate before any write commit.
+    #[must_use]
+    pub fn with_requires_dry_run(mut self) -> Self {
+        if self.profile != Profile::Agent {
+            self.requires_dry_run = true;
+        }
+        self
+    }
+
+    /// Whether the capability requires rehearsal (`true` for `Profile::Agent`
+    /// or when the `requires_dry_run` caveat is set).
+    #[must_use]
+    pub fn requires_dry_run(&self) -> bool {
+        self.requires_dry_run || self.profile == Profile::Agent
+    }
+
+    /// Whether the capability explicitly carries the `requires_dry_run` caveat
+    /// tag (`tag = 12`).
+    #[must_use]
+    pub fn has_requires_dry_run_caveat(&self) -> bool {
+        self.requires_dry_run
+    }
+
+    /// Confine the capability to the entry classes in `classes`; a second call
+    /// intersects, and an empty intersection is refused.
+    pub fn for_classes(mut self, classes: &[EntryClass]) -> Result<Self, CapabilityError> {
+        if classes.is_empty() || classes.len() > MAX_CLASSES {
+            return Err(CapabilityError::BadClasses);
+        }
+        let named: BTreeSet<EntryClass> = classes.iter().copied().collect();
+        self.classes =
+            Some(narrow(self.classes.take(), named).ok_or(CapabilityError::BadClasses)?);
+        Ok(self)
+    }
+
+    /// The `classes` caveat, when the capability carries one.
+    #[must_use]
+    pub fn classes(&self) -> Option<&BTreeSet<EntryClass>> {
+        self.classes.as_ref()
+    }
+
+    /// Whether the capability admits `class`.
+    #[must_use]
+    pub fn admits_class(&self, class: EntryClass) -> bool {
+        self.classes.as_ref().is_none_or(|c| c.contains(&class))
+    }
+
     #[must_use]
     pub fn ops(&self) -> &BTreeSet<Op> {
         &self.ops
@@ -791,6 +1349,23 @@ impl Capability {
         if let Some(root) = self.daily_root {
             out.push((CAVEAT_DAILY_ROOT, root.to_vec()));
         }
+        if self.profile == Profile::Human && self.operator_kind == OperatorKind::Agent {
+            out.push((CAVEAT_OPERATOR_KIND, vec![OperatorKind::Agent.tag()]));
+        }
+        if self.requires_dry_run && self.profile != Profile::Agent {
+            out.push((CAVEAT_REQUIRES_DRY_RUN, vec![1u8]));
+        }
+        if let Some(classes) = &self.classes {
+            let tags: Vec<u16> = classes.iter().map(|c| c.0).collect();
+            let mut payload = Writer::with_capacity(4 + tags.len() * 2);
+            payload.list(&tags, |w, t| {
+                w.u16(*t);
+            });
+            out.push((
+                CAVEAT_CLASSES,
+                payload.finish().map_err(CapabilityError::Encode)?,
+            ));
+        }
         Ok(out)
     }
 
@@ -860,6 +1435,9 @@ impl Capability {
         let mut possession = None;
         let mut daily_totals = Vec::new();
         let mut daily_root = None;
+        let mut operator_kind = None;
+        let mut requires_dry_run = false;
+        let mut classes = None;
         if version == CAPABILITY_VERSION_CAVEATS {
             let caveats = r
                 .list(MAX_CAVEATS, "capability.caveats", |r| {
@@ -948,6 +1526,21 @@ impl Capability {
                         p.finish().map_err(CapabilityError::Decode)?;
                         daily_root = Some(root);
                     }
+                    CAVEAT_OPERATOR_KIND => {
+                        if profile != Profile::Human || payload.as_slice() != [OperatorKind::Agent.tag()] {
+                            return Err(CapabilityError::BadOperatorKind);
+                        }
+                        operator_kind = Some(OperatorKind::Agent);
+                    }
+                    CAVEAT_REQUIRES_DRY_RUN => {
+                        if profile == Profile::Agent || payload.as_slice() != [1u8] {
+                            return Err(CapabilityError::BadRequiresDryRun);
+                        }
+                        requires_dry_run = true;
+                    }
+                    CAVEAT_CLASSES => {
+                        classes = Some(decode_classes(payload)?);
+                    }
                     tag => return Err(CapabilityError::UnknownCaveat { tag }),
                 }
             }
@@ -990,8 +1583,42 @@ impl Capability {
         if let Some(root) = daily_root {
             cap = cap.with_daily_root(root)?;
         }
+        if let Some(kind) = operator_kind {
+            cap = cap.with_operator_kind(kind)?;
+        }
+        if requires_dry_run {
+            cap = cap.with_requires_dry_run();
+        }
+        if let Some(classes) = classes {
+            cap = cap.for_classes(&classes)?;
+        }
         Ok(cap)
     }
+}
+
+fn decode_classes(payload: &[u8]) -> Result<Vec<EntryClass>, CapabilityError> {
+    let mut r = Reader::new(payload);
+    let raw = r
+        .list(MAX_CLASSES, "capability.classes", |r| {
+            r.u16("capability.class")
+        })
+        .map_err(CapabilityError::Decode)?;
+    if raw.is_empty() {
+        return Err(CapabilityError::BadClasses);
+    }
+    if !raw.windows(2).all(|w| w[0] < w[1]) {
+        return Err(CapabilityError::Decode(r.unsorted("capability.classes")));
+    }
+    r.finish().map_err(CapabilityError::Decode)?;
+    let mut out = Vec::with_capacity(raw.len());
+    for tag in raw {
+        let class = EntryClass(tag);
+        if class.name().is_none() {
+            return Err(CapabilityError::BadClasses);
+        }
+        out.push(class);
+    }
+    Ok(out)
 }
 
 /// The daily-total payload is non-empty, bounded, strictly ascending by
@@ -1741,8 +2368,8 @@ mod tests {
             assert!(Capability::decode(&caveated(&caveats)).is_err());
         }
         assert_eq!(
-            Capability::decode(&caveated(&[(11, Vec::new())])),
-            Err(CapabilityError::UnknownCaveat { tag: 11 })
+            Capability::decode(&caveated(&[(14, Vec::new())])),
+            Err(CapabilityError::UnknownCaveat { tag: 14 })
         );
     }
 

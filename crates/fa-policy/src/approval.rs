@@ -56,7 +56,7 @@ impl Approval {
         Ok(Ok(Self {
             book_id,
             principal: cap.holder(),
-            profile: cap.profile(),
+            profile: cap.sod_profile(),
             capability_commitment: cap.commitment()?,
             approved_proposal_digest,
             security_policy_epoch,

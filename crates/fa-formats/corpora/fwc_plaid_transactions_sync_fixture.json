@@ -1,0 +1,32 @@
+{
+  "robot_schema_version": "fwc.robot.v1",
+  "connector": "plaid",
+  "operation": "transactions_sync",
+  "receipt_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+  "account_id": "plaid-acct-chk-1010",
+  "sequence_number": "1",
+  "currency": "USD",
+  "statement_date": "2026-03-31",
+  "opening_balance": "1000.00",
+  "closing_balance": "1250.00",
+  "transactions": [
+    {
+      "transaction_id": "plaid-tx-001",
+      "booking_date": "2026-03-10",
+      "value_date": "2026-03-11",
+      "direction": "credit",
+      "amount": "500.00",
+      "counterparty": "Acme Corp",
+      "reference": "INV-100"
+    },
+    {
+      "transaction_id": "plaid-tx-002",
+      "booking_date": "2026-03-15",
+      "value_date": "2026-03-16",
+      "direction": "debit",
+      "amount": "250.00",
+      "counterparty": "Cloud Hosting Inc",
+      "reference": "BILL-200"
+    }
+  ]
+}

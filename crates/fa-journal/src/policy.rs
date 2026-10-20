@@ -638,10 +638,7 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
     // a book that never activated a policy).
     let witnessed = txn.vertex_property(db, book_root(), property::SECURITY_POLICY_EPOCH)?;
     let epoch = epoch_from(witnessed.as_ref())?;
-    let preparer = Party {
-        principal: proposal.principal_ref,
-        profile: req.capability.profile(),
-    };
+    let preparer = Party::for_capability(proposal.principal_ref, &req.capability);
     if let Err(r) = authorize_approvals(
         &txn,
         db,
@@ -728,6 +725,8 @@ pub fn revocation_vid(book: Id128, commitment: &[u8; 32]) -> VId {
     VId(u128::from_le_bytes(lo))
 }
 
+const MAX_ISSUANCE_LINEAGE: usize = 16;
+
 /// The capability is not revoked, as a point witness of `txn` (plan §14.2:
 /// authority is evaluated against current policy at commit). A revocation
 /// committed after this read makes the transaction a first-committer-wins
@@ -739,14 +738,33 @@ pub fn capability_witness<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
 ) -> Outcome<()> {
     let commitment = capability.commitment().map_err(capability_error)?;
+    let mut parent_issuer = None;
     if capability.possession().is_some() || !capability.daily_totals().is_empty() {
         let issued = txn.vertex(db, issuance_vid(book.book_id, &commitment))?;
-        if let Err(r) = issued_here(issued.as_ref(), &commitment) {
-            return Ok(Err(r));
+        match issued_here(issued.as_ref(), &commitment) {
+            Ok(parent) => parent_issuer = parent,
+            Err(r) => return Ok(Err(r)),
         }
     }
     if let Err(r) = not_revoked(txn.vertex(db, revocation_vid(book.book_id, &commitment))?) {
         return Ok(Err(r));
+    }
+    let mut seen = BTreeSet::from([commitment]);
+    let mut cur_parent = parent_issuer;
+    for _ in 0..MAX_ISSUANCE_LINEAGE {
+        let Some(parent) = cur_parent else {
+            break;
+        };
+        if !seen.insert(parent) {
+            break;
+        }
+        if let Err(r) = not_revoked(txn.vertex(db, revocation_vid(book.book_id, &parent))?) {
+            return Ok(Err(r));
+        }
+        let Some(parent_row) = txn.vertex(db, issuance_vid(book.book_id, &parent))? else {
+            break;
+        };
+        cur_parent = issued_here(Some(&parent_row), &parent).ok().flatten();
     }
     if !capability.daily_totals().is_empty() {
         let root = capability.daily_root().unwrap_or(commitment);
@@ -773,14 +791,33 @@ pub fn capability_admitted<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
 ) -> Outcome<()> {
     let commitment = capability.commitment().map_err(capability_error)?;
+    let mut parent_issuer = None;
     if capability.possession().is_some() || !capability.daily_totals().is_empty() {
         let issued = db.vertex(issuance_vid(book.book_id, &commitment))?;
-        if let Err(r) = issued_here(issued.as_ref(), &commitment) {
-            return Ok(Err(r));
+        match issued_here(issued.as_ref(), &commitment) {
+            Ok(parent) => parent_issuer = parent,
+            Err(r) => return Ok(Err(r)),
         }
     }
     if let Err(r) = not_revoked(db.vertex(revocation_vid(book.book_id, &commitment))?) {
         return Ok(Err(r));
+    }
+    let mut seen = BTreeSet::from([commitment]);
+    let mut cur_parent = parent_issuer;
+    for _ in 0..MAX_ISSUANCE_LINEAGE {
+        let Some(parent) = cur_parent else {
+            break;
+        };
+        if !seen.insert(parent) {
+            break;
+        }
+        if let Err(r) = not_revoked(db.vertex(revocation_vid(book.book_id, &parent))?) {
+            return Ok(Err(r));
+        }
+        let Some(parent_row) = db.vertex(issuance_vid(book.book_id, &parent))? else {
+            break;
+        };
+        cur_parent = issued_here(Some(&parent_row), &parent).ok().flatten();
     }
     if !capability.daily_totals().is_empty() {
         let root = capability.daily_root().unwrap_or(commitment);
@@ -952,6 +989,15 @@ pub fn payload_reach(
     proposal: &EntryPayload,
     accounts: Option<&AccountScope>,
 ) -> Result<(), Denial> {
+    if !capability.admits_class(proposal.class) {
+        return Err(Denial::OutOfScope {
+            caveat: "classes",
+            value: format!(
+                "class `{}`",
+                proposal.class.name().unwrap_or("unknown")
+            ),
+        });
+    }
     let legs: Vec<VId> = proposal.legs.iter().map(|l| l.account_ref).collect();
     let mut periods: Vec<String> = resolved_period(
         book,
@@ -1182,6 +1228,12 @@ impl ReadAuthority {
         self.reach(seq, None, Some(day))
     }
 
+    /// A read of the whole book at `seq` (every period and effective date,
+    /// such as open items): a `periods` or `effective` caveat refuses it.
+    pub fn whole_book(&self, seq: CommitSeq) -> Result<(), Refusal> {
+        self.reach(seq, None, None)
+    }
+
     fn reach(
         &self,
         seq: CommitSeq,
@@ -1387,10 +1439,25 @@ pub fn issuance_vid(book: Id128, commitment: &[u8; 32]) -> VId {
 /// A holder-bound capability is admitted only when this book journaled its
 /// issuance: the row at its issuance identity is an issuance of exactly
 /// this commitment (plan §14.2: "issuance and revocation are journaled
-/// control entries"). Its caveats are therefore the journaled ones.
-fn issued_here(row: Option<&fgdb::VertexRow>, commitment: &[u8; 32]) -> Result<(), Refusal> {
+/// control entries"). Its caveats are therefore the journaled ones. Returns
+/// the issuing capability's commitment when recorded in `origin`.
+fn issued_here(
+    row: Option<&fgdb::VertexRow>,
+    commitment: &[u8; 32],
+) -> Result<Option<[u8; 32]>, Refusal> {
+    let mut parent_issuer = None;
     let issued = row.is_some_and(|row| {
         crate::post::entry_of(row).is_ok_and(|(entry, _)| {
+            if let EntryOrigin::Control {
+                control_kind,
+                spec_body_digest,
+            } = entry.proposal.origin
+                && control_kind == fa_model::ControlKind::CAPABILITY_ISSUANCE
+                && &spec_body_digest != commitment
+                && spec_body_digest != [0; 32]
+            {
+                parent_issuer = Some(spec_body_digest);
+            }
             matches!(
                 entry.proposal.control,
                 Some(ControlPayload::CapabilityEvent { kind: CAPABILITY_EVENT_ISSUE, commitment: c, .. })
@@ -1399,7 +1466,7 @@ fn issued_here(row: Option<&fgdb::VertexRow>, commitment: &[u8; 32]) -> Result<(
         })
     });
     if issued {
-        Ok(())
+        Ok(parent_issuer)
     } else {
         Err(Refusal::new(
             code::CAPABILITY_NOT_ISSUED,
@@ -1437,7 +1504,8 @@ pub struct Issued {
 /// Grants only what the issuer holds (plan §14.2: caveats are conjunctive
 /// and attenuable only). An issued capability holds no op the issuer lacks,
 /// no unit beyond the issuer's ceilings and no larger ceiling, no book
-/// beyond the issuer's books, and expires no later than the issuer.
+/// beyond the issuer's books, keeps the issuer's redaction caveat, and
+/// expires no later than the issuer.
 fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
     let widen = |what: String| {
         Some(Refusal::new(
@@ -1445,7 +1513,7 @@ fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
             exit::SAFETY,
             format!("the issued capability would widen the issuer's authority: {what}"),
             "plan §14.2 (caveats are conjunctive and attenuable only)",
-            "issue only ops, units, ceilings, books and an expiry within the issuing capability",
+            "issue only ops, units, ceilings, books, a redaction caveat and an expiry within the issuing capability",
         ))
     };
     if let Some(op) = issued.ops().iter().find(|op| !issuer.holds(**op)) {
@@ -1511,6 +1579,16 @@ fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
             _ => return widen("it reaches a book the issuer cannot".to_string()),
         }
     }
+    // Issuance is a whole-book act on trunk, so admission already refuses an
+    // issuer carrying an accounts, periods, effective, known-at or branch
+    // caveat. A redaction caveat does not limit reach, so it is kept here.
+    if let Some(contract) = issuer.redaction()
+        && issued.redaction() != Some(contract)
+    {
+        return widen(format!(
+            "it drops the issuer's redaction = {contract} caveat"
+        ));
+    }
     if let Some(bound) = issuer.expires_at()
         && issued.expires_at().is_none_or(|at| at > bound)
     {
@@ -1518,6 +1596,20 @@ fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
             "it outlives the issuer's expiry at sequence {}",
             bound.0
         ));
+    }
+    if issuer.operator_kind() == fa_policy::OperatorKind::Agent
+        && issued.operator_kind() != fa_policy::OperatorKind::Agent
+    {
+        return widen("it escalates an AI operator capability to Human".to_string());
+    }
+    if issuer.requires_dry_run() && !issued.requires_dry_run() {
+        return widen("it drops the issuer's requires_dry_run caveat".to_string());
+    }
+    if let Some(classes) = issuer.classes() {
+        match issued.classes() {
+            Some(own) if own.is_subset(classes) => {}
+            _ => return widen("it admits an EntryClass the issuer cannot".to_string()),
+        }
     }
     None
 }
@@ -1568,6 +1660,7 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
     }
     let body = req.issued.canonical_bytes().map_err(capability_error)?;
     let commitment = req.issued.commitment().map_err(capability_error)?;
+    let issuer_commitment = req.capability.commitment().map_err(capability_error)?;
     let proposal = EntryPayload {
         schema_minor: fa_model::entry::SCHEMA_MINOR,
         book_id: book.book_id,
@@ -1588,7 +1681,7 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
         idempotency_key: req.idempotency_key,
         origin: EntryOrigin::Control {
             control_kind: fa_model::ControlKind::CAPABILITY_ISSUANCE,
-            spec_body_digest: commitment,
+            spec_body_digest: issuer_commitment,
         },
         principal_ref: req.capability.holder(),
         session_ref: None,
@@ -1696,9 +1789,26 @@ pub fn read_issued<V: asupersync::fs::Vfs + Clone>(
             "a capability issuance body does not match its commitment".into(),
         ));
     }
-    let revoked_at = db
+    let mut revoked_at = db
         .vertex(revocation_vid(book.book_id, commitment))?
         .map(|row| row.created_at);
+    let mut seen = BTreeSet::from([*commitment]);
+    let mut cur_parent = issued_here(Some(&row), commitment).ok().flatten();
+    for _ in 0..MAX_ISSUANCE_LINEAGE {
+        let Some(parent) = cur_parent else {
+            break;
+        };
+        if !seen.insert(parent) {
+            break;
+        }
+        if let Some(rev) = db.vertex(revocation_vid(book.book_id, &parent))? {
+            revoked_at = Some(revoked_at.map_or(rev.created_at, |cur| cur.min(rev.created_at)));
+        }
+        let Some(parent_row) = db.vertex(issuance_vid(book.book_id, &parent))? else {
+            break;
+        };
+        cur_parent = issued_here(Some(&parent_row), &parent).ok().flatten();
+    }
     Ok(Some(IssuedCapability {
         capability,
         commitment: *commitment,

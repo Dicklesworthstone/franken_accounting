@@ -547,6 +547,189 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
     }
 }
 
+/// fa-715: a trial balance and a period activity at the head served from
+/// maintained cells plus the exact tail equal the literal fold at every
+/// step of a history of postings, holds and releases in four periods whose
+/// registers advance at random points. The maintained path must actually
+/// answer both.
+#[test]
+fn maintained_trial_balances_equal_the_literal_fold_at_every_step() {
+    let (mut k, mut oracle, periods) = setup();
+    for (i, code) in periods[..4].iter().enumerate() {
+        open_period(&mut k, &mut oracle, code, 70_000 + i as u64);
+    }
+    let usd = k.book.units.lookup("USD").unwrap();
+    let mut rng = Rng(0x0715_5EED_715A_0715);
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let mut live_holds: Vec<(usize, DateDay)> = Vec::new();
+    let selections: Vec<Vec<String>> = vec![
+        vec![periods[0].clone()],
+        vec![periods[1].clone()],
+        vec![periods[3].clone()],
+        vec![periods[0].clone(), periods[2].clone()],
+    ];
+    let mut maintained_reads = 0usize;
+    let mut maintained_activity = 0usize;
+    for step in 0..96u64 {
+        let month = 1 + u8::try_from(rng.below(4)).expect("month");
+        let date = DateDay::from_ymd(2026, month, 10).unwrap();
+        let key = format!("tb-{step}");
+        match rng.below(10) {
+            0..=5 => {
+                let amount = 1 + i128::from(rng.below(1_000));
+                let intent = maintenance_intent("Original", date, amount, &key);
+                let posted = kernel_post(&mut k, &intent, usd, &refs).expect("original posts");
+                refs.push(posted.entry_ref());
+            }
+            6 | 7 => {
+                let amount = 1 + i128::from(rng.below(1_000));
+                let intent = maintenance_intent("Pending", date, amount, &key);
+                let posted = kernel_post(&mut k, &intent, usd, &refs).expect("hold posts");
+                live_holds.push((refs.len(), date));
+                refs.push(posted.entry_ref());
+            }
+            8 if !live_holds.is_empty() => {
+                let pick = usize::try_from(rng.below(live_holds.len() as u64)).expect("index");
+                let (target, held_on) = live_holds.remove(pick);
+                let mut release = maintenance_intent("Resolution", held_on, 0, &key);
+                release.resolves = Some(Resolve {
+                    target,
+                    posts: None,
+                });
+                let posted = kernel_post(&mut k, &release, usd, &refs).expect("release posts");
+                refs.push(posted.entry_ref());
+            }
+            _ => {
+                let period = periods[usize::try_from(rng.below(4)).expect("period")].clone();
+                maintain(&mut k, &period);
+            }
+        }
+        for selection in &selections {
+            let literal = trial_balance(&k.db, &k.book, selection).unwrap();
+            let (served, how) =
+                fa_registers::trial_balance_served(&k.db, &k.book, selection).unwrap();
+            assert_eq!(
+                served, literal,
+                "step {step}, {selection:?}, served {how:?}"
+            );
+            if matches!(how, fa_registers::Served::Maintained(_)) {
+                maintained_reads += 1;
+            }
+            let literal = period_activity(&k.db, &k.book, selection, None).unwrap();
+            let (served, how) =
+                fa_registers::period_activity_served(&k.db, &k.book, selection).unwrap();
+            assert_eq!(
+                served, literal,
+                "step {step}, activity {selection:?}, served {how:?}"
+            );
+            if matches!(how, fa_registers::Served::Maintained(_)) {
+                maintained_activity += 1;
+            }
+        }
+    }
+    assert!(maintained_reads > 0, "maintained cells never answered");
+    assert!(
+        maintained_activity > 0,
+        "maintained cells never answered an activity read"
+    );
+}
+
+/// fa-715 complexity witness: once maintenance has caught up, a head trial
+/// balance decodes only the entries committed after the cursors (its
+/// tail), however much unrelated history the journal holds. 300 postings
+/// to a later period change neither the answer nor the decoded tail; one
+/// new March posting is decoded once per maintained contributing period.
+#[test]
+fn a_maintained_head_read_decodes_only_its_tail_regardless_of_unrelated_history() {
+    let (mut k, mut oracle, periods) = setup();
+    let (january, march, april) = (periods[0].clone(), periods[2].clone(), periods[3].clone());
+    for (i, code) in [&january, &march, &april].into_iter().enumerate() {
+        open_period(&mut k, &mut oracle, code, 71_000 + i as u64);
+    }
+    let usd = k.book.units.lookup("USD").unwrap();
+    let in_march = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let in_april = DateDay::from_ymd(2026, 4, 10).unwrap();
+    let mut refs = Vec::new();
+    let first = maintenance_intent("Original", in_march, 500, "march-0");
+    refs.push(kernel_post(&mut k, &first, usd, &refs).unwrap().entry_ref());
+    for i in 0..300 {
+        let later = maintenance_intent("Original", in_april, 1 + i, &format!("april-{i}"));
+        refs.push(kernel_post(&mut k, &later, usd, &refs).unwrap().entry_ref());
+    }
+    let selection = vec![march.clone()];
+    let (_, cold) = fa_registers::trial_balance_served(&k.db, &k.book, &selection).unwrap();
+    assert!(
+        matches!(&cold, fa_registers::Served::Literal(reason) if reason.contains(&march)),
+        "March has postings and no cells yet: {cold:?}"
+    );
+    maintain(&mut k, &january);
+    maintain(&mut k, &march);
+    let (served, how) = fa_registers::trial_balance_served(&k.db, &k.book, &selection).unwrap();
+    assert_eq!(served, trial_balance(&k.db, &k.book, &selection).unwrap());
+    assert_eq!(how.tail_length(), Some(0), "{how:?}");
+    let second = maintenance_intent("Original", in_march, 7, "march-1");
+    refs.push(
+        kernel_post(&mut k, &second, usd, &refs)
+            .unwrap()
+            .entry_ref(),
+    );
+    let (served, how) = fa_registers::trial_balance_served(&k.db, &k.book, &selection).unwrap();
+    assert_eq!(served, trial_balance(&k.db, &k.book, &selection).unwrap());
+    assert_eq!(how.tail_length(), Some(2), "{how:?}");
+}
+
+/// fa-715 planted negative: a register cell whose amount no longer matches
+/// its fold digest is never served. The read falls back to the literal fold
+/// (the right answer) and `verify registers` reports the drift.
+#[test]
+fn a_drifted_register_cell_is_never_served() {
+    use fa_model::symbols::{property, relation};
+
+    let (mut k, mut oracle, periods) = setup();
+    let march = periods[2].clone();
+    open_period(&mut k, &mut oracle, &march, 72_000);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let in_march = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let intent = maintenance_intent("Original", in_march, 500, "march-0");
+    kernel_post(&mut k, &intent, usd, &[]).unwrap();
+    maintain(&mut k, &march);
+    let selection = vec![march.clone()];
+    let literal = trial_balance(&k.db, &k.book, &selection).unwrap();
+    let (served, how) = fa_registers::trial_balance_served(&k.db, &k.book, &selection).unwrap();
+    assert_eq!(served, literal);
+    assert!(
+        matches!(how, fa_registers::Served::Maintained(_)),
+        "{how:?}"
+    );
+
+    let cell = fa_registers::register_vid(
+        k.book.book_id,
+        &fa_registers::CellKey {
+            account: account_vid(k.book.book_id, "6000"),
+            unit_id: usd.0,
+            period: march.clone(),
+        },
+    );
+    let mut write = WriteBatch::new(relation::IN_PERIOD);
+    write.set_vertex_property(
+        cell,
+        property::DEBITS_POSTED,
+        Some(rows::scalar_bytes("debits", 501i128.to_le_bytes().to_vec()).unwrap()),
+    );
+    let ctx = k.ctx();
+    k.runtime
+        .block_on(k.db.write(&ctx.commit(), write))
+        .unwrap();
+    let (served, how) = fa_registers::trial_balance_served(&k.db, &k.book, &selection).unwrap();
+    assert!(matches!(how, fa_registers::Served::Literal(_)), "{how:?}");
+    assert_eq!(served.rows, literal.rows, "the literal fold still answers");
+    assert!(
+        !fa_registers::verify_period(&k.db, &k.book, &march)
+            .unwrap()
+            .is_green()
+    );
+}
+
 #[test]
 fn incremental_registers_reject_stale_or_foreign_preparation_and_recover_after_reopen() {
     let chart: Vec<ChartRow> = ACCOUNTS
@@ -1434,9 +1617,20 @@ fn kernel_request(k: &Kernel, intent: &Intent, usd: UnitId, refs: &[EntryRef]) -
     }
 }
 
-/// The date every generated transition is journaled on.
-fn transition_day() -> DateDay {
+/// The date the generated revocations, activations and drafts carry. A
+/// period transition carries none: its period dates it (fa-87r).
+fn control_day() -> DateDay {
     DateDay::from_ymd(2026, 1, 1).unwrap()
+}
+
+/// The effective date the kernel journaled on control entry `vid`.
+fn journaled_date(k: &Kernel, vid: VId) -> DateDay {
+    fa_journal::post::read_entry(&k.db, vid)
+        .expect("read")
+        .expect("control entry")
+        .0
+        .proposal
+        .effective_date
 }
 
 fn period_description(k: &Kernel) -> Erasable<String> {
@@ -1460,12 +1654,11 @@ fn period_digest(
 ) -> [u8; 32] {
     transition_proposal(
         &k.book,
-        code,
+        &fa_journal::policy::calendar_period(&k.book, code).expect("calendar period"),
         from,
         to,
         PRINCIPAL,
         1,
-        transition_day(),
         format!("t-{step}").as_bytes(),
         period_description(k),
     )
@@ -1508,7 +1701,7 @@ fn kernel_revoke(k: &mut Kernel, revoked: &Capability, step: u64) {
     let req = RevocationRequest {
         capability: Capability::embedded(VId(90), &["issue_capability"]).expect("issuer"),
         revoked: revoked.commitment().expect("commitment"),
-        effective_date: transition_day(),
+        effective_date: control_day(),
         idempotency_key: format!("revoke-{step}").into_bytes(),
         description: Erasable::seal(
             &"revoke".to_string(),
@@ -1537,7 +1730,7 @@ fn kernel_activate(k: &mut Kernel, step: u64) {
         &k.book,
         PRINCIPAL,
         fa_journal::policy::steward().expect("policy").policy_oid,
-        transition_day(),
+        control_day(),
         key.as_bytes(),
         Erasable::seal(
             &"activate".to_string(),
@@ -1574,12 +1767,14 @@ fn kernel_activate(k: &mut Kernel, step: u64) {
         .expect("activated");
 }
 
-/// One transition by `PRINCIPAL` under `capability`, citing `approvals`.
+/// One transition by `PRINCIPAL` giving `reason` under `capability`, citing
+/// `approvals`.
 fn kernel_transition_under(
     k: &mut Kernel,
     code: &str,
     t: PeriodTransition,
     step: u64,
+    reason: u16,
     capability: &Capability,
     approvals: &[fa_model::ApprovalRef],
 ) -> Result<Transitioned, Refusal> {
@@ -1597,8 +1792,7 @@ fn kernel_transition_under(
                 code,
                 t,
                 PRINCIPAL,
-                1,
-                transition_day(),
+                reason,
                 key.as_bytes(),
                 description,
                 capability,
@@ -1640,9 +1834,64 @@ fn kernel_transition(
         code,
         t,
         step,
+        1,
         &Capability::embedded(PRINCIPAL, &["close", "reopen"]).expect("ops"),
         &approvals,
     )
+}
+
+/// fa-cvg: once the period law admits a transition, its reason must be
+/// registered in its scope (`period_control`, or `period_reopen` for a
+/// reopen), in both engines. At every step of a period's life (open, soft
+/// close, reopen, soft close, close, lock) each unregistered reason is
+/// refused FA-REF-041 with an unchanged frontier, and the registered reason
+/// then moves both engines.
+#[test]
+fn kernel_and_oracle_agree_on_period_transition_reasons() {
+    let (mut k, mut oracle, periods) = setup();
+    let code = periods[4].clone();
+    let capability = Capability::embedded(PRINCIPAL, &["close", "reopen"]).expect("ops");
+    let control = [0, 4, 99, u16::MAX];
+    let steps = [
+        (PeriodTransition::Open, control),
+        (PeriodTransition::SoftClose, control),
+        (
+            PeriodTransition::Reopen {
+                to: PeriodState::Open,
+            },
+            [0, 5, 99, u16::MAX],
+        ),
+        (PeriodTransition::SoftClose, control),
+        (PeriodTransition::Close, control),
+        (PeriodTransition::Lock, control),
+    ];
+    for (i, (t, unregistered)) in steps.into_iter().enumerate() {
+        for (j, reason) in unregistered.into_iter().enumerate() {
+            let before = k.db.frontier().unwrap();
+            let step = 50_000 + 10 * i as u64 + j as u64;
+            let kernel = kernel_transition_under(&mut k, &code, t, step, reason, &capability, &[])
+                .expect_err("an unregistered reason is refused");
+            let model = oracle
+                .transition_with_reason(&code, t, reason)
+                .expect_err("the oracle refuses an unregistered reason");
+            assert_eq!(
+                (kernel.code, kernel.exit),
+                (model, fa_journal::refusal::exit::REFUSAL),
+                "{code} {t:?} reason {reason}: {kernel}"
+            );
+            assert_eq!(
+                k.db.frontier().unwrap(),
+                before,
+                "{code} {t:?} reason {reason}: nothing written"
+            );
+        }
+        let kernel = kernel_transition(&mut k, &code, t, 50_100 + i as u64)
+            .expect("the registered reason 1 admits");
+        let model = oracle
+            .transition_with_reason(&code, t, 1)
+            .expect("the oracle admits reason 1");
+        assert_eq!((kernel.from, kernel.to), model, "{code} {t:?}");
+    }
 }
 
 #[test]
@@ -1768,11 +2017,21 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
             let kernel = kernel_transition(&mut k, &code, t, step);
             let model = oracle.transition(&code, t);
             match (kernel, model) {
-                (Ok(tr), Ok((from, to))) => assert_eq!(
-                    (tr.from, tr.to),
-                    (from, to),
-                    "step {step}: transition {code} {t:?}"
-                ),
+                (Ok(tr), Ok((from, to))) => {
+                    assert_eq!(
+                        (tr.from, tr.to),
+                        (from, to),
+                        "step {step}: transition {code} {t:?}"
+                    );
+                    // fa-87r: both engines date the control by its period.
+                    if !tr.already_recorded {
+                        assert_eq!(
+                            Some(journaled_date(&k, tr.control_entry)),
+                            oracle.transition_date(&code, t),
+                            "step {step}: transition {code} {t:?} control date"
+                        );
+                    }
+                }
                 (Err(r), Err(c)) => {
                     assert_eq!(r.code, c, "step {step}: transition refusal {code} {t:?}")
                 }
@@ -4707,6 +4966,11 @@ fn close_and_maybe_lock(k: &mut Kernel, oracle: &mut Oracle, code: &str, lock: b
         let kernel = kernel_transition(k, code, t, step * 10 + i as u64).expect("transition");
         let model = oracle.transition(code, t).expect("oracle transition");
         assert_eq!((kernel.from, kernel.to), model, "{code} {t:?}");
+        assert_eq!(
+            Some(journaled_date(k, kernel.control_entry)),
+            oracle.transition_date(code, t),
+            "{code} {t:?} control date"
+        );
     }
 }
 
@@ -7865,7 +8129,7 @@ fn kernel_and_oracle_agree_on_period_authority() {
             }
         };
 
-        let kernel = kernel_transition_under(&mut k, &code, t, step, &capability, &approvals);
+        let kernel = kernel_transition_under(&mut k, &code, t, step, 1, &capability, &approvals);
         let model =
             oracle.transition_under(&code, t, PRINCIPAL.0, &authority, book, at.0, &recorded);
         assert_eq!(
@@ -8925,7 +9189,7 @@ const CLERK: VId = VId(71);
 fn draft_request(k: &Kernel, capability: Capability) -> DraftRequest {
     DraftRequest {
         capability,
-        effective_date: transition_day(),
+        effective_date: control_day(),
         description: fresh_seal(&k.book.seal_key, "draft record"),
     }
 }

@@ -512,6 +512,483 @@ fn certified_comparisons_and_traces_retain_the_complete_family_across_processes(
     }
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn unhex(text: &str) -> Vec<u8> {
+    text.as_bytes()
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect()
+}
+
+#[test]
+fn retained_statement_certificates_bridge_and_trace_without_reselecting_head() {
+    let fixture = Fixture::new();
+    let income = ["statement", "income-statement", "--for", "FY2026-P03"];
+    let head = || {
+        data(&ok(&fixture.book, &income)[0])
+            .get("known_at")
+            .unwrap()
+            .render()
+    };
+    let first = ok(&fixture.book, &[&income[..], &["--certify"][..]].concat());
+    let before_oid = text(data(&first[1]), "oid").to_string();
+    let before = data(&first[0]).get("known_at").unwrap().render();
+    fixture.post("bridge-sale", "2026-03-14", "1000", "4000", "17.00 USD");
+    let after_path = fixture.dir.join("after.cert");
+    let second = ok(
+        &fixture.book,
+        &[
+            &income[..],
+            &[
+                "--certify",
+                "--certificate-out",
+                after_path.to_str().unwrap(),
+            ][..],
+        ]
+        .concat(),
+    );
+    let after_oid = text(data(&second[1]), "oid").to_string();
+    let after = data(&second[0]).get("known_at").unwrap().render();
+    let balance = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+        ],
+    );
+    let balance_oid = format!("C:{}", text(data(&balance[1]), "oid"));
+    // The certificates fix the frontiers, so a later HEAD cannot leak in.
+    fixture.post("later-sale", "2026-03-20", "1000", "4000", "20.00 USD");
+    let (b, a) = (format!("C:{before_oid}"), format!("C:{after_oid}"));
+    let sequence = |mode: &str| {
+        ok(
+            &fixture.book,
+            &[
+                "statement",
+                mode,
+                "--definition",
+                "income-statement",
+                "--for",
+                "FY2026-P03",
+                "--before",
+                &before,
+                "--after",
+                &after,
+            ],
+        )
+    };
+    let by_sequence = sequence("diff");
+    let at = head();
+    let bridged = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            &b,
+            "--after-certificate",
+            &a,
+        ],
+    );
+    assert_eq!(bridged, by_sequence);
+    assert_eq!(bridged[0].get("certificate"), Some(&Json::Null));
+    assert_eq!(
+        data(&bridged[0]).get("after_known_at").unwrap().render(),
+        after
+    );
+    // A bare digest and the saved file name the same certificates.
+    assert_eq!(
+        ok(
+            &fixture.book,
+            &[
+                "statement",
+                "diff",
+                "--before-certificate",
+                &before_oid,
+                "--after-certificate",
+                after_path.to_str().unwrap(),
+            ],
+        ),
+        by_sequence
+    );
+    // Stating the statement one means is checked against the certificates.
+    assert_eq!(
+        ok(
+            &fixture.book,
+            &[
+                "statement",
+                "diff",
+                "--before-certificate",
+                &b,
+                "--after-certificate",
+                &a,
+                "--for",
+                "FY2026-P03",
+                "--definition",
+                "income-statement",
+            ],
+        ),
+        by_sequence
+    );
+    assert_eq!(head(), at, "an uncertified bridge writes nothing");
+
+    let certified = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            &b,
+            "--after-certificate",
+            &a,
+            "--certify",
+        ],
+    );
+    assert_eq!(certified.len(), 2);
+    assert_eq!(data(&certified[0]), data(&by_sequence[0]));
+    let diff_oid = text(data(&certified[1]), "oid").to_string();
+    assert_eq!(text(&certified[0], "certificate"), diff_oid);
+    let comparison =
+        fa::StatementDiffCertificate::decode(&unhex(text(data(&certified[1]), "bytes"))).unwrap();
+    let (old, new) = comparison.sources();
+    assert_eq!(hex(&old.digest), before_oid);
+    assert_eq!(hex(&new.digest), after_oid);
+    assert_eq!(
+        new.canonical_bytes().unwrap(),
+        std::fs::read(&after_path).unwrap(),
+        "the comparison keeps the exact retained source, not a re-certification"
+    );
+    let diff_handle = format!("C:{diff_oid}");
+    assert_eq!(
+        ok(&fixture.book, &["replay", &diff_handle]),
+        vec![certified[0].clone()]
+    );
+
+    let trace = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "trace",
+            "--from-diff",
+            &diff_handle,
+            "--for",
+            "FY2026-P03",
+            "--certify",
+        ],
+    );
+    assert_eq!(trace.len(), 2);
+    assert_eq!(text(&trace[0], "event"), "statement_trace");
+    assert_eq!(data(&trace[0]), data(&sequence("trace")[0]));
+    let attributed =
+        fa::StatementTraceCertificate::decode(&unhex(text(data(&trace[1]), "bytes"))).unwrap();
+    let sources = attributed.sources();
+    assert_eq!(hex(&sources.first().unwrap().digest), before_oid);
+    assert_eq!(hex(&sources.last().unwrap().digest), after_oid);
+    let trace_handle = format!("C:{}", text(data(&trace[1]), "oid"));
+    assert_eq!(
+        ok(&fixture.book, &["replay", &trace_handle]),
+        vec![trace[0].clone()]
+    );
+
+    // The comparison and its trace export the library's own workpapers, to a
+    // new file or inline, and exporting is a read.
+    let at = head();
+    let diff_path = fixture.dir.join("bridge.jsonl");
+    let trace_path = fixture.dir.join("trace.jsonl");
+    for (handle, path, family) in [
+        (&diff_handle, &diff_path, "statement-diff"),
+        (&trace_handle, &trace_path, "statement-trace"),
+    ] {
+        let events = ok(
+            &fixture.book,
+            &["replay", handle, "--workpaper-out", path.to_str().unwrap()],
+        );
+        let exported = events.last().unwrap();
+        assert_eq!(text(exported, "event"), "workpaper_exported");
+        assert_eq!(text(data(exported), "family"), family);
+        let written = std::fs::read_to_string(path).unwrap();
+        assert!(written.lines().count() > 1, "{family}: {written}");
+        let inline = ok(&fixture.book, &["replay", handle, "--workpaper"]);
+        assert_eq!(
+            text(data(inline.last().unwrap()), "text"),
+            written,
+            "{family}: the inline text is the file's text"
+        );
+    }
+    {
+        let keys = fa::BookKeys::load(&fixture.book.join("book.keys")).unwrap();
+        let book =
+            fa::Book::open_dir(&fixture.book, keys, fa::Entropy::deterministic(119)).unwrap();
+        let reviewer = fa_model::principal_vid("statement-reviewer");
+        let capability = fa::Capability::embedded(reviewer, &["read", "produce"]).unwrap();
+        let package = book
+            .statement_diff_workpaper(reviewer, &capability, &comparison)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&diff_path).unwrap(),
+            package.jsonl()
+        );
+        let trace_jsonl = book
+            .statement_trace_jsonl(reviewer, &capability, &attributed)
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&trace_path).unwrap(), trace_jsonl);
+    }
+    assert_eq!(head(), at, "workpaper exports publish nothing");
+    let refused = fixture.dir.join("bridge-again.jsonl");
+    std::fs::copy(&diff_path, &refused).unwrap();
+    let (exit, _, _) = run(
+        &fixture.book,
+        &[
+            "replay",
+            &diff_handle,
+            "--workpaper-out",
+            refused.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(exit, 2, "an existing workpaper file is never replaced");
+
+    let at = head();
+    for (args, exit, needle) in [
+        (
+            vec!["diff", "--before-certificate", &b],
+            2,
+            "needs both --before-certificate and --after-certificate",
+        ),
+        (
+            vec![
+                "diff",
+                "--before-certificate",
+                &b,
+                "--after-certificate",
+                &a,
+                "--before",
+                "1",
+            ],
+            2,
+            "--before selects a frontier",
+        ),
+        (
+            vec![
+                "diff",
+                "--before-certificate",
+                &b,
+                "--after-certificate",
+                &a,
+                "--branch",
+                "scenario:what-if",
+            ],
+            2,
+            "--branch selects a frontier",
+        ),
+        (
+            vec![
+                "diff",
+                "--before-certificate",
+                &b,
+                "--after-certificate",
+                &a,
+                "--compare",
+                "FY2026-P02",
+            ],
+            2,
+            "--compare names the comparative column",
+        ),
+        (
+            vec![
+                "diff",
+                "--before-certificate",
+                &b,
+                "--after-certificate",
+                &a,
+                "--for",
+                "FY2026-P02",
+            ],
+            8,
+            "the certificates answer income-statement for FY2026-P03 with no comparative",
+        ),
+        (
+            vec![
+                "diff",
+                "--before-certificate",
+                &b,
+                "--after-certificate",
+                &a,
+                "--for",
+                "FY2026-P03",
+                "--compare",
+                "FY2026-P02",
+            ],
+            8,
+            "not the statement --for/--compare/--definition name",
+        ),
+        (
+            vec![
+                "diff",
+                "--before-certificate",
+                &b,
+                "--after-certificate",
+                &a,
+                "--definition",
+                "balance-sheet",
+            ],
+            8,
+            "the certificates answer income-statement",
+        ),
+        (
+            vec![
+                "trace",
+                "--from-diff",
+                &diff_handle,
+                "--for",
+                "FY2026-P02",
+                "--certify",
+            ],
+            8,
+            "the certificates answer income-statement for FY2026-P03",
+        ),
+        (
+            vec![
+                "diff",
+                "--before-certificate",
+                &b,
+                "--after-certificate",
+                &a,
+                "--max-publications",
+                "2",
+            ],
+            2,
+            "start a statement trace",
+        ),
+        (
+            vec!["income-statement", "--before-certificate", &b],
+            2,
+            "not statement income-statement",
+        ),
+        (
+            vec!["trace", "--from-diff", &diff_handle],
+            2,
+            "add --certify",
+        ),
+        (
+            vec![
+                "trace",
+                "--from-diff",
+                &diff_handle,
+                "--before-certificate",
+                &b,
+                "--certify",
+            ],
+            2,
+            "one saved comparison",
+        ),
+        (
+            vec![
+                "diff",
+                "--before-certificate",
+                &a,
+                "--after-certificate",
+                &b,
+            ],
+            8,
+            "ordered frontiers",
+        ),
+        (
+            vec![
+                "diff",
+                "--before-certificate",
+                &balance_oid,
+                "--after-certificate",
+                &a,
+            ],
+            8,
+            "same sequence-selected trunk statement",
+        ),
+        (
+            vec![
+                "diff",
+                "--before-certificate",
+                &diff_handle,
+                "--after-certificate",
+                &a,
+            ],
+            8,
+            "--before-certificate",
+        ),
+        (
+            vec!["trace", "--from-diff", &a, "--certify"],
+            8,
+            "--from-diff",
+        ),
+    ] {
+        let args = [&["statement"][..], &args[..]].concat();
+        let (code, events, _) = run(&fixture.book, &args);
+        assert_eq!(code, exit, "{args:?}: {events:?}");
+        assert_eq!(events.len(), 1, "{args:?}: {events:?}");
+        assert_eq!(text(&events[0], "event"), "error");
+        assert!(events[0].render().contains(needle), "{args:?}: {events:?}");
+    }
+    assert_eq!(head(), at, "refusals publish nothing");
+
+    // A launch-bound reader bridges retained certificates by digest, but
+    // cannot name a host file for one or certify without produce.
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        fixture.book.clone(),
+        None,
+        "report-reader",
+        fa_cli::authority::LaunchProfile::Agent,
+        &["read"],
+    )
+    .unwrap();
+    let bound = |args: &[&str]| {
+        let argv: Vec<String> = args
+            .iter()
+            .chain(&["--json"])
+            .map(|arg| (*arg).to_string())
+            .collect();
+        fa_cli::entry::fa_with_authority(&argv, fa_cli::cli::Files::default(), &authority, true)
+    };
+    let pair = [
+        "statement",
+        "diff",
+        "--before-certificate",
+        &b,
+        "--after-certificate",
+        &a,
+    ];
+    let (code, captured) = bound(&pair);
+    assert_eq!(code, 0, "{}{}", captured.stdout, captured.stderr);
+    let event = json::parse(captured.stdout.lines().next().unwrap()).unwrap();
+    assert_eq!(data(&event), data(&by_sequence[0]));
+    let (code, captured) = bound(&[
+        "statement",
+        "diff",
+        "--before-certificate",
+        &b,
+        "--after-certificate",
+        after_path.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2, "{}{}", captured.stdout, captured.stderr);
+    assert!(
+        captured
+            .stdout
+            .contains("--after-certificate cannot name a host filesystem path"),
+        "{}",
+        captured.stdout
+    );
+    let (code, captured) = bound(&[&pair[..], &["--certify"][..]].concat());
+    assert_eq!(code, 7, "{}{}", captured.stdout, captured.stderr);
+    assert!(captured.stdout.contains("produce"), "{}", captured.stdout);
+    assert_eq!(head(), at);
+}
+
 #[test]
 fn comparison_scope_and_certification_authority_are_never_silently_ignored() {
     let fixture = Fixture::new();

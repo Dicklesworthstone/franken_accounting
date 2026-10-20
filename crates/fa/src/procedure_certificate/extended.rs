@@ -43,6 +43,14 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("aging.inventory", 1),
     ("reversal.patterns", 1),
     ("confirm.coverage", 1),
+    ("solvency.balance_sheet_test", 1),
+    ("solvency.cash_flow_test", 1),
+    ("lookback.preferences", 1),
+    ("lookback.fraudulent_transfer", 1),
+    ("ponzi.net_investment", 1),
+    ("distribution.rising_tide", 1),
+    ("distribution.pro_rata", 1),
+    ("damages.but_for", 1),
 ];
 
 const INPUTS: &[(&str, &str)] = &[

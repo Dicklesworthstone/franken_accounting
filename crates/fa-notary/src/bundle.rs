@@ -17,7 +17,9 @@
 //!                    | scope 2: bytes(ScopeProof)
 //!                    | scope 3: list(bytes(LeafEnvelope) ‖ list([32] accumulator path))
 //! entry    = leaf_index u64 ‖ proposal_len u32 ‖ bytes(record) ‖ list(stub),
-//!            strictly ascending by leaf_index
+//!            strictly ascending by leaf_index; only journal entries (leaf
+//!            kind 1): evidence records are bound by the completeness
+//!            proof's envelopes, and a bundle discloses no evidence payload
 //! stub     = doc_commit [32] ‖ kind u8 ‖ length u64 ‖ chunk_root [32]
 //!            ‖ opt(bytes(document)), strictly ascending by doc_commit
 //! balance  = bytes(fold_domain) ‖ fold_version u16 ‖ bytes(BalanceProof)
@@ -434,6 +436,19 @@ fn not_in_prefix(vid: VId, through: CommitSeq) -> Refusal {
     )
 }
 
+fn not_an_entry(vid: VId) -> Refusal {
+    Refusal::new(
+        code::NOT_IN_PREFIX,
+        exit::REFUSAL,
+        format!(
+            "vertex {:032x} is an accumulated evidence record, not a journal entry",
+            vid.0
+        ),
+        "plan §13.2 (a bundle's entries are journal entries; evidence records are bound by their envelopes)",
+        "name the entries the evidence supports; prove the record itself with `fa proof inclusion --entry <vid> --with-record`",
+    )
+}
+
 /// The leaves a bundle's scope holds, ascending; the completeness proof of
 /// that scope; and, for named entries, the named leaf indices.
 struct InScope {
@@ -451,7 +466,9 @@ fn in_scope(journal: &Journal, request: &BundleRequest) -> Outcome<InScope> {
     }
     let (indices, proof, leaves): (Vec<usize>, Vec<u8>, Vec<u64>) = match &request.scope {
         BundleScope::Prefix => (
-            (0..journal.leaves.len()).collect(),
+            (0..journal.leaves.len())
+                .filter(|i| journal.leaves[*i].envelope.is_entry())
+                .collect(),
             journal.prefix_proof()?,
             Vec::new(),
         ),
@@ -479,7 +496,8 @@ fn in_scope(journal: &Journal, request: &BundleRequest) -> Outcome<InScope> {
             let mut run = Vec::with_capacity(vids.len());
             for vid in vids {
                 match journal.leaf_index(*vid) {
-                    Some(i) => run.push(i),
+                    Some(i) if journal.leaves[i].envelope.is_entry() => run.push(i),
+                    Some(_) => return Ok(Err(not_an_entry(*vid))),
                     None => return Ok(Err(not_in_prefix(*vid, journal.through_seq))),
                 }
             }

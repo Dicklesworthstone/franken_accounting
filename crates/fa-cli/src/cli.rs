@@ -101,9 +101,12 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("gl", gl_cmd),
     ("explain", explain_cmd),
     ("procedure", procedure_cmd),
+    ("sample", crate::sample::sample_cmd),
     ("checkpoint", notary::checkpoint_cmd),
     ("proof", crate::proof::proof_cmd),
     ("bundle", crate::proof::bundle_cmd),
+    ("production", crate::production::production_cmd),
+    ("produce", crate::production::produce_cmd),
     ("party", crate::rea::party_cmd),
     ("instrument", crate::rea::instrument_cmd),
     ("entity", crate::rea::entity_cmd),
@@ -112,6 +115,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("export", crate::export::export_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
+    ("recover", recover_cmd),
     ("entry", entry_cmd),
     ("doctor", crate::triage::doctor_cmd),
     ("triage", crate::triage::triage_cmd),
@@ -1313,6 +1317,18 @@ fn run_scoped(
     );
     let out = Out::styled_format(format, capture, style).with_authority(authority);
     if authority.is_none() {
+        if daemon_files.is_some() && (args.flags.contains_key("--as") || args.switch("--as")) {
+            return finish_into(
+                out,
+                Err(Fail::Refusal(Refusal::new(
+                    fa_journal::refusal::code::CAPABILITY,
+                    fa_journal::exit::SAFETY,
+                    "`--as` is not admitted on the daemon path: fad authenticates callers by capability token, never by unverified `--as` flag",
+                    "plan §14.2, §15.3 (daemon caller authentication; fa-r3q)",
+                    "present a token: fa capability issue --holder <principal> --out <file> … then fa --token <file> …",
+                ))),
+            );
+        }
         out.said.borrow_mut().owner_principal =
             Some(args.flag("--as").unwrap_or("operator").to_string());
     }
@@ -1593,14 +1609,78 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
     failure.exit
 }
 
+/// Format a human-readable version banner including `franken-stack.lock`
+/// foundation revisions and the binary's embedded registry epochs (`fa-eqk`).
+#[must_use]
+pub fn version_text(binary: &str) -> String {
+    match fa_registry::FoundationStack::embedded() {
+        Ok(stack) => format!(
+            "{binary} {VERSION} (foundations: {}; registries: schema_v={}, epochs={})",
+            stack.foundations_summary(),
+            stack.schema_version,
+            stack.registry_epochs.len()
+        ),
+        Err(_) => format!("{binary} {VERSION}"),
+    }
+}
+
+/// Structured JSON version metadata with `franken-stack.lock` foundation
+/// revisions and canonical registry epoch digests (`fa-eqk`).
+#[must_use]
+pub fn version_metadata_json(binary: &str) -> Json {
+    match fa_registry::FoundationStack::embedded() {
+        Ok(stack) => {
+            let foundations = Json::Arr(
+                stack
+                    .foundations
+                    .iter()
+                    .map(|f| {
+                        obj(vec![
+                            ("name", s(&f.name)),
+                            ("source", s(&f.source)),
+                            ("rev", f.rev.as_deref().map_or(Json::Null, s)),
+                            ("version", s(&f.version)),
+                            ("checksum", f.checksum.as_deref().map_or(Json::Null, s)),
+                            ("role", s(&f.role)),
+                        ])
+                    })
+                    .collect(),
+            );
+            let registry_epochs = Json::Arr(
+                stack
+                    .registry_epochs
+                    .iter()
+                    .map(|e| {
+                        let digest = fa_model::domain_digest(
+                            b"fa:registry-canonical-digest:v1",
+                            &[&e.canonical_bytes],
+                        );
+                        obj(vec![
+                            ("name", s(e.name)),
+                            ("schema_version", Json::Int(e.schema_version)),
+                            ("canonical_digest", s(hex(&digest))),
+                        ])
+                    })
+                    .collect(),
+            );
+            obj(vec![
+                ("binary", s(binary)),
+                ("version", s(VERSION)),
+                ("stack_schema_version", Json::Int(stack.schema_version)),
+                ("stack_taken_on", s(&stack.taken_on)),
+                ("foundations", foundations),
+                ("registry_epochs", registry_epochs),
+            ])
+        }
+        Err(_) => obj(vec![("binary", s(binary)), ("version", s(VERSION))]),
+    }
+}
+
 fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     if args.switch("--version") {
-        out.event(
-            "version",
-            vec![("version", s(VERSION))],
-            &format!("fa {VERSION}"),
-        );
+        let text = version_text("fa");
+        out.event("version", vec![("version", s(VERSION))], &text);
         return Ok(());
     }
     // An alias expands in the verb position (plan §15.3: the spellings agents
@@ -1747,144 +1827,53 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             || args.flag("--review-out").is_some())
 }
 
-/// Required capability operations for a command on the launch-bound surface, or
-/// `None` when the command/subcommand is owner-only and never admitted on a
-/// bound session.
+/// `fa recover projections --dry-run` derives the repair and returns before any
+/// write; only publishing it needs confirmation.
+fn recovery_preview_only(verb: &str, args: &Args) -> bool {
+    verb == "recover" && args.switch("--dry-run")
+}
+
+/// The capability operations a launch-bound session (MCP, `fa --token`, fad
+/// tokens) must hold to run this command: the first `[[bound]]` rule of
+/// `registries/verbs.toml` that decides it (plan §15.1: one verb registry
+/// drives every surface; fa-mg2j). `None`: no rule does, so the command is
+/// not admitted on the bound route.
 #[must_use]
 pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy::Op]> {
-    use fa_policy::Op;
-    let sub = args.positional.get(1).map(String::as_str);
-    if period_plan_only(verb, args) {
-        return Some(&[Op::Read]);
-    }
-    if verb == "statement"
-        && matches!(sub, Some("diff" | "trace"))
-        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
-    {
-        return Some(&[Op::Read, Op::Produce]);
-    }
-    if verb == "gl" && (args.switch("--certify") || args.flag("--certificate-out").is_some()) {
-        return Some(&[Op::Read, Op::Produce]);
-    }
-    if verb == "scenario"
-        && sub == Some("diff")
-        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
-    {
-        return Some(&[Op::Read, Op::Produce]);
-    }
-    if verb == "tb"
-        && args.switch("--summary")
-        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
-    {
-        return Some(&[Op::Read, Op::Produce]);
-    }
-    let ops: &'static [Op] = match (verb, sub) {
-        // The chart templates are data embedded in this build; listing
-        // them reads nothing from the book.
-        ("capabilities" | "robot-docs" | "help", _) | ("chart", Some("templates")) => &[],
-        ("book", Some("info"))
-        | ("chart" | "period", Some("list"))
-        | (
-            "tb" | "statement" | "open-items" | "gl" | "explain" | "replay" | "certificate"
-            | "entry" | "procedure" | "triage" | "next" | "doctor",
-            _,
-        ) => &[Op::Read],
-        ("verify" | "registers", _) => &[Op::Read, Op::Verify],
-        ("close", Some("map")) => &[Op::Read, Op::SchemaChange],
-        ("close", Some("routes")) => &[Op::Read],
-        ("close", Some("year-end")) => &[Op::Read, Op::Post, Op::Close],
-        (
-            "post" | "commit" | "reverse" | "reserve" | "resolve" | "invoice" | "bill" | "receipt"
-            | "payment",
-            _,
-        ) => &[Op::Post],
-        ("allocate" | "settle", _) => {
-            if sub == Some("approve") || args.switch("--approve") {
-                &[Op::Read, Op::Approve]
-            } else {
-                &[Op::Read, Op::Post]
-            }
-        }
-        ("approve", _) => {
-            if args.flag("--review").is_some() {
-                &[Op::Read, Op::Approve]
-            } else {
-                &[Op::Approve]
-            }
-        }
-        ("checkpoint", _) => &[Op::Witness],
-        ("proof" | "bundle" | "export", _) => &[Op::Read, Op::Produce],
-        ("bank", Some("import")) => &[Op::Read, Op::Post, Op::Reconcile],
-        ("bank", Some("match" | "confirm" | "status" | "history")) => &[Op::Read, Op::Reconcile],
-        ("finding", Some("record" | "export")) => &[Op::Read, Op::Produce],
-        ("finding", Some("runs" | "list" | "show" | "replay")) => &[Op::Read],
-        ("finding", Some("review")) => &[Op::Read, Op::Approve],
-        ("document", Some("add")) if args.flag("--grade").is_none() => &[Op::Post],
-        ("document", Some("read" | "list")) => &[Op::Read],
-        ("document", Some("redact")) => &[Op::Privileged],
-        ("document", Some("disclose")) => &[Op::Read, Op::Produce],
-        ("document", Some("custody")) => {
-            if args.flag("--to").is_some() {
-                &[Op::Post]
-            } else {
-                &[Op::Read]
-            }
-        }
-        ("document", Some("erase")) => &[Op::Erase],
-        ("document", Some("hold")) => {
-            if matches!(
-                args.positional.get(2).map(String::as_str),
-                Some("show" | "list")
-            ) {
-                &[Op::Read]
-            } else {
-                &[Op::Hold]
-            }
-        }
-        ("document", Some("attest")) => match args.positional.get(2).map(String::as_str) {
-            Some("review") => &[Op::Approve],
-            Some("manual") => &[Op::Post],
-            Some("register-equals") => {
-                if args.flag("--account").is_some() {
-                    &[Op::Reconcile]
-                } else {
-                    &[Op::Read]
-                }
-            }
-            _ => &[Op::Read],
-        },
-        ("document", Some("import")) => match args.positional.get(2).map(String::as_str) {
-            Some("run") => &[Op::Post],
-            _ => &[Op::Read],
-        },
-        ("event", Some("record")) => &[Op::Post],
-        ("event", Some("show" | "list")) => &[Op::Read],
-        ("migrate", Some("show")) => &[Op::Read],
-        ("migrate", Some("import")) => match args.flag("--action") {
-            Some("show") => &[Op::Read],
-            Some("prepare" | "stage") => &[Op::Read, Op::Post, Op::Migrate],
-            _ => return None,
-        },
-        ("migrate", Some("open" | "stage" | "finalize" | "abandon")) => {
-            &[Op::Read, Op::Post, Op::Migrate]
-        }
-        ("capability", Some("revoke")) => &[Op::Read, Op::IssueCapability],
-        ("capability", Some("list" | "show")) => &[Op::Read],
-        ("draft", Some("new" | "plan" | "discard")) => &[Op::Post],
-        ("draft", Some("list" | "show")) => &[Op::Read],
-        ("draft", Some("promote")) => &[Op::Approve],
-        ("scenario", Some("fork" | "run" | "discard")) => &[Op::Post],
-        ("scenario", Some("list" | "show" | "diff")) => &[Op::Read],
-        // party identifiers is absent on purpose: a bank-detail change is
-        // the business-email-compromise vector (plan §14.4), so it is
-        // host-only and never a launch-bound session's, whatever it holds.
-        ("chart", Some("open" | "close" | "promote"))
-        | ("party", Some("add" | "relate" | "bind"))
-        | ("instrument" | "entity", Some("add")) => &[Op::SchemaChange],
-        ("party" | "instrument" | "entity", Some("list")) => &[Op::Read],
-        _ => return None,
-    };
-    Some(ops)
+    let reg = crate::verbs::registry().ok()?;
+    let present = |flag: &str| args.switch(flag) || !args.flag_all(flag).is_empty();
+    let value = |flag: &str| args.flag(flag).map(str::to_string);
+    let (index, _) = reg.bound_rule(
+        verb,
+        args.positional.get(1).map(String::as_str),
+        args.positional.get(2).map(String::as_str),
+        &present,
+        &value,
+    )?;
+    bound_rule_ops().get(index)?.as_deref()
+}
+
+/// Each `[[bound]]` rule's ops as `fa_policy::Op`s, resolved once. A rule
+/// naming an op this build lacks resolves to `None`: its command is refused,
+/// never admitted on a partial set.
+fn bound_rule_ops() -> &'static [Option<Vec<fa_policy::Op>>] {
+    static OPS: std::sync::OnceLock<Vec<Option<Vec<fa_policy::Op>>>> = std::sync::OnceLock::new();
+    OPS.get_or_init(|| {
+        crate::verbs::registry().map_or_else(
+            |_| Vec::new(),
+            |reg| {
+                reg.bound
+                    .iter()
+                    .map(|rule| {
+                        rule.ops
+                            .iter()
+                            .map(|name| fa_policy::Op::from_name(name))
+                            .collect()
+                    })
+                    .collect()
+            },
+        )
+    })
 }
 
 /// Whether a concrete command is admissible under `authority` on the
@@ -2011,14 +2000,17 @@ enum HostPath {
     /// A new file the command writes; its leaf may not exist yet.
     Output,
     /// Content a flag reads from the file (`--intent`, `--plan`, `--policy`,
-    /// `--file`, `--replace-with`, `--issuer-token`).
+    /// `--audited`, `--file`, `--replace-with`, `--issuer-token`,
+    /// `--privilege`).
     Content,
     /// A review event read from the file.
     Review,
     /// An input file of `fa document import run`.
     ImportRun,
-    /// A positional input file: a chart, account, party, instrument, entity,
-    /// statement, document or certificate.
+    /// An input file: a positional chart, account, party, instrument, entity,
+    /// statement, document or certificate, or a saved-certificate source flag
+    /// (`--before-certificate`, `--after-certificate`, `--from-diff`,
+    /// `--from-source`, `--aging-certificate`, `--control-certificate`).
     Input,
 }
 
@@ -2035,6 +2027,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--certificate-out",
         "--out",
         "--output",
+        "--workpaper-out",
         "--review-out",
         "--receipt-out",
     ] {
@@ -2046,13 +2039,31 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--intent",
         "--plan",
         "--policy",
+        "--audited",
         "--file",
         "--replace-with",
         "--issuer-token",
+        "--privilege",
     ] {
         for value in args.flag_all(flag) {
             if value != "-" {
                 paths.push((flag, value, HostPath::Content));
+            }
+        }
+    }
+    for flag in [
+        "--before-certificate",
+        "--after-certificate",
+        "--from-diff",
+        "--from-source",
+        "--aging-certificate",
+        "--control-certificate",
+    ] {
+        for value in args.flag_all(flag) {
+            let digits = value.strip_prefix("C:").unwrap_or(value);
+            let retained = digits.len() == 64 && digits.bytes().all(|b| b.is_ascii_hexdigit());
+            if value != "-" && !retained {
+                paths.push((flag, value, HostPath::Input));
             }
         }
     }
@@ -2294,7 +2305,10 @@ fn gate_from_argv(
     };
     let mut rows = reg.dangerous_for(&verb.name, sub).peekable();
     // Planning commits nothing: the commit from the plan is what confirms.
-    if period_plan_only(&verb.name, args) || post_plan_only(&verb.name, args) {
+    if period_plan_only(&verb.name, args)
+        || post_plan_only(&verb.name, args)
+        || recovery_preview_only(&verb.name, args)
+    {
         return Ok(());
     }
     if authority.is_none() && confirmed(args) {
@@ -4137,12 +4151,64 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     },
                 },
             };
-            let reason: u16 = args.flag("--reason").unwrap_or("0").parse().map_err(|_| {
-                usage(
-                    "--reason must be a registered reason code (u16)",
-                    "--reason 0",
-                )
-            })?;
+            // Every transition is journaled with its reason (plan §7.3,
+            // fa-cvg): a registered name or code of the transition's scope.
+            // A routine open or soft close defaults to Scheduled; close, lock
+            // and reopen say why. The kernel refuses an unregistered code. A
+            // plan carries the reason its approvals bind.
+            let scope = fa_journal::period::reason_scope(transition);
+            let reasons = ReasonCodes::embedded()
+                .map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+            let reason: Option<u16> = match args.flag("--reason") {
+                Some(_) if args.flag("--plan").is_some() => {
+                    return Err(usage(
+                        "--reason does not apply to --plan: the plan carries the reason its approvals bind",
+                        format!("fa period {t} {code} --plan <file> [--approval <vid>]..."),
+                    ));
+                }
+                None if args.flag("--plan").is_some() => None,
+                Some(given) => Some(match given.parse::<u16>() {
+                    Ok(number) => number,
+                    Err(_) => reasons
+                        .rows
+                        .iter()
+                        .find(|r| r.scope == scope && r.name == given)
+                        .map(|r| r.code)
+                        .ok_or_else(|| {
+                            usage(
+                                format!("--reason `{given}` is not a registered {scope} reason"),
+                                format!("--reason <name>, one of: {}", reasons.listing(scope)),
+                            )
+                        })?,
+                }),
+                None if matches!(
+                    transition,
+                    PeriodTransition::Open | PeriodTransition::SoftClose
+                ) =>
+                {
+                    Some(
+                        reasons
+                            .rows
+                            .iter()
+                            .find(|r| r.scope == scope && r.name == "Scheduled")
+                            .map(|r| r.code)
+                            .ok_or_else(|| {
+                                Fail::Internal(format!(
+                                    "reason_codes.toml has no {scope} Scheduled"
+                                ))
+                            })?,
+                    )
+                }
+                None => {
+                    return Err(usage(
+                        format!("period {t} needs --reason: the journal records why"),
+                        format!(
+                            "fa period {t} {code} --reason <name>, one of: {}",
+                            reasons.listing(scope)
+                        ),
+                    ));
+                }
+            };
             let who = ctx.principal(args);
             let op = fa_journal::policy::steward()
                 .map_err(BookError::Kernel)?
@@ -4162,23 +4228,19 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .flag("--key")
                 .map(|k| k.as_bytes().to_vec())
                 .unwrap_or_else(|| format!("period:{code}:{current}:{t}").into_bytes());
-            let date = date_flag(
-                args,
-                book.periods()?
-                    .into_iter()
-                    .find(|p| &p.code == code)
-                    .map(|p| p.start)
-                    .unwrap_or(DateDay(0)),
-            )?;
             let approval_flags = args.flag_all("--approval");
+            // Every branch but the plan commit has a reason of its own.
+            let given_reason = || {
+                reason.ok_or_else(|| Fail::Internal("only a period plan carries its reason".into()))
+            };
             // A plan seals the description once (R4), so an approval
             // recorded by another principal, in another process, binds the
             // proposal the commit rebuilds from the plan's inputs. Plan files
             // resolve against the caller's working directory, as every file
             // argument does (a daemon writes and reads the client's).
             if args.switch("--dry-run") {
-                let plan = book.plan_transition(code, transition, who, reason, date, &key)??;
-                let digest = book.plan_digest(&plan)?;
+                let plan = book.plan_transition(code, transition, who, given_reason()?, &key)??;
+                let digest = book.plan_digest(&plan)??;
                 let bytes = plan
                     .encode()
                     .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
@@ -4213,8 +4275,8 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "use --dry-run to receive the complete plan bytes as hex on stdout",
                     ));
                 }
-                let plan = book.plan_transition(code, transition, who, reason, date, &key)??;
-                let digest = book.plan_digest(&plan)?;
+                let plan = book.plan_transition(code, transition, who, given_reason()?, &key)??;
+                let digest = book.plan_digest(&plan)??;
                 let bytes = plan
                     .encode()
                     .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
@@ -4259,7 +4321,7 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             "commit a plan with the subcommand and period it was made for",
                         ));
                     }
-                    let digest = book.plan_digest(&plan)?;
+                    let digest = book.plan_digest(&plan)??;
                     let approvals = approval_flags
                         .iter()
                         .map(|v| {
@@ -4279,9 +4341,14 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ),
                     ));
                 }
-                None => {
-                    book.transition_period(code, transition, who, reason, date, &key, &capability)??
-                }
+                None => book.transition_period(
+                    code,
+                    transition,
+                    who,
+                    given_reason()?,
+                    &key,
+                    &capability,
+                )??,
             };
             out.at_book(&book)?;
             out.effective(format!("period:{}", tr.period));
@@ -4617,6 +4684,42 @@ fn issued_json(i: &fa_journal::IssuedCapability) -> Json {
             cap.expires_at()
                 .map_or(Json::Null, |at| Json::Int(i128::from(at.0))),
         ),
+        (
+            "books",
+            cap.books().map_or(Json::Null, |books| {
+                Json::Arr(books.iter().map(|book| s(book.to_hex())).collect())
+            }),
+        ),
+        (
+            "accounts",
+            cap.accounts()
+                .map_or(Json::Null, |roots| Json::Arr(roots.iter().map(s).collect())),
+        ),
+        (
+            "periods",
+            cap.periods().map_or(Json::Null, |periods| {
+                Json::Arr(periods.iter().map(s).collect())
+            }),
+        ),
+        (
+            "effective_through",
+            cap.effective_bound()
+                .map_or(Json::Null, |day| s(day.render())),
+        ),
+        (
+            "known_at_most",
+            cap.known_at_pin()
+                .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+        ),
+        (
+            "branch",
+            cap.branch().map_or(Json::Null, |branch| s(branch.to_hex())),
+        ),
+        (
+            "redaction",
+            cap.redaction()
+                .map_or(Json::Null, |contract| Json::Int(i128::from(contract))),
+        ),
         ("issued_at", Json::Int(i128::from(i.issued_at.0))),
         (
             "revoked_at",
@@ -4711,34 +4814,42 @@ fn capability_issuer(ctx: &Ctx<'_>, args: &Args) -> Result<Capability, Fail> {
 /// file is written only after the issuance commits, so a refused issuance
 /// leaves no file; the secret is never journaled or printed.
 fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const FIX: &str = "fa capability issue --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--daily-total \"1000.00 USD\"]... [--expires-at <seq>] --out <new-file> (--issuer-token <file> or --as <issuer> --grant issue_capability --grant <each issued op>)";
+    const FIX: &str = "fa capability issue --holder <principal> --profile agent|preparer|approver|controller|auditor|regulator|investigator|receiver|production|witness|human [--op <op>]... [--ceiling \"1000.00 USD\"]... [--daily-total \"1000.00 USD\"]... [--expires-at <seq>] [--period <code>]... [--effective-through YYYY-MM-DD] [--known-at-most <seq>] [--redaction <contract>] [--account <code>]... [--branch <32-hex>] [--class <EntryClass>]... [--operator-kind human|agent] [--requires-dry-run] [--book-scope] --out <new-file> (--issuer-token <file> or --as <issuer> --grant issue_capability --grant <each issued op>)";
     let holder = args.require("--holder", "<principal>")?.to_string();
     if holder.is_empty() || holder.len() > fa_policy::capability::MAX_TOKEN_PRINCIPAL_BYTES {
         return Err(usage("--holder is a 1..=256-byte principal name", FIX));
     }
-    let profile = match args.flag("--profile").unwrap_or("agent") {
-        "agent" => fa_policy::Profile::Agent,
-        "human" => fa_policy::Profile::Human,
-        other => {
-            return Err(usage(
-                format!("--profile `{other}` is not an issuable profile"),
-                "--profile agent|human (the remaining §14.4 templates land with fa-5npo)",
-            ));
-        }
+    let raw_profile = args.flag("--profile").unwrap_or("agent");
+    let (profile, selected_template) = if raw_profile.eq_ignore_ascii_case("human") {
+        (fa_policy::Profile::Human, None)
+    } else if let Some(template) = fa_policy::ProfileTemplate::from_name(raw_profile) {
+        (template.base_profile(), Some(template))
+    } else {
+        return Err(usage(
+            format!("--profile `{raw_profile}` is not an issuable profile or §14.4 template"),
+            "--profile agent|preparer|approver|controller|auditor|regulator|investigator|receiver|production|witness|human",
+        ));
     };
     let op_names = args.flag_all("--op");
-    if op_names.is_empty() {
-        return Err(usage("an issued capability names at least one --op", FIX));
-    }
-    let mut ops = Vec::with_capacity(op_names.len());
-    for name in &op_names {
-        ops.push(fa_policy::Op::from_name(name).ok_or_else(|| {
-            usage(
-                format!("--op `{name}` is not a registered op"),
-                "`fa capabilities --json` lists the registered ops",
-            )
-        })?);
-    }
+    let ops = if op_names.is_empty() {
+        match selected_template {
+            Some(template) => template.default_ops().to_vec(),
+            None => {
+                return Err(usage("an issued capability names at least one --op", FIX));
+            }
+        }
+    } else {
+        let mut ops = Vec::with_capacity(op_names.len());
+        for name in &op_names {
+            ops.push(fa_policy::Op::from_name(name).ok_or_else(|| {
+                usage(
+                    format!("--op `{name}` is not a registered op"),
+                    "`fa capabilities --json` lists the registered ops",
+                )
+            })?);
+        }
+        ops
+    };
     let out_path = args.require("--out", "<new token file>")?.to_string();
     if out_path == "-" {
         return Err(usage(
@@ -4764,8 +4875,99 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let holder_vid = fa_model::principal_vid(&holder);
-    let mut issued = Capability::new(holder_vid, profile, &ops, issuer.holder())
-        .map_err(|e| usage(format!("the issued capability: {e}"), FIX))?;
+    let mut issued = match selected_template {
+        Some(template) => {
+            Capability::from_template(holder_vid, template, Some(&ops), issuer.holder())
+                .map_err(|e| usage(format!("the issued capability: {e}"), FIX))?
+        }
+        None => Capability::new(holder_vid, profile, &ops, issuer.holder())
+            .map_err(|e| usage(format!("the issued capability: {e}"), FIX))?,
+    };
+    if args.switch("--book-scope")
+        || selected_template.is_some_and(|t| t.required_caveats().contains(&"books"))
+        || issuer.books().is_some()
+    {
+        issued = issued
+            .for_books(&[book.context().book_id])
+            .map_err(|e| usage(format!("--book-scope: {e}"), FIX))?;
+    }
+    if issuer.operator_kind() == fa_policy::OperatorKind::Agent {
+        issued = issued
+            .with_operator_kind(fa_policy::OperatorKind::Agent)
+            .map_err(|e| usage(format!("inherited operator_kind: {e}"), FIX))?;
+    }
+    if let Some(raw_kind) = args.flag("--operator-kind") {
+        let kind = fa_policy::OperatorKind::from_name(raw_kind).ok_or_else(|| {
+            usage(
+                format!("--operator-kind `{raw_kind}` must be `human` or `agent`"),
+                "--operator-kind human|agent",
+            )
+        })?;
+        issued = issued
+            .with_operator_kind(kind)
+            .map_err(|e| usage(format!("--operator-kind `{raw_kind}`: {e}"), FIX))?;
+    }
+    if issuer.has_requires_dry_run_caveat() || args.switch("--requires-dry-run") {
+        issued = issued.with_requires_dry_run();
+    }
+    if let Some(text) = args.flag("--redaction") {
+        let contract = text.parse::<u16>().map_err(|_| {
+            usage(
+                format!("--redaction `{text}` is not a u16 redaction contract id"),
+                "--redaction <contract-id> (`redaction_contracts.toml`)",
+            )
+        })?;
+        issued = issued
+            .with_redaction(contract)
+            .map_err(|e| usage(format!("--redaction `{text}`: {e}"), FIX))?;
+    } else if let Some(contract) = issuer.redaction() {
+        issued = issued
+            .with_redaction(contract)
+            .map_err(|e| usage(format!("inherited redaction: {e}"), FIX))?;
+    }
+    let accounts = args.flag_all("--account");
+    if !accounts.is_empty() {
+        issued = issued
+            .for_accounts(&accounts)
+            .map_err(|e| usage(format!("--account: {e}"), FIX))?;
+    }
+    if let Some(text) = args.flag("--branch") {
+        let branch = if text.len() == 32 && text.is_ascii() {
+            let mut raw = [0u8; 16];
+            for (i, slot) in raw.iter_mut().enumerate() {
+                *slot = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).map_err(|_| {
+                    usage(
+                        format!("--branch `{text}` is not a 32-hex branch id"),
+                        "--branch <32-hex>",
+                    )
+                })?;
+            }
+            Id128(raw)
+        } else {
+            return Err(usage(
+                format!("--branch `{text}` is not a 32-hex branch id"),
+                "--branch <32-hex>",
+            ));
+        };
+        issued = issued
+            .on_branch(branch)
+            .map_err(|e| usage(format!("--branch `{text}`: {e}"), FIX))?;
+    }
+    let class_names = args.flag_all("--class");
+    if !class_names.is_empty() {
+        let mut classes = Vec::with_capacity(class_names.len());
+        for name in &class_names {
+            classes.push(fa_model::EntryClass::from_name(name).ok_or_else(|| {
+                usage(
+                    format!("--class `{name}` is not a registered EntryClass"),
+                    "`fa capabilities --json` lists the registered entry classes",
+                )
+            })?);
+        }
+        issued = issued
+            .for_classes(&classes)
+            .map_err(|e| usage(format!("--class: {e}"), FIX))?;
+    }
     // A daily limit is a root's shared budget, never a fresh allowance for
     // each descendant. The kernel independently checks this lineage at issue.
     for (unit, maximum) in issuer.daily_totals() {
@@ -4811,6 +5013,47 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         })?;
         issued = issued.expiring_at(CommitSeq(seq));
+    }
+    // Read scope caveats (plan §14.2): judged before any query a holder's
+    // read or write constructs, never applied as a result filter.
+    let periods = args.flag_all("--period");
+    if !periods.is_empty() {
+        let calendar = book.periods()?;
+        if let Some(code) = periods
+            .iter()
+            .find(|code| !calendar.iter().any(|p| p.code == **code))
+        {
+            return Err(usage(
+                format!("--period `{code}` is not a period of this book"),
+                "`fa period list` lists the book's period codes",
+            ));
+        }
+        issued = issued
+            .for_periods(&periods)
+            .map_err(|e| usage(format!("--period: {e}"), FIX))?;
+    }
+    if let Some(text) = args.flag("--effective-through") {
+        let day = DateDay::parse(text).map_err(|e| {
+            usage(
+                format!("--effective-through `{text}`: {e}"),
+                "--effective-through YYYY-MM-DD (the token reaches effective dates on or before it)",
+            )
+        })?;
+        issued = issued.effective_through(day);
+    }
+    if let Some(text) = args.flag("--known-at-most") {
+        let seq = text.parse::<u64>().map_err(|_| {
+            usage(
+                format!("--known-at-most `{text}` is not a commit sequence"),
+                "--known-at-most <seq> (the token reads recorded frontiers at or before it, never the head beyond)",
+            )
+        })?;
+        issued = issued.known_at_most(CommitSeq(seq));
+    }
+    if let Some(template) = selected_template {
+        issued
+            .validate_template(template)
+            .map_err(|e| usage(format!("the issued `{template}` capability: {e}"), FIX))?;
     }
     let mut secret = [0u8; 32];
     Entropy::production()
@@ -8839,6 +9082,23 @@ pub(crate) fn known_at_flag(
     }
 }
 
+/// Whether `--as-originally-reported` (plan §7.4) selects this read. It
+/// fixes the known-at coordinate itself (the period's first StatementIssuance,
+/// else its first Lock; never HEAD, never a Close), so a known-at selector
+/// beside it is refused before either is resolved.
+fn as_originally_reported(args: &Args, example: &str) -> Result<bool, Fail> {
+    let originally = args.switch("--as-originally-reported");
+    if originally
+        && (!args.flag_all("--as-known-at").is_empty() || !args.flag_all("--known-at").is_empty())
+    {
+        return Err(usage(
+            "--as-originally-reported fixes the known-at coordinate itself; it cannot be combined with --as-known-at or --known-at",
+            example,
+        ));
+    }
+    Ok(originally)
+}
+
 fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
     if args.flag_all("--fiscal-year").len() > 1
         || (args.flag("--fiscal-year").is_some() && args.flag("--period").is_some())
@@ -8941,6 +9201,15 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    // A native trial balance, plain or certified, is read under the
+    // session's capability: admitted before the book is observed, and its
+    // selection judged against the scope caveats before any query is
+    // constructed (doctrine 8, fa-0x0); a caveat refuses, never filters. A
+    // head read also loads its register window under it (fa-715).
+    let read_cap = match &certify_cap {
+        Some(capability) => capability.clone(),
+        None => ctx.capability(args, &["read"])?,
+    };
     let out = &ctx.out;
     let mut book = if let Some(capability) = summary_cap.as_ref() {
         ctx.books.open_admitted(args, |book| {
@@ -8972,7 +9241,10 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             prepare_native_certificate_history(book, capability, None)
         })?
     } else {
-        ctx.books.open(args)?
+        ctx.books.open_admitted(args, |book| {
+            book.read_scope(who, &read_cap)??;
+            Ok(())
+        })?
     };
     if args.positional.len() != 1 {
         return Err(usage("unexpected trial-balance argument", "fa tb --help"));
@@ -8992,15 +9264,8 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa tb --period <code> --summary --root <code> --json",
         ));
     }
-    let originally = args.switch("--as-originally-reported");
-    if originally
-        && (!args.flag_all("--as-known-at").is_empty() || !args.flag_all("--known-at").is_empty())
-    {
-        return Err(usage(
-            "--as-originally-reported fixes the known-at coordinate itself; it cannot be combined with --as-known-at",
-            "fa tb --period FY2026-P03 --as-originally-reported",
-        ));
-    }
+    let originally =
+        as_originally_reported(args, "fa tb --period FY2026-P03 --as-originally-reported")?;
     let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
     let selection = if let Some(date) = args.flag("--as-of") {
         if args.flag("--period").is_some()
@@ -9043,6 +9308,10 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ));
             }
         };
+        // The period's scope is judged before its transitions are read; the
+        // pinned coordinate is judged again before the fold.
+        book.read_scope(who, &read_cap)??
+            .admit_report(&selection.clone().into(), known_at)??;
         known_at = Some(book.originally_reported(&period)??.known_at);
     }
     if let Some(capability) = summary_cap {
@@ -9100,7 +9369,9 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let summary = book.summary_trial_balance(who, &capability, &request)??;
         return render_summary_trial_balance(out, &book, &summary, &selection, None);
     }
-    let (tb, certificate) = if let Some(capability) = certify_cap.as_ref() {
+    book.read_scope(who, &read_cap)??
+        .admit_report(&selection.clone().into(), known_at)??;
+    let (tb, certificate, served) = if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;
         let certified = match requested_utc_ns {
             Some(instant) => {
@@ -9109,14 +9380,51 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             None => book.certify_trial_balance(selection.clone(), known_at)??,
         };
         out.time_selection(certified.certificate.time_selection.as_ref());
-        (certified.report, Some(certified.certificate))
+        (certified.report, Some(certified.certificate), None)
     } else {
-        let report = match &selection {
-            TrialBalanceSelection::AsOf(day) => book.balance_as_of(*day, known_at)?,
-            TrialBalanceSelection::Periods(periods) => book.trial_balance_at(periods, known_at)?,
-            TrialBalanceSelection::Activity(periods) => book.period_activity(periods, known_at)?,
+        // A head read is answered from maintained registers plus the exact
+        // tail when they can serve it, and says how it was served (fa-715,
+        // plan §17). Loading the delta window is only preparation: a
+        // capability that cannot load it reads the journal literally, and
+        // the disclosure names its refusal.
+        let window = if known_at.is_none() && !matches!(selection, TrialBalanceSelection::AsOf(_)) {
+            Some(book.prepare_head_reads(who, &read_cap)?)
+        } else {
+            None
         };
-        (report, None)
+        let refused = |refusal: Refusal| {
+            Some(fa_registers::Served::Literal(format!(
+                "this capability cannot load the register window ({}: {}); the read folds the journal",
+                refusal.code, refusal.message
+            )))
+        };
+        match (&selection, window) {
+            (TrialBalanceSelection::Periods(periods), Some(Ok(()))) => {
+                let (report, served) = book.trial_balance_served(periods)?;
+                (report, None, Some(served))
+            }
+            (TrialBalanceSelection::Activity(periods), Some(Ok(()))) => {
+                let (report, served) = book.period_activity_served(periods)?;
+                (report, None, Some(served))
+            }
+            (TrialBalanceSelection::Periods(periods), Some(Err(refusal))) => (
+                book.trial_balance_at(periods, None)?,
+                None,
+                refused(refusal),
+            ),
+            (TrialBalanceSelection::Activity(periods), Some(Err(refusal))) => {
+                (book.period_activity(periods, None)?, None, refused(refusal))
+            }
+            (TrialBalanceSelection::AsOf(day), _) => {
+                (book.balance_as_of(*day, known_at)?, None, None)
+            }
+            (TrialBalanceSelection::Periods(periods), None) => {
+                (book.trial_balance_at(periods, known_at)?, None, None)
+            }
+            (TrialBalanceSelection::Activity(periods), None) => {
+                (book.period_activity(periods, known_at)?, None, None)
+            }
+        }
     };
     validate_trial_balance_units(&tb, &book.context().units)?;
     let retained = certificate
@@ -9129,7 +9437,14 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let digest = certificate
         .as_ref()
         .map(|certificate| hex(&certificate.digest));
-    render_trial_balance(out, &book, &tb, &selection, digest.as_deref())?;
+    render_trial_balance(
+        out,
+        &book,
+        &tb,
+        &selection,
+        digest.as_deref(),
+        served.as_ref(),
+    )?;
     if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
         notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
     }
@@ -9283,6 +9598,9 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--after",
         "--max-publications",
         "--certificate-out",
+        "--before-certificate",
+        "--after-certificate",
+        "--from-diff",
     ] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(
@@ -9290,6 +9608,12 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --json",
             ));
         }
+    }
+    if ["--before-certificate", "--after-certificate", "--from-diff"]
+        .iter()
+        .any(|flag| args.flag(flag).is_some())
+    {
+        return statement_from_certificates(ctx, args);
     }
     let period = args.require("--for", "<period>, for example FY2026-P03")?;
     if period.is_empty() || args.flag("--compare").is_some_and(str::is_empty) {
@@ -9300,9 +9624,12 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let mode = args.positional[1].as_str();
     if matches!(mode, "diff" | "trace") {
-        if args.flag("--known-at").is_some() || args.flag("--as-known-at").is_some() {
+        if args.flag("--known-at").is_some()
+            || args.flag("--as-known-at").is_some()
+            || args.switch("--as-originally-reported")
+        {
             return Err(usage(
-                "statement diff and trace select two frontiers with --before and --after; --known-at and --as-known-at do not select this workflow",
+                "statement diff and trace select two frontiers with --before and --after; --known-at, --as-known-at and --as-originally-reported do not select this workflow",
                 "fa statement diff --definition balance-sheet --for <period> --before <seq> --after <seq> --json",
             ));
         }
@@ -9374,72 +9701,32 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         if mode == "diff" {
             if certify {
                 let certified = book.certify_statement_diff(who, &capability, &comparison)??;
-                let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
-                let (bytes, retained) = notary::retain_report_artifact(
-                    &mut book,
+                return emit_certified_statement_diff(
+                    &ctx.out,
                     &ctx.files,
                     args,
-                    &artifact,
+                    &mut book,
                     &capability,
-                )?;
-                render_statement_diff(
-                    &ctx.out,
-                    &book,
-                    &certified.report,
-                    Some(&hex(artifact.digest())),
-                )?;
-                notary::emit_report_artifact(
-                    &ctx.out,
-                    args,
-                    &artifact,
-                    "fa:statement-diff:v1",
-                    &bytes,
-                    &retained,
+                    &certified,
                 );
-                return Ok(());
             }
             let diff = book.statement_diff(who, &capability, &comparison)??;
             return render_statement_diff(&ctx.out, &book, &diff, None);
         }
-        let max_publications: usize = args
-            .flag("--max-publications")
-            .unwrap_or("64")
-            .parse()
-            .map_err(|_| {
-                usage(
-                    "--max-publications must be an integer in 1..=256",
-                    "--max-publications 64",
-                )
-            })?;
         let request = StatementTraceRequest {
             comparison,
-            max_publications,
+            max_publications: max_publications(args)?,
         };
         if certify {
             let certified = book.certify_statement_trace(who, &capability, &request)??;
-            let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
-            let (bytes, retained) = notary::retain_report_artifact(
-                &mut book,
+            return emit_certified_statement_trace(
+                &ctx.out,
                 &ctx.files,
                 args,
-                &artifact,
+                &mut book,
                 &capability,
-            )?;
-            render_statement_trace(
-                &ctx.out,
-                &book,
-                &certified.report,
-                Some(&hex(artifact.digest())),
-            )?;
-            notary::emit_report_artifact(
-                &ctx.out,
-                args,
-                &artifact,
-                "fa:statement-trace:v1",
-                &bytes,
-                &retained,
+                &certified,
             );
-            return Ok(());
         }
         let trace = book.statement_trace(who, &capability, &request)??;
         return render_statement_trace(&ctx.out, &book, &trace, None);
@@ -9460,11 +9747,20 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .collect(),
     };
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let originally = as_originally_reported(
+        args,
+        "fa statement balance-sheet --for FY2026-P03 --as-originally-reported",
+    )?;
     let capability = ctx.capability(args, &["read"])?;
     let mut book = ctx.books.open_admitted(args, |book| {
         prepare_native_certificate_history(book, &capability, None)
     })?;
-    let (known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
+    let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
+    // Plan §7.4: the statement as it stood when its --for period was first
+    // reported; a --compare column is read at that same snapshot.
+    if originally {
+        known_at = Some(book.originally_reported(period)??.known_at);
+    }
     prepare_native_certificate_history(&mut book, &capability, known_at)?;
     let (statement, certificate) = if certify {
         let certified = match requested_utc_ns {
@@ -9494,6 +9790,299 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         notary::emit_report_certificate(&ctx.out, args, certificate, &bytes, &retained);
     }
     Ok(())
+}
+
+const STATEMENT_CERTIFICATES_EXAMPLE: &str = "fa statement diff --before-certificate C:<oid> --after-certificate C:<oid> [--certify] --json, or fa statement trace --from-diff C:<oid> [--max-publications 64] --certify --json";
+
+/// `--max-publications` for a statement trace (default 64); the library
+/// refuses a value outside 1..=256.
+fn max_publications(args: &Args) -> Result<usize, Fail> {
+    args.flag("--max-publications")
+        .unwrap_or("64")
+        .parse()
+        .map_err(|_| {
+            usage(
+                "--max-publications must be an integer in 1..=256",
+                "--max-publications 64",
+            )
+        })
+}
+
+/// Retain a certified statement comparison (after its replay), then render
+/// the bridge and its certificate.
+fn emit_certified_statement_diff(
+    out: &Out,
+    files: &Files,
+    args: &Args,
+    book: &mut Book,
+    capability: &Capability,
+    certified: &fa::CertifiedStatementDiff,
+) -> Result<(), Fail> {
+    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+    let (bytes, retained) =
+        notary::retain_report_artifact(book, files, args, &artifact, capability)?;
+    render_statement_diff(out, book, &certified.report, Some(&hex(artifact.digest())))?;
+    notary::emit_report_artifact(
+        out,
+        args,
+        &artifact,
+        "fa:statement-diff:v1",
+        &bytes,
+        &retained,
+    );
+    Ok(())
+}
+
+/// Retain a certified statement trace (after its replay), then render the
+/// publications and the trace certificate.
+fn emit_certified_statement_trace(
+    out: &Out,
+    files: &Files,
+    args: &Args,
+    book: &mut Book,
+    capability: &Capability,
+    certified: &fa::CertifiedStatementTrace,
+) -> Result<(), Fail> {
+    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+    let (bytes, retained) =
+        notary::retain_report_artifact(book, files, args, &artifact, capability)?;
+    render_statement_trace(out, book, &certified.report, Some(&hex(artifact.digest())))?;
+    notary::emit_report_artifact(
+        out,
+        args,
+        &artifact,
+        "fa:statement-trace:v1",
+        &bytes,
+        &retained,
+    );
+    Ok(())
+}
+
+/// The statement a caller says it means (`--for`, `--compare`,
+/// `--definition`) must be exactly the one the retained certificates answer.
+/// It is checked, never used to re-select; omitting it accepts theirs.
+fn statement_question_matches(args: &Args, selection: &fa::StatementSelection) -> Result<(), Fail> {
+    let definition = selection.definition.name();
+    let comparative: Vec<String> = args
+        .flag("--compare")
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let same_definition = args
+        .flag("--definition")
+        .is_none_or(|name| name == definition);
+    let same_periods = args
+        .flag("--for")
+        .is_none_or(|period| selection.periods == [period] && selection.comparative == comparative);
+    if same_definition && same_periods {
+        return Ok(());
+    }
+    let compared = if selection.comparative.is_empty() {
+        "no comparative".to_string()
+    } else {
+        format!("comparative {}", selection.comparative.join(", "))
+    };
+    Err(fa_journal::Refusal::new(
+        fa::certificate::code::CERTIFICATE_INVALID,
+        exit::VERIFICATION,
+        format!(
+            "the certificates answer {definition} for {} with {compared}, not the statement --for/--compare/--definition name",
+            selection.periods.join(", ")
+        ),
+        "plan §8.3 / §13.6 (a retained comparison answers only the question its sources were certified for)",
+        "pass the certificates of the statement you mean, or omit --for, --compare and --definition to accept theirs",
+    )
+    .into())
+}
+
+/// `statement diff --before-certificate --after-certificate` bridges two
+/// retained statement certificates; `statement trace --from-diff` attributes a
+/// saved comparison to every intermediate publication. Both replay what was
+/// retained and keep the original source certificates. Frontiers are never
+/// re-selected; a stated --for/--compare/--definition is checked against them.
+fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    for flag in [
+        "--before",
+        "--after",
+        "--known-at",
+        "--as-known-at",
+        "--branch",
+    ] {
+        if args.flag(flag).is_some() {
+            return Err(usage(
+                format!(
+                    "{flag} selects a frontier; certificate inputs already fix both frontiers on trunk"
+                ),
+                STATEMENT_CERTIFICATES_EXAMPLE,
+            ));
+        }
+    }
+    if args.switch("--as-originally-reported") {
+        return Err(usage(
+            "--as-originally-reported selects a frontier; certificate inputs already fix both frontiers on trunk",
+            STATEMENT_CERTIFICATES_EXAMPLE,
+        ));
+    }
+    if args.flag("--compare").is_some() && args.flag("--for").is_none() {
+        return Err(usage(
+            "--compare names the comparative column of a --for period",
+            "--for FY2026-P03 --compare FY2026-P02, or omit both to accept the certificates' own periods",
+        ));
+    }
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let who = ctx.principal(args);
+    match args.positional[1].as_str() {
+        "diff" => {
+            if args.flag("--from-diff").is_some() || args.flag("--max-publications").is_some() {
+                return Err(usage(
+                    "--from-diff and --max-publications start a statement trace, not a statement diff",
+                    "fa statement trace --from-diff C:<oid> --certify --json",
+                ));
+            }
+            let (Some(before), Some(after)) = (
+                args.flag("--before-certificate"),
+                args.flag("--after-certificate"),
+            ) else {
+                return Err(usage(
+                    "a certificate comparison needs both --before-certificate and --after-certificate",
+                    STATEMENT_CERTIFICATES_EXAMPLE,
+                ));
+            };
+            if before == "-" && after == "-" {
+                return Err(usage(
+                    "only one certificate can arrive on stdin",
+                    "pass the other certificate as its C:<oid> or its saved file",
+                ));
+            }
+            let capability = ctx.capability(
+                args,
+                if certify {
+                    &["read", "produce"]
+                } else {
+                    &["read"]
+                },
+            )?;
+            // Admission precedes fetching retained bytes or reading a file.
+            let mut book = ctx.books.open_admitted(args, |book| {
+                prepare_certificate_history(
+                    book,
+                    &capability,
+                    if certify {
+                        &[fa_policy::Op::Produce]
+                    } else {
+                        &[]
+                    },
+                    None,
+                )
+            })?;
+            let decode = fa::ReportCertificate::decode;
+            let before = notary::certificate_input(
+                &book,
+                &ctx.files,
+                "--before-certificate",
+                before,
+                who,
+                &capability,
+                decode,
+            )?;
+            let after = notary::certificate_input(
+                &book,
+                &ctx.files,
+                "--after-certificate",
+                after,
+                who,
+                &capability,
+                decode,
+            )?;
+            // Mismatched sources are the library's refusal; this checks only
+            // the question the caller stated against the first source.
+            if let fa::ReportSelection::Statement(selection) = &before.selection {
+                statement_question_matches(args, selection)?;
+            }
+            // Both sources replay: load the earlier retained prefix.
+            book.prepare_report_history(
+                who,
+                &capability,
+                Some(before.known_at.min(after.known_at)),
+            )??;
+            if certify {
+                let certified =
+                    book.compare_statement_certificates(who, &capability, &before, &after)??;
+                return emit_certified_statement_diff(
+                    &ctx.out,
+                    &ctx.files,
+                    args,
+                    &mut book,
+                    &capability,
+                    &certified,
+                );
+            }
+            let diff = book.diff_statement_certificates(who, &capability, &before, &after)??;
+            render_statement_diff(&ctx.out, &book, &diff, None)
+        }
+        "trace" => {
+            if args.flag("--before-certificate").is_some()
+                || args.flag("--after-certificate").is_some()
+            {
+                return Err(usage(
+                    "a statement trace starts from one saved comparison: --from-diff, not --before-certificate or --after-certificate",
+                    "fa statement diff --before-certificate C:<oid> --after-certificate C:<oid> --certify --json, then fa statement trace --from-diff <its C:oid> --certify --json",
+                ));
+            }
+            let Some(comparison) = args.flag("--from-diff") else {
+                return Err(usage(
+                    "a statement trace from certificates needs --from-diff",
+                    STATEMENT_CERTIFICATES_EXAMPLE,
+                ));
+            };
+            if !certify {
+                return Err(usage(
+                    "statement trace --from-diff certifies every intermediate publication of the saved comparison; add --certify",
+                    "fa statement trace --from-diff C:<oid> --certify --json",
+                ));
+            }
+            let capability = ctx.capability(args, &["read", "produce"])?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                prepare_certificate_history(book, &capability, &[fa_policy::Op::Produce], None)
+            })?;
+            let limit = max_publications(args)?;
+            let comparison = notary::certificate_input(
+                &book,
+                &ctx.files,
+                "--from-diff",
+                comparison,
+                who,
+                &capability,
+                fa::StatementDiffCertificate::decode,
+            )?;
+            if let Ok(request) = comparison.request() {
+                statement_question_matches(args, &request.selection)?;
+            }
+            // The trace replays every publication from the earlier source on.
+            let (before, after) = comparison.sources();
+            book.prepare_report_history(
+                who,
+                &capability,
+                Some(before.known_at.min(after.known_at)),
+            )??;
+            let certified =
+                book.certify_statement_trace_from_diff(who, &capability, &comparison, limit)??;
+            emit_certified_statement_trace(
+                &ctx.out,
+                &ctx.files,
+                args,
+                &mut book,
+                &capability,
+                &certified,
+            )
+        }
+        other => Err(usage(
+            format!(
+                "certificate inputs select statement diff or statement trace, not statement {other}"
+            ),
+            STATEMENT_CERTIFICATES_EXAMPLE,
+        )),
+    }
 }
 
 fn statement_columns_json(statement: &Statement) -> Vec<Json> {
@@ -9927,8 +10516,52 @@ pub(crate) fn render_trial_balance(
     tb: &fa_registers::TrialBalance,
     selection: &TrialBalanceSelection,
     certificate: Option<&str>,
+    served: Option<&fa_registers::Served>,
 ) -> Result<(), Fail> {
-    render_trial_balance_with_units(out, &book.context().units, tb, selection, certificate)
+    render_trial_balance_with_units(
+        out,
+        &book.context().units,
+        tb,
+        selection,
+        certificate,
+        served,
+    )
+}
+
+/// How a head read was answered (`tb_served`, plan §17): maintained cells
+/// at their cursors plus the exact tail, or the literal journal fold and why.
+fn served_json(served: &fa_registers::Served) -> Json {
+    match served {
+        fa_registers::Served::Maintained(periods) => obj(vec![
+            ("mode", s("maintained")),
+            (
+                "tail_length",
+                Json::Int(periods.iter().map(|(_, _, tail)| *tail as i128).sum()),
+            ),
+            ("reason", Json::Null),
+            (
+                "periods",
+                Json::Arr(
+                    periods
+                        .iter()
+                        .map(|(period, served_at, tail)| {
+                            obj(vec![
+                                ("period", s(period)),
+                                ("served_at", Json::Int(i128::from(served_at.0))),
+                                ("tail_entries", Json::Int(*tail as i128)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+        ]),
+        fa_registers::Served::Literal(reason) => obj(vec![
+            ("mode", s("literal")),
+            ("tail_length", Json::Null),
+            ("reason", s(reason)),
+            ("periods", Json::Arr(Vec::new())),
+        ]),
+    }
 }
 
 fn render_trial_balance_with_units(
@@ -9937,6 +10570,7 @@ fn render_trial_balance_with_units(
     tb: &fa_registers::TrialBalance,
     selection: &TrialBalanceSelection,
     certificate: Option<&str>,
+    served: Option<&fa_registers::Served>,
 ) -> Result<(), Fail> {
     validate_trial_balance_units(tb, units)?;
     let periods: &[String] = match selection {
@@ -10014,6 +10648,7 @@ fn render_trial_balance_with_units(
                 ("unit_totals", Json::Arr(totals)),
                 ("pending_unit_totals", Json::Arr(pending_totals)),
                 ("balanced", Json::Bool(tb.is_balanced())),
+                ("served", served.map_or(Json::Null, served_json)),
             ],
             "",
             certificate,
@@ -10426,7 +11061,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     detail: obj(fields),
                     cite: Some("FA-INV-16 (leg projections equal entry payloads)".into()),
                     fix: Some(
-                        "retain this finding with fa verify projections --json and the same --book; projection recovery is not implemented".into(),
+                        "retain this finding with fa verify projections --json and the same --book; then preview the repair from the journal with fa recover projections --dry-run --json, and publish it with --yes if intended".into(),
                     ),
                 })
             }
@@ -10509,8 +11144,12 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         v.drift.len()
                     ),
                     detail: obj(fields),
-                    cite: None,
-                    fix: None,
+                    cite: Some(
+                        "FA-INV-04.open-amount (an applied mirror is the fold of SETTLES and UNSETTLES over the lineage)".into(),
+                    ),
+                    fix: Some(
+                        "retain this finding with fa verify open-items --json and the same --book; the leg-projection recovery rebuilds applied mirrors from the journal: preview it with fa recover projections --dry-run --json, and publish it with --yes if intended".into(),
+                    ),
                 })
             }
         }
@@ -10724,10 +11363,12 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
     let certify_cap = if args.flag("--as-of").is_none()
         && (args.switch("--certify") || args.flag("--certificate-out").is_some())
     {
-        Some(ctx.capability(args, &["read"])?)
+        Some(read_cap.clone())
     } else {
         None
     };
@@ -10737,7 +11378,10 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             prepare_native_certificate_history(book, capability, None)
         })?
     } else {
-        ctx.books.open(args)?
+        ctx.books.open_admitted(args, |book| {
+            book.read_scope(who, &read_cap)??;
+            Ok(())
+        })?
     };
     if args.positional.len() != 1 {
         return Err(usage(
@@ -10774,6 +11418,11 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "--as-of YYYY-MM-DD",
             )
         })?;
+        // Judged against the scope caveats before the query is constructed
+        // (doctrine 8, fa-0x0): the snapshot reaches every period that
+        // starts by its day.
+        book.read_scope(who, &read_cap)??
+            .admit_as_of(day, known_at)??;
         let snapshot = book.open_items_as_of(account, day, known_at)?;
         out.effective(format!("as-of:{day}"));
         let chart = book.accounts()?;
@@ -10812,6 +11461,8 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;
         let selection = ReportSelection::OpenItems { account };
+        book.read_scope(who, &read_cap)??
+            .admit_report(&selection, known_at)??;
         let certified = match requested_utc_ns {
             Some(instant) => book.certify_report_at_instant(selection, instant)??,
             None => book.certify_report(selection, known_at)??,
@@ -10824,6 +11475,9 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         };
         (report, Some(certified.certificate))
     } else {
+        // Open items reach the whole book (doctrine 8, fa-0x0).
+        book.read_scope(who, &read_cap)??
+            .admit_report(&ReportSelection::OpenItems { account }, known_at)??;
         (book.open_items_report(account, known_at)?, None)
     };
     validate_open_items_report(&report, &book.context().units)?;
@@ -12237,11 +12891,100 @@ fn aging_reconciliation_rows(
         .collect()
 }
 
+const AGING_SOURCES_EXAMPLE: &str = "fa gl aging --from-source C:<open-items-oid> --as-of YYYY-MM-DD --certify --json, or fa gl aging --reconcile --account <code> --as-of YYYY-MM-DD --as-known-at <seq> --aging-certificate C:<oid> --control-certificate C:<tb-as-of-oid> --certify --json";
+
+/// `--from-source`, then the `--aging-certificate`/`--control-certificate` pair.
+type AgingSources<'a> = (Option<&'a str>, Option<(&'a str, &'a str)>);
+
+/// `gl aging` from saved certificates: `--from-source` ages one retained
+/// open-items certificate; `--aging-certificate` with `--control-certificate`
+/// reconciles (one leaf or a portfolio) from retained aging and as-of trial
+/// balance certificates. The other flags state the recipient's question, and
+/// each source is reused byte-for-byte, so each form certifies.
+fn aging_source_flags(
+    args: &Args,
+    certify: bool,
+    reconcile: bool,
+) -> Result<AgingSources<'_>, Fail> {
+    for flag in [
+        "--from-source",
+        "--aging-certificate",
+        "--control-certificate",
+    ] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("{flag} may be supplied only once"),
+                AGING_SOURCES_EXAMPLE,
+            ));
+        }
+    }
+    let from_source = args.flag("--from-source");
+    let saved_pair = match (
+        args.flag("--aging-certificate"),
+        args.flag("--control-certificate"),
+    ) {
+        (None, None) => None,
+        (Some(aging), Some(control)) => Some((aging, control)),
+        _ => {
+            return Err(usage(
+                "a reconciliation from saved sources needs both --aging-certificate and --control-certificate",
+                AGING_SOURCES_EXAMPLE,
+            ));
+        }
+    };
+    if from_source.is_none() && saved_pair.is_none() {
+        return Ok((None, None));
+    }
+    if !certify {
+        return Err(usage(
+            "aging from saved certificates retains a new certificate over them; add --certify or --certificate-out",
+            AGING_SOURCES_EXAMPLE,
+        ));
+    }
+    if from_source.is_some() && (reconcile || saved_pair.is_some()) {
+        return Err(usage(
+            "--from-source ages one saved open-items certificate; a reconciliation takes --aging-certificate and --control-certificate",
+            AGING_SOURCES_EXAMPLE,
+        ));
+    }
+    if saved_pair.is_some() && !reconcile {
+        return Err(usage(
+            "--aging-certificate and --control-certificate are the sources of --reconcile",
+            AGING_SOURCES_EXAMPLE,
+        ));
+    }
+    if from_source.is_some() && args.flag("--as-known-at").is_some() {
+        return Err(usage(
+            "--from-source fixes the recorded prefix; --as-known-at does not select it",
+            AGING_SOURCES_EXAMPLE,
+        ));
+    }
+    if saved_pair.is_some()
+        && args
+            .flag("--as-known-at")
+            .and_then(|seq| seq.parse::<u64>().ok())
+            .is_none()
+    {
+        return Err(usage(
+            "a reconciliation from saved sources states the recipient's fixed --as-known-at <seq>, never HEAD or an instant",
+            AGING_SOURCES_EXAMPLE,
+        ));
+    }
+    if saved_pair == Some(("-", "-")) {
+        return Err(usage(
+            "only one certificate can arrive on stdin",
+            "pass the other certificate as its C:<oid> or its saved file",
+        ));
+    }
+    Ok((from_source, saved_pair))
+}
+
 /// `gl aging --reconcile` over every posting leaf or a selected list: one
 /// chart, one whole-book aging fold and one control trial balance at a single
 /// coordinate (plan §5.6–§5.7). Unselected leaves are listed as uncovered,
 /// never printed as zero. This is an internal consistency report, not a close
-/// permit or an external subledger attestation.
+/// permit or an external subledger attestation. With `saved`, the aging and
+/// control sources are retained certificates reused byte-for-byte.
 #[allow(clippy::too_many_arguments)]
 fn gl_aging_portfolio(
     out: &Out,
@@ -12252,8 +12995,14 @@ fn gl_aging_portfolio(
     capability: &Capability,
     certify: bool,
     request: AgingPortfolioRequest,
+    saved: Option<&(fa::AgingCertificate, fa::ReportCertificate)>,
 ) -> Result<(), Fail> {
-    let (portfolio, artifact) = if certify {
+    let (portfolio, artifact) = if let Some((aging, control)) = saved {
+        let certified =
+            book.certify_aging_portfolio_from_sources(who, capability, aging, control, &request)??;
+        let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+        (certified.report, Some(artifact))
+    } else if certify {
         let certified = book.certify_aging_portfolio(who, capability, &request)??;
         let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
         (certified.report, Some(artifact))
@@ -12875,57 +13624,129 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 AgingBuckets::new(bounds)
                     .map_err(|e| usage(e.to_string(), "--bucket 0 --bucket 30 --bucket 60"))?
             };
-            let account_code = args.flag("--account");
-            let account = account_code.map(|code| account_vid(book.context().book_id, code));
+            // Every --account occurrence counts, as in the other gl subcommands:
+            // repeated flags and comma lists both name several leaves.
+            let account_codes: Vec<&str> = args
+                .flag_all("--account")
+                .into_iter()
+                .flat_map(|codes| codes.split(','))
+                .map(str::trim)
+                .collect();
+            let reconcile = args.switch("--reconcile");
+            let (from_source, saved_pair) = aging_source_flags(args, certify, reconcile)?;
+            if !reconcile && account_codes.len() > 1 {
+                return Err(usage(
+                    "gl aging ages one --account, or every account when --account is omitted",
+                    "fa gl aging --account 1200 --as-of YYYY-MM-DD --book <dir>; to tie several leaves to their control balances add --reconcile",
+                ));
+            }
+            let account = account_codes
+                .first()
+                .map(|code| account_vid(book.context().book_id, code));
             let known_at = gl_known_at(args, &book, out)?;
             book.prepare_report_history(who, &capability, known_at)??;
+            // Saved certificates are read after admission, and their own
+            // prefix is prepared before the library replays them.
+            let saved = match saved_pair {
+                Some((aging_value, control_value)) => {
+                    let aging = notary::certificate_input(
+                        &book,
+                        &ctx.files,
+                        "--aging-certificate",
+                        aging_value,
+                        who,
+                        &capability,
+                        fa::AgingCertificate::decode,
+                    )?;
+                    let control = notary::certificate_input(
+                        &book,
+                        &ctx.files,
+                        "--control-certificate",
+                        control_value,
+                        who,
+                        &capability,
+                        fa::ReportCertificate::decode,
+                    )?;
+                    let prefix = aging.source().known_at.min(control.known_at);
+                    book.prepare_report_history(who, &capability, Some(prefix))??;
+                    Some((aging, control))
+                }
+                None => None,
+            };
+            let source = match from_source {
+                Some(value) => {
+                    let source = notary::certificate_input(
+                        &book,
+                        &ctx.files,
+                        "--from-source",
+                        value,
+                        who,
+                        &capability,
+                        fa::ReportCertificate::decode,
+                    )?;
+                    // The saved open-items selection is the account; a stated
+                    // --account is the recipient's question, never a re-selection.
+                    if let (Some(stated), fa::ReportSelection::OpenItems { account: saved }) =
+                        (account, &source.selection)
+                        && *saved != Some(stated)
+                    {
+                        return Err(fa_journal::Refusal::new(
+                            fa::certificate::code::CERTIFICATE_INVALID,
+                            exit::VERIFICATION,
+                            "the saved open-items certificate selects a different account than --account",
+                            "plan §13.6 (a retained source answers only the question it was certified for)",
+                            "pass the open-items certificate of the account you mean, or omit --account to accept its selection",
+                        )
+                        .into());
+                    }
+                    book.prepare_report_history(who, &capability, Some(source.known_at))??;
+                    Some(source)
+                }
+                None => None,
+            };
             out.effective(format!("as-of:{day}"));
             let units = &book.context().units;
             let all_posting = args.switch("--all-posting");
-            if all_posting && !args.switch("--reconcile") {
+            if all_posting && !reconcile {
                 return Err(usage(
                     "--all-posting selects the accounts of an aging reconciliation",
                     "fa gl aging --all-posting --as-of YYYY-MM-DD --reconcile --book <dir>",
                 ));
             }
-            if args.switch("--reconcile") {
-                // One code keeps the single-leaf report. A comma list, or the
-                // explicit --all-posting, reconciles several leaves at one
+            if reconcile {
+                // One code keeps the single-leaf report. Several codes, or the
+                // explicit --all-posting, reconcile several leaves at one
                 // coordinate. A missing selection is never read as the whole book.
-                let acc_vid = match (account_code, all_posting) {
-                    (Some(code), false) if !code.contains(',') => {
-                        account_vid(book.context().book_id, code)
-                    }
-                    (None, false) => {
+                let acc_vid = match (account_codes.as_slice(), all_posting) {
+                    ([code], false) => account_vid(book.context().book_id, code),
+                    ([], false) => {
                         return Err(usage(
                             "--reconcile requires --account <code[,code...]> or --all-posting",
                             "fa gl aging --account 1200 --as-of YYYY-MM-DD --reconcile --book <dir> (one leaf); --account 1200,2100 or --all-posting reconciles several leaves at one coordinate",
                         ));
                     }
-                    (Some(_), true) => {
+                    ([_, ..], true) => {
                         return Err(usage(
                             "--all-posting and --account are separate account selections",
                             "pass either --account <code[,code...]> or --all-posting",
                         ));
                     }
-                    (selection, _) => {
-                        let scope = match selection {
-                            None => AgingAccountScope::AllPosting,
-                            Some(codes) => {
-                                let codes: Vec<&str> = codes.split(',').map(str::trim).collect();
-                                if codes.iter().any(|code| code.is_empty()) {
-                                    return Err(usage(
-                                        "--account lists posting account codes separated by commas",
-                                        "fa gl aging --account 1200,2100 --as-of YYYY-MM-DD --reconcile --book <dir>",
-                                    ));
-                                }
-                                AgingAccountScope::Selected(
-                                    codes
-                                        .into_iter()
-                                        .map(|code| account_vid(book.context().book_id, code))
-                                        .collect(),
-                                )
+                    (codes, _) => {
+                        let scope = if codes.is_empty() {
+                            AgingAccountScope::AllPosting
+                        } else {
+                            if codes.iter().any(|code| code.is_empty()) {
+                                return Err(usage(
+                                    "--account lists posting account codes separated by commas",
+                                    "fa gl aging --account 1200,2100 --as-of YYYY-MM-DD --reconcile --book <dir>",
+                                ));
                             }
+                            AgingAccountScope::Selected(
+                                codes
+                                    .iter()
+                                    .map(|code| account_vid(book.context().book_id, code))
+                                    .collect(),
+                            )
                         };
                         let request = AgingPortfolioRequest {
                             scope,
@@ -12942,6 +13763,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             &capability,
                             certify,
                             request,
+                            saved.as_ref(),
                         );
                     }
                 };
@@ -12951,7 +13773,18 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     known_at,
                     buckets,
                 };
-                let (rec, artifact) = if certify {
+                let (rec, artifact) = if let Some((aging, control)) = &saved {
+                    let certified = book
+                        .certify_effective_date_aging_reconciliation_from_sources(
+                            who,
+                            &capability,
+                            aging,
+                            control,
+                            &request,
+                        )??;
+                    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+                    (certified.report, Some(artifact))
+                } else if certify {
                     let certified = book.certify_effective_date_aging_reconciliation(
                         who,
                         &capability,
@@ -13019,7 +13852,18 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
                 Ok(())
             } else {
-                let (aging, artifact) = if certify {
+                let (aging, artifact) = if let Some(source) = &source {
+                    let certified = book.certify_effective_date_aging_from_source(
+                        who,
+                        &capability,
+                        source,
+                        day,
+                        &buckets,
+                    )??;
+                    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+                    let request = certified.certificate.request()?;
+                    (certified.report, Some((artifact, request)))
+                } else if certify {
                     let certified = book.certify_effective_date_aging(
                         who,
                         &capability,
@@ -13031,13 +13875,17 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         },
                     )??;
                     let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
-                    (certified.report, Some(artifact))
+                    // The receipt's replay_command carries the request the
+                    // certificate binds, so a recipient can retain it apart.
+                    let request = certified.certificate.request()?;
+                    (certified.report, Some((artifact, request)))
                 } else {
                     (
                         book.effective_date_aging(account, day, known_at, &buckets)?,
                         None,
                     )
                 };
+                let (artifact, aging_request) = artifact.unzip();
                 out.known_at(aging.known_at);
                 let chart = book.accounts()?;
                 let accounts_by_vid: std::collections::BTreeMap<VId, String> = chart
@@ -13168,7 +14016,16 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 out.event_with_certificate(
                     "aging",
                     vec![
-                        ("account", account_code.map_or(Json::Null, s)),
+                        // The report's own selection: a saved open-items
+                        // source fixes it even when no --account is stated.
+                        (
+                            "account",
+                            aging
+                                .account
+                                .map(code_of)
+                                .transpose()?
+                                .map_or(Json::Null, s),
+                        ),
                         ("known_at", Json::Int(i128::from(aging.known_at.0))),
                         ("effective_through", s(aging.effective_through.render())),
                         ("bands", Json::Arr(bands)),
@@ -13179,14 +14036,17 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &human,
                     digest.as_deref(),
                 );
-                if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
-                    notary::emit_report_artifact(
+                if let (Some(artifact), Some((bytes, retained)), Some(request)) =
+                    (artifact.as_ref(), retained, aging_request.as_ref())
+                {
+                    notary::emit_report_artifact_for(
                         out,
                         args,
                         artifact,
                         "fa:effective-date-aging:v1",
                         &bytes,
                         &retained,
+                        &notary::aging_expectation_json(request),
                     );
                 }
                 Ok(())
@@ -13797,6 +14657,24 @@ fn side_name(side: Side) -> &'static str {
 /// `fa explain balance|entry|lineage|evidence|refusal|period|register ...`.
 fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let sub = args.positional.get(1).map(String::as_str);
+    // verbs.toml registers flags per verb, so the other subcommands would
+    // otherwise accept these and silently answer without them.
+    if sub.is_some_and(|sub| sub != "balance") {
+        let balance_only = ["--certify", "--as-originally-reported"]
+            .into_iter()
+            .find(|switch| args.switch(switch))
+            .or_else(|| {
+                args.flag("--certificate-out")
+                    .is_some()
+                    .then_some("--certificate-out")
+            });
+        if let Some(flag) = balance_only {
+            return Err(usage(
+                format!("{flag} applies only to `fa explain balance`"),
+                "fa explain balance <account> --period <code> [--as-originally-reported] [--certify]",
+            ));
+        }
+    }
     match sub {
         Some("balance") => explain_balance_cmd(ctx, args),
         Some("entry") => explain_entry_cmd(ctx, args),
@@ -13867,7 +14745,15 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage(format!("unexpected argument `{extra}`"), example));
     }
     let vid = parse_entry_target(raw, example)?;
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &read_cap)??;
+        Ok(())
+    })?;
+    // The entry's period is known only once it is read, so a scoped token
+    // is refused before the read (doctrine 8, fa-0x0).
+    book.read_scope(who, &read_cap)??.admit_whole_book(None)??;
     let (entry, recorded_at) = book.read_entry(vid)?.ok_or_else(|| {
         usage(
             format!("no entry {:032x} in this book", vid.0),
@@ -14014,8 +14900,17 @@ fn explain_lineage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage(format!("unexpected argument `{extra}`"), example));
     }
     let vid = parse_entry_target(raw, example)?;
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &read_cap)??;
+        Ok(())
+    })?;
     let (known_at, _) = known_at_flag(args, &book, out)?;
+    // A lineage walks entries whose periods are known only once read
+    // (doctrine 8, fa-0x0).
+    book.read_scope(who, &read_cap)??
+        .admit_whole_book(known_at)??;
     let report = book.explain_entry_lineage(vid, known_at)?.ok_or_else(|| {
         usage(
             format!("no entry {:032x} in this book", vid.0),
@@ -14135,7 +15030,15 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage(format!("unexpected argument `{extra}`"), example));
     }
     let vid = parse_entry_target(raw, example)?;
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &read_cap)??;
+        Ok(())
+    })?;
+    // An entry's evidence: its period is known only once it is read
+    // (doctrine 8, fa-0x0).
+    book.read_scope(who, &read_cap)??.admit_whole_book(None)??;
     let ex = book.explain_entry_evidence(vid)?.ok_or_else(|| {
         usage(
             format!("no entry {:032x} in this book", vid.0),
@@ -14406,7 +15309,16 @@ fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let Some(extra) = args.positional.get(3) {
         return Err(usage(format!("unexpected argument `{extra}`"), example));
     }
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &read_cap)??;
+        Ok(())
+    })?;
+    // It reaches its one period, judged before the calendar or the period's
+    // history is read (doctrine 8, fa-0x0).
+    book.read_scope(who, &read_cap)??
+        .admit_periods(&[code.as_str()], None)??;
     let periods = book.periods()?;
     let Some(period) = periods.iter().find(|p| p.code == *code) else {
         let codes: Vec<&str> = periods.iter().map(|p| p.code.as_str()).collect();
@@ -14426,7 +15338,10 @@ fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .iter()
         .map(|t| {
             let reason_name = reasons
-                .get("period_control", t.reason_code)
+                .get(
+                    fa_journal::period::reason_scope_of(t.from, t.to),
+                    t.reason_code,
+                )
                 .map(|r| r.name.as_str());
             obj(vec![
                 ("control_entry", s(format!("{:032x}", t.entry_vid.0))),
@@ -14512,8 +15427,21 @@ fn explain_register_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let period = args.require("--period", "FY2026-P01")?;
-    let book = ctx.books.open(args)?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &read_cap)??;
+        Ok(())
+    })?;
     let (known_at, _) = known_at_flag(args, &book, out)?;
+    // It reaches its one period at its frontier, and verifies the stored
+    // cells as they are at the head, so a known-at pin refuses it
+    // (doctrine 8, fa-0x0).
+    {
+        let scope = book.read_scope(who, &read_cap)??;
+        scope.admit_periods(&[period], known_at)??;
+        scope.admit_periods(&[period], None)??;
+    }
     let unit_filter: Option<(u32, String)> = match args.flag("--unit") {
         None => None,
         Some(ucode) => {
@@ -14728,8 +15656,14 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let period = args.require("--period", "FY2026-P03")?;
+    let originally = as_originally_reported(
+        args,
+        "fa explain balance 1000 --period FY2026-P03 --as-originally-reported",
+    )?;
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
     let certify_cap = if args.switch("--certify") || args.flag("--certificate-out").is_some() {
-        Some(ctx.capability(args, &["read"])?)
+        Some(read_cap.clone())
     } else {
         None
     };
@@ -14738,13 +15672,37 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             prepare_native_certificate_history(book, capability, None)
         })?
     } else {
-        ctx.books.open(args)?
+        ctx.books.open_admitted(args, |book| {
+            book.read_scope(who, &read_cap)??;
+            Ok(())
+        })?
     };
-    let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+    let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+    let account = account_vid(book.context().book_id, code);
+    if originally {
+        // The period's scope is judged before its transitions are read; the
+        // pinned coordinate is judged again below.
+        book.read_scope(who, &read_cap)??.admit_report(
+            &ReportSelection::ExplainBalance {
+                account,
+                period: period.to_string(),
+            },
+            known_at,
+        )??;
+        known_at = Some(book.originally_reported(period)??.known_at);
+    }
     if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;
     }
-    let account = account_vid(book.context().book_id, code);
+    // Judged against the scope caveats before the query is constructed
+    // (doctrine 8, fa-0x0): the explanation reaches its one period.
+    book.read_scope(who, &read_cap)??.admit_report(
+        &ReportSelection::ExplainBalance {
+            account,
+            period: period.to_string(),
+        },
+        known_at,
+    )??;
     let explain_error = |error| explanation_selection_error(&book, code, period, known_at, error);
     let (ex, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
     {
@@ -15268,6 +16226,107 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
+/// `fa recover projections`: explicit leg-projection recovery (plan §4.2,
+/// FA-INV-16, fa-avx). Every mirror and edge is derived from the immutable
+/// entry payloads after each source Entry is checked against its native
+/// creation history; no caller value enters the repair. A dry run previews
+/// the exact changes; publishing needs --yes (gated from argv by verbs.toml
+/// [[dangerous]] before this handler runs) and rechecks everything.
+fn recover_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    match args.positional.get(1).map(String::as_str) {
+        Some("projections") => {
+            if args.positional.len() != 2 {
+                return Err(usage(
+                    "unexpected recover projections argument",
+                    "fa recover projections --dry-run --book <dir> --json",
+                ));
+            }
+            let dry_run = args.switch("--dry-run");
+            let principal = ctx.principal(args);
+            let capability = ctx.capability(args, &["read", "verify", "schema_change"])?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                admit_whole_book_read(
+                    book,
+                    &capability,
+                    &[fa_policy::Op::Verify, fa_policy::Op::SchemaChange],
+                    "rebuilding leg projections",
+                )
+            })?;
+            let outcome = if dry_run {
+                book.prepare_projection_rebuild(principal, &capability)
+                    .map(|prepared| prepared.map(|p| p.preview().clone()))
+            } else {
+                book.rebuild_projections(principal, &capability)
+            };
+            let report = match outcome {
+                Ok(report) => report?,
+                // Orphans, occupied identities, incompatible endpoints, and a
+                // publication that does not verify: nothing is repaired around them.
+                Err(BookError::Kernel(fa_journal::KernelError::Corrupt(problem))) => {
+                    return Err(Fail::Verification {
+                        message: format!("leg projections cannot be recovered from the journal: {problem}"),
+                        detail: obj(vec![("problem", s(&problem))]),
+                        cite: Some("FA-INV-16 (leg projections equal entry payloads)".into()),
+                        fix: Some("retain this finding with fa verify projections --json and fa verify open-items --json; preserve the book, since the journal does not determine this repair".into()),
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+            out.at_book(&book)?;
+            let changes = report.legs_created
+                + report.legs_repaired
+                + report.edges_created
+                + report.edges_repaired
+                + report.edges_retired;
+            out.event(
+                "projections_rebuilt",
+                vec![
+                    ("dry_run", Json::Bool(dry_run)),
+                    ("basis", Json::Int(i128::from(report.basis.0))),
+                    (
+                        "recorded_at",
+                        if report.wrote {
+                            Json::Int(i128::from(report.published_at.0))
+                        } else {
+                            Json::Null
+                        },
+                    ),
+                    ("wrote", Json::Bool(report.wrote)),
+                    ("entries_checked", Json::Int(report.entries_checked as i128)),
+                    ("legs_checked", Json::Int(report.legs_checked as i128)),
+                    ("legs_created", Json::Int(report.legs_created as i128)),
+                    ("legs_repaired", Json::Int(report.legs_repaired as i128)),
+                    ("edges_created", Json::Int(report.edges_created as i128)),
+                    ("edges_repaired", Json::Int(report.edges_repaired as i128)),
+                    ("edges_retired", Json::Int(report.edges_retired as i128)),
+                ],
+                &format!(
+                    "{} {} projection changes over {} entries and {} legs at {}{}",
+                    if dry_run {
+                        "would publish"
+                    } else {
+                        "published"
+                    },
+                    changes,
+                    report.entries_checked,
+                    report.legs_checked,
+                    report.basis.0,
+                    if report.wrote {
+                        format!(" (recorded at {})", report.published_at.0)
+                    } else if dry_run && changes > 0 {
+                        "; publishing with --yes rechecks authority and this exact head".to_string()
+                    } else {
+                        "; projections already equal the journal".to_string()
+                    }
+                ),
+            );
+            Ok(())
+        }
+        other => Err(unhandled("recover", other)),
+    }
+}
+
 fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
@@ -15284,10 +16343,21 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "use the `vid` from the posted event",
                 )
             })?;
-            let book = ctx.books.open(args)?;
+            let who = ctx.principal(args);
+            let capability = ctx.capability(args, &["read"])?;
+            let book = ctx.books.open_admitted(args, |book| {
+                book.read_scope(who, &capability)??;
+                Ok(())
+            })?;
             let units = &book.context().units;
             let seal_key = &book.context().seal_key;
-            match book.read_entry(VId(vid))? {
+            // The entry's period is known only once it is read, so a
+            // `periods` or `effective` caveat refuses the read before it,
+            // and a known-at pin refuses the head (doctrine 8, fa-0x0).
+            match book
+                .read_scope(who, &capability)??
+                .read_entry(VId(vid), None)??
+            {
                 None => {
                     // Every field is always present; absence is spelled null.
                     let mut fields = vec![("found", Json::Bool(false)), ("vid", s(vid_s))];
@@ -17097,6 +18167,7 @@ mod tests {
                     &tb,
                     &selection,
                     Some(&certificate),
+                    None,
                 );
                 assert!(matches!(
                     &result,
@@ -17154,8 +18225,14 @@ mod tests {
                 known_at: CommitSeq(10),
                 effective: "all".into(),
             });
-            let result =
-                render_trial_balance_with_units(&out, &units, &tb, &selection, Some(&certificate));
+            let result = render_trial_balance_with_units(
+                &out,
+                &units,
+                &tb,
+                &selection,
+                Some(&certificate),
+                None,
+            );
             let (code, captured) = finish_into(out, result);
             assert_eq!(code, exit::SUCCESS, "{}", captured.stderr);
             assert!(captured.stderr.is_empty(), "{}", captured.stderr);

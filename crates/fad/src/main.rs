@@ -58,11 +58,22 @@ fn run(argv: &[String]) -> u8 {
     };
     let d = &reg.daemon;
     let flags: Vec<&str> = d.flags.iter().map(String::as_str).collect();
-    let switches: Vec<&str> = d.switches.iter().map(String::as_str).collect();
+    let mut switches: Vec<&str> = d.switches.iter().map(String::as_str).collect();
+    if !switches.contains(&"--version") {
+        switches.push("--version");
+    }
     let parsed = match args::parse(argv, &flags, &switches) {
         Ok(a) => a,
         Err(e) => return cli::usage_error(argv, e.message, e.fix, false).0,
     };
+    if parsed.switch("--version") {
+        if parsed.switch("--json") {
+            println!("{}", cli::version_metadata_json(&d.binary).render());
+        } else {
+            println!("{}", cli::version_text(&d.binary));
+        }
+        return 0;
+    }
     let verb = parsed.positional.first().map(String::as_str);
     if verb.is_none() || parsed.switch("--help") {
         let mut text = format!("{} — the FrankenAccounting daemon\n\nusage\n", d.binary);
@@ -481,5 +492,48 @@ fn stop(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             .0
         }
         Err(e) => cli::foundation_error(argv, format!("fad transport: {e}"), false).0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_reports_foundation_revisions_and_registry_epochs() {
+        let code = run(&["--version".to_string()]);
+        assert_eq!(code, 0);
+        let code_json = run(&["--version".to_string(), "--json".to_string()]);
+        assert_eq!(code_json, 0);
+
+        let text = cli::version_text("fa");
+        assert!(text.starts_with("fa "), "{text}");
+        assert!(text.contains("asupersync@78b64636"), "{text}");
+        assert!(text.contains("frankengraphdb@b323bd17"), "{text}");
+        assert!(text.contains("franken_networkx@9d710b1c"), "{text}");
+        assert!(text.contains("fastmcp-rust@=0.12.0"), "{text}");
+        assert!(text.contains("frankensympy@bd1ad68a"), "{text}");
+        assert!(text.contains("registries: schema_v=1, epochs=14"), "{text}");
+
+        let meta = cli::version_metadata_json("fad");
+        assert_eq!(meta.get("binary").and_then(Json::as_str), Some("fad"));
+        let foundations = meta
+            .get("foundations")
+            .and_then(Json::as_arr)
+            .expect("foundations array");
+        assert_eq!(foundations.len(), 5);
+        let epochs = meta
+            .get("registry_epochs")
+            .and_then(Json::as_arr)
+            .expect("registry_epochs array");
+        assert_eq!(epochs.len(), 14);
+        for epoch in epochs {
+            let digest = epoch
+                .get("canonical_digest")
+                .and_then(Json::as_str)
+                .expect("canonical_digest");
+            assert_eq!(digest.len(), 64);
+            assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()));
+        }
     }
 }

@@ -568,3 +568,31 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §15.2 (a discarded scenario keeps its history; nothing is deleted)"
+
+# ---- Litigation productions (book-scoped; fa-6l9) -----------------------------
+# A matter's production profile and every production in it (plan §13.2) are
+# trunk records: an Agent prepares neither (§14.4), and both need `produce`,
+# the op that already governs bundles and certificates leaving the book.
+[[rule]]
+name = "production-open"
+class = "ProductionControl"
+transition = "Open"
+preparer_op = "produce"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §13.2 (a ProductionProfile governs a matter's productions: its Bates prefix and next number, journaled per matter); §0.4 decision 4"
+
+[[rule]]
+name = "production-produce"
+class = "ProductionControl"
+transition = "Produce"
+preparer_op = "produce"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §13.2 (a document produced in two matters carries both ranges); Appendix B Produce"

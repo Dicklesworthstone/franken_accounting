@@ -44,10 +44,10 @@ pub const REGISTER_CELL_DOMAIN: &[u8] = b"fa:register-cell:v1";
 
 /// The entry classes that are book-scoped and undated (`SchemaControl`,
 /// `PolicyControl`, `TimeControl`, `SweepControl`, `ScheduleControl`,
-/// `ImportControl`, `HoldControl`, `DraftControl`, `ScenarioControl`;
-/// `registries/entry_classes.toml`): their envelopes carry no effective day.
-/// Every other class is period-scoped and carries one.
-pub const UNDATED_CLASSES: [u16; 9] = [17, 18, 19, 20, 21, 23, 24, 25, 26];
+/// `ImportControl`, `HoldControl`, `DraftControl`, `ScenarioControl`,
+/// `ProductionControl`; `registries/entry_classes.toml`): their envelopes
+/// carry no effective day. Every other class is period-scoped and carries one.
+pub const UNDATED_CLASSES: [u16; 10] = [17, 18, 19, 20, 21, 23, 24, 25, 26, 27];
 
 /// Bounds for the selection lists (`max_legs_per_entry` bounds both).
 pub const MAX_ENVELOPE_LIST: usize = 4096;
@@ -629,7 +629,11 @@ fn attestation_record(
             reason: Reason::BadTag(scheme),
         }));
     }
-    if !(1..=7).contains(&profile) {
+    // The admitting capability's profile tag as the kernel journals it
+    // (`fa_policy::Profile::tag`: Human 0, Agent 1, System 2). A review is
+    // recorded only under a Human capability, so every real Reviewed
+    // attestation carries 0.
+    if profile > 2 {
         return Err(RecordError::Decode(DecodeError {
             offset: proposal_len + 33,
             what: "attestation.profile",

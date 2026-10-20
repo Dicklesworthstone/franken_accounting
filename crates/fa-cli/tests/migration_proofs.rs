@@ -124,7 +124,6 @@ impl Fixture {
                 transition,
                 PREPARER,
                 1,
-                day(),
                 format!("opening-{index}").as_bytes(),
                 &capability(&["close"]),
             )
@@ -137,12 +136,11 @@ impl Fixture {
                 PeriodTransition::Lock,
                 PREPARER,
                 1,
-                day(),
                 b"lock-opening",
             )
             .unwrap()
             .unwrap();
-        let digest = book.plan_digest(&lock).unwrap();
+        let digest = book.plan_digest(&lock).unwrap().unwrap();
         let approval = book
             .approve(Capability::embedded(VId(8), &["approve"]).unwrap(), digest)
             .unwrap()

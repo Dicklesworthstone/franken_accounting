@@ -456,6 +456,72 @@ where
         .map_err(WaitError::frame)?
 }
 
+/// Enforce per-connection session-token binding (`fa-r3q`):
+/// - The first `Op::Run` frame on a connection fixes the connection's session posture
+///   (`Some(Some(token_bytes))` for a token-bound session, or `Some(None)` for an
+///   embedded-owner connection).
+/// - Subsequent `Op::Run` frames on a token-bound connection inherit the bound token
+///   when `request.token` is `None`, and refuse with `FA-REF-011` (exit 7) if
+///   `request.token` names a different token.
+/// - Subsequent `Op::Run` frames on an embedded-owner connection refuse with
+///   `FA-REF-011` (exit 7) if they attempt to bind a token mid-connection.
+fn bind_connection_session(
+    session_token: &mut Option<Option<Vec<u8>>>,
+    request: &mut Request,
+) -> Result<(), Response> {
+    if request.op != Op::Run {
+        return Ok(());
+    }
+    match session_token {
+        None => {
+            *session_token = Some(request.token.clone());
+            Ok(())
+        }
+        Some(Some(bound)) => match &request.token {
+            None => {
+                request.token = Some(bound.clone());
+                Ok(())
+            }
+            Some(tok) if tok == bound => Ok(()),
+            Some(_) => {
+                let refusal = fa_journal::Refusal::new(
+                    fa_journal::refusal::code::CAPABILITY,
+                    fa_journal::refusal::exit::SAFETY,
+                    "fad refused request: connection is already bound to a different capability token for its lifetime",
+                    "plan §14.2, §15.3 (per-connection session token binding; fa-r3q)",
+                    "open a new connection to fad for each distinct capability token",
+                );
+                let (exit, out) = cli::refuse(&request.argv, refusal, true);
+                Err(Response {
+                    op: Op::Run,
+                    exit,
+                    stdout: out.stdout,
+                    stderr: out.stderr,
+                })
+            }
+        },
+        Some(None) => match &request.token {
+            None => Ok(()),
+            Some(_) => {
+                let refusal = fa_journal::Refusal::new(
+                    fa_journal::refusal::code::CAPABILITY,
+                    fa_journal::refusal::exit::SAFETY,
+                    "fad refused request: cannot bind a capability token mid-connection on an unbound connection",
+                    "plan §14.2, §15.3 (per-connection session token binding; fa-r3q)",
+                    "present the capability token on the first request of a new connection",
+                );
+                let (exit, out) = cli::refuse(&request.argv, refusal, true);
+                Err(Response {
+                    op: Op::Run,
+                    exit,
+                    stdout: out.stdout,
+                    stderr: out.stderr,
+                })
+            }
+        },
+    }
+}
+
 async fn serve_connection_with<S, H>(
     cx: &Cx,
     stream: &mut S,
@@ -467,6 +533,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     H: Service,
 {
+    let mut session_token: Option<Option<Vec<u8>>> = None;
     loop {
         let frame = match wait_io(
             cx,
@@ -498,7 +565,7 @@ where
             Err(fault) => return Ended::Fault(fault),
         };
         let request = canonical(&payload).and_then(|v| Request::from_json(&v, limits.protocol));
-        let request = match request {
+        let mut request = match request {
             Ok(r) => r,
             Err(fault) => {
                 let reply = protocol_fault(&fault).to_json(limits.protocol).render();
@@ -513,7 +580,10 @@ where
                 return Ended::Fault(fault);
             }
         };
-        let (response, next) = service.handle(request);
+        let (response, next) = match bind_connection_session(&mut session_token, &mut request) {
+            Ok(()) => service.handle(request),
+            Err(refusal_response) => (refusal_response, Next::Continue),
+        };
         let mut reply = response.to_json(limits.protocol).render();
         if reply.len() > limits.max_frame_bytes {
             // An answer too large for one frame is refused as a whole, never
@@ -651,7 +721,26 @@ impl Server<'_> {
                 // peer runs in the embedded-owner posture.
                 let bound = match request.token.as_deref().map(|bytes| self.session(bytes)) {
                     None => None,
-                    Some(Ok(authority)) => Some(authority),
+                    Some(Ok(authority)) => {
+                        if let Ok(Err(refusal)) = self.book.admit_current(authority.capability()) {
+                            let (exit, out) = cli::refuse_with_authority(
+                                &request.argv,
+                                refusal,
+                                &authority,
+                                true,
+                            );
+                            return (
+                                Response {
+                                    op: Op::Run,
+                                    exit,
+                                    stdout: out.stdout,
+                                    stderr: out.stderr,
+                                },
+                                Next::Continue,
+                            );
+                        }
+                        Some(authority)
+                    }
                     Some(Err(message)) => {
                         let (exit, out) = cli::usage_error(
                             &request.argv,
@@ -904,6 +993,7 @@ struct ConnSlot<S> {
     peer: Option<PeerCred>,
     started_ns: u64,
     requests: u64,
+    session_token: Option<Option<Vec<u8>>>,
     phase: Phase,
 }
 
@@ -1292,6 +1382,7 @@ async fn serve_with<L: Listener, H: Service>(
                     peer,
                     started_ns,
                     requests: 0,
+                    session_token: None,
                     phase,
                 };
                 if let (Some(peer), Some(daemon_uid)) = (peer, service.daemon_uid())
@@ -1332,7 +1423,7 @@ async fn serve_with<L: Listener, H: Service>(
                     ConnStep::FrameRead(payload) => {
                         let parsed = canonical(&payload)
                             .and_then(|v| Request::from_json(&v, limits.protocol));
-                        let request = match parsed {
+                        let mut request = match parsed {
                             Ok(r) => r,
                             Err(fault) => {
                                 let reply =
@@ -1371,7 +1462,13 @@ async fn serve_with<L: Listener, H: Service>(
                             continue;
                         }
                         connections[idx].requests = connections[idx].requests.saturating_add(1);
-                        let (response, next) = service.handle(request);
+                        let (response, next) = match bind_connection_session(
+                            &mut connections[idx].session_token,
+                            &mut request,
+                        ) {
+                            Ok(()) => service.handle(request),
+                            Err(refusal_response) => (refusal_response, Next::Continue),
+                        };
                         let mut reply = response.to_json(limits.protocol).render();
                         let after = if reply.len() > limits.max_frame_bytes {
                             let fault = FrameError::TooLarge {

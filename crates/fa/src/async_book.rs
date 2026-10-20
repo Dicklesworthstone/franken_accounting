@@ -717,7 +717,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         t: PeriodTransition,
         principal: VId,
         reason_code: u16,
-        effective_date: DateDay,
         idempotency_key: &[u8],
         capability: &fa_journal::Capability,
     ) -> Outcome<Transitioned> {
@@ -730,7 +729,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             t,
             principal,
             reason_code,
-            effective_date,
             idempotency_key,
             description,
             capability,
@@ -747,7 +745,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         t: PeriodTransition,
         principal: VId,
         reason_code: u16,
-        effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::TransitionPlan> {
         let description = self.seal_text(cx, &format!("period {period_code}: {t:?}"))?;
@@ -759,14 +756,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 t,
                 principal,
                 reason_code,
-                effective_date,
                 idempotency_key,
                 description,
             )?)
         })
     }
 
-    pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Result<[u8; 32], BookError> {
+    pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Outcome<[u8; 32]> {
         Ok(plan.proposal_digest(&self.context)?)
     }
 
@@ -787,7 +783,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             t,
             plan.principal_ref,
             plan.reason_code,
-            plan.effective_date,
             &plan.idempotency_key,
             plan.description.clone(),
             capability,
@@ -972,6 +967,99 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Every draft of the book.
     pub fn drafts(&self, cx: &PurposeContexts) -> Result<Vec<fa_journal::DraftView>, BookError> {
         self.query(cx, |db, context| Ok(fa_journal::list_drafts(db, context)?))
+    }
+
+    fn production_request(
+        &self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        effective_date: DateDay,
+        description: &str,
+        idempotency_key: &[u8],
+    ) -> Result<fa_journal::ProductionRequest, BookError> {
+        Ok(fa_journal::ProductionRequest {
+            capability,
+            effective_date,
+            description: self.seal_text(cx, description)?,
+            idempotency_key: idempotency_key.to_vec(),
+        })
+    }
+
+    /// Open the production profile of `profile.matter` (plan §13.2, bead
+    /// fa-6l9): its Bates prefix and first number, journaled once per matter.
+    pub async fn open_production(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        profile: fa_journal::ProductionProfile,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::ProductionOpened> {
+        let description = format!("open production profile for matter {}", profile.matter);
+        let req = self.production_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::open_production(&mut self.db, cx, &self.context, profile, req).await?)
+    }
+
+    /// Produce `documents` in `matter`: each document the matter has not
+    /// produced receives the next Bates numbers, journaled by one Produce
+    /// record; a produced document keeps its range.
+    pub async fn produce(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        matter: &str,
+        documents: Vec<fa_journal::ProducedDocument>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::Produced> {
+        let description = format!("produce {} documents in matter {matter}", documents.len());
+        let req = self.production_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::produce(&mut self.db, cx, &self.context, matter, documents, req).await?)
+    }
+
+    /// The production profile of `matter` and every range it assigned.
+    pub fn production(
+        &self,
+        cx: &PurposeContexts,
+        matter: &str,
+    ) -> Result<Option<fa_journal::ProductionView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_production(db, context, matter)?)
+        })
+    }
+
+    /// Every matter's production profile.
+    pub fn productions(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<Vec<fa_journal::ProductionView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::list_productions(db, context)?)
+        })
+    }
+
+    /// Every matter's Bates range for `document` (plan §13.2: a document
+    /// produced in two matters carries both ranges).
+    pub fn document_bates_ranges(
+        &self,
+        cx: &PurposeContexts,
+        document: &fa_model::Oid,
+    ) -> Result<Vec<(fa_journal::ProductionProfile, fa_journal::RecordedRange)>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::document_ranges(db, context, document)?)
+        })
     }
 
     fn scenario_request(
@@ -2214,6 +2302,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(cited) => cited,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        let cited_order = cited.clone();
         let mut documents = BTreeMap::new();
         let inline_documents = request.inline_documents;
         let query = cx.query();
@@ -2280,7 +2369,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .map_err(|e| KernelError::Corrupt(e.to_string()))?
         .canonical_bytes()
         .map_err(|e| KernelError::Model(e.into()))?;
-        Ok(Ok(Some(ProducedBundle { bundle, receipt })))
+        Ok(Ok(Some(ProducedBundle {
+            bundle,
+            receipt,
+            checkpoint,
+            documents: cited_order,
+        })))
     }
 
     /// Export a portable proof from a supported recorded checkpoint, under
@@ -2781,14 +2875,89 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .await
     }
 
+    /// A head read (`known_at` absent) is answered from maintained registers
+    /// plus the exact tail when they can serve it, else by the literal fold;
+    /// both give the same report (fa-715). A historical read folds literally.
     pub fn trial_balance_at(
         &self,
         cx: &PurposeContexts,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
+        match known_at {
+            None => Ok(self.trial_balance_served(cx, periods)?.0),
+            Some(_) => self.query(cx, |db, book| {
+                Ok(fa_registers::trial_balance_at(db, book, periods, known_at)?)
+            }),
+        }
+    }
+
+    /// Load the committed delta window back to the oldest maintained
+    /// register cursor (fa-715). A store reopened from a checkpoint holds
+    /// only its frontier, so without this a head read in a new process
+    /// cannot fold the tail after a cursor and folds the journal literally.
+    /// Admitted like [`AsyncBook::prepare_report_history`]: whole-book read
+    /// authority, checked before anything is observed. A book without
+    /// maintained cells loads nothing; an explicitly retired interval stays
+    /// retired, and reads over it keep folding literally.
+    pub async fn prepare_head_reads(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<()> {
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = fa_journal::policy::current_at(&self.db, &self.context, capability)? {
+            return Ok(Err(refusal));
+        }
+        let oldest = self.query(cx, |db, book| {
+            let mut oldest: Option<CommitSeq> = None;
+            for period in fa_journal::genesis::list_periods(db)? {
+                if let Some(cursor) = fa_registers::maintainer::cursor(db, book, &period.code)? {
+                    oldest = Some(oldest.map_or(cursor, |seen: CommitSeq| seen.min(cursor)));
+                }
+            }
+            Ok(oldest)
+        })?;
+        let Some(oldest) = oldest else {
+            return Ok(Ok(()));
+        };
+        match self.db.ensure_delta_window(&cx.commit(), oldest).await {
+            Ok(())
+            | Err(fgdb::RebuildError::Index {
+                error: fgdb_delta_types::IndexError::CursorRetired { .. },
+                ..
+            }) => Ok(Ok(())),
+            Err(other) => Err(KernelError::Write(fgdb::WriteError::from(other)).into()),
+        }
+    }
+
+    /// The period activity at the head and how it was served (plan §17).
+    pub fn period_activity_served(
+        &self,
+        cx: &PurposeContexts,
+        periods: &[String],
+    ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::trial_balance_at(db, book, periods, known_at)?)
+            Ok(fa_registers::period_activity_served(db, book, periods)?)
+        })
+    }
+
+    /// The trial balance at the head and how it was served: from
+    /// maintained cells with their cursors and tail lengths, or literally
+    /// with the reason (plan §17).
+    pub fn trial_balance_served(
+        &self,
+        cx: &PurposeContexts,
+        periods: &[String],
+    ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::trial_balance_served(db, book, periods)?)
         })
     }
 
@@ -2803,14 +2972,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// A head read (`known_at` absent) is answered from maintained registers
+    /// plus the exact tail when they can serve it, else by the literal fold;
+    /// both give the same report (fa-715). A historical read folds literally.
     pub fn period_activity(
         &self,
         cx: &PurposeContexts,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
-        self.query(cx, |db, book| {
-            Ok(fa_registers::period_activity(db, book, periods, known_at)?)
+        self.query(cx, |db, book| match known_at {
+            None => Ok(fa_registers::period_activity_served(db, book, periods)?.0),
+            Some(_) => Ok(fa_registers::period_activity(db, book, periods, known_at)?),
         })
     }
 }

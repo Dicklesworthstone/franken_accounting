@@ -70,6 +70,7 @@ pub mod indirect_cash_flow;
 pub mod intake;
 pub mod interop;
 pub mod procedure_certificate;
+pub mod production;
 pub mod projections;
 pub mod proof;
 pub mod report_artifact;
@@ -147,7 +148,8 @@ pub use fa_money::allocation::{
     AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
 };
 pub use fa_notary::{
-    AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, ScopeRequest,
+    AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, LeafKinds,
+    ScopeRequest,
 };
 pub use fa_policy::{
     BenefitInterval, Capability, DECISION_CARD_DOMAIN, DecisionCandidate, DecisionCard,
@@ -182,6 +184,10 @@ pub use intake::IntakeAction;
 pub use procedure_certificate::{
     CERTIFIABLE_PROCEDURES, CertifiedProcedure, MAX_PROCEDURE_CERTIFICATE_BYTES,
     PROCEDURE_CERTIFICATE_FORMAT, PROCEDURE_OUTPUT_FORMAT, ProcedureCertificate, ProcedureRequest,
+};
+pub use production::{
+    BundleDelivery, DEFAULT_VOLUME as DEFAULT_PRODUCTION_VOLUME, PrivilegeClaims, PrivilegeEntry,
+    ProductionVolume,
 };
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};

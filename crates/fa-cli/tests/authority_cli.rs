@@ -638,7 +638,15 @@ fn only_an_actual_read_authorized_inline_period_plan_can_reach_the_book() {
         .parent()
         .expect("fixture parent")
         .join("review.plan");
-    let argv = ["period", "lock", "FY2026-P03", "--dry-run", "--json"];
+    let argv = [
+        "period",
+        "lock",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--dry-run",
+        "--json",
+    ];
     let (exit, out) = run(&reader, &argv);
     assert_eq!(
         exit, 4,

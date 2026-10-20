@@ -49,6 +49,7 @@ const LOCAL_FLAGS: &[&str] = &[
     "--evidence",
     "--export-format",
     "--out",
+    "--file",
 ];
 
 fn invalid(message: impl Into<String>) -> Fail {
@@ -125,12 +126,15 @@ fn check_options(args: &Args, sub: &str) -> Result<(), Fail> {
         ],
         "list" => &["--certificate", "--known-at", "--as-known-at"],
         "show" => &["--known-at", "--as-known-at"],
+        // --certificate and --file select a run review (review_run).
         "review" => &[
             "--action",
             "--note",
             "--dismissal-reason",
             "--previous",
             "--evidence",
+            "--certificate",
+            "--file",
         ],
         "export" => &[
             "--certificate",
@@ -735,86 +739,28 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 fn review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() == 2 && args.flag("--file").is_some() {
+        return review_run(ctx, args);
+    }
+    if args.flag("--certificate").is_some() || args.flag("--file").is_some() {
+        return Err(usage(
+            "--certificate and --file select a run review, which names no F:<vid>",
+            REVIEW_RUN_EXAMPLE,
+        ));
+    }
     if args.positional.len() != 3 {
         return Err(usage("finding review needs one F:<vid>", EXAMPLE));
     }
     let selected = handle(&args.positional[2], "F:", "finding")?;
-    let action = match args.require("--action", "acknowledge|dismiss|reopen")? {
-        "acknowledge" => FindingReviewAction::Acknowledge,
-        "reopen" => FindingReviewAction::Reopen,
-        "dismiss" => FindingReviewAction::Dismiss(
-            match args.require(
-                "--dismissal-reason",
-                "explained|duplicate|data-quality|outside-scope|other",
-            )? {
-                "explained" => DismissalReason::Explained,
-                "duplicate" => DismissalReason::Duplicate,
-                "data-quality" => DismissalReason::DataQuality,
-                "outside-scope" => DismissalReason::OutsideScope,
-                "other" => DismissalReason::Other,
-                _ => {
-                    return Err(usage(
-                        "unregistered finding dismissal reason",
-                        "--dismissal-reason explained|duplicate|data-quality|outside-scope|other",
-                    ));
-                }
-            },
-        ),
-        _ => {
-            return Err(usage(
-                "unregistered finding review action",
-                "--action acknowledge|dismiss|reopen",
-            ));
-        }
-    };
-    if !matches!(action, FindingReviewAction::Dismiss(_))
-        && args.flag("--dismissal-reason").is_some()
-    {
-        return Err(usage(
-            "--dismissal-reason belongs to a dismissal",
-            "use --note for every decision; add --dismissal-reason and --evidence for dismiss",
-        ));
-    }
-    let note = args
-        .require("--note", "<nonempty human explanation>")?
-        .to_string();
-    if note.trim().is_empty() || note.len() > fa::findings::review::MAX_REVIEW_NOTE_BYTES {
-        return Err(usage(
-            "review note is empty or exceeds its registered UTF-8 byte bound",
-            "--note <nonempty explanation of at most 2048 UTF-8 bytes>",
-        ));
-    }
-    let previous = args
-        .flag("--previous")
-        .map(|text| handle(text, "R:", "--previous"))
-        .transpose()?;
-    let mut evidence = args
-        .flag_all("--evidence")
-        .into_iter()
-        .map(|text| fixed_hex(text.strip_prefix("D:").unwrap_or(text), "--evidence").map(Oid))
-        .collect::<Result<Vec<_>, _>>()?;
-    evidence.sort();
-    if evidence.len() > fa::findings::review::MAX_REVIEW_EVIDENCE
-        || evidence.windows(2).any(|pair| pair[0] == pair[1])
-    {
-        return Err(usage(
-            "review evidence must contain at most 16 distinct retained documents",
-            "supply each --evidence document once",
-        ));
-    }
-    if matches!(action, FindingReviewAction::Dismiss(_)) && evidence.is_empty() {
-        return Err(usage(
-            "dismissing a finding requires retained evidence",
-            "--evidence <document oid>; import the actual supporting document with fa document add first",
-        ));
-    }
-    let request = FindingReviewRequest {
-        finding_vid: selected,
-        expected_previous: previous,
-        action,
-        note,
-        evidence,
-    };
+    let request = review_request(
+        selected,
+        args.require("--action", "acknowledge|dismiss|reopen")?,
+        args.flag("--dismissal-reason"),
+        args.flag("--note"),
+        args.flag("--previous"),
+        &args.flag_all("--evidence"),
+    )?;
+    let action = request.action;
     let who = ctx.principal(args);
     let cap = capability(ctx, args, &["read", "approve"])?;
     let mut book = ctx
@@ -841,6 +787,255 @@ fn review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ),
     );
     Ok(())
+}
+
+/// One review decision, validated the same way whether it comes from flags
+/// (`finding review F:<vid>`) or from one item of a run review file.
+fn review_request(
+    selected: VId,
+    action: &str,
+    dismissal: Option<&str>,
+    note: Option<&str>,
+    previous: Option<&str>,
+    evidence: &[&str],
+) -> Result<FindingReviewRequest, Fail> {
+    let action = match action {
+        "acknowledge" => FindingReviewAction::Acknowledge,
+        "reopen" => FindingReviewAction::Reopen,
+        "dismiss" => FindingReviewAction::Dismiss(
+            match dismissal.ok_or_else(|| {
+                usage(
+                    "--dismissal-reason is required",
+                    "--dismissal-reason explained|duplicate|data-quality|outside-scope|other",
+                )
+            })? {
+                "explained" => DismissalReason::Explained,
+                "duplicate" => DismissalReason::Duplicate,
+                "data-quality" => DismissalReason::DataQuality,
+                "outside-scope" => DismissalReason::OutsideScope,
+                "other" => DismissalReason::Other,
+                _ => {
+                    return Err(usage(
+                        "unregistered finding dismissal reason",
+                        "--dismissal-reason explained|duplicate|data-quality|outside-scope|other",
+                    ));
+                }
+            },
+        ),
+        _ => {
+            return Err(usage(
+                "unregistered finding review action",
+                "--action acknowledge|dismiss|reopen",
+            ));
+        }
+    };
+    if !matches!(action, FindingReviewAction::Dismiss(_)) && dismissal.is_some() {
+        return Err(usage(
+            "--dismissal-reason belongs to a dismissal",
+            "use --note for every decision; add --dismissal-reason and --evidence for dismiss",
+        ));
+    }
+    let note = note
+        .ok_or_else(|| usage("--note is required", "--note <nonempty human explanation>"))?
+        .to_string();
+    if note.trim().is_empty() || note.len() > fa::findings::review::MAX_REVIEW_NOTE_BYTES {
+        return Err(usage(
+            "review note is empty or exceeds its registered UTF-8 byte bound",
+            "--note <nonempty explanation of at most 2048 UTF-8 bytes>",
+        ));
+    }
+    let previous = previous
+        .map(|text| handle(text, "R:", "--previous"))
+        .transpose()?;
+    let mut evidence = evidence
+        .iter()
+        .map(|text| fixed_hex(text.strip_prefix("D:").unwrap_or(text), "--evidence").map(Oid))
+        .collect::<Result<Vec<_>, _>>()?;
+    evidence.sort();
+    if evidence.len() > fa::findings::review::MAX_REVIEW_EVIDENCE
+        || evidence.windows(2).any(|pair| pair[0] == pair[1])
+    {
+        return Err(usage(
+            "review evidence must contain at most 16 distinct retained documents",
+            "supply each --evidence document once",
+        ));
+    }
+    if matches!(action, FindingReviewAction::Dismiss(_)) && evidence.is_empty() {
+        return Err(usage(
+            "dismissing a finding requires retained evidence",
+            "--evidence <document oid>; import the actual supporting document with fa document add first",
+        ));
+    }
+    Ok(FindingReviewRequest {
+        finding_vid: selected,
+        expected_previous: previous,
+        action,
+        note,
+        evidence,
+    })
+}
+
+const REVIEW_RUN_EXAMPLE: &str = r#"fa finding review --certificate C:<run digest> --file reviews.json --json, where reviews.json is [{"finding":"F:<vid>","action":"acknowledge","note":"..."},{"finding":"F:<vid>","action":"dismiss","dismissal_reason":"explained","note":"...","evidence":["D:<oid>"]}]"#;
+
+/// `finding review --certificate C:<run> --file <reviews.json|->`: an explicit
+/// selection from ONE retained finding run, reviewed in one native transaction
+/// (Book::review_finding_run). Each decision is validated exactly as a single
+/// review; any refused decision refuses the whole set and publishes nothing.
+fn review_run(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    for flag in [
+        "--action",
+        "--note",
+        "--dismissal-reason",
+        "--previous",
+        "--evidence",
+    ] {
+        if args.flag(flag).is_some() {
+            return Err(usage(
+                format!(
+                    "{flag} belongs to a single review; a run review reads every decision from --file"
+                ),
+                REVIEW_RUN_EXAMPLE,
+            ));
+        }
+    }
+    let digest = certificate(args)?;
+    let text = ctx
+        .files
+        .read_text(args.require("--file", "<reviews.json|->")?)?;
+    let doc = crate::json::parse(&text).map_err(|error| {
+        usage(
+            format!("invalid run review JSON: {error}"),
+            REVIEW_RUN_EXAMPLE,
+        )
+    })?;
+    let Json::Arr(items) = doc else {
+        return Err(usage(
+            "a run review is a JSON array of decisions",
+            REVIEW_RUN_EXAMPLE,
+        ));
+    };
+    if items.is_empty() {
+        return Err(usage(
+            "a run review names at least one finding",
+            REVIEW_RUN_EXAMPLE,
+        ));
+    }
+    let requests = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| run_review_item(index, item))
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let who = ctx.principal(args);
+    let cap = capability(ctx, args, &["read", "approve"])?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_book(book, who, &cap))?;
+    let before = book.head()?;
+    let decisions = book.review_finding_run(who, &cap, &digest, &requests)??;
+    ctx.out.at_book(&book)?;
+    for decision in &decisions {
+        ctx.out.event(
+            "finding_reviewed",
+            vec![
+                ("review", review_json(decision)),
+                (
+                    "already_recorded",
+                    Json::Bool(decision.recorded_at <= before),
+                ),
+            ],
+            &format!(
+                "{} F:{:032x} at sequence {}\nReview: R:{:032x}",
+                action_name(decision.request.action),
+                decision.request.finding_vid.0,
+                decision.recorded_at.0,
+                decision.review_vid.0
+            ),
+        );
+    }
+    Ok(())
+}
+
+fn item_text<'a>(item: &'a Json, index: usize, key: &str) -> Result<Option<&'a str>, Fail> {
+    match item.get(key) {
+        None => Ok(None),
+        Some(Json::Str(text)) => Ok(Some(text.as_str())),
+        Some(_) => Err(usage(
+            format!("reviews[{index}].{key} must be a string"),
+            REVIEW_RUN_EXAMPLE,
+        )),
+    }
+}
+
+/// One run-review decision. Field names mirror the single review's flags;
+/// every error names the item it came from.
+fn run_review_item(index: usize, item: &Json) -> Result<FindingReviewRequest, Fail> {
+    let in_item = |fail: Fail| match fail {
+        Fail::Usage(error) => usage(format!("reviews[{index}]: {}", error.message), error.fix),
+        other => other,
+    };
+    let Json::Obj(fields) = item else {
+        return Err(usage(
+            format!("reviews[{index}] must be a JSON object"),
+            REVIEW_RUN_EXAMPLE,
+        ));
+    };
+    for (name, _) in fields {
+        if ![
+            "finding",
+            "action",
+            "dismissal_reason",
+            "note",
+            "previous",
+            "evidence",
+        ]
+        .contains(&name.as_str())
+        {
+            return Err(usage(
+                format!("reviews[{index}]: unknown field '{name}'"),
+                REVIEW_RUN_EXAMPLE,
+            ));
+        }
+    }
+    let Some(finding) = item_text(item, index, "finding")? else {
+        return Err(usage(
+            format!("reviews[{index}] names no finding"),
+            REVIEW_RUN_EXAMPLE,
+        ));
+    };
+    let Some(action) = item_text(item, index, "action")? else {
+        return Err(usage(
+            format!("reviews[{index}] names no action"),
+            r#""action":"acknowledge|dismiss|reopen""#,
+        ));
+    };
+    let evidence: Vec<&str> = match item.get("evidence") {
+        None => Vec::new(),
+        Some(Json::Arr(values)) => values
+            .iter()
+            .map(|value| match value {
+                Json::Str(text) => Ok(text.as_str()),
+                _ => Err(usage(
+                    format!("reviews[{index}].evidence must contain document oids"),
+                    REVIEW_RUN_EXAMPLE,
+                )),
+            })
+            .collect::<Result<_, Fail>>()?,
+        Some(_) => {
+            return Err(usage(
+                format!("reviews[{index}].evidence must be an array"),
+                REVIEW_RUN_EXAMPLE,
+            ));
+        }
+    };
+    review_request(
+        handle(finding, "F:", "finding").map_err(in_item)?,
+        action,
+        item_text(item, index, "dismissal_reason")?,
+        item_text(item, index, "note")?,
+        item_text(item, index, "previous")?,
+        &evidence,
+    )
+    .map_err(in_item)
 }
 
 fn export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

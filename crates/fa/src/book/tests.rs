@@ -152,7 +152,6 @@ fn lab_lifecycle(seed: u64) -> (Fold, [u8; 32], Vec<String>) {
             PeriodTransition::Open,
             principal,
             1,
-            day,
             b"open",
             &Capability::embedded(principal, &["close"]).unwrap(),
         )
@@ -436,7 +435,6 @@ async fn prepared_fixture(root: &Cx, seed: u64) -> PreparedFixture {
         PeriodTransition::Open,
         principal,
         1,
-        day,
         b"open-march",
         &Capability::embedded(principal, &["close"]).unwrap(),
     )
@@ -539,7 +537,6 @@ fn prepare_fixture_transition(
         transition,
         VId(1),
         1,
-        DateDay::from_ymd(2026, 3, 15).unwrap(),
         b"prepared-transition",
         description,
         capability,
@@ -1081,7 +1078,6 @@ fn prepared_post_and_transition_conflict_when_their_acting_capability_is_revoked
             PeriodTransition::SoftClose,
             VId(1),
             1,
-            DateDay::from_ymd(2026, 3, 15).unwrap(),
             b"fresh-revoked-transition",
             description,
             &capability,
@@ -1234,7 +1230,6 @@ fn prepared_open_conflicts_with_a_new_due_schedule_and_fresh_open_mints_once() {
                     PeriodTransition::Open,
                     VId(1),
                     1,
-                    april_day,
                     b"second-open",
                     &capability,
                 )
@@ -1371,7 +1366,6 @@ fn async_timing_adapters_expire_and_reverse_under_the_callers_fault_vfs() {
                 PeriodTransition::Open,
                 VId(1),
                 1,
-                april_day,
                 b"timing-open-april",
                 &Capability::embedded(VId(1), &["close"]).unwrap(),
             )
@@ -2110,7 +2104,6 @@ fn scoped_reads_refuse_before_construction_and_a_revoked_token_never_reads_histo
         PeriodTransition::Open,
         principal,
         1,
-        day,
         b"open",
         &Capability::embedded(principal, &["close"]).unwrap(),
     )
@@ -2499,16 +2492,12 @@ fn certified_fixture() -> (Book, fa_money::UnitId, DateDay, VId) {
     )
     .unwrap()
     .unwrap();
-    for (code, date) in [
-        ("FY2026-P03", day),
-        ("FY2026-P04", DateDay::from_ymd(2026, 4, 1).unwrap()),
-    ] {
+    for code in ["FY2026-P03", "FY2026-P04"] {
         book.transition_period(
             code,
             PeriodTransition::Open,
             principal,
             1,
-            date,
             code.as_bytes(),
             &Capability::embedded(principal, &["close"]).unwrap(),
         )
@@ -3903,6 +3892,7 @@ fn replay_takes_the_retained_raw_text_closure_and_names_an_unavailable_one() {
     use crate::{ReportSelection, TrialBalanceSelection};
     let hex = |bytes: &[u8; 32]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
     let (book, _, day, _) = certified_fixture();
+    let cash = account_vid(book.context().book_id, "1000");
     let trial = book
         .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
         .unwrap()
@@ -3911,31 +3901,56 @@ fn replay_takes_the_retained_raw_text_closure_and_names_an_unavailable_one() {
         .certify_report(ReportSelection::OpenItems { account: None }, None)
         .unwrap()
         .unwrap();
-    // The trial balance binds no reason codes; every other report does.
-    assert_ne!(
+    let explain = book
+        .certify_report(
+            ReportSelection::ExplainBalance {
+                account: cash,
+                period: "FY2026-P03".into(),
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    // Trial balances and open items bind the same 4 read registries; only
+    // balance explanations also bind reason_codes.
+    assert_eq!(
         trial.certificate.registry_digest,
         open_items.certificate.registry_digest
     );
+    assert_ne!(
+        trial.certificate.registry_digest,
+        explain.certificate.registry_digest
+    );
 
-    let legacy = trial
-        .certificate
-        .resealed_under(trial.certificate.legacy_registry_closure());
-    assert_ne!(legacy.registry_digest, trial.certificate.registry_digest);
-    assert_eq!(
-        book.replay_trial_balance(&legacy).unwrap().unwrap(),
-        trial.report
-    );
-    let legacy_items = open_items
-        .certificate
-        .resealed_under(open_items.certificate.legacy_registry_closure());
-    assert_eq!(
-        book.replay_report(&legacy_items).unwrap().unwrap(),
-        open_items.report
-    );
+    for closure in [
+        trial.certificate.legacy_registry_closure(),
+        trial.certificate.legacy_v2_registry_closure(),
+    ] {
+        let legacy = trial.certificate.resealed_under(closure);
+        assert_ne!(legacy.registry_digest, trial.certificate.registry_digest);
+        assert_eq!(
+            book.replay_trial_balance(&legacy).unwrap().unwrap(),
+            trial.report
+        );
+    }
+    for (certified, closure) in [
+        (&open_items, open_items.certificate.legacy_registry_closure()),
+        (&open_items, open_items.certificate.legacy_v2_registry_closure()),
+        (&explain, explain.certificate.legacy_registry_closure()),
+        (&explain, explain.certificate.legacy_v2_registry_closure()),
+    ] {
+        let legacy = certified.certificate.resealed_under(closure);
+        assert_ne!(legacy.registry_digest, certified.certificate.registry_digest);
+        assert_eq!(
+            book.replay_report(&legacy).unwrap().unwrap(),
+            certified.report
+        );
+    }
 
     for (certificate, registries) in [
         (&trial.certificate, "units, foundations is"),
-        (&open_items.certificate, "foundations, reason_codes is"),
+        (&open_items.certificate, "units, foundations is"),
+        (&explain.certificate, "foundations, reason_codes is"),
     ] {
         let foreign = certificate.resealed_under([7; 32]);
         let refusal = book.replay_report(&foreign).unwrap().unwrap_err();
@@ -4531,7 +4546,6 @@ fn certificate_status_ignores_period_controls_but_tracks_later_reservation_relea
         PeriodTransition::SoftClose,
         VId(1),
         1,
-        day,
         b"certified-soft-close",
         &Capability::embedded(VId(1), &["close"]).unwrap(),
     )
@@ -4639,7 +4653,6 @@ fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
         PeriodTransition::Open,
         principal,
         1,
-        day,
         b"open",
         &Capability::embedded(principal, &["close"]).expect("close"),
     )
@@ -4873,7 +4886,6 @@ fn memory_book_creates_installs_opens_posts_folds_and_refuses() {
         PeriodTransition::Open,
         principal,
         1,
-        day,
         b"open",
         &Capability::embedded(principal, &["close"]).expect("close"),
     )
@@ -4969,7 +4981,6 @@ fn attestations_through_the_facade_promote_an_upload_and_stand_in_for_a_document
         PeriodTransition::Open,
         preparer,
         1,
-        day,
         b"open",
         &Capability::embedded(preparer, &["close"]).expect("close"),
     )
@@ -5102,7 +5113,6 @@ fn explain_balance_resolves_the_account_at_the_requested_sequence() {
         PeriodTransition::Open,
         principal,
         1,
-        day,
         b"open",
         &Capability::embedded(principal, &["close"]).expect("close"),
     )
@@ -5406,7 +5416,6 @@ fn a_bundle_inlines_a_governed_document_only_for_a_capability_that_reveals_it() 
         PeriodTransition::Open,
         counsel,
         1,
-        day,
         b"open",
         &Capability::embedded(counsel, &["close"]).expect("close"),
     )
@@ -5602,7 +5611,6 @@ fn directory_book_persists_across_reopen() {
             PeriodTransition::Open,
             principal,
             1,
-            day,
             b"open",
             &Capability::embedded(principal, &["close"]).expect("close"),
         )

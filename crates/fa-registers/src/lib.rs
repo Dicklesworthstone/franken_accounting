@@ -63,7 +63,8 @@ pub use lots::{
     fold_lots_from_open_items, lots,
 };
 pub use maintainer::{
-    Advance, PreparedAdvance, advance, prepare_advance, publish_advance, rebuild,
+    Advance, HeadFold, PreparedAdvance, advance, head_fold, prepare_advance, publish_advance,
+    rebuild,
 };
 pub use open_items::{
     Application, AppliedDrift, OpenItem, OpenItemVerification, open_items, verify_open_items,
@@ -1137,6 +1138,201 @@ pub fn trial_balance_at<V: asupersync::fs::Vfs + Clone>(
     report_at(db, book, selected, seq, through, &[])
 }
 
+/// How a trial balance at the frontier was served (plan §17: a balance
+/// read states whether maintained cells answered it and how long its tail
+/// was).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Served {
+    /// Every contributing period from its maintained cells at its cursor,
+    /// plus the exact tail after it: `(period, served_at, tail_entries)`.
+    Maintained(Vec<(String, CommitSeq, usize)>),
+    /// The literal journal fold, and why maintained cells could not answer.
+    Literal(String),
+}
+
+impl Served {
+    /// Entry payloads decoded for the tails; `None` for a literal fold.
+    #[must_use]
+    pub fn tail_length(&self) -> Option<usize> {
+        match self {
+            Self::Maintained(periods) => Some(periods.iter().map(|(_, _, tail)| tail).sum()),
+            Self::Literal(_) => None,
+        }
+    }
+}
+
+/// [`trial_balance`] at the frontier, answered from maintained registers
+/// when every period ending on or before the selection's last day can be
+/// served exactly (plan §5.3, fa-715), and from the literal fold otherwise.
+/// Both yield the same report; [`Served`] says which ran. The maintained
+/// path reads the chart, each contributing period's cells and the tail
+/// after its cursor, not the journal's history.
+pub fn trial_balance_served<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[String],
+) -> Result<(TrialBalance, Served), RegisterError> {
+    let seq = db.frontier()?;
+    let selected = select_periods(db, book, periods, seq)?;
+    let mut through = None;
+    for p in &selected {
+        let end = period_at(db, book, p, seq)?
+            .end
+            .0
+            .checked_sub(1)
+            .ok_or_else(|| KernelError::Corrupt("period end underflow".into()))?;
+        through = Some(through.map_or(DateDay(end), |d: DateDay| d.max(DateDay(end))));
+    }
+    let maintained = match through {
+        Some(day) => maintained_sums(db, book, day)?,
+        None => Err("no period was selected".to_string()),
+    };
+    match maintained {
+        Ok((sums, served)) => Ok((
+            trial_balance_from_sums(db, sums, selected, seq, through)?,
+            Served::Maintained(served),
+        )),
+        Err(reason) => Ok((
+            report_at(db, book, selected, seq, through, &[])?,
+            Served::Literal(reason),
+        )),
+    }
+}
+
+/// Per-(account, unit) column sums: `[debits, credits, debits_pending,
+/// credits_pending]`.
+type ColumnSums = BTreeMap<(VId, u32), [i128; 4]>;
+
+/// `(period, served_at, tail_entries)` of each period maintained cells answered.
+type ServedPeriods = Vec<(String, CommitSeq, usize)>;
+
+/// The trial balance's column sums through `day` from maintained cells, or
+/// why they cannot answer exactly: a period straddles `day` (the literal
+/// fold selects by date inside it), or a period with postings has no
+/// servable cells.
+fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    day: DateDay,
+) -> Result<Result<(ColumnSums, ServedPeriods), String>, RegisterError> {
+    let accounts = fa_journal::genesis::list_accounts(db)?;
+    let mut sums = ColumnSums::new();
+    let mut served = Vec::new();
+    for period in fa_journal::genesis::list_periods(db)? {
+        let last = DateDay(
+            period
+                .end
+                .0
+                .checked_sub(1)
+                .ok_or_else(|| KernelError::Corrupt("period end underflow".into()))?,
+        );
+        if period.start > day {
+            continue;
+        }
+        if last > day {
+            return Ok(Err(format!(
+                "period `{}` straddles {}",
+                period.code,
+                day.render()
+            )));
+        }
+        let Some(head) = maintainer::head_fold(db, book, &period.code, &accounts)? else {
+            if period_has_postings(db, period.vid)? {
+                return Ok(Err(unservable(&period.code)));
+            }
+            continue;
+        };
+        add_cells(&mut sums, &head.fold)?;
+        served.push((period.code, head.served_at, head.tail_entries));
+    }
+    Ok(Ok((sums, served)))
+}
+
+/// Why maintained cells could not answer for a period with postings, and
+/// how to make them answer.
+fn unservable(period: &str) -> String {
+    format!(
+        "period `{period}` has postings but its maintained cells cannot answer at the head (no or damaged state, drifted cells, or a tail outside this process's delta window); `fa registers advance --period {period}` or a daemon's register cycle keeps them current"
+    )
+}
+
+/// Add a fold's posted and pending cells into trial-balance column sums.
+fn add_cells(sums: &mut ColumnSums, fold: &Fold) -> Result<(), RegisterError> {
+    for (cells, column) in [(&fold.cells, 0), (&fold.pending, 2)] {
+        for cell in cells {
+            let sum = sums
+                .entry((cell.key.account, cell.key.unit_id))
+                .or_insert([0; 4]);
+            sum[column] = sum[column]
+                .checked_add(cell.debits)
+                .ok_or(RegisterError::Overflow)?;
+            sum[column + 1] = sum[column + 1]
+                .checked_add(cell.credits)
+                .ok_or(RegisterError::Overflow)?;
+        }
+    }
+    Ok(())
+}
+
+/// [`period_activity`] at the frontier: the selected periods' maintained
+/// cells plus their exact tails when every selected period with postings
+/// can be served that way, and the literal fold otherwise (fa-715). Both
+/// yield the same report; [`Served`] says which ran.
+pub fn period_activity_served<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[String],
+) -> Result<(TrialBalance, Served), RegisterError> {
+    let seq = db.frontier()?;
+    let selected = select_periods(db, book, periods, seq)?;
+    let accounts = fa_journal::genesis::list_accounts(db)?;
+    let mut sums = ColumnSums::new();
+    let mut served = Vec::new();
+    for code in &selected {
+        match maintainer::head_fold(db, book, code, &accounts)? {
+            Some(head) => {
+                add_cells(&mut sums, &head.fold)?;
+                served.push((code.clone(), head.served_at, head.tail_entries));
+            }
+            None if period_has_postings(db, period_at(db, book, code, seq)?.vid)? => {
+                let reason = unservable(code);
+                return Ok((
+                    report_at(db, book, selected.clone(), seq, None, &[])?,
+                    Served::Literal(reason),
+                ));
+            }
+            None => {}
+        }
+    }
+    Ok((
+        trial_balance_from_sums(db, sums, selected, seq, None)?,
+        Served::Maintained(served),
+    ))
+}
+
+/// Whether anything that can carry a leg reaches `period`: an Entry with
+/// legs, or a register cell (a stale cell without its state is not
+/// trusted to be empty).
+fn period_has_postings<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    period: VId,
+) -> Result<bool, RegisterError> {
+    for vid in db.in_neighbours(period, relation::IN_PERIOD)? {
+        let Some(row) = db.vertex(vid)? else { continue };
+        if row.labels.contains(&label::REGISTER) {
+            return Ok(true);
+        }
+        if row.labels.contains(&label::ENTRY) {
+            let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry.payload")?)
+                .map_err(KernelError::from)?;
+            if !entry.proposal.legs.is_empty() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// A stock position on a civil day, independent of when postings were recorded
 /// (`fa-a57x`, plan §7.5, §12.1). Includes adjustment/closing periods and every
 /// account type (`stock`, `flow`, `memo`) folded inception-to-date (`EFFECTIVE <= day`);
@@ -1291,6 +1487,19 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
                 .ok_or(RegisterError::Overflow)?;
         }
     }
+    trial_balance_from_sums(db, sums, periods, seq, through)
+}
+
+/// A trial balance over per-(account, unit) column sums `[debits, credits,
+/// debits_pending, credits_pending]` known at `seq`. The literal fold and
+/// the maintained read share it, so both reports follow one law.
+fn trial_balance_from_sums<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    sums: ColumnSums,
+    periods: Vec<String>,
+    seq: CommitSeq,
+    through: Option<DateDay>,
+) -> Result<TrialBalance, RegisterError> {
     let mut rows = Vec::with_capacity(sums.len());
     let mut unit_totals: BTreeMap<u32, (i128, i128)> = BTreeMap::new();
     let mut pending_unit_totals: BTreeMap<u32, (i128, i128)> = BTreeMap::new();

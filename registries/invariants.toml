@@ -49,6 +49,7 @@ proof = ["FA-INV-04.outsider-recomputation", "FA-INV-14.inclusion", "FA-INV-14.s
 bundle = ["FA-INV-14.scope-index-complete", "FA-INV-14.public-commitment"]
 replay = ["FA-INV-11.core"]
 certificate = ["FA-INV-11.core"]
+finding = ["FA-INV-11.finding-replay", "FA-INV-02.payload-immutable", "FA-INV-10.sod"]
 event = ["FA-INV-05.event-closure", "FA-INV-09.core"]
 
 [[invariant]]
@@ -487,8 +488,8 @@ evidence_class = "invariant"
 checker_strength = "exhaustive"
 first_gate = "G1"
 owner = "fa-lp6"
-checkers = ["fa-registry::lib::evidence_policy::tests::embedded_policy_is_total_over_entry_classes", "fa-journal::lib::evidence::tests::minimum_counts_admissible_kinds_and_names_the_row"]
-negatives = ["fa-journal::tests/genesis.rs::an_entry_below_its_evidence_minimum_is_refused_and_a_cited_document_is_linked", "fa-journal::tests/genesis.rs::target_classes_rest_on_their_target_while_a_hold_needs_its_own_document"]
+checkers = ["fa-registry::lib::evidence_policy::tests::embedded_policy_is_total_over_entry_classes", "fa-journal::lib::evidence::tests::minimum_counts_admissible_kinds_and_names_the_row", "fa-registers::tests/evidence_oracle.rs::capability_bound_uploads_derive_grade_from_profile_and_agree_with_the_oracle"]
+negatives = ["fa-journal::tests/genesis.rs::an_entry_below_its_evidence_minimum_is_refused_and_a_cited_document_is_linked", "fa-journal::tests/genesis.rs::target_classes_rest_on_their_target_while_a_hold_needs_its_own_document", "fa-mcp::tests/e2e_stdio.rs::agent_upload_is_self_sourced_and_forged_human_grade_is_refused"]
 waiver = "forbidden"
 
 [[clause]]
@@ -524,7 +525,7 @@ status = "dormant"
 statement = "An attested ByReferenceOnly external evidence policy downgrades dependent certificates to VerifiableIfArtifactsSupplied."
 evidence_class = "invariant"
 first_gate = "G3"
-activating = ["fa-9ae"]
+activating = ["fa-oimc"]
 waiver = "forbidden"
 
 [[clause]]
@@ -594,11 +595,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-06"
 id = "proofs"
-status = "dormant"
+status = "live"
 statement = "Lean lanes for rounding bounds and allocation conservation."
 evidence_class = "proof"
+checker_strength = "proof"
 first_gate = "G3"
-activating = ["fa-8x9"]
+owner = "fa-8x9"
+checkers = ["fa-money::tests/formal_anchors.rs::lean_formal_anchors_have_zero_sorry_and_match_concrete_rust_vectors", "fa-money::tests/formal_anchors.rs::rounding_laws_toml_generates_lean_definitions_and_catches_planted_weakened_bound"]
+negatives = ["fa-money::tests/formal_anchors.rs::fln_check_olean_gate_verifier_reports_unrun_when_absent_and_fails_on_planted_corrupt_olean"]
 waiver = "forbidden"
 
 [[clause]]
@@ -659,7 +663,7 @@ status = "dormant"
 statement = "AS ORIGINALLY REPORTED resolves to the first StatementIssuance (else the first Lock) and AS REPORTED IN to a certificate's closure."
 evidence_class = "invariant"
 first_gate = "G3"
-activating = ["fa-9ae"]
+activating = ["fa-wrrw"]
 waiver = "forbidden"
 
 [[clause]]
@@ -857,11 +861,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-10"
 id = "ceiling"
-status = "dormant"
+status = "live"
 statement = "Amount ceilings are debited serially through usage cells."
 evidence_class = "invariant"
+checker_strength = "negative_fixture"
 first_gate = "G2"
-activating = ["fa-llx"]
+owner = "fa-llx"
+checkers = ["fa-journal::tests/usage.rs::complete_gross_debits_share_a_root_across_calls_descendants_and_retries", "fa-cli::tests/daily_usage.rs::cli_root_issue_enforces_cumulative_gross_debits_and_retries_do_not_recharge"]
+negatives = ["fa-journal::tests/usage.rs::issuance_cannot_drop_widen_or_reset_daily_lineage_or_units", "fa-journal::tests/usage.rs::restored_cells_and_deleted_or_relabelled_receipts_never_restore_capacity"]
 waiver = "forbidden"
 
 [[clause]]
@@ -903,8 +910,21 @@ evidence_class = "invariant"
 checker_strength = "negative_fixture"
 first_gate = "G1"
 owner = "fa-we7"
-checkers = ["fa-intents::lib::tests::certificate_wire_fields_have_a_fixed_order_and_explicit_version", "fa-cli::tests/plans.rs::binary_plan_survives_reopen_preserves_seals_and_exact_retries", "fa-cli::tests/plans.rs::inline_period_plan_survives_independent_approval_and_exact_stdin_commit", "fa-cli::tests/cli.rs::retained_trial_balances_replay_exactly_and_report_later_relevant_entries"]
-negatives = ["fa-intents::lib::tests::certificates_refuse_unknown_versions_truncation_trailing_bytes_and_bad_tags", "fa-cli::tests/plans.rs::tampered_wrong_caller_and_stale_plans_cannot_publish_or_consume_the_key", "fa-cli::tests/plans.rs::law_refusals_and_artifact_output_failures_do_not_emit_a_plan_or_write"]
+checkers = ["fa-intents::lib::tests::certificate_wire_fields_have_a_fixed_order_and_explicit_version", "fa-cli::tests/plans.rs::binary_plan_survives_reopen_preserves_seals_and_exact_retries", "fa-cli::tests/plans.rs::inline_period_plan_survives_independent_approval_and_exact_stdin_commit", "fa-cli::tests/cli.rs::retained_trial_balances_replay_exactly_and_report_later_relevant_entries", "fa::lib::certificate::tests::registry_closure_binds_canonical_content_not_file_text"]
+negatives = ["fa-intents::lib::tests::certificates_refuse_unknown_versions_truncation_trailing_bytes_and_bad_tags", "fa-cli::tests/plans.rs::tampered_wrong_caller_and_stale_plans_cannot_publish_or_consume_the_key", "fa-cli::tests/plans.rs::law_refusals_and_artifact_output_failures_do_not_emit_a_plan_or_write", "fa::lib::book::tests::replay_takes_the_retained_raw_text_closure_and_names_an_unavailable_one"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-11"
+id = "finding-replay"
+status = "live"
+statement = "Every journaled finding run and workpaper carries a retained procedure certificate, resolves its CITES edges, replays byte-for-byte from its certificate, and is idempotent on retry."
+evidence_class = "invariant"
+checker_strength = "negative_fixture"
+first_gate = "G3"
+owner = "fa-2oqr"
+checkers = ["fa::lib::findings::tests::whole_run_has_one_birth_replays_after_reopen_and_retries_without_posting", "fa::lib::findings::tests::every_citation_becomes_a_same_birth_edge_without_losing_ordered_paths", "fa::lib::findings::tests::lantern_thirty_entry_corpus_journals_findings_replays_workpaper_and_retries_idempotently", "fa::lib::findings::tests::fault_vfs_crash_between_retain_and_commit_is_all_or_nothing", "fa::lib::findings::tests::workpaper::numbered_workpaper_preserves_original_text_and_paths_after_later_history", "fa-cli::tests/findings.rs::findings_remain_citable_and_review_history_survives_process_boundaries"]
+negatives = ["fa::lib::findings::tests::modified_then_restored_finding_or_edge_cannot_be_repaired_by_retry", "fa::lib::findings::tests::workpaper::repaired_hash_of_false_workpaper_is_not_a_replay_and_authority_precedes_decode", "fa-cli::tests/findings.rs::replay_refuses_rehashed_false_text_and_exports_never_overwrite_files"]
 waiver = "forbidden"
 
 [[clause]]
@@ -914,7 +934,7 @@ status = "dormant"
 statement = "Every report, finding and bundle replays byte-for-byte from its certificate; erased closure elements downgrade the grade attributably."
 evidence_class = "invariant"
 first_gate = "G3"
-activating = ["fa-9ae"]
+activating = ["fa-oimc", "fa-v74"]
 waiver = "forbidden"
 
 [[clause]]
@@ -940,11 +960,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-13"
 id = "core"
-status = "dormant"
+status = "live"
 statement = "Intercompany pairs match under the FX law or carry an explicit difference leg; eliminations derive deterministically; consolidated equity reconciles."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G3"
-activating = ["fa-9ae"]
+owner = "fa-9ae"
+checkers = ["fa-statements::lib::concordat::tests::intercompany_pairs_eliminations_and_consolidated_equity_reconcile_exactly", "fa-statements::lib::concordat::tests::book_to_book_bridge_explains_every_difference_by_rule_version_and_m1_m3_reason"]
+negatives = ["fa-statements::lib::concordat::tests::unmatched_intercompany_pair_and_unexplained_bridge_or_restated_parent_are_refused"]
 waiver = "forbidden"
 
 [[clause]]
@@ -1138,7 +1161,7 @@ status = "dormant"
 statement = "Balance limits are enforced through substrate escrow rights once R-ESC is live."
 evidence_class = "invariant"
 first_gate = "G3"
-activating = ["fa-s30"]
+activating = ["fa-0mft"]
 waiver = "forbidden"
 
 [[clause]]
@@ -1163,8 +1186,8 @@ evidence_class = "invariant"
 checker_strength = "negative_fixture"
 first_gate = "G2"
 owner = "fa-zy1"
-checkers = ["fa-conformance::tests/substrate.rs::delta_cursor_retired_refuses_unloaded_or_retired_prefixes_and_triggers_register_rebuild"]
-negatives = ["fa-registers::tests/registers.rs::missing_register_membership_is_detected_and_repaired"]
+checkers = ["fa-conformance::tests/substrate.rs::delta_cursor_retired_refuses_unloaded_or_retired_prefixes_and_triggers_register_rebuild", "fa::lib::projections::tests::repairs_mirrors_exactly_in_one_commit_preserving_history_payloads_and_noop_retry", "fa::lib::projections::tests::fills_never_created_legacy_legs_and_edges_from_real_payloads_not_synthetic_zero_counters"]
+negatives = ["fa-registers::tests/registers.rs::missing_register_membership_is_detected_and_repaired", "fa::lib::projections::tests::spent_identity_failure_cannot_publish_earlier_mirror_repairs", "fa::lib::projections::tests::malformed_sources_authoritative_collisions_and_orphans_refuse_without_partial_write"]
 depends = ["FA-INV-16.core"]
 waiver = "forbidden"
 

@@ -337,7 +337,6 @@ fn build_fixture_book_vectors() -> BookVectorDigests {
         PeriodTransition::Open,
         principal,
         1,
-        day,
         b"open-march",
         &close_cap,
     )
@@ -568,10 +567,28 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     // Every book pin at once: a deliberate format or registry change is then
     // reviewed as one measured set, never discovered one assertion per run.
-    // fa-nd7g adds object_chunk_bytes=4096 to the committed limits registry.
-    // Resealing only the registry field without that row reproduced all three
-    // prior certificate pins. Arithmetic, fold, report bytes and bundle pins
-    // are unchanged; only the three certificate commitments move.
+    // fa-87r: the period law now dates the fixture's March Open control on
+    // March 1 (the fixture used to pass March 15). That changes the control
+    // entry's digest, so the three certificates and the evidence bundle
+    // move; every arithmetic, register-fold and report-byte pin is unchanged.
+    // fa-va02 then moved the evidence bundle alone: the book's document
+    // receipts are accumulator leaves and its state is schema minor 1 (the
+    // evidence boundary), so the signed checkpoint the bundle carries
+    // changes; every certificate, fold and report-byte pin is unchanged.
+    // fa-6l9 then moved the three certificates and the bundle, measured
+    // together: the ProductionControl class, its control kind, two
+    // extension tags, the ProductionProfile and BatesRange labels and the
+    // next_bates property change the registry closure every certificate
+    // binds, and the symbol-table digest the book's genesis records, which
+    // the checkpoint's substrate chain commitment covers. The fold and
+    // every report-byte pin are unchanged.
+    // fa-t8gk narrowed the bound registry closure of report certificates to
+    // the 4 registries their folds read (`account_types`, `entry_classes`,
+    // `units`, `foundations`; plus `reason_codes` for `ExplainBalance` only),
+    // excluding unread post-time/symbol registries (`admissibility`, `limits`,
+    // `rounding_laws`, `symbols`, and `reason_codes` on statements). That moves
+    // only `tb_cert`, `bs_cert`, and `is_cert` once; the fold, report bytes,
+    // and evidence bundle pins are unchanged.
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -598,7 +615,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "697bf0e7aaab6ae5afb7fd5d3c6ec17f0041375f22b40416911868270f7b67a4",
+        "f7ff642371e3219ab0df40cc75fa82b62bbd7806b68561dce5a7b842e1c08fbd",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -610,7 +627,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "3c0837b8d74a8ab373972fda0023b18a3449fa38f6e32ec0ed51bf9470d709de",
+        "fd97ba60449e5402dd126a5afa064f95925c039e33398525f7bc1c5e306b46db",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -622,13 +639,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "f753eed11b4566ab1a538829a299698f90e6f2a1fc005b49d115a9ae3f4f2fa7",
+        "a2c29a1e1728711da548c04cebb9c52d3cfbf2d5aea640fccb3fa423f0418b32",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "de6fb3858a2a3971fde00beb61b928056b9353acdf1cbe16a8f304040cef5cf4",
+        "34e59eef5abe691cc43ee0c8114b3bed8396ae5cb3d4373b80517b98fa147057",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );

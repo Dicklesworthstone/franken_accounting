@@ -60,7 +60,7 @@ pub const RESOURCES: &[(&str, &str)] = &[
     ),
     (
         "resource://fa/laws",
-        "the law registries this build enforces, verbatim TOML: entry classes, the admissibility matrix, rounding laws, units, the evidence policy, the SoD policy, reason codes, the refusal catalog, account types, limits",
+        "the law registries this build enforces, verbatim TOML: entry classes, the admissibility matrix, capability caveats, rounding laws, units, the evidence policy, the SoD policy, reason codes, the refusal catalog, account types, limits",
     ),
     (
         "resource://fa/exit-codes",
@@ -94,6 +94,10 @@ pub const RESOURCES: &[(&str, &str)] = &[
         "resource://fa/bundles/{id}",
         "the launch-bound book's accumulator verification status and bundle verification guidance for `{id}` (`fa verify accumulator`)",
     ),
+    (
+        "resource://fa/capabilities/{token}",
+        "the launch-bound book's issued capability or the session's bound capability (`fa capability show|list`); `{token}` is `session`, `current`, `list`, or a 64-hex commitment digest",
+    ),
 ];
 
 /// A deterministic multi-step workflow macro (plan §15.4) composed from
@@ -113,7 +117,7 @@ pub const MACROS: &[MacroSpec] = &[
     MacroSpec {
         id: "fa.macro.prepare_close",
         name: "prepare_close",
-        summary: "Inspect period state, compute the period's trial balance, verify derived registers against the fold, and rehearse a sealed close proposal (`fa period close <code> --dry-run`) with step-by-step provenance.",
+        summary: "Inspect period state, compute the period's trial balance, verify derived registers against the fold, and rehearse a sealed close proposal (`fa period close <code> --reason Scheduled --dry-run`) with step-by-step provenance.",
         properties: &[(
             "period",
             "fiscal period code to prepare for close (for example `FY2026-P03`)",

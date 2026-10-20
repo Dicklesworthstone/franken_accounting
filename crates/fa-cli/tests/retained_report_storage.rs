@@ -116,7 +116,6 @@ impl Fixture {
             PeriodTransition::Open,
             PRINCIPAL,
             1,
-            day(),
             b"open",
             &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
         )
@@ -478,6 +477,19 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
             retained_at,
             "{family}: exact retry reuses its retention"
         );
+        // A summary has its own relevance law (the report reproduces at
+        // HEAD) and a roll-forward its selected-schedule law; effective-date
+        // aging still refuses selector status.
+        let (exit, status) = f.run(&["certificate", "status", &locator]);
+        if family == "effective-date-aging" {
+            assert_eq!(exit, 8, "{family}: {status:?}");
+        } else {
+            assert_eq!(exit, 0, "{family}: {status:?}");
+            let status = data(&status, "certificate_status");
+            assert_eq!(text(status, "status"), "Current", "{family}");
+            assert_eq!(status.get("later_entries"), Some(&Json::Arr(Vec::new())));
+        }
+        assert_eq!(f.head(), retained_at, "{family}: status is a read");
         originals.push((event_name, events, bytes, locator, file));
     }
     let mut book = f.open();
@@ -485,6 +497,25 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
     let later = book.head().unwrap();
     drop(book);
     for (event_name, original, bytes, locator, file) in originals {
+        if event_name == "summary_trial_balance" {
+            let status = f.ok(&["certificate", "status", &locator]);
+            let status = data(&status, "certificate_status");
+            assert_eq!(text(status, "status"), "Changed", "64 later postings");
+            assert_eq!(
+                status.get("checked_at"),
+                Some(&Json::Int(i128::from(later.0)))
+            );
+            assert_eq!(status.get("later_entries"), Some(&Json::Arr(Vec::new())));
+            let (exit, refused) = f.run(&["certificate", "status", &locator, "--expect", "{}"]);
+            assert_eq!(
+                exit, 2,
+                "a summary status takes no expectation: {refused:?}"
+            );
+            assert!(
+                text(data(&refused, "error"), "message").contains("summary status compares"),
+                "{refused:?}"
+            );
+        }
         let artifact = fa::ReportArtifact::decode(&bytes).unwrap();
         for input in [locator.as_str(), file.to_str().unwrap()] {
             let replayed = f.ok(&["replay", input]);
@@ -1383,6 +1414,16 @@ fn aging_portfolio_equals_each_single_leaf_reconciliation_and_replays_only_again
     // A selection is order-free; unselected leaves are uncovered, not zero.
     let selected_events = f.ok(&portfolio_args(&at, &["--account", "4000,1000"]));
     let selected = data(&selected_events, "aging_portfolio_reconciled");
+    // Repeated --account flags select the same leaves as a comma list, as in
+    // the other gl subcommands; none of them is silently dropped.
+    let repeated_events = f.ok(&portfolio_args(
+        &at,
+        &["--account", "4000", "--account", "1000"],
+    ));
+    assert_eq!(
+        data(&repeated_events, "aging_portfolio_reconciled"),
+        selected
+    );
     assert_eq!(text(selected, "scope"), "selected");
     assert_eq!(account_codes(selected, "accounts"), ["1000", "4000"]);
     assert_eq!(account_codes(selected, "uncovered"), ["2000", "2001"]);
@@ -1417,6 +1458,18 @@ fn aging_portfolio_equals_each_single_leaf_reconciliation_and_replays_only_again
     }
     let (exit, errors) = f.run(&["gl", "aging", "--as-of", "2026-01-31", "--all-posting"]);
     assert_eq!(exit, 2, "--all-posting without --reconcile: {errors:?}");
+    for accounts in [
+        vec!["--account", "1000", "--account", "4000"],
+        vec!["--account", "1000,4000"],
+    ] {
+        let mut args = vec!["gl", "aging", "--as-of", "2026-01-31"];
+        args.extend(accounts);
+        let (exit, errors) = f.run(&args);
+        assert_eq!(
+            exit, 2,
+            "plain aging takes one account, never silently the last: {errors:?}"
+        );
+    }
     assert_eq!(
         f.head(),
         before,
@@ -2326,4 +2379,935 @@ fn split_cash_flow_preserves_original_units_and_replays_exact_portions_at_its_fi
         Some(&Json::Int(i128::from(later.0)))
     );
     assert_eq!(f.head(), later, "freshness never publishes");
+}
+
+fn generated_expectation(metadata: &Json) -> String {
+    text(metadata, "replay_command")
+        .split_once(" --expect '")
+        .unwrap()
+        .1
+        .split_once("' --book")
+        .unwrap()
+        .0
+        .to_string()
+}
+
+#[test]
+fn replay_workpapers_equal_the_library_export_and_never_overwrite_or_widen_families() {
+    let f = Fixture::with_additional_cash_accounts(1);
+    let at = f.source_head.0.to_string();
+    let operator = fa_model::principal_vid("operator");
+    let read_produce = Capability::embedded(operator, &["read", "produce"]).unwrap();
+
+    // Aging portfolio: the file is exactly the library's export of the same
+    // certificate and request, and writing it publishes nothing.
+    let certified = f.ok(&portfolio_args(
+        &at,
+        &["--account", "4000,1000", "--certify"],
+    ));
+    let metadata = data(&certified, "report_certificate");
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let expect = generated_expectation(metadata);
+    let portfolio_path = f.dir.join("portfolio.jsonl");
+    let retained = f.head();
+    let events = f.ok(&[
+        "replay",
+        &locator,
+        "--expect",
+        &expect,
+        "--workpaper-out",
+        portfolio_path.to_str().unwrap(),
+    ]);
+    let exported = data(&events, "workpaper_exported");
+    assert_eq!(
+        keys(exported),
+        pinned_fields("events", "workpaper_exported")
+    );
+    assert_eq!(text(exported, "family"), "aging-portfolio");
+    assert_eq!(text(exported, "file"), portfolio_path.to_str().unwrap());
+    let written = std::fs::read_to_string(&portfolio_path).unwrap();
+    assert_eq!(
+        exported.get("bytes"),
+        Some(&Json::Int(written.len() as i128))
+    );
+    assert_eq!(
+        exported.get("lines"),
+        Some(&Json::Int(written.lines().count() as i128))
+    );
+    assert!(written.lines().count() > 1, "{written}");
+    for line in written.lines() {
+        assert!(matches!(json::parse(line), Ok(Json::Obj(_))), "{line}");
+    }
+    let certificate =
+        fa::aging::portfolio::AgingPortfolioCertificate::decode(&unhex(text(metadata, "bytes")))
+            .unwrap();
+    {
+        let book = f.open();
+        let library = book
+            .aging_portfolio_jsonl(
+                operator,
+                &read_produce,
+                &certificate,
+                &certificate.request().unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(written, library, "the CLI writes the library's export");
+    }
+    assert_eq!(exported.get("text"), Some(&Json::Null));
+    // Inline: the same text in the event, which is the form MCP carries.
+    let inline_events = f.ok(&["replay", &locator, "--expect", &expect, "--workpaper"]);
+    let inline = data(&inline_events, "workpaper_exported");
+    assert_eq!(inline.get("file"), Some(&Json::Null));
+    assert_eq!(text(inline, "text"), written);
+    let both = f.dir.join("both.jsonl");
+    let (exit, _) = f.run(&[
+        "replay",
+        &locator,
+        "--expect",
+        &expect,
+        "--workpaper",
+        "--workpaper-out",
+        both.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 2, "inline and file workpapers are one choice");
+    assert!(!both.exists());
+    assert_eq!(f.head(), retained, "exporting a workpaper is a read");
+
+    // An existing file is never replaced; without its request the replay is
+    // refused before any file appears.
+    let (exit, _) = f.run(&[
+        "replay",
+        &locator,
+        "--expect",
+        &expect,
+        "--workpaper-out",
+        portfolio_path.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 2);
+    assert_eq!(std::fs::read_to_string(&portfolio_path).unwrap(), written);
+    let absent = f.dir.join("unexpected.jsonl");
+    let (exit, _) = f.run(&[
+        "replay",
+        &locator,
+        "--workpaper-out",
+        absent.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 8);
+    assert!(!absent.exists());
+
+    // Effective-date aging: the receipt now carries its request, a supplied
+    // request binds the replay, and the aging workpaper needs it.
+    let certified = f.ok(&[
+        "gl",
+        "aging",
+        "--account",
+        "1000",
+        "--as-of",
+        "2026-01-31",
+        "--bucket",
+        "0,30,60",
+        "--as-known-at",
+        &at,
+        "--certify",
+    ]);
+    let aging_metadata = data(&certified, "report_certificate");
+    let aging_locator = format!("C:{}", text(aging_metadata, "oid"));
+    let aging_expect = generated_expectation(aging_metadata);
+    let aging_doc = json::parse(&aging_expect).unwrap();
+    assert_eq!(text(&aging_doc, "kind"), "aging");
+    assert_eq!(
+        aging_doc.get("known_at"),
+        Some(&Json::Int(i128::from(f.source_head.0)))
+    );
+    let as_supplied = f.ok(&["replay", &aging_locator]);
+    let bound = f.ok(&["replay", &aging_locator, "--expect", &aging_expect]);
+    assert_eq!(
+        data(&bound, "aging"),
+        data(&as_supplied, "aging"),
+        "binding the recipient's request changes no amount"
+    );
+    let Json::Obj(fields) = aging_doc.clone() else {
+        panic!("expected an object");
+    };
+    let earlier_cutoff = Json::Obj(
+        fields
+            .into_iter()
+            .map(|(name, value)| {
+                if name == "through" {
+                    (name, s("2026-01-30"))
+                } else {
+                    (name, value)
+                }
+            })
+            .collect(),
+    )
+    .render();
+    let (exit, errors) = f.run(&["replay", &aging_locator, "--expect", &earlier_cutoff]);
+    assert_eq!(exit, 8, "a different recipient question: {errors:?}");
+    let (exit, errors) = f.run(&["replay", &locator, "--expect", &aging_expect]);
+    assert_eq!(exit, 8, "{errors:?}");
+    assert!(
+        text(data(&errors, "error"), "message").contains("an aging expectation names"),
+        "an aging request on another family is refused, never ignored: {errors:?}"
+    );
+    let aging_path = f.dir.join("aging.jsonl");
+    let events = f.ok(&[
+        "replay",
+        &aging_locator,
+        "--expect",
+        &aging_expect,
+        "--workpaper-out",
+        aging_path.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        text(data(&events, "workpaper_exported"), "family"),
+        "effective-date-aging"
+    );
+    let written_aging = std::fs::read_to_string(&aging_path).unwrap();
+    let aging_certificate =
+        fa::AgingCertificate::decode(&unhex(text(aging_metadata, "bytes"))).unwrap();
+    {
+        let book = f.open();
+        let library = book
+            .effective_date_aging_jsonl(
+                operator,
+                &read_produce,
+                &aging_certificate,
+                &aging_certificate.request().unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            written_aging, library,
+            "the CLI writes the library's export"
+        );
+    }
+    let unbound = f.dir.join("aging-unbound.jsonl");
+    let (exit, _) = f.run(&[
+        "replay",
+        &aging_locator,
+        "--workpaper-out",
+        unbound.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 2, "an aging workpaper needs the recipient's request");
+    assert!(!unbound.exists());
+
+    // Direct cash flow: a policy classifies every cash leg, and the export
+    // binds the request the receipt prints.
+    let ledger = f.ok(&[
+        "gl",
+        "detail",
+        "--account",
+        "1000",
+        "--unit",
+        "USD",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--as-known-at",
+        &at,
+    ]);
+    let assignments: Vec<Json> = data(&ledger, "general_ledger")
+        .get("lines")
+        .and_then(Json::as_arr)
+        .unwrap()
+        .iter()
+        .map(|line| {
+            obj(vec![
+                ("entry_digest", line.get("entry_digest").unwrap().clone()),
+                ("leg_index", line.get("leg_index").unwrap().clone()),
+                ("activity", s("operating")),
+            ])
+        })
+        .collect();
+    assert_eq!(assignments.len(), 64);
+    let policy_path = f.dir.join("workpaper-cash-policy.json");
+    let policy = obj(vec![
+        ("name", s("cash-policy")),
+        ("cash_accounts", Json::Arr(vec![s("1000")])),
+        ("assignments", Json::Arr(assignments)),
+    ]);
+    std::fs::write(&policy_path, policy.render()).unwrap();
+    let certified = f.ok(&cash_flow_args(
+        &at,
+        policy_path.to_str().unwrap(),
+        &["--certify"],
+    ));
+    let cash = data(&certified, "report_certificate");
+    let cash_locator = format!("C:{}", text(cash, "oid"));
+    let cash_expect = generated_expectation(cash);
+    let cash_path = f.dir.join("cash.jsonl");
+    let events = f.ok(&[
+        "replay",
+        &cash_locator,
+        "--expect",
+        &cash_expect,
+        "--workpaper-out",
+        cash_path.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        text(data(&events, "workpaper_exported"), "family"),
+        "cash-flow"
+    );
+    let written_cash = std::fs::read_to_string(&cash_path).unwrap();
+    assert!(written_cash.lines().count() > 1, "{written_cash}");
+    let cash_certificate = fa::CashFlowCertificate::decode(&unhex(text(cash, "bytes"))).unwrap();
+    {
+        let book = f.open();
+        let library = book
+            .cash_flow_jsonl(
+                operator,
+                &read_produce,
+                &cash_certificate,
+                cash_certificate.request(),
+                cash_certificate.definition(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(written_cash, library, "the CLI writes the library's export");
+    }
+    let unbound_cash = f.dir.join("cash-unbound.jsonl");
+    let (exit, _) = f.run(&[
+        "replay",
+        &cash_locator,
+        "--workpaper-out",
+        unbound_cash.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 8, "cash flow replays only against its request");
+    assert!(!unbound_cash.exists());
+
+    // Ledger detail: a roll-forward source replayed with --view detail.
+    let scope = [
+        "--account",
+        "1000",
+        "--unit",
+        "USD",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--label",
+        "January detail",
+        "--as-known-at",
+        at.as_str(),
+    ];
+    let mut certify = vec!["gl", "detail"];
+    certify.extend(scope);
+    certify.push("--certify");
+    let certified = f.ok(&certify);
+    let detail_retained = f.head();
+    let metadata = data(&certified, "report_certificate");
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let detail_path = f.dir.join("detail.jsonl");
+    let mut replay = vec!["replay", locator.as_str(), "--view", "detail"];
+    replay.extend(scope);
+    replay.extend(["--workpaper-out", detail_path.to_str().unwrap()]);
+    let events = f.ok(&replay);
+    assert_eq!(
+        text(data(&events, "workpaper_exported"), "family"),
+        "roll-forward"
+    );
+    let written = std::fs::read_to_string(&detail_path).unwrap();
+    let source = fa::RollForwardCertificate::decode(&unhex(text(metadata, "bytes"))).unwrap();
+    {
+        let book = f.open();
+        let library = book
+            .general_ledger_jsonl(operator, &read_produce, &source, source.request())
+            .unwrap()
+            .unwrap();
+        assert_eq!(written, library, "the CLI writes the library's export");
+    }
+    // Freshness parses the same expectations: an aging question on a
+    // roll-forward is refused, never ignored as an as-supplied replay.
+    let (exit, errors) = f.run(&["certificate", "status", &locator, "--expect", &aging_expect]);
+    assert_eq!(exit, 8, "{errors:?}");
+    assert!(
+        text(data(&errors, "error"), "message").contains("an aging expectation names"),
+        "{errors:?}"
+    );
+
+    // A family without an export is refused before replay and writes nothing:
+    // the same roll-forward source without --view detail.
+    let refused = f.dir.join("no-export.jsonl");
+    let (exit, errors) = f.run(&[
+        "replay",
+        &locator,
+        "--workpaper-out",
+        refused.to_str().unwrap(),
+    ]);
+    assert_eq!(exit, 2, "{errors:?}");
+    assert!(
+        text(data(&errors, "error"), "message")
+            .contains("roll-forward certificates have no JSONL workpaper export"),
+        "{errors:?}"
+    );
+    assert!(!refused.exists());
+
+    // A launch-bound session cannot name a host output path at all: the new
+    // flag is in the shared host-path containment list.
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        f.dir.clone(),
+        None,
+        "workpaper-reader",
+        fa_cli::authority::LaunchProfile::Agent,
+        &["read", "produce"],
+    )
+    .unwrap();
+    let bound = f.dir.join("bound.jsonl");
+    let args = [
+        "replay",
+        &locator,
+        "--workpaper-out",
+        bound.to_str().unwrap(),
+        "--json",
+    ]
+    .map(String::from);
+    let (code, captured) =
+        fa_cli::entry::fa_with_authority(&args, Files::default(), &authority, true);
+    assert_eq!(code, 2, "{}{}", captured.stdout, captured.stderr);
+    assert!(
+        captured
+            .stdout
+            .contains("--workpaper-out cannot name a host filesystem path"),
+        "{}",
+        captured.stdout
+    );
+    assert!(!bound.exists());
+    assert_eq!(
+        f.head(),
+        detail_retained,
+        "workpapers and refusals are reads"
+    );
+}
+
+#[test]
+fn aging_from_saved_certificates_reuses_them_byte_for_byte_and_answers_only_their_question() {
+    // 1000 and 4000 carry 64 postings; 2000 is a zero-activity leaf.
+    let f = Fixture::with_additional_cash_accounts(1);
+    let at = f.source_head.0.to_string();
+    let bytes_of = |events: &[Json]| unhex(text(data(events, "report_certificate"), "bytes"));
+    let oid_of = |events: &[Json]| format!("C:{}", text(data(events, "report_certificate"), "oid"));
+    let aging_at = |extra: &[&str]| {
+        let mut args = vec![
+            "gl",
+            "aging",
+            "--as-of",
+            "2026-01-31",
+            "--bucket",
+            "0,30,60",
+            "--as-known-at",
+            at.as_str(),
+        ];
+        args.extend_from_slice(extra);
+        f.ok(&args)
+    };
+    // The sources a producer certified and handed out at `at`.
+    let open_items = f.ok(&[
+        "open-items",
+        "--account",
+        "1000",
+        "--as-known-at",
+        &at,
+        "--certify",
+    ]);
+    let aging = aging_at(&["--account", "1000", "--certify"]);
+    let whole_aging = aging_at(&["--certify"]);
+    let control = f.ok(&[
+        "tb",
+        "--as-of",
+        "2026-01-31",
+        "--as-known-at",
+        &at,
+        "--certify",
+    ]);
+    let other_date = f.ok(&[
+        "tb",
+        "--as-of",
+        "2026-01-30",
+        "--as-known-at",
+        &at,
+        "--certify",
+    ]);
+    // A later posting moves HEAD; the saved sources still answer `at`.
+    let mut book = f.open();
+    post(&mut book, 900);
+    drop(book);
+
+    // Aging from a saved open-items certificate is the aging at its prefix,
+    // with that exact certificate as its source, by digest or by file.
+    let saved_file = f.dir.join("open-items.cert");
+    std::fs::write(&saved_file, bytes_of(&open_items)).unwrap();
+    let from_source = |source: &str, extra: &[&str]| {
+        let mut args = vec![
+            "gl",
+            "aging",
+            "--from-source",
+            source,
+            "--as-of",
+            "2026-01-31",
+            "--bucket",
+            "0,30,60",
+        ];
+        args.extend_from_slice(extra);
+        f.run(&args)
+    };
+    let (exit, aged) = from_source(&oid_of(&open_items), &["--certify"]);
+    assert_eq!(exit, 0, "{aged:?}");
+    assert_eq!(data(&aged, "aging"), data(&aging, "aging"));
+    let certificate = fa::AgingCertificate::decode(&bytes_of(&aged)).unwrap();
+    assert_eq!(
+        certificate.source(),
+        &ReportCertificate::decode(&bytes_of(&open_items)).unwrap(),
+        "the saved open-items certificate is the source, not a new fold"
+    );
+    let (exit, by_file) = from_source(saved_file.to_str().unwrap(), &["--certify"]);
+    assert_eq!(exit, 0, "{by_file:?}");
+    assert_eq!(
+        text(data(&by_file, "report_certificate"), "oid"),
+        &oid_of(&aged)[2..]
+    );
+    let (exit, stated) = from_source(&oid_of(&open_items), &["--account", "1000", "--certify"]);
+    assert_eq!(exit, 0, "a matching stated account: {stated:?}");
+    let replayed = f.ok(&[
+        "replay",
+        &oid_of(&aged),
+        "--expect",
+        &generated_expectation(data(&aged, "report_certificate")),
+    ]);
+    assert_eq!(data(&replayed, "aging"), data(&aging, "aging"));
+
+    // Reconciliation from the saved aging and control certificates equals the
+    // reconciliation at their prefix and keeps both of them as its sources.
+    let question = |selection: &[&'static str]| {
+        let mut args = portfolio_args(&at, selection);
+        args.extend(["--bucket", "0,30,60"]);
+        args
+    };
+    let single = question(&["--account", "1000"]);
+    let plain = f.ok(&single);
+    let mut saved_args = single.clone();
+    let (aging_oid, control_oid) = (oid_of(&aging), oid_of(&control));
+    saved_args.extend([
+        "--aging-certificate",
+        &aging_oid,
+        "--control-certificate",
+        &control_oid,
+        "--certify",
+    ]);
+    let reconciled = f.ok(&saved_args);
+    assert_eq!(
+        data(&reconciled, "aging_reconciled"),
+        data(&plain, "aging_reconciled")
+    );
+    let certificate = fa::AgingReconciliationCertificate::decode(&bytes_of(&reconciled)).unwrap();
+    assert_eq!(
+        certificate.aging_source(),
+        &fa::AgingCertificate::decode(&bytes_of(&aging)).unwrap()
+    );
+    assert_eq!(
+        certificate.control_source(),
+        &ReportCertificate::decode(&bytes_of(&control)).unwrap()
+    );
+    f.ok(&[
+        "replay",
+        &oid_of(&reconciled),
+        "--expect",
+        &generated_expectation(data(&reconciled, "report_certificate")),
+    ]);
+
+    // The whole-book aging and the same control give the portfolio.
+    let whole = question(&["--all-posting"]);
+    let plain_portfolio = f.ok(&whole);
+    let mut portfolio_saved = whole.clone();
+    let whole_oid = oid_of(&whole_aging);
+    portfolio_saved.extend([
+        "--aging-certificate",
+        &whole_oid,
+        "--control-certificate",
+        &control_oid,
+        "--certify",
+    ]);
+    let portfolio = f.ok(&portfolio_saved);
+    assert_eq!(
+        data(&portfolio, "aging_portfolio_reconciled"),
+        data(&plain_portfolio, "aging_portfolio_reconciled")
+    );
+    let certificate =
+        fa::aging::portfolio::AgingPortfolioCertificate::decode(&bytes_of(&portfolio)).unwrap();
+    assert_eq!(
+        certificate.aging_source(),
+        &fa::AgingCertificate::decode(&bytes_of(&whole_aging)).unwrap()
+    );
+    assert_eq!(
+        certificate.control_source(),
+        &ReportCertificate::decode(&bytes_of(&control)).unwrap()
+    );
+
+    // Planted refusals: none publishes.
+    let retained = f.head();
+    let open_items_oid = oid_of(&open_items);
+    let control_file = f.dir.join("control.cert");
+    std::fs::write(&control_file, bytes_of(&control)).unwrap();
+    for (extra, exit, needle) in [
+        (vec![], 2, "add --certify"),
+        (
+            vec!["--as-known-at", at.as_str(), "--certify"],
+            2,
+            "--as-known-at does not select it",
+        ),
+        (
+            vec!["--reconcile", "--certify"],
+            2,
+            "--from-source ages one",
+        ),
+        (
+            vec!["--account", "4000", "--certify"],
+            8,
+            "selects a different account",
+        ),
+    ] {
+        let (code, errors) = from_source(&open_items_oid, &extra);
+        assert_eq!(code, exit, "{needle}: {errors:?}");
+        assert!(
+            text(data(&errors, "error"), "message").contains(needle),
+            "{needle}: {errors:?}"
+        );
+    }
+    for (source, needle) in [
+        (control_oid.as_str(), "OpenItems"),
+        (aging_oid.as_str(), "--from-source"),
+    ] {
+        let (code, errors) = from_source(source, &["--certify"]);
+        assert_eq!(code, 8, "a wrong source family: {errors:?}");
+        assert!(
+            text(data(&errors, "error"), "message").contains(needle),
+            "{needle}: {errors:?}"
+        );
+    }
+    let other_oid = oid_of(&other_date);
+    let control_path = control_file.to_str().unwrap();
+    for (args, exit, why) in [
+        (
+            [
+                single.clone(),
+                vec![
+                    "--aging-certificate",
+                    &aging_oid,
+                    "--control-certificate",
+                    &other_oid,
+                    "--certify",
+                ],
+            ]
+            .concat(),
+            8,
+            "a control certificate at another date",
+        ),
+        (
+            [
+                question(&["--account", "4000"]),
+                vec![
+                    "--aging-certificate",
+                    &aging_oid,
+                    "--control-certificate",
+                    &control_oid,
+                    "--certify",
+                ],
+            ]
+            .concat(),
+            8,
+            "a different stated account",
+        ),
+        (
+            [
+                single.clone(),
+                vec![
+                    "--aging-certificate",
+                    &whole_oid,
+                    "--control-certificate",
+                    &control_oid,
+                    "--certify",
+                ],
+            ]
+            .concat(),
+            8,
+            "a whole-book aging for one account",
+        ),
+        (
+            [
+                whole.clone(),
+                vec![
+                    "--aging-certificate",
+                    &aging_oid,
+                    "--control-certificate",
+                    &control_oid,
+                    "--certify",
+                ],
+            ]
+            .concat(),
+            8,
+            "one account's aging for the whole book",
+        ),
+        (
+            [
+                single.clone(),
+                vec!["--aging-certificate", &aging_oid, "--certify"],
+            ]
+            .concat(),
+            2,
+            "a single source",
+        ),
+        (
+            [
+                single.clone(),
+                vec![
+                    "--aging-certificate",
+                    &aging_oid,
+                    "--control-certificate",
+                    &control_oid,
+                ],
+            ]
+            .concat(),
+            2,
+            "uncertified",
+        ),
+        (
+            vec![
+                "gl",
+                "aging",
+                "--account",
+                "1000",
+                "--as-of",
+                "2026-01-31",
+                "--as-known-at",
+                &at,
+                "--aging-certificate",
+                &aging_oid,
+                "--control-certificate",
+                &control_oid,
+                "--certify",
+            ],
+            2,
+            "without --reconcile",
+        ),
+        (
+            vec![
+                "gl",
+                "aging",
+                "--reconcile",
+                "--account",
+                "1000",
+                "--as-of",
+                "2026-01-31",
+                "--bucket",
+                "0,30,60",
+                "--aging-certificate",
+                &aging_oid,
+                "--control-certificate",
+                control_path,
+                "--certify",
+            ],
+            2,
+            "without a fixed --as-known-at",
+        ),
+    ] {
+        let (code, errors) = f.run(&args);
+        assert_eq!(code, exit, "{why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "{why}: {errors:?}");
+    }
+    assert_eq!(f.head(), retained, "refusals publish nothing");
+
+    // A launch-bound session names retained digests only, never host files.
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        f.dir.clone(),
+        None,
+        "aging-producer",
+        fa_cli::authority::LaunchProfile::Agent,
+        &["read", "produce"],
+    )
+    .unwrap();
+    let args = [
+        "gl",
+        "aging",
+        "--from-source",
+        saved_file.to_str().unwrap(),
+        "--as-of",
+        "2026-01-31",
+        "--certify",
+        "--json",
+    ]
+    .map(String::from);
+    let (code, captured) =
+        fa_cli::entry::fa_with_authority(&args, Files::default(), &authority, true);
+    assert_eq!(code, 2, "{}{}", captured.stdout, captured.stderr);
+    assert!(
+        captured
+            .stdout
+            .contains("--from-source cannot name a host filesystem path"),
+        "{}",
+        captured.stdout
+    );
+    assert_eq!(f.head(), retained);
+}
+
+#[test]
+fn roll_forward_view_binds_the_lead_schedule_to_the_stated_request_and_exports_it() {
+    let f = Fixture::new();
+    let at = f.source_head.0.to_string();
+    let operator = fa_model::principal_vid("operator");
+    let read_produce = Capability::embedded(operator, &["read", "produce"]).unwrap();
+    let scope = [
+        "--account",
+        "1000",
+        "--unit",
+        "USD",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--label",
+        "January lead",
+        "--as-known-at",
+        at.as_str(),
+    ];
+    let mut certify = vec!["gl", "roll-forward"];
+    certify.extend(scope);
+    certify.push("--certify");
+    let certified = f.ok(&certify);
+    let metadata = data(&certified, "report_certificate");
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let aging = f.ok(&[
+        "gl",
+        "aging",
+        "--account",
+        "1000",
+        "--as-of",
+        "2026-01-31",
+        "--as-known-at",
+        &at,
+        "--certify",
+    ]);
+    let aging_locator = format!("C:{}", text(data(&aging, "report_certificate"), "oid"));
+    // A later posting moves HEAD; the certificate still answers `at`.
+    let mut book = f.open();
+    post(&mut book, 900);
+    let later = book.head().unwrap().0.to_string();
+    drop(book);
+    let retained = f.head();
+
+    let mut bound = vec!["replay", locator.as_str(), "--view", "roll-forward"];
+    bound.extend(scope);
+    let replayed = f.ok(&bound);
+    assert_eq!(
+        data(&replayed, "roll_forward"),
+        data(&certified, "roll_forward")
+    );
+    assert_eq!(
+        text(data(&replayed, "report_replayed"), "family"),
+        "roll-forward"
+    );
+    assert_eq!(
+        data(&f.ok(&["replay", &locator]), "roll_forward"),
+        data(&certified, "roll_forward"),
+        "without a view the certificate still replays as supplied"
+    );
+
+    // The lead schedule's workpaper is the library's export of the same
+    // certificate and request.
+    let path = f.dir.join("lead.jsonl");
+    let mut export = bound.clone();
+    export.extend(["--workpaper-out", path.to_str().unwrap()]);
+    let events = f.ok(&export);
+    assert_eq!(
+        text(data(&events, "workpaper_exported"), "family"),
+        "roll-forward"
+    );
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.lines().count() > 1, "{written}");
+    let source = fa::RollForwardCertificate::decode(&unhex(text(metadata, "bytes"))).unwrap();
+    {
+        let book = f.open();
+        let library = book
+            .roll_forward_jsonl(operator, &read_produce, &source, source.request())
+            .unwrap()
+            .unwrap();
+        assert_eq!(written, library, "the CLI writes the library's export");
+        let ledger = book
+            .general_ledger_jsonl(operator, &read_produce, &source, source.request())
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            written, ledger,
+            "the lead schedule is not the ledger detail"
+        );
+    }
+
+    // Planted refusals: a different question exits 8, a malformed one 2.
+    let owned =
+        |words: &[&str]| -> Vec<String> { words.iter().map(|w| (*w).to_string()).collect() };
+    let with = |replace: &str, value: &str| -> Vec<String> {
+        let mut args = owned(&["replay", locator.as_str(), "--view", "roll-forward"]);
+        let mut words = scope.iter();
+        while let Some(flag) = words.next() {
+            let original = words.next().unwrap();
+            args.push((*flag).to_string());
+            let word = if *flag == replace { value } else { *original };
+            args.push(word.to_string());
+        }
+        args
+    };
+    for (args, exit, why) in [
+        (with("--label", "February lead"), 8, "a different label"),
+        (with("--account", "4000"), 8, "a different account"),
+        (with("--as-known-at", later.as_str()), 8, "a later prefix"),
+        (
+            with("--as-known-at", "HEAD"),
+            2,
+            "HEAD is never a stated prefix",
+        ),
+        (
+            owned(&[&bound[..], &["--expect", "{}"][..]].concat()),
+            2,
+            "a view and --expect together",
+        ),
+        (
+            owned(&[
+                "replay",
+                locator.as_str(),
+                "--view",
+                "roll-forward",
+                "--account",
+                "1000",
+            ]),
+            2,
+            "an incomplete request",
+        ),
+        (
+            owned(&["replay", locator.as_str(), "--view", "schedule"]),
+            2,
+            "an unknown view",
+        ),
+        (
+            owned(
+                &[
+                    &["replay", aging_locator.as_str(), "--view", "roll-forward"][..],
+                    &scope[..],
+                ]
+                .concat(),
+            ),
+            8,
+            "an aging certificate",
+        ),
+    ] {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (code, errors) = f.run(&args);
+        assert_eq!(code, exit, "{why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "{why}: {errors:?}");
+    }
+    assert_eq!(
+        f.head(),
+        retained,
+        "replays, exports and refusals are reads"
+    );
 }

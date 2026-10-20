@@ -45,7 +45,6 @@ impl Harness {
                 PeriodTransition::Open,
                 PRINCIPAL,
                 1,
-                day(),
                 b"correction-period",
                 &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
             ))

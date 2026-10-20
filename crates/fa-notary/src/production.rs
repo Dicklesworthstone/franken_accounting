@@ -535,7 +535,9 @@ pub struct PrivilegeLogRow {
     pub document_oid: Oid,
     pub doc_commit: [u8; 32],
     pub bates_range: Option<String>,
-    pub date: DateDay,
+    /// The document's date; `None` (rendered `UNSPECIFIED`) when no privilege
+    /// metadata states it, never a made-up day.
+    pub date: Option<DateDay>,
     pub author: String,
     pub recipients: Vec<String>,
     pub description: String,
@@ -582,7 +584,7 @@ impl PrivilegeLog {
                         document_oid: *oid,
                         doc_commit: view.doc_commit,
                         bates_range,
-                        date: meta.map_or(DateDay(0), |m| m.date),
+                        date: meta.map(|m| m.date),
                         author: meta
                             .map_or_else(|| "UNSPECIFIED".to_string(), |m| m.author.clone()),
                         recipients: meta.map_or_else(Vec::new, |m| m.recipients.clone()),
@@ -620,7 +622,7 @@ impl PrivilegeLog {
                 document_oid: oid,
                 doc_commit: meta.doc_commit,
                 bates_range: None,
-                date: meta.date,
+                date: Some(meta.date),
                 author: meta.author.clone(),
                 recipients: meta.recipients.clone(),
                 description: meta.description.clone(),
@@ -650,7 +652,8 @@ impl PrivilegeLog {
                 hex(&row.document_oid.0),
                 hex(&row.doc_commit),
                 bates,
-                row.date,
+                row.date
+                    .map_or_else(|| "UNSPECIFIED".to_string(), |d| d.to_string()),
                 row.author.replace('|', "/"),
                 recipients.replace('|', "/"),
                 row.basis.replace('|', "/"),

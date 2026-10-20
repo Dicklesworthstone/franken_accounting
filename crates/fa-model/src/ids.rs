@@ -196,6 +196,27 @@ pub fn scenario_vid(book: Id128, name: &str) -> VId {
     derive_vid(b"fa:vid:scenario:v1", &[&book.0, name.as_bytes()])
 }
 
+/// `vid(ProductionProfile) = H("fa:vid:production-profile:v1" ‖ book ‖
+/// matter)` (plan §13.2, bead fa-6l9): one profile per matter in a book.
+#[must_use]
+pub fn production_profile_vid(book: Id128, matter: &str) -> VId {
+    derive_vid(
+        b"fa:vid:production-profile:v1",
+        &[&book.0, matter.as_bytes()],
+    )
+}
+
+/// `vid(BatesRange) = H("fa:vid:bates-range:v1" ‖ book ‖ matter ‖ oid)`
+/// (bead fa-6l9): a document's one Bates range in a matter, so producing it
+/// again in that matter never burns new numbers.
+#[must_use]
+pub fn bates_range_vid(book: Id128, matter: &str, document: &Oid) -> VId {
+    derive_vid(
+        b"fa:vid:bates-range:v1",
+        &[&book.0, matter.as_bytes(), &document.0],
+    )
+}
+
 /// `vid(Entry) = H("fa:vid:migration-entry:v1" ‖ book_id ‖ run ‖
 /// idempotency_key)` for a `Migration` entry (plan §8.6): the run is part of
 /// the identity, so a retry run reuses the abandoned run's keys.

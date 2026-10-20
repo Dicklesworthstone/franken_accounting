@@ -107,7 +107,7 @@ impl Harness {
             ))
             .unwrap()
             .unwrap();
-        for (period, date) in [("FY2026-P03", "2026-03-01"), ("FY2026-P04", "2026-04-01")] {
+        for period in ["FY2026-P03", "FY2026-P04"] {
             runtime
                 .block_on(book.transition_period(
                     &cx,
@@ -115,7 +115,6 @@ impl Harness {
                     PeriodTransition::Open,
                     PRINCIPAL,
                     1,
-                    day(date),
                     period.as_bytes(),
                     &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
                 ))
@@ -759,7 +758,6 @@ fn source_approval_does_not_grant_closed_period_posting_authority() {
             PeriodTransition::Close,
             PRINCIPAL,
             1,
-            day("2026-03-31"),
             b"close-march",
             &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
         ))

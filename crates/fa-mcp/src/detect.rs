@@ -283,8 +283,8 @@ fn producer(key: &str, path: &[String]) -> Vec<ToolCall> {
         ),
         "proposal" => (
             "fa_time_period_transition",
-            "fa period lock <code> --dry-run --json",
-            json!({"transition": "lock", "dry_run": true}),
+            "fa period lock <code> --reason Scheduled --dry-run --json",
+            json!({"transition": "lock", "reason": "Scheduled", "dry_run": true}),
         ),
         "code" | "period" => ("fa_time_period_status", "fa period list --json", json!({})),
         "account" => (

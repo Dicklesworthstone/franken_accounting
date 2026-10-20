@@ -1,9 +1,12 @@
 //! Notary — the journal accumulator (plan §13.2, FA-INV-14).
 //!
-//! Every committed entry — posting and control classes alike — is one leaf
-//! of a Merkle Mountain Range, in commit order, over a domain-separated
-//! leaf envelope that binds the entry's digest, its recorded commit
-//! sequence, and its selection fields ([`journal`]). The accumulator is a
+//! Every committed entry — posting and control classes alike — and every
+//! journaled evidence record after the state's evidence boundary
+//! (attestations, import receipts, custody transfers, supplemental
+//! evidence; bead fa-va02) is one leaf of a Merkle Mountain Range, in
+//! commit order, over a domain-separated leaf envelope that binds the
+//! record's kind and digest, its recorded commit sequence, and its
+//! selection fields ([`journal`]). The accumulator is a
 //! derived, rebuildable structure: its root at any sequence is a pure
 //! function of the journal prefix, recomputed from the authoritative
 //! payloads, never maintained inside the posting transaction ([`tree`]).
@@ -55,7 +58,7 @@ pub use bundle::{
     MAX_INLINE_DOCUMENT_BYTES, ProductionReceipt, ReceiptBody,
 };
 pub use checkpoint::TransparencyCheckpoint;
-pub use journal::{Journal, Leaf, LeafEnvelope};
+pub use journal::{Journal, Leaf, LeafEnvelope, LeafKinds, Record};
 pub use migration_balance::prove_balance_with_migrations;
 pub use production::{
     BatesAssignment, ConfidentialityDesignation, ExhibitMark, Fre902Package, LoadFileFormat,

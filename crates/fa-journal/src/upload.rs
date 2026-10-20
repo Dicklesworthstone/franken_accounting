@@ -202,7 +202,7 @@ fn admit_upload<V: asupersync::fs::Vfs + Clone>(
     }
     let policy =
         EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
-    let grade = upload_grade(&policy, capability.profile())?;
+    let grade = upload_grade(&policy, capability.sod_profile())?;
     if request
         .asserted_grade
         .is_some_and(|asserted| asserted != grade)
@@ -212,7 +212,7 @@ fn admit_upload<V: asupersync::fs::Vfs + Clone>(
             exit::REFUSAL,
             format!(
                 "the asserted provenance grade does not equal the upload grade derived from the {} session",
-                capability.profile().name(),
+                capability.sod_profile().name(),
             ),
             "plan §9.3; FA-INV-05; fa-vwf (provenance is derived from the acquisition path)",
             "omit the grade assertion; a human Reviewed attestation, not relabeling an upload, satisfies the self-sourced evidence gate",

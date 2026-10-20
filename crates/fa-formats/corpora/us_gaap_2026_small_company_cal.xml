@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Vendored US-GAAP 2026 Small-Company Calculation Linkbase (plan §12.6, §16.3, bead fa-faim) -->
+<link:linkbase
+  xmlns:link="http://www.xbrl.org/2003/linkbase"
+  xmlns:xlink="http://www.w3.org/1999/xlink">
+
+  <!-- 1. Classified Small-Company Statement of Financial Position -->
+  <link:calculationLink xlink:type="extended" xlink:role="http://fasb.org/us-gaap/role/statement/StatementOfFinancialPositionClassified">
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_CashAndCashEquivalentsAtCarryingValue" xlink:label="loc_CashAndCashEquivalentsAtCarryingValue"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_AccountsReceivableNetCurrent" xlink:label="loc_AccountsReceivableNetCurrent"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_InventoryNet" xlink:label="loc_InventoryNet"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_AssetsCurrent" xlink:label="loc_AssetsCurrent"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_PropertyPlantAndEquipmentNet" xlink:label="loc_PropertyPlantAndEquipmentNet"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_AssetsNoncurrent" xlink:label="loc_AssetsNoncurrent"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_Assets" xlink:label="loc_Assets"/>
+
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_AccountsPayableCurrent" xlink:label="loc_AccountsPayableCurrent"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_AccruedLiabilitiesCurrent" xlink:label="loc_AccruedLiabilitiesCurrent"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_LiabilitiesCurrent" xlink:label="loc_LiabilitiesCurrent"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_LongTermDebtNoncurrent" xlink:label="loc_LongTermDebtNoncurrent"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_LiabilitiesNoncurrent" xlink:label="loc_LiabilitiesNoncurrent"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_Liabilities" xlink:label="loc_Liabilities"/>
+
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_CommonStockValue" xlink:label="loc_CommonStockValue"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_RetainedEarningsAccumulatedDeficit" xlink:label="loc_RetainedEarningsAccumulatedDeficit"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_StockholdersEquity" xlink:label="loc_StockholdersEquity"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_LiabilitiesAndStockholdersEquity" xlink:label="loc_LiabilitiesAndStockholdersEquity"/>
+
+    <!-- AssetsCurrent = Cash + AR + Inventory -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_AssetsCurrent" xlink:to="loc_CashAndCashEquivalentsAtCarryingValue" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_AssetsCurrent" xlink:to="loc_AccountsReceivableNetCurrent" weight="1" order="20"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_AssetsCurrent" xlink:to="loc_InventoryNet" weight="1" order="30"/>
+
+    <!-- AssetsNoncurrent = PPE -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_AssetsNoncurrent" xlink:to="loc_PropertyPlantAndEquipmentNet" weight="1" order="10"/>
+
+    <!-- Assets = AssetsCurrent + AssetsNoncurrent -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_Assets" xlink:to="loc_AssetsCurrent" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_Assets" xlink:to="loc_AssetsNoncurrent" weight="1" order="20"/>
+
+    <!-- LiabilitiesCurrent = AP + Accrued -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_LiabilitiesCurrent" xlink:to="loc_AccountsPayableCurrent" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_LiabilitiesCurrent" xlink:to="loc_AccruedLiabilitiesCurrent" weight="1" order="20"/>
+
+    <!-- LiabilitiesNoncurrent = LongTermDebt -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_LiabilitiesNoncurrent" xlink:to="loc_LongTermDebtNoncurrent" weight="1" order="10"/>
+
+    <!-- Liabilities = LiabilitiesCurrent + LiabilitiesNoncurrent -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_Liabilities" xlink:to="loc_LiabilitiesCurrent" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_Liabilities" xlink:to="loc_LiabilitiesNoncurrent" weight="1" order="20"/>
+
+    <!-- StockholdersEquity = CommonStock + RetainedEarnings -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_StockholdersEquity" xlink:to="loc_CommonStockValue" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_StockholdersEquity" xlink:to="loc_RetainedEarningsAccumulatedDeficit" weight="1" order="20"/>
+
+    <!-- LiabilitiesAndStockholdersEquity = Liabilities + StockholdersEquity -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_LiabilitiesAndStockholdersEquity" xlink:to="loc_Liabilities" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_LiabilitiesAndStockholdersEquity" xlink:to="loc_StockholdersEquity" weight="1" order="20"/>
+  </link:calculationLink>
+
+  <!-- 2. Multi-Step Small-Company Statement of Income -->
+  <link:calculationLink xlink:type="extended" xlink:role="http://fasb.org/us-gaap/role/statement/StatementOfIncome">
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_Revenues" xlink:label="loc_Revenues"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_CostOfGoodsAndServicesSold" xlink:label="loc_CostOfGoodsAndServicesSold"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_GrossProfit" xlink:label="loc_GrossProfit"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_OperatingExpenses" xlink:label="loc_OperatingExpenses"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_OperatingIncomeLoss" xlink:label="loc_OperatingIncomeLoss"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_IncomeTaxExpenseBenefit" xlink:label="loc_IncomeTaxExpenseBenefit"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_NetIncomeLoss" xlink:label="loc_NetIncomeLoss"/>
+
+    <!-- GrossProfit = Revenues - CostOfGoodsAndServicesSold -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_GrossProfit" xlink:to="loc_Revenues" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_GrossProfit" xlink:to="loc_CostOfGoodsAndServicesSold" weight="-1" order="20"/>
+
+    <!-- OperatingIncomeLoss = GrossProfit - OperatingExpenses -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_OperatingIncomeLoss" xlink:to="loc_GrossProfit" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_OperatingIncomeLoss" xlink:to="loc_OperatingExpenses" weight="-1" order="20"/>
+
+    <!-- NetIncomeLoss = OperatingIncomeLoss - IncomeTaxExpenseBenefit -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_NetIncomeLoss" xlink:to="loc_OperatingIncomeLoss" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_NetIncomeLoss" xlink:to="loc_IncomeTaxExpenseBenefit" weight="-1" order="20"/>
+  </link:calculationLink>
+
+  <!-- 3. FrankenAccounting Type-Level Balance Sheet & Income Statement Linkbase -->
+  <link:calculationLink xlink:type="extended" xlink:role="http://frankenaccounting.org/role/TypeLevelStatements">
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_Liabilities" xlink:label="loc_TL_Liabilities"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_StockholdersEquity" xlink:label="loc_TL_StockholdersEquity"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_CurrentPeriodNetIncome" xlink:label="loc_TL_CurrentPeriodNetIncome"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest" xlink:label="loc_TL_TotalEquity"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_LiabilitiesAndStockholdersEquity" xlink:label="loc_TL_LiabilitiesAndEquity"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_Revenues" xlink:label="loc_TL_Revenues"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_OperatingExpenses" xlink:label="loc_TL_OperatingExpenses"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_NetIncomeLoss" xlink:label="loc_TL_NetIncomeLoss"/>
+
+    <!-- TotalEquity = StockholdersEquity + CurrentPeriodNetIncome -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_TotalEquity" xlink:to="loc_TL_StockholdersEquity" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_TotalEquity" xlink:to="loc_TL_CurrentPeriodNetIncome" weight="1" order="20"/>
+
+    <!-- LiabilitiesAndStockholdersEquity = Liabilities + TotalEquity -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_LiabilitiesAndEquity" xlink:to="loc_TL_Liabilities" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_LiabilitiesAndEquity" xlink:to="loc_TL_TotalEquity" weight="1" order="20"/>
+
+    <!-- NetIncomeLoss = Revenues - OperatingExpenses -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_NetIncomeLoss" xlink:to="loc_TL_Revenues" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_NetIncomeLoss" xlink:to="loc_TL_OperatingExpenses" weight="-1" order="20"/>
+  </link:calculationLink>
+</link:linkbase>

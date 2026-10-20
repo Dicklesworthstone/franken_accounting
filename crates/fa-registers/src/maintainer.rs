@@ -13,8 +13,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::KernelError;
-use fa_journal::genesis::BookContext;
-use fa_journal::rows::{bytes, prop, scalar_bytes, scalar_text};
+use fa_journal::genesis::{BookContext, UnitPolicy};
+use fa_journal::rows::{AccountRow, bytes, prop, scalar_bytes, scalar_text};
 use fa_model::symbols::{label, property};
 use fa_model::{ControlPayload, Entry, EntryClass, Id128, Reader, Writer};
 use fa_money::Side;
@@ -292,29 +292,27 @@ pub(crate) fn verify_state<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
-/// Compute a new projection without writing it. Rehydrate checkpoint-opened
-/// delta history explicitly; an actually retired cursor triggers a full fold.
-pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
-    db: &mut Database<V>,
-    ctx: &PurposeContexts,
+/// What folding the committed suffix after a cursor did.
+enum Tail {
+    /// Every new entry was folded; this many payloads were decoded.
+    Applied(usize),
+    /// Only a literal fold is exact: a migration run was finalized (its
+    /// chunks may precede the cursor), or a pending column overflowed before
+    /// the releases later in the suffix.
+    Rebuild,
+}
+
+/// Fold the committed suffix after `from` into `fold` as of `basis`,
+/// decoding only the new Entry payloads (plan §5.3). Maintenance and the
+/// head read share it, so both apply one law.
+fn apply_tail<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     period: &str,
-) -> Result<PreparedAdvance, RegisterError> {
-    let basis = db.frontier()?;
-    crate::period_at(db, book, period, basis)?;
-    let (from, mut fold, expected_state) = match load(db, book, period)? {
-        Some((through, fold, payload)) => (through, fold, Some(payload)),
-        None => (CommitSeq::ORIGIN, empty(period)?, None),
-    };
-    if let Err(error) = db.ensure_delta_window(&ctx.commit(), from).await {
-        return match error {
-            fgdb::RebuildError::Index {
-                error: IndexError::CursorRetired { .. },
-                ..
-            } => prepare_rebuild(db, book, period),
-            other => Err(fgdb::WriteError::from(other).into()),
-        };
-    }
+    basis: CommitSeq,
+    from: CommitSeq,
+    fold: &mut Fold,
+) -> Result<Tail, RegisterError> {
     let mut cells: BTreeMap<_, _> = fold
         .cells
         .iter()
@@ -393,13 +391,13 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
                 // Finalization activates chunks whose creation may
                 // precede our cursor. Rebuild at this basis rather
                 // than omit those newly visible old contributions.
-                return prepare_rebuild(db, book, period);
+                return Ok(Tail::Rebuild);
             }
             if !fa_journal::migration::visible_at(db, &entry, basis, &mut migration_runs)? {
                 continue;
             }
             if entry.proposal.class == EntryClass::RESOLUTION {
-                release(db, book, vid, &entry, seq, &mut fold, &mut pending)?;
+                release(db, book, vid, &entry, seq, fold, &mut pending)?;
             }
             if entry.proposal.legs.is_empty() || crate::entry_period(book, &entry)? != period {
                 continue;
@@ -414,7 +412,7 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
                     // the target frontier before adding them. A
                     // truly oversized final column still fails.
                     Err(RegisterError::Overflow) => {
-                        return prepare_rebuild(db, book, period);
+                        return Ok(Tail::Rebuild);
                     }
                     Err(error) => return Err(error),
                 }
@@ -442,6 +440,36 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
         fold.posted_legs_digest,
         &fold.pending_holds,
     )?;
+    Ok(Tail::Applied(entries_decoded))
+}
+
+/// Compute a new projection without writing it. Rehydrate checkpoint-opened
+/// delta history explicitly; an actually retired cursor triggers a full fold.
+pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    period: &str,
+) -> Result<PreparedAdvance, RegisterError> {
+    let basis = db.frontier()?;
+    crate::period_at(db, book, period, basis)?;
+    let (from, mut fold, expected_state) = match load(db, book, period)? {
+        Some((through, fold, payload)) => (through, fold, Some(payload)),
+        None => (CommitSeq::ORIGIN, empty(period)?, None),
+    };
+    if let Err(error) = db.ensure_delta_window(&ctx.commit(), from).await {
+        return match error {
+            fgdb::RebuildError::Index {
+                error: IndexError::CursorRetired { .. },
+                ..
+            } => prepare_rebuild(db, book, period),
+            other => Err(fgdb::WriteError::from(other).into()),
+        };
+    }
+    let entries_decoded = match apply_tail(db, book, period, basis, from, &mut fold)? {
+        Tail::Applied(decoded) => decoded,
+        Tail::Rebuild => return prepare_rebuild(db, book, period),
+    };
     // Repeated calls after our own maintenance write must not manufacture
     // an endless stream of empty maintenance commits.
     let wrote = expected_state.is_none() || entries_decoded != 0;
@@ -569,6 +597,166 @@ fn release<V: asupersync::fs::Vfs + Clone>(
         fold.watermark = Some(fold.watermark.map_or(seq, |w| w.max(seq)));
     }
     Ok(())
+}
+
+/// The period's maintenance state when it can serve a read at `basis`: its
+/// identity, checksum and format agree and its cursor does not pass the
+/// frontier. The cells are not read here. `None` otherwise; reads never
+/// repair state.
+fn servable_state<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    basis: CommitSeq,
+) -> Result<Option<(CommitSeq, Fold)>, RegisterError> {
+    let Some(state) = db.vertex(state_vid(book.book_id, period))? else {
+        return Ok(None);
+    };
+    let payload = match (
+        prop(&state, property::BOOK_ID),
+        prop(&state, property::EFFECTIVE_PERIOD),
+        prop(&state, property::FA_PAYLOAD),
+        prop(&state, property::FA_DIGEST),
+    ) {
+        (
+            Some(CanonicalScalar::Bytes(owner)),
+            Some(CanonicalScalar::Text(code)),
+            Some(CanonicalScalar::Bytes(payload)),
+            Some(CanonicalScalar::Bytes(digest)),
+        ) if state.labels == vec![label::REGISTER_STATE]
+            && owner.as_slice() == &book.book_id.0[..]
+            && code.as_str() == period
+            && digest.as_slice() == &state_digest(book.book_id, period, payload.as_slice())[..] =>
+        {
+            payload.as_slice().to_vec()
+        }
+        _ => return Ok(None),
+    };
+    let Ok((through, fold)) = decode(&payload, period) else {
+        return Ok(None);
+    };
+    Ok((through <= basis).then_some((through, fold)))
+}
+
+/// The maintenance cursor of `period` when its state could serve a read at
+/// the frontier (fa-715); a caller loads the delta window back to it.
+pub fn cursor<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+) -> Result<Option<CommitSeq>, RegisterError> {
+    Ok(servable_state(db, book, period, db.frontier()?)?.map(|(through, _)| through))
+}
+
+/// A period's fold at the frontier, served from its maintained cells and the
+/// exact tail after their cursor, without writing (plan §5.3, fa-715).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeadFold {
+    pub fold: Fold,
+    /// The maintenance cursor the cells were read at.
+    pub served_at: CommitSeq,
+    /// Entry payloads decoded for the tail after `served_at`.
+    pub tail_entries: usize,
+}
+
+/// Read `period`'s fold at the frontier from its maintained cells plus the
+/// exact tail since their cursor. The cells are point reads of the
+/// registers of `accounts` in every unit their policies admit, so the cost
+/// follows the chart and the tail, not the journal's history; the assembled
+/// cells must reproduce the state's fold digest.
+///
+/// `None` whenever this cannot be served exactly (no or damaged state,
+/// drifted cells, a delta window that no longer reaches the cursor, a tail
+/// that needs a rebuild); the caller then folds the journal literally. A
+/// maintained read never serves a partial answer, and it never repairs: a
+/// damaged cache is reported by `verify registers`, not here.
+pub fn head_fold<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    accounts: &[AccountRow],
+) -> Result<Option<HeadFold>, RegisterError> {
+    let basis = db.frontier()?;
+    let Some((through, mut fold)) = servable_state(db, book, period, basis)? else {
+        return Ok(None);
+    };
+    for account in accounts {
+        let units: Vec<u32> = match account.unit_policy {
+            UnitPolicy::Single(unit) => vec![unit.0],
+            UnitPolicy::AnyCurrency | UnitPolicy::AnyUnit => {
+                book.units.iter().map(|(id, _)| id.0).collect()
+            }
+        };
+        for unit_id in units {
+            let key = CellKey {
+                account: account.vid,
+                unit_id,
+                period: period.into(),
+            };
+            let Some(row) = db.vertex(crate::register_vid(book.book_id, &key))? else {
+                continue;
+            };
+            // A retired cell keeps its identity for reuse and holds nothing;
+            // a live cell missing here fails the digest below.
+            if !row.labels.contains(&label::REGISTER) {
+                continue;
+            }
+            let identity = row.labels == vec![label::REGISTER]
+                && matches!(prop(&row, property::BOOK_ID), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == &book.book_id.0[..])
+                && matches!(prop(&row, property::ACCOUNT_REF), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == &account.vid.0.to_le_bytes()[..])
+                && matches!(prop(&row, property::UNIT_ID), Some(CanonicalScalar::Int(u)) if *u == i64::from(unit_id))
+                && matches!(prop(&row, property::EFFECTIVE_PERIOD), Some(CanonicalScalar::Text(p)) if p.as_str() == period)
+                && matches!(prop(&row, property::WATERMARK), Some(CanonicalScalar::Int(w)) if u64::try_from(*w).ok() == Some(fold.watermark.map_or(0, |s| s.0)));
+            if !identity {
+                return Ok(None);
+            }
+            for (pending, column) in [(false, &mut fold.cells), (true, &mut fold.pending)] {
+                let Ok(Some((debits, credits, entry_count))) = crate::stored_values(&row, pending)
+                else {
+                    return Ok(None);
+                };
+                if debits < 0 || credits < 0 || (entry_count == 0 && (debits != 0 || credits != 0))
+                {
+                    return Ok(None);
+                }
+                if entry_count != 0 {
+                    column.push(Cell {
+                        key: key.clone(),
+                        debits,
+                        credits,
+                        entry_count,
+                    });
+                }
+            }
+        }
+    }
+    fold.cells.sort_by(|a, b| a.key.cmp(&b.key));
+    fold.pending.sort_by(|a, b| a.key.cmp(&b.key));
+    if crate::digest_of(
+        period,
+        &fold.cells,
+        &fold.pending,
+        fold.watermark,
+        fold.posted_legs_digest,
+        &fold.pending_holds,
+    )? != fold.fold_digest
+    {
+        return Ok(None);
+    }
+    match db.delta_since(through) {
+        Ok(_) => {}
+        Err(fgdb::ReadError::DeltaCursorRetired { .. }) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let tail_entries = match apply_tail(db, book, period, basis, through, &mut fold)? {
+        Tail::Applied(decoded) => decoded,
+        Tail::Rebuild => return Ok(None),
+    };
+    Ok(Some(HeadFold {
+        fold,
+        served_at: through,
+        tail_entries,
+    }))
 }
 
 fn prepare_rebuild<V: asupersync::fs::Vfs + Clone>(

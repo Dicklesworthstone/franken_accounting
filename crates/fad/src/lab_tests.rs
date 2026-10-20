@@ -525,3 +525,111 @@ fn slow_client_sending_a_frame_every_29s_does_not_starve_other_clients_and_unaut
         "slow client A timing recorded: {timings:?}"
     );
 }
+
+#[test]
+fn connection_session_token_is_bound_for_lifetime_and_refuses_mid_connection_switch_under_chaos() {
+    fn req_with_token(n: usize, token: Option<&[u8]>) -> Request {
+        Request {
+            op: Op::Run,
+            argv: vec!["tb".into(), format!("--n={n}"), "--json".into()],
+            cwd: None,
+            stdin: None,
+            token: token.map(<[u8]>::to_vec),
+        }
+    }
+
+    for seed in 0..8 {
+        // 1. Token-bound connection: frame 0 binds token-a, frame 1 omits token (inherits token-a),
+        //    frame 2 tries to switch to token-b (refused FA-REF-011), frame 3 omits token (still token-a).
+        let sent_bound = vec![
+            req_with_token(0, Some(b"token-a")),
+            req_with_token(1, None),
+            req_with_token(2, Some(b"token-b")),
+            req_with_token(3, None),
+        ];
+        let bytes_bound: Vec<u8> = sent_bound.iter().flat_map(frame).collect();
+        let config = LabConfig::new(seed).with_light_chaos();
+        let ((seen_tokens, ended, frames), _) =
+            run_async_under_lab_with_config(config, move |cx| async move {
+                let (mut server, mut client) = VirtualTcpStream::pair(addr(1), addr(2));
+                let _ = client.write_all(&bytes_bound).await;
+                let _ = AsyncWriteExt::shutdown(&mut client).await;
+                let mut seen: Vec<(Vec<String>, Option<Vec<u8>>)> = Vec::new();
+                let mut handle = |r: Request| {
+                    seen.push((r.argv.clone(), r.token.clone()));
+                    (
+                        Response {
+                            op: r.op,
+                            exit: 0,
+                            stdout: r.argv.join(" "),
+                            stderr: String::new(),
+                        },
+                        Next::Continue,
+                    )
+                };
+                let dir = std::path::Path::new(BOOK);
+                let ended = serve_connection(&cx, &mut server, LIMITS, dir, &mut handle).await;
+                drop(server);
+                let mut received = Vec::new();
+                let _ = client.read_to_end(&mut received).await;
+                let mut decoder = Decoder::new(MAX);
+                decoder.push(&received);
+                let mut frames = Vec::new();
+                while let Ok(Some(f)) = decoder.next_frame() {
+                    frames.push(f);
+                }
+                (seen, ended, frames)
+            });
+
+        schema_checked(&frames);
+        if ended == Ended::Closed {
+            assert_eq!(
+                seen_tokens.len(),
+                3,
+                "seed {seed}: frame 2 (token switch) must not reach handler"
+            );
+            for (argv, tok) in &seen_tokens {
+                assert_eq!(
+                    tok.as_deref(),
+                    Some(&b"token-a"[..]),
+                    "seed {seed}: {argv:?} must carry bound token-a"
+                );
+            }
+            let replies = responses(&frames);
+            assert_eq!(replies.len(), 4, "seed {seed}");
+            assert_eq!(replies[0].exit, 0);
+            assert_eq!(replies[1].exit, 0);
+            assert_eq!(replies[2].exit, 7, "seed {seed}: {}", replies[2].stdout);
+            assert!(
+                replies[2].stdout.contains("FA-REF-011")
+                    && replies[2]
+                        .stdout
+                        .contains("already bound to a different capability token"),
+                "seed {seed}: {}",
+                replies[2].stdout
+            );
+            assert_eq!(replies[3].exit, 0);
+        }
+
+        // 2. Unbound connection: frame 0 has no token, frame 1 tries to bind token-a mid-connection (refused FA-REF-011).
+        let sent_unbound = vec![req_with_token(10, None), req_with_token(11, Some(b"token-a"))];
+        let bytes_unbound: Vec<u8> = sent_unbound.iter().flat_map(frame).collect();
+        let ((seen, ended_u, frames_u), _) =
+            run_async_under_lab(seed, move |cx| exchange(cx, bytes_unbound));
+        assert_eq!(ended_u, Ended::Closed, "seed {seed}");
+        assert_eq!(seen.len(), 1, "seed {seed}: mid-connection bind refused before handler");
+        schema_checked(&frames_u);
+        let replies_u = responses(&frames_u);
+        assert_eq!(replies_u.len(), 2, "seed {seed}");
+        assert_eq!(replies_u[0].exit, 0);
+        assert_eq!(replies_u[1].exit, 7, "seed {seed}: {}", replies_u[1].stdout);
+        assert!(
+            replies_u[1].stdout.contains("FA-REF-011")
+                && replies_u[1]
+                    .stdout
+                    .contains("cannot bind a capability token mid-connection"),
+            "seed {seed}: {}",
+            replies_u[1].stdout
+        );
+    }
+}

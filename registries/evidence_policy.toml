@@ -338,3 +338,12 @@ class = "ScenarioControl"
 requirement = "control_record"
 min_documents = 0
 kinds = "any"
+
+# A matter's production records (fa-6l9) cite what they act on as proof refs:
+# the protective order on Open (optional) and every produced document on
+# Produce, each a document this book holds, verified at commit.
+[[minimum]]
+class = "ProductionControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"

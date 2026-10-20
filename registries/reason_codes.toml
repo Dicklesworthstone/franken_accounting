@@ -16,6 +16,11 @@
 # Scope `supersession` records the preparer's correction reason (§8.2).
 # Other requires particulars in the authenticated entry description.
 # ScheduledAccrualReversal identifies the kernel's scheduled control effect.
+# Scope `period_control` records why a period takes a step of its close
+# (Open, SoftClose, Close, Lock); scope `period_reopen` records why a closed
+# or soft-closed period is reopened (plan §7.3: "who reopened March and why"
+# is a query). The period kernel refuses a transition whose reason is not
+# registered in its scope (FA-REF-041); zero is not a reason.
 
 schema_version = 1
 
@@ -120,3 +125,45 @@ code = 12
 scope = "supersession"
 name = "ScheduledAccrualReversal"
 meaning = "the kernel reverses an accrual under its authenticated auto-reversal schedule"
+
+[[reason]]
+code = 1
+scope = "period_control"
+name = "Scheduled"
+meaning = "the step the period's close calendar schedules: opened when it begins, soft-closed, closed and locked as its close completes"
+
+[[reason]]
+code = 2
+scope = "period_control"
+name = "Reclose"
+meaning = "closing again after the corrections a reopen admitted are recorded"
+
+[[reason]]
+code = 3
+scope = "period_control"
+name = "AuditComplete"
+meaning = "locked or closed because the period's audit or review is complete"
+
+[[reason]]
+code = 1
+scope = "period_reopen"
+name = "LateTransactions"
+meaning = "reopened to record transactions that arrived after the close"
+
+[[reason]]
+code = 2
+scope = "period_reopen"
+name = "AuditAdjustment"
+meaning = "reopened to record adjustments an auditor or reviewer proposed"
+
+[[reason]]
+code = 3
+scope = "period_reopen"
+name = "ErrorCorrection"
+meaning = "reopened to correct an error found after the close"
+
+[[reason]]
+code = 4
+scope = "period_reopen"
+name = "Restatement"
+meaning = "reopened under a restatement case"

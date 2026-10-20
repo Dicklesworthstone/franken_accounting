@@ -349,7 +349,6 @@ impl GenLeg {
 pub struct GenTransition {
     pub period_code: String,
     pub transition: PeriodTransition,
-    pub effective_date: DateDay,
     pub description: String,
 }
 
@@ -511,7 +510,6 @@ impl GeneratedCorpus {
                 PeriodTransition::Reopen { .. } => 5,
             };
             h.update(&[tag]);
-            h.update(&t.effective_date.0.to_le_bytes());
         }
         h.update(&(self.entries.len() as u64).to_le_bytes());
         for e in &self.entries {
@@ -958,7 +956,6 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
             transitions.push(GenTransition {
                 period_code: "FY2026-P01".into(),
                 transition: PeriodTransition::SoftClose,
-                effective_date: day(2026, 2, 1),
                 description: "Routine period-01 soft close after all January postings".into(),
             });
         }
@@ -974,7 +971,6 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
             transitions.push(GenTransition {
                 period_code: "FY2026-P01".into(),
                 transition: PeriodTransition::SoftClose,
-                effective_date: day(2026, 2, 1),
                 description: "Soft-close FY2026-P01 prior to top-side channel-stuffing adjustment"
                     .into(),
             });
@@ -1455,7 +1451,6 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
             transitions.push(GenTransition {
                 period_code: "FY2026-P01".into(),
                 transition: PeriodTransition::SoftClose,
-                effective_date: day(2026, 2, 1),
                 description: "Soft-close FY2026-P01 prior to top-side line-cost capitalization"
                     .into(),
             });

@@ -242,7 +242,6 @@ fn populate<V: Vfs + Clone>(runtime: &Runtime, cx: &PurposeContexts, book: &mut 
             PeriodTransition::Open,
             PRINCIPAL,
             1,
-            day(),
             b"symbol-open",
             &cap(&["close"]),
         ))

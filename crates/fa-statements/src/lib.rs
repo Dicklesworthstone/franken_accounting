@@ -20,6 +20,23 @@
 
 mod definition;
 
+/// Direct and indirect cash-flow statements (`CashFlowClassification`, reconciling to cash)
+/// and `EquityRollForward` statements (plan §12.1, `fa-i9yn`).
+pub mod cash_flow;
+/// Concordat: multi-book adjustment layers, book-to-book bridges, intercompany pair matching,
+/// deterministic elimination derivation, and consolidated equity reconciliation (plan §12.2, §12.3, FA-INV-13).
+pub mod concordat;
+/// Custom statement definitions (`AccountSetExpr`), `statement lint`, and presentation rounding
+/// with an explicit residual line (plan §12.1, `fa-i9yn`).
+pub mod custom;
+/// Deterministic Markdown IR for certified financial statements and restatement diffs (fa-9ae, fa-cet).
+pub mod markdown;
+/// Regulatory schedule definitions (FFIEC 031/041 Call Report Schedules RC/RI, FR Y-9C Schedules HC/HI)
+/// and versioned FFIEC validity and quality edits (`regulatory.edits(<form>@<quarter>)`) (plan §12.6, `fa-pbm`).
+pub mod regulatory;
+/// Deterministic HTML, SVG, PDF, and PDF/A-2b renderers, semantic restatement diffs,
+/// and lineage flowcharts over certified `StatementMarkdownIr` (`fa-cet`, `fa-949`).
+pub mod render;
 /// Exact account lead schedules with classified activity and stock tie-outs.
 pub mod roll_forward;
 

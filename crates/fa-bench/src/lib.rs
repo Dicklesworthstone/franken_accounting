@@ -603,13 +603,11 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
         .map_err(|r| BenchError::Execution(r.to_string()))?;
     let close_cap = Capability::embedded(controller, &["close"])
         .map_err(|e| BenchError::Execution(e.to_string()))?;
-    let p01_start = DateDay::from_ymd(2026, 1, 1).unwrap();
     book.transition_period(
         "FY2026-P01",
         PeriodTransition::Open,
         controller,
         1,
-        p01_start,
         b"bench:open:p01",
         &close_cap,
     )
@@ -803,7 +801,6 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 PeriodTransition::SoftClose,
                 controller,
                 1,
-                DateDay::from_ymd(2026, 1, 31).unwrap(),
                 b"bench:softclose:p01",
                 &close_cap,
             )

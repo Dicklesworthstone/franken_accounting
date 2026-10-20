@@ -51,6 +51,7 @@ pub const CONTROL_KINDS: &[(u16, &str, &str)] = &[
     (11, "draft_transition", "DraftControl"),
     (12, "scenario_transition", "ScenarioControl"),
     (13, "period_creation", "SchemaControl"),
+    (14, "production_transition", "ProductionControl"),
 ];
 
 /// The control class a record of kind `id` must carry, per the oracle's copy.
@@ -507,6 +508,7 @@ pub mod code {
     pub const CONFLICT: &str = "FA-REF-030";
     pub const IDEMPOTENCY_CONFLICT: &str = "FA-REF-032";
     pub const TRANSITION: &str = "FA-REF-040";
+    pub const PERIOD_REASON: &str = "FA-REF-041";
     pub const REVERSAL_TARGET: &str = "FA-REF-050";
     pub const REVERSAL_SHAPE: &str = "FA-REF-051";
     pub const REPLACEMENT_UNPAIRED: &str = "FA-REF-160";
@@ -1322,6 +1324,52 @@ impl Oracle {
     #[must_use]
     pub fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// The effective date the period law gives the `PeriodControl` entry
+    /// of `t` on period `code` (plan §7.3, fa-87r), read from the oracle's
+    /// own period table: an Open is dated on the period's first day, every
+    /// other transition on its last day (the day before its exclusive end).
+    /// `None` for a period the oracle does not hold.
+    #[must_use]
+    pub fn transition_date(&self, code: &str, t: PeriodTransition) -> Option<DateDay> {
+        let (def, _) = self.periods.get(code)?;
+        Some(match t {
+            PeriodTransition::Open => def.start,
+            _ => DateDay(def.end.0 - 1),
+        })
+    }
+
+    /// [`Oracle::transition`] for a principal giving `reason` (plan §7.3,
+    /// fa-cvg): once the period law admits the transition, its reason must be
+    /// registered in `reason_codes.toml`, under `period_reopen` for a reopen
+    /// and `period_control` for every other transition; zero never is.
+    pub fn transition_with_reason(
+        &mut self,
+        code: &str,
+        t: PeriodTransition,
+        reason: u16,
+    ) -> Result<(PeriodState, PeriodState), &'static str> {
+        if let Some((def, from)) = self.periods.get(code)
+            && !admissibility::kind_has_restriction(def.kind)
+            && !admissibility::pre_opening_governs(def.kind, def.end, self.opening_date)
+            && admissibility::oracle_transition(*from, t).is_ok()
+        {
+            let scope = match t {
+                PeriodTransition::Reopen { .. } => "period_reopen",
+                _ => "period_control",
+            };
+            let reasons =
+                fa_registry::reason_codes::ReasonCodes::embedded().expect("reason registry");
+            if !reasons
+                .rows
+                .iter()
+                .any(|r| r.scope == scope && r.code == reason)
+            {
+                return Err(code::PERIOD_REASON);
+            }
+        }
+        self.transition(code, t)
     }
 
     /// [`Oracle::transition_minting`] without its mint lists.

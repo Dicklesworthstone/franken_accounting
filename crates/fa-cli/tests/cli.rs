@@ -161,6 +161,19 @@ fn report(book: &Path, args: &[&str]) -> String {
     out
 }
 
+/// A trial balance line without its `served` disclosure (fa-715): how a
+/// head read was answered is not part of the fold it answers, and a
+/// historical read of the same coordinate always folds the journal.
+fn without_served(out: &str) -> Json {
+    let mut line = json::parse(out.trim()).expect("one robot line");
+    if let Json::Obj(fields) = &mut line
+        && let Some((_, Json::Obj(data))) = fields.iter_mut().find(|(key, _)| key == "data")
+    {
+        data.retain(|(key, _)| key != "served");
+    }
+    line
+}
+
 fn assert_cash_credits(out: &str, expected: &str) {
     let cash = out
         .split('{')
@@ -537,14 +550,21 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
                 &["book", "create", "--name", "Other", "--json"],
             );
             assert_eq!(code, 0, "{out}");
-            let (code, out, _) = fa(Some(&other), &["replay", &path, "--json"]);
-            assert_eq!(code, 8, "{out}");
-            assert!(out.contains("another book"), "{out}");
+            // The identity refusal precedes any prefix check: this book's head
+            // is lower than the certificate's prefix.
+            for verb in [vec!["replay"], vec!["certificate", "status"]] {
+                let mut args = verb;
+                args.extend([path.as_str(), "--json"]);
+                let (code, out, _) = fa(Some(&other), &args);
+                assert_eq!(code, 8, "{out}");
+                assert!(out.contains("another book"), "{out}");
+                assert!(out.contains("FA-REF-150"), "{out}");
+            }
         }
         retained.push((oid.to_string(), original));
     }
     assert_eq!(
-        report(
+        without_served(&report(
             &book,
             &[
                 "tb",
@@ -554,8 +574,8 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
                 known_at.as_str(),
                 "--json",
             ]
-        ),
-        before,
+        )),
+        without_served(&before),
         "certificate metadata never changes the certified accounting fold"
     );
 
@@ -932,15 +952,42 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
     );
     let march = "FY2026-P03";
     assert_eq!(fa(Some(&book), &["period", "open", march]).0, 0);
-    assert_eq!(fa(Some(&book), &["period", "close", march, "--yes"]).0, 0);
+    assert_eq!(
+        fa(
+            Some(&book),
+            &["period", "close", march, "--reason", "Scheduled", "--yes"]
+        )
+        .0,
+        0
+    );
     // Confirmed with --yes, so the kernel's verdict is what refuses it.
-    let (code, out, _) = fa(Some(&book), &["period", "lock", march, "--yes", "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "lock",
+            march,
+            "--reason",
+            "Scheduled",
+            "--yes",
+            "--json",
+        ],
+    );
     assert_eq!(code, 7, "{out}");
     assert!(out.contains("\"refusal_id\":\"FA-REF-012\""), "{out}");
     let plan = dir.join("lock.plan").display().to_string();
     let (code, out, _) = fa(
         Some(&book),
-        &["period", "lock", march, "--plan-out", &plan, "--json"],
+        &[
+            "period",
+            "lock",
+            march,
+            "--reason",
+            "Scheduled",
+            "--plan-out",
+            &plan,
+            "--json",
+        ],
     );
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("\"event\":\"period_planned\""), "{out}");
@@ -959,6 +1006,8 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
             "period",
             "lock",
             march,
+            "--reason",
+            "Scheduled",
             "--approval",
             &"0".repeat(32),
             "--yes",
@@ -1056,7 +1105,18 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
     let (_, after, _) = fa(Some(&book), &["book", "info", "--json"]);
     assert_eq!(after, before, "the replay wrote nothing");
     // A different request after the lock is still the illegal transition.
-    let (code, out, _) = fa(Some(&book), &["period", "close", march, "--yes", "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "close",
+            march,
+            "--reason",
+            "Scheduled",
+            "--yes",
+            "--json",
+        ],
+    );
     assert_eq!(code, 7, "{out}");
     assert!(out.contains("\"refusal_id\":\"FA-REF-040\""), "{out}");
     Ok(())
@@ -1648,7 +1708,10 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     assert_eq!(checks[0].get("stale"), Some(&Json::Bool(true)));
     assert!(int(&checks[0], "lag_entries").is_some_and(|n| n >= 1));
     assert!(out.contains("fa registers advance --period FY2026-P03 --json"));
-    let (code, _, _) = fa(Some(&book), &["period", "close", march, "--yes"]);
+    let (code, _, _) = fa(
+        Some(&book),
+        &["period", "close", march, "--reason", "Scheduled", "--yes"],
+    );
     assert_eq!(code, 0);
     let later = write(
         &dir,
@@ -1673,7 +1736,17 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     // verdict, not the confirmation gate, is what refuses it.
     let (code, out, _) = fa(
         Some(&book),
-        &["period", "reopen", march, "--to", "open", "--yes", "--json"],
+        &[
+            "period",
+            "reopen",
+            march,
+            "--reason",
+            "LateTransactions",
+            "--to",
+            "open",
+            "--yes",
+            "--json",
+        ],
     );
     assert_eq!(code, 7, "{out}");
     assert!(
@@ -2737,16 +2810,103 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
             "--as-originally-reported",
             "--json",
         ],
+        vec![
+            "statement",
+            "balance-sheet",
+            "--for",
+            march,
+            "--as-originally-reported",
+            "--known-at",
+            "HEAD",
+            "--json",
+        ],
+        vec![
+            "statement",
+            "diff",
+            "--definition",
+            "balance-sheet",
+            "--for",
+            march,
+            "--before",
+            "1",
+            "--as-originally-reported",
+            "--json",
+        ],
+        vec![
+            "explain",
+            "balance",
+            "6000",
+            "--period",
+            march,
+            "--as-originally-reported",
+            "--as-known-at",
+            "HEAD",
+            "--json",
+        ],
+        // Balance-only switches are refused, never ignored, elsewhere.
+        vec![
+            "explain",
+            "register",
+            "6000",
+            "--period",
+            march,
+            "--as-originally-reported",
+            "--json",
+        ],
+        vec![
+            "explain",
+            "register",
+            "6000",
+            "--period",
+            march,
+            "--certify",
+            "--json",
+        ],
     ] {
         let (code, out, err) = fa(Some(&book), &args);
         assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
     }
+    let statement = [
+        "statement",
+        "income-statement",
+        "--for",
+        march,
+        "--compare",
+        "FY2026-P04",
+        "--as-originally-reported",
+        "--json",
+    ];
+    let explained = [
+        "explain",
+        "balance",
+        "6000",
+        "--period",
+        march,
+        "--as-originally-reported",
+        "--json",
+    ];
     // Open, then Closed: nothing was reported yet; never HEAD, never a Close.
     let (code, out, _) = fa(Some(&book), &originally);
     assert_eq!(code, 3, "{out}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-161"), "{out}");
     assert!(out.contains("fa period lock FY2026-P03"), "{out}");
-    let (code, out, _) = fa(Some(&book), &["period", "close", march, "--yes", "--json"]);
+    for args in [&statement[..], &explained[..]] {
+        let (code, out, _) = fa(Some(&book), args);
+        assert_eq!(code, 3, "{args:?}\n{out}");
+        assert_eq!(field(&out, "refusal_id"), Some("FA-REF-161"), "{out}");
+    }
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "close",
+            march,
+            "--reason",
+            "Scheduled",
+            "--yes",
+            "--json",
+        ],
+    );
     assert_eq!(code, 0, "{out}");
     let closed_at = field(&out, "recorded_at").unwrap().to_string();
     let (code, out, _) = fa(Some(&book), &originally);
@@ -2757,7 +2917,16 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
     let plan = dir.join("lock.plan").display().to_string();
     let (code, out, _) = fa(
         Some(&book),
-        &["period", "lock", march, "--plan-out", &plan, "--json"],
+        &[
+            "period",
+            "lock",
+            march,
+            "--reason",
+            "Scheduled",
+            "--plan-out",
+            &plan,
+            "--json",
+        ],
     );
     assert_eq!(code, 0, "{out}");
     let digest = field(&out, "proposal_digest").unwrap().to_string();
@@ -2821,6 +2990,356 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
         ),
         reported
     );
+
+    // The statement and the balance explanation pin the same coordinate.
+    // The April comparative is read at that snapshot too, so April's later
+    // rent is absent as originally reported and present as currently stated.
+    let pinned = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        assert_eq!(field(&out, "known_at"), Some(locked_at.as_str()), "{out}");
+        out
+    };
+    let as_reported = pinned(&statement);
+    assert!(!as_reported.contains("7.00 USD"), "{as_reported}");
+    let mut at_lock = statement.to_vec();
+    at_lock.retain(|arg| *arg != "--as-originally-reported");
+    at_lock.splice(at_lock.len() - 1.., ["--known-at", &locked_at, "--json"]);
+    assert_eq!(pinned(&at_lock), as_reported);
+    at_lock.truncate(at_lock.len() - 3);
+    at_lock.push("--json");
+    let (code, current, _) = fa(Some(&book), &at_lock);
+    assert_eq!(code, 0, "{current}");
+    assert!(current.contains("7.00 USD"), "{current}");
+    assert_eq!(
+        pinned(&explained),
+        pinned(&[
+            "explain",
+            "balance",
+            "6000",
+            "--period",
+            march,
+            "--as-known-at",
+            &locked_at,
+            "--json",
+        ])
+    );
+    // A certified originally-reported statement replays at the pinned prefix.
+    let certificate = dir.join("originally.cert").display().to_string();
+    let mut certified = statement.to_vec();
+    certified.splice(
+        certified.len() - 1..,
+        ["--certificate-out", &certificate, "--json"],
+    );
+    pinned(&certified);
+    let (code, replayed, err) = fa(Some(&book), &["replay", &certificate, "--json"]);
+    assert_eq!(code, 0, "{replayed}\n{err}");
+    assert_eq!(field(&replayed, "event"), Some("statement"), "{replayed}");
+    assert_eq!(
+        field(&replayed, "known_at"),
+        Some(locked_at.as_str()),
+        "{replayed}"
+    );
+    Ok(())
+}
+
+/// `fa sample uniform|mus` (fa-kaf7, fa-vpk): a sample of one account's
+/// normal-side open items, reproducible from the declared seed at a recorded
+/// sequence; opposite-side open items are excluded and listed, never dropped.
+#[test]
+fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std::io::Result<()> {
+    let dir = tmp("sample")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Sample Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"1300","name":"Deposits","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    let post = |key: &str, debit: &str, credit: &str, amount: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-15","description":"{key}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount} USD"}},{{"side":"credit","account":"{credit}","amount":"{amount} USD"}}]}}"#
+            ),
+        );
+        let (code, out, err) = fa(
+            Some(&book),
+            &["post", "--intent", &intent, "--evidence", &ev, "--json"],
+        );
+        assert_eq!(code, 0, "{out}\n{err}");
+    };
+    for (key, amount) in [
+        ("inv-1", "100.00"),
+        ("inv-2", "250.00"),
+        ("inv-3", "50.00"),
+        ("inv-4", "700.00"),
+    ] {
+        post(key, "1200", "4000", amount);
+    }
+    // An unapplied customer receipt: a credit open item in a debit-normal
+    // account, outside the positive-value population.
+    post("receipt-1", "1000", "1200", "30.00");
+    let draw = |args: &[&str]| {
+        let mut argv = vec!["sample"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    let uniform = ["uniform", "--account", "1200", "--seed", "7", "--size", "2"];
+    let out = draw(&uniform);
+    let data = doc(&out);
+    assert_eq!(text(&data, "method"), "uniform");
+    assert_eq!(text(&data, "unit"), "USD");
+    assert_eq!(data.get("population_count"), Some(&Json::Int(4)), "{out}");
+    assert_eq!(text(&data, "population_total"), "1100.00 USD");
+    assert_eq!(data.get("selected_count"), Some(&Json::Int(2)), "{out}");
+    assert_eq!(arr(&data, "selected").len(), 2, "{out}");
+    let excluded = arr(&data, "excluded");
+    assert_eq!(excluded.len(), 1, "{out}");
+    assert_eq!(text(&excluded[0], "side"), "credit");
+    assert_eq!(text(&excluded[0], "open"), "30.00 USD");
+    // The data's known_at is the envelope coordinate's.
+    let first = field(&out, "known_at").unwrap_or_default().to_string();
+    assert_eq!(
+        data.get("known_at"),
+        Some(&Json::Int(first.parse::<i128>().unwrap_or(-1))),
+        "{out}"
+    );
+    // The same seed at the same sequence is the same sample, byte for byte;
+    // so is its replay command.
+    assert_eq!(draw(&uniform), out);
+    let replay = text(&data, "replay_command").to_string();
+    let replay: Vec<&str> = replay.split_whitespace().skip(2).collect();
+    assert_eq!(draw(&replay), out);
+    // Another seed is another sample over the same population.
+    let other = doc(&draw(&[
+        "uniform",
+        "--account",
+        "1200",
+        "--seed",
+        "8",
+        "--size",
+        "2",
+    ]));
+    assert_eq!(
+        text(&other, "population_digest"),
+        text(&data, "population_digest")
+    );
+    assert_ne!(text(&other, "sample_digest"), text(&data, "sample_digest"));
+    // A later invoice joins the population at HEAD, not at the recorded one.
+    post("inv-5", "1200", "4000", "400.00");
+    let head = doc(&draw(&uniform));
+    assert_eq!(head.get("population_count"), Some(&Json::Int(5)));
+    let mut pinned = uniform.to_vec();
+    pinned.extend(["--as-known-at", first.as_str()]);
+    assert_eq!(draw(&pinned), out);
+
+    // MUS: an item at or above the interval is examined in the top stratum.
+    let mus = doc(&draw(&[
+        "mus",
+        "--account",
+        "1200",
+        "--seed",
+        "7",
+        "--interval",
+        "300.00 USD",
+        "--as-known-at",
+        first.as_str(),
+    ]));
+    assert_eq!(text(&mus, "interval"), "300.00 USD");
+    assert_eq!(mus.get("top_stratum_count"), Some(&Json::Int(1)));
+    let top: Vec<&Json> = arr(&mus, "selected")
+        .iter()
+        .filter(|row| text(row, "basis") == "top_stratum")
+        .collect();
+    assert_eq!(top.len(), 1, "{mus:?}");
+    assert_eq!(text(top[0], "book_value"), "700.00 USD");
+    assert!(
+        arr(&mus, "selected")
+            .iter()
+            .filter(|row| text(row, "basis") == "systematic")
+            .all(|row| !text(row, "hit").is_empty()),
+        "{mus:?}"
+    );
+
+    // Evaluation re-draws that sample. The 700.00 top-stratum item is 10.00
+    // overstated and the first systematic item 10% overstated; at 95%
+    // (R0 = 3.00, R1 = 4.75) and a 300.00 interval: basic precision 900.00,
+    // most likely error 10.00 + 300.00 x 1/10 = 40.00, incremental allowance
+    // (4.75 - 3.00 - 1) x 30.00 = 22.50, upper limit 962.50, whichever
+    // systematic item the seed hit.
+    let mut tainted = false;
+    let rows: Vec<String> = arr(&mus, "selected")
+        .iter()
+        .map(|row| {
+            let book_value = text(row, "book_value");
+            let audited = match (text(row, "basis"), book_value) {
+                ("top_stratum", _) => "690.00 USD",
+                ("systematic", "100.00 USD") if !tainted => "90.00 USD",
+                ("systematic", "250.00 USD") if !tainted => "225.00 USD",
+                ("systematic", "50.00 USD") if !tainted => "45.00 USD",
+                _ => book_value,
+            };
+            tainted |= text(row, "basis") == "systematic";
+            format!(
+                r#"{{"item_id":"{}","audited":"{audited}"}}"#,
+                text(row, "item_id")
+            )
+        })
+        .collect();
+    let audited = write(
+        &dir,
+        "audited.json",
+        &format!(r#"{{"items":[{}]}}"#, rows.join(",")),
+    );
+    let evaluate = |audited: &str| {
+        vec![
+            "evaluate".to_string(),
+            "--account".into(),
+            "1200".into(),
+            "--seed".into(),
+            "7".into(),
+            "--interval".into(),
+            "300.00 USD".into(),
+            "--as-known-at".into(),
+            first.clone(),
+            "--audited".into(),
+            audited.to_string(),
+            "--confidence".into(),
+            "95".into(),
+        ]
+    };
+    let argv = evaluate(&audited);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let evaluated = doc(&draw(&argv));
+    assert_eq!(text(&evaluated, "basic_precision"), "900.00 USD");
+    assert_eq!(text(&evaluated, "top_stratum_misstatement"), "10.00 USD");
+    assert_eq!(text(&evaluated, "most_likely_error"), "40.00 USD");
+    assert_eq!(text(&evaluated, "incremental_allowance"), "22.50 USD");
+    assert_eq!(text(&evaluated, "upper_misstatement_limit"), "962.50 USD");
+    assert_eq!(
+        text(&evaluated, "upper_misstatement_limit_exact"),
+        "96250/1"
+    );
+    assert_eq!(evaluated.get("misstatement_count"), Some(&Json::Int(2)));
+    assert_eq!(evaluated.get("understatement_count"), Some(&Json::Int(0)));
+    assert_eq!(
+        text(&evaluated, "sample_digest"),
+        text(&mus, "sample_digest")
+    );
+    let taints: Vec<&str> = arr(&evaluated, "misstatements")
+        .iter()
+        .map(|row| text(row, "tainting"))
+        .collect();
+    assert!(taints.contains(&"1/10"), "{evaluated:?}");
+    // An audited set that leaves out a selected item answers another sample
+    // (exit 8), and evaluation needs the sample's recorded sequence (exit 2).
+    let partial = write(
+        &dir,
+        "partial.json",
+        &format!(r#"{{"items":[{}]}}"#, rows[1..].join(",")),
+    );
+    let argv = evaluate(&partial);
+    let mut argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    argv.insert(0, "sample");
+    argv.push("--json");
+    let (code, out, err) = fa(Some(&book), &argv);
+    assert_eq!(code, 8, "{out}\n{err}");
+    assert!(out.contains("missing"), "{out}");
+    let mut argv = evaluate(&audited);
+    assert_eq!(argv[7], "--as-known-at");
+    argv.drain(7..9);
+    let mut argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    argv.insert(0, "sample");
+    argv.push("--json");
+    let (code, out, err) = fa(Some(&book), &argv);
+    assert_eq!(code, 2, "{out}\n{err}");
+
+    // Usage errors (exit 2), nothing drawn.
+    for args in [
+        vec!["sample", "uniform", "--account", "1200", "--size", "2"],
+        vec![
+            "sample",
+            "uniform",
+            "--account",
+            "1200",
+            "--seed",
+            "-1",
+            "--size",
+            "2",
+        ],
+        vec![
+            "sample",
+            "uniform",
+            "--account",
+            "1200",
+            "--seed",
+            "7",
+            "--size",
+            "0",
+        ],
+        vec![
+            "sample",
+            "uniform",
+            "--account",
+            "1200",
+            "--seed",
+            "7",
+            "--size",
+            "99",
+        ],
+        vec![
+            "sample",
+            "uniform",
+            "--account",
+            "1200",
+            "--seed",
+            "7",
+            "--interval",
+            "300.00 USD",
+        ],
+        vec![
+            "sample",
+            "mus",
+            "--account",
+            "1200",
+            "--seed",
+            "7",
+            "--size",
+            "2",
+        ],
+        // No normal-side open item to sample.
+        vec![
+            "sample",
+            "uniform",
+            "--account",
+            "1300",
+            "--seed",
+            "7",
+            "--size",
+            "1",
+        ],
+        vec!["sample", "stratified", "--account", "1200", "--seed", "7"],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 2, "{argv:?}\n{out}\n{err}");
+    }
     Ok(())
 }
 
@@ -4781,6 +5300,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["verify", "accumulator"]).0, 0);
+    assert_eq!(run(true, &["recover", "projections", "--dry-run"]).0, 0);
     assert_eq!(run(true, &["proof", "signed-checkpoint"]).0, 0);
     assert_eq!(run(true, &["bundle", "produce"]).0, 0);
     let chart = write(
@@ -4903,8 +5423,112 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["scenario", "discard", "what-if"]).0, 0);
+    // Litigation productions (fa-6l9).
+    assert_eq!(
+        run(
+            true,
+            &[
+                "production",
+                "open",
+                "events-matter",
+                "--bates-prefix",
+                "EVT"
+            ]
+        )
+        .0,
+        0
+    );
+    let volume = dir.join("events-volume").display().to_string();
+    assert_eq!(
+        run(
+            true,
+            &[
+                "produce",
+                "--matter",
+                "events-matter",
+                "--document",
+                &ev,
+                "--out",
+                &volume
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["production", "list"]).0, 0);
+    assert_eq!(run(true, &["production", "show", "events-matter"]).0, 0);
+    assert_eq!(run(true, &["production", "document", &ev]).0, 0);
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &[
+                "sample",
+                "uniform",
+                "--account",
+                "6000",
+                "--seed",
+                "7",
+                "--size",
+                "1"
+            ]
+        )
+        .0,
+        0
+    );
+    // An MUS draw, then its evaluation with every selected item at book.
+    let (code, mus) = run(
+        true,
+        &[
+            "sample",
+            "mus",
+            "--account",
+            "6000",
+            "--seed",
+            "7",
+            "--interval",
+            "5.00 USD",
+        ],
+    );
+    assert_eq!(code, 0, "{mus}");
+    let drawn = doc(&mus);
+    let audited: Vec<String> = arr(&drawn, "selected")
+        .iter()
+        .map(|row| {
+            format!(
+                r#"{{"item_id":"{}","audited":"{}"}}"#,
+                text(row, "item_id"),
+                text(row, "book_value")
+            )
+        })
+        .collect();
+    let audited = write(
+        &dir,
+        "audited.json",
+        &format!(r#"{{"items":[{}]}}"#, audited.join(",")),
+    );
+    let drawn_at = field(&mus, "known_at").unwrap_or_default().to_string();
+    let (code, evaluated) = run(
+        true,
+        &[
+            "sample",
+            "evaluate",
+            "--account",
+            "6000",
+            "--seed",
+            "7",
+            "--interval",
+            "5.00 USD",
+            "--as-known-at",
+            &drawn_at,
+            "--audited",
+            &audited,
+            "--confidence",
+            "95",
+        ],
+    );
+    assert_eq!(code, 0, "{evaluated}");
     assert_eq!(run(true, &["procedure", "list"]).0, 0);
     assert_eq!(run(true, &["procedure", "run", "jet.round_amounts"]).0, 0);
     // Recorded findings: the Sunday rent is a jet.weekend observation; a
@@ -5301,13 +5925,49 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     // A planned, approved lock (R4): `period_planned`, then `approved`.
     assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
-    assert_eq!(run(true, &["period", "close", "FY2026-P04", "--yes"]).0, 0);
     assert_eq!(
-        run(true, &["period", "lock", "FY2026-P04", "--dry-run"]).0,
+        run(
+            true,
+            &[
+                "period",
+                "close",
+                "FY2026-P04",
+                "--reason",
+                "Scheduled",
+                "--yes"
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "period",
+                "lock",
+                "FY2026-P04",
+                "--reason",
+                "Scheduled",
+                "--dry-run"
+            ]
+        )
+        .0,
         0
     );
     let plan = dir.join("lock.plan").display().to_string();
-    let (code, out) = run(true, &["period", "lock", "FY2026-P04", "--plan-out", &plan]);
+    let (code, out) = run(
+        true,
+        &[
+            "period",
+            "lock",
+            "FY2026-P04",
+            "--reason",
+            "Scheduled",
+            "--plan-out",
+            &plan,
+        ],
+    );
     assert_eq!(code, 0, "{out}");
     let digest = field(&out, "proposal_digest")
         .unwrap_or_default()
@@ -5368,7 +6028,15 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     run2(&["period", "create", "--fiscal-year", "2026"]);
     run2(&["period", "open", "FY2026-P01"]);
     let close_plan = dir.join("p01_close.plan").display().to_string();
-    let (_, cp_out) = run2(&["period", "close", "FY2026-P01", "--plan-out", &close_plan]);
+    let (_, cp_out) = run2(&[
+        "period",
+        "close",
+        "FY2026-P01",
+        "--reason",
+        "Scheduled",
+        "--plan-out",
+        &close_plan,
+    ]);
     let cp_digest = field(&cp_out, "proposal_digest")
         .unwrap_or_default()
         .to_string();
@@ -5386,7 +6054,15 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         &cp_app,
     ]);
     let lock_plan = dir.join("p01_lock.plan").display().to_string();
-    let (_, lp_out) = run2(&["period", "lock", "FY2026-P01", "--plan-out", &lock_plan]);
+    let (_, lp_out) = run2(&[
+        "period",
+        "lock",
+        "FY2026-P01",
+        "--reason",
+        "Scheduled",
+        "--plan-out",
+        &lock_plan,
+    ]);
     let lp_digest = field(&lp_out, "proposal_digest")
         .unwrap_or_default()
         .to_string();
@@ -5538,6 +6214,28 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "8",
         "--after",
         "HEAD",
+    ]);
+    let trace_certificate = dir.join("trace.cert").display().to_string();
+    run2(&[
+        "statement",
+        "trace",
+        "--definition",
+        "balance-sheet",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        "8",
+        "--after",
+        "HEAD",
+        "--certificate-out",
+        &trace_certificate,
+    ]);
+    let trace_workpaper = dir.join("trace.jsonl").display().to_string();
+    run2(&[
+        "replay",
+        &trace_certificate,
+        "--workpaper-out",
+        &trace_workpaper,
     ]);
 
     let mut bank_bytes = String::from("HEADER_PAGE_1_ACCOUNT_NUMBER_SECRET\n");
@@ -6917,6 +7615,8 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("settle", None, "grant:post_closed"),
     ("resolve", None, "disposition:voids"),
     ("registers", Some("materialize"), "existing-cells"),
+    // Recovery rewrites projection rows at HEAD; its dry run writes nothing.
+    ("recover", Some("projections"), "always"),
     ("capability", Some("revoke"), "always"),
     ("draft", Some("promote"), "always"),
 ];
@@ -7061,7 +7761,15 @@ fn dangerous_operations_need_yes_and_name_the_safe_alternative() -> std::io::Res
         "fa period soft-close",
     );
     assert_eq!(state("FY2026-P03"), "SoftClosed");
-    let (code, out) = confirmed(&["period", "close", "FY2026-P03", "--yes", "--json"]);
+    let (code, out) = confirmed(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(state("FY2026-P03"), "Closed");
 
@@ -7135,12 +7843,22 @@ fn dangerous_operations_need_yes_and_name_the_safe_alternative() -> std::io::Res
         "period",
         "reopen",
         "FY2026-P03",
+        "--reason",
+        "LateTransactions",
         "--to",
         "open",
         "--yes",
         "--json",
     ]);
-    confirmed(&["period", "lock", "FY2026-P03", "--yes", "--json"]);
+    confirmed(&[
+        "period",
+        "lock",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
 
     // Human mode names the safe alternative on stderr.
     let (code, _, err) = fa_b(&["period", "close", "FY2026-P04"]);
@@ -7934,7 +8652,7 @@ fn projection_verification_case(plant: &str) -> std::io::Result<()> {
     let repeated = fa(Some(&book), &verify);
     assert_eq!(repeated.0, 8, "{}\n{}", repeated.1, repeated.2);
     assert_eq!(repeated.1, red, "red verification is deterministic too");
-    let handle = Book::open_dir(&book, keys, Entropy::deterministic(91)).unwrap();
+    let handle = Book::open_dir(&book, keys.clone(), Entropy::deterministic(91)).unwrap();
     assert_eq!(
         handle.head().unwrap(),
         damaged_at,
@@ -7945,6 +8663,206 @@ fn projection_verification_case(plant: &str) -> std::io::Result<()> {
         handle.verify_projections(Some(prefix)).unwrap().is_green(),
         "the earlier committed projection remains independently verifiable"
     );
+    drop(handle);
+    // `fa doctor` sees the drift and names the read-only preview next.
+    let (code, out, err) = fa(Some(&book), &["doctor", "--json"]);
+    assert_eq!(code, 8, "{out}\n{err}");
+    assert!(
+        doctor_checks(&out).contains(&("projections".into(), "fail".into())),
+        "{out}"
+    );
+    assert!(
+        out.contains("fa recover projections --dry-run --json"),
+        "{out}"
+    );
+
+    // The finding names its recovery, which derives every change from the
+    // journal: unconfirmed it writes nothing, a dry run previews at this head,
+    // and a bound session can do neither.
+    assert!(
+        text(&error, "fix").contains("fa recover projections --dry-run --json"),
+        "{red}"
+    );
+    let head = || {
+        Book::open_dir(&book, keys.clone(), Entropy::deterministic(91))
+            .unwrap()
+            .head()
+            .unwrap()
+    };
+    let (code, out, err) = fa(Some(&book), &["recover", "projections", "--json"]);
+    assert_eq!(code, 7, "{out}\n{err}");
+    let unconfirmed = doc(&out);
+    assert_eq!(text(&unconfirmed, "refusal_id"), "FA-REF-007", "{out}");
+    assert!(
+        text(&unconfirmed, "fix").contains("fa recover projections --dry-run --json"),
+        "{out}"
+    );
+    assert_eq!(head(), damaged_at, "an unconfirmed recovery wrote nothing");
+    let dry_run = ["recover", "projections", "--dry-run", "--json"];
+    let preview = ok(&dry_run);
+    assert_eq!(preview.lines().count(), 1, "{preview}");
+    assert_eq!(field(&preview, "event"), Some("projections_rebuilt"));
+    let planned = doc(&preview);
+    assert_eq!(planned.get("dry_run"), Some(&Json::Bool(true)), "{preview}");
+    assert_eq!(planned.get("wrote"), Some(&Json::Bool(false)), "{preview}");
+    assert_eq!(planned.get("recorded_at"), Some(&Json::Null), "{preview}");
+    assert_eq!(int(&planned, "basis"), Some(i128::from(damaged_at.0)));
+    assert!(int(&planned, "entries_checked").unwrap() >= 1, "{preview}");
+    assert_eq!(int(&planned, "legs_checked"), Some(2), "{preview}");
+    // A changed mirror repairs its one leg; a deleted HAS_LEG edge is the
+    // one edge the journal says should exist.
+    let (legs_repaired, edges_created) = if plant == "missing-has-leg" {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    assert_eq!(
+        int(&planned, "legs_repaired"),
+        Some(legs_repaired),
+        "{preview}"
+    );
+    assert_eq!(
+        int(&planned, "edges_created"),
+        Some(edges_created),
+        "{preview}"
+    );
+    for untouched in ["legs_created", "edges_repaired", "edges_retired"] {
+        assert_eq!(int(&planned, untouched), Some(0), "{untouched}: {preview}");
+    }
+    assert_eq!(ok(&dry_run), preview, "a preview is deterministic");
+    assert_eq!(head(), damaged_at, "a preview wrote nothing");
+
+    let publish = ["recover", "projections", "--yes", "--json"];
+    if plant == "missing-has-leg" {
+        // The substrate never re-creates a spent edge identity: the repair
+        // fails before publication and the finding stays reported.
+        let (code, out, err) = fa(Some(&book), &publish);
+        assert_eq!(code, 5, "{out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("error"), "{out}");
+        assert_eq!(head(), damaged_at, "a failed repair published nothing");
+        assert_eq!(fa(Some(&book), &verify).0, 8);
+    } else {
+        let repaired = ok(&publish);
+        assert_eq!(field(&repaired, "event"), Some("projections_rebuilt"));
+        let data = doc(&repaired);
+        assert_eq!(data.get("dry_run"), Some(&Json::Bool(false)), "{repaired}");
+        assert_eq!(data.get("wrote"), Some(&Json::Bool(true)), "{repaired}");
+        assert_eq!(int(&data, "basis"), Some(i128::from(damaged_at.0)));
+        let published = i128::from(damaged_at.0) + 1;
+        assert_eq!(int(&data, "recorded_at"), Some(published), "{repaired}");
+        for counter in [
+            "entries_checked",
+            "legs_checked",
+            "legs_created",
+            "legs_repaired",
+            "edges_created",
+            "edges_repaired",
+            "edges_retired",
+        ] {
+            assert_eq!(
+                int(&data, counter),
+                int(&planned, counter),
+                "{counter}: the publication is the previewed repair"
+            );
+        }
+        assert_eq!(
+            int(robot_line(&repaired).get("coordinate").unwrap(), "known_at"),
+            Some(published)
+        );
+        let repaired_head = head();
+        assert_eq!(i128::from(repaired_head.0), published);
+        let green = ok(&verify);
+        assert_eq!(field(&green, "event"), Some("projections_verified"));
+        assert!(arr(&doc(&green), "drift").is_empty(), "{green}");
+        let (code, out, err) = fa(Some(&book), &["doctor", "--json"]);
+        assert_eq!(code, 0, "{out}\n{err}");
+        assert!(
+            doctor_checks(&out).contains(&("projections".into(), "ok".into())),
+            "{out}"
+        );
+        let db = runtime
+            .block_on(Database::open(
+                &cx.commit(),
+                &book.join("store"),
+                DatabaseKeys::new([91; 32], DatabaseSecurityNamespaceId([92; 32]), [93; 32]),
+            ))
+            .unwrap();
+        assert_eq!(
+            fa_journal::rows::bytes(
+                &db.vertex(entry).unwrap().unwrap(),
+                property::FA_PAYLOAD,
+                "authoritative entry",
+            )
+            .unwrap(),
+            payload,
+            "{plant}: recovery never rewrites the journal payload"
+        );
+        drop(db);
+        let handle = Book::open_dir(&book, keys.clone(), Entropy::deterministic(91)).unwrap();
+        assert!(
+            !handle
+                .verify_projections(Some(damaged_at))
+                .unwrap()
+                .is_green(),
+            "the damaged prefix stays on the record"
+        );
+        drop(handle);
+        let again = doc(&ok(&publish));
+        assert_eq!(again.get("wrote"), Some(&Json::Bool(false)));
+        assert_eq!(again.get("recorded_at"), Some(&Json::Null));
+        assert_eq!(int(&again, "legs_repaired"), Some(0));
+        assert_eq!(head(), repaired_head, "a clean book publishes nothing");
+    }
+
+    // Host-only: no launch ceiling holds schema_change, so a token-bound
+    // session (here a Human preparer with read and verify) can neither
+    // preview a recovery nor confirm one.
+    let token = dir.join("repairer.token").display().to_string();
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "repairer",
+            "--profile",
+            "human",
+            "--op",
+            "read",
+            "--op",
+            "verify",
+            "--out",
+            &token,
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+            "--grant",
+            "verify",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let issued = head();
+    let mut bound = vec!["--token", token.as_str()];
+    bound.extend_from_slice(&dry_run);
+    let (code, out, err) = fa(Some(&book), &bound);
+    assert_eq!(code, 7, "{out}\n{err}");
+    let refused = doc(&out);
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-011", "{out}");
+    assert!(
+        text(&refused, "message").contains("not admitted by the launch-bound"),
+        "{out}"
+    );
+    let mut bound = vec!["--token", token.as_str()];
+    bound.extend_from_slice(&publish);
+    let (code, out, err) = fa(Some(&book), &bound);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(
+        text(&doc(&out), "message").contains("--yes cannot be supplied by a launch-bound request"),
+        "{out}"
+    );
+    assert_eq!(head(), issued, "a bound session recovers nothing");
     Ok(())
 }
 
@@ -8186,12 +9104,19 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
     let listed = ok(&["procedure", "list"]);
     let listed_doc = doc(&listed);
     let rows = arr(&listed_doc, "procedures");
-    assert_eq!(rows.len(), 51, "{listed}");
-    assert!(
-        rows.iter()
-            .any(|r| r.get("id").and_then(Json::as_str) == Some("jet.round_amounts")),
-        "{listed}"
-    );
+    assert_eq!(rows.len(), 59, "{listed}");
+    for id in [
+        "jet.round_amounts",
+        "solvency.balance_sheet_test",
+        "ponzi.net_investment",
+        "damages.but_for",
+    ] {
+        assert!(
+            rows.iter()
+                .any(|r| r.get("id").and_then(Json::as_str) == Some(id)),
+            "{id}: {listed}"
+        );
+    }
 
     // The planted round amount is found, cited by the posted entry's vid.
     let out = ok(&["procedure", "run", "jet.round_amounts"]);
@@ -8371,6 +9296,7 @@ fn doctor_reports_every_check_and_its_fix_and_exits_with_the_first_failure() -> 
             "writer_lease",
             "book",
             "registers",
+            "projections",
             "availability",
             "accumulator"
         ],
@@ -9178,13 +10104,23 @@ fn docket_steward_and_migration_controls_round_trip() -> std::io::Result<()> {
     ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
     ok(&["period", "open", "FY2026-OPEN", "--json"]);
     ok(&["period", "soft-close", "FY2026-OPEN", "--json"]);
-    ok(&["period", "close", "FY2026-OPEN", "--yes", "--json"]);
+    ok(&[
+        "period",
+        "close",
+        "FY2026-OPEN",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
     let lock_plan = dir.join("lock_open.plan");
     let lock_plan_s = lock_plan.to_str().unwrap();
     let lock_planned = ok(&[
         "period",
         "lock",
         "FY2026-OPEN",
+        "--reason",
+        "Scheduled",
         "--plan-out",
         lock_plan_s,
         "--json",
@@ -13637,5 +14573,89 @@ fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<(
     let (code, out, _) = run(&["--token", &token, "draft", "new", "after"]);
     assert_eq!(code, 7, "{out}");
     assert!(out.contains("FA-REF-023"), "{out}");
+
+    // fa-5npo: Auditor profile template requires redaction caveat and pins known_at <= S,
+    // refusing reads at later frontiers.
+    let (code, out, _) = run(&[
+        "capability",
+        "issue",
+        "--holder",
+        "auditor-missing-redaction",
+        "--profile",
+        "auditor",
+        "--out",
+        "auditor-bad.token",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "verify",
+        "--grant",
+        "produce",
+        "--grant",
+        "witness",
+    ]);
+    assert_eq!(
+        code, 2,
+        "Auditor without --redaction must be refused: {out}"
+    );
+    let (_, info, _) = run(&["book", "info"]);
+    let pin_seq = field(&info, "known_at").unwrap_or("1").to_string();
+    let auditor_token = "auditor-pinned.token";
+    let (code, out, _) = run(&[
+        "capability",
+        "issue",
+        "--holder",
+        "auditor-1",
+        "--profile",
+        "auditor",
+        "--op",
+        "read",
+        "--op",
+        "verify",
+        "--op",
+        "produce",
+        "--redaction",
+        "1",
+        "--known-at-most",
+        &pin_seq,
+        "--out",
+        auditor_token,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "verify",
+        "--grant",
+        "produce",
+    ]);
+    assert_eq!(code, 0, "Auditor issuance: {out}");
+    // Post a new entry after the pin, then verify the pinned Auditor token can read at <= pin_seq
+    // and is refused at the new head.
+    write(
+        &dir,
+        "after-pin.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-16","idempotency_key":"after-auditor-pin","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6000","amount":"5.00 USD"}},{{"side":"credit","account":"1000","amount":"5.00 USD"}}]}}"#
+        ),
+    );
+    let (code, out, _) = run(&["post", "--intent", "after-pin.json", "--grant", "post"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out, _) = run(&[
+        "--token",
+        auditor_token,
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &pin_seq,
+    ]);
+    assert_eq!(code, 0, "pinned Auditor reads at pin_seq: {out}");
+    let (code, out, _) = run(&["--token", auditor_token, "tb", "--period", "FY2026-P03"]);
+    assert_eq!(code, 7, "pinned Auditor refused at later head: {out}");
+    assert!(out.contains("FA-REF-011"), "{out}");
+    assert!(out.contains("the token is pinned at <="), "{out}");
     Ok(())
 }
