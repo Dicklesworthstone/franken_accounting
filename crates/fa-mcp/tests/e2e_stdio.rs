@@ -449,6 +449,8 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         &[
             "--cluster",
             "fa.close",
+            "--cluster",
+            "fa.proof",
             "--grant",
             "read",
             "--grant",
@@ -586,7 +588,17 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
     }
     assert_eq!(mcp.finish(), 0);
 
-    let mut producer = Mcp::start_with(&book, &["--grant", "read", "--grant", "produce"]);
+    let mut producer = Mcp::start_with(
+        &book,
+        &[
+            "--cluster",
+            "fa.proof",
+            "--grant",
+            "read",
+            "--grant",
+            "produce",
+        ],
+    );
     producer.discover();
     for (tool, family, event_name, args) in [
         (
@@ -1615,23 +1627,19 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert!(findings_res["procedures"]["procedures"].is_array());
     assert_eq!(findings_res["findings"]["evidence"], json!("FA-EVID-L01"));
     assert_eq!(findings_res["findings"]["claim"], json!("statistical"));
-    let read = mcp.result(
+    let cases = mcp.request(
         "resources/read",
         json!({"uri": "resource://fa/cases/default"}),
     );
-    let cases_res: JsonValue =
-        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
-    assert!(cases_res["periods"]["periods"].is_array());
-    assert_eq!(cases_res["cases"], json!([]));
+    assert!(cases.get("error").is_some(), "unimplemented cases: {cases}");
     let read = mcp.result(
         "resources/read",
         json!({"uri": "resource://fa/drafts/default"}),
     );
-    let drafts_res: JsonValue =
-        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(
-        drafts_res["portable_planning"]["commit_tool"],
-        json!("fa_post_commit_plan")
+        read["contents"][0]["text"].as_str().unwrap(),
+        cli_data(&["draft", "list", "--book", &b, "--json"]),
+        "draft resource must read the actual book inventory",
     );
     let read = mcp.result(
         "resources/read",
@@ -1641,14 +1649,11 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(cert_res["oid"], json!(certificate_oid));
     assert_eq!(cert_res["status"], json!("SupersededBy"));
-    let read = mcp.result(
+    let bundle = mcp.request(
         "resources/read",
         json!({"uri": "resource://fa/bundles/bundle-1"}),
     );
-    let bundle_res: JsonValue =
-        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(bundle_res["bundle_id"], json!("bundle-1"));
-    assert_eq!(bundle_res["accumulator"]["status"], json!("no_checkpoints"));
+    assert!(bundle.get("error").is_some(), "unknown bundle: {bundle}");
     let read = mcp.result(
         "resources/read",
         json!({"uri": "resource://fa/capabilities/session"}),
@@ -1682,12 +1687,12 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     );
     let (is_error, text, _) = call_tool(
         &mut mcp,
-        "fa_macro_record_and_match_cash",
+        "fa_macro_inspect_cash_matching",
         json!({"account": "1000", "period": "FY2026-P03"}),
     );
-    assert!(!is_error, "fa_macro_record_and_match_cash: {text}");
+    assert!(!is_error, "fa_macro_inspect_cash_matching: {text}");
     let cash_macro: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
-    assert_eq!(cash_macro["macro"], json!("fa.macro.record_and_match_cash"));
+    assert_eq!(cash_macro["macro"], json!("fa.macro.inspect_cash_matching"));
     assert_eq!(cash_macro["step_count"], json!(3));
     let (is_error, text, _) = call_tool(
         &mut mcp,
@@ -1701,15 +1706,15 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(inv_macro["certificates"].as_array().unwrap().len(), 1);
     let (is_error, text, _) = call_tool(
         &mut mcp,
-        "fa_macro_produce_audit_package",
+        "fa_macro_certify_period_reports",
         json!({"period": "FY2026-P03"}),
     );
-    assert!(!is_error, "fa_macro_produce_audit_package: {text}");
+    assert!(!is_error, "fa_macro_certify_period_reports: {text}");
     let pkg_macro: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
-    assert_eq!(pkg_macro["macro"], json!("fa.macro.produce_audit_package"));
+    assert_eq!(pkg_macro["macro"], json!("fa.macro.certify_period_reports"));
     assert_eq!(pkg_macro["step_count"], json!(4));
     assert_eq!(pkg_macro["certificates"].as_array().unwrap().len(), 3);
-    log("all 13 resources and 4 workflow macros verified over stdio");
+    log("live resources, unavailable resource refusals and 4 workflow macros verified over stdio");
 
     // A portable plan runs under the actual launch capability. Rejected
     // overrides and other launch authorities cannot publish its effects.
@@ -2689,7 +2694,17 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
     };
     let before = cli(&["book", "info", "--book", &b, "--json"]);
     assert_eq!(before.0, 0);
-    let mut mcp = Mcp::start_with(&book, &["--principal", "reader", "--grant", "read"]);
+    let mut mcp = Mcp::start_with(
+        &book,
+        &[
+            "--cluster",
+            "fa.evidence",
+            "--principal",
+            "reader",
+            "--grant",
+            "read",
+        ],
+    );
     mcp.discover();
     for path in paths {
         for (wire, argument, mut input) in [
@@ -3596,7 +3611,10 @@ fn agent_upload_is_self_sourced_and_forged_human_grade_is_refused() {
     ]);
     cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
 
-    let mut mcp = Mcp::start_with(&book, &["--principal", "agent-uploader"]);
+    let mut mcp = Mcp::start_with(
+        &book,
+        &["--cluster", "fa.evidence", "--principal", "agent-uploader"],
+    );
     mcp.discover();
 
     // 1. Agent session uploads inline text -> AgentUpload, self_sourced = true.
@@ -3715,7 +3733,14 @@ fn agent_upload_is_self_sourced_and_forged_human_grade_is_refused() {
     // and require an independent Human `Reviewed` attestation before posting.
     let mut mcp_prep = Mcp::start_with(
         &book,
-        &["--profile", "preparer", "--principal", "mcp-preparer"],
+        &[
+            "--cluster",
+            "fa.evidence",
+            "--profile",
+            "preparer",
+            "--principal",
+            "mcp-preparer",
+        ],
     );
     mcp_prep.discover();
     let (err, prep_upload_out, _) = call_tool(

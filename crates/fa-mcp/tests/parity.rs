@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_cli::verbs::{Registry, registry};
-use fa_mcp::registry::{FORBIDDEN_ARGUMENTS, McpRegistry, SOURCE, ToolSpec};
+use fa_mcp::registry::{FORBIDDEN_ARGUMENTS, MACROS, McpRegistry, SOURCE, ToolSpec};
 use fastmcp_rust::{JsonValue, json};
 
 fn embedded() -> (McpRegistry, &'static Registry) {
@@ -163,9 +163,20 @@ fn no_cluster_has_more_than_seven_tools_and_the_limit_is_seven() {
         .sum();
     assert_eq!(total, mcp.exposed(&[]).count());
     assert!(
-        total <= 40,
-        "plan §15.4: at most 40 tools by default, got {total}"
+        total + MACROS.len() <= 40,
+        "plan §15.4: at most 40 tools by default, including {} macros, got {}",
+        MACROS.len(),
+        total + MACROS.len(),
     );
+    for cluster in ["fa.evidence", "fa.forensics", "fa.proof"] {
+        assert!(mcp.cluster(cluster).unwrap().on_demand);
+        assert!(mcp.exposed(&[]).all(|tool| tool.cluster != cluster));
+        assert_eq!(
+            mcp.exposed(&[cluster.into()]).count(),
+            total + mcp.tools_of(cluster).count(),
+            "the entire {cluster} surface remains available on demand",
+        );
+    }
     println!("fa-mcp parity: clusters {counts:?}");
 }
 

@@ -225,6 +225,41 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
         ],
     );
     reader.discover();
+    let draft_resource = reader.result(
+        "resources/read",
+        json!({"uri": "resource://fa/drafts/default"}),
+    );
+    let draft_text = draft_resource["contents"][0]["text"].as_str().unwrap();
+    assert_eq!(
+        draft_text,
+        cli_data(&["draft", "list", "--book", &fixture.book_arg, "--json"]),
+        "the read-only session sees the journaled draft inventory",
+    );
+    let draft_inventory = wire(draft_text);
+    let drafts = draft_inventory["drafts"].as_array().unwrap();
+    assert_eq!(drafts.len(), 2);
+    for (index, name) in names.iter().enumerate() {
+        let actual = drafts
+            .iter()
+            .find(|draft| draft["name"] == json!(name))
+            .expect("recorded draft");
+        let original = wire(&original_drafts[index]);
+        assert_eq!(actual, &original["draft"]);
+        assert_eq!(actual["intents"], json!(1));
+        assert_eq!(actual["owner"], wire(&expected[index])["owner"]);
+    }
+    let resource_authority = wire(draft_resource["contents"][1]["text"].as_str().unwrap());
+    assert_eq!(resource_authority["authority"]["ops"], json!(["read"]));
+    for uri in [
+        "resource://fa/cases/default",
+        "resource://fa/bundles/unknown",
+    ] {
+        let response = reader.request("resources/read", json!({"uri": uri}));
+        assert!(
+            response.get("error").is_some(),
+            "unavailable {uri}: {response}"
+        );
+    }
     let listed = reader.result("tools/list", json!({}));
     let tool = listed["tools"]
         .as_array()
