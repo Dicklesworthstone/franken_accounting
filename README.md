@@ -607,14 +607,14 @@ foundation revision are recorded with the implementation landing.
 | | `franken_accounting` |
 |---|---|
 | Truth | The journal. There are no balance rows; registers, trial balances, statements, agings, and findings are derived folds, never authoritative, always verifiable by recomputation (`fa verify registers` — available now). |
-| Immutability | Append-only. Corrections are `Reverse` (available now) and `Replace`/`Reclass`/`Restate` (`fa-oz3`) entries with `SUPERSEDES` lineage. Period close, reopen, and lock are journaled, approved control entries — never a flag (available now). |
-| Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied (available now). Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence (available now). GQL selectors `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03` (`fa-x8n`), `AS ORIGINALLY REPORTED` (`fa-9ae`), `AS CURRENTLY STATED` (`fa-oz3`), `AS REPORTED IN <certificate>` (`fa-9ae`) are target selectors, not backups. |
+| Immutability | Append-only. Corrections are `Reverse` and one-step `Replace` (`fa reverse --replace-with`) entries with `SUPERSEDES` lineage (available now); a typed `fa reclass` verb is target (`fa-i7e`), and restatement cases are target (`fa-75j4`). Period close, reopen, and lock are journaled, approved control entries — never a flag (available now). |
+| Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied (available now). Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence (available now). GQL selectors `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03` (`fa-5c1`), `AS ORIGINALLY REPORTED`, `AS CURRENTLY STATED` and `AS REPORTED IN <certificate>` (`fa-wrrw`) are target selectors, not backups; `fa tb --as-originally-reported` already reads one period as of its first Lock. |
 | Exactness | `Amount { unit, mantissa: i128 }` at the unit's registered scale; every rounding, allocation, and FX conversion names a registered law and exact error bound (available now). Native residual postings are explicit where the law requires them; base-valuation residuals are recorded and absorbed under plan §5.2 (`fa-s3c`). No float ever touches an amount. No tolerance. No auto-balancing. |
-| Evidence | Nothing posts without a why: documents, attestations, supplements, and `fa explain evidence <entry-vid>` are available now; REA events (`fa-bvx`) and posting-rule versions (`fa-c34`) complete the target content-addressed provenance closure. |
-| Proofs | A journal-level Merkle accumulator with signed `TransparencyCheckpoint`s, `.fab` evidence bundles with signed production receipts, and `fa-verify`, a dependency-free static verifier a regulator runs on an air-gapped laptop (available now; external witness quorum `fa-l3c`). |
-| Graph | Accounts, entities, parties, instruments, documents, periods, findings are vertices; legs, approvals, ownership, settlement, intercompany pairs, supersession are edges. Journal-entry tests, Benford, duplicates, sequence gaps, cutoff, aging, round-trips, structuring, and LIBR/FIFO/pro-rata/taint tracing run via `fa procedure run` today; related-party exposure, layering, kiting, and Ponzi motifs are target (`fa-412`, `fa-q2e`). |
+| Evidence | Nothing posts without a why: documents, attestations, supplements, REA events (`fa event record`), and `fa explain evidence <entry-vid>` are available now; posting-rule versions (`fa-c34`) complete the target content-addressed provenance closure. |
+| Proofs | A journal-level Merkle accumulator with signed `TransparencyCheckpoint`s, `.fab` evidence bundles with signed production receipts, and `fa-verify`, a dependency-free static verifier a regulator runs on an air-gapped laptop (available now; an external witness quorum is target, `fa-qtfd`). |
+| Graph | Accounts, entities, parties, instruments, documents, periods, findings are vertices; legs, approvals, ownership, settlement, intercompany pairs, supersession are edges. Journal-entry tests, Benford, duplicates, sequence gaps, cutoff, aging, round-trips, structuring, circular flows, layering, communities, related-party exposure, shell signatures, concentration, identity resolution, LIBR/FIFO/LIFO/pro-rata tracing of tainted value (single-account and network), court-ordered restitution schedules, Ponzi net investment, balance-sheet and cash-flow solvency, preference and fraudulent-transfer lookback, rising-tide and pro-rata distribution, and but-for damages run via `fa procedure run` today; check kiting has no procedure or bead yet. |
 | Determinism | Same closure ⇒ byte-identical output, with a certificate (`fa tb|statement|explain|open-items --certify`, `fa replay` — available now; cross-registry-version certificate survival `fa-vdc`). |
-| Agents | Dry-run plans (`fa post --dry-run --plan-out` / `fa commit --plan`), refusals that name the law and the exact fix, `fa triage` in one call, robot-mode NDJSON, and `fa-mcp` with the same verbs (available now); domain intent verbs (`fa-we7`) and drafts with authorized promotion (`fa-s7x`) are target. |
+| Agents | Dry-run plans (`fa post --dry-run --plan-out` / `fa commit --plan`), refusals that name the law and the exact fix, `fa triage` in one call, robot-mode NDJSON, `fa-mcp` with the same verbs, drafts with authorized promotion (`fa draft new|plan|promote`), and the typed `fa invoice|bill|receipt|payment` verbs (available now); the remaining typed verbs (`fa-i7e`), plan certificates (`fa-we7`) and the rest of the draft life cycle (`fa-s7x`) are target. |
 | Safety | `unsafe_code = "forbid"` everywhere, zero unsafe islands. Dependencies are `std`, the pinned nightly and suitable Franken-suite foundations with exact pins and recorded transitive paths. Unrelated third-party crates are not imported directly by accounting code. FrankenGraphDB is the sole book storage engine. |
 
 ---
@@ -653,7 +653,7 @@ fa tb --period FY2025-P12 --as-originally-reported --book acme.fabook --json
 fa reverse <vid> --reason WrongAccount --book acme.fabook --json
 # One-step correction: the reversal and the corrected entry commit together, both or neither (available today).
 fa reverse <vid> --reason WrongAmount --replace-with corrected.json --book acme.fabook --json
-# Target (fa-oz3): `fa case` for restatement cases.
+# Target (fa-75j4): `fa case` for restatement cases.
 fa case open --kind Restatement --periods FY2024-Q4 --narrative restatement-memo.pdf
 
 # Rehearse the close on a draft, diff it, let a human promote it (drafts available today; close dry-run and diff are target fa-4o0 / fa-s7x).
@@ -663,13 +663,10 @@ fa close dry-run --period 2026-03 --draft close-2026-03 --json
 # Target (fa-s7x):
 fa diff --from draft:close-2026-03 --to trunk --json
 
-# Forensics, in the database, certified (`fa procedure run` available today; `fa jet` / `fa trace` aliases and `graph.related_party_exposure` are target fa-412 / fa-q2e).
-# Target (fa-412):
-fa jet --period FY2025 --json
-# Target (fa-q2e):
-fa trace libr --source P-412 --from 2025-01-01 --to 2025-12-31 --max-hops 8 --json
-# Target (fa-412):
-fa procedure run graph.related_party_exposure --param entity=ACME --json
+# Forensics, in the database, certified (available today; `fa procedure list` names every registered procedure and its parameters).
+fa procedure run jet.weekend --book acme.fabook --json
+fa procedure run trace.libr --effective-through 2025-12-31 --account 1010 --source <deposit entry vid> --book acme.fabook --json
+fa procedure run graph.related_party_exposure --param max_depth=4 --book acme.fabook --json
 
 # Proofs an outsider can check without the book (`fa bundle produce` and `fa-verify bundle` available today).
 fa bundle produce --account 1000 --from 2025-01-01 --to 2025-12-31 --inline-documents --out fy2025-cash.fab --receipt-out fy2025-cash.receipt --book acme.fabook --json
@@ -706,7 +703,7 @@ fa chart open office-supplies.json --opened 2026-03-01 --book acme.fabook --json
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.
 
 ```gql
--- Target (fa-x8n): GQL through the substrate, plus the FrankenAccounting profile.
+-- Target (fa-5c1): GQL through the substrate, plus the FrankenAccounting profile.
 MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code:'1200'}), (l)-[:FOR]->(:DimensionValue)<-[:IS]-(p:Party)
 WHERE EXISTS { MATCH (p)-[:RELATED_TO|OWNS|CONTROLS*1..3]-(:LegalEntity {code:'ACME'}) EFFECTIVE AT l.effective_date }
 FOR PERIOD 'FY2025' AS KNOWN AT '2026-02-01T00:00:00Z'
