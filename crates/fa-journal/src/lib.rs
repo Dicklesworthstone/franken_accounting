@@ -159,7 +159,8 @@ pub use engagement::{
     AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, EngagementKind,
     EngagementOpened, EngagementProfile, EngagementRequest, EngagementState, EngagementView,
     Materiality, ProposalLeg, ProposalView, ProposedAdjustment, RecordedDecision,
-    decide_adjustment, list_engagements, open_engagement, propose_adjustment, read_engagement,
+    StatementEffect, UncorrectedItem, UncorrectedSummary, decide_adjustment, list_engagements,
+    open_engagement, propose_adjustment, read_engagement, uncorrected_misstatements,
 };
 pub use production::{
     BatesRange, Produced, ProducedDocument, ProducedRange, ProductionOpened, ProductionProfile,
