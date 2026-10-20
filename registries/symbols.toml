@@ -192,8 +192,11 @@ name = "BatesRange"
 [[label]]
 id = 52
 name = "AccessEvent"
+
+# fa-zgn: one proposed adjustment in one engagement (plan §11.12), staged by
+# the Propose record; its records are EngagementControl entries.
 [[label]]
-id = 60
+id = 53
 name = "ProposedAdjustment"
 
 # ---- property keys --------------------------------------------------------
@@ -386,9 +389,6 @@ name = "unit_table_digest"
 [[property]]
 id = 69
 name = "next_bates"
-[[property]]
-id = 80
-name = "next_proposal"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]
