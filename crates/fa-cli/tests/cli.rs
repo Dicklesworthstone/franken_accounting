@@ -3260,6 +3260,22 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
     let (code, out, err) = fa(Some(&book), &argv);
     assert_eq!(code, 8, "{out}\n{err}");
     assert!(out.contains("missing"), "{out}");
+    // An audited value in another unit is refused for its unit (exit 2).
+    let item = text(&arr(&mus, "selected")[0], "item_id").to_string();
+    let mut other_unit = rows.clone();
+    other_unit[0] = format!(r#"{{"item_id":"{item}","audited":"90.00 EUR"}}"#);
+    let other_unit = write(
+        &dir,
+        "other-unit.json",
+        &format!(r#"{{"items":[{}]}}"#, other_unit.join(",")),
+    );
+    let argv = evaluate(&other_unit);
+    let mut argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    argv.insert(0, "sample");
+    argv.push("--json");
+    let (code, out, err) = fa(Some(&book), &argv);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(out.contains("not in the sample's unit USD"), "{out}");
     let mut argv = evaluate(&audited);
     assert_eq!(argv[7], "--as-known-at");
     argv.drain(7..9);
@@ -3339,6 +3355,85 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         argv.push("--json");
         let (code, out, err) = fa(Some(&book), &argv);
         assert_eq!(code, 2, "{argv:?}\n{out}\n{err}");
+    }
+
+    // The sample discloses the account's open items, so a token is judged
+    // as `fa open-items` judges it, before the query (doctrine 8, fa-0x0):
+    // confined to March, bounded to effective dates through March 31, or
+    // pinned at the first sequence, the whole-book read is refused
+    // (FA-REF-011, exit 7), and an evaluation is refused before its audited
+    // values are judged. Inside its caveats a token draws the owner's sample.
+    let token = |holder: &str, scope: &[&str]| -> String {
+        let path = dir.join(format!("{holder}.token")).display().to_string();
+        let mut argv = vec![
+            "capability",
+            "issue",
+            "--holder",
+            holder,
+            "--profile",
+            "human",
+            "--op",
+            "read",
+            "--out",
+            path.as_str(),
+            "--grant",
+            "issue_capability",
+            "--json",
+        ];
+        argv.extend_from_slice(scope);
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{out}\n{err}");
+        path
+    };
+    let march = token("auditor-march", &["--period", "FY2026-P03"]);
+    let through = token("auditor-q1", &["--effective-through", "2026-03-31"]);
+    let pinned = token("auditor-pinned", &["--known-at-most", &first]);
+    let scoped = |token: &str, args: &[&str]| {
+        let mut argv = vec!["--token", token, "sample"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    for (token, as_of, caveat) in [
+        (march.as_str(), false, "`periods`"),
+        (march.as_str(), true, "`periods`"),
+        (through.as_str(), false, "`effective`"),
+        (pinned.as_str(), false, "`known_at`"),
+    ] {
+        let mut args = uniform.to_vec();
+        if as_of {
+            args.extend(["--as-of", "2026-03-20"]);
+        }
+        let (code, out, err) = scoped(token, &args);
+        assert_eq!(code, 7, "{args:?}\n{out}\n{err}");
+        assert!(out.contains("FA-REF-011") && out.contains(caveat), "{out}");
+    }
+    let argv = evaluate(&audited);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, out, err) = scoped(&march, &argv);
+    assert_eq!(code, 7, "{out}\n{err}");
+    assert!(
+        out.contains("FA-REF-011") && out.contains("`periods`"),
+        "{out}"
+    );
+    for (token, extra) in [
+        (through.as_str(), ["--as-of", "2026-03-20"]),
+        (pinned.as_str(), ["--as-known-at", first.as_str()]),
+    ] {
+        let mut args = uniform.to_vec();
+        args.extend(extra);
+        let (code, theirs, err) = scoped(token, &args);
+        assert_eq!(code, 0, "{args:?}\n{theirs}\n{err}");
+        let (theirs, ours) = (doc(&theirs), doc(&draw(&args)));
+        for key in [
+            "known_at",
+            "population_count",
+            "population_digest",
+            "sample_digest",
+            "selected",
+        ] {
+            assert_eq!(theirs.get(key), ours.get(key), "{key}");
+        }
     }
     Ok(())
 }

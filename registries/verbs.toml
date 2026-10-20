@@ -3821,7 +3821,7 @@ subcommands = ["list"]
 ops = ["read"]
 
 [[bound]]
-verbs = ["tb", "statement", "open-items", "gl", "explain", "replay", "certificate", "entry", "procedure", "triage", "next", "doctor"]
+verbs = ["tb", "statement", "open-items", "gl", "explain", "replay", "certificate", "entry", "procedure", "sample", "triage", "next", "doctor"]
 ops = ["read"]
 
 [[bound]]

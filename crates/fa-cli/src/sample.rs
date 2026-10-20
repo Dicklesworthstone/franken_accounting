@@ -23,7 +23,6 @@ use fa_lantern::LanternError;
 use fa_lantern::sample::{self, MusSelectionBasis, PopulationItem, SamplePopulation};
 use fa_model::account_vid;
 use fa_money::{Amount, Side, UnitId};
-use fa_policy::Op;
 use fa_registers::open_items::OpenItem;
 use fa_time::DateDay;
 use fgdb_types::{CommitSeq, VId};
@@ -157,21 +156,35 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })
         })
         .transpose()?;
-    // Authority precedes observation: the sample discloses the account's
-    // open items, so read is checked before the book is read.
+    // Authority precedes observation (doctrine 8, fa-0x0): the sample
+    // discloses the account's open items, so the capability is admitted as
+    // current read authority on open, and each read is judged by the scope
+    // caveats before its query, exactly as `fa open-items` is.
+    let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
-    fa_policy::require(&capability, Op::Read, "drawing an audit sample")
-        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-    let book = ctx.books.open(args)?;
+    let book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(who, &capability)??;
+        Ok(())
+    })?;
     let (requested, _) = known_at_flag(args, &book, &ctx.out)?;
     let account = account_vid(book.context().book_id, code);
     let (known_at, items) = match as_of {
         Some(day) => {
+            // The snapshot reaches every period that starts by its day.
+            book.read_scope(who, &capability)??
+                .admit_as_of(day, requested)??;
             let snapshot = book.open_items_as_of(Some(account), day, requested)?;
             ctx.out.effective(format!("as-of:{day}"));
             (snapshot.known_at, snapshot.items)
         }
         None => {
+            // Open items reach the whole book.
+            book.read_scope(who, &capability)??.admit_report(
+                &fa::ReportSelection::OpenItems {
+                    account: Some(account),
+                },
+                requested,
+            )??;
             let report = book.open_items_report(Some(account), requested)?;
             (report.known_at, report.items)
         }
@@ -510,12 +523,24 @@ fn evaluate(
                 AUDITED_SHAPE,
             ));
         };
-        let value = Amount::parse(text, units).map_err(|e| {
-            usage(
-                format!("audited value of {id}: {e}"),
-                format!("\"95.00 {}\", in the sample's unit", drawn.unit_code),
-            )
-        })?;
+        let value = Amount::parse(text, units)
+            .map_err(|e| format!("audited value of {id}: {e}"))
+            .and_then(|value| {
+                if value.unit == drawn.population.unit {
+                    Ok(value)
+                } else {
+                    Err(format!(
+                        "audited value of {id} is not in the sample's unit {}",
+                        drawn.unit_code
+                    ))
+                }
+            })
+            .map_err(|message| {
+                usage(
+                    message,
+                    format!("\"95.00 {}\", in the sample's unit", drawn.unit_code),
+                )
+            })?;
         if values.insert(id, value).is_some() {
             return Err(usage(
                 format!("{id} has more than one audited value"),
