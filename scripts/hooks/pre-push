@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# =============================================================================
+# scripts/hooks/pre-push — Pre-push verdict guard (bead fa-7dx)
+# =============================================================================
+# Refuses a push to `refs/heads/main` or `refs/heads/staging` unless the pushed
+# tip has a green verdict note (`refs/notes/verdicts`, `refs/notes/fa-verdict`,
+# or `refs/notes/merge-train`) bound to its exact tree hash.
+# Pushes to `refs/heads/train/*` and `refs/notes/*` are always allowed.
+#
+# Enforcement is active when `FA_PRE_PUSH_STRICT=1` or `git config --bool fa.prePushStrict`
+# is `true` (set by `scripts/install-hooks.sh --strict`). Otherwise emits an
+# advisory warning so concurrent swarm agents are not disrupted.
+# =============================================================================
+
+set -uo pipefail
+
+strict="${FA_PRE_PUSH_STRICT:-}"
+if [ -z "$strict" ]; then
+  if [ "$(git config --bool fa.prePushStrict 2>/dev/null || echo false)" = "true" ]; then
+    strict=1
+  else
+    strict=0
+  fi
+fi
+
+has_green_verdict_for_tree() {
+  local sha="$1" expected_tree="$2" ref note
+  for ref in verdicts fa-verdict merge-train owner-watch; do
+    note="$(git notes --ref="$ref" show "$sha" 2>/dev/null || true)"
+    [ -n "$note" ] || continue
+    if grep -Eqx 'verdict=(pass|GREEN)' <<< "$note" \
+      && grep -Fxq "tree=$expected_tree" <<< "$note"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+while read -r local_ref local_sha remote_ref _remote_sha; do
+  [ -n "${local_ref:-}" ] || continue
+  # Deleting a ref (all-zero local_sha) or pushing to train/* or notes/* is allowed
+  if [[ "$local_sha" =~ ^0+$ ]]; then
+    continue
+  fi
+  case "$remote_ref" in
+    refs/heads/train/*|refs/notes/*)
+      continue
+      ;;
+    refs/heads/main|refs/heads/staging|refs/heads/master)
+      tree_sha="$(git rev-parse "${local_sha}^{tree}" 2>/dev/null || echo unknown)"
+      if ! has_green_verdict_for_tree "$local_sha" "$tree_sha"; then
+        msg="pre-push: tip ${local_sha:0:12} (tree ${tree_sha:0:12}) pushed to $remote_ref has no green verdict note for its exact tree.
+  Fix options:
+    1. Prove the tree locally:  bash scripts/local_proof.sh --publish-note
+    2. Queue for merge train:   git push origin HEAD:refs/heads/train/<bead>-<agent>"
+        if [ "$strict" = "1" ]; then
+          printf 'REFUSED %s\n' "$msg" >&2
+          exit 1
+        else
+          printf 'WARNING %s\n' "$msg" >&2
+        fi
+      fi
+      ;;
+  esac
+done
+
+exit 0

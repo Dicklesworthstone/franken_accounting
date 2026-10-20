@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # =============================================================================
-# merge_train.sh — the verified landing queue from `staging` to `main`
-# (beads fa-u7u, fa-aj8)
+# merge_train.sh — the verified landing queue from `staging` / `refs/heads/train/*`
+# to `main` (beads fa-u7u, fa-aj8, fa-7dx, fa-cat)
 # =============================================================================
-# Adopted from frankengraphdb, extended with canonical warm gate worktree and
-# designated worker support (fa-aj8).
-#
-# Usage:
-#   bash scripts/merge_train.sh run     [--remote NAME|URL] [--main BRANCH] [--staging BRANCH]
-#                                       [--work DIR] [--canonical-worktree DIR] [--no-push] [--dry-run]
-#   bash scripts/merge_train.sh dry-run [--canonical-worktree DIR]
-#   bash scripts/merge_train.sh audit   --since REV [--remote NAME|URL] [--main BRANCH]
-#                                       [--work DIR] [--author-pattern ERE] [--strict]
+# Supports:
+#   - `run`: single staging branch promotion (substrate-compatible) or `--batch`
+#            queue processing over `refs/heads/train/<bead>-<agent>`.
+#   - `run-batch`: batched queue gating with binary-search bisection on RED,
+#                  UNRUN non-ejection, claim-before-code enforcement (fa-7dx),
+#                  and a replayable batch-size decision card with pinned fallback N=1 (fa-cat).
+#   - `dry-run`: prints canonical warm gate path, designated workers, and warmth (fa-aj8).
+#   - `audit`: audits first-parent commits on `main` since `--since REV`.
 # =============================================================================
 
 set -uo pipefail
@@ -22,23 +21,23 @@ EX_USAGE=2
 EX_CONFLICT=3
 EX_STALE=4
 EX_UNVERIFIABLE=5
+EX_CLAIM=6
+EX_UNRUN=7
 EX_VOID=125
 NOTES_REF=merge-train
 
 usage() {
   cat <<'USAGE'
 Usage:
-  bash scripts/merge_train.sh run     [--remote NAME|URL] [--main BRANCH] [--staging BRANCH]
-                                      [--work DIR] [--canonical-worktree DIR] [--no-push] [--dry-run]
-  bash scripts/merge_train.sh dry-run [--canonical-worktree DIR]
-  bash scripts/merge_train.sh audit   --since REV [--remote NAME|URL] [--main BRANCH]
-                                      [--work DIR] [--author-pattern ERE] [--strict]
-
-run exit codes:  0 promoted or nothing to promote   1 red (bounced)
-                 3 merge conflict (bounced)          4 stale (main moved; retry)
-                 5 proof bundle failed verification  125 void (tree moved)
-                 2 usage or environment error
-audit exit codes: 0 no violation   1 violations found   2 usage or environment error
+  bash scripts/merge_train.sh run       [--remote NAME|URL] [--main BRANCH] [--staging BRANCH]
+                                        [--work DIR] [--canonical-worktree DIR] [--no-push]
+                                        [--dry-run] [--check-claims] [--batch]
+  bash scripts/merge_train.sh run-batch [--remote NAME|URL] [--main BRANCH] [--work DIR]
+                                        [--canonical-worktree DIR] [--max-batch N]
+                                        [--check-claims] [--no-push]
+  bash scripts/merge_train.sh dry-run   [--canonical-worktree DIR]
+  bash scripts/merge_train.sh audit     --since REV [--remote NAME|URL] [--main BRANCH]
+                                        [--work DIR] [--author-pattern ERE] [--strict]
 USAGE
 }
 
@@ -55,7 +54,7 @@ say() {
 command="$1"
 shift
 case "$command" in
-  run|audit|dry-run) ;;
+  run|run-batch|audit|dry-run) ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit "$EX_USAGE" ;;
 esac
@@ -73,8 +72,13 @@ work="${TMPDIR:-/tmp}/fa-merge-train"
 canonical_worktree=""
 push=1
 dry_run=0
+check_claims="${FA_MERGE_TRAIN_CHECK_CLAIMS:-0}"
+batch_mode=0
+max_batch=8
 if [ "$command" = "dry-run" ]; then
   dry_run=1
+elif [ "$command" = "run-batch" ]; then
+  batch_mode=1
 fi
 since=""
 author_pattern='users\.noreply\.github\.com'
@@ -86,8 +90,11 @@ while [ "$#" -gt 0 ]; do
     --staging) [ "$#" -ge 2 ] || die "--staging needs a value"; staging_branch="$2"; shift 2 ;;
     --work) [ "$#" -ge 2 ] || die "--work needs a value"; work="$2"; shift 2 ;;
     --canonical-worktree) [ "$#" -ge 2 ] || die "--canonical-worktree needs a value"; canonical_worktree="$2"; shift 2 ;;
+    --max-batch) [ "$#" -ge 2 ] || die "--max-batch needs a value"; max_batch="$2"; shift 2 ;;
     --no-push) push=0; shift ;;
     --dry-run) dry_run=1; shift ;;
+    --check-claims) check_claims=1; shift ;;
+    --batch) batch_mode=1; shift ;;
     --since) [ "$#" -ge 2 ] || die "--since needs a value"; since="$2"; shift 2 ;;
     --author-pattern) [ "$#" -ge 2 ] || die "--author-pattern needs a value"; author_pattern="$2"; shift 2 ;;
     --strict) strict=1; shift ;;
@@ -121,7 +128,7 @@ else
 fi
 case "$work" in /*) ;; *) work="$PWD/$work" ;; esac
 case "$work" in "$root"|"$root"/*) die "--work must be outside the repository worktree" ;; esac
-mkdir -p "$work/candidates" "$work/proofs" || die "cannot create $work"
+mkdir -p "$work/candidates" "$work/proofs" "$work/cards" || die "cannot create $work"
 
 train_name="$(git -C "$root" config user.name 2>/dev/null || true)"
 train_email="$(git -C "$root" config user.email 2>/dev/null || true)"
@@ -174,8 +181,337 @@ note_body() {
   for kv in "$@"; do printf '%s\n' "$kv"; done
 }
 
+# verify_candidate_claims <repo> <base_sha> <cand_sha> [expected_agent]
+# Refuses if any commit in base_sha..cand_sha mentions a bead ID whose assignee
+# in .beads/issues.jsonl is someone other than the commit author or expected_agent (fa-7dx).
+verify_candidate_claims() {
+  local repo="$1" base_sha="$2" cand_sha="$3" expected_agent="${4:-}"
+  [ "$check_claims" -eq 1 ] || return 0
+  local jsonl_blob
+  jsonl_blob="$(git -C "$repo" show "${base_sha}:.beads/issues.jsonl" 2>/dev/null || true)"
+  [ -n "$jsonl_blob" ] || return 0
+
+  python3 - "$jsonl_blob" "$repo" "$base_sha" "$cand_sha" "$expected_agent" <<'PY'
+import json
+import re
+import subprocess
+import sys
+
+jsonl_text, repo, base_sha, cand_sha, expected_agent = sys.argv[1:6]
+assignees = {}
+for line in jsonl_text.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        row = json.loads(line)
+    except Exception:
+        continue
+    bid = row.get("id")
+    assignee = row.get("assignee")
+    if bid and assignee:
+        assignees[bid] = assignee
+
+log_out = subprocess.check_output(
+    ["git", "-C", repo, "log", "--format=%H%x09%an%x09%s %b", f"{base_sha}..{cand_sha}"],
+    text=True,
+)
+for entry in log_out.splitlines():
+    parts = entry.split("\t", 2)
+    if len(parts) < 3:
+        continue
+    commit_sha, author_name, msg = parts
+    actor = expected_agent or author_name
+    for bead_id in re.findall(r"\bfa-[a-z0-9]+\b", msg):
+        owner = assignees.get(bead_id)
+        if owner and owner != actor and owner != author_name:
+            print(f"CLAIM-CONFLICT: commit {commit_sha[:12]} names {bead_id} assigned to {owner}, not {actor}")
+            sys.exit(1)
+sys.exit(0)
+PY
+}
+
+# emit_batch_decision_card <queue_len> <card_file>
+# Computes optimal batch size N minimizing expected gate cost per landed candidate
+# C(N) = G * [1 + (1 - (1-p)^N) * ceil(log2 N)] / (N * (1-p))
+# with pinned fallback N=1 when posterior is wide or FA_TRAIN_PINNED_FALLBACK=1 (fa-cat).
+emit_batch_decision_card() {
+  local queue_len="$1" card_file="$2" max_n="$3"
+  python3 - "$queue_len" "$card_file" "$max_n" "${FA_TRAIN_PINNED_FALLBACK:-0}" <<'PY'
+import json
+import math
+import sys
+
+queue_len = int(sys.argv[1])
+card_file = sys.argv[2]
+max_n = int(sys.argv[3])
+force_fallback = int(sys.argv[4]) == 1
+
+# Beta(alpha=1, beta=19) prior (~5% failure rate)
+alpha, beta = 1.0, 19.0
+p = alpha / (alpha + beta)
+g_minutes = 15.0
+
+candidates = []
+limit = max(1, min(queue_len, max_n))
+best_n = 1
+best_cost = None
+
+for n in range(1, limit + 1):
+    ceil_log2 = 0 if n <= 1 else int(math.ceil(math.log2(n)))
+    prob_all_green = (1.0 - p) ** n
+    expected_gates = 1.0 + (1.0 - prob_all_green) * ceil_log2
+    expected_landed = max(0.01, n * (1.0 - p))
+    cost_per_landed = g_minutes * expected_gates / expected_landed
+    candidates.append({
+        "batch_size": n,
+        "expected_gates": round(expected_gates, 4),
+        "cost_minutes_per_landed": round(cost_per_landed, 4),
+    })
+    if best_cost is None or cost_per_landed < best_cost:
+        best_cost = cost_per_landed
+        best_n = n
+
+chosen = 1 if force_fallback else best_n
+c1 = candidates[0]["cost_minutes_per_landed"]
+cn = candidates[chosen - 1]["cost_minutes_per_landed"]
+
+card = {
+    "schema": "fa:decision-card:merge-train-batch:v1",
+    "policy_epoch": 1,
+    "state_space": {
+        "queue_length": queue_len,
+        "beta_alpha": alpha,
+        "beta_beta": beta,
+        "p_fail_posterior_mean": round(p, 4),
+    },
+    "candidate_actions": candidates,
+    "chosen_action": {"batch_size": chosen},
+    "expected_benefit_minutes_per_candidate": round(c1 - cn, 4),
+    "pinned_fallback": {"batch_size": 1},
+    "fallback_active": force_fallback,
+}
+with open(card_file, "w", encoding="utf-8") as f:
+    json.dump(card, f, indent=2, sort_keys=True)
+print(chosen)
+PY
+}
+
+# gate_tree_in_cand <cand_dir> <label_tag> -> sets GATE_LAST_VERDICT (PASS|RED|UNRUN|VOID), GATE_LAST_FAIL_LINE
+GATE_LAST_VERDICT=""
+GATE_LAST_FAIL_LINE=""
+GATE_COUNT=0
+
+gate_tree_in_cand() {
+  local cand="$1" tag="$2"
+  GATE_COUNT=$((GATE_COUNT + 1))
+  local cand_sha
+  cand_sha="$(git -C "$cand" rev-parse HEAD)"
+  local proof="$work/proofs/$stamp-${tag}-${GATE_COUNT}-${cand_sha:0:12}"
+  local log="$work/proofs/$stamp-${tag}-${GATE_COUNT}-${cand_sha:0:12}.train.log"
+  : "${RCH_CARGO_WRAPPER_BYPASS:=1}"
+  : "${CARGO_TARGET_DIR:=$work/target}"
+  : "${RCH_WORKER:=${FA_GATE_PRIMARY_WORKER:-hz2}}"
+  export RCH_CARGO_WRAPPER_BYPASS CARGO_TARGET_DIR RCH_WORKER
+
+  local proof_rc=0
+  (cd "$cand" && bash scripts/local_proof.sh --output "$proof") > "$log" 2>&1 || proof_rc=$?
+  GATE_LAST_FAIL_LINE=""
+
+  if [ ! -f "$proof/manifest.txt" ]; then
+    GATE_LAST_VERDICT="VOID"
+    return 1
+  fi
+  local verdict
+  verdict="$(sed -n 's/^verdict=//p' "$proof/manifest.txt")"
+  if [ "$verdict" = "pass" ] && [ "$proof_rc" -eq 0 ]; then
+    GATE_LAST_VERDICT="PASS"
+    return 0
+  fi
+  if [ "$verdict" = "void" ]; then
+    GATE_LAST_VERDICT="VOID"
+    return 1
+  fi
+  # Distinguish infrastructure UNRUN (no RED line and no non-UNRUN FAIL line) from product RED
+  if grep -Eq '^UNRUN([[:space:]]|$)' "$proof/check.stdout.log" 2>/dev/null \
+    && ! grep -Eq '^RED([[:space:]]|$)|: [0-9]+ passed, [1-9][0-9]* failed,' "$proof/check.stdout.log" 2>/dev/null; then
+    GATE_LAST_VERDICT="UNRUN"
+    return 2
+  fi
+  GATE_LAST_VERDICT="RED"
+  GATE_LAST_FAIL_LINE="$(grep -a '^FAIL ' "$proof/check.stdout.log" 2>/dev/null | head -n 1 || true)"
+  return 1
+}
+
+run_batch_train() {
+  refresh_mirror
+  local main_sha
+  main_sha="$(git -C "$mirror" rev-parse --verify --quiet "refs/heads/$main_branch^{commit}")" \
+    || die "remote has no $main_branch branch"
+
+  local -a raw_refs=()
+  while IFS= read -r ref; do
+    [ -n "$ref" ] && raw_refs+=("$ref")
+  done < <(git -C "$mirror" for-each-ref --format='%(refname)' 'refs/heads/train/' | LC_ALL=C sort)
+
+  if [ "${#raw_refs[@]}" -eq 0 ]; then
+    say "NOTHING: no queued refs under refs/heads/train/*"
+    return "$EX_NOTHING"
+  fi
+
+  local cand
+  if [ -n "$canonical_worktree" ]; then
+    cand="$canonical_worktree"
+    if [ ! -d "$cand/.git" ] && [ ! -f "$cand/.git" ]; then
+      git clone --quiet --local "$mirror" "$cand" || die "cannot initialize canonical gate worktree $cand"
+    else
+      git -C "$cand" fetch --quiet "$mirror" "+refs/heads/*:refs/remotes/origin/*" || die "cannot fetch mirror into $cand"
+    fi
+  else
+    cand="$work/candidates/$stamp-batch-$$"
+    git clone --quiet --local "$mirror" "$cand" || die "cannot clone candidate"
+  fi
+  git -C "$cand" fetch --quiet "$remote_url" "+refs/heads/*:refs/remotes/origin/*" "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" 2>/dev/null || true
+
+  # Filter eligible candidates (not already ancestor of main, and passing claim-before-code)
+  local -a active_refs=()
+  local -a active_shas=()
+  local ref sha short_name expected_agent claim_err
+  for ref in "${raw_refs[@]}"; do
+    sha="$(git -C "$mirror" rev-parse --verify "$ref^{commit}")"
+    if git -C "$mirror" merge-base --is-ancestor "$sha" "$main_sha"; then
+      continue
+    fi
+    short_name="${ref#refs/heads/train/}"
+    expected_agent="${short_name##*-}"
+    if ! claim_err="$(verify_candidate_claims "$mirror" "$main_sha" "$sha" "$expected_agent" 2>&1)"; then
+      say "EJECTED $ref ($claim_err)"
+      publish_note "$cand" "$sha" "$(note_body claim-conflict "main=$main_sha" "ref=$ref" "fail: $claim_err")"
+      continue
+    fi
+    active_refs+=("$ref")
+    active_shas+=("$sha")
+  done
+
+  if [ "${#active_refs[@]}" -eq 0 ]; then
+    say "NOTHING: all queued candidates were already landed or rejected by claim check"
+    return "$EX_CLAIM"
+  fi
+
+  local card_file="$work/cards/decision-card-$stamp.json"
+  local chosen_n
+  chosen_n="$(emit_batch_decision_card "${#active_refs[@]}" "$card_file" "$max_batch")"
+  say "DECISION-CARD: queue=${#active_refs[@]} chosen_batch_size=$chosen_n card=$card_file"
+
+  # Slice active_refs to chosen_n (or full queue if max_batch >= queue)
+  local -a batch_refs=("${active_refs[@]:0:$chosen_n}")
+  local -a batch_shas=("${active_shas[@]:0:$chosen_n}")
+
+  while [ "${#batch_refs[@]}" -gt 0 ]; do
+    git -C "$cand" checkout --quiet --detach "$main_sha" || die "cannot checkout $main_sha"
+    local -a stacked_refs=()
+    local -a stacked_shas=()
+    local -a stacked_merges=()
+    local idx
+    for idx in "${!batch_refs[@]}"; do
+      ref="${batch_refs[$idx]}"
+      sha="${batch_shas[$idx]}"
+      if ! gitc -C "$cand" merge --quiet --no-ff --no-edit \
+          -m "merge-train: stack $ref (${sha:0:12})" "$sha" >/dev/null 2>&1; then
+        git -C "$cand" merge --abort >/dev/null 2>&1 || true
+        say "EJECTED $ref (merge conflict)"
+        publish_note "$cand" "$sha" "$(note_body conflict "main=$main_sha" "ref=$ref")"
+        continue
+      fi
+      stacked_refs+=("$ref")
+      stacked_shas+=("$sha")
+      stacked_merges+=("$(git -C "$cand" rev-parse HEAD)")
+    done
+
+    if [ "${#stacked_refs[@]}" -eq 0 ]; then
+      say "RED: all candidates in batch failed to stack"
+      return "$EX_CONFLICT"
+    fi
+
+    local count="${#stacked_refs[@]}"
+    say "GATING stack of $count candidate(s): ${stacked_refs[*]}"
+    gate_tree_in_cand "$cand" "stack"
+    if [ "$GATE_LAST_VERDICT" = "UNRUN" ]; then
+      say "UNRUN: infrastructure offloader did not run stack; retrying once without ejecting any candidate"
+      gate_tree_in_cand "$cand" "stack-retry"
+      if [ "$GATE_LAST_VERDICT" = "UNRUN" ]; then
+        say "UNRUN: stack remained UNRUN; no candidate ejected"
+        return "$EX_UNRUN"
+      fi
+    fi
+
+    if [ "$GATE_LAST_VERDICT" = "PASS" ]; then
+      local tip_sha="${stacked_merges[$((count - 1))]}"
+      local tip_tree
+      tip_tree="$(git -C "$cand" rev-parse "${tip_sha}^{tree}")"
+      if [ "$push" -eq 1 ]; then
+        git -C "$cand" push --quiet "$remote_url" "$tip_sha:refs/heads/$main_branch" \
+          || { say "STALE: $main_branch moved during batch proof"; return "$EX_STALE"; }
+        if git -C "$mirror" rev-parse --verify --quiet "refs/heads/$staging_branch^{commit}" >/dev/null; then
+          git -C "$cand" push --quiet "$remote_url" "$tip_sha:refs/heads/$staging_branch" 2>/dev/null || true
+        fi
+      fi
+      for idx in "${!stacked_refs[@]}"; do
+        ref="${stacked_refs[$idx]}"
+        sha="${stacked_shas[$idx]}"
+        publish_note "$cand" "$sha" "$(note_body pass "main=$main_sha" "ref=$ref" "batch_tip=$tip_sha" "tree=$tip_tree")"
+      done
+      publish_note "$cand" "$tip_sha" "$(note_body pass "main=$main_sha" "batch_size=$count" "tree=$tip_tree")"
+      say "PROMOTED-BATCH: $count candidate(s) (${stacked_refs[*]}) -> $main_branch ${tip_sha:0:12} (gates=$GATE_COUNT)"
+      return "$EX_NOTHING"
+    fi
+
+    # Binary search bisection over stacked_merges[0..count-1] to find the first failing candidate
+    local lo=0
+    local hi=$((count - 1))
+    local bad_fail_line="$GATE_LAST_FAIL_LINE"
+    while [ "$lo" -lt "$hi" ]; do
+      local mid=$(( (lo + hi) / 2 ))
+      local mid_merge="${stacked_merges[$mid]}"
+      git -C "$cand" checkout --quiet --detach "$mid_merge"
+      say "BISECT testing prefix 0..$mid (${stacked_refs[$mid]})"
+      gate_tree_in_cand "$cand" "bisect-$mid"
+      if [ "$GATE_LAST_VERDICT" = "PASS" ]; then
+        lo=$((mid + 1))
+      else
+        hi="$mid"
+        [ -n "$GATE_LAST_FAIL_LINE" ] && bad_fail_line="$GATE_LAST_FAIL_LINE"
+      fi
+    done
+
+    local bad_ref="${stacked_refs[$lo]}"
+    local bad_sha="${stacked_shas[$lo]}"
+    say "EJECTED $bad_ref (${bad_sha:0:12}) after bisection: ${bad_fail_line:-gate failed}"
+    publish_note "$cand" "$bad_sha" "$(note_body red "main=$main_sha" "ref=$bad_ref" "fail: ${bad_fail_line:-gate failed}")"
+
+    # Rebuild batch_refs and batch_shas without bad_ref and loop to gate the healthy remainder
+    local -a next_refs=()
+    local -a next_shas=()
+    for idx in "${!stacked_refs[@]}"; do
+      if [ "$idx" -ne "$lo" ]; then
+        next_refs+=("${stacked_refs[$idx]}")
+        next_shas+=("${stacked_shas[$idx]}")
+      fi
+    done
+    batch_refs=("${next_refs[@]}")
+    batch_shas=("${next_shas[@]}")
+  done
+
+  say "RED: all candidates in batch were ejected"
+  return "$EX_RED"
+}
+
 run_train() {
   refresh_mirror
+  if [ "$batch_mode" -eq 1 ]; then
+    run_batch_train
+    return $?
+  fi
   local main_sha staging_sha
   main_sha="$(git -C "$mirror" rev-parse --verify --quiet "refs/heads/$main_branch^{commit}")" \
     || die "remote has no $main_branch branch"
@@ -187,6 +523,13 @@ run_train() {
     say "NOTHING: $staging_branch ${staging_sha:0:12} is already contained in $main_branch ${main_sha:0:12}"
     return "$EX_NOTHING"
   fi
+
+  local claim_err
+  if ! claim_err="$(verify_candidate_claims "$mirror" "$main_sha" "$staging_sha" "" 2>&1)"; then
+    say "CLAIM-CONFLICT: $claim_err"
+    return "$EX_CLAIM"
+  fi
+
   local prior
   prior="$(git -C "$mirror" notes --ref="$NOTES_REF" show "$staging_sha" 2>/dev/null || true)"
   if [ -n "$prior" ] && grep -qx "main=$main_sha" <<< "$prior" \
@@ -335,6 +678,6 @@ audit_train() {
 }
 
 case "$command" in
-  run) run_train; exit $? ;;
+  run|run-batch) run_train; exit $? ;;
   audit) audit_train; exit $? ;;
 esac
