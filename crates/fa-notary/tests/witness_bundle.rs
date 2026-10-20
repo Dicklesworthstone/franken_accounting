@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use fa_model::{Id128, Oid};
-use fa_notary::{CheckpointSigner, Journal, SigningKey, StoredCheckpoint, ScopeIndex};
+use fa_notary::{Journal, ScopeIndex, SigningKey, StoredCheckpoint};
 use fa_notary::bundle::{assemble, BundleRequest, BundleScope, ProductionReceipt, ReceiptBody};
 use fa_notary::checkpoint::{CheckpointBody, TransparencyCheckpoint};
 use fa_verify::checkpoint::witness::{RecipientWitnessPolicy, verify_witnessed_checkpoint};

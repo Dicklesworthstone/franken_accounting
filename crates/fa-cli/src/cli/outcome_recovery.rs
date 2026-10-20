@@ -51,21 +51,21 @@ pub(super) fn recover(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .prepare_outcome_rebuild(capability)
         .map_err(recovery_error)??;
     let preview = prepared.preview().clone();
-    if let Some(expected) = basis {
-        if expected != preview.basis {
-            prepared.abort();
-            return Err(Refusal::new(
-                fa_journal::refusal::code::PLAN_INVALIDATED,
-                exit::CONFLICT,
-                format!(
-                    "the head moved from the previewed basis {} to {}; preview the current history before publishing",
-                    expected.0, preview.basis.0,
-                ),
-                "plan §5.9, FA-INV-09 (idempotency recovery publishes its exact verified basis)",
-                "preview again with fa recover outcomes --dry-run --json, retain it, and publish with --yes --basis <its basis>",
-            )
-            .into());
-        }
+    if let Some(expected) = basis
+        && expected != preview.basis
+    {
+        prepared.abort();
+        return Err(Refusal::new(
+            fa_journal::refusal::code::PLAN_INVALIDATED,
+            exit::CONFLICT,
+            format!(
+                "the head moved from the previewed basis {} to {}; preview the current history before publishing",
+                expected.0, preview.basis.0,
+            ),
+            "plan §5.9, FA-INV-09 (idempotency recovery publishes its exact verified basis)",
+            "preview again with fa recover outcomes --dry-run --json, retain it, and publish with --yes --basis <its basis>",
+        )
+        .into());
     }
     let (recorded_at, wrote) = if dry_run {
         prepared.abort();
