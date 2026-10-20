@@ -3836,8 +3836,27 @@ verbs = ["tb", "open-items", "explain", "entry"]
 ops = ["read"]
 reach = "judged"
 
+# A statement diff or trace compares two frontiers, and a statement from
+# saved certificates reads them: each reaches the whole book.
 [[bound]]
-verbs = ["statement", "gl", "replay", "certificate", "procedure", "triage", "next", "doctor"]
+verbs = ["statement"]
+subcommands = ["diff", "trace"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["statement"]
+when_any = ["--before-certificate", "--after-certificate", "--from-diff"]
+ops = ["read"]
+
+# A statement's columns reach what their basis folds: a stock basis through
+# the latest of its periods, an activity basis exactly its periods.
+[[bound]]
+verbs = ["statement"]
+ops = ["read"]
+reach = "judged"
+
+[[bound]]
+verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor"]
 ops = ["read"]
 
 [[bound]]
