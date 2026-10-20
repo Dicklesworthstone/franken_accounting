@@ -13,6 +13,7 @@
 //! durable pin storage, freshness and ledger/index correctness are not checked.
 
 mod advance;
+pub mod bundle;
 
 pub use advance::{
     AdvanceError, AdvanceStatus, CheckpointAdvance, MAX_WITNESS_CONSISTENCY_BYTES,
