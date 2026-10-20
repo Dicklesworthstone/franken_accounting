@@ -1021,6 +1021,47 @@ exit = "refusal"
 cite = "plan §12.5 (a StatementIssuance names the retained statement certificate it issued, for the period it reports; bead fa-wrrw)"
 fix = "certify the statement first with fa statement balance-sheet|income-statement --for <period> --certify, then issue its C:<oid> for that period"
 
+# ---- Engagements (180–184; fa-zgn; 172–179 are held by fa-wrrw's StatementIssuance) ---
+[[refusal]]
+code = "FA-REF-180"
+name = "ENGAGEMENT_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12 (an Engagement is the unit an audit's mechanics attach to; bead fa-zgn)"
+fix = "list the book's engagements with fa engagement list --json, or open one with fa engagement open <id> --kind audit --period <code> --overall <amount> --performance <amount> --clearly-trivial <amount>"
+
+[[refusal]]
+code = "FA-REF-181"
+name = "ADJUSTMENT_DECIDED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12, Appendix A ProposedAdjustment (status Proposed, then Booked or Passed once)"
+fix = "a booked or passed proposal stays on the record as decided; propose a new adjustment with fa adjustment propose if the correction must change"
+
+[[refusal]]
+code = "FA-REF-182"
+name = "BOOKED_ENTRY_DIFFERS"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12 (Booked names the committed entry that makes the proposed correction)"
+fix = "book the proposal with the committed trunk entry that posts exactly its legs (fa adjustment show <engagement> <n> --json lists them), or pass it with fa adjustment pass"
+
+[[refusal]]
+code = "FA-REF-183"
+name = "ADJUSTMENT_OUT_OF_SCOPE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12 (an Engagement's scope_periods bound what its adjustments correct)"
+fix = "date the proposed adjustment inside one of the engagement's scope periods (fa engagement show <id> --json lists them)"
+
+[[refusal]]
+code = "FA-REF-184"
+name = "ADJUSTMENT_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12, Appendix A ProposedAdjustment (numbered from 1 per engagement)"
+fix = "list the engagement's proposals with fa engagement show <id> --json"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-145"

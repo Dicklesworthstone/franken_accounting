@@ -11,11 +11,12 @@ const REASON_CODES: &str = include_str!("../../../registries/reason_codes.toml")
 const R: &str = "reason_codes.toml";
 
 /// The closed set of scopes a reason may belong to.
-pub const SCOPES: [&str; 4] = [
+pub const SCOPES: [&str; 5] = [
     "manual_assertion",
     "supersession",
     "period_control",
     "period_reopen",
+    "adjustment_pass",
 ];
 
 /// Stable supersession reason for the kernel's scheduled accrual reversal.
