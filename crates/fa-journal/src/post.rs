@@ -2175,8 +2175,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     }
 
     if let Some(claim) = &fx_claim
-        && let Err(refusal) =
-            crate::fx::verify_in_txn(&txn, db, &spec, &book.units, &leg_entities, proposal, claim)?
+        && let Err(refusal) = crate::fx::verify_in_txn(
+            &txn,
+            db,
+            &spec,
+            &period,
+            &book.units,
+            &leg_entities,
+            proposal,
+            claim,
+        )?
     {
         txn.abort();
         return Ok(Err(refusal));

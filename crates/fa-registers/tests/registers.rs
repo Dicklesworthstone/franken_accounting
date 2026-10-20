@@ -3118,14 +3118,14 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
     let stripped = Cx::detached_cancel_context();
     let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
 
-    // 1. SpotClose with rounding residual (Dr 0.01 EUR, Dr 0.01 EUR / Cr 0.02 EUR at 1/2 USD/EUR under HalfUp).
+    // 1. SpotClose with rounding residual (Dr 0.03 EUR, Dr 0.03 EUR / Cr 0.06 EUR at 1/2 USD/EUR under HalfEven).
     let rate_half = FxRateDocument::new(
         FxRateTerms {
             base_unit: usd,
             quote_unit: eur,
             rate_num: 1,
             rate_den: 2,
-            rounding: RoundingLaw::HalfUp,
+            rounding: RoundingLaw::HalfEven,
         },
         mar_05,
         1_700_000_000_000_000_000,
@@ -3146,9 +3146,9 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
 
     let mut raw_res = h.proposal(
         vec![
-            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
-            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
-            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 2)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 3)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 3)),
+            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 6)),
         ],
         b"fx-spot-residual",
         EntryClass::ORIGINAL,
@@ -3173,7 +3173,7 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
             quote_scale: 2,
             rate_num: 1,
             rate_den: 2,
-            rounding_law: "HalfUp".into(),
+            rounding_law: "HalfEven".into(),
         },
     );
     let oracle_val = value_entity_legs(
@@ -3182,21 +3182,21 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
                 side: fa_reference::Side::Debit,
                 account: ar_eur.0,
                 unit: eur.0,
-                mantissa: 1,
+                mantissa: 3,
                 entity: None,
             },
             OracleFxLeg {
                 side: fa_reference::Side::Debit,
                 account: ar_eur.0,
                 unit: eur.0,
-                mantissa: 1,
+                mantissa: 3,
                 entity: None,
             },
             OracleFxLeg {
                 side: fa_reference::Side::Credit,
                 account: rev_eur.0,
                 unit: eur.0,
-                mantissa: 2,
+                mantissa: 6,
                 entity: None,
             },
         ],
@@ -3208,6 +3208,7 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
     let bt_res = valued_res.base_totals.as_ref().unwrap();
     assert_eq!(bt_res.debits, oracle_val.base_debits);
     assert_eq!(bt_res.credits, oracle_val.base_credits);
+    assert_eq!((bt_res.debits, bt_res.credits), (4, 4));
     assert_eq!(
         bt_res.residual.map(|r| (r.leg_ordinal, r.amount.mantissa)),
         oracle_val.residual
@@ -3500,6 +3501,245 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
 }
 
 #[test]
+fn fx_native_post_enforces_rounding_and_average_period_end_without_publication() {
+    use fa_journal::refusal::code;
+    use fa_journal::{FxLawId, FxRateDocument, FxRatePurpose, add_document, exit, value_proposal};
+    use fa_money::RoundingLaw;
+    use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+    use fa_registers::fold_period_functional;
+
+    let mut h = harness();
+    let usd = h.book.units.lookup("USD").unwrap();
+    let eur = h.book.units.lookup("EUR").unwrap();
+    let mar_05 = DateDay::from_ymd(2026, 3, 5).unwrap();
+    let mar_30 = DateDay::from_ymd(2026, 3, 30).unwrap();
+    let mar_31 = DateDay::from_ymd(2026, 3, 31).unwrap();
+    let apr_30 = DateDay::from_ymd(2026, 4, 30).unwrap();
+    let fx_accounts = vec![
+        AccountSpec {
+            code: "1210".into(),
+            name: "AccountsReceivableEur".into(),
+            account_type: AccountType::ASSET.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "4110".into(),
+            name: "RevenueEur".into(),
+            account_type: AccountType::REVENUE.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(eur),
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    {
+        let ctx = h.ctx();
+        let desc = Erasable::seal(
+            &"install-fx-law-chart".to_string(),
+            None,
+            &h.book.seal_key,
+            [81; 32],
+            [82; 24],
+        );
+        h.runtime
+            .block_on(install_chart(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                &fx_accounts,
+                PRINCIPAL,
+                mar_05,
+                b"install-fx-law-chart",
+                desc,
+                &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
+    }
+    let ar_eur = account_vid(h.book.book_id, "1210");
+    let rev_eur = account_vid(h.book.book_id, "4110");
+    let spec = fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap();
+    let arithmetic = h.root.restrict::<asupersync::cx::cap::None>();
+    let mut budget = ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(1_000_000, 0), 4096);
+
+    for (key, law, purpose, rounding, as_of, class, admitted) in [
+        (
+            "native-spot-half-up",
+            FxLawId::SpotClose,
+            FxRatePurpose::SpotClose,
+            RoundingLaw::HalfUp,
+            mar_05,
+            EntryClass::ORIGINAL,
+            false,
+        ),
+        (
+            "native-average-half-up",
+            FxLawId::PeriodAverage,
+            FxRatePurpose::PeriodAverage,
+            RoundingLaw::HalfUp,
+            mar_31,
+            EntryClass::ORIGINAL,
+            false,
+        ),
+        (
+            "native-average-before-end",
+            FxLawId::PeriodAverage,
+            FxRatePurpose::PeriodAverage,
+            RoundingLaw::HalfEven,
+            mar_30,
+            EntryClass::ORIGINAL,
+            false,
+        ),
+        (
+            "native-average-other-period",
+            FxLawId::PeriodAverage,
+            FxRatePurpose::PeriodAverage,
+            RoundingLaw::HalfEven,
+            apr_30,
+            EntryClass::ORIGINAL,
+            false,
+        ),
+        (
+            "native-average-pending",
+            FxLawId::PeriodAverage,
+            FxRatePurpose::PeriodAverage,
+            RoundingLaw::HalfEven,
+            mar_31,
+            EntryClass::PENDING,
+            false,
+        ),
+        (
+            "native-spot-half-even",
+            FxLawId::SpotClose,
+            FxRatePurpose::SpotClose,
+            RoundingLaw::HalfEven,
+            mar_05,
+            EntryClass::ORIGINAL,
+            true,
+        ),
+        (
+            "native-average-period-end",
+            FxLawId::PeriodAverage,
+            FxRatePurpose::PeriodAverage,
+            RoundingLaw::HalfEven,
+            mar_31,
+            EntryClass::ORIGINAL,
+            true,
+        ),
+    ] {
+        let rate = FxRateDocument::new(
+            FxRateTerms {
+                base_unit: usd,
+                quote_unit: eur,
+                rate_num: 11,
+                rate_den: 10,
+                rounding,
+            },
+            as_of,
+            1_700_000_000_000_000_000,
+            purpose,
+            "Native FX law regression",
+        )
+        .unwrap();
+        let doc = rate.document(h.book.book_id, PRINCIPAL, 3).unwrap();
+        let ctx = h.ctx();
+        h.runtime
+            .block_on(add_document(&mut h.db, &ctx, &h.book, &doc))
+            .unwrap()
+            .unwrap();
+
+        let mut raw = h.proposal(
+            vec![
+                LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 10_000)),
+                LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 10_000)),
+            ],
+            key.as_bytes(),
+            class,
+        );
+        raw.effective_date = mar_05;
+        if class == EntryClass::PENDING {
+            raw.pending = Some(Pending {
+                timeout_ns: None,
+                resolution_of: None,
+                disposition: None,
+            });
+        }
+        // Pure valuation remains deterministic for retained historical rates. The
+        // posting boundary must reject a balanced claim using a forbidden law.
+        let valued = value_proposal(
+            &mut budget,
+            raw,
+            &spec,
+            &h.book.units,
+            law,
+            std::slice::from_ref(&rate),
+        )
+        .unwrap();
+        valued.validate().unwrap();
+        let totals = valued.base_totals.as_ref().unwrap();
+        assert_eq!((totals.debits, totals.credits), (11_000, 11_000), "{key}");
+        assert_eq!(valued.legs[0].base_amount, Some(Amount::new(usd, 11_000)));
+        assert_eq!(valued.legs[1].base_amount, Some(Amount::new(usd, 11_000)));
+        let before = h.db.frontier().unwrap();
+        let result = h
+            .runtime
+            .block_on(post(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                PostRequest {
+                    proposal: valued.clone(),
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+                },
+            ))
+            .unwrap();
+        if !admitted {
+            let refusal = result.expect_err(key);
+            assert_eq!(
+                (refusal.code, refusal.exit),
+                (code::STRUCTURE, exit::USAGE),
+                "{key}"
+            );
+            if class == EntryClass::PENDING {
+                assert!(
+                    refusal
+                        .message
+                        .contains("does not admit entry class Pending")
+                );
+            }
+            assert_eq!(h.db.frontier().unwrap(), before, "{key}");
+            continue;
+        }
+
+        let posted = result.expect(key);
+        assert!(matches!(&posted, Posted::Committed { .. }), "{key}");
+        assert_eq!(posted.period(), Some(h.march.as_str()));
+        h.post_rent(1, format!("{key}-later-publication").as_bytes());
+        let before_retry = h.db.frontier().unwrap();
+        assert!(before_retry > posted.recorded_at());
+        let replayed = h.commit(valued);
+        assert!(matches!(&replayed, Posted::AlreadyRecorded { .. }), "{key}");
+        assert_eq!(replayed.entry_ref(), posted.entry_ref());
+        assert_eq!(replayed.recorded_at(), posted.recorded_at());
+        assert_eq!(h.db.frontier().unwrap(), before_retry);
+    }
+
+    // Two admitted 110.00 USD invoices and two later 0.01 USD postings;
+    // neither the five refusals nor either exact retry contributes a leg.
+    let fold = fold_period_functional(&h.db, &h.book, &h.march, None).unwrap();
+    assert_eq!(fold.entries, 4);
+    assert_eq!(fold.total_debits().unwrap(), 22_002);
+    assert_eq!(fold.total_credits().unwrap(), 22_002);
+}
+
+#[test]
 fn fx_unbalanced_base_amounts_are_refused_without_mutating_book() {
     use asupersync::Cx;
     use fa_journal::{FxLawId, FxRateDocument, FxRatePurpose, add_document, exit, value_proposal};
@@ -3573,7 +3813,7 @@ fn fx_unbalanced_base_amounts_are_refused_without_mutating_book() {
             quote_unit: eur,
             rate_num: 1,
             rate_den: 2,
-            rounding: RoundingLaw::HalfUp,
+            rounding: RoundingLaw::HalfEven,
         },
         mar_05,
         1_700_000_000_000_000_000,
@@ -3594,9 +3834,9 @@ fn fx_unbalanced_base_amounts_are_refused_without_mutating_book() {
 
     let mut raw_res = h.proposal(
         vec![
-            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
-            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
-            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 2)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 3)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 3)),
+            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 6)),
         ],
         b"fx-neg-base",
         EntryClass::ORIGINAL,
@@ -3711,7 +3951,7 @@ fn fx_wrong_or_excessive_base_residual_is_refused_without_mutating_book() {
             quote_unit: eur,
             rate_num: 1,
             rate_den: 2,
-            rounding: RoundingLaw::HalfUp,
+            rounding: RoundingLaw::HalfEven,
         },
         mar_05,
         1_700_000_000_000_000_000,
@@ -3732,9 +3972,9 @@ fn fx_wrong_or_excessive_base_residual_is_refused_without_mutating_book() {
 
     let mut raw_res = h.proposal(
         vec![
-            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
-            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
-            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 2)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 3)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 3)),
+            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 6)),
         ],
         b"fx-neg-res",
         EntryClass::ORIGINAL,
@@ -4023,7 +4263,7 @@ fn fx_tampered_functional_fold_is_detected_by_verify_functional_fold() {
             quote_unit: eur,
             rate_num: 1,
             rate_den: 2,
-            rounding: RoundingLaw::HalfUp,
+            rounding: RoundingLaw::HalfEven,
         },
         mar_05,
         1_700_000_000_000_000_000,
@@ -4044,9 +4284,9 @@ fn fx_tampered_functional_fold_is_detected_by_verify_functional_fold() {
 
     let mut raw_res = h.proposal(
         vec![
-            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
-            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 1)),
-            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 2)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 3)),
+            LegPayload::simple(Side::Debit, ar_eur, Amount::new(eur, 3)),
+            LegPayload::simple(Side::Credit, rev_eur, Amount::new(eur, 6)),
         ],
         b"fx-neg-fold",
         EntryClass::ORIGINAL,
