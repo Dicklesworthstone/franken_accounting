@@ -572,6 +572,18 @@ usage = ["registers materialize ((--period <code>)... | --fiscal-year N)   (over
 example = "fa registers materialize --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
+name = "recover"
+summary = "Explicitly rebuild derived state from the journal: leg mirrors and projection edges, each derived from immutable entry payloads after every source entry is checked against its native creation history. Preview with --dry-run; publishing needs --yes."
+writes = true
+subcommands = ["projections"]
+flags = []
+switches = ["--dry-run"]
+events = ["projections_rebuilt"]
+exits = [0, 2, 4, 5, 7, 8]
+usage = ["recover projections --dry-run   (the exact mirror and edge changes a repair would publish at this head; writes nothing)", "recover projections --yes   (one commit, then projections and open items are rechecked; a clean book publishes nothing; needs read, verify and schema_change, never on trunk from an Agent profile; host-only over MCP)"]
+example = "fa recover projections --dry-run --book ./books/myco --json"
+
+[[verb]]
 name = "entry"
 summary = "Read one committed entry back by its vid, verifying its digests."
 writes = false
@@ -820,6 +832,12 @@ verb = "registers"
 subcommand = "materialize"
 condition = "existing-cells"
 safe = "`fa verify registers --period <code> --json` checks the existing cells against the journal without rewriting them"
+
+[[dangerous]]
+verb = "recover"
+subcommand = "projections"
+condition = "always"
+safe = "`fa verify projections --json` reports the drift without writing, and `fa recover projections --dry-run --json` previews every mirror and edge the repair would publish; retain both before repairing"
 
 [[dangerous]]
 verb = "draft"
@@ -1483,6 +1501,12 @@ name = "projections_verified"
 book = true
 doc = "Every decoded entry payload at known_at agrees with its immutable leg mirrors and HAS_LEG, POSTS_TO, IN_UNIT and FOR topology, including Pending and unpublished migration entries. edges_checked counts expected edges. Drift is sorted; applied counters and settlement edges have their own fold checker. Verification writes nothing and does not rebuild projections."
 fields = ["known_at:seq","entries_checked:int","legs_checked:int","edges_checked:int","drift:[string]"]
+
+[[event]]
+name = "projections_rebuilt"
+book = true
+doc = "A leg-projection recovery derived from the journal at basis. dry_run=true previews the changes and writes nothing. Otherwise every change publishes in one commit at recorded_at, and projections and open items are then rechecked; wrote=false means the projections already equalled the journal, no sequence was consumed and recorded_at is null. Entries, payloads and settlement edges are never rewritten. This is a repair of derived state, not a certificate."
+fields = ["dry_run:bool", "basis:seq", "recorded_at:seq?", "wrote:bool", "entries_checked:int", "legs_checked:int", "legs_created:int", "legs_repaired:int", "edges_created:int", "edges_repaired:int", "edges_retired:int"]
 
 [[event]]
 name = "open_items_verified"
@@ -2534,6 +2558,11 @@ subcommand = "unmatch"
 reason = "host-only: an independently authorized Human explicitly releases one exact confirmation with --yes; launch-bound sessions may inspect native metadata history but cannot release claims"
 
 [[mcp.excluded]]
+verb = "recover"
+subcommand = "projections"
+reason = "host-only: rebuilding leg projections requires schema_change on trunk, which neither launch-bound MCP templates nor their issued tokens may hold, and publishing needs --yes; a bound session verifies projections through fa_book_verify (plan §4.2/§15.4 registered exclusion)"
+
+[[mcp.excluded]]
 verb = "fad"
 subcommand = "serve"
 reason = "host-only: controls the daemon process that will host fa-mcp (plan §15.4 registered exclusion)"
@@ -2714,7 +2743,7 @@ subcommands = ["registers", "open-items", "availability", "usage", "accumulator"
 selector = "target"
 positionals = []
 required = []
-dont = ["Don't treat a register, an aging or a statement as truth: truth is the fold, and this proves it (exit 8 on drift).", "Don't `materialize_registers` to make a verification pass; a drift is a finding, not a nuisance.", "Period verification loads complete native history at the selected as_known_at and requires current read and verify authority. A missing history window or deleted immutable birth declaration is a failure; legacy calendar baselines do not invent missing creator provenance.", "Usage verification refolds immutable daily charges and their original issuance, source entries and committed time witnesses at as_known_at. Current whole-book read and verify authority is still required. It has no period filter and cannot repair or reset a quota; registers verification also checks usage at current head."]
+dont = ["Don't treat a register, an aging or a statement as truth: truth is the fold, and this proves it (exit 8 on drift).", "Don't `materialize_registers` to make a verification pass; a drift is a finding, not a nuisance.", "Period verification loads complete native history at the selected as_known_at and requires current read and verify authority. A missing history window or deleted immutable birth declaration is a failure; legacy calendar baselines do not invent missing creator provenance.", "Usage verification refolds immutable daily charges and their original issuance, source entries and committed time witnesses at as_known_at. Current whole-book read and verify authority is still required. It has no period filter and cannot repair or reset a quota; registers verification also checks usage at current head.", "Don't try to repair projections or open-item applied mirrors from a session: retain the projections or open-items finding and ask the operator, because the journal-derived repair (`fa recover projections`) needs schema_change and --yes and is host-only."]
 mistakes = ["Passing `period` or `fiscal_year` with a target other than `registers` (the other targets take no period filter).", "Reading `status: \"no_checkpoints\"` as verified: it makes no verification claim."]
 
 [[mcp.tool]]

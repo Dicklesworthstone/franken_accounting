@@ -3035,6 +3035,36 @@ impl Book {
         with_store!(&self.store, core => core.verify_projections(&self.purposes(), known_at))
     }
 
+    /// Preview an explicit leg-projection recovery without writing (fa-avx):
+    /// admission first, then the complete native history, then every source
+    /// Entry checked against its creation before any change is derived. The
+    /// preview is bound to this exact head and partition root.
+    pub fn prepare_projection_rebuild(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::PreparedProjectionRebuild> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_projection_rebuild_with_history(&purposes, principal, capability)
+        ))
+    }
+
+    /// Rebuild every leg mirror and projection edge from the journal in one
+    /// commit, then recheck projections and open items independently. A clean
+    /// book is a true no-op. Read, verify and schema_change are required, and
+    /// no caller value enters the repair.
+    pub fn rebuild_projections(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::ProjectionRebuild> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.rebuild_projections(&purposes, principal, capability)
+        ))
+    }
+
     /// Compare every posted leg's `applied` mirror with the open-item fold.
     pub fn verify_open_items(&self) -> Result<OpenItemVerification, BookError> {
         with_store!(&self.store, core => core.verify_open_items(&self.purposes()))
