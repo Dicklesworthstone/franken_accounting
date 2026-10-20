@@ -22,6 +22,8 @@ pub const RECON_MATCH_DOMAIN: &[u8] = b"fa:reconciliation-match:v1";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReconciliationError {
     InvalidField(&'static str),
+    /// An exact quantity, amount, or decision feature exceeded `i128`.
+    Overflow(&'static str),
     UnitMismatch {
         expected: UnitId,
         actual: UnitId,
@@ -59,6 +61,9 @@ impl core::fmt::Display for ReconciliationError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::InvalidField(field) => write!(f, "invalid reconciliation field: {field}"),
+            Self::Overflow(operation) => {
+                write!(f, "reconciliation arithmetic overflow: {operation}")
+            }
             Self::UnitMismatch { expected, actual } => {
                 write!(
                     f,

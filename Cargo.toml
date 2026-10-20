@@ -96,13 +96,16 @@ fnx-cgse = { git = "https://github.com/Dicklesworthstone/franken_networkx.git", 
 [profile.dev]
 debug = "line-tables-only"
 incremental = false
+overflow-checks = true
 
 [profile.test]
 debug = "line-tables-only"
 incremental = false
+overflow-checks = true
 
 [profile.release]
 opt-level = 3
+overflow-checks = true
 lto = "thin"
 codegen-units = 1
 debug = "line-tables-only"
