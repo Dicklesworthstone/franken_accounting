@@ -2179,6 +2179,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Refold one period's per-legal-entity register at the head and prove
+    /// it against the journal (FA-INV-01 `per-entity`): per account and
+    /// unit the entity cells sum to the plain fold's cell, every entry
+    /// balances per unit and entity, and in a multi-entity book every leg
+    /// names a declared entity. Findings are drift, never corrections.
+    pub fn verify_entities(
+        &self,
+        cx: &PurposeContexts,
+        period: &str,
+    ) -> Result<fa_registers::EntityVerification, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::verify_entities(db, book, period, None)?)
+        })
+    }
+
     pub async fn advance_registers(
         &mut self,
         cx: &PurposeContexts,

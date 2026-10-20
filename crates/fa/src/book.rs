@@ -2360,6 +2360,16 @@ impl Book {
         with_store!(&self.store, core => core.verify_registers(&self.purposes(), period_code))
     }
 
+    /// Prove one period's per-legal-entity register against the journal
+    /// at the head (FA-INV-01 `per-entity`; see
+    /// [`fa_registers::verify_entities`]).
+    pub fn verify_entities(
+        &self,
+        period_code: &str,
+    ) -> Result<fa_registers::EntityVerification, BookError> {
+        with_store!(&self.store, core => core.verify_entities(&self.purposes(), period_code))
+    }
+
     /// Incrementally maintain native posted/pending period registers from
     /// committed Entry payloads. Cells and the consumed cursor publish in
     /// one commit. A retired delta cursor rebuilds from the journal; detected

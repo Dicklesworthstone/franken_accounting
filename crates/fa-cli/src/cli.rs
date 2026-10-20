@@ -11355,6 +11355,68 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             );
             Ok(())
         }
+        Some("entities") => {
+            if args.positional.len() != 2 {
+                return Err(usage(
+                    "verify entities takes no positional argument",
+                    "fa verify entities (--period <code>)... | --fiscal-year N --book <dir> --json",
+                ));
+            }
+            let principal = ctx.principal(args);
+            let capability = ctx.capability(args, &["read", "verify"])?;
+            let book = ctx.books.open_admitted(args, |book| {
+                admit_registers(
+                    book,
+                    principal,
+                    &capability,
+                    "verifying per-entity registers",
+                )
+            })?;
+            let periods = selected_periods(args, &book)?;
+            out.effective(periods_selector(&periods));
+            let mut details = Vec::new();
+            let mut findings = Vec::new();
+            for p in &periods {
+                let v = book.verify_entities(p)?;
+                findings.extend(v.findings.iter().map(|f| format!("{p}: {f}")));
+                details.push(obj(vec![
+                    ("period", s(p)),
+                    ("green", Json::Bool(v.is_green())),
+                    ("known_at", Json::Int(i128::from(v.known_at.0))),
+                    ("cells_checked", Json::Int(v.cells_checked as i128)),
+                    ("entries_checked", Json::Int(v.entries_checked as i128)),
+                    ("fold_digest", s(hex(&v.fold_digest))),
+                    ("findings", Json::Arr(v.findings.iter().map(s).collect())),
+                ]));
+            }
+            if findings.is_empty() {
+                out.event(
+                    "entities_verified",
+                    vec![("periods", Json::Arr(details))],
+                    &format!(
+                        "per-entity registers verified by refold: {} green",
+                        periods.join(", ")
+                    ),
+                );
+                Ok(())
+            } else {
+                Err(Fail::Verification {
+                    message: format!(
+                        "per-entity registers differ from the journal: {}",
+                        findings.join("; ")
+                    ),
+                    detail: Json::Arr(details),
+                    cite: Some(
+                        "FA-INV-01.per-entity (entity cells sum to the plain fold; every entry balances per unit and entity)"
+                            .into(),
+                    ),
+                    fix: Some(
+                        "retain this finding: the journal is the truth and derived registers are rebuilt from it (fa registers materialize --period <code> --yes)"
+                            .into(),
+                    ),
+                })
+            }
+        }
         Some("registers") => {
             let principal = ctx.principal(args);
             let capability = ctx.capability(args, &["read", "verify"])?;

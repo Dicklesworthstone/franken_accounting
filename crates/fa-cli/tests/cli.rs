@@ -5459,6 +5459,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["production", "show", "events-matter"]).0, 0);
     assert_eq!(run(true, &["production", "document", &ev]).0, 0);
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
+    assert_eq!(
+        run(true, &["tb", "--period", "FY2026-P03", "--render", "md"]).0,
+        0
+    );
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(
         run(
@@ -5604,6 +5608,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(
         run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
+        0
+    );
+    assert_eq!(
+        run(true, &["verify", "entities", "--period", "FY2026-P03"]).0,
         0
     );
     assert_eq!(run(true, &["verify", "open-items"]).0, 0);
@@ -14768,5 +14776,90 @@ fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<(
     assert_eq!(code, 7, "pinned Auditor refused at later head: {out}");
     assert!(out.contains("FA-REF-011"), "{out}");
     assert!(out.contains("the token is pinned at <="), "{out}");
+    Ok(())
+}
+
+/// FA-INV-01 per-entity: in a multi-entity book `fa verify entities`
+/// refolds each period's per-legal-entity register and proves it against
+/// the journal; the kernel already refuses a leg without a declared entity
+/// at commit, so the verification is the derived-state half.
+#[test]
+fn verify_entities_proves_each_legal_entitys_register_by_refold() -> std::io::Result<()> {
+    let dir = tmp("entities")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    let (code, out, _) = run(&[
+        "book",
+        "create",
+        "--name",
+        "Two Entities",
+        "--base-unit",
+        "USD",
+        "--entity",
+        "HOLDCO:HoldCo Inc.:USD",
+        "--entity",
+        "SUB-US:Sub US LLC",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let source = write(&dir, "sales.txt", "Sales of both entities");
+    let (code, out, _) = run(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let evidence = text(&doc(&out), "oid").to_string();
+    let post = |key: &str, entity: Option<&str>, amount: &str| {
+        let entity = entity.map_or(String::new(), |code| format!(r#","entity":"{code}""#));
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"idempotency_key":"{key}","effective_date":"2026-03-10","legs":[{{"side":"debit","account":"1000","amount":"{amount} USD"{entity}}},{{"side":"credit","account":"4000","amount":"{amount} USD"{entity}}}]}}"#
+            ),
+        );
+        run(&["post", "--intent", &intent, "--evidence", &evidence])
+    };
+    assert_eq!(post("holdco-sale", Some("HOLDCO"), "10.00").0, 0);
+    assert_eq!(post("sub-sale", Some("SUB-US"), "4.00").0, 0);
+    // The commit-time half: a leg naming no entity is refused.
+    let (code, out, _) = post("no-entity", None, "1.00");
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("names no legal entity"), "{out}");
+
+    let (code, out, _) = run(&["verify", "entities", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    let line = json::parse(out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+    assert_eq!(text(&line, "event"), "entities_verified", "{out}");
+    let periods = arr(&doc(&out), "periods").to_vec();
+    assert_eq!(periods.len(), 1, "{out}");
+    let check = &periods[0];
+    assert_eq!(text(check, "period"), "FY2026-P03");
+    assert_eq!(check.get("green"), Some(&Json::Bool(true)), "{out}");
+    assert_eq!(int(check, "entries_checked"), Some(2), "{out}");
+    // Two accounts in two entities.
+    assert_eq!(int(check, "cells_checked"), Some(4), "{out}");
+    assert!(arr(check, "findings").is_empty(), "{out}");
+    assert_eq!(text(check, "fold_digest").len(), 64, "{out}");
+
+    // An unknown period is a usage error, not an empty green.
+    let (code, out, _) = run(&["verify", "entities", "--period", "FY2099-P01"]);
+    assert_ne!(code, 0, "{out}");
     Ok(())
 }
