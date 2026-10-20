@@ -966,7 +966,8 @@ impl Adapter {
                         Some(commitment) => {
                             let hex: String =
                                 commitment.iter().map(|b| format!("{b:02x}")).collect();
-                            let detail = self.read(&["capability", "show", "--commitment", &hex])?;
+                            let detail =
+                                self.read(&["capability", "show", "--commitment", &hex])?;
                             to_wire(&detail)
                         }
                         None => JsonValue::Null,
@@ -1574,7 +1575,8 @@ mod tests {
             )
             .expect("session capability");
         assert!(
-            cap_session.contains("\"profile\":\"agent\"") && cap_session.contains("\"issued\":null"),
+            cap_session.contains("\"profile\":\"agent\"")
+                && cap_session.contains("\"issued\":null"),
             "{cap_session}"
         );
         let (_, intents) = adapter

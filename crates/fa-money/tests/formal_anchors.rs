@@ -141,8 +141,14 @@ fn lean_formal_anchors_have_zero_sorry_and_match_concrete_rust_vectors() {
         let zero = Amount::zero(u);
 
         assert_eq!(
-            amt_a.checked_add(amt_b).unwrap().checked_add(amt_c).unwrap(),
-            amt_a.checked_add(amt_b.checked_add(amt_c).unwrap()).unwrap()
+            amt_a
+                .checked_add(amt_b)
+                .unwrap()
+                .checked_add(amt_c)
+                .unwrap(),
+            amt_a
+                .checked_add(amt_b.checked_add(amt_c).unwrap())
+                .unwrap()
         );
         assert_eq!(amt_a.checked_add(amt_b), amt_b.checked_add(amt_a));
         assert_eq!(amt_a.checked_add(zero).unwrap(), amt_a);
@@ -293,7 +299,10 @@ fn tla_bounded_models_pass_exhaustive_state_exploration_and_catch_planted_identi
     // Positive: TwoPhaseWithExpiry satisfies SingleResolutionPerHold across all reachable states
     let states_explored =
         explore_two_phase_model(true).expect("TwoPhaseWithExpiry must satisfy all invariants");
-    assert!(states_explored >= 36, "expected full state space exploration");
+    assert!(
+        states_explored >= 36,
+        "expected full state space exploration"
+    );
 
     // Planted negative (fa-8x9 acceptance): TwoPhaseMissingIdentityGuard violates SingleResolutionPerHold
     let counterexample = explore_two_phase_model(false)
@@ -369,8 +378,11 @@ fn fln_check_olean_gate_verifier_reports_unrun_when_absent_and_fails_on_planted_
     assert!(matches!(planted_sorry, FormalGateVerdict::Fail { .. }));
 
     // 4. Valid .olean header with closed declarations => PASS
-    let valid_olean =
-        verify_olean_and_fln_gate(Some(b"olean\x01FrankenAccounting.Amount.add_assoc"), None, None);
+    let valid_olean = verify_olean_and_fln_gate(
+        Some(b"olean\x01FrankenAccounting.Amount.add_assoc"),
+        None,
+        None,
+    );
     assert_eq!(
         valid_olean,
         FormalGateVerdict::Pass {

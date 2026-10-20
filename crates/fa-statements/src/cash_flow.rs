@@ -6,7 +6,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fa_model::{AccountType, DecodeError, EncodeError, EntryClass, Id128, Oid, Reader, Writer, domain_digest};
+use fa_model::{
+    AccountType, DecodeError, EncodeError, EntryClass, Id128, Oid, Reader, Writer, domain_digest,
+};
 use fa_money::wide::U256;
 use fa_time::DateDay;
 
@@ -348,43 +350,42 @@ pub fn evaluate_cash_flow(source: &CashFlowInput) -> Result<CashFlowStatement, S
     }
     let unit_set: BTreeSet<u32> = units.iter().copied().collect();
 
-    let sum_cash_stock = |balances: &[AccountBalance],
-                          which: &str|
-     -> Result<BTreeMap<u32, i128>, StatementError> {
-        let mut seen = BTreeSet::new();
-        let mut sums: BTreeMap<u32, Sum> = units.iter().map(|&u| (u, Sum::ZERO)).collect();
-        for b in balances {
-            if !cash_set.contains(&b.account_id) || !unit_set.contains(&b.unit_id) {
-                return Err(input(format!(
-                    "{which} cash balance ({:032x}, {}) is outside declared cash/unit scope",
-                    b.account_id, b.unit_id
-                )));
+    let sum_cash_stock =
+        |balances: &[AccountBalance], which: &str| -> Result<BTreeMap<u32, i128>, StatementError> {
+            let mut seen = BTreeSet::new();
+            let mut sums: BTreeMap<u32, Sum> = units.iter().map(|&u| (u, Sum::ZERO)).collect();
+            for b in balances {
+                if !cash_set.contains(&b.account_id) || !unit_set.contains(&b.unit_id) {
+                    return Err(input(format!(
+                        "{which} cash balance ({:032x}, {}) is outside declared cash/unit scope",
+                        b.account_id, b.unit_id
+                    )));
+                }
+                if b.debits < 0 || b.credits < 0 {
+                    return Err(input(format!(
+                        "{which} cash balance has negative debit/credit"
+                    )));
+                }
+                if !seen.insert((b.account_id, b.unit_id)) {
+                    return Err(input(format!(
+                        "duplicate {which} cash balance for ({:032x}, {})",
+                        b.account_id, b.unit_id
+                    )));
+                }
+                let slot = sums.get_mut(&b.unit_id).unwrap();
+                let failed = || overflow(which, &source.label, b.unit_id);
+                slot.add(b.debits, false).ok_or_else(failed)?;
+                slot.add(b.credits, true).ok_or_else(failed)?;
             }
-            if b.debits < 0 || b.credits < 0 {
-                return Err(input(format!(
-                    "{which} cash balance has negative debit/credit"
-                )));
+            let mut out = BTreeMap::new();
+            for (&u, s) in &sums {
+                out.insert(
+                    u,
+                    s.value().ok_or_else(|| overflow(which, &source.label, u))?,
+                );
             }
-            if !seen.insert((b.account_id, b.unit_id)) {
-                return Err(input(format!(
-                    "duplicate {which} cash balance for ({:032x}, {})",
-                    b.account_id, b.unit_id
-                )));
-            }
-            let slot = sums.get_mut(&b.unit_id).unwrap();
-            let failed = || overflow(which, &source.label, b.unit_id);
-            slot.add(b.debits, false).ok_or_else(failed)?;
-            slot.add(b.credits, true).ok_or_else(failed)?;
-        }
-        let mut out = BTreeMap::new();
-        for (&u, s) in &sums {
-            out.insert(
-                u,
-                s.value().ok_or_else(|| overflow(which, &source.label, u))?,
-            );
-        }
-        Ok(out)
-    };
+            Ok(out)
+        };
 
     let opening_by_unit = sum_cash_stock(&source.opening_cash_balances, "opening_cash")?;
     let closing_by_unit = sum_cash_stock(&source.closing_cash_balances, "closing_cash")?;
@@ -515,10 +516,10 @@ pub fn evaluate_cash_flow(source: &CashFlowInput) -> Result<CashFlowStatement, S
                     .ok_or_else(failed)?;
             }
         }
-        let inflows = i128::try_from(inflows_wide.to_u128().ok_or_else(failed)?)
-            .map_err(|_| failed())?;
-        let outflows = i128::try_from(outflows_wide.to_u128().ok_or_else(failed)?)
-            .map_err(|_| failed())?;
+        let inflows =
+            i128::try_from(inflows_wide.to_u128().ok_or_else(failed)?).map_err(|_| failed())?;
+        let outflows =
+            i128::try_from(outflows_wide.to_u128().ok_or_else(failed)?).map_err(|_| failed())?;
         let net = inflows.checked_sub(outflows).ok_or_else(failed)?;
         Ok(CashFlowSection {
             inflows,
@@ -562,7 +563,11 @@ pub fn evaluate_cash_flow(source: &CashFlowInput) -> Result<CashFlowStatement, S
             });
         }
 
-        let net_income = source.net_income_by_unit.get(&unit_id).copied().unwrap_or(0);
+        let net_income = source
+            .net_income_by_unit
+            .get(&unit_id)
+            .copied()
+            .unwrap_or(0);
         let get_ind = |cat: IndirectAdjustmentCategory| -> Result<i128, StatementError> {
             match indirect_sums.get(&(unit_id, cat)) {
                 Some(s) => s.value().ok_or_else(failed),
@@ -800,7 +805,9 @@ pub fn evaluate_equity_roll_forward(
     source: &EquityRollForwardInput,
 ) -> Result<EquityRollForward, StatementError> {
     if source.label.trim().is_empty() || source.label.len() > 256 {
-        return Err(input("equity roll-forward label is empty or exceeds 256 bytes"));
+        return Err(input(
+            "equity roll-forward label is empty or exceeds 256 bytes",
+        ));
     }
     if source.effective_from > source.effective_through {
         return Err(input("equity roll-forward effective bounds are reversed"));
@@ -844,9 +851,7 @@ pub fn evaluate_equity_roll_forward(
                 )));
             }
             if b.debits < 0 || b.credits < 0 {
-                return Err(input(format!(
-                    "{which} balance has negative debit/credit"
-                )));
+                return Err(input(format!("{which} balance has negative debit/credit")));
             }
             if !seen.insert((b.account_id, b.unit_id)) {
                 return Err(input(format!("duplicate {which} balance cell")));
@@ -979,20 +984,21 @@ pub fn evaluate_equity_roll_forward(
             });
         }
 
-        let net_income = source.net_income_by_unit.get(&unit_id).copied().unwrap_or(0);
+        let net_income = source
+            .net_income_by_unit
+            .get(&unit_id)
+            .copied()
+            .unwrap_or(0);
         let mut net_change_sum = Sum::ZERO;
-        for part in [
-            net_income,
-            issuances,
-            distributions,
-            other_equity_movements,
-        ] {
+        for part in [net_income, issuances, distributions, other_equity_movements] {
             net_change_sum.add(part, false).ok_or_else(failed)?;
         }
         let net_equity_change = net_change_sum.value().ok_or_else(failed)?;
 
         let mut tie_out = Sum::ZERO;
-        tie_out.add(opening_total_equity, false).ok_or_else(failed)?;
+        tie_out
+            .add(opening_total_equity, false)
+            .ok_or_else(failed)?;
         tie_out.add(net_equity_change, false).ok_or_else(failed)?;
         tie_out.add(closing_total_equity, true).ok_or_else(failed)?;
         let equity_tie_out_residual = tie_out.value().ok_or_else(failed)?;
@@ -1367,11 +1373,20 @@ mod tests {
         let u = &cf.units[0];
         let ref_d = &ref_direct[&1];
         let ref_i = &ref_indirect[&1];
-        assert_eq!(u.operating.inflows, ref_d.operating.inflows.to_i128().unwrap());
-        assert_eq!(u.operating.outflows, ref_d.operating.outflows.to_i128().unwrap());
+        assert_eq!(
+            u.operating.inflows,
+            ref_d.operating.inflows.to_i128().unwrap()
+        );
+        assert_eq!(
+            u.operating.outflows,
+            ref_d.operating.outflows.to_i128().unwrap()
+        );
         assert_eq!(u.operating.net, 20);
         assert_eq!(u.investing.net, -40);
-        assert_eq!(u.indirect_operating_cash, ref_i.operating.to_i128().unwrap());
+        assert_eq!(
+            u.indirect_operating_cash,
+            ref_i.operating.to_i128().unwrap()
+        );
         assert_eq!(u.direct_vs_indirect_residual, 0);
         assert_eq!(u.opening_cash, 500);
         assert_eq!(u.net_cash_change, -20);
@@ -1383,7 +1398,8 @@ mod tests {
     }
 
     #[test]
-    fn equity_roll_forward_reconciles_opening_net_income_issuances_dividends_and_closing_transfers() {
+    fn equity_roll_forward_reconciles_opening_net_income_issuances_dividends_and_closing_transfers()
+    {
         let mut net_income_by_unit = BTreeMap::new();
         net_income_by_unit.insert(1, 55); // Revenue 70 - Expense 15
 

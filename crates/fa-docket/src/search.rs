@@ -15,8 +15,8 @@
 //!   uses exact 64/128-bit fixed-point integer arithmetic (`score_micro` at
 //!   scale $10^6$). No amounts are ever parsed from search hits.
 
-use std::collections::{BTreeMap, BTreeSet};
 use core::fmt;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::{DecodeError, EncodeError, Id128, Oid, Reader, Writer, domain_digest};
 use fgdb_types::VId;
@@ -605,11 +605,8 @@ impl QuillLexicalIndex {
                 self.delta_records.clone(),
             ))
         };
-        let all_segments: Vec<&FslxSegment> = self
-            .segments
-            .iter()
-            .chain(delta_seg.as_ref())
-            .collect();
+        let all_segments: Vec<&FslxSegment> =
+            self.segments.iter().chain(delta_seg.as_ref()).collect();
 
         let total_docs: u128 = all_segments.iter().map(|s| s.docs.len() as u128).sum();
         if total_docs == 0 {

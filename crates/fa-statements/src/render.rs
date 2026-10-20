@@ -166,7 +166,10 @@ pub fn render_html(
         ir.definition_version
     ));
     html.push_str("<ul class=\"statement-metadata\">\n");
-    html.push_str(&format!("  <li>Book: <code>{}</code></li>\n", ir.book_id.to_hex()));
+    html.push_str(&format!(
+        "  <li>Book: <code>{}</code></li>\n",
+        ir.book_id.to_hex()
+    ));
     html.push_str(&format!(
         "  <li>Branch: <code>{}</code></li>\n",
         ir.branch_id.to_hex()
@@ -183,7 +186,9 @@ pub fn render_html(
     html.push_str(&format!(
         "  <li>IR Digest: <code>{ir_digest_hex}</code></li>\n"
     ));
-    html.push_str(&format!("  <li>Created UTC: <code>{created_iso}</code></li>\n"));
+    html.push_str(&format!(
+        "  <li>Created UTC: <code>{created_iso}</code></li>\n"
+    ));
     html.push_str("</ul>\n");
 
     for table in &ir.tables {
@@ -200,7 +205,12 @@ pub fn render_html(
         };
         html.push_str(&format!("<table class=\"{table_class}\">\n<thead>\n<tr>"));
         for (idx, header) in table.headers.iter().enumerate() {
-            let align_cls = match table.alignments.get(idx).copied().unwrap_or(ColumnAlignment::Left) {
+            let align_cls = match table
+                .alignments
+                .get(idx)
+                .copied()
+                .unwrap_or(ColumnAlignment::Left)
+            {
                 ColumnAlignment::Left => "align-left",
                 ColumnAlignment::Right => "align-right",
             };
@@ -229,7 +239,12 @@ pub fn render_html(
                 row_classes.join(" ")
             ));
             for (idx, cell) in row.cells.iter().enumerate() {
-                let align_cls = match table.alignments.get(idx).copied().unwrap_or(ColumnAlignment::Left) {
+                let align_cls = match table
+                    .alignments
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(ColumnAlignment::Left)
+                {
                     ColumnAlignment::Left => "align-left",
                     ColumnAlignment::Right => "align-right",
                 };
@@ -480,7 +495,11 @@ pub fn render_svg(
     Ok(svg.into_bytes())
 }
 
-fn build_pdf_content_stream(ir: &StatementMarkdownIr, created_iso: &str, ir_digest_hex: &str) -> String {
+fn build_pdf_content_stream(
+    ir: &StatementMarkdownIr,
+    created_iso: &str,
+    ir_digest_hex: &str,
+) -> String {
     let mut s = String::new();
     let mut y: i64 = 750;
     s.push_str("BT /F1 11 Tf 36 766 Td (");
@@ -540,7 +559,9 @@ fn render_pdf_table(s: &mut String, table: &MarkdownTable, mut y: i64) -> i64 {
         ));
     }
     let header_line_y = y - 3;
-    s.push_str(&format!("1 w 36 {header_line_y} m 576 {header_line_y} l S\n"));
+    s.push_str(&format!(
+        "1 w 36 {header_line_y} m 576 {header_line_y} l S\n"
+    ));
     y -= 14;
 
     for row in &table.rows {
@@ -688,7 +709,9 @@ fn render_pdf_internal(
     }
 
     let xref_offset = out.len();
-    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
     for offset in &offsets {
         out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
     }
@@ -765,7 +788,8 @@ pub fn validate_pdfa2b(pdf_bytes: &[u8]) -> Result<PdfaValidationReceipt, Statem
         && text.contains("/DestOutputProfile");
     if !has_output_intent_srgb {
         return Err(StatementError::Input(
-            "PDF/A-2b validation failed: missing /OutputIntents /GTS_PDFA1 with /DestOutputProfile".into(),
+            "PDF/A-2b validation failed: missing /OutputIntents /GTS_PDFA1 with /DestOutputProfile"
+                .into(),
         ));
     }
     let has_trailer_id = text.contains("/ID [<") && text.ends_with("%%EOF\n");
@@ -847,7 +871,9 @@ pub fn invoke_fmd_render(
     if format == StatementRenderFormat::Markdown {
         let bytes = ir.markdown.as_bytes().to_vec();
         std::fs::write(out_path, &bytes).map_err(|e| {
-            StatementError::Input(format!("failed to write Markdown output to {out_path:?}: {e}"))
+            StatementError::Input(format!(
+                "failed to write Markdown output to {out_path:?}: {e}"
+            ))
         })?;
         let output_digest = Oid(domain_digest(b"fa:rendered-statement:v1", &[&bytes]));
         return Ok(FmdRenderReceipt {
@@ -1166,7 +1192,11 @@ pub fn render_flow_of_funds_diagram(
     let mut sorted_nodes = nodes.to_vec();
     sorted_nodes.sort_by(|a, b| a.code.cmp(&b.code));
     let mut sorted_edges = edges.to_vec();
-    sorted_edges.sort_by(|a, b| a.from_code.cmp(&b.from_code).then_with(|| a.to_code.cmp(&b.to_code)));
+    sorted_edges.sort_by(|a, b| {
+        a.from_code
+            .cmp(&b.from_code)
+            .then_with(|| a.to_code.cmp(&b.to_code))
+    });
 
     let mut md = format!(
         "# Flow-of-Funds Exhibit ({unit_code}, scale={unit_scale})\n\n- Book: `{}`\n- Known-At Sequence: `{known_at}`\n\n```mermaid\nflowchart LR\n",
@@ -1244,8 +1274,14 @@ pub fn render_flow_of_funds_diagram(
         ));
     }
     for e in &sorted_edges {
-        let from_idx = sorted_nodes.iter().position(|n| n.code == e.from_code).unwrap();
-        let to_idx = sorted_nodes.iter().position(|n| n.code == e.to_code).unwrap();
+        let from_idx = sorted_nodes
+            .iter()
+            .position(|n| n.code == e.from_code)
+            .unwrap();
+        let to_idx = sorted_nodes
+            .iter()
+            .position(|n| n.code == e.to_code)
+            .unwrap();
         let x1: i64 = 24 + (from_idx as i64) * 250 + 190;
         let x2: i64 = 24 + (to_idx as i64) * 250;
         let mid_x = (x1 + x2) / 2;
@@ -1282,7 +1318,9 @@ mod tests {
         TrialBalanceIrRow, UnitFormatSpec, render_open_items_ir, render_register_ir,
         render_restatement_diff_ir, render_statement_ir, render_trial_balance_ir,
     };
-    use crate::{Account, AccountBalance, ColumnInput, StatementDefinition, StatementInput, evaluate};
+    use crate::{
+        Account, AccountBalance, ColumnInput, StatementDefinition, StatementInput, evaluate,
+    };
     use fa_time::DateDay;
 
     fn sample_units() -> Vec<UnitFormatSpec> {
@@ -1293,7 +1331,11 @@ mod tests {
         }]
     }
 
-    fn sample_bs(known_at: u64, revenue_cents: i128, expense_cents: i128) -> (StatementDefinition, crate::Statement) {
+    fn sample_bs(
+        known_at: u64,
+        revenue_cents: i128,
+        expense_cents: i128,
+    ) -> (StatementDefinition, crate::Statement) {
         let def = StatementDefinition::embedded("balance-sheet").unwrap();
         let net_cash = 100_000 + revenue_cents - expense_cents;
         let input = StatementInput {
@@ -1376,7 +1418,8 @@ mod tests {
     }
 
     #[test]
-    fn statement_fixture_proves_right_aligned_numeric_columns_and_footing_rules_across_all_formats() {
+    fn statement_fixture_proves_right_aligned_numeric_columns_and_footing_rules_across_all_formats()
+    {
         let (def, orig) = sample_bs(10, 50_025, 12_005);
         let units = sample_units();
         let ir = render_statement_ir(&orig, &def, &units).unwrap();
@@ -1417,7 +1460,10 @@ mod tests {
         assert!(receipt.has_binary_comment_marker);
         assert!(receipt.has_trailer_id);
         assert_eq!(receipt.creation_date_iso, "2026-10-20T00:00:00Z");
-        assert_eq!(receipt.embedded_ir_digest_hex, hex_bytes(&ir.digest().unwrap().0));
+        assert_eq!(
+            receipt.embedded_ir_digest_hex,
+            hex_bytes(&ir.digest().unwrap().0)
+        );
         assert!(receipt.single_footing_count >= 1);
         assert!(receipt.double_footing_count >= 1);
     }
@@ -1436,10 +1482,9 @@ mod tests {
         assert!(diff_html.contains("restatement-diff"));
         assert!(diff_html.contains("delta-nonzero"));
 
-        let sem_diff = String::from_utf8(
-            render_semantic_diff_html(&orig_ir, &restated_ir, epoch).unwrap(),
-        )
-        .unwrap();
+        let sem_diff =
+            String::from_utf8(render_semantic_diff_html(&orig_ir, &restated_ir, epoch).unwrap())
+                .unwrap();
         assert!(sem_diff.contains("status-restated"));
         assert!(sem_diff.contains("<del>380.20</del><ins>315.20</ins>"));
 
@@ -1471,7 +1516,10 @@ mod tests {
             &units,
         )
         .unwrap();
-        assert_eq!(tb_ir.tables[0].rows.last().unwrap().footing, FootingRule::Double);
+        assert_eq!(
+            tb_ir.tables[0].rows.last().unwrap().footing,
+            FootingRule::Double
+        );
         let tb_pdfa = render_pdfa(&tb_ir, epoch).unwrap();
         assert!(validate_pdfa2b(&tb_pdfa).is_ok());
 
@@ -1498,7 +1546,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reg_ir.tables[0].rows[0].footing, FootingRule::Single);
-        assert_eq!(reg_ir.tables[0].rows.last().unwrap().footing, FootingRule::Double);
+        assert_eq!(
+            reg_ir.tables[0].rows.last().unwrap().footing,
+            FootingRule::Double
+        );
 
         // Open Items IR
         let oi_ir = render_open_items_ir(
@@ -1521,7 +1572,10 @@ mod tests {
             &units,
         )
         .unwrap();
-        assert_eq!(oi_ir.tables[0].rows.last().unwrap().footing, FootingRule::Double);
+        assert_eq!(
+            oi_ir.tables[0].rows.last().unwrap().footing,
+            FootingRule::Double
+        );
     }
 
     #[test]
@@ -1638,7 +1692,8 @@ mod tests {
     }
 
     #[test]
-    fn flow_of_funds_diagram_renders_deterministic_markdown_and_svg_and_refuses_non_positive_edges() {
+    fn flow_of_funds_diagram_renders_deterministic_markdown_and_svg_and_refuses_non_positive_edges()
+    {
         let nodes = vec![
             FlowOfFundsNode {
                 code: "1000".into(),
@@ -1659,24 +1714,10 @@ mod tests {
             amount_mantissa: 180_000,
             entry_count: 3,
         }];
-        let f1 = render_flow_of_funds_diagram(
-            Id128([0x44; 16]),
-            15,
-            "USD",
-            2,
-            &nodes,
-            &edges,
-        )
-        .unwrap();
-        let f2 = render_flow_of_funds_diagram(
-            Id128([0x44; 16]),
-            15,
-            "USD",
-            2,
-            &nodes,
-            &edges,
-        )
-        .unwrap();
+        let f1 =
+            render_flow_of_funds_diagram(Id128([0x44; 16]), 15, "USD", 2, &nodes, &edges).unwrap();
+        let f2 =
+            render_flow_of_funds_diagram(Id128([0x44; 16]), 15, "USD", 2, &nodes, &edges).unwrap();
         assert_eq!(f1, f2);
         assert!(f1.markdown.contains("1800.00 USD (3 entries)"));
         assert!(f1.svg.contains("marker-end=\"url(#fof-arrow)\""));
@@ -1687,14 +1728,9 @@ mod tests {
             amount_mantissa: 0,
             entry_count: 1,
         }];
-        assert!(render_flow_of_funds_diagram(
-            Id128([0x44; 16]),
-            15,
-            "USD",
-            2,
-            &nodes,
-            &bad_edge,
-        )
-        .is_err());
+        assert!(
+            render_flow_of_funds_diagram(Id128([0x44; 16]), 15, "USD", 2, &nodes, &bad_edge,)
+                .is_err()
+        );
     }
 }

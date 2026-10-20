@@ -15,16 +15,16 @@ name = "fa-fuzz-smoke"
 path = "src/main.rs"
 
 [dependencies]
-fa = { path = "../fa" }
-fa-cli = { path = "../fa-cli" }
-fa-formats = { path = "../fa-formats" }
-fa-intents = { path = "../fa-intents" }
-fa-journal = { path = "../fa-journal" }
-fa-model = { path = "../fa-model" }
-fa-money = { path = "../fa-money" }
-fa-notary = { path = "../fa-notary" }
-fa-registry = { path = "../fa-registry" }
-fa-time = { path = "../fa-time" }
-fa-verbs = { path = "../fa-verbs" }
-fa-verify = { path = "../fa-verify" }
+fa = { path = "../fa", version = "=0.0.1" }
+fa-cli = { path = "../fa-cli", version = "=0.0.1" }
+fa-formats = { path = "../fa-formats", version = "=0.0.1" }
+fa-intents = { path = "../fa-intents", version = "=0.0.1" }
+fa-journal = { path = "../fa-journal", version = "=0.0.1" }
+fa-model = { path = "../fa-model", version = "=0.0.1" }
+fa-money = { path = "../fa-money", version = "=0.0.1" }
+fa-notary = { path = "../fa-notary", version = "=0.0.1" }
+fa-registry = { path = "../fa-registry", version = "=0.0.1" }
+fa-time = { path = "../fa-time", version = "=0.0.1" }
+fa-verbs = { path = "../fa-verbs", version = "=0.0.1" }
+fa-verify = { path = "../fa-verify", version = "=0.0.1" }
 fgdb-types = { workspace = true }

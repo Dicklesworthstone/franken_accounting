@@ -1838,7 +1838,8 @@ fn capability_bound_uploads_derive_grade_from_profile_and_agree_with_the_oracle(
                 .runtime
                 .block_on(upload_document(&mut b.db, &ctx, &b.book, &cap, req))
                 .expect("kernel");
-            let oracle_res = upload_verdict(&law, is_human, asserted.as_ref().map(|(_, n)| n.as_str()));
+            let oracle_res =
+                upload_verdict(&law, is_human, asserted.as_ref().map(|(_, n)| n.as_str()));
 
             match (kernel_res, oracle_res) {
                 (Ok(added), Ok(expected_grade)) => {
@@ -1871,13 +1872,8 @@ fn capability_bound_uploads_derive_grade_from_profile_and_agree_with_the_oracle(
                         *counts.entry("agent_upload").or_default() += 1;
                         // Re-uploading the same bytes from a Human session must not
                         // upgrade the recorded AgentUpload grade or change uploader.
-                        let human_reuploader = Capability::new(
-                            VId(99),
-                            Profile::Human,
-                            &[Op::Post],
-                            VId(99),
-                        )
-                        .unwrap();
+                        let human_reuploader =
+                            Capability::new(VId(99), Profile::Human, &[Op::Post], VId(99)).unwrap();
                         let repeat_req = UploadRequest {
                             kind: invoice_tag,
                             mime: "text/plain".into(),
@@ -1901,9 +1897,7 @@ fn capability_bound_uploads_derive_grade_from_profile_and_agree_with_the_oracle(
                         assert!(repeated.already_recorded);
                         assert_eq!(repeated.grade, added.grade);
                         assert_eq!(repeated.oid, added.oid);
-                        *counts
-                            .entry("human_reupload_kept_agent_grade")
-                            .or_default() += 1;
+                        *counts.entry("human_reupload_kept_agent_grade").or_default() += 1;
                     }
 
                     // 2. Post citing the newly uploaded document before review.
@@ -1936,11 +1930,7 @@ fn capability_bound_uploads_derive_grade_from_profile_and_agree_with_the_oracle(
                         assert_eq!(self_rev, Some("FA-REF-111"));
                         *counts.entry("FA-REF-111").or_default() += 1;
 
-                        let reviewer = PRINCIPALS
-                            .iter()
-                            .copied()
-                            .find(|p| *p != uploader)
-                            .unwrap();
+                        let reviewer = PRINCIPALS.iter().copied().find(|p| *p != uploader).unwrap();
                         let rev_ok = outcome(&b.review(reviewer, added.oid, Vec::new()));
                         assert_eq!(
                             rev_ok,
@@ -1958,8 +1948,7 @@ fn capability_bound_uploads_derive_grade_from_profile_and_agree_with_the_oracle(
                             reviews: reviews.clone(),
                             manual: None,
                         };
-                        let oracle_after =
-                            verdict(&law, "Original", &docs, &citations, &att_after);
+                        let oracle_after = verdict(&law, "Original", &docs, &citations, &att_after);
                         assert_eq!(
                             post_after, oracle_after,
                             "seed {seed:x} step {step} post-review"
@@ -2002,4 +1991,3 @@ fn capability_bound_uploads_derive_grade_from_profile_and_agree_with_the_oracle(
         }
     }
 }
-

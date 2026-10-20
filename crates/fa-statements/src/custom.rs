@@ -52,9 +52,9 @@ impl AccountSetExpr {
         match self {
             Self::AccountTypes(types) => types.contains(&account.account_type),
             Self::AccountCodes(codes) => codes.iter().any(|c| c == &account.code),
-            Self::AccountCodePrefixes(prefixes) => {
-                prefixes.iter().any(|p| account.code.starts_with(p.as_str()))
-            }
+            Self::AccountCodePrefixes(prefixes) => prefixes
+                .iter()
+                .any(|p| account.code.starts_with(p.as_str())),
             Self::Union(children) => children.iter().any(|c| c.matches(account)),
             Self::Difference { include, exclude } => {
                 include.matches(account) && !exclude.matches(account)
@@ -191,9 +191,11 @@ impl AccountSetExpr {
                 "account_code_prefixes",
                 |r| Ok(r.str(64, "prefix")?.to_string()),
             )?)),
-            4 => Ok(Self::Union(r.list(32, "union_children", |r| {
-                Self::decode(r, depth + 1)
-            })?)),
+            4 => {
+                Ok(Self::Union(r.list(32, "union_children", |r| {
+                    Self::decode(r, depth + 1)
+                })?))
+            }
             5 => {
                 let include = Box::new(Self::decode(r, depth + 1)?);
                 let exclude = Box::new(Self::decode(r, depth + 1)?);
@@ -367,9 +369,11 @@ impl CustomStatementDefinition {
             ));
         }
         for check in &self.check_lines {
-            if !self.lines.iter().any(|l| {
-                &l.code == check && matches!(l.source, CustomLineSource::Formula { .. })
-            }) {
+            if !self
+                .lines
+                .iter()
+                .any(|l| &l.code == check && matches!(l.source, CustomLineSource::Formula { .. }))
+            {
                 return Err(StatementError::Definition(format!(
                     "check_line `{check}` must name a Formula line"
                 )));
@@ -591,7 +595,10 @@ pub fn lint_custom_statement_definition(
                 "account code must be 1..=64 bytes and its name must fit the chart schema body",
             ));
         }
-        if !ids.insert(account.id) || chart_by_code.insert(account.code.as_str(), account).is_some()
+        if !ids.insert(account.id)
+            || chart_by_code
+                .insert(account.code.as_str(), account)
+                .is_some()
         {
             return Err(input(format!(
                 "account identity or code `{}` is repeated",
@@ -671,7 +678,11 @@ pub fn lint_custom_statement_definition(
     let mut empty_account_lines = Vec::new();
     for line in &definition.lines {
         if matches!(line.source, CustomLineSource::AccountSet { .. })
-            && line_match_counts.get(line.code.as_str()).copied().unwrap_or(0) == 0
+            && line_match_counts
+                .get(line.code.as_str())
+                .copied()
+                .unwrap_or(0)
+                == 0
         {
             empty_account_lines.push(line.code.clone());
         }
@@ -973,11 +984,7 @@ impl PresentedStatement {
     }
 }
 
-fn round_by_power_of_ten(
-    exact: i128,
-    divisor: u128,
-    law: RoundingLaw,
-) -> Option<(i128, i128)> {
+fn round_by_power_of_ten(exact: i128, divisor: u128, law: RoundingLaw) -> Option<(i128, i128)> {
     let negative = exact < 0;
     let mag = exact.unsigned_abs();
     let q = mag / divisor;
@@ -1054,8 +1061,8 @@ pub fn apply_presentation_rounding(
         ));
     }
     let divisor_u128 = 10u128.pow(u32::from(spec.scale_reduction_digits));
-    let divisor = i128::try_from(divisor_u128)
-        .map_err(|_| input("presentation divisor overflows i128"))?;
+    let divisor =
+        i128::try_from(divisor_u128).map_err(|_| input("presentation divisor overflows i128"))?;
 
     let mut units: Vec<u32> = statement.lines.iter().map(|l| l.unit_id).collect();
     units.sort_unstable();
@@ -1082,13 +1089,7 @@ pub fn apply_presentation_rounding(
             for (col_idx, &exact) in stmt_line.amounts.iter().enumerate() {
                 let (presented, err) =
                     round_by_power_of_ten(exact, divisor_u128, spec.rounding_law).ok_or_else(
-                        || {
-                            overflow(
-                                &def_line.code,
-                                &statement.columns[col_idx].label,
-                                unit_id,
-                            )
-                        },
+                        || overflow(&def_line.code, &statement.columns[col_idx].label, unit_id),
                     )?;
                 presented_amounts.push(presented);
                 rounding_errors.push(err);
@@ -1117,9 +1118,11 @@ pub fn apply_presentation_rounding(
                     let op_total = rounded_op_sum.value().ok_or_else(|| {
                         overflow(&def_line.code, &statement.columns[col_idx].label, unit_id)
                     })?;
-                    let res = presented_amounts[col_idx].checked_sub(op_total).ok_or_else(|| {
-                        overflow(&def_line.code, &statement.columns[col_idx].label, unit_id)
-                    })?;
+                    let res = presented_amounts[col_idx]
+                        .checked_sub(op_total)
+                        .ok_or_else(|| {
+                            overflow(&def_line.code, &statement.columns[col_idx].label, unit_id)
+                        })?;
                     if res != 0 {
                         any_non_zero = true;
                     }
@@ -1333,7 +1336,11 @@ impl StatementXbrlMapping {
             role_uri: "http://frankenaccounting.org/role/TypeLevelStatements".into(),
             bindings: vec![
                 b("assets", "us-gaap:Assets", XbrlBalanceSide::Debit),
-                b("liabilities", "us-gaap:Liabilities", XbrlBalanceSide::Credit),
+                b(
+                    "liabilities",
+                    "us-gaap:Liabilities",
+                    XbrlBalanceSide::Credit,
+                ),
                 b(
                     "equity",
                     "us-gaap:StockholdersEquity",
@@ -1379,7 +1386,11 @@ impl StatementXbrlMapping {
                     "us-gaap:OperatingExpenses",
                     XbrlBalanceSide::Debit,
                 ),
-                b("net_income", "us-gaap:NetIncomeLoss", XbrlBalanceSide::Credit),
+                b(
+                    "net_income",
+                    "us-gaap:NetIncomeLoss",
+                    XbrlBalanceSide::Credit,
+                ),
             ],
         }
     }
@@ -1397,8 +1408,9 @@ impl StatementXbrlMapping {
             statement_definition_name: "us_gaap_small_company_balance_sheet".into(),
             taxonomy_namespace: "http://fasb.org/us-gaap/2026".into(),
             taxonomy_schema_href: "us_gaap_2026_small_company.xsd".into(),
-            role_uri: "http://fasb.org/us-gaap/role/statement/StatementOfFinancialPositionClassified"
-                .into(),
+            role_uri:
+                "http://fasb.org/us-gaap/role/statement/StatementOfFinancialPositionClassified"
+                    .into(),
             bindings: vec![
                 b(
                     "cash",
@@ -1491,8 +1503,7 @@ impl StatementXbrlMapping {
         };
         Self {
             mapping_id: "fa_xbrl_us_gaap_small_company_income_statement_v1".into(),
-            statement_definition_name: "us_gaap_small_company_income_statement"
-                .into(),
+            statement_definition_name: "us_gaap_small_company_income_statement".into(),
             taxonomy_namespace: "http://fasb.org/us-gaap/2026".into(),
             taxonomy_schema_href: "us_gaap_2026_small_company.xsd".into(),
             role_uri: "http://fasb.org/us-gaap/role/statement/StatementOfIncome".into(),
@@ -1548,11 +1559,8 @@ impl CustomStatementDefinition {
         let cash_expr = AccountSetExpr::AccountCodePrefixes(vec!["10".into()]);
         let ar_expr = AccountSetExpr::AccountCodePrefixes(vec!["11".into()]);
         let inv_expr = AccountSetExpr::AccountCodePrefixes(vec!["12".into()]);
-        let cur_asset_expr = AccountSetExpr::Union(vec![
-            cash_expr.clone(),
-            ar_expr.clone(),
-            inv_expr.clone(),
-        ]);
+        let cur_asset_expr =
+            AccountSetExpr::Union(vec![cash_expr.clone(), ar_expr.clone(), inv_expr.clone()]);
         let ppe_expr = AccountSetExpr::Difference {
             include: Box::new(AccountSetExpr::AccountTypes(vec![1])),
             exclude: Box::new(cur_asset_expr),
@@ -1895,7 +1903,7 @@ mod tests {
                         expr: AccountSetExpr::Difference {
                             include: Box::new(AccountSetExpr::AccountTypes(vec![1])),
                             exclude: Box::new(AccountSetExpr::AccountCodePrefixes(vec![
-                                "10".into()
+                                "10".into(),
                             ])),
                         },
                         sign: Sign::Debit,
@@ -2028,13 +2036,7 @@ mod tests {
         };
 
         let stmt = evaluate_custom(&def, &input).unwrap();
-        let get_amt = |code: &str| {
-            stmt.lines
-                .iter()
-                .find(|l| l.code == code)
-                .unwrap()
-                .amounts[0]
-        };
+        let get_amt = |code: &str| stmt.lines.iter().find(|l| l.code == code).unwrap().amounts[0];
         assert_eq!(get_amt("cash_and_equivalents"), 10040);
         assert_eq!(get_amt("other_assets"), 5040);
         assert_eq!(get_amt("total_assets"), 15080);
@@ -2104,10 +2106,7 @@ mod tests {
         ] {
             def.validate().unwrap();
             let bytes = def.canonical_bytes().unwrap();
-            assert_eq!(
-                CustomStatementDefinition::decode(&bytes).unwrap(),
-                def
-            );
+            assert_eq!(CustomStatementDefinition::decode(&bytes).unwrap(), def);
         }
         for mapping in [
             StatementXbrlMapping::us_gaap_type_level_balance_sheet(),

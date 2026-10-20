@@ -79,7 +79,11 @@ impl StatementXbrlMapping {
             role_uri: "http://frankenaccounting.org/role/TypeLevelStatements".into(),
             bindings: vec![
                 b("assets", "us-gaap:Assets", XbrlBalanceSide::Debit),
-                b("liabilities", "us-gaap:Liabilities", XbrlBalanceSide::Credit),
+                b(
+                    "liabilities",
+                    "us-gaap:Liabilities",
+                    XbrlBalanceSide::Credit,
+                ),
                 b(
                     "equity",
                     "us-gaap:StockholdersEquity",
@@ -125,7 +129,11 @@ impl StatementXbrlMapping {
                     "us-gaap:OperatingExpenses",
                     XbrlBalanceSide::Debit,
                 ),
-                b("net_income", "us-gaap:NetIncomeLoss", XbrlBalanceSide::Credit),
+                b(
+                    "net_income",
+                    "us-gaap:NetIncomeLoss",
+                    XbrlBalanceSide::Credit,
+                ),
             ],
         }
     }
@@ -143,8 +151,9 @@ impl StatementXbrlMapping {
             statement_definition_name: "us_gaap_small_company_balance_sheet".into(),
             taxonomy_namespace: "http://fasb.org/us-gaap/2026".into(),
             taxonomy_schema_href: "us_gaap_2026_small_company.xsd".into(),
-            role_uri: "http://fasb.org/us-gaap/role/statement/StatementOfFinancialPositionClassified"
-                .into(),
+            role_uri:
+                "http://fasb.org/us-gaap/role/statement/StatementOfFinancialPositionClassified"
+                    .into(),
             bindings: vec![
                 b(
                     "cash",
@@ -663,11 +672,10 @@ pub fn parse_xbrl_calculation_linkbase_xml(
                 format: "xbrl_calculation_linkbase",
                 detail: format!("link:loc missing xlink:href: {tag}"),
             })?;
-            let label =
-                extract_xml_attr(tag, "xlink:label").ok_or_else(|| FormatError::Parse {
-                    format: "xbrl_calculation_linkbase",
-                    detail: format!("link:loc missing xlink:label: {tag}"),
-                })?;
+            let label = extract_xml_attr(tag, "xlink:label").ok_or_else(|| FormatError::Parse {
+                format: "xbrl_calculation_linkbase",
+                detail: format!("link:loc missing xlink:label: {tag}"),
+            })?;
             let (_, fragment) = href.split_once('#').ok_or_else(|| FormatError::Parse {
                 format: "xbrl_calculation_linkbase",
                 detail: format!("link:loc xlink:href {href:?} missing #fragment"),
@@ -688,11 +696,10 @@ pub fn parse_xbrl_calculation_linkbase_xml(
                 format: "xbrl_calculation_linkbase",
                 detail: format!("link:calculationArc missing xlink:to: {tag}"),
             })?;
-            let weight_str =
-                extract_xml_attr(tag, "weight").ok_or_else(|| FormatError::Parse {
-                    format: "xbrl_calculation_linkbase",
-                    detail: format!("link:calculationArc missing weight: {tag}"),
-                })?;
+            let weight_str = extract_xml_attr(tag, "weight").ok_or_else(|| FormatError::Parse {
+                format: "xbrl_calculation_linkbase",
+                detail: format!("link:calculationArc missing weight: {tag}"),
+            })?;
             let order_str = extract_xml_attr(tag, "order").unwrap_or("1");
             let weight: i8 = match weight_str.trim() {
                 "1" | "+1" | "1.0" => 1,
@@ -763,7 +770,10 @@ pub fn write_xbrl_instance_xml(instance: &XbrlInstance) -> String {
     }
 
     for ctx_id in contexts {
-        xml.push_str(&format!("  <xbrli:context id=\"{}\">\n", xml_escape(ctx_id)));
+        xml.push_str(&format!(
+            "  <xbrli:context id=\"{}\">\n",
+            xml_escape(ctx_id)
+        ));
         xml.push_str("    <xbrli:entity>\n");
         xml.push_str(&format!(
             "      <xbrli:identifier scheme=\"http://frankenaccounting.org/entity\">{}</xbrli:identifier>\n",
@@ -812,9 +822,9 @@ pub fn read_xbrl_instance_xml(xml: &str) -> Result<XbrlInstance, FormatError> {
 
     for raw_line in xml.lines() {
         let line = raw_line.trim();
-        if let Some(rest) = line.strip_prefix(
-            "<xbrli:identifier scheme=\"http://frankenaccounting.org/entity\">",
-        ) {
+        if let Some(rest) =
+            line.strip_prefix("<xbrli:identifier scheme=\"http://frankenaccounting.org/entity\">")
+        {
             if let Some(inner) = rest.strip_suffix("</xbrli:identifier>")
                 && entity_identifier.is_empty()
             {
@@ -847,18 +857,20 @@ pub fn read_xbrl_instance_xml(xml: &str) -> Result<XbrlInstance, FormatError> {
                     format: "xbrl_gl_instance_v1",
                     detail: format!("mismatched closing tag on fact line: {line}"),
                 })?;
-            let context_ref = xml_unescape(
-                extract_xml_attr(open_tag, "contextRef").ok_or_else(|| FormatError::Parse {
-                    format: "xbrl_gl_instance_v1",
-                    detail: format!("fact {concept} missing contextRef"),
-                })?,
-            );
-            let unit_code = xml_unescape(
-                extract_xml_attr(open_tag, "unitRef").ok_or_else(|| FormatError::Parse {
-                    format: "xbrl_gl_instance_v1",
-                    detail: format!("fact {concept} missing unitRef"),
-                })?,
-            );
+            let context_ref =
+                xml_unescape(extract_xml_attr(open_tag, "contextRef").ok_or_else(|| {
+                    FormatError::Parse {
+                        format: "xbrl_gl_instance_v1",
+                        detail: format!("fact {concept} missing contextRef"),
+                    }
+                })?);
+            let unit_code =
+                xml_unescape(extract_xml_attr(open_tag, "unitRef").ok_or_else(|| {
+                    FormatError::Parse {
+                        format: "xbrl_gl_instance_v1",
+                        detail: format!("fact {concept} missing unitRef"),
+                    }
+                })?);
             let decimals_str =
                 extract_xml_attr(open_tag, "decimals").ok_or_else(|| FormatError::Parse {
                     format: "xbrl_gl_instance_v1",
@@ -993,12 +1005,13 @@ pub fn validate_calculation_linkbase_detailed(
                 }
             }
             if any_child_present {
-                let delta = reported_parent
-                    .checked_sub(sum)
-                    .ok_or_else(|| FormatError::Overflow {
-                        format: "xbrl_gl_instance_v1",
-                        detail: "calculation delta subtraction overflow".to_owned(),
-                    })?;
+                let delta =
+                    reported_parent
+                        .checked_sub(sum)
+                        .ok_or_else(|| FormatError::Overflow {
+                            format: "xbrl_gl_instance_v1",
+                            detail: "calculation delta subtraction overflow".to_owned(),
+                        })?;
                 let passed = delta == 0;
                 rows.push(XbrlCalculationCheckRow {
                     role_uri: linkbase.role_uri.clone(),
@@ -1086,15 +1099,16 @@ pub fn export_statement_lines_to_xbrl(
     let mut binding_by_line: BTreeMap<&str, _> = BTreeMap::new();
     let mut used_concepts: BTreeSet<&str> = BTreeSet::new();
     for b in &mapping.bindings {
-        let tax_concept = schema.concepts.get(&b.concept).ok_or_else(|| {
-            FormatError::Parse {
+        let tax_concept = schema
+            .concepts
+            .get(&b.concept)
+            .ok_or_else(|| FormatError::Parse {
                 format: "xbrl_gl_instance_v1",
                 detail: format!(
                     "line `{}` maps to unknown taxonomy concept `{}`",
                     b.line_code, b.concept
                 ),
-            }
-        })?;
+            })?;
         if tax_concept.period_type != b.period_type {
             return Err(FormatError::Parse {
                 format: "xbrl_gl_instance_v1",
@@ -1206,22 +1220,21 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
                     unit: unit_code.clone(),
                 })?;
         units_seen.insert(uid.0);
-        let acct_ty =
-            acct_type_by_code
-                .get(code.as_str())
-                .copied()
-                .ok_or_else(|| FormatError::UnknownAccount {
-                    format: "xbrl_gl_instance_v1",
-                    account_code: code.clone(),
-                })?;
+        let acct_ty = acct_type_by_code
+            .get(code.as_str())
+            .copied()
+            .ok_or_else(|| FormatError::UnknownAccount {
+                format: "xbrl_gl_instance_v1",
+                account_code: code.clone(),
+            })?;
         let natural = match acct_ty {
             AccountType::ASSET | AccountType::EXPENSE => dr_minus_cr,
-            AccountType::LIABILITY | AccountType::EQUITY | AccountType::REVENUE => {
-                dr_minus_cr.checked_neg().ok_or_else(|| FormatError::Overflow {
+            AccountType::LIABILITY | AccountType::EQUITY | AccountType::REVENUE => dr_minus_cr
+                .checked_neg()
+                .ok_or_else(|| FormatError::Overflow {
                     format: "xbrl_gl_instance_v1",
                     detail: "negation overflow in natural balance".into(),
-                })?
-            }
+                })?,
             _ => continue,
         };
         let cell = type_sums.entry((uid.0, acct_ty.0)).or_insert(0);
@@ -1237,22 +1250,26 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
     let mut is_lines = Vec::new();
     for uid in units_seen {
         let assets = *type_sums.get(&(uid, AccountType::ASSET.0)).unwrap_or(&0);
-        let liabilities = *type_sums.get(&(uid, AccountType::LIABILITY.0)).unwrap_or(&0);
+        let liabilities = *type_sums
+            .get(&(uid, AccountType::LIABILITY.0))
+            .unwrap_or(&0);
         let equity = *type_sums.get(&(uid, AccountType::EQUITY.0)).unwrap_or(&0);
         let revenue = *type_sums.get(&(uid, AccountType::REVENUE.0)).unwrap_or(&0);
         let expense = *type_sums.get(&(uid, AccountType::EXPENSE.0)).unwrap_or(&0);
-        let unclosed_earnings = revenue
-            .checked_sub(expense)
-            .ok_or_else(|| FormatError::Overflow {
-                format: "xbrl_gl_instance_v1",
-                detail: "unclosed earnings overflow".into(),
-            })?;
-        let total_equity = equity
-            .checked_add(unclosed_earnings)
-            .ok_or_else(|| FormatError::Overflow {
-                format: "xbrl_gl_instance_v1",
-                detail: "total equity overflow".into(),
-            })?;
+        let unclosed_earnings =
+            revenue
+                .checked_sub(expense)
+                .ok_or_else(|| FormatError::Overflow {
+                    format: "xbrl_gl_instance_v1",
+                    detail: "unclosed earnings overflow".into(),
+                })?;
+        let total_equity =
+            equity
+                .checked_add(unclosed_earnings)
+                .ok_or_else(|| FormatError::Overflow {
+                    format: "xbrl_gl_instance_v1",
+                    detail: "total equity overflow".into(),
+                })?;
         let liabilities_and_equity =
             liabilities
                 .checked_add(total_equity)
@@ -1376,23 +1393,29 @@ pub fn verify_format_journal_xbrl_xml(
     };
     let book_name = attr("book_name")?;
     let base_unit_code = attr("base_unit")?;
-    let base_unit_scale: u8 = attr("base_unit_scale")?.parse().map_err(|_| FormatError::Parse {
-        format: "xbrl_gl_instance_v1",
-        detail: "invalid base_unit_scale".into(),
-    })?;
+    let base_unit_scale: u8 = attr("base_unit_scale")?
+        .parse()
+        .map_err(|_| FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: "invalid base_unit_scale".into(),
+        })?;
     let effective_through =
         DateDay::parse(&attr("effective_through")?).map_err(|e| FormatError::Parse {
             format: "xbrl_gl_instance_v1",
             detail: format!("invalid effective_through: {e}"),
         })?;
-    let known_at_seq: u64 = attr("known_at_seq")?.parse().map_err(|_| FormatError::Parse {
-        format: "xbrl_gl_instance_v1",
-        detail: "invalid known_at_seq".into(),
-    })?;
-    let entry_count: u64 = attr("entry_count")?.parse().map_err(|_| FormatError::Parse {
-        format: "xbrl_gl_instance_v1",
-        detail: "invalid entry_count".into(),
-    })?;
+    let known_at_seq: u64 = attr("known_at_seq")?
+        .parse()
+        .map_err(|_| FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: "invalid known_at_seq".into(),
+        })?;
+    let entry_count: u64 = attr("entry_count")?
+        .parse()
+        .map_err(|_| FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: "invalid entry_count".into(),
+        })?;
     let content_digest = hex_decode("xbrl_gl_instance_v1", &attr("content_digest")?)?;
     let certificate_digest = hex_decode("xbrl_gl_instance_v1", &attr("certificate_digest")?)?;
 

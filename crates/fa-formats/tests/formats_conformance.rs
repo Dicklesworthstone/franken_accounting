@@ -538,7 +538,8 @@ fn xbrl_calculation_linkbase_validates_statements_and_catches_inconsistency() {
 
     // End-to-end FormatJournal -> XBRL instance export + vendored calculation linkbase & coordinate verification
     let journal = sample_multi_unit_journal();
-    let exported_xbrl = write_format_journal_xbrl_xml(&journal).expect("export FormatJournal to XBRL");
+    let exported_xbrl =
+        write_format_journal_xbrl_xml(&journal).expect("export FormatJournal to XBRL");
     let (verified_coord, report) =
         verify_format_journal_xbrl_xml(&exported_xbrl).expect("verify exported XBRL instance");
     assert_eq!(verified_coord, journal.coordinate);
