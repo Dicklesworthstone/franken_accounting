@@ -161,7 +161,10 @@ impl Book {
             };
         let mut entries = Vec::with_capacity(through);
         for (i, planned) in view.intents.iter().take(through).enumerate() {
-            match book.post(scratch_request(planned.intent.clone())?)? {
+            match book.post(scratch_request(
+                planned.intent.clone(),
+                &planned.capability,
+            )?)? {
                 Ok(posted) => entries.push(posted.entry_ref().vid),
                 Err(refusal) => {
                     return Ok(Err(in_scenario(
@@ -223,7 +226,10 @@ impl Book {
             Ok(scenario) => scenario,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let rehearsed = match scenario.book.post(scratch_request(intent.clone())?)? {
+        let rehearsed = match scenario
+            .book
+            .post(scratch_request(intent.clone(), &capability)?)?
+        {
             Ok(posted) => posted.entry_ref().vid,
             Err(refusal) => return Ok(Err(in_scenario(name, fork_at, ordinal, refusal))),
         };
@@ -309,7 +315,8 @@ impl Book {
 }
 
 /// An intent as the scratch book posts it: under an embedded capability of
-/// its planner holding `post`. The planner's own authority (ops, ceilings,
+/// its planner holding `post`, and `reconcile` only when that planner's
+/// admitted capability carries it. The planner's own authority (ops, ceilings,
 /// scope caveats, currency and revocation) was admitted on trunk when the
 /// intent was recorded, as a dry run of it is. The scratch book is the
 /// scenario's review copy, where an Agent's trunk-write denial (a rule about
@@ -317,9 +324,17 @@ impl Book {
 /// own approvals are evaluated there. Not re-applied: profile-dependent
 /// separation of duties (an Agent preparer's extra Human approver on
 /// trunk), since the embedded capability is a Human one.
-fn scratch_request(intent: fa_journal::PostIntent) -> Result<PostRequest, BookError> {
+fn scratch_request(
+    intent: fa_journal::PostIntent,
+    planner: &fa_journal::Capability,
+) -> Result<PostRequest, BookError> {
     let principal = intent.proposal().principal_ref;
-    let capability = fa_journal::Capability::embedded(principal, &["post"])
+    let ops = if planner.ops().contains(&fa_policy::Op::Reconcile) {
+        &["post", "reconcile"][..]
+    } else {
+        &["post"][..]
+    };
+    let capability = fa_journal::Capability::embedded(principal, ops)
         .map_err(|e| BookError::Kernel(fa_journal::KernelError::Corrupt(e.to_string())))?;
     let approvals = intent.approvals().to_vec();
     Ok(PostRequest {

@@ -41,6 +41,7 @@ pub use lifecycle::{
     BankMatchHistory, BankUnmatch, BankUnmatchRecorded, BankUnmatchRequest,
     UNMATCH_SCHEMA_REGISTRY, admit_bank_match_history, bank_match_history, unmatch_bank_match,
 };
+pub(crate) use reconciliation::verify_history_at as verify_reconciliation_history_at;
 pub use reconciliation::{
     BankReconciliationLock, BankReconciliationPreparation, BankReconciliationRecorded,
     BankReconciliationRequest, BankReconciliationState, BankReconciliationStatus,

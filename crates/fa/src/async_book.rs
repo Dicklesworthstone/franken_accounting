@@ -1570,7 +1570,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &mut self.db,
             &mut target,
             cx,
-            self.context.book_id,
+            &self.context,
             prefix,
         )
         .await?

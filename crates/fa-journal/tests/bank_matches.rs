@@ -2005,3 +2005,6 @@ fn published_v1_zero_generation_graphs_remain_readable_correctable_and_reconfirm
 
 #[path = "bank_matches/reconciliation_guard.rs"]
 mod reconciliation_guard;
+
+#[path = "bank_matches/reconciliation_replay.rs"]
+mod reconciliation_replay;

@@ -1299,6 +1299,20 @@ pub fn verify_bank_reconciliation_history<V: Vfs + Clone>(
         Ok(at) => at,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    verify_history_at(db, cx, book, at)
+}
+
+/// Native integrity primitive shared by admitted readers and scratch replay.
+/// Replay validates the original source before omitting maintenance rows, so
+/// a source mutation cannot disappear through maintenance classification.
+/// This does not admit a principal or disclose reconciliation state; public
+/// readers retain their own current authority checks before calling it.
+pub(crate) fn verify_history_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    at: CommitSeq,
+) -> Outcome<()> {
     if let Err(error) = crate::entry_history::verify_entry_history(db, cx, book, Some(at)) {
         return match error {
             KernelError::Corrupt(message) => Ok(Err(drift(message))),
