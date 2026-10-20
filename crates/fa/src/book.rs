@@ -3857,8 +3857,10 @@ impl ReadScope<'_> {
     /// period through its latest selected one (a `periods` caveat refuses
     /// it; an `effective` caveat admits it only through that period's last
     /// day); period activity and an explanation reach exactly their
-    /// periods; open items reach the whole book. A statement is admitted by
-    /// its own family, so here it reaches the whole book.
+    /// periods; open items reach the whole book. A statement's columns,
+    /// current and comparative, reach what their basis folds: a stock basis
+    /// is a balance through the latest of them, an activity basis exactly
+    /// their periods.
     pub fn admit_report(
         &self,
         selection: &crate::ReportSelection,
@@ -3883,9 +3885,17 @@ impl ReadScope<'_> {
             ReportSelection::ExplainBalance { period, .. } => {
                 self.authority.periods(book, seq, &[period.as_str()])
             }
-            ReportSelection::OpenItems { .. } | ReportSelection::Statement(_) => {
-                self.authority.whole_book(seq)
+            ReportSelection::Statement(statement) => {
+                let mut reached = codes(&statement.periods);
+                reached.extend(codes(&statement.comparative));
+                match statement.definition.basis() {
+                    fa_statements::Basis::Stock => {
+                        self.authority.stock_through(book, seq, &reached)
+                    }
+                    fa_statements::Basis::Activity => self.authority.periods(book, seq, &reached),
+                }
             }
+            ReportSelection::OpenItems { .. } => self.authority.whole_book(seq),
         };
         Ok(admitted.map(|()| seq))
     }
