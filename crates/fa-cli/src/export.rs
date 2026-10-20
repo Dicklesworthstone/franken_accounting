@@ -11,7 +11,7 @@ use fa_policy::Op;
 use fa_time::DateDay;
 
 use crate::args::Args;
-use crate::cli::{Ctx, Fail, hex, known_at_flag, usage, write_new_output_file};
+use crate::cli::{Ctx, Fail, hex, known_at_read_flag, usage, write_new_output_file};
 use crate::json::{Json, obj, s};
 
 const EXAMPLE: &str = "fa export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
@@ -24,11 +24,9 @@ struct ExportFile {
 
 pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let format = match args.positional.get(1).map(String::as_str) {
-        Some(format @ ("ads" | "saft" | "csv-gl" | "beancount" | "hledger" | "ndjson" | "xbrl"))
-            if args.positional.len() == 2 =>
-        {
-            format
-        }
+        Some(
+            format @ ("ads" | "saft" | "csv-gl" | "beancount" | "hledger" | "ndjson" | "xbrl"),
+        ) if args.positional.len() == 2 => format,
         Some(other) if args.positional.len() == 2 => {
             return Err(usage(format!("unknown export format `{other}`"), EXAMPLE));
         }
@@ -59,20 +57,12 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         fa_policy::require(&capability, op, "exporting the journal")
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     }
-    let book = ctx.books.open(args)?;
-    let through = match (args.flag("--period"), args.flag("--as-of")) {
-        (Some(code), None) => {
-            let periods = book.periods()?;
-            let period = periods.iter().find(|p| p.code == code).ok_or_else(|| {
-                usage(
-                    format!("no period `{code}` in this book"),
-                    "fa period list --json names the periods",
-                )
-            })?;
-            DateDay(period.end.0 - 1)
-        }
-        (None, Some(date)) => DateDay::parse(date)
-            .map_err(|e| usage(format!("--as-of: {e}"), "--as-of YYYY-MM-DD"))?,
+    let selection = match (args.flag("--period"), args.flag("--as-of")) {
+        (Some(code), None) => fa::TrialBalanceSelection::Periods(vec![code.to_string()]),
+        (None, Some(date)) => fa::TrialBalanceSelection::AsOf(
+            DateDay::parse(date)
+                .map_err(|e| usage(format!("--as-of: {e}"), "--as-of YYYY-MM-DD"))?,
+        ),
         _ => {
             return Err(usage(
                 "export needs exactly one of --period <code> (through its last day) or --as-of YYYY-MM-DD",
@@ -80,8 +70,35 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ));
         }
     };
-    let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
-    let journal = book.format_journal(through, known_at)?;
+    let mut selected = None;
+    let book = ctx.books.open_admitted(args, |book| {
+        let scope = book.read_scope(capability.holder(), &capability)??;
+        let (known_at, _) = known_at_read_flag(args, book, &ctx.out, &capability)?;
+        // An export is cumulative stock, even when --period names its
+        // boundary. Admit that reach before reading any period or entry.
+        let seq = scope.admit_report(&selection.clone().into(), known_at)??;
+        let through = match &selection {
+            fa::TrialBalanceSelection::Periods(periods) => {
+                let code = &periods[0];
+                let period = scope.period_at(code, Some(seq))??.ok_or_else(|| {
+                    usage(
+                        format!("no period `{code}` in this book at {}", seq.0),
+                        "select a period recorded at the requested known-at sequence",
+                    )
+                })?;
+                DateDay(period.end.0 - 1)
+            }
+            fa::TrialBalanceSelection::AsOf(day) => *day,
+            fa::TrialBalanceSelection::Activity(_) => {
+                return Err(Fail::Internal(
+                    "an export cannot select period activity".into(),
+                ));
+            }
+        };
+        selected = Some(book.format_journal(through, Some(seq))?);
+        Ok(())
+    })?;
+    let journal = selected.ok_or_else(|| Fail::Internal("export selection is missing".into()))?;
     let written = |e: fa_formats::FormatError| Fail::Internal(format!("{format} writer: {e}"));
     let files = match format {
         "ads" => {
@@ -178,6 +195,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     out.at_book(&book)?;
     let coordinate = &journal.coordinate;
+    out.known_at(fgdb_types::CommitSeq(coordinate.known_at_seq));
     let files_json: Vec<Json> = files
         .iter()
         .map(|file| {

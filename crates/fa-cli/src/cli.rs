@@ -9082,6 +9082,26 @@ pub(crate) fn known_at_flag(
     }
 }
 
+/// Resolve an authorized read's recorded coordinate. Resolving an instant
+/// currently reads TimeEvidence at the head, so scoped tokens must use an
+/// explicit sequence until that lookup itself has a bounded read API.
+pub(crate) fn known_at_read_flag(
+    args: &Args,
+    book: &Book,
+    out: &Out,
+    capability: &Capability,
+) -> Result<(Option<CommitSeq>, Option<u64>), Fail> {
+    if let Some(value) = args
+        .flag("--known-at")
+        .or_else(|| args.flag("--as-known-at"))
+        && value != "HEAD"
+        && !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        admit_whole_book_read(book, capability, &[], "resolving a known-at instant")?;
+    }
+    known_at_flag(args, book, out)
+}
+
 /// Whether `--as-originally-reported` (plan §7.4) selects this read. It
 /// fixes the known-at coordinate itself (the period's first StatementIssuance,
 /// else its first Lock; never HEAD, never a Close), so a known-at selector
@@ -17988,9 +18008,16 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa event show <code|vid> [--as-known-at HEAD|<seq>] --book <dir>",
                 ));
             }
-            let book = ctx.books.open(args)?;
-            let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
-            let rea = book.rea_snapshot(known_at)?;
+            let capability = ctx.capability(args, &["read"])?;
+            let mut selected = None;
+            let book = ctx.books.open_admitted(args, |book| {
+                let scope = book.read_scope(who, &capability)??;
+                let (known_at, _) = known_at_read_flag(args, book, &ctx.out, &capability)?;
+                let seq = scope.admit_whole_book(known_at)??;
+                selected = Some(book.rea_snapshot(Some(seq))?);
+                Ok(())
+            })?;
+            let rea = selected.ok_or_else(|| Fail::Internal("event snapshot is missing".into()))?;
             ctx.out.known_at(rea.known_at);
             let stripped = target.strip_prefix("EV:").unwrap_or(target);
             let ev_row = if stripped.len() == 32
@@ -18034,9 +18061,16 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa event list [--as-known-at HEAD|<seq>] --book <dir>",
                 ));
             }
-            let book = ctx.books.open(args)?;
-            let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
-            let rea = book.rea_snapshot(known_at)?;
+            let capability = ctx.capability(args, &["read"])?;
+            let mut selected = None;
+            ctx.books.open_admitted(args, |book| {
+                let scope = book.read_scope(who, &capability)??;
+                let (known_at, _) = known_at_read_flag(args, book, &ctx.out, &capability)?;
+                let seq = scope.admit_whole_book(known_at)??;
+                selected = Some(book.rea_snapshot(Some(seq))?);
+                Ok(())
+            })?;
+            let rea = selected.ok_or_else(|| Fail::Internal("event snapshot is missing".into()))?;
             ctx.out.known_at(rea.known_at);
             let mut rows: Vec<&fa_journal::EventRow> = rea.events.values().collect();
             rows.sort_by(|a, b| {

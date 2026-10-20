@@ -651,8 +651,8 @@ subcommands = []
 flags = []
 switches = []
 events = ["book_triage"]
-exits = [0, 2, 4, 5]
-usage = ["triage   (next_actions: what to run next, computed from the book's state)"]
+exits = [0, 2, 4, 5, 7]
+usage = ["triage   (next_actions: what to run next, computed from the book's state)", "Requires current read authority over the whole book at its head; scoped tokens are refused before the survey."]
 example = "fa triage --book ./books/myco --json"
 
 [[verb]]
@@ -663,8 +663,8 @@ subcommands = []
 flags = []
 switches = []
 events = ["next_step"]
-exits = [0, 2, 4, 5]
-usage = ["next   (command and why; null when there is nothing to do)"]
+exits = [0, 2, 4, 5, 7]
+usage = ["next   (command and why; null when there is nothing to do)", "Requires the same current whole-book read authority as triage."]
 example = "fa next --book ./books/myco --json"
 
 

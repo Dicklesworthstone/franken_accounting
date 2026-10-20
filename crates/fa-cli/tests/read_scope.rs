@@ -147,6 +147,10 @@ impl Fixture {
     /// A read-only Human token for `holder`, issued by the embedded owner
     /// with the given scope flags; returns the token file and commitment.
     fn issue(&self, holder: &str, scope: &[&str]) -> (String, String) {
+        self.issue_ops(holder, &["read"], scope)
+    }
+
+    fn issue_ops(&self, holder: &str, ops: &[&str], scope: &[&str]) -> (String, String) {
         let token = format!("{holder}.token");
         let mut args = vec![
             "capability",
@@ -155,13 +159,14 @@ impl Fixture {
             holder,
             "--profile",
             "human",
-            "--op",
-            "read",
             "--out",
             &token,
             "--grant",
             "issue_capability",
         ];
+        for op in ops {
+            args.extend(["--op", *op, "--grant", *op]);
+        }
         args.extend_from_slice(scope);
         let issued = self.ok(&args);
         let commitment = text(data(&issued), "commitment").to_string();
@@ -338,6 +343,347 @@ fn scoped_tokens_read_inside_their_caveats_and_are_refused_outside_them() {
         scoped.extend(args);
         f.out_of_scope(&scoped, "`known_at`");
     }
+}
+
+#[test]
+fn exports_enforce_the_same_scope_as_stock_reads_before_disclosing_or_writing() {
+    let f = Fixture::new();
+    let pin = number(data(&f.march), "recorded_at");
+    let pin_text = pin.to_string();
+    let (pinned, _) = f.issue_ops(
+        "export-pinned",
+        &["read", "produce"],
+        &["--known-at-most", &pin_text],
+    );
+    let selected = [
+        "export",
+        "csv-gl",
+        "--period",
+        "FY2026-P04",
+        "--as-known-at",
+        &pin_text,
+    ];
+    let mut scoped = vec!["--token", pinned.as_str()];
+    scoped.extend(selected);
+    let exported = f.ok(&scoped);
+    let owner = f.ok(&selected);
+    assert_eq!(data(&exported), data(&owner));
+    assert_eq!(number(data(&exported), "entries"), 1);
+    assert_eq!(number(data(&exported), "known_at"), pin);
+    assert_eq!(number(exported.get("coordinate").unwrap(), "known_at"), pin);
+    assert_eq!(
+        number(
+            data(&f.ok(&["export", "csv-gl", "--period", "FY2026-P04"])),
+            "entries"
+        ),
+        2,
+        "the historical export must not silently substitute today's journal"
+    );
+
+    // Every format shares admission, including ADS's directory output.
+    for format in [
+        "ads",
+        "saft",
+        "csv-gl",
+        "beancount",
+        "hledger",
+        "ndjson",
+        "xbrl",
+    ] {
+        let path = format!("refused-{format}");
+        f.out_of_scope(
+            &[
+                "--token",
+                &pinned,
+                "export",
+                format,
+                "--as-of",
+                "2026-04-30",
+                "--out",
+                &path,
+            ],
+            "`known_at`",
+        );
+        assert!(
+            !f.dir.join(path).exists(),
+            "refusal creates no export file or directory"
+        );
+    }
+    f.out_of_scope(
+        &[
+            "--token",
+            &pinned,
+            "export",
+            "csv-gl",
+            "--as-of",
+            "2026-04-30",
+            "--as-known-at",
+            &(pin + 1).to_string(),
+        ],
+        "`known_at`",
+    );
+    // Resolving an instant currently observes TimeEvidence at HEAD; it is
+    // refused before that lookup, even when no tick exists for the instant.
+    f.out_of_scope(
+        &[
+            "--token",
+            &pinned,
+            "export",
+            "csv-gl",
+            "--as-of",
+            "2026-03-31",
+            "--as-known-at",
+            "2026-03-31T00:00:00Z",
+        ],
+        "`known_at`",
+    );
+
+    let (march, _) = f.issue_ops(
+        "export-march",
+        &["read", "produce"],
+        &["--period", "FY2026-P03"],
+    );
+    // --period sets a cumulative boundary, not an activity-only export.
+    f.out_of_scope(
+        &[
+            "--token",
+            &march,
+            "export",
+            "csv-gl",
+            "--period",
+            "FY2026-P03",
+        ],
+        "`periods`",
+    );
+    let (through, _) = f.issue_ops(
+        "export-through",
+        &["read", "produce"],
+        &["--effective-through", "2026-03-31"],
+    );
+    let bounded = f.ok(&[
+        "--token",
+        &through,
+        "export",
+        "csv-gl",
+        "--period",
+        "FY2026-P03",
+    ]);
+    assert_eq!(
+        data(&bounded),
+        data(&f.ok(&["export", "csv-gl", "--as-of", "2026-03-31"]))
+    );
+    f.out_of_scope(
+        &[
+            "--token",
+            &through,
+            "export",
+            "csv-gl",
+            "--period",
+            "FY2026-P04",
+        ],
+        "`effective`",
+    );
+    let (account, _) = f.issue_ops(
+        "export-account",
+        &["read", "produce"],
+        &["--account", "1000"],
+    );
+    f.out_of_scope(
+        &[
+            "--token",
+            &account,
+            "export",
+            "csv-gl",
+            "--period",
+            "FY2026-P03",
+        ],
+        "`accounts`",
+    );
+    let (reader, _) = f.issue("export-without-produce", &[]);
+    f.out_of_scope(
+        &[
+            "--token",
+            &reader,
+            "export",
+            "csv-gl",
+            "--period",
+            "FY2026-P03",
+        ],
+        "`produce`",
+    );
+
+    // A later period's existence must not be borrowed from the head while
+    // resolving an otherwise authorized historical export.
+    f.ok(&["period", "create", "--fiscal-year", "2027"]);
+    let (exit, unknown) = f.run(&[
+        "--token",
+        &pinned,
+        "export",
+        "csv-gl",
+        "--period",
+        "FY2027-P01",
+        "--as-known-at",
+        &pin_text,
+    ]);
+    assert_eq!(exit, 2, "{unknown:?}");
+    assert!(
+        text(data(&unknown), "message").contains("no period `FY2027-P01`"),
+        "{unknown:?}"
+    );
+}
+
+#[test]
+fn event_reads_and_book_surveys_require_current_authority_at_their_actual_reach() {
+    let f = Fixture::new();
+    let document = f.ok(&[
+        "document",
+        "add",
+        "receipt.txt",
+        "--kind",
+        "Receipt",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let evidence = text(data(&document), "oid");
+    let march = f.ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-MARCH",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-15",
+        "--description",
+        "March event",
+        "--evidence",
+        evidence,
+    ]);
+    let pin = number(data(&march), "recorded_at");
+    let pin_text = pin.to_string();
+    f.ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-APRIL",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-04-15",
+        "--description",
+        "April event",
+        "--evidence",
+        evidence,
+    ]);
+    let (pinned, commitment) = f.issue("events-pinned", &["--known-at-most", &pin_text]);
+    for args in [
+        vec![
+            "event",
+            "show",
+            "EV-MARCH",
+            "--as-known-at",
+            pin_text.as_str(),
+        ],
+        vec!["event", "list", "--as-known-at", pin_text.as_str()],
+    ] {
+        let mut scoped = vec!["--token", pinned.as_str()];
+        scoped.extend_from_slice(&args);
+        let read = f.ok(&scoped);
+        assert_eq!(data(&read), data(&f.ok(&args)));
+        assert_eq!(number(read.get("coordinate").unwrap(), "known_at"), pin);
+    }
+    assert_eq!(
+        number(
+            data(&f.ok(&[
+                "--token",
+                &pinned,
+                "event",
+                "list",
+                "--as-known-at",
+                &pin_text
+            ])),
+            "count"
+        ),
+        1
+    );
+    assert_eq!(number(data(&f.ok(&["event", "list"])), "count"), 2);
+
+    for (holder, scope, caveat) in [
+        ("survey-period", vec!["--period", "FY2026-P03"], "`periods`"),
+        (
+            "survey-effective",
+            vec!["--effective-through", "2026-03-31"],
+            "`effective`",
+        ),
+        ("survey-account", vec!["--account", "1000"], "`accounts`"),
+    ] {
+        let (token, _) = f.issue(holder, &scope);
+        for args in [
+            vec!["event", "show", "EV-MARCH"],
+            vec!["event", "show", "EV-UNKNOWN"],
+            vec!["event", "list"],
+            vec!["triage"],
+            vec!["next"],
+        ] {
+            let mut scoped = vec!["--token", token.as_str()];
+            scoped.extend(args);
+            f.out_of_scope(&scoped, caveat);
+        }
+    }
+    for args in [
+        vec!["event", "show", "EV-MARCH"],
+        vec!["event", "list"],
+        vec!["event", "list", "--as-known-at", "2026-03-31T00:00:00Z"],
+        vec!["triage"],
+        vec!["next"],
+    ] {
+        let mut scoped = vec!["--token", pinned.as_str()];
+        scoped.extend(args);
+        f.out_of_scope(&scoped, "`known_at`");
+    }
+
+    let (reader, _) = f.issue("survey-reader", &[]);
+    for verb in ["triage", "next"] {
+        assert_eq!(
+            data(&f.ok(&["--token", &reader, verb])),
+            data(&f.ok(&[verb]))
+        );
+    }
+    let (writer, _) = f.issue_ops("survey-no-read", &["post"], &[]);
+    for args in [
+        vec!["event", "show", "EV-MARCH"],
+        vec!["event", "list"],
+        vec!["triage"],
+        vec!["next"],
+    ] {
+        let mut denied = vec!["--token", writer.as_str()];
+        denied.extend(args);
+        f.out_of_scope(&denied, "`read`");
+    }
+
+    // Historical selection never resurrects a token revoked now.
+    f.ok(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &commitment,
+        "--grant",
+        "issue_capability",
+        "--yes",
+    ]);
+    let (exit, refused) = f.run(&[
+        "--token",
+        &pinned,
+        "event",
+        "list",
+        "--as-known-at",
+        &pin_text,
+    ]);
+    assert_eq!(exit, 7, "{refused:?}");
+    assert!(
+        text(data(&refused), "message").contains("revoked"),
+        "{refused:?}"
+    );
 }
 
 #[test]

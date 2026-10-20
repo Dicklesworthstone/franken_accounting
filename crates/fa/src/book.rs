@@ -3879,6 +3879,27 @@ impl ReadScope<'_> {
             .map(|()| seq))
     }
 
+    /// One period's metadata at an admitted frontier. The selected period
+    /// is judged before its point read; no current or unrelated period rows
+    /// are loaded while resolving a historical report's effective boundary.
+    pub fn period_at(&self, code: &str, known_at: Option<CommitSeq>) -> Outcome<Option<PeriodRow>> {
+        let seq = match self.admit_periods(&[code], known_at)? {
+            Ok(seq) => seq,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let purposes = self.book.purposes();
+        with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
+            let row = db
+                .vertex_at(fa_model::period_vid(&book.calendar.id, code), seq)
+                .map_err(KernelError::from)?;
+            let period = row
+                .filter(|row| row.labels.contains(&fa_model::symbols::label::PERIOD))
+                .map(|row| PeriodRow::decode(&row))
+                .transpose()?;
+            Ok(Ok(period))
+        }))
+    }
+
     /// Admit a read of the whole book at its recorded frontier: an entry,
     /// its lineage or its evidence, whose period is known only once read.
     pub fn admit_whole_book(&self, known_at: Option<CommitSeq>) -> Outcome<CommitSeq> {
