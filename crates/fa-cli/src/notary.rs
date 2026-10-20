@@ -425,6 +425,46 @@ pub(crate) fn general_ledger_replay_options(
     Ok(options)
 }
 
+/// The `--view roll-forward` options that bind a replay of a certified
+/// roll-forward to the certificate's canonical request, as
+/// [`general_ledger_replay_options`] does for the ledger detail view, so
+/// the receipt's replay command reaches the lead-schedule workpaper.
+pub(crate) fn roll_forward_replay_options(
+    book: &Book,
+    certificate: &fa::RollForwardCertificate,
+    report: &fa::RollForward,
+) -> Result<String, Fail> {
+    let request = certificate.request();
+    let mut options = String::from(" --view roll-forward");
+    for account in &request.accounts {
+        let code = report
+            .accounts
+            .iter()
+            .find(|row| row.id == account.0)
+            .map(|row| row.code.as_str())
+            .ok_or_else(|| {
+                Fail::Internal("a certified roll-forward account is missing from its report".into())
+            })?;
+        options.push_str(&format!(" --account {}", quoted_word(code)));
+    }
+    for unit in &request.units {
+        let code =
+            crate::cli::registered_unit_code(fa_money::UnitId(*unit), &book.context().units)?;
+        options.push_str(&format!(" --unit {}", quoted_word(&code)));
+    }
+    let known_at = request.known_at.ok_or_else(|| {
+        Fail::Internal("a roll-forward certificate without its recorded prefix".into())
+    })?;
+    options.push_str(&format!(
+        " --from {} --to {} --label {} --as-known-at {}",
+        request.effective_from,
+        request.effective_through,
+        quoted_word(&request.label),
+        known_at.0,
+    ));
+    Ok(options)
+}
+
 pub(crate) fn emit_general_ledger_certificate(
     out: &Out,
     args: &Args,
@@ -536,11 +576,20 @@ fn has_workpaper(family: ReportArtifactFamily, view_bound: bool, aging_expected:
 }
 
 fn unsupported_workpaper(family: ReportArtifactFamily) -> Fail {
-    usage(
-        format!(
+    let message = match family {
+        ReportArtifactFamily::RollForward => {
+            "a roll-forward certificate's workpaper is bound to a view: replay it with --view detail or --view roll-forward".to_string()
+        }
+        ReportArtifactFamily::EffectiveDateAging => {
+            "an effective-date-aging certificate's workpaper is bound to the recipient's aging --expect".to_string()
+        }
+        _ => format!(
             "{} certificates have no JSONL workpaper export",
             family.name()
         ),
+    };
+    usage(
+        message,
         "--workpaper-out exports a roll-forward source's ledger detail or lead schedule (replay it with --view detail or --view roll-forward), effective-date aging (with its aging --expect), cash-flow, aging-reconciliation, aging-portfolio, statement-diff and statement-trace certificates",
     )
 }
@@ -752,13 +801,35 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         book.prepare_report_history(principal, &capability, None)??;
         Ok(())
     })?;
-    if let Some(path) = workpaper_out
-        && std::fs::symlink_metadata(ctx.files.resolve(path)).is_ok()
-    {
-        return Err(usage(
-            format!("workpaper output {path} already exists"),
-            "choose a new --workpaper-out path; an existing file is never overwritten",
-        ));
+    if let Some(path) = workpaper_out {
+        let target = ctx.files.resolve(path);
+        if std::fs::symlink_metadata(&target).is_ok() {
+            return Err(usage(
+                format!("workpaper output {path} already exists"),
+                "choose a new --workpaper-out path; an existing file is never overwritten",
+            ));
+        }
+        // The report is written before the workpaper, so a workpaper target
+        // that cannot be created is refused now: a failed export never
+        // leaves the report file behind.
+        if args
+            .flag("--output")
+            .is_some_and(|output| ctx.files.resolve(output) == target)
+        {
+            return Err(usage(
+                format!("--output and --workpaper-out both name {path}"),
+                "write the replayed report and its workpaper to two new paths",
+            ));
+        }
+        if !target
+            .parent()
+            .is_some_and(|dir| dir.as_os_str().is_empty() || dir.is_dir())
+        {
+            return Err(usage(
+                format!("the directory of workpaper output {path} does not exist"),
+                "create the directory first, or choose a --workpaper-out path in an existing one",
+            ));
+        }
     }
     let expected = expectations::parse(args, &book, principal, &capability)?;
     let view_request = match view {
