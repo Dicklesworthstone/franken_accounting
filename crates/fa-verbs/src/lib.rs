@@ -1910,6 +1910,8 @@ mod bound_tests {
             // Plain detail and roll-forward judge a complete recorded prefix.
             ("gl", Some("detail")),
             ("gl", Some("roll-forward")),
+            ("sample", Some("mus")),
+            ("sample", Some("evaluate")),
         ] {
             assert_eq!(judged(verb, sub, &[]), Some(true), "{verb} {sub:?}");
         }
