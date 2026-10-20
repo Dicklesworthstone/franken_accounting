@@ -220,6 +220,21 @@ name = "ProductionControl"
 kind = "control"
 supersession = "none"
 
+# An audit engagement's mechanics (plan §11.12, Appendix A `Engagement` and
+# `ProposedAdjustment`; fa-zgn): book-scoped and undated;
+# ControlPayload::LifecycleTransition — Open on the Engagement (its profile in
+# extension 16 `fa:engagement:v1`: kind, firm principal, scope periods and the
+# stated materiality parameters), Propose on the Engagement (the draft
+# correcting entry in extension 17 `fa:proposed-adjustment:v1`, which never
+# posts), and Book or Pass on the ProposedAdjustment (Book's proof ref is the
+# committed entry whose legs equal the proposal's; Pass carries an
+# `adjustment_pass` reason code). Nothing in it alters a committed amount.
+[[class]]
+tag = 29
+name = "EngagementControl"
+kind = "control"
+supersession = "none"
+
 # ---- Control kinds (fa-g23) ---------------------------------------------------
 # `EntryOrigin::Control.control_kind`: the act that minted a control record. It
 # is durable in every control record's origin, so it is registered here rather
@@ -317,3 +332,14 @@ id = 14
 name = "production_transition"
 class = "ProductionControl"
 minted_by = "fa-journal production::open_production, production::produce"
+
+[[reserved_control_kind]]
+id = 15
+name = "statement_issuance"
+holder = "MaroonCat fa-wrrw (StatementIssuance, announced 2026-10-20); its row replaces this reservation"
+
+[[control_kind]]
+id = 16
+name = "engagement_transition"
+class = "EngagementControl"
+minted_by = "fa-journal engagement::open_engagement, engagement::propose_adjustment, engagement::decide_adjustment"
