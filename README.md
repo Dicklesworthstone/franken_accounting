@@ -82,6 +82,9 @@ fa gl roll-forward --account 1000,1200 --from 2026-03-01 --to 2026-03-31 --book 
 # Tie open items to the control balance: one leaf, a list, or every posting leaf.
 fa gl aging --account 1200 --as-of 2026-03-31 --reconcile --book ./books/acme --json
 fa gl aging --all-posting --as-of 2026-03-31 --reconcile --book ./books/acme --json
+# Reconcile exactly the aging and as-of trial balance certificates already handed out.
+fa gl aging --reconcile --account 1200 --as-of 2026-03-31 --as-known-at 42 \
+  --aging-certificate C:<aging-oid> --control-certificate C:<tb-oid> --certify --book ./books/acme --json
 # Cash flow under an explicit policy: per-leg assignments, or account_rules plus overrides.
 fa gl cash-flow --account 1000 --from 2026-03-01 --to 2026-03-31 --policy cash-policy.json --book ./books/acme --json
 ```
