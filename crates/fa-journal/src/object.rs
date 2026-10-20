@@ -2,7 +2,7 @@
 //!
 //! The caller owns the root, authority checks and transaction. This module
 //! only stages immutable fragments; it never publishes, repairs or opens a
-//! second store. The first consumers are posting and correction plans.
+//! second store. Consumers include posting plans and committed intent outcomes.
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::property;
@@ -24,6 +24,7 @@ pub enum ObjectKind {
     PostPlan = 1,
     ReplacementPlan = 2,
     BatchPlan = 3,
+    IntentOutcome = 4,
 }
 
 /// Public content identity, separate from a caller's graph locator.
@@ -82,7 +83,7 @@ fn fragment_vid(book: Id128, root: VId, object: ObjectRef, index: usize) -> VId 
 
 /// Add fragments to the SAME batch as their root; no root or commit is created.
 /// The caller supplies the storage label so fragments inherit its observation
-/// and scratch-replay policy. Current consumers use Certificate.
+/// and scratch-replay policy. Plans use Certificate; outcomes use IntentOutcome.
 pub fn stage(
     cx: &QueryCx,
     batch: &mut WriteBatch,
@@ -233,6 +234,7 @@ mod tests {
             ObjectKind::PostPlan,
             ObjectKind::ReplacementPlan,
             ObjectKind::BatchPlan,
+            ObjectKind::IntentOutcome,
         ]
         .into_iter()
         .flat_map(|kind| {
@@ -304,7 +306,9 @@ mod tests {
             }
             let wrong_kind = match kind {
                 ObjectKind::PostPlan => ObjectKind::ReplacementPlan,
-                ObjectKind::ReplacementPlan | ObjectKind::BatchPlan => ObjectKind::PostPlan,
+                ObjectKind::ReplacementPlan | ObjectKind::BatchPlan | ObjectKind::IntentOutcome => {
+                    ObjectKind::PostPlan
+                }
             };
             assert!(
                 read(

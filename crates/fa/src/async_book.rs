@@ -966,13 +966,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         name: &str,
     ) -> Result<Option<fa_journal::DraftView>, BookError> {
         self.query(cx, |db, context| {
-            Ok(fa_journal::read_draft(db, context, name)?)
+            Ok(fa_journal::read_draft(db, &cx.query(), context, name)?)
         })
     }
 
     /// Every draft of the book.
     pub fn drafts(&self, cx: &PurposeContexts) -> Result<Vec<fa_journal::DraftView>, BookError> {
-        self.query(cx, |db, context| Ok(fa_journal::list_drafts(db, context)?))
+        self.query(cx, |db, context| {
+            Ok(fa_journal::list_drafts(db, &cx.query(), context)?)
+        })
     }
 
     /// The issuance `certificate` records for `period` to `issued_to` (plan

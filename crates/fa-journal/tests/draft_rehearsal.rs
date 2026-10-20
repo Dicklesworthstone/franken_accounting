@@ -108,7 +108,7 @@ fn agent_rehearsal_matches_atomic_promotion_without_touching_trunk() {
     assert_eq!(cash_balance(&scratch, h.cash), before_cash - 12_845);
     assert!(scratch.vertex(maintenance_vid(1)).unwrap().is_none());
     assert_eq!(
-        read_draft(&scratch, &h.book, "close-march")
+        read_draft(&scratch, &h.ctx().query(), &h.book, "close-march")
             .unwrap()
             .unwrap(),
         before_view

@@ -41,7 +41,7 @@ use fa_policy::{Capability, Denial, Intent, Op};
 use fa_time::DateDay;
 use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CanonicalScalar, CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 
 use crate::batch::{BatchStage, commit_batch, read_outcome, stage_batch};
 use crate::genesis::BookContext;
@@ -742,7 +742,7 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
             "plan Original, Adjusting, Reversal, Pending or Resolution entries; post allocations and migration chunks through their own verbs",
         )));
     }
-    let Some(view) = read_draft(db, book, name)? else {
+    let Some(view) = read_draft(db, &ctx.query(), book, name)? else {
         return Ok(Err(unknown(name)));
     };
     if view.body.owner != req.capability.holder() {
@@ -873,7 +873,7 @@ pub async fn discard_draft<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = admit(db, book, &req.capability, Kind::Discard)? {
         return Ok(Err(r));
     }
-    let Some(view) = read_draft(db, book, name)? else {
+    let Some(view) = read_draft(db, &ctx.query(), book, name)? else {
         return Ok(Err(unknown(name)));
     };
     if view.body.owner != req.capability.holder() && !req.capability.holds(Op::Approve) {
@@ -957,7 +957,7 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = admit(db, book, &req.capability, Kind::Promote)? {
         return Ok(Err(r));
     }
-    let Some(view) = read_draft(db, book, name)? else {
+    let Some(view) = read_draft(db, &ctx.query(), book, name)? else {
         return Ok(Err(unknown(name)));
     };
     if view.body.owner == req.capability.holder() {
@@ -1085,12 +1085,13 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
 /// The draft `name` as its records state it at the head.
 pub fn read_draft<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
+    cx: &QueryCx,
     book: &BookContext,
     name: &str,
 ) -> Result<Option<DraftView>, KernelError> {
     let vid = draft_vid(book.book_id, name);
     match db.vertex(vid)? {
-        Some(row) if row.labels.contains(&label::DRAFT_SET) => Ok(Some(view_of(db, &row)?)),
+        Some(row) if row.labels.contains(&label::DRAFT_SET) => Ok(Some(view_of(db, cx, &row)?)),
         Some(_) => Err(KernelError::Corrupt(format!(
             "draft identity {:032x} holds a vertex that is not a DraftSet",
             vid.0
@@ -1102,12 +1103,13 @@ pub fn read_draft<V: asupersync::fs::Vfs + Clone>(
 /// Every draft of the book, by opening sequence.
 pub fn list_drafts<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
+    cx: &QueryCx,
     book: &BookContext,
 ) -> Result<Vec<DraftView>, KernelError> {
     let mut out = Vec::new();
     for row in db.vertices()? {
         if row.labels.contains(&label::DRAFT_SET) {
-            let view = view_of(db, &row)?;
+            let view = view_of(db, cx, &row)?;
             if view.body.book_id == book.book_id {
                 out.push(view);
             }
@@ -1119,6 +1121,7 @@ pub fn list_drafts<V: asupersync::fs::Vfs + Clone>(
 
 fn view_of<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
+    cx: &QueryCx,
     row: &VertexRow,
 ) -> Result<DraftView, KernelError> {
     let draft = row.vid;
@@ -1198,7 +1201,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                             e.src.0
                         )));
                     };
-                    let Some((body, _)) = read_outcome(db, *outcome)? else {
+                    let Some((body, _)) = read_outcome(db, cx, *outcome)? else {
                         return Err(KernelError::Corrupt(format!(
                             "draft Promote record {:032x} names a missing outcome",
                             e.src.0
