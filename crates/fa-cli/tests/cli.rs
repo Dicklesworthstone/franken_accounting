@@ -5442,6 +5442,58 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         .0,
         0
     );
+    // An MUS draw, then its evaluation with every selected item at book.
+    let (code, mus) = run(
+        true,
+        &[
+            "sample",
+            "mus",
+            "--account",
+            "6000",
+            "--seed",
+            "7",
+            "--interval",
+            "5.00 USD",
+        ],
+    );
+    assert_eq!(code, 0, "{mus}");
+    let drawn = doc(&mus);
+    let audited: Vec<String> = arr(&drawn, "selected")
+        .iter()
+        .map(|row| {
+            format!(
+                r#"{{"item_id":"{}","audited":"{}"}}"#,
+                text(row, "item_id"),
+                text(row, "book_value")
+            )
+        })
+        .collect();
+    let audited = write(
+        &dir,
+        "audited.json",
+        &format!(r#"{{"items":[{}]}}"#, audited.join(",")),
+    );
+    let drawn_at = field(&mus, "known_at").unwrap_or_default().to_string();
+    let (code, evaluated) = run(
+        true,
+        &[
+            "sample",
+            "evaluate",
+            "--account",
+            "6000",
+            "--seed",
+            "7",
+            "--interval",
+            "5.00 USD",
+            "--as-known-at",
+            &drawn_at,
+            "--audited",
+            &audited,
+            "--confidence",
+            "95",
+        ],
+    );
+    assert_eq!(code, 0, "{evaluated}");
     assert_eq!(run(true, &["procedure", "list"]).0, 0);
     assert_eq!(run(true, &["procedure", "run", "jet.round_amounts"]).0, 0);
     // Recorded findings: the Sunday rent is a jet.weekend observation; a
