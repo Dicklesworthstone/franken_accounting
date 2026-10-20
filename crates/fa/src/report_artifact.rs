@@ -296,6 +296,25 @@ impl ReportArtifact {
         self.source_certificate().known_at
     }
 
+    /// A bridge's displayed coordinate is its terminal source. Hydration must
+    /// reach the earliest source it will replay, including when the terminal
+    /// source equals HEAD and would otherwise need no historical preparation.
+    fn earliest_source_known_at(&self) -> Result<CommitSeq, Refusal> {
+        match &self.inner {
+            Artifact::StatementDiff(certificate) => {
+                let (before, after) = certificate.sources();
+                Ok(before.known_at.min(after.known_at))
+            }
+            Artifact::StatementTrace(certificate) => certificate
+                .sources()
+                .iter()
+                .map(|source| source.known_at)
+                .min()
+                .ok_or_else(|| invalid("a statement trace has no source prefix")),
+            _ => Ok(self.known_at()),
+        }
+    }
+
     #[must_use]
     pub fn digest(&self) -> &[u8; 32] {
         match &self.inner {
@@ -524,8 +543,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
+        let earliest = match artifact.earliest_source_known_at() {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         if let Err(refusal) = self
-            .prepare_report_history(cx, principal, capability, Some(artifact.known_at()))
+            .prepare_report_history(cx, principal, capability, Some(earliest))
             .await?
         {
             return Ok(Err(refusal));

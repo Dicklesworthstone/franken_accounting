@@ -706,7 +706,7 @@ fn attestation_record(
                 if profile != 0 {
                     return Err(r.error("reconciled.profile", Reason::BadTag(profile)));
                 }
-                expected_source = Some(reconciled::read(&mut r, book_id)?);
+                expected_source = Some(reconciled::read(&mut r, book_id, commit_seq)?);
             }
             t => return Err(r.error("attestation.claim", Reason::BadTag(t))),
         }
