@@ -1,8 +1,8 @@
-# TigerBeetle Two-Phase Semantic Conformance Matrix
+# TigerBeetle-Semantics Simulator Self-Consistency Matrix
 
-- **Oracle:** `tigerbeetle_corpus_v1`
-- **Proof Class:** `differential (semantic corpus)`
-- **No-Claim Boundary:** Proves semantic agreement on two-phase reservation, capture, void, expiry, and worst-case pending limit sub-vectors, not TigerBeetle transfer throughput.
+- **Oracle:** `tigerbeetle_corpus_v1 (in-house simulator in fa-formats)`
+- **Proof Class:** `self-consistency (simulator vs. author-written expectations)`
+- **No-Claim Boundary:** The scenarios run through a TigerBeetle-semantics simulator inside fa-formats and are compared with expectations written by this project. The FrankenAccounting posting kernel is not exercised and TigerBeetle itself is not run, so no agreement with either is claimed; running the corpus through the kernel is fa-w3n6.
 
 | Fixture | Expected | Observed | Divergence | Reason |
 |---|---|---|---|---|

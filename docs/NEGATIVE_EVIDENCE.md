@@ -268,3 +268,16 @@ in `registries/threat_model.toml` and `docs/THREAT_AND_TRUST_MODEL.md`:
   verifier is removed, the clause is dormant until `fa-09q8` compiles real
   proofs, and the TLA+ test is renamed to say what it checks (a spec
   declaration and a Rust model of one spec; TLC is `fa-dj6j`).
+- **External-oracle agreement was claimed, not computed (`fa-kkxl`).**
+  `probe_external_oracle_binary` returned `Verified { cells_checked: 0 }`
+  when `bean-check --version` or `hledger --version` succeeded; neither tool
+  evaluated a journal. `docs/conformance/beancount.md` claimed "exact
+  per-account balance agreement across FrankenAccounting, Beancount v3, and
+  hledger" from a matrix whose `observed` column was a string literal typed
+  equal to `expected`. The TigerBeetle "corpus" runs an in-house simulator,
+  not the posting kernel; the ADS, SAF-T and XBRL rows were round trips
+  through this project's own readers and a hand-written linkbase. Now the
+  probe reports `Present`, never a verification; the Beancount/hledger rows
+  are computed from the actual self round-trip; the three conformance
+  documents, the format summaries and the crate description say what ran.
+  The real differentials are `fa-sa4w`, `fa-w3n6` and `fa-ipom`.

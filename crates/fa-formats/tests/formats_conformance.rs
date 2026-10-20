@@ -3,6 +3,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use fa_formats::{
     FormatAccount, FormatAssertion, FormatEntry, FormatError, FormatJournal, FormatLeg,
     UnitCatalog,
@@ -27,6 +29,25 @@ use fa_model::{AccountType, EntryClass};
 use fa_money::{Amount, Side, UnitId};
 use fa_registry::Formats;
 use fa_time::DateDay;
+
+/// Render folded balances as `account:UNIT=±int.frac` at each unit's scale, in map order.
+fn render_balances(balances: &BTreeMap<(String, String), i128>, units: &UnitCatalog) -> String {
+    balances
+        .iter()
+        .map(|((account, unit), mantissa)| {
+            let scale = units.lookup_code(unit).map_or(0, |(_, s)| usize::from(s));
+            let sign = if *mantissa < 0 { '-' } else { '+' };
+            let digits = format!("{:0>width$}", mantissa.unsigned_abs(), width = scale + 1);
+            let (int, frac) = digits.split_at(digits.len() - scale);
+            if scale == 0 {
+                format!("{account}:{unit}={sign}{int}")
+            } else {
+                format!("{account}:{unit}={sign}{int}.{frac}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 fn sample_multi_unit_journal() -> FormatJournal {
     let d1 = DateDay::from_ymd(2026, 3, 10).expect("valid date");
@@ -277,13 +298,13 @@ fn beancount_and_hledger_balance_differential_and_one_minor_unit_mutation_negati
     compare_balances_exact("acme-fy2026-p03", &fa_balances, &hl_balances)
         .expect("hledger balances agree cell-by-cell");
 
-    // Log external binary probe status honestly (UNRUN if absent, never fake PASS).
+    // The differential above is a self round-trip through fa-formats' own
+    // writers and readers. The external tools are only probed for presence;
+    // neither evaluates these journals (fa-sa4w).
     for bin in ["bean-check", "hledger"] {
         match probe_external_oracle_binary(bin) {
-            SubprocessOracleStatus::Verified {
-                binary, version, ..
-            } => {
-                println!("external oracle {binary}: VERIFIED ({version})");
+            SubprocessOracleStatus::Present { binary, version } => {
+                println!("external oracle {binary}: present ({version}), not evaluated");
             }
             SubprocessOracleStatus::Unrun { binary, reason } => {
                 println!("external oracle {binary}: UNRUN ({reason})");
@@ -615,32 +636,52 @@ fn bank_statement_parsers_camt053_bai2_ofx_and_sequence_continuity() {
 
 #[test]
 fn conformance_matrices_match_published_docs_and_refuse_undocumented_divergence() {
+    // Both columns are computed: FrankenAccounting's fold of the fixture, and
+    // the fold after fa-formats writes it as Beancount v3 / hledger and reads
+    // it back with its own reader. No external tool evaluates it (fa-sa4w).
+    let units = UnitCatalog::embedded().expect("units.toml");
+    let journal = sample_multi_unit_journal();
+    let fa_fold = render_balances(&journal.fold_balances().expect("fa fold"), &units);
+    let bc_fold = render_balances(
+        &read_beancount(&write_beancount(&journal), &units)
+            .expect("read_beancount")
+            .fold_balances()
+            .expect("beancount fold"),
+        &units,
+    );
+    let hl_fold = render_balances(
+        &read_hledger(&write_hledger(&journal), &units)
+            .expect("read_hledger")
+            .fold_balances()
+            .expect("hledger fold"),
+        &units,
+    );
     let bc_matrix = ConformanceMatrix {
         schema_version: 1,
-        oracle: "beancount_v3 + hledger_journal".to_owned(),
-        proof_class: "differential (external oracle) + metamorphic (round-trip)".to_owned(),
-        no_claim_boundary: "Agreement with Beancount and hledger proves exact per-account per-unit balance arithmetic agreement on the covered subset, not regulatory compliance.".to_owned(),
+        oracle: "fa-formats beancount_v3 + hledger writers and readers (self round-trip)".to_owned(),
+        proof_class: "metamorphic (self round-trip); external tools not run".to_owned(),
+        no_claim_boundary: "Shows that FrankenAccounting's fold survives its own Beancount v3 and hledger export read back by its own reader. bean-check and hledger did not evaluate these journals, so no agreement with either tool is claimed; that differential is fa-sa4w.".to_owned(),
         rows: vec![
             ConformanceRow {
-                fixture: "genesis_single_currency_usd".to_owned(),
-                expected: "1000:USD=+2500.00, 3000:USD=-2500.00".to_owned(),
-                observed: "1000:USD=+2500.00, 3000:USD=-2500.00".to_owned(),
+                fixture: "acme_multi_unit_fy2026_p03 via Beancount v3".to_owned(),
+                expected: fa_fold.clone(),
+                observed: bc_fold,
                 divergence: "none".to_owned(),
-                reason: "Exact per-account balance agreement across FrankenAccounting, Beancount v3, and hledger.".to_owned(),
+                reason: "Written by fa-formats and read back by fa-formats; computed in this test.".to_owned(),
             },
             ConformanceRow {
-                fixture: "acme_multi_unit_fy2026_p03".to_owned(),
-                expected: "1000:USD=+2500.00, 1010:EUR=+1000.00, 1200:USD=+755.00, 2000:USD=-182.50, 3000:USD=-2500.00, 3000:EUR=-1000.00, 4000:USD=-755.00, 5000:USD=+182.50".to_owned(),
-                observed: "1000:USD=+2500.00, 1010:EUR=+1000.00, 1200:USD=+755.00, 2000:USD=-182.50, 3000:USD=-2500.00, 3000:EUR=-1000.00, 4000:USD=-755.00, 5000:USD=+182.50".to_owned(),
+                fixture: "acme_multi_unit_fy2026_p03 via hledger".to_owned(),
+                expected: fa_fold,
+                observed: hl_fold,
                 divergence: "none".to_owned(),
-                reason: "Exact multi-currency native balance agreement across FrankenAccounting, Beancount v3, and hledger.".to_owned(),
+                reason: "Written by fa-formats and read back by fa-formats; computed in this test.".to_owned(),
             },
             ConformanceRow {
                 fixture: "fx_designated_leg_base_residual_eur_half_up".to_owned(),
                 expected: "native EUR 0.01+0.01/0.02 balanced; base USD +0.01/+0.01/-0.02 with -0.01 designated-leg residual".to_owned(),
-                observed: "Beancount @ price converts per-leg with tolerance and does not journal designated-leg base_residual".to_owned(),
-                divergence: "documented_rounding".to_owned(),
-                reason: "Plan §5.2 / §16.3: FrankenAccounting forbids tolerance auto-balancing and records exact designated-leg base_residual under a named RoundingLaw, whereas Beancount uses per-posting @ price tolerance.".to_owned(),
+                observed: "not evaluated: bean-check was not run".to_owned(),
+                divergence: "not_run".to_owned(),
+                reason: "Plan §5.2 / §16.3 expect a divergence here (FrankenAccounting records the designated-leg base residual; Beancount documents per-posting @ price tolerance), but it has not been observed; fa-sa4w runs the tool.".to_owned(),
             },
         ],
     };
@@ -650,9 +691,9 @@ fn conformance_matrices_match_published_docs_and_refuse_undocumented_divergence(
     let tb_results = tb_corpus.evaluate_all().expect("tb evaluate_all");
     let tb_matrix = ConformanceMatrix {
         schema_version: 1,
-        oracle: "tigerbeetle_corpus_v1".to_owned(),
-        proof_class: "differential (semantic corpus)".to_owned(),
-        no_claim_boundary: "Proves semantic agreement on two-phase reservation, capture, void, expiry, and worst-case pending limit sub-vectors, not TigerBeetle transfer throughput.".to_owned(),
+        oracle: "tigerbeetle_corpus_v1 (in-house simulator in fa-formats)".to_owned(),
+        proof_class: "self-consistency (simulator vs. author-written expectations)".to_owned(),
+        no_claim_boundary: "The scenarios run through a TigerBeetle-semantics simulator inside fa-formats and are compared with expectations written by this project. The FrankenAccounting posting kernel is not exercised and TigerBeetle itself is not run, so no agreement with either is claimed; running the corpus through the kernel is fa-w3n6.".to_owned(),
         rows: tb_corpus
             .scenarios
             .iter()
@@ -671,30 +712,30 @@ fn conformance_matrices_match_published_docs_and_refuse_undocumented_divergence(
 
     let standards_matrix = ConformanceMatrix {
         schema_version: 1,
-        oracle: "aicpa_ads_gl_v2 + oecd_saft_v2 + xbrl_gl_instance_v1".to_owned(),
-        proof_class: "metamorphic (export-import round-trip identity) + invariant (FA-INV-04 refold & XBRL calculation linkbase)".to_owned(),
-        no_claim_boundary: "Proves deterministic export-import round-trip identity, coordinate certificate verification, FA-INV-04 refold equality, and XBRL calculation-linkbase summation consistency.".to_owned(),
+        oracle: "fa-formats ADS-shaped, SAF-T-shaped and XBRL writers and readers (self round-trip)".to_owned(),
+        proof_class: "metamorphic (self round-trip) + summation check against a hand-written linkbase".to_owned(),
+        no_claim_boundary: "Shows export-import round-trip identity through fa-formats' own writers and readers, coordinate certificate verification, FA-INV-04 refold equality, and summation consistency against XbrlCalculationLinkbase::standard_balance_sheet/standard_income_statement (written in this repository). No published AICPA ADS column set, OECD SAF-T XSD or XBRL taxonomy was used, so standards conformance is not claimed; that is fa-ipom.".to_owned(),
         rows: vec![
             ConformanceRow {
                 fixture: "aicpa_ads_gl_v2_acme_fy2026_p03".to_owned(),
                 expected: "round_trip_identity=true, refold_equal=true".to_owned(),
                 observed: "round_trip_identity=true, refold_equal=true".to_owned(),
                 divergence: "none".to_owned(),
-                reason: "Byte-identical FormatJournal and FA-INV-04 refold digest after AICPA ADS export and re-import.".to_owned(),
+                reason: "Byte-identical FormatJournal and FA-INV-04 refold digest after fa-formats' ADS-shaped export and its own re-import (asserted in aicpa_ads_and_oecd_saft_and_csv_gl_round_trip_identity_and_dropped_leg_negative).".to_owned(),
             },
             ConformanceRow {
                 fixture: "oecd_saft_v2_acme_fy2026_p03".to_owned(),
                 expected: "round_trip_identity=true, refold_equal=true".to_owned(),
                 observed: "round_trip_identity=true, refold_equal=true".to_owned(),
                 divergence: "none".to_owned(),
-                reason: "Byte-identical FormatJournal and FA-INV-04 refold digest after OECD SAF-T v2.0 XML export and re-import.".to_owned(),
+                reason: "Byte-identical FormatJournal and FA-INV-04 refold digest after fa-formats' SAF-T-shaped XML export and its own re-import (asserted in the same test); no XSD validation.".to_owned(),
             },
             ConformanceRow {
                 fixture: "xbrl_us_gaap_bs_and_is_calc_linkbase".to_owned(),
                 expected: "calc_parents_verified=4".to_owned(),
                 observed: "calc_parents_verified=4".to_owned(),
                 divergence: "none".to_owned(),
-                reason: "All Balance Sheet and Income Statement XBRL summation-item calculation arcs verify with zero discrepancy.".to_owned(),
+                reason: "Balance-sheet and income-statement summation arcs of the hand-written linkbase verify with zero discrepancy (asserted in xbrl_calculation_linkbase_validates_statements_and_catches_inconsistency); not a published taxonomy.".to_owned(),
             },
         ],
     };
@@ -714,12 +755,21 @@ fn conformance_matrices_match_published_docs_and_refuse_undocumented_divergence(
     );
 
     // Verify published docs match rendered matrices byte-for-byte
-    let expected_bc_doc =
-        bc_matrix.to_markdown("Beancount v3 & hledger Balance Differential Conformance Matrix");
+    let expected_bc_doc = bc_matrix.to_markdown("Beancount v3 & hledger Self Round-Trip Matrix");
     let expected_tb_doc =
-        tb_matrix.to_markdown("TigerBeetle Two-Phase Semantic Conformance Matrix");
+        tb_matrix.to_markdown("TigerBeetle-Semantics Simulator Self-Consistency Matrix");
     let expected_std_doc =
-        standards_matrix.to_markdown("AICPA ADS, OECD SAF-T & XBRL Conformance Matrix");
+        standards_matrix.to_markdown("ADS-, SAF-T- and XBRL-Shaped Export Round-Trip Matrix");
+
+    // The docs are renderings of the matrices above. Setting
+    // FA_WRITE_CONFORMANCE_DOCS rewrites them from this run; the comparison
+    // below still runs against what was compiled in.
+    if std::env::var_os("FA_WRITE_CONFORMANCE_DOCS").is_some() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/conformance");
+        std::fs::write(format!("{root}/beancount.md"), &expected_bc_doc).expect("write");
+        std::fs::write(format!("{root}/tigerbeetle.md"), &expected_tb_doc).expect("write");
+        std::fs::write(format!("{root}/ads_saft_xbrl.md"), &expected_std_doc).expect("write");
+    }
 
     let on_disk_bc = include_str!("../../../docs/conformance/beancount.md");
     let on_disk_tb = include_str!("../../../docs/conformance/tigerbeetle.md");

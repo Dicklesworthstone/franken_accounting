@@ -1,11 +1,11 @@
-# AICPA ADS, OECD SAF-T & XBRL Conformance Matrix
+# ADS-, SAF-T- and XBRL-Shaped Export Round-Trip Matrix
 
-- **Oracle:** `aicpa_ads_gl_v2 + oecd_saft_v2 + xbrl_gl_instance_v1`
-- **Proof Class:** `metamorphic (export-import round-trip identity) + invariant (FA-INV-04 refold & XBRL calculation linkbase)`
-- **No-Claim Boundary:** Proves deterministic export-import round-trip identity, coordinate certificate verification, FA-INV-04 refold equality, and XBRL calculation-linkbase summation consistency.
+- **Oracle:** `fa-formats ADS-shaped, SAF-T-shaped and XBRL writers and readers (self round-trip)`
+- **Proof Class:** `metamorphic (self round-trip) + summation check against a hand-written linkbase`
+- **No-Claim Boundary:** Shows export-import round-trip identity through fa-formats' own writers and readers, coordinate certificate verification, FA-INV-04 refold equality, and summation consistency against XbrlCalculationLinkbase::standard_balance_sheet/standard_income_statement (written in this repository). No published AICPA ADS column set, OECD SAF-T XSD or XBRL taxonomy was used, so standards conformance is not claimed; that is fa-ipom.
 
 | Fixture | Expected | Observed | Divergence | Reason |
 |---|---|---|---|---|
-| `aicpa_ads_gl_v2_acme_fy2026_p03` | `round_trip_identity=true, refold_equal=true` | `round_trip_identity=true, refold_equal=true` | `none` | Byte-identical FormatJournal and FA-INV-04 refold digest after AICPA ADS export and re-import. |
-| `oecd_saft_v2_acme_fy2026_p03` | `round_trip_identity=true, refold_equal=true` | `round_trip_identity=true, refold_equal=true` | `none` | Byte-identical FormatJournal and FA-INV-04 refold digest after OECD SAF-T v2.0 XML export and re-import. |
-| `xbrl_us_gaap_bs_and_is_calc_linkbase` | `calc_parents_verified=4` | `calc_parents_verified=4` | `none` | All Balance Sheet and Income Statement XBRL summation-item calculation arcs verify with zero discrepancy. |
+| `aicpa_ads_gl_v2_acme_fy2026_p03` | `round_trip_identity=true, refold_equal=true` | `round_trip_identity=true, refold_equal=true` | `none` | Byte-identical FormatJournal and FA-INV-04 refold digest after fa-formats' ADS-shaped export and its own re-import (asserted in aicpa_ads_and_oecd_saft_and_csv_gl_round_trip_identity_and_dropped_leg_negative). |
+| `oecd_saft_v2_acme_fy2026_p03` | `round_trip_identity=true, refold_equal=true` | `round_trip_identity=true, refold_equal=true` | `none` | Byte-identical FormatJournal and FA-INV-04 refold digest after fa-formats' SAF-T-shaped XML export and its own re-import (asserted in the same test); no XSD validation. |
+| `xbrl_us_gaap_bs_and_is_calc_linkbase` | `calc_parents_verified=4` | `calc_parents_verified=4` | `none` | Balance-sheet and income-statement summation arcs of the hand-written linkbase verify with zero discrepancy (asserted in xbrl_calculation_linkbase_validates_statements_and_catches_inconsistency); not a published taxonomy. |

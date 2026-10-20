@@ -4,7 +4,7 @@ version = "0.0.1"
 edition.workspace = true
 license-file.workspace = true
 repository.workspace = true
-description = "Interop formats and external oracles (plan §9.5, §16.3, §18.1): Beancount v3 and hledger journal writers/readers and balance differential oracle, TigerBeetle two-phase semantic corpus, AICPA ADS and OECD SAF-T writers/readers with export-import identity and coordinate certificates, XBRL calculation-linkbase validation, CSV/NDJSON GL extracts, and BAI2/OFX/CAMT.053 bank statement parsers. Bead fa-npi."
+description = "Interop formats (plan §9.5, §16.3, §18.1): Beancount v3 and hledger journal writers/readers checked by self round-trip (the external differential with bean-check and hledger is fa-sa4w), a TigerBeetle-semantics simulator corpus, ADS- and SAF-T-shaped writers/readers with export-import identity and coordinate certificates, XBRL instance export with summation checks, CSV/NDJSON GL extracts, and bank statement parsers. Bead fa-npi."
 publish = false
 
 [lints]

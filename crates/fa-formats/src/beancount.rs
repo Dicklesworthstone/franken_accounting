@@ -714,29 +714,26 @@ pub fn compare_balances_exact(
     Ok(())
 }
 
-/// Status of invoking an external CLI oracle binary (`bean-check` or `hledger`).
+/// Whether an external plain-text accounting binary (`bean-check` or `hledger`)
+/// is available. This is a presence probe only: no status here means a journal
+/// was evaluated or a balance compared (that differential is fa-sa4w).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubprocessOracleStatus {
-    /// Binary is present and verified the exported journal with zero errors.
-    Verified {
-        binary: String,
-        version: String,
-        cells_checked: usize,
-    },
-    /// Binary is not installed in `PATH` — reported honestly as `UNRUN`, never `PASS`.
+    /// `<binary> --version` succeeded. Nothing was evaluated.
+    Present { binary: String, version: String },
+    /// Binary is not installed in `PATH`, or `--version` failed.
     Unrun { binary: String, reason: String },
 }
 
-/// Probe an external plain-text accounting binary (`bean-check` or `hledger`).
-/// Returns `SubprocessOracleStatus::Unrun` when the binary is absent from `PATH`.
+/// Probe whether an external plain-text accounting binary is installed.
+/// A `Present` result is not a verification of anything.
 pub fn probe_external_oracle_binary(binary: &str) -> SubprocessOracleStatus {
     match Command::new(binary).arg("--version").output() {
         Ok(out) if out.status.success() => {
             let ver = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-            SubprocessOracleStatus::Verified {
+            SubprocessOracleStatus::Present {
                 binary: binary.to_owned(),
                 version: ver,
-                cells_checked: 0,
             }
         }
         Ok(out) => SubprocessOracleStatus::Unrun {

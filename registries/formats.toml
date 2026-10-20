@@ -19,7 +19,7 @@ oracle_tool = "bean-check"
 round_trip_identity = false
 certified_coordinate = true
 plan_ref = "§16.3"
-summary = "Beancount v3 plain-text double-entry journal (open directives, dated transactions, multi-unit postings, balance assertions) used for external balance differential oracles."
+summary = "Beancount v3 plain-text double-entry journal (open directives, dated transactions, multi-unit postings, balance assertions), intended for the external balance differential with bean-check; today only fa-formats reads it back (fa-sa4w)."
 
 [[format]]
 id = 2
@@ -32,7 +32,7 @@ oracle_tool = "hledger"
 round_trip_identity = false
 certified_coordinate = true
 plan_ref = "§16.3"
-summary = "hledger journal format with exact decimal postings and balance assertions (`= <amount> <unit>`) used for external balance differential oracles."
+summary = "hledger journal format with exact decimal postings and balance assertions (`= <amount> <unit>`), intended for the external balance differential with hledger; today only fa-formats reads it back (fa-sa4w)."
 
 [[format]]
 id = 3
@@ -45,7 +45,7 @@ oracle_tool = "ledger"
 round_trip_identity = false
 certified_coordinate = true
 plan_ref = "§16.3"
-summary = "Ledger-cli compatible journal export for external balance differential verification."
+summary = "Ledger-cli compatible journal export, intended for an external balance differential with ledger; not run (fa-sa4w)."
 
 [[format]]
 id = 4
