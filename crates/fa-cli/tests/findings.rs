@@ -1065,7 +1065,32 @@ fn a_run_review_decides_several_findings_in_one_transaction_or_none() {
             .contains("reviews[1]: dismissing a finding requires retained evidence"),
         "{refused:?}"
     );
+    // Its fix names the file's field, never a flag the run review refuses.
+    let fix = text(data(&refused[0]), "fix");
+    assert!(
+        fix.contains(r#""evidence":["D:"#) && !fix.contains("--evidence"),
+        "{refused:?}"
+    );
     assert_eq!(f.head(), before, "a refused run review publishes nothing");
+    // A run review that forgets --file is told so.
+    let (exit, refused) = call(
+        &f.book,
+        &[
+            "finding",
+            "review",
+            "--certificate",
+            &certificate,
+            "--as",
+            "reviewer",
+        ],
+        None,
+    );
+    assert_eq!(exit, 2, "{refused:?}");
+    let message = text(data(&refused[0]), "message");
+    assert!(
+        message.contains("--file") && !message.contains("names no F:"),
+        "{refused:?}"
+    );
 
     for (body, why) in [
         (
