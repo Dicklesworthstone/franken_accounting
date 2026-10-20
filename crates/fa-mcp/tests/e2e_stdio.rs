@@ -1646,6 +1646,21 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(bundle_res["bundle_id"], json!("bundle-1"));
     assert_eq!(bundle_res["accumulator"]["status"], json!("no_checkpoints"));
+    let read = mcp.result(
+        "resources/read",
+        json!({"uri": "resource://fa/capabilities/session"}),
+    );
+    let cap_session: JsonValue =
+        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(cap_session["authority"]["profile"], json!("preparer"));
+    assert_eq!(cap_session["issued"], JsonValue::Null);
+    let read = mcp.result(
+        "resources/read",
+        json!({"uri": "resource://fa/capabilities/list"}),
+    );
+    let cap_list: JsonValue =
+        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(cap_list["capabilities"], json!([]));
 
     // Workflow macros (§15.4): deterministic step-by-step execution and provenance.
     let (is_error, text, _) = call_tool(
@@ -1691,7 +1706,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(pkg_macro["macro"], json!("fa.macro.produce_audit_package"));
     assert_eq!(pkg_macro["step_count"], json!(4));
     assert_eq!(pkg_macro["certificates"].as_array().unwrap().len(), 3);
-    log("all 12 resources and 4 workflow macros verified over stdio");
+    log("all 13 resources and 4 workflow macros verified over stdio");
 
     // A portable plan runs under the actual launch capability. Rejected
     // overrides and other launch authorities cannot publish its effects.

@@ -46,6 +46,10 @@ pub const LAWS: &[(&str, &str)] = &[
         include_str!("../../../registries/admissibility.toml"),
     ),
     (
+        "capability_caveats.toml",
+        include_str!("../../../registries/capability_caveats.toml"),
+    ),
+    (
         "rounding_laws.toml",
         include_str!("../../../registries/rounding_laws.toml"),
     ),
@@ -944,6 +948,41 @@ impl Adapter {
                 });
                 Ok((json_mime, v.to_string()))
             }
+            "resource://fa/capabilities/{token}" => {
+                let token = params
+                    .get("token")
+                    .map(String::as_str)
+                    .map(percent_decode)
+                    .unwrap_or_default();
+                if token.is_empty() || token.starts_with('-') {
+                    return Err(StructuredError::arguments(
+                        "capability `{token}` must be `session`, `current`, `list`, or a 64-hex commitment digest",
+                        "pass `session`, `list`, or a 64-hex commitment digest in resource://fa/capabilities/{token}",
+                    ));
+                }
+                if token == "session" || token == "current" {
+                    let issued = match self.authority.issued() {
+                        Some(commitment) => {
+                            let hex: String =
+                                commitment.iter().map(|b| format!("{b:02x}")).collect();
+                            let detail = self.read(&["capability", "show", "--commitment", &hex])?;
+                            to_wire(&detail)
+                        }
+                        None => JsonValue::Null,
+                    };
+                    let v = json!({
+                        "authority": self.authority_json(),
+                        "issued": issued,
+                    });
+                    return Ok((json_mime, v.to_string()));
+                }
+                let data = if token == "list" || token == "all" {
+                    self.read(&["capability", "list"])?
+                } else {
+                    self.read(&["capability", "show", "--commitment", &token])?
+                };
+                Ok((json_mime, data.render()))
+            }
             other => Err(StructuredError::arguments(
                 format!("no resource `{other}`"),
                 format!(
@@ -1266,6 +1305,7 @@ impl FaResource {
             .replace("/{book}", "")
             .replace("/{party}", "")
             .replace("/{id}", "")
+            .replace("/{token}", "")
             .replace('/', "_")
     }
 }
@@ -1521,7 +1561,21 @@ mod tests {
         let (_, laws) = adapter
             .read_resource("resource://fa/laws", &HashMap::new())
             .expect("laws");
-        assert!(laws.contains("admissibility.toml") && laws.contains("sod_policy.toml"));
+        assert!(
+            laws.contains("admissibility.toml")
+                && laws.contains("capability_caveats.toml")
+                && laws.contains("sod_policy.toml")
+        );
+        let (_, cap_session) = adapter
+            .read_resource(
+                "resource://fa/capabilities/{token}",
+                &HashMap::from([("token".into(), "session".into())]),
+            )
+            .expect("session capability");
+        assert!(
+            cap_session.contains("\"profile\":\"agent\"") && cap_session.contains("\"issued\":null"),
+            "{cap_session}"
+        );
         let (_, intents) = adapter
             .read_resource("resource://fa/intents", &HashMap::new())
             .expect("intents");
@@ -1740,7 +1794,7 @@ mod tests {
     fn macros_and_book_resources_enforce_forbidden_arguments_paths_and_read_capability_before_opening_the_book()
      {
         let adapter = Adapter::new(config()).expect("adapter");
-        assert_eq!(RESOURCES.len(), 12);
+        assert_eq!(RESOURCES.len(), 13);
         assert_eq!(MACROS.len(), 4);
         for mac in MACROS {
             for argument in crate::registry::FORBIDDEN_ARGUMENTS {
@@ -1842,6 +1896,10 @@ mod tests {
             (
                 "resource://fa/bundles/{id}",
                 HashMap::from([("id".into(), "bundle-1".into())]),
+            ),
+            (
+                "resource://fa/capabilities/{token}",
+                HashMap::from([("token".into(), "a".repeat(64))]),
             ),
         ] {
             let error = no_read

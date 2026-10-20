@@ -3260,3 +3260,86 @@ fn an_issuance_never_drops_its_issuers_caveats() {
         .expect("a grant that keeps the redaction caveat");
     assert_eq!(issued.commitment, kept.commitment().unwrap());
 }
+
+/// fa-v62: revoking an issuer capability cascades to every capability it
+/// issued (and their descendants), refusing both writes and reads with
+/// FA-REF-023 and reporting `revoked_at` in `read_issued` / `list_issued`.
+#[test]
+fn revoking_an_issuer_cascades_to_revoke_its_issued_children_and_grandchildren() {
+    let mut h = harness();
+    let root_steward = human(PREPARER, &["read", "post", "issue_capability"]);
+    let other_steward = human(CAROL, &["read", "issue_capability"]);
+
+    // 1. Root steward issues a delegate capability to ALICE (holding read, post, issue_capability),
+    //    and ALICE issues an attenuated leaf capability to BOB (holding read, post).
+    let alice_delegate = Capability::new(
+        ALICE,
+        Profile::Human,
+        &[Op::Read, Op::Post, Op::IssueCapability],
+        PREPARER,
+    )
+    .unwrap()
+    .holder_bound(possession_digest(&[0x11; 32]));
+    let alice_issued = h
+        .issue(&root_steward, &alice_delegate, b"issue-alice-delegate")
+        .expect("issue alice delegate");
+
+    let bob_leaf = Capability::new(BOB, Profile::Human, &[Op::Read, Op::Post], ALICE)
+        .unwrap()
+        .holder_bound(possession_digest(&[0x22; 32]));
+    let bob_issued = h
+        .issue(&alice_delegate, &bob_leaf, b"issue-bob-leaf")
+        .expect("alice issues bob leaf");
+
+    // Both ALICE and BOB are admitted for reads and posts before revocation.
+    admit_reads(&h.db, &h.book, ALICE, &alice_delegate)
+        .unwrap()
+        .expect("alice reads admitted");
+    admit_reads(&h.db, &h.book, BOB, &bob_leaf)
+        .unwrap()
+        .expect("bob reads admitted");
+    h.post(
+        h.proposal(BOB, 500, b"bob-before-revoke", EntryClass::ORIGINAL),
+        bob_leaf.clone(),
+        Vec::new(),
+    )
+    .expect("bob posts before parent revocation");
+
+    // 2. Revoke the root_steward capability (an embedded issuer): both ALICE
+    //    (child) and BOB (grandchild) are immediately revoked by cascade!
+    let revoked = h
+        .revoke(&other_steward, &root_steward, b"revoke-root-steward")
+        .expect("revoke root steward");
+
+    for (who, cap, key) in [
+        (ALICE, &alice_delegate, &b"alice-after-cascade"[..]),
+        (BOB, &bob_leaf, &b"bob-after-cascade"[..]),
+    ] {
+        let write_refusal = h
+            .post(
+                h.proposal(who, 500, key, EntryClass::ORIGINAL),
+                cap.clone(),
+                Vec::new(),
+            )
+            .expect_err("write must be refused after ancestor issuer revocation");
+        assert_eq!(write_refusal.code, "FA-REF-023", "{write_refusal}");
+        assert!(
+            write_refusal
+                .message
+                .contains(&format!("sequence {}", revoked.recorded_at.0)),
+            "{}",
+            write_refusal.message
+        );
+        let read_refusal = admit_reads(&h.db, &h.book, who, cap)
+            .unwrap()
+            .expect_err("read must be refused after ancestor issuer revocation");
+        assert_eq!(read_refusal.code, "FA-REF-023", "{read_refusal}");
+    }
+
+    for commitment in [alice_issued.commitment, bob_issued.commitment] {
+        let info = read_issued(&h.db, &h.book, &commitment)
+            .unwrap()
+            .expect("issued record exists");
+        assert_eq!(info.revoked_at, Some(revoked.recorded_at));
+    }
+}

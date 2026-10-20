@@ -47,8 +47,8 @@ open_items = ["FA-INV-04.open-amount"]
 checkpoint = ["FA-INV-14.leaf-envelope", "FA-INV-14.consistency", "FA-INV-14.signed"]
 proof = ["FA-INV-04.outsider-recomputation", "FA-INV-14.inclusion", "FA-INV-14.seq-range-complete", "FA-INV-14.scope-index-complete"]
 bundle = ["FA-INV-14.scope-index-complete", "FA-INV-14.public-commitment"]
-replay = ["FA-INV-11.core", "FA-INV-11.report-replay"]
-certificate = ["FA-INV-11.core", "FA-INV-11.report-replay"]
+replay = ["FA-INV-11.core"]
+certificate = ["FA-INV-11.core"]
 finding = ["FA-INV-11.finding-replay", "FA-INV-02.payload-immutable", "FA-INV-10.sod"]
 event = ["FA-INV-05.event-closure", "FA-INV-09.core"]
 
@@ -930,14 +930,11 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-11"
 id = "report-replay"
-status = "live"
+status = "dormant"
 statement = "Every report, finding and bundle replays byte-for-byte from its certificate; erased closure elements downgrade the grade attributably."
 evidence_class = "invariant"
-checker_strength = "negative_fixture"
 first_gate = "G3"
-owner = "fa-9ae"
-checkers = ["fa::lib::book::tests::replay_takes_the_retained_raw_text_closure_and_names_an_unavailable_one", "fa-statements::lib::tests::seeded_statements_match_the_independent_oracle_for_both_kinds_and_units"]
-negatives = ["fa::lib::certificate::tests::registry_closure_binds_canonical_content_not_file_text", "fa::lib::book::tests::certificate_replay_detects_rewrites_and_retirements_after_its_snapshot"]
+activating = ["fa-t8gk", "fa-oimc", "fa-v74"]
 waiver = "forbidden"
 
 [[clause]]

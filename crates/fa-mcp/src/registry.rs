@@ -60,7 +60,7 @@ pub const RESOURCES: &[(&str, &str)] = &[
     ),
     (
         "resource://fa/laws",
-        "the law registries this build enforces, verbatim TOML: entry classes, the admissibility matrix, rounding laws, units, the evidence policy, the SoD policy, reason codes, the refusal catalog, account types, limits",
+        "the law registries this build enforces, verbatim TOML: entry classes, the admissibility matrix, capability caveats, rounding laws, units, the evidence policy, the SoD policy, reason codes, the refusal catalog, account types, limits",
     ),
     (
         "resource://fa/exit-codes",
@@ -93,6 +93,10 @@ pub const RESOURCES: &[(&str, &str)] = &[
     (
         "resource://fa/bundles/{id}",
         "the launch-bound book's accumulator verification status and bundle verification guidance for `{id}` (`fa verify accumulator`)",
+    ),
+    (
+        "resource://fa/capabilities/{token}",
+        "the launch-bound book's issued capability or the session's bound capability (`fa capability show|list`); `{token}` is `session`, `current`, `list`, or a 64-hex commitment digest",
     ),
 ];
 

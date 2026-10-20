@@ -2,11 +2,18 @@
 //! cite them (plan §14.2: "every capability name the admissibility matrix,
 //! the profiles, or any verb cites resolves to this list").
 
+use fa_policy::capability::{
+    CAVEAT_ACCOUNTS, CAVEAT_BOOKS, CAVEAT_BRANCH, CAVEAT_DAILY_ROOT, CAVEAT_DAILY_TOTALS,
+    CAVEAT_EFFECTIVE, CAVEAT_KNOWN_AT, CAVEAT_PERIODS, CAVEAT_POSSESSION, CAVEAT_REDACTION,
+    Capability,
+};
 use fa_policy::denial::{code, exit};
 use fa_policy::{Op, Profile, Steward};
+use fa_registry::capability_caveats::CaveatEncoding;
 use fa_registry::sod_policy::PROFILES;
-use fa_registry::{Admissibility, Decision, EntryClasses, ExitCodes};
+use fa_registry::{Admissibility, CapabilityCaveats, Decision, EntryClasses, ExitCodes};
 use fa_time::PeriodState;
+use fgdb_types::VId;
 
 const STATES: [PeriodState; 5] = [
     PeriodState::Future,
@@ -75,6 +82,67 @@ fn every_op_and_profile_the_sod_policy_cites_resolves() {
                 "a rule admits {p} approvers, but {p} can never hold `{op}`"
             );
         }
+    }
+}
+
+#[test]
+fn capability_caveats_registry_agrees_with_op_caveat_and_profile_laws() {
+    let reg = CapabilityCaveats::embedded().expect("capability_caveats.toml");
+    assert_eq!(reg.ops.len(), Op::ALL.len());
+    for (op, row) in Op::ALL.into_iter().zip(&reg.ops) {
+        assert_eq!(row.tag, op.tag(), "{}", op.name());
+        assert_eq!(row.name, op.name(), "{}", op.name());
+        assert_eq!(
+            row.agent_forbidden,
+            Profile::Agent.forbidden_ops().contains(&op),
+            "Agent forbidden law for `{}`",
+            op.name()
+        );
+        assert_eq!(
+            row.system_forbidden,
+            Profile::System.forbidden_ops().contains(&op),
+            "System forbidden law for `{}`",
+            op.name()
+        );
+    }
+
+    for (tag, expected_name) in [
+        (CAVEAT_BOOKS, "books"),
+        (CAVEAT_REDACTION, "redaction"),
+        (CAVEAT_ACCOUNTS, "accounts"),
+        (CAVEAT_PERIODS, "periods"),
+        (CAVEAT_EFFECTIVE, "effective"),
+        (CAVEAT_KNOWN_AT, "known_at"),
+        (CAVEAT_BRANCH, "branch"),
+        (CAVEAT_POSSESSION, "possession"),
+        (CAVEAT_DAILY_TOTALS, "daily_totals"),
+        (CAVEAT_DAILY_ROOT, "daily_root"),
+    ] {
+        let cav = reg
+            .caveat_by_tag(tag)
+            .unwrap_or_else(|| panic!("missing caveat tag {tag}"));
+        assert_eq!(cav.name, expected_name);
+        assert_eq!(cav.encoding, CaveatEncoding::Tagged(tag));
+    }
+
+    for profile in &reg.profiles {
+        let base = Profile::from_name(&profile.base_profile)
+            .unwrap_or_else(|| panic!("unknown base profile `{}`", profile.base_profile));
+        let ceiling_ops: Vec<Op> = profile
+            .ops_ceiling
+            .iter()
+            .map(|n| Op::from_name(n).unwrap())
+            .collect();
+        let default_ops: Vec<Op> = profile
+            .default_ops
+            .iter()
+            .map(|n| Op::from_name(n).unwrap())
+            .collect();
+        // Every registered template's ceiling and default op sets construct a valid Capability.
+        Capability::new(VId(10), base, &ceiling_ops, VId(1))
+            .unwrap_or_else(|e| panic!("profile `{}` ceiling: {e}", profile.name));
+        Capability::new(VId(10), base, &default_ops, VId(1))
+            .unwrap_or_else(|e| panic!("profile `{}` default_ops: {e}", profile.name));
     }
 }
 

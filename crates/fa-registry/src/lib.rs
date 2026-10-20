@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod admissibility_plan;
+pub mod capability_caveats;
 pub mod document_stores;
 pub mod evidence_policy;
 pub mod foundations;
@@ -27,6 +28,7 @@ pub mod toml;
 pub mod topology;
 
 pub use admissibility_plan::{ALL_KINDS, DispositionFamily, PlanAdmissibility};
+pub use capability_caveats::CapabilityCaveats;
 pub use foundations::{FoundationPin, FoundationStack, RegistryEpoch};
 pub use g0::{
     ApplicationDifferenceKindRow, ConversionLawRow, ConversionLaws, FormatRow, Formats, FxLawRow,

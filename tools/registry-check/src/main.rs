@@ -32,7 +32,7 @@ use fa_registry::threat_model::ThreatModel;
 use fa_registry::toml::{self, Table, Value};
 use fa_registry::topology::Topology;
 use fa_registry::{
-    Admissibility, ControlKinds, EntryClasses, ExitCodes, Symbols, parse_units,
+    Admissibility, CapabilityCaveats, ControlKinds, EntryClasses, ExitCodes, Symbols, parse_units,
     rounding_laws_embedded,
 };
 
@@ -91,6 +91,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "account_types.toml",
     "admissibility.toml",
     "allocation_laws.toml",
+    "capability_caveats.toml",
     "checker_index.toml",
     "claims_lint.toml",
     "constitution.toml",
@@ -683,12 +684,21 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let _procedures = Procedures::embedded().map_err(|e| e.to_string())?;
     let _reasons = ReasonCodes::embedded().map_err(|e| e.to_string())?;
     let _redaction = RedactionContracts::embedded().map_err(|e| e.to_string())?;
+    let _capability_caveats = CapabilityCaveats::embedded().map_err(|e| e.to_string())?;
 
     // 2. Disk-backed checks (supports validating mutated registries in --root).
     let read = |name: &str| -> Result<String, String> {
         let p = reg_dir.join(name);
         fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))
     };
+    let cap_caveats =
+        CapabilityCaveats::parse(&read("capability_caveats.toml")?).map_err(|e| e.to_string())?;
+    let cap_ops: Vec<&str> = cap_caveats.ops.iter().map(|o| o.name.as_str()).collect();
+    if cap_ops != REGISTERED_OPS {
+        return Err(format!(
+            "capability_caveats.toml: [[op]] list {cap_ops:?} disagrees with REGISTERED_OPS {REGISTERED_OPS:?}"
+        ));
+    }
     let classes = EntryClasses::parse(&read("entry_classes.toml")?).map_err(|e| e.to_string())?;
     let matrix =
         Admissibility::parse(&classes, &read("admissibility.toml")?).map_err(|e| e.to_string())?;
