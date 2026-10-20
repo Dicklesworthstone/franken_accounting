@@ -1,6 +1,8 @@
 //! Offline recipient-owned checkpoint quorums. No trust setting is learned
 //! from the signed file, and no fallback to the any-trusted-signer command.
 
+mod bundle;
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -18,6 +20,8 @@ pub(super) const HELP: &str = "Recipient-owned checkpoint witness quorum:
   fa-verify witness --checkpoint SIGNED_FILE --expect-book HEX32 \\
     --expect-branch HEX32 --expect-policy HEX64 --publisher-key HEX64 \\
     --witness-key HEX64 [--witness-key HEX64 ...] --quorum N [--json]
+
+To bind a production to this trust decision: fa-verify witness bundle --help
 
 Obtain ALL expected identifiers, keys and the quorum independently. HEX32
 and HEX64 mean exactly 32 and 64 ASCII hex digits, respectively. The input
@@ -221,6 +225,13 @@ fn verify(args: &[OsString], json: bool) -> Result<String, Failure> {
         return Ok(HELP.into());
     }
     let request = parse(args)?;
+    let (verified, continuity) = authenticate(&request)?;
+    Ok(render(&verified, &request, continuity.as_ref(), json))
+}
+
+// Shared by checkpoint-only and bundle workflows: a substituted old file must
+// be rejected before either workflow observes any candidate accounting artifact.
+fn authenticate(request: &Request) -> Result<(WitnessedCheckpoint, Option<Continuity>), Failure> {
     if let Some(advance) = &request.advance {
         let bytes = read_bounded(&advance.previous, MAX_WITNESSED_CHECKPOINT_BYTES)?;
         let previous = verify_witnessed_checkpoint(&bytes, &request.policy)
@@ -242,20 +253,18 @@ fn verify(args: &[OsString], json: bool) -> Result<String, Failure> {
             previous_body: advance.expected_body,
             previous_seq: previous.signed_checkpoint().checkpoint.through_seq,
         };
-        return Ok(render(
-            verified.checkpoint(),
-            &request,
-            Some(&continuity),
-            json,
-        ));
+        return Ok((verified.into_checkpoint(), Some(continuity)));
     }
     let bytes = read_bounded(&request.path, MAX_WITNESSED_CHECKPOINT_BYTES)?;
     let verified = verify_witnessed_checkpoint(&bytes, &request.policy)
         .map_err(|error| Failure::verification(error.to_string()))?;
-    Ok(render(&verified, &request, None, json))
+    Ok((verified, None))
 }
 
 pub(super) fn run(args: &[OsString]) -> Output {
+    if args.get(1).is_some_and(|arg| arg == "bundle") {
+        return bundle::run(&args[1..]);
+    }
     let json = args.iter().any(|argument| argument == "--json");
     match verify(args, json) {
         Ok(report) => Output {
