@@ -3708,3 +3708,88 @@ fn fx_rate_transport_refuses_missing_authority_and_host_paths_before_io() {
     assert_eq!(mcp.finish(), 0);
     assert!(!book.exists(), "denied calls must not create a book");
 }
+
+/// An Agent posts into a what-if scenario over MCP (`scenario` on the post
+/// tool, plan §15.3): the scenario's trial balance carries the posting and
+/// trunk's does not.
+#[test]
+fn an_agent_posts_into_a_scenario_over_mcp_and_trunk_is_untouched() {
+    let dir = tmp("agent-scenario");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Scenario Co",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    )
+    .unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        &chart.display().to_string(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let intent = json!({
+        "class": "Original", "effective_date": "2026-03-15",
+        "description": "Agent what-if rent", "idempotency_key": "agent-scenario-rent",
+        "legs": [
+            {"side": "debit", "account": "6000", "amount": "37.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "37.00 USD"},
+        ],
+    });
+    // fa.scenario is an on-demand cluster (plan §15.4).
+    let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.scenario"]);
+    mcp.discover();
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_scenario_manage",
+        json!({"action": "fork", "name": "what-if"}),
+    );
+    assert!(!error, "the Agent forks a scenario: {text}");
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": intent, "evidence": [oid], "scenario": "what-if"}),
+    );
+    assert!(!error, "the Agent posts into its scenario: {text}");
+    assert_eq!(mcp.finish(), 0);
+
+    let trunk = cli_data(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"]);
+    assert!(!trunk.contains("37.00"), "trunk is untouched: {trunk}");
+    let scenario = cli_data(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--branch",
+        "scenario:what-if",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert!(
+        scenario.contains("37.00"),
+        "the scenario carries it: {scenario}"
+    );
+}
