@@ -24,6 +24,7 @@ mod document;
 pub mod entry;
 mod export;
 mod finding;
+mod fx;
 mod intake;
 mod intake_provenance;
 pub mod json;

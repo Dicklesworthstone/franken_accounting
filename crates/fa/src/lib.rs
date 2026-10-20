@@ -65,6 +65,7 @@ mod certificate_store;
 pub mod document_disclosure;
 pub mod evidence_disclosure;
 pub mod findings;
+pub mod fx;
 pub mod general_ledger;
 pub mod indirect_cash_flow;
 pub mod intake;
@@ -167,6 +168,7 @@ pub use fa_statements::{
     StatementLine,
 };
 pub use findings::{RecordedFindings, finding_run_vid, finding_vid};
+pub use fx::{FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms};
 pub use general_ledger::{
     CASH_FLOW_FORMAT, CashFlow, CashFlowActivity, CashFlowAssignment, CashFlowDefinition,
     CashFlowSection, CashFlowUnit, CertifiedGeneralLedger, GENERAL_LEDGER_FORMAT,

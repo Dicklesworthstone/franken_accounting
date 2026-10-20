@@ -1536,6 +1536,55 @@ impl Book {
         )))
     }
 
+    /// Upload canonical Rate evidence under the authenticated holder's
+    /// existing upload policy. Source and retrieval metadata are assertions
+    /// by that uploader; the rate receives no implied provider provenance.
+    pub fn upload_fx_rate(
+        &mut self,
+        capability: &fa_journal::Capability,
+        rate: &crate::FxRateDocument,
+    ) -> Outcome<fa_journal::DocumentAdded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.upload_fx_rate(
+            &purposes, capability, rate,
+        )))
+    }
+
+    /// Value a proposal from retained Rate evidence without publishing.
+    /// The ordinary post/plan path independently verifies these base amounts.
+    pub fn value_fx_proposal(
+        &mut self,
+        capability: &fa_journal::Capability,
+        proposal: fa_model::EntryPayload,
+        law: crate::FxLawId,
+        rate_oids: &[fa_model::Oid],
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.value_fx_proposal(
+            &purposes, capability, proposal, law, rate_oids, &mut budget,
+        )))
+    }
+
+    /// Exact functional-currency period activity at a retained journal prefix.
+    /// Pending holds stay separate. This is not cumulative stock or a certificate.
+    pub fn functional_period_activity(
+        &mut self,
+        capability: &fa_journal::Capability,
+        period_code: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<fa_registers::FunctionalFold> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_period_activity(
+            &purposes, capability, period_code, known_at,
+        )))
+    }
+
     /// Record an import run (plan §9.3): the batch's documents and their
     /// receipts, and the run's `ImportControl` receipt, in one commit.
     /// `description` is sealed under the book key with fresh entropy.

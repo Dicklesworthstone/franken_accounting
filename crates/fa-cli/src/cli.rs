@@ -91,6 +91,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("allocate", allocate_cmd),
     ("settle", settle_cmd),
     ("document", document::document_cmd),
+    ("fx", crate::fx::fx_cmd),
     ("event", event_cmd),
     ("migrate", migrate_cmd),
     ("tb", tb_cmd),
@@ -2093,6 +2094,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
     }
     for flag in [
         "--intent",
+        "--from-json",
         "--plan",
         "--policy",
         "--audited",
@@ -5473,9 +5475,11 @@ fn plan_document_into_draft(
         ));
     }
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["post"])?;
+    let capability = ctx.capability(args, crate::fx::posting_ops(doc))?;
     let out = &ctx.out;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::fx::admit_intent_sources(book, &capability, doc)
+    })?;
     let BuiltPost { request: req, .. } =
         build_post_request(out, &mut book, args, forced, doc, who, capability)?;
     let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
@@ -5559,12 +5563,13 @@ pub(crate) fn plan_document_into_scenario(
         ));
     }
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["post"])?;
+    let capability = ctx.capability(args, crate::fx::posting_ops(doc))?;
     let out = &ctx.out;
     // Current authority to run intents in a scenario is admitted before the
     // book, its frontier or the scenario is disclosed.
     let mut book = ctx.books.open_admitted(args, |book| {
         book.admit_scenario_plan(&capability)??;
+        crate::fx::admit_intent_sources(book, &capability, doc)?;
         Ok(())
     })?;
     let BuiltPost { request: req, .. } =
@@ -5732,6 +5737,12 @@ fn parse_legs(
     let mut legs = Vec::with_capacity(legs_doc.len());
     for (i, l) in legs_doc.iter().enumerate() {
         let what = format!("legs[{i}]");
+        if l.get("base_amount").is_some() || l.get("base_totals").is_some() {
+            return Err(usage(
+                format!("{what}: functional values must be derived from retained Rate evidence"),
+                "remove base_amount/base_totals and supply intent.fx with a named law and Rate document OIDs",
+            ));
+        }
         let side = match req_str(l, "side", &what)? {
             "debit" | "dr" | "Debit" => Side::Debit,
             "credit" | "cr" | "Credit" => Side::Credit,
@@ -5907,9 +5918,11 @@ fn correction(
         }
     }
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["post"])?;
+    let capability = ctx.capability(args, crate::fx::posting_ops(&doc))?;
     let out = &ctx.out;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::fx::admit_intent_sources(book, &capability, &doc)
+    })?;
     let Some((target, _)) = book.read_entry(vid)? else {
         return Err(usage(
             format!("reverse: no entry {:032x} in this book", vid.0),
@@ -6153,9 +6166,11 @@ fn post_batch_document(ctx: &mut Ctx<'_>, args: &Args, doc: &Json) -> Result<(),
         ));
     };
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["post"])?;
+    let capability = ctx.capability(args, crate::fx::posting_ops(doc))?;
     let out = &ctx.out;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::fx::admit_intent_sources(book, &capability, doc)
+    })?;
     let mut intents = Vec::with_capacity(members.len());
     let mut classes = Vec::with_capacity(members.len());
     for (i, member) in members.iter().enumerate() {
@@ -6288,6 +6303,7 @@ fn post_timing(
         "disposition",
         "timeout_ns",
         "reverse_on",
+        "fx",
     ];
     if let Some((field, _)) = fields
         .iter()
@@ -6379,6 +6395,19 @@ fn build_post_request(
     who: VId,
     capability: Capability,
 ) -> Result<BuiltPost, Fail> {
+    if doc.get("fx").is_some() {
+        fa_policy::admit_read(&capability, who, book.context().book_id)
+            .and_then(|()| {
+                fa_policy::require(
+                    &capability,
+                    fa_policy::Op::Post,
+                    "preparing an FX-valued posting",
+                )
+            })
+            .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        book.read_scope(who, &capability)??;
+    }
     let ctx = book.context().clone();
     let class_name = match doc.get("class") {
         None => match forced {
@@ -6439,7 +6468,15 @@ fn build_post_request(
     let mut pending = None;
     let mut control = None;
     let mut reversal_detail = None;
+    let mut reversal_base_totals = None;
+    let mut reversal_rate_evidence = Vec::new();
     let legs: Vec<LegPayload> = if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
+        if doc.get("fx").is_some() {
+            return Err(usage(
+                "a Reversal derives its exact valuation from the target; do not supply fx",
+                "remove fx; use a paired Replacement to post corrected legs with new Rate evidence",
+            ));
+        }
         // Earlier raw-post clients recorded zero when no reason was supplied.
         // Let the kernel compare that complete historical request with the
         // recorded outcome. It refuses every fresh zero-reason correction
@@ -6480,6 +6517,17 @@ fn build_post_request(
         });
         target_date = Some(target.proposal.effective_date);
         target_period = target.proposal.effective_period.clone();
+        reversal_base_totals = target.proposal.base_totals.clone();
+        if let Some(totals) = &mut reversal_base_totals {
+            std::mem::swap(&mut totals.debits, &mut totals.credits);
+            reversal_rate_evidence = target
+                .proposal
+                .evidence
+                .iter()
+                .filter(|evidence| evidence.role == fa_journal::fx::RATE_EVIDENCE_ROLE)
+                .copied()
+                .collect();
+        }
         reversal_detail = reason.map(|reason| (format!("{:032x}", vid.0), reason));
         if doc.get("legs").is_some() {
             return Err(usage(
@@ -6693,7 +6741,7 @@ fn build_post_request(
         legs,
         control,
         unit_totals,
-        base_totals: None,
+        base_totals: reversal_base_totals,
         idempotency_key: key.as_bytes().to_vec(),
         origin: EntryOrigin::Intent {
             intent_oid: Oid(fa_model::domain_digest(
@@ -6711,6 +6759,12 @@ fn build_post_request(
         extensions: Vec::new(),
         tags: Vec::new(),
     };
+    for evidence in reversal_rate_evidence {
+        if !proposal.evidence.contains(&evidence) {
+            proposal.evidence.push(evidence);
+        }
+    }
+    proposal.evidence.sort_unstable();
     if let Some(ev_arg) = event_arg {
         let rea = book.rea_snapshot(None)?;
         let stripped = ev_arg.strip_prefix("EV:").unwrap_or(ev_arg);
@@ -6750,6 +6804,7 @@ fn build_post_request(
             }
         }
     }
+    let proposal = crate::fx::value_intent(book, &capability, doc, proposal)?;
     let proposal = match reverse_on {
         Some(day) => fa_journal::with_auto_reverse(proposal, day),
         None => proposal,
@@ -6786,9 +6841,11 @@ pub(crate) fn post_document(
     }
     check_post_planning_options(args)?;
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["post"])?;
+    let capability = ctx.capability(args, crate::fx::posting_ops(&doc))?;
     let out = &ctx.out;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::fx::admit_intent_sources(book, &capability, &doc)
+    })?;
     let BuiltPost {
         request: req,
         class_name,
@@ -7109,6 +7166,12 @@ pub(crate) fn emit_post_plan(
         for grant in args.flag_all("--grant") {
             command.push_str(&format!(" --grant {}", quoted(grant)));
         }
+        if proposal.base_totals.is_some()
+            && proposal.class != EntryClass::REVERSAL
+            && !args.flag_all("--grant").contains(&"read")
+        {
+            command.push_str(" --grant 'read'");
+        }
         if proposal.class == EntryClass::CLOSING {
             // The owner close command explicitly holds these operations.
             // A restored plan never grants them; the commit caller supplies
@@ -7368,6 +7431,11 @@ fn emit_replacement_plan(
         }
         for grant in args.flag_all("--grant") {
             command.push_str(&format!(" --grant {}", quoted(grant)));
+        }
+        if plan.replacement().proposal().base_totals.is_some()
+            && !args.flag_all("--grant").contains(&"read")
+        {
+            command.push_str(" --grant 'read'");
         }
         command.push_str(" --json");
         command
@@ -9259,6 +9327,9 @@ fn prepare_native_certificate_history(
 }
 
 fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.switch("--functional") {
+        return crate::fx::functional_tb(ctx, args);
+    }
     let who = ctx.principal(args);
     let summary_cap = if args.switch("--summary") {
         let ops: &[&str] = if args.switch("--certify") || args.flag("--certificate-out").is_some() {

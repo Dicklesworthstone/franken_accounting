@@ -2963,6 +2963,43 @@ fn lots_fifo_lifo_wac_specific_id_reversal_and_reference_differential() {
 }
 
 #[test]
+fn functional_fold_uses_the_book_spec_at_its_selected_prefix() {
+    use fa_journal::rows::book_root;
+    use fa_registers::fold_period_functional;
+
+    let mut h = harness();
+    h.post_rent(12_345, b"functional-before-book-damage");
+    let selected = h.db.frontier().unwrap();
+    let original = fold_period_functional(&h.db, &h.book, &h.march, Some(selected)).unwrap();
+    assert_eq!(original.base_unit, h.usd);
+    assert_eq!(original.total_debits().unwrap(), 12_345);
+    assert_eq!(original.total_credits().unwrap(), 12_345);
+
+    // A later damaged root would reinterpret the earlier USD postings as
+    // unvalued foreign legs if the fold used HEAD's BookSpec. The selected
+    // historical book still has its original USD functional unit.
+    let mut damaged = fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap();
+    damaged.base_unit = h.book.units.lookup("EUR").unwrap();
+    let mut write = WriteBatch::new(relation::IN_PERIOD);
+    write.set_vertex_property(
+        book_root(),
+        property::FA_PAYLOAD,
+        Some(scalar_bytes(damaged.canonical_bytes().unwrap())),
+    );
+    h.write_derived(write);
+    let after_damage = h.db.frontier().unwrap();
+    assert!(matches!(
+        fold_period_functional(&h.db, &h.book, &h.march, None),
+        Err(RegisterError::ProjectionDrift(_))
+    ));
+    assert_eq!(
+        fold_period_functional(&h.db, &h.book, &h.march, Some(selected)).unwrap(),
+        original
+    );
+    assert_eq!(h.db.frontier().unwrap(), after_damage);
+}
+
+#[test]
 fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_functionally() {
     use fa_journal::{
         FxLawId, FxRateDocument, FxRatePurpose, add_document, plan_realized_fx_settlement,

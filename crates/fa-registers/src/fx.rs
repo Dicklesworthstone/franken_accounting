@@ -12,9 +12,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::entity::leg_entity;
-use fa_journal::genesis::{BookContext, BookSpec, read_book_spec};
+use fa_journal::genesis::{BookContext, BookSpec};
 use fa_journal::refusal::{Refusal, code, exit};
+use fa_journal::rows::{book_root, bytes};
 use fa_journal::{FxLawId, FxRateDocument, FxRatePurpose, KernelError};
+use fa_model::symbols::{label, property};
 use fa_model::{AccountType, BaseTotals, Entry, EntryClass, EntryPayload, LegPayload, Writer};
 use fa_money::rate::ArithmeticBudget;
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
@@ -320,8 +322,26 @@ pub fn fold_period_functional<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<FunctionalFold, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     period_at(db, book, period_code, seq)?;
-    let spec = read_book_spec(db)?
-        .ok_or_else(|| KernelError::Corrupt("no book spec on the root".into()))?;
+    let root = db
+        .vertex_at(book_root(), seq)?
+        .filter(|row| row.labels.contains(&label::BOOK))
+        .ok_or_else(|| {
+            RegisterError::InvalidSelection(format!(
+                "the book does not exist at sequence {}",
+                seq.0
+            ))
+        })?;
+    let spec = BookSpec::decode(&bytes(
+        &root,
+        property::FA_PAYLOAD,
+        "functional book payload",
+    )?)?;
+    if spec.book_id != book.book_id || spec.calendar != book.calendar {
+        return Err(KernelError::Corrupt(
+            "functional fold context differs from the book at its selected sequence".into(),
+        )
+        .into());
+    }
     let mut cells: BTreeMap<FunctionalCellKey, FunctionalCell> = BTreeMap::new();
     let mut pending: BTreeMap<FunctionalCellKey, FunctionalCell> = BTreeMap::new();
     let mut watermark: Option<CommitSeq> = None;

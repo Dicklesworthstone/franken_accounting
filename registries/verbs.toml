@@ -154,7 +154,7 @@ subcommands = ["new", "plan", "list", "show", "promote", "discard"]
 flags = ["--intent", "--evidence", "--event", "--date", "--description", "--reason", "--grant"]
 switches = []
 events = ["draft_opened", "draft_planned", "drafts", "draft_detail", "draft_promoted", "draft_discarded"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["draft new <name> [--description <text>] [--as <principal>]   (opens an intent log owned by --as; nothing in it is a trunk entry)", "draft plan <name> --intent <file.json|-> [--evidence <oid>]...   (rehearses the intent under every posting law and journals it into the draft; also: the same post, reverse, reserve or resolve command with --draft <name>)", "draft list", "draft show <name>   (the planned intents in promotion order, and the entries a promotion created)", "draft promote <name> --as <approver> [--grant approve] --yes   (a principal holding approve who is not the draft's owner: every planned intent posts in one batch, admitted again against current trunk; any refusal promotes nothing)", "draft discard <name> [--reason <text>]   (the owner, or a principal holding approve, closes the draft; nothing is deleted)"]
 example = "fa draft new close-03 --as agent-7 --book ./books/myco --json"
 
@@ -166,19 +166,19 @@ subcommands = ["fork", "run", "list", "show", "diff", "discard"]
 flags = ["--at", "--from", "--evidence", "--event", "--intent", "--period", "--date", "--description", "--reason", "--grant", "--certificate-out"]
 switches = ["--activity", "--certify"]
 events = ["scenario_forked", "scenario_run", "scenarios", "scenario_detail", "scenario_diff", "scenario_discarded", "report_certificate"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["scenario fork <name> [--at HEAD|<seq>] [--from YYYY-MM-DD] [--evidence <assumption-document-oid>]... [--description <text>] [--date YYYY-MM-DD]   (forks at a trunk sequence, HEAD by default; --from is where the counterfactual starts: every intent run in the scenario is effective on or after it; trunk history is never filtered)", "scenario run <name> --intent <file.json|-> [--evidence <oid>]...   (rehearses the intent on the scenario's materialization and journals it into the scenario; the planner's authority over the intent (its ops, ceilings and scope caveats) is admitted on trunk first, as for a dry run, and nothing is rehearsed for a refused intent; an identical retry returns its record even after a discard; also: fa post, invoice, bill, receipt or payment with --scenario <name>)", "scenario list", "scenario show <name>   (its fork, assumptions and intents in run order)", "scenario diff <name> --period <code>... [--activity] [--certify | --certificate-out <new-file>]   (per account and unit, exact: trunk as known at the fork sequence against the scenario's materialization; only changed rows, posted and pending columns apart; stock balances, or period movement with --activity. --certify retains a replayable certificate (read and produce): a native trial-balance certificate of trunk at the fork, plus the scenario body and exactly the intents it holds now; fa replay C:<oid> re-materializes those intents and reproduces the diff byte for byte, even after later intents run)", "scenario discard <name> [--reason <text>] [--date YYYY-MM-DD]   (the owner, or a principal holding approve, closes it; nothing is deleted)", "A scenario is materialized on every run and diff (plan §15.2 interim posture until substrate branches): the trunk prefix's accounting objects are replayed into a scratch book and every intent is posted again under every posting law. The diff binds the scenario body, its intent records, the fork sequence and the replay's SeqMap digest; --certify retains it as a replayable certificate. Reads select a scenario with --branch scenario:<name> (tb, statement, explain, open-items, gl), uncertified. Every check is on trunk and the replay is fixed at the fork: a document, period reopening or authority issued on trunk after the fork reaches only a scenario forked after it. The replay posts each intent under a Human embedded capability of its planner, so an Agent preparer's extra Human approver (a trunk SoD rule) is not re-applied there."]
 example = "fa scenario fork but-for-breach --from 2025-07-01 --book ./books/myco --json"
 
 [[verb]]
 name = "post"
-summary = "Post one entry intent under the accounting laws (balance, period law, idempotency)."
+summary = "Post an entry intent under balance, period and idempotency laws, with optional functional-currency valuation from retained Rate evidence (fa fx rate add)."
 writes = true
 subcommands = []
 flags = ["--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "batch_posted", "draft_planned", "scenario_run"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["A leg may name its legal entity (\"entity\": code; in a multi-entity book every leg names one) and its counterparty (\"party\": code from fa party list); the kernel refuses an undeclared entity or an unknown party.", "post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--event <code|vid>] [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target.", "A PostBatch intent {\"idempotency_key\": K, \"intents\": [<entry intent>, ...]} commits every member atomically, in order, in one transaction: all or none, each member seeing the earlier members' effects (an application may settle an invoice earlier in the same batch by its derived vid). Members are Original, Adjusting, Reversal, Pending or Resolution entries of one principal with distinct keys. The batch key names its IntentOutcome: an identical retry returns the recorded outcome; the same key with different members is refused (exit 6). Batch plans, --plan-out and per-batch flags are not available; a member refusal names its index and nothing is posted.", "post --intent <file.json|-> --draft <name>   (plan §15.2: rehearses the intent under every posting law and journals it into the open draft; nothing reaches trunk until a principal holding approve who is not the draft's owner runs fa draft promote <name>)", "post --intent <file.json|-> --scenario <name>   (fa-k07b: rehearses the intent on the scenario's materialization under every posting law and journals it into the open scenario; trunk never moves; fa scenario diff shows the effect)"]
 example = "fa post --intent entry.json --book ./books/myco --json"
 
@@ -254,7 +254,7 @@ subcommands = []
 flags = ["--reason", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out", "--draft", "--replace-with"]
 switches = ["--dry-run"]
 events = ["reversed", "recorded", "plan", "draft_planned", "corrected", "replacement_plan"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["reverse <vid|E:vid> --reason <name|code> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--grant <op>]... [--evidence <oid>]... [--dry-run [--plan-out <new-file>]]", "The default effective date and period are the target's; --effective never chooses an open period automatically. The default key is reverse:<target vid>. Repeating the same request returns the original outcome; changing a committed reversal is refused.", "--dry-run rehearses the exact derived reversal without publishing it; commit its reviewed sealed plan with fa commit --plan <file|-> at the same book snapshot.", "Reasons are registered in reason_codes.toml (scope supersession): WrongAccount, WrongPeriod, WrongAmount, Duplicate, and the other listed codes. Other requires --description. A reason records the preparer's statement, not its truth.", "reverse <vid> --reason <name> --replace-with <file.json|-> [--dry-run [--plan-out <new-file>]]   (plan §8.2: the exact reversal and the corrected Replacement commit as one pair, both or neither. The replacement intent is an entry intent without class, reverses or reason; its effective_date, period and idempotency_key default to the target's date and period and replace:<vid>. The dry-run returns one sealed plan containing both members; fa commit --plan <file|-> revalidates and publishes both atomically. Agent-profile plans are rehearsal only. Correction drafts remain unsupported; a Replacement posted alone is FA-REF-160.)"]
 example = "fa reverse <vid> --reason WrongAccount --book ./books/myco --json"
 
@@ -266,7 +266,7 @@ subcommands = []
 flags = ["--intent", "--grant", "--evidence", "--balancing", "--plan-out", "--timeout-ns", "--draft"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["reserve --intent <hold.json> [--timeout-ns N] [--dry-run [--plan-out <new-file>]] (a Pending: amounts reserved, nothing posted)", "timeout_ns in the intent or --timeout-ns supplies one unsigned nanosecond duration from the latest committed TimeEvidence. Missing anchors and overflow refuse. Start fad serve --bootstrap-system to record clock observations and expire due holds.", "--dry-run runs the reservation laws without acquiring the hold; fa commit --plan <file|-> acquires exactly the reviewed hold if the book has not advanced. --balancing is not supported with --dry-run."]
 example = "fa reserve --intent hold.json --book ./books/myco --json"
 
@@ -278,7 +278,7 @@ subcommands = []
 flags = ["--intent", "--grant", "--evidence", "--plan-out", "--draft"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned"]
-exits = [0, 2, 3, 4, 5, 6, 7]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["resolve --intent <res.json> [--dry-run [--plan-out <new-file>]] (resolves <hold vid>; disposition posts (legs drawn from the hold) | voids)", "A direct void requires --yes. --dry-run releases nothing and needs no confirmation; fa commit --plan <file|-> explicitly confirms the authenticated exact plan and rechecks the hold at the same snapshot."]
 example = "fa resolve --intent res.json --book ./books/myco --json"
 
@@ -344,14 +344,23 @@ example = "fa migrate show go-live-2026 --book ./books/myco --json"
 
 [[verb]]
 name = "tb"
-summary = "Trial balance: leaf or summary stock/activity at a known-at frontier; opt-in certification retains the complete report's immutable certificate in the book."
+summary = "Trial balance: native leaf or summary stock/activity, or exact functional-currency period activity, at a known-at frontier. Native reports support retained certification."
 writes = true
 subcommands = []
 flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--certificate-out", "--branch"]
-switches = ["--activity", "--summary", "--certify", "--as-originally-reported"]
-events = ["trial_balance", "summary_trial_balance", "report_certificate"]
+switches = ["--activity", "--summary", "--certify", "--as-originally-reported", "--functional"]
+events = ["trial_balance", "summary_trial_balance", "report_certificate", "functional_trial_balance"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "tb --period <code> --as-originally-reported [--activity] [--certify]   (plan §7.4: one period as first reported, at the known-at of its first Lock transition (a StatementIssuance takes precedence once issuances are journaled); never its first Close, never HEAD. A period with neither is refused with FA-REF-161. Cannot be combined with --as-known-at.)", "tb --as-of YYYY-MM-DD [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed. --summary --certify binds the selected roots and exact group membership as well as the leaf source; it requires read and produce, and a sequence selector (HEAD or <seq>).", "Stock balances include opening history; --activity is selected-period movement. --summary folds disjoint leaf subtrees under each root account (all roots by default, or --root <code>...). Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Native certificates preserve the original instant resolution; the summary certificate format currently binds sequences only. Replay scope is fa-fold-over-prefix; no witness signature or physical timestamp claim.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector."]
+usage = [
+  "tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]",
+  "tb --functional --activity --period <one code> [--as-known-at HEAD|<seq>|<RFC3339>]   (exact functional-currency movement from immutable committed valuations, with posted and pending columns separate; requires current whole-book read authority; refuses unvalued foreign legs)",
+  "Functional activity requires --activity and exactly one period. It does not provide cumulative stock, summary, fiscal-year, as-of, scenario, original-report or certificate selections. Use retained Rate evidence in intent.fx when posting foreign-currency entries; fa fx --help describes source intake and the admitted valuation laws.",
+  "tb --period <code> --as-originally-reported [--activity] [--certify]   (plan §7.4: one period as first reported, at the known-at of its first Lock transition (a StatementIssuance takes precedence once issuances are journaled); never its first Close, never HEAD. A period with neither is refused with FA-REF-161. Cannot be combined with --as-known-at.)",
+  "tb --as-of YYYY-MM-DD [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]",
+  "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed. --summary --certify binds the selected roots and exact group membership as well as the leaf source; it requires read and produce, and a sequence selector (HEAD or <seq>).",
+  "Stock balances include opening history; --activity is selected-period movement. --summary folds disjoint leaf subtrees under each root account (all roots by default, or --root <code>...). Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Native certificates preserve the original instant resolution; the summary certificate format currently binds sequences only. Replay scope is fa-fold-over-prefix; no witness signature or physical timestamp claim.",
+  "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.",
+]
 example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -558,6 +567,18 @@ events = ["findings_recorded", "finding_runs", "finding_list", "finding_shown", 
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["finding record <procedure-id> [--param <name=integer>]... [--account <code>] [--source E:<vid>] [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD]", "finding record --certificate C:<digest>   (the exact idempotent retry; a new run at HEAD may select a later source prefix)", "finding runs [--page-size 1..32] [--cursor <192-hex>] [--known-at HEAD|<seq>]   (discover recorded runs; default page size 16)", "finding list --certificate C:<digest> [--known-at HEAD|<seq>]   (every finding in this certified run, not a global inventory)", "finding show F:<vid> [--known-at HEAD|<seq>]", "finding review F:<vid> --action acknowledge|dismiss|reopen --note <text> [--previous R:<latest-review>] [--dismissal-reason explained|duplicate|data-quality|outside-scope|other] [--evidence D:<oid>]...", "finding review --certificate C:<run> --file <reviews.json|->   (an explicit selection from ONE run reviewed in one transaction: a JSON array of {finding, action, note, previous?, dismissal_reason?, evidence?: [D:<oid>]}, each validated as a single review; any refused decision refuses the whole set, and one finding_reviewed event is emitted per decision in certified order)", "finding export --certificate C:<digest> [--export-format md|jsonl|canonical] [--include-reviews [--known-at HEAD|<seq>]] [--out <new-file>]", "finding replay <canonical-workpaper|-> [--certificate C:<expected-digest> --known-at <exact-seq>]", "Recording and exporting require read and produce; discovering runs, listing, showing and replaying require read. Review requires a Human with read and approve who is independent of the run producer. Dismissal also requires a registered reason and retained evidence. Supply the current --previous after the first decision; stale decisions refuse instead of overwriting history.", "Run discovery has scope recorded-runs: total_recorded_runs counts the structurally checked inventory at known_at; only summaries in the returned page also undergo full certificate and computation replay. It establishes neither current review status nor complete detector coverage. Pass next_cursor unchanged to continue the same book and inventory: omitted known_at or HEAD inherits the cursor cutoff; an explicit sequence must equal it. Current authority is always rechecked, and checked_through names the current validation frontier.", "The original numbered workpaper remains unchanged when later reviews are appended. --include-reviews adds a separate review appendix with its own fixed cutoff. Canonical exports replay against retained native evidence; Markdown and JSONL are presentations. Recipient-bound replay requires both the independently expected certificate and exact review cutoff; replay without them states its as-supplied historical scope. Complete responses refuse if they exceed transport limits, never truncate."]
 example = "fa finding record jet.round_amounts --book ./books/myco --json"
+
+[[verb]]
+name = "fx"
+summary = "Retain exact typed Rate evidence for functional-currency posting; no uploaded rate claims provider authentication."
+writes = true
+subcommands = ["rate"]
+flags = ["--from-json", "--grant"]
+switches = []
+events = ["fx_rate_added"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["fx rate add --from-json <rate.json|->", "Rate JSON fields: base_unit (functional currency code), quote_unit (foreign currency code), rate_num and rate_den (positive exact decimal integer strings, at most u128), rounding (registered law name), as_of (YYYY-MM-DD), retrieved_at_ns (nonnegative u64 integer), purpose (spot_close | period_average | period_close | settlement), and source (uploader's source description). The ratio states functional-currency units per one foreign-currency unit. Unknown and repeated fields, floats, zero denominators and unknown units refuse.", "The existing authenticated intake path derives HumanUpload or AgentUpload. Source and retrieval metadata are uploaded assertions, never a verified provider transcript or trusted clock. A retry preserves the original uploader's evidence grade and receipt. Admission precedes host-file or stdin consumption. MCP uses the on-demand fa.fx cluster with action add and inline rate JSON; host paths are refused.", "For a valued posting, fa post --intent <entry.json|-> accepts fx: {law: SpotClose | PeriodAverage, rates: [D:<retained-Rate-oid>, ...]}. JSON string values must be quoted. The facade reads complete governed Rate documents and computes base amounts; the posting kernel independently recomputes them inside its transaction. Caller-supplied base_amount and base_totals refuse. Current read and post authority are required; a bound capability is never widened.", "SpotClose uses spot_close evidence as of the entry's effective date. PeriodAverage uses period_average evidence as of the last included day of the actual posting period. Both live laws require HalfEven rounding. A Reversal inherits its target's exact valuation and retained Rate evidence and cannot supply a new fx selection; an explicit later SpotClose reversal date must satisfy native rate-date law.", "Read the resulting functional activity with fa tb --functional --activity --period <one code> [--as-known-at HEAD|<seq>|<RFC3339>]. Posted and pending columns stay separate; foreign legs lacking committed base valuations refuse. This view is one period's activity, not cumulative stock, revaluation or a certificate. It rejects summary, fiscal-year, as-of, scenario, original-report and certification options. Current whole-book read authority is checked even for historical prefixes."]
+example = "fa fx rate add --from-json rate.json --book ./books/myco --json"
 
 [[verb]]
 name = "bank"
@@ -1036,6 +1057,12 @@ doc = "A complete canonical workpaper replayed against retained native observati
 fields = ["certificate:hex", "workpaper:string", "workpaper_digest:hex", "recorded_at:seq", "source_known_at:seq", "review_known_at:seq?", "includes_reviews:bool", "finding_count:int", "checked_through:seq", "scope:string"]
 
 [[event]]
+name = "fx_rate_added"
+book = true
+doc = "One canonical typed Rate document retained through authenticated upload. The exact rational is functional-currency units per foreign-currency unit. Its source and retrieved_at_ns are uploader assertions, with no implied provider or clock authentication. Exact retries preserve the original grade, commitment and receipt."
+fields = ["oid:hex", "doc_commit:hex", "kind:string", "grade:string", "size:int", "recorded_at:seq", "already_recorded:bool", "base_unit:string", "quote_unit:string", "rate_num:string", "rate_den:string", "rounding:string", "as_of:date", "retrieved_at_ns:int", "purpose:string"]
+
+[[event]]
 name = "bank_imported"
 book = true
 doc = "A bank statement retained with its complete canonical line documents and a parser/account manifest, under one native import receipt. Repeating the same source, parser and account returns the existing receipt without publication. continuity is unlinked or verified_predecessor; verified_predecessors counts replayed links ending at an unlinked root. predecessor binds the immediately preceding retained receipt and statement. This is not match confirmation."
@@ -1371,6 +1398,12 @@ name = "trial_balance"
 book = true
 doc = "Stock (through `effective_through`) or activity (the selected periods), at the `known_at` snapshot."
 fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool", "served:tb_served?"]
+
+[[event]]
+name = "functional_trial_balance"
+book = true
+doc = "Exact functional-currency activity for one posting period at one known-at prefix, folded from immutable committed base valuations. scope is period_activity; posted and outstanding pending holds are separate. Unvalued foreign legs refuse. Current authority, complete Entry history and the selected Book definition are checked before reporting. This does not recalculate entries at current rates, assert current access to their Rate source bytes, establish cumulative stock or issue a certificate."
+fields = ["scope:string", "period:string", "base_unit:string", "known_at:seq", "watermark:seq?", "entries:int", "fold_digest:hex", "rows:[functional_tb_row]", "pending_rows:[functional_tb_row]", "totals:functional_tb_totals", "pending_totals:functional_tb_totals", "balanced:bool", "pending_balanced:bool"]
 
 [[event]]
 name = "statement"
@@ -2133,6 +2166,16 @@ doc = "One account in one unit."
 fields = ["code:string", "name:string", "type:string", "debits:amount", "credits:amount", "net:amount", "debits_pending:amount", "credits_pending:amount"]
 
 [[shape]]
+name = "functional_tb_row"
+doc = "One account and optional legal entity in the book's functional currency, in either the posted or pending period-activity column. net is exact debits less credits."
+fields = ["account:string", "account_ref:hex", "entity:string?", "debits:amount", "credits:amount", "net:amount", "entry_count:int"]
+
+[[shape]]
+name = "functional_tb_totals"
+doc = "Checked exact debit, credit and net totals in the functional currency for one activity column."
+fields = ["debits:amount", "credits:amount", "net:amount"]
+
+[[shape]]
 name = "tb_served"
 doc = "How a head trial balance or period activity was answered (plan §5.3, §17). mode maintained: every contributing period from its maintained register cells at their cursor plus the exact tail after it; tail_length counts the entries decoded for those tails. mode literal: the journal was folded, and reason says why maintained cells could not answer and how to make them answer. Both modes yield the same report. Null for certified, historical, as-of and summary reads, which always fold the journal."
 fields = ["mode:string", "tail_length:int?", "reason:string?", "periods:[tb_served_period]"]
@@ -2638,6 +2681,11 @@ doc = "Period law: create a fiscal year's periods, list them, move one along the
 [[mcp.cluster]]
 name = "fa.evidence"
 doc = "Evidence: record a source document, content-addressed, so an entry can cite it."
+
+[[mcp.cluster]]
+name = "fa.fx"
+on_demand = true
+doc = "Foreign-currency evidence: retain typed uploaded Rate documents for source-valued posting. Rates retain the authenticated uploader's grade; no provider or clock provenance is inferred. Functional activity is read through fa_read_trial_balance."
 
 [[mcp.cluster]]
 name = "fa.rea"
@@ -3199,6 +3247,21 @@ dont = ["Supply the complete canonical bytes_hex from export as workpaper; host 
 mistakes = ["Passing HEAD as an independently expected review cutoff, or supplying only one expectation.", "Treating a repaired public checksum as proof of edited findings or human decisions; native replay verifies the complete retained source and decision closure."]
 
 [[mcp.tool]]
+cluster = "fa.fx"
+name = "rate"
+verb = "fx"
+subcommands = ["rate"]
+positionals = ["action"]
+flags = ["--from-json"]
+switches = []
+stdin_property = "rate"
+stdin_kind = "object"
+stdin_via = "--from-json"
+required = ["action", "--from-json"]
+dont = ["Use action add and supply the complete typed source object inline as rate. from_json_file host paths are not accepted. The fixed launch capability must hold post; the authenticated intake derives AgentUpload for an Agent holder.", "Use exact positive decimal strings for rate_num and rate_den. Source and retrieved_at_ns are uploaded assertions; never describe them as independently verified provider or time evidence.", "After upload, post an intent naming fx.law and fx.rates with the retained D:oid. Both SpotClose and PeriodAverage require HalfEven; SpotClose needs the effective date, PeriodAverage the last included posting-period day. The posting kernel verifies admissibility and evidence grade independently."]
+mistakes = ["Supplying a raw rate or caller-computed base_amount in a posting intent instead of a retained Rate document.", "Treating an uploaded rate as a verified provider quote, or a duplicate upload as a grade promotion."]
+
+[[mcp.tool]]
 cluster = "fa.bank"
 name = "import"
 verb = "bank"
@@ -3493,7 +3556,7 @@ subcommands = []
 positionals = []
 flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--branch"]
 required = []
-dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write."]
+dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write.", "For functional currency, supply functional: true, activity: true and one period. This view folds committed base valuations and refuses unvalued foreign legs; it cannot combine with certify, summary, fiscal_year, as_of, branch or as_originally_reported. It is period movement, not cumulative stock or revaluation."]
 mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Treating a known-at instant as an exact physical commit timestamp: it is a retained TimeEvidence bucket, with its frontier and brackets in the coordinate."]
 
 [[mcp.tool]]
@@ -4007,6 +4070,12 @@ ops = ["read", "produce"]
 verbs = ["bank"]
 subcommands = ["import"]
 ops = ["read", "post", "reconcile"]
+
+[[bound]]
+verbs = ["fx"]
+subcommands = ["rate"]
+args = ["add"]
+ops = ["post"]
 
 [[bound]]
 verbs = ["bank"]
