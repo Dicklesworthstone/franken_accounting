@@ -190,7 +190,8 @@ impl Adapter {
                 }
                 LaunchAuthority::from_token(book, config.keys, token)
             }
-            None => LaunchAuthority::new(book, config.keys, config.principal, config.profile, &grants),
+            None => LaunchAuthority::new(book, config.keys, config.principal, config.profile, &grants)
+                .and_then(LaunchAuthority::as_mcp_operator),
         }
         .and_then(|auth| auth.with_files(config.files))
         .map_err(ServerError::Launch)?;

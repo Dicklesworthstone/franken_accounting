@@ -64,7 +64,7 @@ pub(crate) fn session_import(
             "omit --source or use --source Upload; verified connector intake requires its own authenticated adapter",
         ));
     }
-    let grade = fa_journal::upload::upload_grade(policy, capability.profile())
+    let grade = fa_journal::upload::upload_grade(policy, capability.sod_profile())
         .map_err(fa::BookError::Kernel)?;
     if asserted_grade.is_some_and(|asserted| asserted != grade) {
         return Err(Fail::Refusal(Refusal::new(

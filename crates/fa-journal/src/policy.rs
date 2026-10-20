@@ -638,10 +638,7 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
     // a book that never activated a policy).
     let witnessed = txn.vertex_property(db, book_root(), property::SECURITY_POLICY_EPOCH)?;
     let epoch = epoch_from(witnessed.as_ref())?;
-    let preparer = Party {
-        principal: proposal.principal_ref,
-        profile: req.capability.profile(),
-    };
+    let preparer = Party::for_capability(proposal.principal_ref, &req.capability);
     if let Err(r) = authorize_approvals(
         &txn,
         db,
@@ -992,6 +989,15 @@ pub fn payload_reach(
     proposal: &EntryPayload,
     accounts: Option<&AccountScope>,
 ) -> Result<(), Denial> {
+    if !capability.admits_class(proposal.class) {
+        return Err(Denial::OutOfScope {
+            caveat: "classes",
+            value: format!(
+                "class `{}`",
+                proposal.class.name().unwrap_or("unknown")
+            ),
+        });
+    }
     let legs: Vec<VId> = proposal.legs.iter().map(|l| l.account_ref).collect();
     let mut periods: Vec<String> = resolved_period(
         book,
@@ -1590,6 +1596,20 @@ fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
             "it outlives the issuer's expiry at sequence {}",
             bound.0
         ));
+    }
+    if issuer.operator_kind() == fa_policy::OperatorKind::Agent
+        && issued.operator_kind() != fa_policy::OperatorKind::Agent
+    {
+        return widen("it escalates an AI operator capability to Human".to_string());
+    }
+    if issuer.requires_dry_run() && !issued.requires_dry_run() {
+        return widen("it drops the issuer's requires_dry_run caveat".to_string());
+    }
+    if let Some(classes) = issuer.classes() {
+        match issued.classes() {
+            Some(own) if own.is_subset(classes) => {}
+            _ => return widen("it admits an EntryClass the issuer cannot".to_string()),
+        }
     }
     None
 }

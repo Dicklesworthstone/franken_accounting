@@ -204,6 +204,19 @@ impl LaunchAuthority {
         self.token.as_ref()
     }
 
+    /// Mark a launch-bound session as an MCP AI operator (plan §14.4, bead
+    /// fa-5npo): an MCP `Preparer` retains its `Human` base profile (so it can
+    /// hold `post_softclosed`) while setting `operator_kind = Agent` so SoD
+    /// (`agent_prepared_human_approvers`) and document upload grading
+    /// (`AgentUpload`) record an AI operator, never a human.
+    pub fn as_mcp_operator(mut self) -> Result<Self, String> {
+        self.capability = self
+            .capability
+            .with_operator_kind(fa_policy::OperatorKind::Agent)
+            .map_err(|e| format!("MCP operator capability: {e}"))?;
+        Ok(self)
+    }
+
     /// Attach an optional launch filesystem root (`--files <dir>`). When set,
     /// the directory must exist at launch and is canonicalized once; caller
     /// path arguments are confined to this directory with no `..`, symlinks,

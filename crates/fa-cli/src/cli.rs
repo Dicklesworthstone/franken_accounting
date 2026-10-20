@@ -4802,34 +4802,42 @@ fn capability_issuer(ctx: &Ctx<'_>, args: &Args) -> Result<Capability, Fail> {
 /// file is written only after the issuance commits, so a refused issuance
 /// leaves no file; the secret is never journaled or printed.
 fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const FIX: &str = "fa capability issue --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--daily-total \"1000.00 USD\"]... [--expires-at <seq>] [--period <code>]... [--effective-through YYYY-MM-DD] [--known-at-most <seq>] --out <new-file> (--issuer-token <file> or --as <issuer> --grant issue_capability --grant <each issued op>)";
+    const FIX: &str = "fa capability issue --holder <principal> --profile agent|preparer|approver|controller|auditor|regulator|investigator|receiver|production|witness|human [--op <op>]... [--ceiling \"1000.00 USD\"]... [--daily-total \"1000.00 USD\"]... [--expires-at <seq>] [--period <code>]... [--effective-through YYYY-MM-DD] [--known-at-most <seq>] [--redaction <contract>] [--account <code>]... [--branch <32-hex>] [--class <EntryClass>]... [--operator-kind human|agent] [--requires-dry-run] [--book-scope] --out <new-file> (--issuer-token <file> or --as <issuer> --grant issue_capability --grant <each issued op>)";
     let holder = args.require("--holder", "<principal>")?.to_string();
     if holder.is_empty() || holder.len() > fa_policy::capability::MAX_TOKEN_PRINCIPAL_BYTES {
         return Err(usage("--holder is a 1..=256-byte principal name", FIX));
     }
-    let profile = match args.flag("--profile").unwrap_or("agent") {
-        "agent" => fa_policy::Profile::Agent,
-        "human" => fa_policy::Profile::Human,
-        other => {
-            return Err(usage(
-                format!("--profile `{other}` is not an issuable profile"),
-                "--profile agent|human (the remaining §14.4 templates land with fa-5npo)",
-            ));
-        }
+    let raw_profile = args.flag("--profile").unwrap_or("agent");
+    let (profile, selected_template) = if raw_profile.eq_ignore_ascii_case("human") {
+        (fa_policy::Profile::Human, None)
+    } else if let Some(template) = fa_policy::ProfileTemplate::from_name(raw_profile) {
+        (template.base_profile(), Some(template))
+    } else {
+        return Err(usage(
+            format!("--profile `{raw_profile}` is not an issuable profile or §14.4 template"),
+            "--profile agent|preparer|approver|controller|auditor|regulator|investigator|receiver|production|witness|human",
+        ));
     };
     let op_names = args.flag_all("--op");
-    if op_names.is_empty() {
-        return Err(usage("an issued capability names at least one --op", FIX));
-    }
-    let mut ops = Vec::with_capacity(op_names.len());
-    for name in &op_names {
-        ops.push(fa_policy::Op::from_name(name).ok_or_else(|| {
-            usage(
-                format!("--op `{name}` is not a registered op"),
-                "`fa capabilities --json` lists the registered ops",
-            )
-        })?);
-    }
+    let ops = if op_names.is_empty() {
+        match selected_template {
+            Some(template) => template.default_ops().to_vec(),
+            None => {
+                return Err(usage("an issued capability names at least one --op", FIX));
+            }
+        }
+    } else {
+        let mut ops = Vec::with_capacity(op_names.len());
+        for name in &op_names {
+            ops.push(fa_policy::Op::from_name(name).ok_or_else(|| {
+                usage(
+                    format!("--op `{name}` is not a registered op"),
+                    "`fa capabilities --json` lists the registered ops",
+                )
+            })?);
+        }
+        ops
+    };
     let out_path = args.require("--out", "<new token file>")?.to_string();
     if out_path == "-" {
         return Err(usage(
@@ -4855,8 +4863,99 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let holder_vid = fa_model::principal_vid(&holder);
-    let mut issued = Capability::new(holder_vid, profile, &ops, issuer.holder())
-        .map_err(|e| usage(format!("the issued capability: {e}"), FIX))?;
+    let mut issued = match selected_template {
+        Some(template) => {
+            Capability::from_template(holder_vid, template, Some(&ops), issuer.holder())
+                .map_err(|e| usage(format!("the issued capability: {e}"), FIX))?
+        }
+        None => Capability::new(holder_vid, profile, &ops, issuer.holder())
+            .map_err(|e| usage(format!("the issued capability: {e}"), FIX))?,
+    };
+    if args.switch("--book-scope")
+        || selected_template.is_some_and(|t| t.required_caveats().contains(&"books"))
+        || issuer.books().is_some()
+    {
+        issued = issued
+            .for_books(&[book.context().book_id])
+            .map_err(|e| usage(format!("--book-scope: {e}"), FIX))?;
+    }
+    if issuer.operator_kind() == fa_policy::OperatorKind::Agent {
+        issued = issued
+            .with_operator_kind(fa_policy::OperatorKind::Agent)
+            .map_err(|e| usage(format!("inherited operator_kind: {e}"), FIX))?;
+    }
+    if let Some(raw_kind) = args.flag("--operator-kind") {
+        let kind = fa_policy::OperatorKind::from_name(raw_kind).ok_or_else(|| {
+            usage(
+                format!("--operator-kind `{raw_kind}` must be `human` or `agent`"),
+                "--operator-kind human|agent",
+            )
+        })?;
+        issued = issued
+            .with_operator_kind(kind)
+            .map_err(|e| usage(format!("--operator-kind `{raw_kind}`: {e}"), FIX))?;
+    }
+    if issuer.has_requires_dry_run_caveat() || args.switch("--requires-dry-run") {
+        issued = issued.with_requires_dry_run();
+    }
+    if let Some(text) = args.flag("--redaction") {
+        let contract = text.parse::<u16>().map_err(|_| {
+            usage(
+                format!("--redaction `{text}` is not a u16 redaction contract id"),
+                "--redaction <contract-id> (`redaction_contracts.toml`)",
+            )
+        })?;
+        issued = issued
+            .with_redaction(contract)
+            .map_err(|e| usage(format!("--redaction `{text}`: {e}"), FIX))?;
+    } else if let Some(contract) = issuer.redaction() {
+        issued = issued
+            .with_redaction(contract)
+            .map_err(|e| usage(format!("inherited redaction: {e}"), FIX))?;
+    }
+    let accounts = args.flag_all("--account");
+    if !accounts.is_empty() {
+        issued = issued
+            .for_accounts(&accounts)
+            .map_err(|e| usage(format!("--account: {e}"), FIX))?;
+    }
+    if let Some(text) = args.flag("--branch") {
+        let branch = if text.len() == 32 && text.is_ascii() {
+            let mut raw = [0u8; 16];
+            for (i, slot) in raw.iter_mut().enumerate() {
+                *slot = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).map_err(|_| {
+                    usage(
+                        format!("--branch `{text}` is not a 32-hex branch id"),
+                        "--branch <32-hex>",
+                    )
+                })?;
+            }
+            Id128(raw)
+        } else {
+            return Err(usage(
+                format!("--branch `{text}` is not a 32-hex branch id"),
+                "--branch <32-hex>",
+            ));
+        };
+        issued = issued
+            .on_branch(branch)
+            .map_err(|e| usage(format!("--branch `{text}`: {e}"), FIX))?;
+    }
+    let class_names = args.flag_all("--class");
+    if !class_names.is_empty() {
+        let mut classes = Vec::with_capacity(class_names.len());
+        for name in &class_names {
+            classes.push(fa_model::EntryClass::from_name(name).ok_or_else(|| {
+                usage(
+                    format!("--class `{name}` is not a registered EntryClass"),
+                    "`fa capabilities --json` lists the registered entry classes",
+                )
+            })?);
+        }
+        issued = issued
+            .for_classes(&classes)
+            .map_err(|e| usage(format!("--class: {e}"), FIX))?;
+    }
     // A daily limit is a root's shared budget, never a fresh allowance for
     // each descendant. The kernel independently checks this lineage at issue.
     for (unit, maximum) in issuer.daily_totals() {
@@ -4938,6 +5037,11 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         })?;
         issued = issued.known_at_most(CommitSeq(seq));
+    }
+    if let Some(template) = selected_template {
+        issued
+            .validate_template(template)
+            .map_err(|e| usage(format!("the issued `{template}` capability: {e}"), FIX))?;
     }
     let mut secret = [0u8; 32];
     Entropy::production()

@@ -73,7 +73,7 @@ pub(super) fn check_request(capability: &Capability, request: &SourceUploadReque
             "source metadata needs a registered kind and a bounded, nonempty MIME type",
         )));
     }
-    let grade = fa_journal::upload::upload_grade(&policy, capability.profile())?;
+    let grade = fa_journal::upload::upload_grade(&policy, capability.sod_profile())?;
     if request
         .asserted_grade
         .is_some_and(|asserted| asserted != grade)

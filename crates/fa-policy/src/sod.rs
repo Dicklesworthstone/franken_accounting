@@ -38,6 +38,19 @@ pub struct Party {
     pub profile: Profile,
 }
 
+impl Party {
+    /// Construct a `Party` for SoD evaluation from `principal` and `capability`,
+    /// using [`Capability::sod_profile`] so an MCP `Preparer` (`Profile::Human`
+    /// with `OperatorKind::Agent`) is evaluated as `Profile::Agent` (plan §14.4).
+    #[must_use]
+    pub fn for_capability(principal: VId, capability: &Capability) -> Self {
+        Self {
+            principal,
+            profile: capability.sod_profile(),
+        }
+    }
+}
+
 /// One approval, as the kernel witnessed it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Approver {

@@ -3,9 +3,10 @@
 //! the profiles, or any verb cites resolves to this list").
 
 use fa_policy::capability::{
-    CAVEAT_ACCOUNTS, CAVEAT_BOOKS, CAVEAT_BRANCH, CAVEAT_DAILY_ROOT, CAVEAT_DAILY_TOTALS,
-    CAVEAT_EFFECTIVE, CAVEAT_KNOWN_AT, CAVEAT_PERIODS, CAVEAT_POSSESSION, CAVEAT_REDACTION,
-    Capability,
+    CAVEAT_ACCOUNTS, CAVEAT_BOOKS, CAVEAT_BRANCH, CAVEAT_CLASSES, CAVEAT_DAILY_ROOT,
+    CAVEAT_DAILY_TOTALS, CAVEAT_EFFECTIVE, CAVEAT_KNOWN_AT, CAVEAT_OPERATOR_KIND, CAVEAT_PERIODS,
+    CAVEAT_POSSESSION, CAVEAT_REDACTION, CAVEAT_REQUIRES_DRY_RUN, Capability, OperatorKind,
+    ProfileTemplate,
 };
 use fa_policy::denial::{code, exit};
 use fa_policy::{Op, Profile, Steward};
@@ -117,6 +118,9 @@ fn capability_caveats_registry_agrees_with_op_caveat_and_profile_laws() {
         (CAVEAT_POSSESSION, "possession"),
         (CAVEAT_DAILY_TOTALS, "daily_totals"),
         (CAVEAT_DAILY_ROOT, "daily_root"),
+        (CAVEAT_OPERATOR_KIND, "operator_kind"),
+        (CAVEAT_REQUIRES_DRY_RUN, "requires_dry_run"),
+        (CAVEAT_CLASSES, "classes"),
     ] {
         let cav = reg
             .caveat_by_tag(tag)
@@ -125,9 +129,13 @@ fn capability_caveats_registry_agrees_with_op_caveat_and_profile_laws() {
         assert_eq!(cav.encoding, CaveatEncoding::Tagged(tag));
     }
 
-    for profile in &reg.profiles {
+    assert_eq!(reg.profiles.len(), ProfileTemplate::ALL.len());
+    for (template, profile) in ProfileTemplate::ALL.into_iter().zip(&reg.profiles) {
+        assert_eq!(template.name(), profile.name);
         let base = Profile::from_name(&profile.base_profile)
             .unwrap_or_else(|| panic!("unknown base profile `{}`", profile.base_profile));
+        assert_eq!(template.base_profile(), base, "{}", profile.name);
+        assert_eq!(template.is_external(), profile.external, "{}", profile.name);
         let ceiling_ops: Vec<Op> = profile
             .ops_ceiling
             .iter()
@@ -138,12 +146,34 @@ fn capability_caveats_registry_agrees_with_op_caveat_and_profile_laws() {
             .iter()
             .map(|n| Op::from_name(n).unwrap())
             .collect();
+        assert_eq!(template.ops_ceiling(), ceiling_ops.as_slice(), "{}", profile.name);
+        assert_eq!(template.default_ops(), default_ops.as_slice(), "{}", profile.name);
+        assert_eq!(
+            template.required_caveats(),
+            profile
+                .required_caveats
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            "{}",
+            profile.name
+        );
         // Every registered template's ceiling and default op sets construct a valid Capability.
         Capability::new(VId(10), base, &ceiling_ops, VId(1))
             .unwrap_or_else(|e| panic!("profile `{}` ceiling: {e}", profile.name));
         Capability::new(VId(10), base, &default_ops, VId(1))
             .unwrap_or_else(|e| panic!("profile `{}` default_ops: {e}", profile.name));
+        let built = Capability::from_template(VId(10), template, None, VId(1)).unwrap();
+        assert_eq!(built.operator_kind(), template.default_operator_kind());
     }
+    let mcp_prep = Capability::from_template(VId(10), ProfileTemplate::Preparer, None, VId(1))
+        .unwrap()
+        .with_operator_kind(OperatorKind::Agent)
+        .unwrap();
+    assert_eq!(mcp_prep.profile(), Profile::Human);
+    assert_eq!(mcp_prep.operator_kind(), OperatorKind::Agent);
+    assert_eq!(mcp_prep.sod_profile(), Profile::Agent);
 }
 
 #[test]
@@ -653,5 +683,137 @@ fn steward_authority_graph_sod_dominator_and_min_cut_detects_planted_bypass() {
                 target_close
             ],
         })
+    );
+}
+
+#[test]
+fn profile_templates_matrix_and_caveat_round_trip() {
+    use fa_model::{EntryClass, Id128};
+    use fa_policy::{Approver, CapabilityError, Party};
+    use fgdb_types::CommitSeq;
+
+    let holder = VId(77);
+    let issuer = VId(1);
+    let book = Id128([9; 16]);
+
+    // 1. Matrix across all 10 templates x all 21 ops + required caveat validation.
+    for template in ProfileTemplate::ALL {
+        let ceiling = template.ops_ceiling();
+        for op in Op::ALL {
+            let res = Capability::from_template(holder, template, Some(&[op]), issuer);
+            if ceiling.contains(&op) {
+                assert!(res.is_ok(), "{template} should admit `{op}`");
+            } else {
+                assert_eq!(
+                    res,
+                    Err(CapabilityError::TemplateForbiddenOp { template, op }),
+                    "{template} must refuse `{op}`"
+                );
+            }
+        }
+        let mut cap = Capability::from_template(holder, template, None, issuer).unwrap();
+        for &req in template.required_caveats() {
+            if req == "ops" {
+                continue;
+            }
+            assert_eq!(
+                cap.validate_template(template),
+                Err(CapabilityError::MissingTemplateCaveat {
+                    template,
+                    caveat: req
+                }),
+                "{template} missing `{req}`"
+            );
+            cap = match req {
+                "books" => cap.for_books(&[book]).unwrap(),
+                "known_at" => cap.known_at_most(CommitSeq(12)),
+                "redaction" => cap.with_redaction(1).unwrap(),
+                "expires_at" => cap.expiring_at(CommitSeq(100)),
+                other => panic!("unexpected required caveat `{other}`"),
+            };
+        }
+        assert_eq!(cap.validate_template(template), Ok(()), "{template}");
+    }
+
+    // 2. MCP Preparer (`OperatorKind::Agent` on `Profile::Human`): wire round-trip,
+    // monotone attenuation, and SoD `agent_prepared_human_approvers` enforcement.
+    let human_prep =
+        Capability::from_template(holder, ProfileTemplate::Preparer, None, issuer).unwrap();
+    let mcp_prep = human_prep
+        .clone()
+        .with_operator_kind(OperatorKind::Agent)
+        .unwrap();
+    assert_eq!(mcp_prep.profile(), Profile::Human);
+    assert_eq!(mcp_prep.operator_kind(), OperatorKind::Agent);
+    assert_eq!(mcp_prep.sod_profile(), Profile::Agent);
+    let encoded = mcp_prep.canonical_bytes().unwrap();
+    assert_eq!(Capability::decode(&encoded).unwrap(), mcp_prep);
+    assert_ne!(
+        human_prep.commitment().unwrap(),
+        mcp_prep.commitment().unwrap()
+    );
+    assert_eq!(
+        mcp_prep.clone().with_operator_kind(OperatorKind::Human),
+        Err(CapabilityError::BadOperatorKind),
+        "an AI operator capability cannot escalate back to Human"
+    );
+
+    let steward = Steward::embedded().unwrap();
+    let reversal_closed_key = fa_policy::sod::posting_key("Reversal", PeriodState::Closed, false);
+    let approver = Approver {
+        principal: VId(88),
+        profile: Profile::Human,
+        op: Op::Approve,
+    };
+    assert_eq!(
+        steward.segregate(
+            &reversal_closed_key,
+            0,
+            Party::for_capability(holder, &human_prep),
+            &[]
+        ),
+        Ok(()),
+        "Human Preparer does not trigger agent_prepared_human_approvers"
+    );
+    let err = steward
+        .segregate(
+            &reversal_closed_key,
+            0,
+            Party::for_capability(holder, &mcp_prep),
+            &[],
+        )
+        .expect_err("MCP Preparer requires human approver on reversal-closed");
+    assert_eq!(err.code(), "FA-REF-008");
+    assert_eq!(err.kind(), "human_approvers");
+    assert_eq!(
+        steward.segregate(
+            &reversal_closed_key,
+            0,
+            Party::for_capability(holder, &mcp_prep),
+            &[approver]
+        ),
+        Ok(())
+    );
+
+    // 3. `requires_dry_run` and `classes` caveats round-trip and narrow monotonically.
+    let dry_classes = human_prep
+        .with_requires_dry_run()
+        .for_classes(&[EntryClass::ORIGINAL, EntryClass::ADJUSTING])
+        .unwrap();
+    assert!(dry_classes.requires_dry_run());
+    assert!(dry_classes.has_requires_dry_run_caveat());
+    assert!(dry_classes.admits_class(EntryClass::ORIGINAL));
+    assert!(!dry_classes.admits_class(EntryClass::CLOSING));
+    let bytes = dry_classes.canonical_bytes().unwrap();
+    assert_eq!(Capability::decode(&bytes).unwrap(), dry_classes);
+    let narrowed = dry_classes
+        .clone()
+        .for_classes(&[EntryClass::ORIGINAL])
+        .unwrap();
+    assert!(narrowed.admits_class(EntryClass::ORIGINAL));
+    assert!(!narrowed.admits_class(EntryClass::ADJUSTING));
+    assert_eq!(
+        narrowed.for_classes(&[EntryClass::CLOSING]),
+        Err(CapabilityError::BadClasses)
     );
 }

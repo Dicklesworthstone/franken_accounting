@@ -754,6 +754,15 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     if let Err(denial) = policy::payload_reach(&req.capability, book, proposal, scope.as_ref()) {
         return Ok(Err(policy::refusal(&denial)));
     }
+    if matches!(admission, Admission::Commit)
+        && req.capability.has_requires_dry_run_caveat()
+        && req.plan_certificate.is_none()
+    {
+        return Ok(Err(policy::refusal(&fa_policy::Denial::OutOfScope {
+            caveat: "requires_dry_run",
+            value: "a direct commit without a verified plan certificate".into(),
+        })));
+    }
     Ok(Ok(scope))
 }
 
@@ -1943,10 +1952,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         state,
         matches!(resolution, Some((_, Disposition::Posts { .. }))),
     );
-    let preparer = fa_policy::Party {
-        principal: proposal.principal_ref,
-        profile: req.capability.profile(),
-    };
+    let preparer = fa_policy::Party::for_capability(proposal.principal_ref, &req.capability);
     let balancing = proposal
         .extensions
         .iter()

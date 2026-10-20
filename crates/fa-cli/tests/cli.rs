@@ -14571,5 +14571,89 @@ fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<(
     let (code, out, _) = run(&["--token", &token, "draft", "new", "after"]);
     assert_eq!(code, 7, "{out}");
     assert!(out.contains("FA-REF-023"), "{out}");
+
+    // fa-5npo: Auditor profile template requires redaction caveat and pins known_at <= S,
+    // refusing reads at later frontiers.
+    let (code, out, _) = run(&[
+        "capability",
+        "issue",
+        "--holder",
+        "auditor-missing-redaction",
+        "--profile",
+        "auditor",
+        "--out",
+        "auditor-bad.token",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "verify",
+        "--grant",
+        "produce",
+        "--grant",
+        "witness",
+    ]);
+    assert_eq!(
+        code, 2,
+        "Auditor without --redaction must be refused: {out}"
+    );
+    let (_, info, _) = run(&["book", "info"]);
+    let pin_seq = field(&info, "known_at").unwrap_or("1").to_string();
+    let auditor_token = "auditor-pinned.token";
+    let (code, out, _) = run(&[
+        "capability",
+        "issue",
+        "--holder",
+        "auditor-1",
+        "--profile",
+        "auditor",
+        "--op",
+        "read",
+        "--op",
+        "verify",
+        "--op",
+        "produce",
+        "--redaction",
+        "1",
+        "--known-at-most",
+        &pin_seq,
+        "--out",
+        auditor_token,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "verify",
+        "--grant",
+        "produce",
+    ]);
+    assert_eq!(code, 0, "Auditor issuance: {out}");
+    // Post a new entry after the pin, then verify the pinned Auditor token can read at <= pin_seq
+    // and is refused at the new head.
+    write(
+        &dir,
+        "after-pin.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-16","idempotency_key":"after-auditor-pin","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6000","amount":"5.00 USD"}},{{"side":"credit","account":"1000","amount":"5.00 USD"}}]}}"#
+        ),
+    );
+    let (code, out, _) = run(&["post", "--intent", "after-pin.json", "--grant", "post"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out, _) = run(&[
+        "--token",
+        auditor_token,
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &pin_seq,
+    ]);
+    assert_eq!(code, 0, "pinned Auditor reads at pin_seq: {out}");
+    let (code, out, _) = run(&["--token", auditor_token, "tb", "--period", "FY2026-P03"]);
+    assert_eq!(code, 7, "pinned Auditor refused at later head: {out}");
+    assert!(out.contains("FA-REF-011"), "{out}");
+    assert!(out.contains("the token is pinned at <="), "{out}");
     Ok(())
 }

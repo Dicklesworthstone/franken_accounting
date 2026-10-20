@@ -280,6 +280,33 @@ attenuation_law = "preserve_root_commitment"
 summary = "Inherited root issuance commitment for shared daily_totals quota accounting; attenuation never resets a daily ceiling."
 
 [[caveat]]
+tag = 11
+name = "operator_kind"
+encoding = "tagged"
+status = "live"
+payload_type = "u8 operator_kind_tag"
+attenuation_law = "monotone_agent"
+summary = "Operator provenance kind (0 = Human, 1 = Agent); records an AI operator (e.g. MCP Preparer) without weakening Human-profile ops."
+
+[[caveat]]
+tag = 12
+name = "requires_dry_run"
+encoding = "tagged"
+status = "live"
+payload_type = "bool"
+attenuation_law = "monotone_true"
+summary = "Requires rehearsal plan certificate before any write commit."
+
+[[caveat]]
+tag = 13
+name = "classes"
+encoding = "tagged"
+status = "live"
+payload_type = "list(u16 class_tag, ascending)"
+attenuation_law = "subset"
+summary = "Admissible EntryClass subset (classes subset_of EntryClass)."
+
+[[caveat]]
 name = "entities"
 encoding = "planned"
 status = "dormant"
@@ -296,24 +323,6 @@ tracking_bead = "fa-0x0"
 payload_type = "map(str dim, list(str value))"
 attenuation_law = "subset"
 summary = "Dimension-value scope (dimensions subset_of {...})."
-
-[[caveat]]
-name = "classes"
-encoding = "planned"
-status = "dormant"
-tracking_bead = "fa-5npo"
-payload_type = "list(u16 class_tag, ascending)"
-attenuation_law = "subset"
-summary = "Admissible EntryClass subset (classes subset_of EntryClass)."
-
-[[caveat]]
-name = "requires_dry_run"
-encoding = "planned"
-status = "dormant"
-tracking_bead = "fa-5npo"
-payload_type = "bool"
-attenuation_law = "monotone_true"
-summary = "Requires rehearsal plan certificate before any write commit."
 
 # ---------------------------------------------------------------------------
 # Registered profile templates (plan §14.4)

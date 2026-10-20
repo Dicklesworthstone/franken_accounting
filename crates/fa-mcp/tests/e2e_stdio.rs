@@ -3324,5 +3324,68 @@ fn agent_upload_is_self_sourced_and_forged_human_grade_is_refused() {
     );
 
     assert_eq!(mcp.finish(), 0);
+
+    // 6. fa-5npo: MCP Preparer is recorded as an AI operator (`OperatorKind::Agent`),
+    // never a Human: documents uploaded by an MCP Preparer receive `AgentUpload`
+    // and require an independent Human `Reviewed` attestation before posting.
+    let mut mcp_prep = Mcp::start_with(
+        &book,
+        &[
+            "--profile",
+            "preparer",
+            "--principal",
+            "mcp-preparer",
+        ],
+    );
+    mcp_prep.discover();
+    let (err, prep_upload_out, _) = call_tool(
+        &mut mcp_prep,
+        "fa_evidence_import_document",
+        json!({
+            "kind": "Invoice",
+            "mime": "text/plain",
+            "text": "Invoice #2026-888: 40.00 USD"
+        }),
+    );
+    assert!(
+        !err,
+        "MCP Preparer inline upload must succeed: {prep_upload_out}"
+    );
+    let prep_uploaded: JsonValue = fastmcp_rust::serde_json::from_str(&prep_upload_out).unwrap();
+    assert_eq!(
+        prep_uploaded["grade"],
+        json!("AgentUpload"),
+        "MCP Preparer must be recorded as an AI operator (AgentUpload), not HumanUpload"
+    );
+    assert_eq!(prep_uploaded["self_sourced"], json!(true));
+    let prep_oid = prep_uploaded["oid"].as_str().unwrap().to_string();
+    let prep_intent = json!({
+        "class": "Original",
+        "effective_date": "2026-03-15",
+        "description": "MCP Preparer self-uploaded invoice",
+        "idempotency_key": "fa-5npo-mcp-prep-post",
+        "evidence": [prep_oid],
+        "legs": [
+            {"side": "debit", "account": "6100", "amount": "40.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "40.00 USD"}
+        ]
+    });
+    let (err, unreviewed_prep_post, _) = call_tool(
+        &mut mcp_prep,
+        "fa_post_post",
+        json!({
+            "intent": prep_intent,
+            "dry_run": false
+        }),
+    );
+    assert!(
+        err,
+        "MCP Preparer self-uploaded evidence without Human review must be refused: {unreviewed_prep_post}"
+    );
+    assert_eq!(
+        structured_error(&unreviewed_prep_post)["refusal_id"],
+        json!("FA-REF-086")
+    );
+    assert_eq!(mcp_prep.finish(), 0);
 }
 

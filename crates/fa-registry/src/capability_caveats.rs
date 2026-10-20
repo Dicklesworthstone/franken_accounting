@@ -383,6 +383,18 @@ mod tests {
             Some("daily_root")
         );
         assert_eq!(
+            reg.caveat_by_tag(11).map(|c| c.name.as_str()),
+            Some("operator_kind")
+        );
+        assert_eq!(
+            reg.caveat_by_tag(12).map(|c| c.name.as_str()),
+            Some("requires_dry_run")
+        );
+        assert_eq!(
+            reg.caveat_by_tag(13).map(|c| c.name.as_str()),
+            Some("classes")
+        );
+        assert_eq!(
             reg.caveat_by_name("entities").map(|c| c.status),
             Some(CaveatStatus::Dormant)
         );
