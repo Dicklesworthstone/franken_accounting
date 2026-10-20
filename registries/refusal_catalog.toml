@@ -389,7 +389,7 @@ name = "NOT_ORIGINALLY_REPORTED"
 owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §7.4 (AS ORIGINALLY REPORTED pins the first StatementIssuance, else the first Lock; never the first Close)"
-fix = "read the period as currently stated (omit --as-originally-reported), or lock it once it is final: fa period lock {period} --reason AuditComplete --yes"
+fix = "read the period as currently stated (omit --as-originally-reported); record the statements that left the entity with fa statement issue --certificate C:<oid> --for {period} --issued-to <audience>, or lock the period once it is final: fa period lock {period} --reason AuditComplete --yes"
 
 [[refusal]]
 code = "FA-REF-162"
@@ -1012,6 +1012,14 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §13.2 (a document's Bates range in a matter is assigned once and never changes)"
 fix = "produce the document again without --pages or --designation to receive its recorded range, or record the corrected document with fa document add and produce the new document"
+
+[[refusal]]
+code = "FA-REF-172"
+name = "NOT_ISSUABLE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §12.5 (a StatementIssuance names the retained statement certificate it issued, for the period it reports; bead fa-wrrw)"
+fix = "certify the statement first with fa statement balance-sheet|income-statement --for <period> --certify, then issue its C:<oid> for that period"
 
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]

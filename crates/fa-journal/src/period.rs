@@ -320,7 +320,7 @@ pub fn transition_proposal(
     }
 }
 
-fn unknown_period(book: &BookContext, period_code: &str) -> Refusal {
+pub(crate) fn unknown_period(book: &BookContext, period_code: &str) -> Refusal {
     Refusal::new(
         code::PERIOD_UNKNOWN,
         exit::SAFETY,
@@ -1228,16 +1228,26 @@ pub struct OriginallyReported {
     pub period: String,
     /// The known-at sequence every read `AS ORIGINALLY REPORTED` pins.
     pub known_at: CommitSeq,
-    /// The control entry that fixed it: today always the first Lock.
-    pub basis: PeriodTransitionRecord,
+    /// The control entry that fixed it.
+    pub basis: ReportedBasis,
+}
+
+/// What fixed a period's `AS ORIGINALLY REPORTED` coordinate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReportedBasis {
+    /// The period's first `StatementIssuance`: the coordinate is the
+    /// `certified_at` of the certificate it issued.
+    Issuance(Box<crate::issuance::IssuanceRecord>),
+    /// No issuance: the period's first `Lock`, at its recorded sequence.
+    Lock(PeriodTransitionRecord),
 }
 
 /// Where `AS ORIGINALLY REPORTED` pins a period's reads (plan §7.4): the
-/// first `StatementIssuance` of the period and, absent any issuance, its
-/// first `Lock` transition, never its first `Close`, because `Closed`
-/// admits audit adjustments by design. No `StatementIssuance` is journaled
-/// yet (IssueStatements is not an intent), so the first Lock decides; a
-/// period never locked was never reported, which is a refusal, not HEAD.
+/// known-at of the certificate the period's first `StatementIssuance`
+/// issued and, absent any issuance, its first `Lock` transition, never its
+/// first `Close`, because `Closed` admits audit adjustments by design. A
+/// period neither issued nor locked was never reported, which is a refusal,
+/// not HEAD.
 pub fn originally_reported<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1249,6 +1259,13 @@ pub fn originally_reported<V: asupersync::fs::Vfs + Clone>(
     {
         return Ok(Err(unknown_period(book, period_code)));
     }
+    if let Some(first) = crate::issuance::first_issuance(db, book, period_code)? {
+        return Ok(Ok(OriginallyReported {
+            period: period_code.to_string(),
+            known_at: first.issuance.certified_at,
+            basis: ReportedBasis::Issuance(Box::new(first)),
+        }));
+    }
     let first_lock = period_transitions(db, book, period_code)?
         .into_iter()
         .find(|t| t.to == PeriodState::Locked);
@@ -1256,7 +1273,7 @@ pub fn originally_reported<V: asupersync::fs::Vfs + Clone>(
         Some(lock) => Ok(OriginallyReported {
             period: period_code.to_string(),
             known_at: lock.recorded_at,
-            basis: lock,
+            basis: ReportedBasis::Lock(lock),
         }),
         None => Err(Refusal::new(
             code::NOT_ORIGINALLY_REPORTED,
@@ -1266,7 +1283,7 @@ pub fn originally_reported<V: asupersync::fs::Vfs + Clone>(
             ),
             "plan §7.4 (AS ORIGINALLY REPORTED pins the first StatementIssuance, else the first Lock; never the first Close)",
             format!(
-                "read the period as currently stated (omit --as-originally-reported), or lock it once it is final: fa period lock {period_code} --reason AuditComplete --yes"
+                "read the period as currently stated (omit --as-originally-reported); record the statements that left the entity with `fa statement issue --certificate C:<oid> --for {period_code} --issued-to <audience>`, or lock the period once it is final: fa period lock {period_code} --reason AuditComplete --yes"
             ),
         )),
     })

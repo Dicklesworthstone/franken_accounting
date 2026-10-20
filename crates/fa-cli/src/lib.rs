@@ -27,6 +27,7 @@ mod finding;
 mod fx;
 mod intake;
 mod intake_provenance;
+mod issuance;
 pub mod json;
 pub mod lease;
 mod migration_import;

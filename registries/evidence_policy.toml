@@ -347,3 +347,12 @@ class = "ProductionControl"
 requirement = "control_record"
 min_documents = 0
 kinds = "any"
+
+# A statement issuance (fa-wrrw) cites its optional transmittal document as
+# its proof ref, a document this book holds, verified at commit; what it
+# issued is the retained certificate the record names.
+[[minimum]]
+class = "IssuanceControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"

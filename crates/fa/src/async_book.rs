@@ -969,6 +969,193 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, context| Ok(fa_journal::list_drafts(db, context)?))
     }
 
+    /// The issuance `certificate` records for `period` to `issued_to` (plan
+    /// §12.5, bead fa-wrrw), judged after `close` and whole-book `read` are
+    /// admitted (doctrine 8): the certificate must be retained in this book
+    /// and be a trunk statement certificate whose columns report `period`,
+    /// which may be omitted when it reports exactly one. The ordinal is
+    /// assigned when the issuance is planned.
+    async fn statement_issuance(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        certificate: &[u8; 32],
+        period: Option<&str>,
+        issued_to: fa_journal::IssuedTo,
+        document: Option<fa_model::Oid>,
+    ) -> Outcome<fa_journal::StatementIssuance> {
+        use fa_journal::issuance::not_issuable;
+        if let Err(r) = self.query(cx, |db, book| {
+            Ok(fa_journal::issuance::admit(db, book, capability)?)
+        })? {
+            return Ok(Err(r));
+        }
+        let artifact = match self
+            .read_report_artifact(cx, capability.holder(), capability, certificate)
+            .await?
+        {
+            Ok(artifact) => artifact,
+            Err(r) => return Ok(Err(r)),
+        };
+        let digest = fa_journal::evidence::hex(certificate);
+        if artifact.family() != crate::ReportArtifactFamily::Native {
+            return Ok(Err(not_issuable(format!(
+                "certificate {digest} is a {} certificate; only a statement certificate is issued",
+                artifact.family().name()
+            ))));
+        }
+        let source = artifact.source_certificate();
+        let crate::ReportSelection::Statement(selection) = &source.selection else {
+            return Ok(Err(not_issuable(format!(
+                "certificate {digest} certifies a {} report, not a statement",
+                source.selection.output_format()
+            ))));
+        };
+        if source.book_id != self.context.book_id || source.branch_id != fa_model::Id128::TRUNK {
+            return Ok(Err(not_issuable(format!(
+                "certificate {digest} does not certify this book's trunk"
+            ))));
+        }
+        let period = match (period, selection.periods.as_slice()) {
+            (Some(p), periods) if periods.iter().any(|q| q == p) => p.to_string(),
+            (Some(p), periods) => {
+                return Ok(Err(not_issuable(format!(
+                    "certificate {digest} reports {}, not period `{p}` (a comparative column is not what a statement reports)",
+                    periods.join(", ")
+                ))));
+            }
+            (None, [only]) => only.clone(),
+            (None, periods) => {
+                return Ok(Err(not_issuable(format!(
+                    "certificate {digest} reports {} periods ({}); name the one issued with --for",
+                    periods.len(),
+                    periods.join(", ")
+                ))));
+            }
+        };
+        let definition = &selection.definition;
+        Ok(Ok(fa_journal::StatementIssuance {
+            book_id: self.context.book_id,
+            period,
+            ordinal: 0,
+            definition_digest: definition
+                .digest()
+                .map_err(|e| BookError::Kernel(e.into()))?,
+            definition_name: definition.name().to_string(),
+            definition_version: definition.version(),
+            certificate: *certificate,
+            certified_at: source.known_at,
+            issued_to,
+            document,
+        }))
+    }
+
+    /// Plan the issuance of the retained statement certificate `certificate`
+    /// for `period` to `issued_to` (plan §12.5, Appendix B `IssueStatements`,
+    /// bead fa-wrrw): the period's next ordinal and a once-sealed
+    /// description. Nothing is written; an approver who is not the planner
+    /// approves the plan's proposal digest, and [`Self::issue_statements`]
+    /// commits the same plan.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn plan_statement_issuance(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        certificate: &[u8; 32],
+        period: Option<&str>,
+        issued_to: fa_journal::IssuedTo,
+        document: Option<fa_model::Oid>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::IssuancePlan> {
+        let issuance = match self
+            .statement_issuance(cx, capability, certificate, period, issued_to, document)
+            .await?
+        {
+            Ok(issuance) => issuance,
+            Err(r) => return Ok(Err(r)),
+        };
+        let description = self.seal_text(
+            cx,
+            &format!(
+                "issue {} for {} to {}",
+                issuance.definition_name,
+                issuance.period,
+                issued_to.name()
+            ),
+        )?;
+        self.query(cx, |db, book| {
+            Ok(fa_journal::plan_issuance(
+                db,
+                book,
+                capability,
+                issuance,
+                effective_date,
+                idempotency_key,
+                description,
+            )?)
+        })
+    }
+
+    /// Commit `plan` under `capability` and `approvals` (plan §12.5, bead
+    /// fa-wrrw). The plan's issuance is derived again from its certificate
+    /// first, so a plan that names a certificate, coordinate or definition
+    /// the certificate does not hold is refused before the kernel sees it.
+    pub async fn issue_statements(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        plan: fa_journal::IssuancePlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<fa_journal::StatementsIssued> {
+        let planned = &plan.issuance;
+        let mut derived = match self
+            .statement_issuance(
+                cx,
+                capability,
+                &planned.certificate,
+                Some(&planned.period),
+                planned.issued_to,
+                planned.document,
+            )
+            .await?
+        {
+            Ok(issuance) => issuance,
+            Err(r) => return Ok(Err(r)),
+        };
+        derived.ordinal = planned.ordinal;
+        if &derived != planned {
+            return Ok(Err(fa_journal::issuance::not_issuable(format!(
+                "the plan's issuance does not match certificate {}: it states another definition or coordinate",
+                fa_journal::evidence::hex(&planned.certificate)
+            ))));
+        }
+        Ok(fa_journal::issue_statements(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            plan,
+            approvals,
+        )
+        .await?)
+    }
+
+    /// Every statement issuance of `period`, by ordinal, or of the book, by
+    /// period then ordinal.
+    pub fn statement_issuances(
+        &self,
+        cx: &PurposeContexts,
+        period: Option<&str>,
+    ) -> Result<Vec<fa_journal::IssuanceRecord>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(match period {
+                Some(period) => fa_journal::issuances(db, book, period)?,
+                None => fa_journal::list_issuances(db, book)?,
+            })
+        })
+    }
+
     fn production_request(
         &self,
         cx: &PurposeContexts,

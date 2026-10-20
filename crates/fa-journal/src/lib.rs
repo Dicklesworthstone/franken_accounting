@@ -33,6 +33,7 @@ pub mod finding_history;
 pub mod fx;
 pub mod genesis;
 pub mod import;
+pub mod issuance;
 pub mod legal_hold;
 pub mod limit;
 pub mod migration;
@@ -98,6 +99,10 @@ pub use import::{
     decode_derivation, decode_extraction_derivation, document_sources, encode_derivation,
     encode_extraction_derivation, import_run, verify_receipt, verify_receipt_in,
 };
+pub use issuance::{
+    IssuancePlan, IssuanceRecord, IssuedTo, StatementIssuance, StatementsIssued, first_issuance,
+    issuances, issue_statements, list_issuances, plan_issuance,
+};
 pub use legal_hold::{
     LegalHold, LegalHoldPlaced, LegalHoldReleased, LegalHoldRequest, Pinned, ReleasePlan,
     active_legal_holds, place_legal_hold, plan_release, read_legal_hold, release_legal_hold,
@@ -113,9 +118,9 @@ pub use migration::{
 };
 pub use period::{
     OriginallyReported, PeriodCheck, PeriodTransitionRecord, PeriodVerification,
-    PreparedTransition, TransitionPlan, Transitioned, originally_reported, period_transitions,
-    plan_transition, prepare_transition, transition_name, transition_period, transition_proposal,
-    verify_periods,
+    PreparedTransition, ReportedBasis, TransitionPlan, Transitioned, originally_reported,
+    period_transitions, plan_transition, prepare_transition, transition_name, transition_period,
+    transition_proposal, verify_periods,
 };
 pub use period_history::{PeriodHistoryVerification, verify_periods_with_history};
 pub use plan::{
