@@ -371,7 +371,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .map(|account| VId(account.id))
             .collect();
         let units: BTreeSet<_> = source.units().iter().copied().collect();
-        let income_selection = ReportSelection::Statement(crate::StatementSelection {
+        let income_selection = ReportSelection::Statement(Box::new(crate::StatementSelection {
             definition: match crate::StatementDefinition::decode(
                 &original.income().definition_bytes,
             ) {
@@ -380,7 +380,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             },
             periods: certificate.income_periods().to_vec(),
             comparative: Vec::new(),
-        });
+        }));
         let income = ReportOutput::Statement(Box::new(original.income().clone()));
         let later_entries = match self.later_artifact_entries(
             cx,
