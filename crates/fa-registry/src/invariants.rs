@@ -1008,8 +1008,8 @@ mod tests {
             (
                 "shipped capability depends on dormant clause",
                 good.replacen(
-                    "replay = [\"FA-INV-11.core\"]",
-                    "replay = [\"FA-INV-11.report-replay\"]",
+                    "replay = [\"FA-INV-11.core\", \"FA-INV-11.report-replay\"]",
+                    "replay = [\"FA-INV-05.by-reference-downgrade\"]",
                     1,
                 ),
             ),

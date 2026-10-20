@@ -37,12 +37,28 @@ python3 - "$jsonl" "$wip_limit" "$hours" "$json_mode" "$recent_commits" <<'PY'
 import json
 import sys
 from collections import defaultdict
+from datetime import datetime, timezone, timedelta
 
 jsonl_path = sys.argv[1]
 wip_limit = int(sys.argv[2])
 hours = int(sys.argv[3])
 json_mode = int(sys.argv[4]) == 1
 recent_commits = sys.argv[5]
+
+cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+def is_older_than_cutoff(ts_str: str) -> bool:
+    if not ts_str:
+        return True
+    try:
+        s = ts_str.rstrip("Z")
+        if "." in s:
+            head, frac = s.split(".", 1)
+            s = f"{head}.{frac[:6]}"
+        dt = datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+        return dt < cutoff
+    except Exception:
+        return True
 
 in_progress = []
 by_agent = defaultdict(list)
@@ -55,13 +71,14 @@ with open(jsonl_path, "r", encoding="utf-8") as f:
         row = json.loads(line)
         if row.get("status") == "in_progress":
             bid = row.get("id", "")
-            assignee = row.get("assignee") or row.get("owner") or "unassigned"
+            assignee = row.get("assignee") or "unassigned"
             in_progress.append((bid, assignee, row.get("updated_at", "")))
-            by_agent[assignee].append(bid)
+            if assignee != "unassigned":
+                by_agent[assignee].append(bid)
 
 stale = []
 for bid, assignee, updated_at in in_progress:
-    if bid and bid not in recent_commits:
+    if bid and bid not in recent_commits and is_older_than_cutoff(updated_at):
         stale.append({"id": bid, "assignee": assignee, "updated_at": updated_at})
 
 wip_violations = []
