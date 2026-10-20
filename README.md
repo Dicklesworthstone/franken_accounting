@@ -582,8 +582,16 @@ A governed document (a bank statement) that the producer can see only through
 its redacted view is listed as `REDACTED`, with its contract, and ships no
 bytes. The default key is the request itself: running the identical command
 again returns the recorded production, and it can write the same volume into
-another new directory. EDRM XML, the privilege log and the `.fab` bundle with
-its FRE 902(13)/(14) package are not written yet (`fa-6l9`).
+another new directory.
+
+The volume's `PRIVILEGE_LOG.md` has two kinds of row. The first is each
+produced document whose redacted view withholds bytes. The second is each
+document withheld in full with `--withhold <oid>`; that document is never
+produced and takes no Bates number. `--privilege <claims.json>` states each
+claim's date, author, recipients, description and basis. A withheld document
+must have a claim. A redacted row without a claim states no date. Claims are
+checked before anything is journaled. EDRM XML and the `.fab` bundle with its
+FRE 902(13)/(14) package are not written yet (`fa-6l9`).
 
 ### Exact arithmetic available now
 

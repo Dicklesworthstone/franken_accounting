@@ -225,6 +225,7 @@ fn a_production_journals_continuing_bates_numbers_and_writes_its_volume() {
         vec![
             "VOL001.dat",
             "VOL001.opt",
+            "PRIVILEGE_LOG.md",
             "NATIVES/ACME-SEC-00000001.txt",
             "NATIVES/ACME-SEC-00000004.txt"
         ]
@@ -422,6 +423,15 @@ fn a_governed_source_is_listed_redacted_unless_the_producer_reveals_it() {
     let dat = std::fs::read_to_string(format!("{out}/VOL001.dat")).expect("dat");
     assert!(dat.contains("statement-account-block"), "{dat}");
     assert!(!dat.contains("BANK-123"), "{dat}");
+    // The redaction is logged; no claim states its date, so none is shown.
+    let logged = rows(data(&produced), "privilege_log");
+    assert_eq!(logged.len(), 1, "{}", produced.render());
+    assert_eq!(logged[0].get("date"), Some(&Json::Null));
+    assert_eq!(text(&logged[0], "bates"), "M1-00000001..=M1-00000001");
+    assert!(text(&logged[0], "treatment").starts_with("REDACTED_IN_PART(contract=1"));
+    let log = std::fs::read_to_string(format!("{out}/PRIVILEGE_LOG.md")).expect("log");
+    assert!(log.contains("| UNSPECIFIED |"), "{log}");
+    assert!(!log.contains("1970-01-01"), "{log}");
 
     // The owner who holds privileged produces the same range with its native.
     let revealed_out = f.path("revealed");
@@ -599,4 +609,204 @@ fn refused_productions_journal_nothing_and_create_no_volume() {
     }
     assert_eq!(head(&f.book), before_later);
     assert_ne!(before, before_later, "the later document was recorded");
+}
+
+#[test]
+fn withheld_documents_and_claims_fill_the_privilege_log_and_are_checked_before_journaling() {
+    let f = Fixture::new();
+    let invoice = f.document("invoice.txt", "INVOICE 7", "Invoice");
+    let memo = f.document("memo.txt", "PRIVILEGED LEGAL MEMO", "Invoice");
+    let statement = f.document(
+        "statement.csv",
+        "date,amount,reference\n2026-03-02,100.00,BANK-9\n",
+        "BankStatement",
+    );
+    ok(
+        &f.book,
+        &["document", "redact", &statement, "--grant", "privileged"],
+    );
+    ok(
+        &f.book,
+        &["production", "open", "M-1", "--bates-prefix", "M1"],
+    );
+    let claims = f.dir.join("claims.json");
+    std::fs::write(
+        &claims,
+        format!(
+            r#"[{{"document": "{memo}", "date": "2026-02-01", "author": "Outside Counsel", "recipients": ["CFO", "GC"], "description": "Legal advice on the March accrual", "basis": "Attorney-client privilege"}},
+{{"document": "{statement}", "date": "2026-03-05", "author": "First Bank", "description": "Account statement", "basis": "Account numbers redacted under the protective order"}}]"#
+        ),
+    )
+    .expect("claims");
+    let claims = claims.display().to_string();
+    let out = f.path("vol");
+    let produced = ok(
+        &f.book,
+        &[
+            "produce",
+            "--matter",
+            "M-1",
+            "--document",
+            &invoice,
+            "--document",
+            &statement,
+            "--withhold",
+            &memo,
+            "--privilege",
+            &claims,
+            "--out",
+            &out,
+        ],
+    );
+    // The withheld memo is numbered by no range and never produced.
+    assert_eq!(
+        spans(&produced),
+        vec![
+            (
+                invoice.clone(),
+                "M1-00000001".into(),
+                "M1-00000001".into(),
+                true
+            ),
+            (
+                statement.clone(),
+                "M1-00000002".into(),
+                "M1-00000002".into(),
+                true
+            ),
+        ]
+    );
+    let logged = rows(data(&produced), "privilege_log");
+    assert_eq!(logged.len(), 2, "{}", produced.render());
+    let row = |oid: &str| {
+        logged
+            .iter()
+            .find(|r| text(r, "document") == oid)
+            .expect("a privilege row for the document")
+    };
+    assert_eq!(row(&memo).get("bates"), Some(&Json::Null));
+    assert_eq!(text(row(&memo), "treatment"), "WITHHELD_IN_FULL");
+    assert_eq!(text(row(&memo), "date"), "2026-02-01");
+    assert_eq!(text(row(&statement), "bates"), "M1-00000002..=M1-00000002");
+    assert!(text(row(&statement), "treatment").starts_with("REDACTED_IN_PART(contract=1"));
+    assert_eq!(text(row(&statement), "author"), "First Bank");
+    let log = std::fs::read_to_string(format!("{out}/PRIVILEGE_LOG.md")).expect("log");
+    assert!(log.contains("| WITHHELD |"), "{log}");
+    assert!(log.contains("Attorney-client privilege"), "{log}");
+    assert!(log.contains("CFO; GC"), "{log}");
+    assert!(log.contains("2026-03-05"), "{log}");
+    let dat = std::fs::read_to_string(format!("{out}/VOL001.dat")).expect("dat");
+    assert!(
+        !dat.contains(&memo),
+        "a withheld document is not in the load file"
+    );
+    let natives: Vec<String> = std::fs::read_dir(Path::new(&out).join("NATIVES"))
+        .expect("natives")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        natives,
+        vec!["M1-00000001.txt".to_string()],
+        "only the invoice ships bytes"
+    );
+
+    // Every bad claim is refused before anything is journaled.
+    let before = head(&f.book);
+    let unclaimed = f.dir.join("unclaimed.json");
+    std::fs::write(&unclaimed, "[]").expect("empty claims");
+    let full = f.dir.join("full.json");
+    std::fs::write(
+        &full,
+        format!(
+            r#"[{{"document": "{invoice}", "date": "2026-02-01", "author": "A", "description": "D", "basis": "B"}}]"#
+        ),
+    )
+    .expect("claim on a full document");
+    let typo = f.dir.join("typo.json");
+    std::fs::write(
+        &typo,
+        format!(
+            r#"[{{"document": "{memo}", "date": "2026-02-01", "author": "A", "descripton": "D", "basis": "B"}}]"#
+        ),
+    )
+    .expect("typo claim");
+    let later = f.document("later.txt", "LATER", "Invoice");
+    let before_later = head(&f.book);
+    assert_ne!(before, before_later);
+    let refusals: Vec<(Vec<String>, i32)> = vec![
+        // withheld without a claim
+        (
+            vec![
+                "--withhold".into(),
+                memo.clone(),
+                "--privilege".into(),
+                unclaimed.display().to_string(),
+            ],
+            2,
+        ),
+        // a claim on a document produced in full
+        (vec!["--privilege".into(), full.display().to_string()], 2),
+        // produced and withheld at once
+        (
+            vec![
+                "--withhold".into(),
+                later.clone(),
+                "--privilege".into(),
+                claims.clone(),
+            ],
+            2,
+        ),
+        // an unknown field
+        (
+            vec![
+                "--withhold".into(),
+                memo.clone(),
+                "--privilege".into(),
+                typo.display().to_string(),
+            ],
+            2,
+        ),
+    ];
+    for (i, (extra, exit)) in refusals.into_iter().enumerate() {
+        let out = f.path(&format!("refused-{i}"));
+        let mut args = vec![
+            "produce".to_string(),
+            "--matter".into(),
+            "M-1".into(),
+            "--document".into(),
+            later.clone(),
+            "--out".into(),
+            out.clone(),
+        ];
+        args.extend(extra);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (status, output) = run(&f.book, &args);
+        assert_eq!(status, exit, "case {i}: {}", output.render());
+        assert!(!Path::new(&out).exists(), "case {i}");
+    }
+    refused(
+        &f.book,
+        &[
+            "produce",
+            "--matter",
+            "M-1",
+            "--document",
+            &later,
+            "--withhold",
+            &"cd".repeat(32),
+            "--privilege",
+            &claims,
+            "--out",
+            &f.path("refused-unknown"),
+        ],
+        3,
+        "FA-REF-081",
+    );
+    assert_eq!(
+        head(&f.book),
+        before_later,
+        "no refused production journaled"
+    );
+    let shown = ok(&f.book, &["production", "show", "M-1"]);
+    assert_eq!(rows(data(&shown), "ranges").len(), 2);
 }

@@ -2088,7 +2088,8 @@ enum HostPath {
     /// A new file the command writes; its leaf may not exist yet.
     Output,
     /// Content a flag reads from the file (`--intent`, `--plan`, `--policy`,
-    /// `--file`, `--replace-with`, `--issuer-token`).
+    /// `--audited`, `--file`, `--replace-with`, `--issuer-token`,
+    /// `--privilege`).
     Content,
     /// A review event read from the file.
     Review,
@@ -2130,6 +2131,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--file",
         "--replace-with",
         "--issuer-token",
+        "--privilege",
     ] {
         for value in args.flag_all(flag) {
             if value != "-" {

@@ -185,6 +185,9 @@ pub use procedure_certificate::{
     CERTIFIABLE_PROCEDURES, CertifiedProcedure, MAX_PROCEDURE_CERTIFICATE_BYTES,
     PROCEDURE_CERTIFICATE_FORMAT, PROCEDURE_OUTPUT_FORMAT, ProcedureCertificate, ProcedureRequest,
 };
+pub use production::{
+    DEFAULT_VOLUME as DEFAULT_PRODUCTION_VOLUME, PrivilegeClaims, PrivilegeEntry, ProductionVolume,
+};
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use report_artifact::{
@@ -199,7 +202,6 @@ pub use scenario::{
     CertifiedScenarioDiff, SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT,
     ScenarioBook, ScenarioDiff, ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
 };
-pub use production::{DEFAULT_VOLUME as DEFAULT_PRODUCTION_VOLUME, ProductionVolume};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,

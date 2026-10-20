@@ -18,7 +18,8 @@ use crate::cli::{Ctx, Fail, control_date, hex, usage, write_new_output_file};
 use crate::json::{Json, obj, s};
 
 const OPEN_EXAMPLE: &str = "fa production open <matter> --bates-prefix <PREFIX> [--start <n>] [--load-file dat] [--protective-order <oid>] --json";
-const PRODUCE_EXAMPLE: &str = "fa produce --matter <matter> --document <oid>[:pages[:designation]]... --out <new-dir> [--volume VOL001] --json";
+const PRODUCE_EXAMPLE: &str = "fa produce --matter <matter> --document <oid>[:pages[:designation]]... --out <new-dir> [--withhold <oid>]... [--privilege <claims.json>] [--volume VOL001] --json";
+const PRIVILEGE_EXAMPLE: &str = "--privilege claims.json: [{\"document\": \"<oid>\", \"date\": \"YYYY-MM-DD\", \"author\": \"...\", \"recipients\": [\"...\"], \"description\": \"...\", \"basis\": \"Attorney-client privilege\"}]";
 /// The designation names `--document` accepts, by tag (Appendix A).
 const DESIGNATIONS: [&str; 4] = ["none", "confidential", "aeo", "highly-confidential"];
 
@@ -372,6 +373,76 @@ fn parse_document(text: &str) -> Result<ProducedDocument, Fail> {
     })
 }
 
+/// `--withhold <oid>` (repeatable) and `--privilege <file.json>`: the
+/// documents withheld in full and each claim's metadata.
+fn parse_claims(ctx: &Ctx<'_>, args: &Args) -> Result<fa::PrivilegeClaims, Fail> {
+    let mut claims = fa::PrivilegeClaims::default();
+    for text in args.flag_all("--withhold") {
+        claims
+            .withheld
+            .push(Oid(crate::document::hex32(text, "--withhold")?));
+    }
+    let Some(path) = one_flag(args, "--privilege", PRODUCE_EXAMPLE)? else {
+        return Ok(claims);
+    };
+    let text = ctx.files.read_text(path)?;
+    let doc = crate::cli::parse_json(path, &text)?;
+    let bad = |what: String| usage(format!("--privilege {path}: {what}"), PRIVILEGE_EXAMPLE);
+    let Json::Arr(rows) = doc else {
+        return Err(bad("expected a JSON array of claims".into()));
+    };
+    for (i, row) in rows.iter().enumerate() {
+        let Json::Obj(fields) = row else {
+            return Err(bad(format!("claim {i} is not an object")));
+        };
+        if let Some((key, _)) = fields.iter().find(|(k, _)| {
+            !matches!(
+                k.as_str(),
+                "document" | "date" | "author" | "recipients" | "description" | "basis"
+            )
+        }) {
+            return Err(bad(format!("claim {i} has an unknown field `{key}`")));
+        }
+        let text_field = |key: &str| -> Result<&str, Fail> {
+            row.get(key)
+                .and_then(Json::as_str)
+                .ok_or_else(|| bad(format!("claim {i} needs a string `{key}`")))
+        };
+        let document = Oid(crate::document::hex32(
+            text_field("document")?,
+            "--privilege document",
+        )?);
+        let date = fa_time::DateDay::parse(text_field("date")?)
+            .map_err(|e| bad(format!("claim {i}: date: {e}")))?;
+        let recipients = match row.get("recipients") {
+            None | Some(Json::Null) => Vec::new(),
+            Some(Json::Arr(items)) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| bad(format!("claim {i}: each recipient is a string")))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => return Err(bad(format!("claim {i}: recipients is an array of strings"))),
+        };
+        let entry = fa::PrivilegeEntry {
+            date,
+            author: text_field("author")?.to_string(),
+            recipients,
+            description: text_field("description")?.to_string(),
+            basis: text_field("basis")?.to_string(),
+        };
+        if claims.metadata.insert(document, entry).is_some() {
+            return Err(bad(format!(
+                "claim {i} names document {} a second time",
+                hex(&document.0)
+            )));
+        }
+    }
+    Ok(claims)
+}
+
 /// `fa produce`: journal the Bates numbers, then write the volume into a
 /// new directory. The directory is refused before anything is journaled,
 /// and the default key is the request itself, so re-running the identical
@@ -423,6 +494,7 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         }
     };
+    let claims = parse_claims(ctx, args)?;
     let capability = ctx.capability(args, &["read", "produce"])?;
     let mut book = ctx.books.open(args)?;
     let target = ctx.files.resolve(out);
@@ -433,11 +505,13 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let date = control_date(args, &book)?;
-    // Every document's read is judged before the numbers are journaled.
+    // Every document's read and every claim are judged before the numbers
+    // are journaled.
     let (produced, volume) = book.produce_volume(
         &capability,
         matter,
         documents,
+        &claims,
         &volume,
         date,
         key.as_bytes(),
@@ -456,6 +530,10 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         (
             format!("{}.opt", volume.volume),
             volume.opt.clone().into_bytes(),
+        ),
+        (
+            "PRIVILEGE_LOG.md".to_string(),
+            volume.privilege_log.to_markdown().into_bytes(),
         ),
     ];
     if !volume.natives.is_empty() {
@@ -508,6 +586,27 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ])
         })
         .collect();
+    let privilege_log: Vec<Json> = volume
+        .privilege_log
+        .rows
+        .iter()
+        .map(|row| {
+            obj(vec![
+                ("document", s(hex(&row.document_oid.0))),
+                ("doc_commit", s(hex(&row.doc_commit))),
+                ("bates", row.bates_range.as_deref().map_or(Json::Null, s)),
+                ("date", row.date.map_or(Json::Null, |d| s(d.render()))),
+                ("author", s(&row.author)),
+                (
+                    "recipients",
+                    Json::Arr(row.recipients.iter().map(s).collect()),
+                ),
+                ("description", s(&row.description)),
+                ("basis", s(&row.basis)),
+                ("treatment", s(row.treatment.label())),
+            ])
+        })
+        .collect();
     let assigned = produced.ranges.iter().filter(|r| r.assigned).count();
     let (record, recorded_at) = produced
         .record
@@ -523,6 +622,7 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("volume", s(&volume.volume)),
             ("out", s(out)),
             ("ranges", Json::Arr(ranges)),
+            ("privilege_log", Json::Arr(privilege_log)),
             ("files", Json::Arr(written)),
         ],
         &format!(
