@@ -2082,8 +2082,9 @@ enum HostPath {
     /// An input file of `fa document import run`.
     ImportRun,
     /// An input file: a positional chart, account, party, instrument, entity,
-    /// statement, document or certificate, or a statement certificate flag
-    /// (`--before-certificate`, `--after-certificate`, `--from-diff`).
+    /// statement, document or certificate, or a saved-certificate source flag
+    /// (`--before-certificate`, `--after-certificate`, `--from-diff`,
+    /// `--from-source`, `--aging-certificate`, `--control-certificate`).
     Input,
 }
 
@@ -2122,7 +2123,14 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
             }
         }
     }
-    for flag in ["--before-certificate", "--after-certificate", "--from-diff"] {
+    for flag in [
+        "--before-certificate",
+        "--after-certificate",
+        "--from-diff",
+        "--from-source",
+        "--aging-certificate",
+        "--control-certificate",
+    ] {
         for value in args.flag_all(flag) {
             let digits = value.strip_prefix("C:").unwrap_or(value);
             let retained = digits.len() == 64 && digits.bytes().all(|b| b.is_ascii_hexdigit());
@@ -12812,11 +12820,100 @@ fn aging_reconciliation_rows(
         .collect()
 }
 
+const AGING_SOURCES_EXAMPLE: &str = "fa gl aging --from-source C:<open-items-oid> --as-of YYYY-MM-DD --certify --json, or fa gl aging --reconcile --account <code> --as-of YYYY-MM-DD --as-known-at <seq> --aging-certificate C:<oid> --control-certificate C:<tb-as-of-oid> --certify --json";
+
+/// `--from-source`, then the `--aging-certificate`/`--control-certificate` pair.
+type AgingSources<'a> = (Option<&'a str>, Option<(&'a str, &'a str)>);
+
+/// `gl aging` from saved certificates: `--from-source` ages one retained
+/// open-items certificate; `--aging-certificate` with `--control-certificate`
+/// reconciles (one leaf or a portfolio) from retained aging and as-of trial
+/// balance certificates. The other flags state the recipient's question, and
+/// each source is reused byte-for-byte, so each form certifies.
+fn aging_source_flags(
+    args: &Args,
+    certify: bool,
+    reconcile: bool,
+) -> Result<AgingSources<'_>, Fail> {
+    for flag in [
+        "--from-source",
+        "--aging-certificate",
+        "--control-certificate",
+    ] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("{flag} may be supplied only once"),
+                AGING_SOURCES_EXAMPLE,
+            ));
+        }
+    }
+    let from_source = args.flag("--from-source");
+    let saved_pair = match (
+        args.flag("--aging-certificate"),
+        args.flag("--control-certificate"),
+    ) {
+        (None, None) => None,
+        (Some(aging), Some(control)) => Some((aging, control)),
+        _ => {
+            return Err(usage(
+                "a reconciliation from saved sources needs both --aging-certificate and --control-certificate",
+                AGING_SOURCES_EXAMPLE,
+            ));
+        }
+    };
+    if from_source.is_none() && saved_pair.is_none() {
+        return Ok((None, None));
+    }
+    if !certify {
+        return Err(usage(
+            "aging from saved certificates retains a new certificate over them; add --certify or --certificate-out",
+            AGING_SOURCES_EXAMPLE,
+        ));
+    }
+    if from_source.is_some() && (reconcile || saved_pair.is_some()) {
+        return Err(usage(
+            "--from-source ages one saved open-items certificate; a reconciliation takes --aging-certificate and --control-certificate",
+            AGING_SOURCES_EXAMPLE,
+        ));
+    }
+    if saved_pair.is_some() && !reconcile {
+        return Err(usage(
+            "--aging-certificate and --control-certificate are the sources of --reconcile",
+            AGING_SOURCES_EXAMPLE,
+        ));
+    }
+    if from_source.is_some() && args.flag("--as-known-at").is_some() {
+        return Err(usage(
+            "--from-source fixes the recorded prefix; --as-known-at does not select it",
+            AGING_SOURCES_EXAMPLE,
+        ));
+    }
+    if saved_pair.is_some()
+        && args
+            .flag("--as-known-at")
+            .and_then(|seq| seq.parse::<u64>().ok())
+            .is_none()
+    {
+        return Err(usage(
+            "a reconciliation from saved sources states the recipient's fixed --as-known-at <seq>, never HEAD or an instant",
+            AGING_SOURCES_EXAMPLE,
+        ));
+    }
+    if saved_pair == Some(("-", "-")) {
+        return Err(usage(
+            "only one certificate can arrive on stdin",
+            "pass the other certificate as its C:<oid> or its saved file",
+        ));
+    }
+    Ok((from_source, saved_pair))
+}
+
 /// `gl aging --reconcile` over every posting leaf or a selected list: one
 /// chart, one whole-book aging fold and one control trial balance at a single
 /// coordinate (plan §5.6–§5.7). Unselected leaves are listed as uncovered,
 /// never printed as zero. This is an internal consistency report, not a close
-/// permit or an external subledger attestation.
+/// permit or an external subledger attestation. With `saved`, the aging and
+/// control sources are retained certificates reused byte-for-byte.
 #[allow(clippy::too_many_arguments)]
 fn gl_aging_portfolio(
     out: &Out,
@@ -12827,8 +12924,14 @@ fn gl_aging_portfolio(
     capability: &Capability,
     certify: bool,
     request: AgingPortfolioRequest,
+    saved: Option<&(fa::AgingCertificate, fa::ReportCertificate)>,
 ) -> Result<(), Fail> {
-    let (portfolio, artifact) = if certify {
+    let (portfolio, artifact) = if let Some((aging, control)) = saved {
+        let certified =
+            book.certify_aging_portfolio_from_sources(who, capability, aging, control, &request)??;
+        let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+        (certified.report, Some(artifact))
+    } else if certify {
         let certified = book.certify_aging_portfolio(who, capability, &request)??;
         let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
         (certified.report, Some(artifact))
@@ -13459,6 +13562,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .map(str::trim)
                 .collect();
             let reconcile = args.switch("--reconcile");
+            let (from_source, saved_pair) = aging_source_flags(args, certify, reconcile)?;
             if !reconcile && account_codes.len() > 1 {
                 return Err(usage(
                     "gl aging ages one --account, or every account when --account is omitted",
@@ -13470,6 +13574,65 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .map(|code| account_vid(book.context().book_id, code));
             let known_at = gl_known_at(args, &book, out)?;
             book.prepare_report_history(who, &capability, known_at)??;
+            // Saved certificates are read after admission, and their own
+            // prefix is prepared before the library replays them.
+            let saved = match saved_pair {
+                Some((aging_value, control_value)) => {
+                    let aging = notary::certificate_input(
+                        &book,
+                        &ctx.files,
+                        "--aging-certificate",
+                        aging_value,
+                        who,
+                        &capability,
+                        fa::AgingCertificate::decode,
+                    )?;
+                    let control = notary::certificate_input(
+                        &book,
+                        &ctx.files,
+                        "--control-certificate",
+                        control_value,
+                        who,
+                        &capability,
+                        fa::ReportCertificate::decode,
+                    )?;
+                    let prefix = aging.source().known_at.min(control.known_at);
+                    book.prepare_report_history(who, &capability, Some(prefix))??;
+                    Some((aging, control))
+                }
+                None => None,
+            };
+            let source = match from_source {
+                Some(value) => {
+                    let source = notary::certificate_input(
+                        &book,
+                        &ctx.files,
+                        "--from-source",
+                        value,
+                        who,
+                        &capability,
+                        fa::ReportCertificate::decode,
+                    )?;
+                    // The saved open-items selection is the account; a stated
+                    // --account is the recipient's question, never a re-selection.
+                    if let (Some(stated), fa::ReportSelection::OpenItems { account: saved }) =
+                        (account, &source.selection)
+                        && *saved != Some(stated)
+                    {
+                        return Err(fa_journal::Refusal::new(
+                            fa::certificate::code::CERTIFICATE_INVALID,
+                            exit::VERIFICATION,
+                            "the saved open-items certificate selects a different account than --account",
+                            "plan §13.6 (a retained source answers only the question it was certified for)",
+                            "pass the open-items certificate of the account you mean, or omit --account to accept its selection",
+                        )
+                        .into());
+                    }
+                    book.prepare_report_history(who, &capability, Some(source.known_at))??;
+                    Some(source)
+                }
+                None => None,
+            };
             out.effective(format!("as-of:{day}"));
             let units = &book.context().units;
             let all_posting = args.switch("--all-posting");
@@ -13529,6 +13692,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             &capability,
                             certify,
                             request,
+                            saved.as_ref(),
                         );
                     }
                 };
@@ -13538,7 +13702,18 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     known_at,
                     buckets,
                 };
-                let (rec, artifact) = if certify {
+                let (rec, artifact) = if let Some((aging, control)) = &saved {
+                    let certified = book
+                        .certify_effective_date_aging_reconciliation_from_sources(
+                            who,
+                            &capability,
+                            aging,
+                            control,
+                            &request,
+                        )??;
+                    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+                    (certified.report, Some(artifact))
+                } else if certify {
                     let certified = book.certify_effective_date_aging_reconciliation(
                         who,
                         &capability,
@@ -13606,7 +13781,18 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
                 Ok(())
             } else {
-                let (aging, artifact) = if certify {
+                let (aging, artifact) = if let Some(source) = &source {
+                    let certified = book.certify_effective_date_aging_from_source(
+                        who,
+                        &capability,
+                        source,
+                        day,
+                        &buckets,
+                    )??;
+                    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+                    let request = certified.certificate.request()?;
+                    (certified.report, Some((artifact, request)))
+                } else if certify {
                     let certified = book.certify_effective_date_aging(
                         who,
                         &capability,
