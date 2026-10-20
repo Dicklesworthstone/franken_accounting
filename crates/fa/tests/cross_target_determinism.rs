@@ -568,11 +568,10 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     // Every book pin at once: a deliberate format or registry change is then
     // reviewed as one measured set, never discovered one assertion per run.
-    // Since the prior pins at 2e630879, symbols alone changed in the report
-    // registry closure: UsageCell/UsageDebit and BankMatch/BankMatchedLeg/
-    // BankUnmatch added labels 45..49. The native book birth and registry
-    // commitments change the three certificates and evidence bundle; all
-    // arithmetic, register-fold and report-byte pins remain unchanged.
+    // fa-nd7g adds object_chunk_bytes=4096 to the committed limits registry.
+    // Resealing only the registry field without that row reproduced all three
+    // prior certificate pins. Arithmetic, fold, report bytes and bundle pins
+    // are unchanged; only the three certificate commitments move.
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -599,7 +598,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "f2c5c07141308fc14094f9aab2efc82da1df775849928a08d2ed719a67cbda0b",
+        "697bf0e7aaab6ae5afb7fd5d3c6ec17f0041375f22b40416911868270f7b67a4",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -611,7 +610,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "d5322a8086ee01371c47b0c20883c11ee8c697f7176f2dec7ca27b56adc56d1a",
+        "3c0837b8d74a8ab373972fda0023b18a3449fa38f6e32ec0ed51bf9470d709de",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -623,7 +622,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "dc0a98ab606badab697627de3e86c8ca22bbb48cc98174703eea265d07d54fef",
+        "f753eed11b4566ab1a538829a299698f90e6f2a1fc005b49d115a9ae3f4f2fa7",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
