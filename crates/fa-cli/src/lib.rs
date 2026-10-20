@@ -17,6 +17,7 @@
 pub mod args;
 pub mod authority;
 mod bank;
+mod case;
 pub mod cli;
 pub mod client;
 mod closing;

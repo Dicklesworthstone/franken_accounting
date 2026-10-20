@@ -1037,6 +1037,22 @@ exit = "refusal"
 cite = "plan §7.4 (AS REPORTED IN <statement certificate> pins exactly the closure a published statement used; bead fa-wrrw)"
 fix = "name the C:<oid> of a retained statement certificate that reports the period, or read it as originally reported with --as-originally-reported"
 
+[[refusal]]
+code = "FA-REF-175"
+name = "CASE_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.3 (a RestatementCase is opened with OpenRestatementCase; bead fa-75j4)"
+fix = "list the book's cases with fa case list, or open one with fa case open --kind Restatement --periods <code>"
+
+[[refusal]]
+code = "FA-REF-176"
+name = "CASE_STATE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.3 (Proposed → Determined → Rehearsed → Approved → Posted → Disclosed → Closed; bead fa-75j4)"
+fix = "inspect the case with fa case show <case>; each transition is journaled once, in order"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-145"

@@ -613,3 +613,31 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 1
 exclusions = ["preparer", "duplicate"]
 cite = "plan §12.5 (StatementIssuance is what 'previously issued' means), §7.4 (AS ORIGINALLY REPORTED pins the first issuance); Appendix C PeriodControl Closed Lock W(close, 1)"
+
+# A RestatementCase's opening and its determination (plan §8.3; fa-75j4)
+# under `restate`. Dual control applies when the case's effect manifest is
+# approved (a later slice); opening a case and recording the determination
+# change no balance and need no approver.
+[[rule]]
+name = "case-open"
+class = "CaseControl"
+transition = "Open"
+preparer_op = "restate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.3 (OpenRestatementCase); Appendix B"
+
+[[rule]]
+name = "case-determine"
+class = "CaseControl"
+transition = "Determine"
+preparer_op = "restate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.3 (Determined: the non-reliance determination, its date and authority, journaled when made)"

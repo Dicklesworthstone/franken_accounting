@@ -1203,6 +1203,52 @@ impl Book {
         with_store!(&self.store, core => core.statement_issuances(&self.purposes(), period))
     }
 
+    /// Open a restatement case over `periods` (plan §8.3, Appendix B
+    /// `OpenRestatementCase`, bead fa-75j4): numbered next among the book's
+    /// cases, `Proposed` (or `Determined` when the determination is given).
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        kind: fa_journal::CaseKind,
+        periods: Vec<String>,
+        narrative: Option<fa_model::Oid>,
+        determination: Option<fa_journal::Determination>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.open_case(
+            &purposes, capability, kind, periods, narrative, determination, effective_date,
+            idempotency_key,
+        )))
+    }
+
+    /// Record case `ordinal`'s determination (plan §8.3, bead fa-75j4).
+    pub fn determine_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        determination: fa_journal::Determination,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.determine_case(
+            &purposes, capability, ordinal, determination, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Restatement case `ordinal` as its records state it.
+    pub fn case(&self, ordinal: u32) -> Result<Option<fa_journal::CaseView>, BookError> {
+        with_store!(&self.store, core => core.case(&self.purposes(), ordinal))
+    }
+
+    /// Every restatement case of the book, by ordinal.
+    pub fn cases(&self) -> Result<Vec<fa_journal::CaseView>, BookError> {
+        with_store!(&self.store, core => core.cases(&self.purposes()))
+    }
+
     /// Open the production profile of `profile.matter` (plan §13.2, bead
     /// fa-6l9): its Bates prefix and first number, journaled once per matter.
     pub fn open_production(

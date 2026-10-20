@@ -22,6 +22,7 @@ pub mod attestation;
 pub mod bank;
 pub mod batch;
 pub mod blob;
+pub mod case;
 pub mod chart;
 pub mod closing;
 pub mod custody;
@@ -69,6 +70,10 @@ pub use batch::{
     post_batch, read_outcome, request_digest,
 };
 pub use blob::BlobStore;
+pub use case::{
+    CaseBody, CaseKind, CaseRecorded, CaseRequest, CaseState, CaseTransition, CaseView,
+    Determination, determine_case, list_cases, open_case, read_case,
+};
 pub use chart::{
     AccountEffectivity, AccountLifecycleRecorded, ChartSnapshot, close_account, open_account,
     promote_to_summary,

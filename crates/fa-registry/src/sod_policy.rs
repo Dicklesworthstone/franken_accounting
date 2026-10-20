@@ -51,6 +51,9 @@ const SCENARIO_TRANSITIONS: &[&str] = &["Open", "Plan", "Discard"];
 const PRODUCTION_TRANSITIONS: &[&str] = &["Open", "Produce"];
 /// A statement package leaving the entity (plan §12.5; fa-wrrw).
 const ISSUANCE_TRANSITIONS: &[&str] = &["Issue"];
+/// A RestatementCase's life cycle (plan §8.3; fa-75j4). Slice 1 registers
+/// the transitions it journals.
+const CASE_TRANSITIONS: &[&str] = &["Open", "Determine"];
 const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "SchemaControl",
     "PolicyControl",
@@ -64,6 +67,7 @@ const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "ScenarioControl",
     "ProductionControl",
     "IssuanceControl",
+    "CaseControl",
 ];
 /// A MigrationRun's lifecycle (plan §8.6).
 const MIGRATION_TRANSITIONS: &[&str] = &["Open", "Finalize", "Abandon"];
@@ -329,6 +333,7 @@ impl SodPolicy {
                         "ScenarioControl" => SCENARIO_TRANSITIONS,
                         "ProductionControl" => PRODUCTION_TRANSITIONS,
                         "IssuanceControl" => ISSUANCE_TRANSITIONS,
+                        "CaseControl" => CASE_TRANSITIONS,
                         other => {
                             return Err(invalid(
                                 R,

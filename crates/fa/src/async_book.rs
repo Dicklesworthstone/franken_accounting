@@ -1231,6 +1231,109 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    fn case_request(
+        &self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        effective_date: DateDay,
+        description: &str,
+        idempotency_key: &[u8],
+    ) -> Result<fa_journal::CaseRequest, BookError> {
+        Ok(fa_journal::CaseRequest {
+            capability,
+            effective_date,
+            description: self.seal_text(cx, description)?,
+            idempotency_key: idempotency_key.to_vec(),
+        })
+    }
+
+    /// Open a restatement case (plan §8.3, Appendix B `OpenRestatementCase`,
+    /// bead fa-75j4) over `periods`, numbered next among the book's cases.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        kind: fa_journal::CaseKind,
+        periods: Vec<String>,
+        narrative: Option<fa_model::Oid>,
+        determination: Option<fa_journal::Determination>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        // The kernel sorts and dedups the body's periods; the description
+        // names them the same way, so a retry that lists them in another
+        // order is the identical request (plan §4.9).
+        let mut periods = periods;
+        periods.sort();
+        periods.dedup();
+        let description = format!("open {} case over {}", kind.name(), periods.join(", "));
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        let body = fa_journal::CaseBody {
+            book_id: self.context.book_id,
+            ordinal: 0,
+            kind,
+            periods,
+            narrative,
+            determination,
+        };
+        Ok(fa_journal::open_case(&mut self.db, cx, &self.context, body, req).await?)
+    }
+
+    /// Record case `ordinal`'s determination: the day it was made and the
+    /// document recording its authority (plan §8.3, bead fa-75j4).
+    pub async fn determine_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        determination: fa_journal::Determination,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let description = format!("determine case {ordinal} on {}", determination.day.render());
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::determine_case(
+                &mut self.db,
+                cx,
+                &self.context,
+                ordinal,
+                determination,
+                req,
+            )
+            .await?,
+        )
+    }
+
+    /// Restatement case `ordinal` as its records state it.
+    pub fn case(
+        &self,
+        cx: &PurposeContexts,
+        ordinal: u32,
+    ) -> Result<Option<fa_journal::CaseView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_case(db, context, ordinal)?)
+        })
+    }
+
+    /// Every restatement case of the book, by ordinal.
+    pub fn cases(&self, cx: &PurposeContexts) -> Result<Vec<fa_journal::CaseView>, BookError> {
+        self.query(cx, |db, context| Ok(fa_journal::list_cases(db, context)?))
+    }
+
     fn production_request(
         &self,
         cx: &PurposeContexts,

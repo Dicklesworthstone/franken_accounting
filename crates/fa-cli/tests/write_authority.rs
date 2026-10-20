@@ -466,6 +466,31 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         row(&["checkpoint", "create"], &[Op::Witness], Reaches),
         row(
             &[
+                "case",
+                "open",
+                "--kind",
+                "Restatement",
+                "--periods",
+                "FY2026-P03",
+            ],
+            &[Op::Read, Op::Restate],
+            Reaches,
+        ),
+        row(
+            &[
+                "case",
+                "determine",
+                "1",
+                "--on",
+                DAY,
+                "--authority",
+                document,
+            ],
+            &[Op::Read, Op::Restate],
+            Reaches,
+        ),
+        row(
+            &[
                 "statement",
                 "issue",
                 "--certificate",

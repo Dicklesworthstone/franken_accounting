@@ -171,6 +171,18 @@ usage = ["scenario fork <name> [--at HEAD|<seq>] [--from YYYY-MM-DD] [--evidence
 example = "fa scenario fork but-for-breach --from 2025-07-01 --book ./books/myco --json"
 
 [[verb]]
+name = "case"
+summary = "Restatement cases (plan §8.3): open a case over the periods a material correction affects, journal its determination (day and authority), and read it. Rehearsal, dual-control approval, posting, disclosure and closing are later fa-75j4 slices."
+writes = true
+subcommands = ["open", "determine", "show", "list"]
+flags = ["--kind", "--periods", "--narrative", "--determined-on", "--authority", "--on", "--key", "--date"]
+switches = []
+events = ["case_opened", "case_determined", "case", "cases"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["case open --kind Restatement|Revision|PriorPeriodAdjustment|PolicyChangeRetrospective --periods <code>[,<code>]... [--narrative <document-oid>] [--determined-on YYYY-MM-DD --authority <document-oid>] [--key K] [--date YYYY-MM-DD]   (journals a RestatementCase under restate, numbered next among the book's cases: Proposed, or Determined when the determination is already made. Every period must exist; the narrative and authority must be verified documents of this book. The default key is the request itself, so the same command opens the case once.)", "case determine <case> --on YYYY-MM-DD --authority <document-oid> [--key K]   (Proposed → Determined: the day the non-reliance or immateriality determination was made, and the document recording its authority. For a Restatement the Item 4.02 clock starts that day. FA-REF-176 from any other state.)", "case show <case>", "case list", "A case cannot yet leave Determined: rehearsal (a scenario with its diff certificate), dual-control approval of the effect manifest, posting the case's entries in one batch, disclosure and closing are later fa-75j4 slices, and Revision, Restatement and PriorPeriodAdjustment entries stay refused until posting lands."]
+example = "fa case open --kind Restatement --periods FY2025-P12 --narrative <oid> --book ./books/myco --json"
+
+[[verb]]
 name = "post"
 summary = "Post an entry intent under balance, period and idempotency laws, with optional functional-currency valuation from retained Rate evidence (fa fx rate add)."
 writes = true
@@ -1301,6 +1313,30 @@ name = "draft_discarded"
 book = true
 doc = "A draft was closed without promotion by a DraftControl Discard record (or was already discarded by this principal: then nothing was written). Nothing is deleted."
 fields = ["draft:hex", "name:string", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "case_opened"
+book = true
+doc = "A restatement case was journaled by a CaseControl Open record (or the identical request was already recorded: then nothing was written). It is Proposed, or Determined when the determination was given at open."
+fields = ["case:restatement_case", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "case_determined"
+book = true
+doc = "A restatement case's determination (day and authority document) was journaled by a CaseControl Determine record, moving it Proposed → Determined (or the identical request was already recorded)."
+fields = ["case:restatement_case", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "case"
+book = true
+doc = "One restatement case as its body, state and journaled transitions state it."
+fields = ["case:restatement_case"]
+
+[[event]]
+name = "cases"
+book = true
+doc = "Every restatement case of the book, by case number."
+fields = ["cases:[restatement_case]"]
 
 [[event]]
 name = "scenario_forked"
@@ -2881,6 +2917,16 @@ subcommand = "reconcile"
 reason = "host-only: an independently authorized Human reviews the exact source prefix and uses --yes with full-source authority to attest a statement close; launch-bound sessions inspect verified closes and drift through fa_bank_reconciliation"
 
 [[mcp.excluded]]
+verb = "case"
+subcommand = "open"
+reason = "host-only: opening a restatement case needs restate, which no launch-bound MCP template or issued token may hold (plan §14.4); bound sessions read cases through fa_case_read"
+
+[[mcp.excluded]]
+verb = "case"
+subcommand = "determine"
+reason = "host-only: journaling a case's determination needs restate, which no launch-bound MCP template or issued token may hold (plan §14.4); bound sessions read cases through fa_case_read"
+
+[[mcp.excluded]]
 verb = "recover"
 subcommand = "projections"
 reason = "host-only: rebuilding leg projections requires schema_change on trunk, which neither launch-bound MCP templates nor their issued tokens may hold, and publishing needs --yes; a bound session verifies projections through fa_book_verify (plan §4.2/§15.4 registered exclusion)"
@@ -2965,6 +3011,11 @@ doc = "Lantern: the registered forensic and audit procedures (journal-entry test
 name = "fa.search"
 on_demand = true
 doc = "Full-text search over entry descriptions and leg memos at a recorded frontier, ranked by exact fixed-point BM25 from an index rebuilt from the journal per query. A pure read. On demand (fa-mcp --cluster fa.search): the default surface is at its 40-tool limit."
+
+[[mcp.cluster]]
+name = "fa.case"
+on_demand = true
+doc = "Restatement cases (plan §8.3): read one journaled case, or every case of the book, with its kind, affected periods, state and transitions. Opening and determining a case need restate, a host-side operation. On demand (fa-mcp --cluster fa.case)."
 
 [[mcp.cluster]]
 name = "fa.audit"
@@ -3971,6 +4022,19 @@ dont = ["Don't read a high score as evidence of anything: BM25 ranks text, it st
 mistakes = ["Expecting documents or findings among the hits: this build indexes entry descriptions and leg memos only.", "Expecting erased or subject-sealed text to match: it is never indexed."]
 
 [[mcp.tool]]
+cluster = "fa.case"
+name = "read"
+verb = "case"
+subcommands = ["show", "list"]
+selector = "action"
+positionals = ["target?"]
+flags = []
+switches = []
+required = []
+dont = ["Use action list for every restatement case and action show with target set to a case number. Reads need read.", "Don't expect to open or determine a case here: both need restate, which no launch-bound template holds; a Human operator opens a case on the host with fa case open."]
+mistakes = ["Passing a case's vid as target: action show takes the case number (1, 2, ...).", "Reading a Determined case as approved: rehearsal, approval and posting are later fa-75j4 slices."]
+
+[[mcp.tool]]
 cluster = "fa.audit"
 name = "sample"
 verb = "sample"
@@ -4089,6 +4153,21 @@ fields = ["document:hex", "doc_commit:hex", "bates:string?", "date:date?", "auth
 name = "production_bundle"
 doc = "A bundle-scoped production's evidence bundle: its digest, the recorded checkpoint it was produced against, the book's checkpoint signing key (fa-verify's --key) and the exact offline verification command for the volume's .fab and .receipt."
 fields = ["digest:hex", "checkpoint:hex", "checkpoint_public_key:hex", "verify:string"]
+
+[[shape]]
+name = "restatement_case"
+doc = "A restatement case (plan §8.3): its number and vertex, kind, state, the periods it affects, its optional narrative document, its determination (day and authority document) and every journaled transition in commit order."
+fields = ["case:int", "vid:hex", "kind:string", "state:string", "periods:[string]", "narrative:hex?", "determination:case_determination?", "transitions:[case_transition]"]
+
+[[shape]]
+name = "case_determination"
+doc = "When a case's determination was made and the document recording its authority."
+fields = ["day:date", "authority:hex"]
+
+[[shape]]
+name = "case_transition"
+doc = "One journaled CaseControl transition: from (null for the Open record), to, its record, sequence and principal."
+fields = ["from:string?", "to:string", "control_entry:hex", "recorded_at:seq", "principal:hex"]
 
 [[shape]]
 name = "statement_issuance"
@@ -4242,6 +4321,18 @@ ops = ["read"]
 [[bound]]
 verbs = ["statement"]
 subcommands = ["issuances", "lint"]
+ops = ["read"]
+
+# Restatement cases (fa-75j4): opening one and recording its determination
+# need restate; reading them reaches the whole book.
+[[bound]]
+verbs = ["case"]
+subcommands = ["open", "determine"]
+ops = ["read", "restate"]
+
+[[bound]]
+verbs = ["case"]
+subcommands = ["show", "list"]
 ops = ["read"]
 
 # A statement's columns reach what their basis folds: a stock basis through

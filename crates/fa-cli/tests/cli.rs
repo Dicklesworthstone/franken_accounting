@@ -3825,6 +3825,160 @@ fn statement_issue_pins_as_originally_reported_to_the_issued_certificate() -> st
     Ok(())
 }
 
+/// fa-75j4 (plan §8.3): `fa case` journals a restatement case through the
+/// real binary: numbered, Proposed, then Determined with its day and
+/// authority document; the same command opens it once; every refusal names
+/// its code and writes nothing.
+#[test]
+fn case_open_and_determine_journal_a_restatement_case() -> std::io::Result<()> {
+    let dir = tmp("restatement-case")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Case Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2025"]).0,
+        0
+    );
+    let memo = source_doc(&dir, &book);
+    let open = [
+        "case",
+        "open",
+        "--kind",
+        "Restatement",
+        "--periods",
+        "FY2025-P12,FY2025-P11",
+        "--narrative",
+        &memo,
+        "--json",
+    ];
+    let (code, out, _) = fa(Some(&book), &open);
+    assert_eq!(code, 0, "{out}");
+    let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(int(&case, "case"), Some(1), "{out}");
+    assert_eq!(text(&case, "state"), "Proposed");
+    assert_eq!(
+        arr(&case, "periods")
+            .iter()
+            .filter_map(Json::as_str)
+            .collect::<Vec<_>>(),
+        ["FY2025-P11", "FY2025-P12"]
+    );
+    let (code, out, _) = fa(Some(&book), &open);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("true"), "{out}");
+
+    // Refusals, each naming its code: no such case, the wrong state, an
+    // unknown period, an unknown kind.
+    let determine = |n: &str| {
+        vec![
+            "case".to_string(),
+            "determine".into(),
+            n.into(),
+            "--on".into(),
+            "2026-01-28".into(),
+            "--authority".into(),
+            memo.clone(),
+            "--json".into(),
+        ]
+    };
+    let run = |args: &[String]| {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        fa(Some(&book), &args)
+    };
+    let (code, out, _) = run(&determine("2"));
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-175"), "{out}");
+    let (code, out, _) = run(&determine("1"));
+    assert_eq!(code, 0, "{out}");
+    let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&case, "state"), "Determined", "{out}");
+    let determination = case.get("determination").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&determination, "day"), "2026-01-28");
+    assert_eq!(text(&determination, "authority"), memo);
+    let (code, out, _) = run(&[
+        "case".into(),
+        "determine".into(),
+        "1".into(),
+        "--on".into(),
+        "2026-02-03".into(),
+        "--authority".into(),
+        memo.clone(),
+        "--json".into(),
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-176"), "{out}");
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "case",
+            "open",
+            "--kind",
+            "Restatement",
+            "--periods",
+            "FY2099-P01",
+            "--json",
+        ],
+    );
+    assert_ne!(code, 0, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-021"), "{out}");
+    for bad in [
+        vec![
+            "case",
+            "open",
+            "--kind",
+            "Restated",
+            "--periods",
+            "FY2025-P12",
+            "--json",
+        ],
+        vec!["case", "open", "--kind", "Restatement", "--json"],
+        vec![
+            "case",
+            "open",
+            "--kind",
+            "Restatement",
+            "--periods",
+            "FY2025-P12",
+            "--determined-on",
+            "2026-01-28",
+            "--json",
+        ],
+        vec!["case", "determine", "one", "--on", "2026-01-28", "--json"],
+        vec!["case", "show", "--json"],
+    ] {
+        let (code, out, err) = fa(Some(&book), &bad);
+        assert_eq!(code, 2, "{bad:?}\n{out}\n{err}");
+    }
+
+    let (code, out, _) = fa(Some(&book), &["case", "list", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let cases = doc(&out);
+    let listed = arr(&cases, "cases");
+    assert_eq!(listed.len(), 1, "{out}");
+    assert_eq!(
+        arr(&listed[0], "transitions")
+            .iter()
+            .map(|t| text(t, "to"))
+            .collect::<Vec<_>>(),
+        ["Proposed", "Determined"]
+    );
+    let (code, out, _) = fa(Some(&book), &["case", "show", "1", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("case"), "{out}");
+    let (code, out, _) = fa(Some(&book), &["case", "show", "9", "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-175"), "{out}");
+    Ok(())
+}
+
 /// `fa sample uniform|mus` (fa-kaf7, fa-vpk): a sample of one account's
 /// normal-side open items, reproducible from the declared seed at a recorded
 /// sequence; opposite-side open items are excluded and listed, never dropped.
@@ -6977,6 +7131,40 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["statement", "balance-sheet", "--for", "FY2026-P03"]).0,
         0
     );
+    // A restatement case (fa-75j4): opened, determined, read.
+    assert_eq!(
+        run(
+            true,
+            &[
+                "case",
+                "open",
+                "--kind",
+                "Restatement",
+                "--periods",
+                "FY2026-P03"
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "case",
+                "determine",
+                "1",
+                "--on",
+                "2026-04-02",
+                "--authority",
+                &ev
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["case", "show", "1"]).0, 0);
+    assert_eq!(run(true, &["case", "list"]).0, 0);
     // A statement issuance (fa-wrrw): planned, approved in another hand,
     // committed from the exact plan, then listed.
     let (code, out) = run(

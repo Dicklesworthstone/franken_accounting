@@ -82,6 +82,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("capability", capability_cmd),
     ("draft", draft_cmd),
     ("scenario", crate::scenario::scenario_cmd),
+    ("case", crate::case::case_cmd),
     ("post", post_cmd),
     ("invoice", crate::typed::invoice_cmd),
     ("bill", crate::typed::bill_cmd),

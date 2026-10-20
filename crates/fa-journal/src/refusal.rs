@@ -113,6 +113,13 @@ pub mod code {
     /// retained trunk statement certificate reporting the period (plan §7.4,
     /// bead fa-wrrw).
     pub const NOT_REPORTED_IN: &str = "FA-REF-174";
+    /// The book has no restatement case with that number (plan §8.3, bead
+    /// fa-75j4).
+    pub const CASE_UNKNOWN: &str = "FA-REF-175";
+    /// A case transition is not admissible from the case's current state
+    /// (plan §8.3: Proposed → Determined → Rehearsed → Approved → Posted →
+    /// Disclosed → Closed).
+    pub const CASE_STATE: &str = "FA-REF-176";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

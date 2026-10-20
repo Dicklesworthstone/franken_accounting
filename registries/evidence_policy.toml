@@ -356,3 +356,12 @@ class = "IssuanceControl"
 requirement = "control_record"
 min_documents = 0
 kinds = "any"
+
+# A restatement case's records (fa-75j4) cite their narrative and the
+# determination's authority document as proof refs, each a document this
+# book holds, verified at commit.
+[[minimum]]
+class = "CaseControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"

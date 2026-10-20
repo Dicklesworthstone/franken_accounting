@@ -712,8 +712,10 @@ fa statement balance-sheet --for FY2025-P12 --compare FY2024-P12 --as-originally
 fa reverse <vid> --reason WrongAccount --book acme.fabook --json
 # One-step correction: the reversal and the corrected entry commit together, both or neither (available today).
 fa reverse <vid> --reason WrongAmount --replace-with corrected.json --book acme.fabook --json
-# Target (fa-75j4): `fa case` for restatement cases.
-fa case open --kind Restatement --periods FY2024-Q4 --narrative restatement-memo.pdf
+# Restatement cases (fa-75j4): open one over the periods a correction affects and journal its
+# determination (available today); rehearsal, approval, posting and disclosure are next.
+fa case open --kind Restatement --periods FY2024-P12 --narrative <memo-oid> --book acme.fabook --json
+fa case determine 1 --on 2025-03-03 --authority <minutes-oid> --book acme.fabook --json
 
 # Rehearse the close on a draft, diff it, let a human promote it (drafts available today; close dry-run and diff are target fa-4o0 / fa-s7x).
 fa draft new close-2026-03 --book acme.fabook --json
