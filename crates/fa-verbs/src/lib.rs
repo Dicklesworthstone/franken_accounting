@@ -1389,7 +1389,7 @@ mod tests {
                 "flag that is both a value flag and a switch",
                 with(|s| {
                     s.replace(
-                        "switches = [\"--activity\", \"--summary\", \"--certify\", \"--as-originally-reported\"]",
+                        "switches = [\"--activity\", \"--summary\", \"--certify\", \"--as-originally-reported\", \"--functional\"]",
                         "switches = [\"--period\"]",
                     )
                 }),
