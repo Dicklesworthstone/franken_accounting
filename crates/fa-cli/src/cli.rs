@@ -13993,9 +13993,15 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 out.event_with_certificate(
                     "aging",
                     vec![
+                        // The report's own selection: a saved open-items
+                        // source fixes it even when no --account is stated.
                         (
                             "account",
-                            account_codes.first().map_or(Json::Null, |code| s(*code)),
+                            aging
+                                .account
+                                .map(code_of)
+                                .transpose()?
+                                .map_or(Json::Null, s),
                         ),
                         ("known_at", Json::Int(i128::from(aging.known_at.0))),
                         ("effective_through", s(aging.effective_through.render())),
