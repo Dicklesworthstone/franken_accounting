@@ -547,6 +547,189 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
     }
 }
 
+/// fa-715: a trial balance and a period activity at the head served from
+/// maintained cells plus the exact tail equal the literal fold at every
+/// step of a history of postings, holds and releases in four periods whose
+/// registers advance at random points. The maintained path must actually
+/// answer both.
+#[test]
+fn maintained_trial_balances_equal_the_literal_fold_at_every_step() {
+    let (mut k, mut oracle, periods) = setup();
+    for (i, code) in periods[..4].iter().enumerate() {
+        open_period(&mut k, &mut oracle, code, 70_000 + i as u64);
+    }
+    let usd = k.book.units.lookup("USD").unwrap();
+    let mut rng = Rng(0x0715_5EED_715A_0715);
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let mut live_holds: Vec<(usize, DateDay)> = Vec::new();
+    let selections: Vec<Vec<String>> = vec![
+        vec![periods[0].clone()],
+        vec![periods[1].clone()],
+        vec![periods[3].clone()],
+        vec![periods[0].clone(), periods[2].clone()],
+    ];
+    let mut maintained_reads = 0usize;
+    let mut maintained_activity = 0usize;
+    for step in 0..96u64 {
+        let month = 1 + u8::try_from(rng.below(4)).expect("month");
+        let date = DateDay::from_ymd(2026, month, 10).unwrap();
+        let key = format!("tb-{step}");
+        match rng.below(10) {
+            0..=5 => {
+                let amount = 1 + i128::from(rng.below(1_000));
+                let intent = maintenance_intent("Original", date, amount, &key);
+                let posted = kernel_post(&mut k, &intent, usd, &refs).expect("original posts");
+                refs.push(posted.entry_ref());
+            }
+            6 | 7 => {
+                let amount = 1 + i128::from(rng.below(1_000));
+                let intent = maintenance_intent("Pending", date, amount, &key);
+                let posted = kernel_post(&mut k, &intent, usd, &refs).expect("hold posts");
+                live_holds.push((refs.len(), date));
+                refs.push(posted.entry_ref());
+            }
+            8 if !live_holds.is_empty() => {
+                let pick = usize::try_from(rng.below(live_holds.len() as u64)).expect("index");
+                let (target, held_on) = live_holds.remove(pick);
+                let mut release = maintenance_intent("Resolution", held_on, 0, &key);
+                release.resolves = Some(Resolve {
+                    target,
+                    posts: None,
+                });
+                let posted = kernel_post(&mut k, &release, usd, &refs).expect("release posts");
+                refs.push(posted.entry_ref());
+            }
+            _ => {
+                let period = periods[usize::try_from(rng.below(4)).expect("period")].clone();
+                maintain(&mut k, &period);
+            }
+        }
+        for selection in &selections {
+            let literal = trial_balance(&k.db, &k.book, selection).unwrap();
+            let (served, how) =
+                fa_registers::trial_balance_served(&k.db, &k.book, selection).unwrap();
+            assert_eq!(
+                served, literal,
+                "step {step}, {selection:?}, served {how:?}"
+            );
+            if matches!(how, fa_registers::Served::Maintained(_)) {
+                maintained_reads += 1;
+            }
+            let literal = period_activity(&k.db, &k.book, selection, None).unwrap();
+            let (served, how) =
+                fa_registers::period_activity_served(&k.db, &k.book, selection).unwrap();
+            assert_eq!(
+                served, literal,
+                "step {step}, activity {selection:?}, served {how:?}"
+            );
+            if matches!(how, fa_registers::Served::Maintained(_)) {
+                maintained_activity += 1;
+            }
+        }
+    }
+    assert!(maintained_reads > 0, "maintained cells never answered");
+    assert!(
+        maintained_activity > 0,
+        "maintained cells never answered an activity read"
+    );
+}
+
+/// fa-715 complexity witness: once maintenance has caught up, a head trial
+/// balance decodes only the entries committed after the cursors (its
+/// tail), however much unrelated history the journal holds. 300 postings
+/// to a later period change neither the answer nor the decoded tail; one
+/// new March posting is decoded once per maintained contributing period.
+#[test]
+fn a_maintained_head_read_decodes_only_its_tail_regardless_of_unrelated_history() {
+    let (mut k, mut oracle, periods) = setup();
+    let (january, march, april) = (periods[0].clone(), periods[2].clone(), periods[3].clone());
+    for (i, code) in [&january, &march, &april].into_iter().enumerate() {
+        open_period(&mut k, &mut oracle, code, 71_000 + i as u64);
+    }
+    let usd = k.book.units.lookup("USD").unwrap();
+    let in_march = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let in_april = DateDay::from_ymd(2026, 4, 10).unwrap();
+    let mut refs = Vec::new();
+    let first = maintenance_intent("Original", in_march, 500, "march-0");
+    refs.push(kernel_post(&mut k, &first, usd, &refs).unwrap().entry_ref());
+    for i in 0..300 {
+        let later = maintenance_intent("Original", in_april, 1 + i, &format!("april-{i}"));
+        refs.push(kernel_post(&mut k, &later, usd, &refs).unwrap().entry_ref());
+    }
+    let selection = vec![march.clone()];
+    let (_, cold) = fa_registers::trial_balance_served(&k.db, &k.book, &selection).unwrap();
+    assert!(
+        matches!(&cold, fa_registers::Served::Literal(reason) if reason.contains(&march)),
+        "March has postings and no cells yet: {cold:?}"
+    );
+    maintain(&mut k, &january);
+    maintain(&mut k, &march);
+    let (served, how) = fa_registers::trial_balance_served(&k.db, &k.book, &selection).unwrap();
+    assert_eq!(served, trial_balance(&k.db, &k.book, &selection).unwrap());
+    assert_eq!(how.tail_length(), Some(0), "{how:?}");
+    let second = maintenance_intent("Original", in_march, 7, "march-1");
+    refs.push(
+        kernel_post(&mut k, &second, usd, &refs)
+            .unwrap()
+            .entry_ref(),
+    );
+    let (served, how) = fa_registers::trial_balance_served(&k.db, &k.book, &selection).unwrap();
+    assert_eq!(served, trial_balance(&k.db, &k.book, &selection).unwrap());
+    assert_eq!(how.tail_length(), Some(2), "{how:?}");
+}
+
+/// fa-715 planted negative: a register cell whose amount no longer matches
+/// its fold digest is never served. The read falls back to the literal fold
+/// (the right answer) and `verify registers` reports the drift.
+#[test]
+fn a_drifted_register_cell_is_never_served() {
+    use fa_model::symbols::{property, relation};
+
+    let (mut k, mut oracle, periods) = setup();
+    let march = periods[2].clone();
+    open_period(&mut k, &mut oracle, &march, 72_000);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let in_march = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let intent = maintenance_intent("Original", in_march, 500, "march-0");
+    kernel_post(&mut k, &intent, usd, &[]).unwrap();
+    maintain(&mut k, &march);
+    let selection = vec![march.clone()];
+    let literal = trial_balance(&k.db, &k.book, &selection).unwrap();
+    let (served, how) = fa_registers::trial_balance_served(&k.db, &k.book, &selection).unwrap();
+    assert_eq!(served, literal);
+    assert!(
+        matches!(how, fa_registers::Served::Maintained(_)),
+        "{how:?}"
+    );
+
+    let cell = fa_registers::register_vid(
+        k.book.book_id,
+        &fa_registers::CellKey {
+            account: account_vid(k.book.book_id, "6000"),
+            unit_id: usd.0,
+            period: march.clone(),
+        },
+    );
+    let mut write = WriteBatch::new(relation::IN_PERIOD);
+    write.set_vertex_property(
+        cell,
+        property::DEBITS_POSTED,
+        Some(rows::scalar_bytes("debits", 501i128.to_le_bytes().to_vec()).unwrap()),
+    );
+    let ctx = k.ctx();
+    k.runtime
+        .block_on(k.db.write(&ctx.commit(), write))
+        .unwrap();
+    let (served, how) = fa_registers::trial_balance_served(&k.db, &k.book, &selection).unwrap();
+    assert!(matches!(how, fa_registers::Served::Literal(_)), "{how:?}");
+    assert_eq!(served.rows, literal.rows, "the literal fold still answers");
+    assert!(
+        !fa_registers::verify_period(&k.db, &k.book, &march)
+            .unwrap()
+            .is_green()
+    );
+}
+
 #[test]
 fn incremental_registers_reject_stale_or_foreign_preparation_and_recover_after_reopen() {
     let chart: Vec<ChartRow> = ACCOUNTS
