@@ -160,3 +160,5 @@ fn oversized_truncated_trailing_and_tampered_frames_never_return_a_quorum_report
     assert_eq!(verify_witnessed_checkpoint(&oversized, &policy),
         Err(WitnessError::InputLimit("signed checkpoint")));
 }
+
+mod advance;
