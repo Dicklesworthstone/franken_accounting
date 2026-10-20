@@ -2696,3 +2696,372 @@ fn replay_workpapers_equal_the_library_export_and_never_overwrite_or_widen_famil
         "workpapers and refusals are reads"
     );
 }
+
+#[test]
+fn aging_from_saved_certificates_reuses_them_byte_for_byte_and_answers_only_their_question() {
+    // 1000 and 4000 carry 64 postings; 2000 is a zero-activity leaf.
+    let f = Fixture::with_additional_cash_accounts(1);
+    let at = f.source_head.0.to_string();
+    let bytes_of = |events: &[Json]| unhex(text(data(events, "report_certificate"), "bytes"));
+    let oid_of = |events: &[Json]| format!("C:{}", text(data(events, "report_certificate"), "oid"));
+    let aging_at = |extra: &[&str]| {
+        let mut args = vec![
+            "gl",
+            "aging",
+            "--as-of",
+            "2026-01-31",
+            "--bucket",
+            "0,30,60",
+            "--as-known-at",
+            at.as_str(),
+        ];
+        args.extend_from_slice(extra);
+        f.ok(&args)
+    };
+    // The sources a producer certified and handed out at `at`.
+    let open_items = f.ok(&[
+        "open-items",
+        "--account",
+        "1000",
+        "--as-known-at",
+        &at,
+        "--certify",
+    ]);
+    let aging = aging_at(&["--account", "1000", "--certify"]);
+    let whole_aging = aging_at(&["--certify"]);
+    let control = f.ok(&[
+        "tb",
+        "--as-of",
+        "2026-01-31",
+        "--as-known-at",
+        &at,
+        "--certify",
+    ]);
+    let other_date = f.ok(&[
+        "tb",
+        "--as-of",
+        "2026-01-30",
+        "--as-known-at",
+        &at,
+        "--certify",
+    ]);
+    // A later posting moves HEAD; the saved sources still answer `at`.
+    let mut book = f.open();
+    post(&mut book, 900);
+    drop(book);
+
+    // Aging from a saved open-items certificate is the aging at its prefix,
+    // with that exact certificate as its source, by digest or by file.
+    let saved_file = f.dir.join("open-items.cert");
+    std::fs::write(&saved_file, bytes_of(&open_items)).unwrap();
+    let from_source = |source: &str, extra: &[&str]| {
+        let mut args = vec![
+            "gl",
+            "aging",
+            "--from-source",
+            source,
+            "--as-of",
+            "2026-01-31",
+            "--bucket",
+            "0,30,60",
+        ];
+        args.extend_from_slice(extra);
+        f.run(&args)
+    };
+    let (exit, aged) = from_source(&oid_of(&open_items), &["--certify"]);
+    assert_eq!(exit, 0, "{aged:?}");
+    assert_eq!(data(&aged, "aging"), data(&aging, "aging"));
+    let certificate = fa::AgingCertificate::decode(&bytes_of(&aged)).unwrap();
+    assert_eq!(
+        certificate.source(),
+        &ReportCertificate::decode(&bytes_of(&open_items)).unwrap(),
+        "the saved open-items certificate is the source, not a new fold"
+    );
+    let (exit, by_file) = from_source(saved_file.to_str().unwrap(), &["--certify"]);
+    assert_eq!(exit, 0, "{by_file:?}");
+    assert_eq!(
+        text(data(&by_file, "report_certificate"), "oid"),
+        &oid_of(&aged)[2..]
+    );
+    let (exit, stated) = from_source(&oid_of(&open_items), &["--account", "1000", "--certify"]);
+    assert_eq!(exit, 0, "a matching stated account: {stated:?}");
+    let replayed = f.ok(&[
+        "replay",
+        &oid_of(&aged),
+        "--expect",
+        &generated_expectation(data(&aged, "report_certificate")),
+    ]);
+    assert_eq!(data(&replayed, "aging"), data(&aging, "aging"));
+
+    // Reconciliation from the saved aging and control certificates equals the
+    // reconciliation at their prefix and keeps both of them as its sources.
+    let question = |selection: &[&'static str]| {
+        let mut args = portfolio_args(&at, selection);
+        args.extend(["--bucket", "0,30,60"]);
+        args
+    };
+    let single = question(&["--account", "1000"]);
+    let plain = f.ok(&single);
+    let mut saved_args = single.clone();
+    let (aging_oid, control_oid) = (oid_of(&aging), oid_of(&control));
+    saved_args.extend([
+        "--aging-certificate",
+        &aging_oid,
+        "--control-certificate",
+        &control_oid,
+        "--certify",
+    ]);
+    let reconciled = f.ok(&saved_args);
+    assert_eq!(
+        data(&reconciled, "aging_reconciled"),
+        data(&plain, "aging_reconciled")
+    );
+    let certificate = fa::AgingReconciliationCertificate::decode(&bytes_of(&reconciled)).unwrap();
+    assert_eq!(
+        certificate.aging_source(),
+        &fa::AgingCertificate::decode(&bytes_of(&aging)).unwrap()
+    );
+    assert_eq!(
+        certificate.control_source(),
+        &ReportCertificate::decode(&bytes_of(&control)).unwrap()
+    );
+    f.ok(&[
+        "replay",
+        &oid_of(&reconciled),
+        "--expect",
+        &generated_expectation(data(&reconciled, "report_certificate")),
+    ]);
+
+    // The whole-book aging and the same control give the portfolio.
+    let whole = question(&["--all-posting"]);
+    let plain_portfolio = f.ok(&whole);
+    let mut portfolio_saved = whole.clone();
+    let whole_oid = oid_of(&whole_aging);
+    portfolio_saved.extend([
+        "--aging-certificate",
+        &whole_oid,
+        "--control-certificate",
+        &control_oid,
+        "--certify",
+    ]);
+    let portfolio = f.ok(&portfolio_saved);
+    assert_eq!(
+        data(&portfolio, "aging_portfolio_reconciled"),
+        data(&plain_portfolio, "aging_portfolio_reconciled")
+    );
+    let certificate =
+        fa::aging::portfolio::AgingPortfolioCertificate::decode(&bytes_of(&portfolio)).unwrap();
+    assert_eq!(
+        certificate.aging_source(),
+        &fa::AgingCertificate::decode(&bytes_of(&whole_aging)).unwrap()
+    );
+    assert_eq!(
+        certificate.control_source(),
+        &ReportCertificate::decode(&bytes_of(&control)).unwrap()
+    );
+
+    // Planted refusals: none publishes.
+    let retained = f.head();
+    let open_items_oid = oid_of(&open_items);
+    let control_file = f.dir.join("control.cert");
+    std::fs::write(&control_file, bytes_of(&control)).unwrap();
+    for (extra, exit, needle) in [
+        (vec![], 2, "add --certify"),
+        (
+            vec!["--as-known-at", at.as_str(), "--certify"],
+            2,
+            "--as-known-at does not select it",
+        ),
+        (
+            vec!["--reconcile", "--certify"],
+            2,
+            "--from-source ages one",
+        ),
+        (
+            vec!["--account", "4000", "--certify"],
+            8,
+            "selects a different account",
+        ),
+    ] {
+        let (code, errors) = from_source(&open_items_oid, &extra);
+        assert_eq!(code, exit, "{needle}: {errors:?}");
+        assert!(
+            text(data(&errors, "error"), "message").contains(needle),
+            "{needle}: {errors:?}"
+        );
+    }
+    for (source, needle) in [
+        (control_oid.as_str(), "OpenItems"),
+        (aging_oid.as_str(), "--from-source"),
+    ] {
+        let (code, errors) = from_source(source, &["--certify"]);
+        assert_eq!(code, 8, "a wrong source family: {errors:?}");
+        assert!(
+            text(data(&errors, "error"), "message").contains(needle),
+            "{needle}: {errors:?}"
+        );
+    }
+    let other_oid = oid_of(&other_date);
+    let control_path = control_file.to_str().unwrap();
+    for (args, exit, why) in [
+        (
+            [
+                single.clone(),
+                vec![
+                    "--aging-certificate",
+                    &aging_oid,
+                    "--control-certificate",
+                    &other_oid,
+                    "--certify",
+                ],
+            ]
+            .concat(),
+            8,
+            "a control certificate at another date",
+        ),
+        (
+            [
+                question(&["--account", "4000"]),
+                vec![
+                    "--aging-certificate",
+                    &aging_oid,
+                    "--control-certificate",
+                    &control_oid,
+                    "--certify",
+                ],
+            ]
+            .concat(),
+            8,
+            "a different stated account",
+        ),
+        (
+            [
+                single.clone(),
+                vec![
+                    "--aging-certificate",
+                    &whole_oid,
+                    "--control-certificate",
+                    &control_oid,
+                    "--certify",
+                ],
+            ]
+            .concat(),
+            8,
+            "a whole-book aging for one account",
+        ),
+        (
+            [
+                whole.clone(),
+                vec![
+                    "--aging-certificate",
+                    &aging_oid,
+                    "--control-certificate",
+                    &control_oid,
+                    "--certify",
+                ],
+            ]
+            .concat(),
+            8,
+            "one account's aging for the whole book",
+        ),
+        (
+            [
+                single.clone(),
+                vec!["--aging-certificate", &aging_oid, "--certify"],
+            ]
+            .concat(),
+            2,
+            "a single source",
+        ),
+        (
+            [
+                single.clone(),
+                vec![
+                    "--aging-certificate",
+                    &aging_oid,
+                    "--control-certificate",
+                    &control_oid,
+                ],
+            ]
+            .concat(),
+            2,
+            "uncertified",
+        ),
+        (
+            vec![
+                "gl",
+                "aging",
+                "--account",
+                "1000",
+                "--as-of",
+                "2026-01-31",
+                "--as-known-at",
+                &at,
+                "--aging-certificate",
+                &aging_oid,
+                "--control-certificate",
+                &control_oid,
+                "--certify",
+            ],
+            2,
+            "without --reconcile",
+        ),
+        (
+            vec![
+                "gl",
+                "aging",
+                "--reconcile",
+                "--account",
+                "1000",
+                "--as-of",
+                "2026-01-31",
+                "--bucket",
+                "0,30,60",
+                "--aging-certificate",
+                &aging_oid,
+                "--control-certificate",
+                control_path,
+                "--certify",
+            ],
+            2,
+            "without a fixed --as-known-at",
+        ),
+    ] {
+        let (code, errors) = f.run(&args);
+        assert_eq!(code, exit, "{why}: {errors:?}");
+        assert_eq!(errors.len(), 1, "{why}: {errors:?}");
+    }
+    assert_eq!(f.head(), retained, "refusals publish nothing");
+
+    // A launch-bound session names retained digests only, never host files.
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        f.dir.clone(),
+        None,
+        "aging-producer",
+        fa_cli::authority::LaunchProfile::Agent,
+        &["read", "produce"],
+    )
+    .unwrap();
+    let args = [
+        "gl",
+        "aging",
+        "--from-source",
+        saved_file.to_str().unwrap(),
+        "--as-of",
+        "2026-01-31",
+        "--certify",
+        "--json",
+    ]
+    .map(String::from);
+    let (code, captured) =
+        fa_cli::entry::fa_with_authority(&args, Files::default(), &authority, true);
+    assert_eq!(code, 2, "{}{}", captured.stdout, captured.stderr);
+    assert!(
+        captured
+            .stdout
+            .contains("--from-source cannot name a host filesystem path"),
+        "{}",
+        captured.stdout
+    );
+    assert_eq!(f.head(), retained);
+}
