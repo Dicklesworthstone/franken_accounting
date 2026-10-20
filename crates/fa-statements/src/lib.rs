@@ -31,6 +31,9 @@ pub mod concordat;
 pub mod custom;
 /// Deterministic Markdown IR for certified financial statements and restatement diffs (fa-9ae, fa-cet).
 pub mod markdown;
+/// Regulatory schedule definitions (FFIEC 031/041 Call Report Schedules RC/RI, FR Y-9C Schedules HC/HI)
+/// and versioned FFIEC validity and quality edits (`regulatory.edits(<form>@<quarter>)`) (plan §12.6, `fa-pbm`).
+pub mod regulatory;
 /// Exact account lead schedules with classified activity and stock tie-outs.
 pub mod roll_forward;
 

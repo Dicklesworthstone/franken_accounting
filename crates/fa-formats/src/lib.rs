@@ -20,6 +20,7 @@ pub mod conformance;
 pub mod csv_gl;
 pub mod legacy;
 pub mod load_file;
+pub mod part370;
 pub mod saft;
 pub mod tigerbeetle;
 pub mod xbrl;

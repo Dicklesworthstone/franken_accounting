@@ -1,0 +1,4 @@
+CS_Unique_ID|CS_First_Name|CS_Middle_Name|CS_Last_Name|CS_Name_Suffix|CS_Entity_Name|CS_Tax_ID|CS_Tax_ID_Type|CS_Street_Address_1|CS_City|CS_State|CS_Postal_Code|CS_Country
+CUST-001|Alice|M|Vance|||999-01-0001|S|100 Oak Street|Hartford|CT|06103|US
+CUST-002|Bob|J|Vance|||999-01-0002|S|100 Oak Street|Hartford|CT|06103|US
+CUST-003|||||Apex Manufacturing LLC|99-7000003|T|500 Industrial Way|New Haven|CT|06511|US
