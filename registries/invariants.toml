@@ -1189,8 +1189,8 @@ evidence_class = "invariant"
 checker_strength = "negative_fixture"
 first_gate = "G2"
 owner = "fa-zy1"
-checkers = ["fa-conformance::tests/substrate.rs::delta_cursor_retired_refuses_unloaded_or_retired_prefixes_and_triggers_register_rebuild"]
-negatives = ["fa-registers::tests/registers.rs::missing_register_membership_is_detected_and_repaired"]
+checkers = ["fa-conformance::tests/substrate.rs::delta_cursor_retired_refuses_unloaded_or_retired_prefixes_and_triggers_register_rebuild", "fa::lib::projections::tests::repairs_mirrors_exactly_in_one_commit_preserving_history_payloads_and_noop_retry", "fa::lib::projections::tests::fills_never_created_legacy_legs_and_edges_from_real_payloads_not_synthetic_zero_counters"]
+negatives = ["fa-registers::tests/registers.rs::missing_register_membership_is_detected_and_repaired", "fa::lib::projections::tests::spent_identity_failure_cannot_publish_earlier_mirror_repairs", "fa::lib::projections::tests::malformed_sources_authoritative_collisions_and_orphans_refuse_without_partial_write"]
 depends = ["FA-INV-16.core"]
 waiver = "forbidden"
 
