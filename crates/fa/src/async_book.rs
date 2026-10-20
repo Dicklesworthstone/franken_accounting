@@ -94,7 +94,7 @@ fn sweep_request(
 pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     pub(crate) db: Database<V>,
     pub(crate) blobs: fa_journal::BlobStore<B>,
-    context: BookContext,
+    pub(crate) context: BookContext,
     entropy: Entropy,
     /// Signs this book's transparency checkpoints (derived from its keys).
     signer: fa_notary::SigningKey,
