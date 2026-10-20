@@ -1077,7 +1077,7 @@ fn bank_drift_becomes_typed_recorded_findings_with_replayable_original_workpaper
         f.book.clone(),
         None,
         "bank-drift-observer",
-        LaunchProfile::Human,
+        LaunchProfile::Preparer,
         &["read", "reconcile"],
     )
     .unwrap();
@@ -1443,7 +1443,7 @@ fn bank_drift_admission_precedes_open_and_read_only_procedures_keep_their_author
         missing.clone(),
         None,
         "bank-drift-denied",
-        LaunchProfile::Human,
+        LaunchProfile::Preparer,
         &["read", "produce"],
     )
     .unwrap();
@@ -1475,7 +1475,7 @@ fn bank_drift_admission_precedes_open_and_read_only_procedures_keep_their_author
         f.book.clone(),
         None,
         "ordinary-procedure-reader",
-        LaunchProfile::Human,
+        LaunchProfile::Preparer,
         &["read"],
     )
     .unwrap();
