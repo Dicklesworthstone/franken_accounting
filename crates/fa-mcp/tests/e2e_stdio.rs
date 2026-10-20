@@ -2830,15 +2830,30 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
 
     // Existing source-bearing tools remain present and keep their original
     // privilege/Human boundary. Metadata history does not widen that authority.
-    for (tool, arguments) in [
-        ("fa_bank_match", json!({"import": manifest})),
-        ("fa_bank_status", json!({"import": manifest})),
+    // Without `privileged` the governed statement has no redacted view
+    // (FA-REF-142, a refusal: exit 3, as the CLI's governed-source test pins);
+    // confirmation is the Human boundary (FA-REF-008), judged before the source.
+    for (tool, arguments, refusal_id, exit) in [
+        (
+            "fa_bank_match",
+            json!({"import": manifest}),
+            "FA-REF-142",
+            3,
+        ),
+        (
+            "fa_bank_status",
+            json!({"import": manifest}),
+            "FA-REF-142",
+            3,
+        ),
         (
             "fa_bank_confirm",
             json!({
                 "import": manifest, "line_ordinal": line, "proposal_digest": digest,
                 "source_known_at": source_pin, "proposer": proposer, "date_window": 3,
             }),
+            "FA-REF-008",
+            7,
         ),
     ] {
         let (error, output, _) = call_tool(&mut mcp, tool, arguments);
@@ -2847,7 +2862,8 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
             "{tool} must retain its source/confirmation authority: {output}"
         );
         let refused = structured_error(&output);
-        assert_eq!(refused["exit"], json!(7));
+        assert_eq!(refused["refusal_id"], json!(refusal_id), "{tool}: {output}");
+        assert_eq!(refused["exit"], json!(exit), "{tool}: {output}");
         assert_eq!(refused["authority"]["profile"], json!("agent"));
     }
     for forbidden in [json!({"grant": ["privileged"]}), json!({"yes": true})] {
