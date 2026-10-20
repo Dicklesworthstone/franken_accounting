@@ -861,11 +861,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-10"
 id = "ceiling"
-status = "dormant"
+status = "live"
 statement = "Amount ceilings are debited serially through usage cells."
 evidence_class = "invariant"
+checker_strength = "negative_fixture"
 first_gate = "G2"
-activating = ["fa-llx"]
+owner = "fa-llx"
+checkers = ["fa-journal::tests/usage.rs::complete_gross_debits_share_a_root_across_calls_descendants_and_retries", "fa-cli::tests/daily_usage.rs::cli_root_issue_enforces_cumulative_gross_debits_and_retries_do_not_recharge"]
+negatives = ["fa-journal::tests/usage.rs::issuance_cannot_drop_widen_or_reset_daily_lineage_or_units", "fa-journal::tests/usage.rs::restored_cells_and_deleted_or_relabelled_receipts_never_restore_capacity"]
 waiver = "forbidden"
 
 [[clause]]
