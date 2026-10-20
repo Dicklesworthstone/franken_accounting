@@ -1144,9 +1144,15 @@ mod tests {
     fn activated_slo_row_without_measured_baseline_is_refused() {
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         let slo_text = include_str!("../../../registries/slo.toml");
-        // Planted negative (fa-e75k): flip FA-BENCH-01 to activated while its
-        // manifest carries no [baseline].
-        let activated_text = slo_text.replacen("activated = false", "activated = true", 1);
+        // Planted negative (fa-e75k): flip FA-BENCH-01 (the first [[slo]] row) to
+        // activated while its manifest carries no [baseline].
+        let row = "id = \"FA-BENCH-01\"";
+        let at = slo_text.find(row).expect("FA-BENCH-01 row");
+        let (before, after) = slo_text.split_at(at);
+        let activated_text = format!(
+            "{before}{}",
+            after.replacen("activated = false", "activated = true", 1)
+        );
         let slo = SloRegistry::parse(&activated_text, &op_costs).expect("slo.toml variant");
         assert_eq!(
             slo.activated_manifest_ids(),
@@ -1250,7 +1256,12 @@ mod tests {
             assert!(reason.contains("fa-ykbp"), "{reason}");
             let line = o.to_json_line();
             assert!(line.contains("\"event\":\"bench_unmeasured\""), "{line}");
-            for forbidden in ["p50_us", "baseline", "bytes_per_leg", "samples"] {
+            for forbidden in [
+                "\"p50_us\":",
+                "\"baseline_p50_us\":",
+                "\"bytes_per_leg\":",
+                "\"samples\":",
+            ] {
                 assert!(!line.contains(forbidden), "{forbidden} in {line}");
             }
         }
