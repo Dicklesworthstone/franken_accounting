@@ -914,9 +914,12 @@ pub fn verify_bundle(
     // supply that missing derivation premise. Filter/index assertions cannot.
     let mut full_prefix_payloads = matches!(&p.manifest.scope, BundleScope::Prefix)
         && matches!(&entry_set, Grade::Pass)
-        && signed.as_ref().zip(scoped.as_ref()).is_some_and(|(signed, scope)| {
-            u64::try_from(scope.len()).ok() == Some(signed.checkpoint.leaf_count)
-        });
+        && signed
+            .as_ref()
+            .zip(scoped.as_ref())
+            .is_some_and(|(signed, scope)| {
+                u64::try_from(scope.len()).ok() == Some(signed.checkpoint.leaf_count)
+            });
     checks.push(check(
         "entries",
         scope_label,
@@ -981,7 +984,10 @@ pub fn verify_bundle(
                 Ok(balance) if balance.scope == crate::balance::SCOPE_RECOMPUTATION => Grade::Pass,
                 Ok(balance)
                     if balance.scope == crate::balance::SCOPE_MEMBERSHIP_ONLY
-                        && full_prefix_payloads => Grade::Pass,
+                        && full_prefix_payloads =>
+                {
+                    Grade::Pass
+                }
                 Ok(balance) => Grade::Fail(format!(
                     "balance completeness is not independently verified (scope {}); \
                      supply a payload-complete proof or every verified prefix entry",
