@@ -610,7 +610,7 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
                 "--entry",
                 "E:00000000000000000000000000000000",
             ],
-            &[Op::Produce],
+            &[Op::Read, Op::Produce],
             Reaches,
         ),
         row(

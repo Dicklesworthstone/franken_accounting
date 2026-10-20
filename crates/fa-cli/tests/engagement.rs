@@ -335,14 +335,36 @@ fn an_engagement_proposes_books_and_passes_adjustments_and_posts_nothing_itself(
     assert_eq!(wrong_params[11], "--performance");
     wrong_params[12] = "600.00 USD";
     let before = f.head();
-    let (exit, _) = f.run(&wrong_params);
+    let (exit, error) = f.run(&wrong_params);
     assert_eq!(exit, 2, "performance above overall is a usage error");
+    assert_eq!(text(data(&error), "class"), "usage", "{}", error.render());
+    assert!(
+        text(data(&error), "message").contains("clearly trivial <= performance <= overall"),
+        "{}",
+        error.render()
+    );
     assert_eq!(f.head(), before);
     let mut unknown_period = OPEN.to_vec();
     unknown_period[2] = "FY99-audit";
     assert_eq!(unknown_period[5], "--period");
     unknown_period[6] = "FY2099-P01";
-    f.refused(&unknown_period, 3, "FA-REF-021");
+    f.refused(&unknown_period, 7, "FA-REF-021");
+
+    // A third proposal with proposal 1's legs, before any correction posts.
+    f.intent(
+        "fees-again.json",
+        "2026-03-30",
+        &[("debit", "6000", "40.00"), ("credit", "2100", "40.00")],
+    );
+    let third = f.ok(&[
+        "adjustment",
+        "propose",
+        "--engagement",
+        "FY26-audit",
+        "--intent",
+        "fees-again.json",
+    ]);
+    assert_eq!(int(data(&third).get("proposal").unwrap(), "number"), 3);
 
     // The client books proposal 1 with its own posting; the booking names
     // that committed entry, whose legs equal the proposal's.
@@ -363,6 +385,7 @@ fn an_engagement_proposes_books_and_passes_adjustments_and_posts_nothing_itself(
     let decision = proposal.get("decision").unwrap();
     assert_eq!(text(decision, "kind"), "book");
     assert_eq!(text(decision, "entry"), correction);
+    assert_eq!(decision.get("superseded_by"), Some(&Json::Null));
     // That entry does not make proposal 2's correction.
     f.refused(
         &[
@@ -421,14 +444,15 @@ fn an_engagement_proposes_books_and_passes_adjustments_and_posts_nothing_itself(
             "--engagement",
             "FY26-audit",
             "--proposal",
-            "3",
+            "9",
             "--reason",
             "Other",
         ],
         3,
         "FA-REF-184",
     );
-    let (exit, _) = f.run(&[
+    let before = f.head();
+    let (exit, error) = f.run(&[
         "adjustment",
         "pass",
         "--engagement",
@@ -439,23 +463,18 @@ fn an_engagement_proposes_books_and_passes_adjustments_and_posts_nothing_itself(
         "Immaterial",
     ]);
     assert_eq!(exit, 2, "an unregistered reason is a usage error");
-
-    // One committed entry makes one correction: a third proposal with the
-    // same legs cannot be booked by the entry that booked proposal 1.
-    f.intent(
-        "fees-again.json",
-        "2026-03-30",
-        &[("debit", "6000", "40.00"), ("credit", "2100", "40.00")],
+    assert_eq!(text(data(&error), "class"), "usage", "{}", error.render());
+    assert!(
+        text(data(&error), "message")
+            .contains("`Immaterial` is not a registered adjustment_pass reason"),
+        "{}",
+        error.render()
     );
-    let third = f.ok(&[
-        "adjustment",
-        "propose",
-        "--engagement",
-        "FY26-audit",
-        "--intent",
-        "fees-again.json",
-    ]);
-    assert_eq!(int(data(&third).get("proposal").unwrap(), "number"), 3);
+    assert_eq!(f.head(), before);
+
+    // One committed entry makes one correction: the third proposal, with
+    // the same legs and recorded before the correction, cannot be booked by
+    // the entry that booked proposal 1.
     let refusal = f.refused(
         &[
             "adjustment",
@@ -522,6 +541,103 @@ fn an_engagement_proposes_books_and_passes_adjustments_and_posts_nothing_itself(
     assert_eq!(rows(data(&listed), "engagements").len(), 1);
 }
 
+/// Booking names the correction that stands: recorded after its proposal,
+/// effective in the proposal's period, never reversed. A booking whose
+/// entry is reversed later is uncorrected again in the summary, with the
+/// decision still on the record.
+#[test]
+fn booking_names_the_standing_correction_after_its_proposal_in_its_period() {
+    let f = Fixture::new();
+    f.ok(OPEN);
+    let propose = |name: &str, date: &str, amount: &str| {
+        f.intent(
+            name,
+            date,
+            &[("debit", "6000", amount), ("credit", "2100", amount)],
+        );
+        let proposed = f.ok(&[
+            "adjustment",
+            "propose",
+            "--engagement",
+            "FY26-audit",
+            "--intent",
+            name,
+        ]);
+        int(data(&proposed).get("proposal").unwrap(), "number").to_string()
+    };
+    let book_args = |proposal: &str, entry: &str| -> Vec<String> {
+        [
+            "adjustment",
+            "book",
+            "--engagement",
+            "FY26-audit",
+            "--proposal",
+            proposal,
+            "--entry",
+            &format!("E:{entry}"),
+        ]
+        .map(str::to_string)
+        .to_vec()
+    };
+    let refuse_book = |proposal: &str, entry: &str, why: &str| {
+        let args = book_args(proposal, entry);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let refusal = f.refused(&args, 3, "FA-REF-182");
+        assert!(
+            text(data(&refusal), "message").contains(why),
+            "{why}: {}",
+            refusal.render()
+        );
+    };
+
+    // An entry recorded before the proposal is not its correction.
+    let early = f.post("early", "2026-03-20", "6000", "2100", "15.00");
+    let first = propose("proposal-early.json", "2026-03-20", "15.00");
+    refuse_book(&first, &early, "before the proposal");
+
+    // An entry effective in another scope period is not its correction.
+    let second = propose("proposal-april.json", "2026-03-25", "12.00");
+    let april = f.post("april", "2026-04-05", "6000", "2100", "12.00");
+    refuse_book(&second, &april, "outside the proposal's period FY2026-P03");
+
+    // A reversed entry no longer makes the correction.
+    let third = propose("proposal-reversed.json", "2026-03-26", "13.00");
+    let reversed = f.post("reversed", "2026-03-26", "6000", "2100", "13.00");
+    f.ok(&["reverse", &reversed, "--reason", "WrongAmount"]);
+    refuse_book(&third, &reversed, "superseded by entry");
+
+    // A standing correction books; reversing it later makes the proposal
+    // uncorrected again, its booking still on the record.
+    let fourth = propose("proposal-standing.json", "2026-03-27", "14.00");
+    let standing = f.post("standing", "2026-03-27", "6000", "2100", "14.00");
+    let args = book_args(&fourth, &standing);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    f.ok(&args);
+    let sud = f.ok(&["engagement", "sud", "FY26-audit"]);
+    assert!(rows(data(&sud), "items").is_empty(), "{}", sud.render());
+    let reversal = f.ok(&["reverse", &standing, "--reason", "WrongAmount"]);
+    let reversal = text(data(&reversal), "vid").to_string();
+    let sud = f.ok(&["engagement", "sud", "FY26-audit"]);
+    let items = rows(data(&sud), "items");
+    assert_eq!(items.len(), 1, "{}", sud.render());
+    assert_eq!(int(&items[0], "number").to_string(), fourth);
+    assert_eq!(items[0].get("reason"), Some(&Json::Null));
+    assert_eq!(text(&items[0], "booked_entry"), standing);
+    assert_eq!(text(&items[0], "superseded_by"), reversal);
+    let effect = items[0].get("effect").unwrap();
+    assert_eq!(text(effect, "income"), "-14.00 USD");
+    assert_eq!(text(effect, "liabilities"), "14.00 USD");
+    let shown = f.ok(&["engagement", "show", "FY26-audit"]);
+    let booked = rows(data(&shown), "proposals")
+        .iter()
+        .find(|p| int(p, "number").to_string() == fourth)
+        .unwrap();
+    assert_eq!(text(booked, "state"), "booked");
+    let decision = booked.get("decision").unwrap();
+    assert_eq!(text(decision, "entry"), standing);
+    assert_eq!(text(decision, "superseded_by"), reversal);
+}
+
 #[test]
 fn engagement_records_need_produce_and_never_come_from_an_agent() {
     let f = Fixture::new();
@@ -531,26 +647,29 @@ fn engagement_records_need_produce_and_never_come_from_an_agent() {
         "2026-03-31",
         &[("debit", "6000", "40.00"), ("credit", "2100", "40.00")],
     );
-    let issue = |holder: &str, profile: &str, op: &str| {
+    let issue = |holder: &str, profile: &str, ops: &[&str]| {
         let token = format!("{holder}.token");
-        f.ok(&[
+        let mut args = vec![
             "capability",
             "issue",
             "--holder",
             holder,
             "--profile",
             profile,
-            "--op",
-            op,
             "--out",
             &token,
             "--grant",
             "issue_capability",
-        ]);
+        ];
+        // The issuer must hold what it issues: never a widening.
+        for op in ops {
+            args.extend(["--op", op, "--grant", op]);
+        }
+        f.ok(&args);
         token
     };
     // A reader reads the engagement but proposes nothing (missing produce).
-    let reader = issue("engagement-reader", "human", "read");
+    let reader = issue("engagement-reader", "human", &["read"]);
     f.ok(&["--token", &reader, "engagement", "show", "FY26-audit"]);
     f.refused(
         &[
@@ -566,8 +685,57 @@ fn engagement_records_need_produce_and_never_come_from_an_agent() {
         7,
         "FA-REF-011",
     );
-    // An Agent holding produce still journals no trunk record.
-    let agent = issue("engagement-agent", "agent", "produce");
+    // The owner proposes twice and posts the first correction.
+    for key in ["first", "second"] {
+        f.ok(&[
+            "adjustment",
+            "propose",
+            "--engagement",
+            "FY26-audit",
+            "--intent",
+            "fees.json",
+            "--key",
+            key,
+        ]);
+    }
+    let correction = f.post("fees-correction", "2026-03-31", "6000", "2100", "40.00");
+    let entry = format!("E:{correction}");
+    fn book<'a>(token: &'a str, entry: &'a str) -> Vec<&'a str> {
+        vec![
+            "--token",
+            token,
+            "adjustment",
+            "book",
+            "--engagement",
+            "FY26-audit",
+            "--proposal",
+            "1",
+            "--entry",
+            entry,
+        ]
+    }
+    fn pass(token: &str) -> Vec<&str> {
+        vec![
+            "--token",
+            token,
+            "adjustment",
+            "pass",
+            "--engagement",
+            "FY26-audit",
+            "--proposal",
+            "2",
+            "--reason",
+            "Other",
+        ]
+    }
+
+    // An Agent holding read and produce still journals no trunk record:
+    // neither an engagement, a proposal, a booking nor a pass.
+    let agent = issue("engagement-agent", "agent", &["read", "produce"]);
+    let mut agent_open = vec!["--token", agent.as_str()];
+    agent_open.extend(OPEN);
+    agent_open[4] = "FY26-agent";
+    f.refused(&agent_open, 7, "FA-REF-013");
     f.refused(
         &[
             "--token",
@@ -582,4 +750,14 @@ fn engagement_records_need_produce_and_never_come_from_an_agent() {
         7,
         "FA-REF-013",
     );
+    f.refused(&book(&agent, &entry), 7, "FA-REF-013");
+    f.refused(&pass(&agent), 7, "FA-REF-013");
+
+    // Produce alone passes (it reads nothing it does not own) but never
+    // books: booking reads the entry it names, which needs read.
+    let producer = issue("engagement-producer", "human", &["produce"]);
+    f.refused(&book(&producer, &entry), 7, "FA-REF-011");
+    f.ok(&pass(&producer));
+    let booker = issue("engagement-booker", "human", &["read", "produce"]);
+    f.ok(&book(&booker, &entry));
 }
