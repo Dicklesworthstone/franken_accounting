@@ -57,6 +57,89 @@ done
 
 LOG_DIR="${CHECK_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/fa-check.XXXXXX")}"
 mkdir -p "$LOG_DIR"
+STEP_MANIFEST="${CHECK_STEP_MANIFEST:-$LOG_DIR/step-verdicts.jsonl}"
+: >"$STEP_MANIFEST"
+
+CHECK_TREE_HASH="$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo unknown)"
+CHECK_TOOLCHAIN="$(rustc --version 2>/dev/null || echo unavailable)"
+
+hash_file() {
+  local f="$1"
+  if [ ! -f "$f" ]; then
+    printf 'none\n'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$f" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$f" | awk '{print $1}'
+  else
+    printf 'unavailable\n'
+  fi
+}
+
+extract_worker() {
+  local f="$1"
+  local w=""
+  if [ -f "$f" ]; then
+    w="$(sed -n 's/.*Selected worker: \([^ ]*\) at .*/\1/p' "$f" | tail -n 1)"
+  fi
+  printf '%s\n' "${w:-local}"
+}
+
+record_step_verdict() {
+  local step="$1" status="$2" started="$3" finished="$4" duration="$5" log_file="${6:-}"
+  local worker log_digest
+  worker="$(extract_worker "$log_file")"
+  log_digest="$(hash_file "$log_file")"
+  printf '{"step":"%s","status":"%s","tree_hash":"%s","toolchain":"%s","worker":"%s","started":"%s","finished":"%s","duration_secs":%s,"log_digest":"%s"}\n' \
+    "$step" "$status" "$CHECK_TREE_HASH" "$CHECK_TOOLCHAIN" "$worker" "$started" "$finished" "${duration:-0}" "$log_digest" \
+    >>"$STEP_MANIFEST"
+}
+
+try_reuse_step() {
+  local label="$1" log_dest="$2"
+  [ -n "${CHECK_RESUME_FROM:-}" ] || return 1
+  local prior_manifest="$CHECK_RESUME_FROM"
+  local prior_dir=""
+  if [ -d "$CHECK_RESUME_FROM" ]; then
+    prior_dir="$CHECK_RESUME_FROM"
+    if [ -f "$prior_dir/tree-before.txt" ] && [ "$(cat "$prior_dir/tree-before.txt")" != "$CHECK_TREE_HASH" ]; then
+      return 1
+    fi
+    if [ -f "$prior_dir/check.stdout.log" ] && grep -Eq '^RED([[:space:]]|$)|: [0-9]+ passed, [1-9][0-9]* failed,' "$prior_dir/check.stdout.log"; then
+      return 1
+    fi
+    prior_manifest="$prior_dir/step-verdicts.jsonl"
+    if [ ! -f "$prior_manifest" ] && [ -f "$prior_dir/tools.txt" ]; then
+      prior_manifest="$prior_dir/tools.txt"
+    fi
+  fi
+  if [ -f "$prior_manifest" ]; then
+    if grep -Fq '"status":"FAIL"' "$prior_manifest"; then
+      return 1
+    fi
+    local line
+    line="$(grep -F "\"step\":\"$label\"" "$prior_manifest" | grep -F "\"status\":\"PASS\"" | grep -F "\"tree_hash\":\"$CHECK_TREE_HASH\"" | grep -F "\"toolchain\":\"$CHECK_TOOLCHAIN\"" | tail -n 1 || true)"
+    if [ -n "$line" ]; then
+      line="${line#step_verdict=}"
+      if [ -n "$prior_dir" ] && [ -n "$log_dest" ] && [ -f "$prior_dir/$(basename "$log_dest")" ]; then
+        cp "$prior_dir/$(basename "$log_dest")" "$log_dest" 2>/dev/null || true
+      fi
+      printf '%s\n' "$line" >>"$STEP_MANIFEST"
+      gate_pass "$label (reused from split-run for tree ${CHECK_TREE_HASH:0:12})"
+      return 0
+    fi
+  fi
+  if [ -n "$prior_dir" ] && [ -f "$prior_dir/check.stdout.log" ]; then
+    if grep -Eq "^PASS ${label}([[:space:]]|\$)" "$prior_dir/check.stdout.log"; then
+      local now_utc
+      now_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      record_step_verdict "$label" "PASS" "$now_utc" "$now_utc" 0 "$log_dest"
+      gate_pass "$label (reused from split-run for tree ${CHECK_TREE_HASH:0:12})"
+      return 0
+    fi
+  fi
+  return 1
+}
 
 gate_init "check.sh"
 
@@ -78,13 +161,25 @@ gate_init "check.sh"
 run_step() {
   local label="$1"; shift
   local log="$LOG_DIR/${label//[^A-Za-z0-9_.-]/_}.log"
+  if try_reuse_step "$label" "$log"; then
+    return
+  fi
+  local started t0 finished t1 dur
+  started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  t0="$(date +%s)"
   if ! command -v "$1" >/dev/null 2>&1; then
+    finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    record_step_verdict "$label" "UNRUN" "$started" "$finished" 0 "$log"
     gate_unrun "$label — $1 is not installed; did not run; log: $log"
     return
   fi
   "$@" >"$log" 2>&1
   local rc=$?
+  finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  t1="$(date +%s)"
+  dur=$((t1 - t0))
   if [ "$rc" -eq 0 ]; then
+    record_step_verdict "$label" "PASS" "$started" "$finished" "$dur" "$log"
     gate_pass "$label"
     return
   fi
@@ -92,8 +187,10 @@ run_step() {
   grep -q 'Remote command finished' "$log" && executed=1
   if [ "$rc" -eq 103 ] \
     || { [ "$executed" -eq 0 ] && { [ "$rc" -eq 100 ] || grep -Eq '^\[RCH\] .*(refusing local fallback|completion unconfirmed)' "$log"; }; }; then
+    record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
     gate_unrun "$label — the rch offloader did not run the command (exit $rc: refused, no admissible worker, or lost the worker before execution; retryable, not a product verdict); log: $log"
   else
+    record_step_verdict "$label" "FAIL" "$started" "$finished" "$dur" "$log"
     gate_fail "$label (exit $rc); log: $log"
     gate_diag "---- $label: last 40 lines of $log"
     tail -n 40 "$log" >&2
@@ -115,21 +212,34 @@ CHECK_JOBS="${CHECK_JOBS:-2}"
 cargo_build() {
   local label="$1" sub="$2"; shift 2
   local log="$LOG_DIR/${label//[^A-Za-z0-9_.-]/_}.log"
+  if try_reuse_step "$label" "$log"; then
+    return
+  fi
+  local started t0 finished t1 dur
+  started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  t0="$(date +%s)"
   if ! command -v rch >/dev/null 2>&1; then
+    finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    record_step_verdict "$label" "UNRUN" "$started" "$finished" 0 "$log"
     gate_unrun "$label — rch is not installed; compiling steps go through rch (AGENTS.md); log: $log"
     return
   fi
   RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
     rch exec -- cargo "$sub" -j "$CHECK_JOBS" "$@" >"$log" 2>&1
   local rc=$?
+  finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  t1="$(date +%s)"
+  dur=$((t1 - t0))
   if [ "$rc" -eq 0 ]; then
     if ! grep -Fq 'Remote command finished: exit=0' "$log"; then
+      record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
       gate_unrun "$label — exit 0 without 'Remote command finished: exit=0' completion marker; log: $log"
       return
     fi
     case "$sub" in
       check|clippy)
         if ! grep -Eq '^[[:space:]]*Finished ' "$log"; then
+          record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
           gate_unrun "$label — exit 0 without cargo 'Finished' completion marker; log: $log"
           return
         fi
@@ -137,6 +247,7 @@ cargo_build() {
       test)
         if [ "$label" = "test-list" ]; then
           if ! grep -Eq ': test$' "$log"; then
+            record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
             gate_unrun "$label — exit 0 with zero listed tests; log: $log"
             return
           fi
@@ -144,12 +255,14 @@ cargo_build() {
           local passed_total
           passed_total="$(awk '/^test result: ok\./ { for (i = 1; i <= NF; i++) if ($i == "passed;") sum += $(i - 1) } END { print sum + 0 }' "$log")"
           if ! grep -Eq '^test result: ok\. ' "$log" || [ "${passed_total:-0}" -le 0 ]; then
+            record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
             gate_unrun "$label — exit 0 without a positive 'test result: ok. N passed' completion marker (passed=${passed_total:-0}); log: $log"
             return
           fi
         fi
         ;;
     esac
+    record_step_verdict "$label" "PASS" "$started" "$finished" "$dur" "$log"
     gate_pass "$label"
     return
   fi
@@ -157,8 +270,10 @@ cargo_build() {
   grep -q 'Remote command finished' "$log" && executed=1
   if [ "$rc" -eq 103 ] \
     || { [ "$executed" -eq 0 ] && { [ "$rc" -eq 100 ] || grep -Eq '^\[RCH\] .*(refusing local fallback|completion unconfirmed)' "$log"; }; }; then
+    record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
     gate_unrun "$label — the rch offloader did not run the command (exit $rc: refused, no admissible worker, or lost the worker before execution; retryable, not a product verdict); log: $log"
   else
+    record_step_verdict "$label" "FAIL" "$started" "$finished" "$dur" "$log"
     gate_fail "$label (exit $rc); log: $log"
     gate_diag "---- $label: last 40 lines of $log"
     tail -n 40 "$log" >&2
@@ -173,15 +288,27 @@ cargo_build() {
 run_gate() {
   local label="$1"; shift
   local log="$LOG_DIR/${label//[^A-Za-z0-9_.-]/_}.log"
+  if try_reuse_step "$label" "$log"; then
+    return
+  fi
+  local started t0 finished t1 dur
+  started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  t0="$(date +%s)"
   bash "$@" >"$log" 2>&1
   local rc=$?
+  finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  t1="$(date +%s)"
+  dur=$((t1 - t0))
   local tally
   tally="$(grep -E '^[a-z-]+: [0-9]+ passed, [0-9]+ failed, [0-9]+ unrun$' "$log" | tail -n 1)"
   if [ "$rc" -eq 0 ]; then
+    record_step_verdict "$label" "PASS" "$started" "$finished" "$dur" "$log"
     gate_pass "$label ($tally)"
   elif [ "$rc" -eq 2 ] && grep -q '^UNRUN ' "$log"; then
+    record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
     gate_unrun "$label — $(grep -m1 '^UNRUN ' "$log" | cut -c7-); log: $log"
   else
+    record_step_verdict "$label" "FAIL" "$started" "$finished" "$dur" "$log"
     gate_fail "$label (exit $rc; $tally); log: $log"
     grep '^FAIL ' "$log" >&2 || true
   fi
@@ -247,22 +374,33 @@ fi
 # project scan exit 0 / 0 critical; a fixture with a src panic exits 1 / 1
 # critical). The verdict is the exit code AND the critical count, and a
 # positive file count is required, because ubs exits 0 on "nothing checked".
-if ! command -v ubs >/dev/null 2>&1; then
+UBS_LOG="$LOG_DIR/ubs.log"
+if try_reuse_step "ubs" "$UBS_LOG"; then
+  :
+elif ! command -v ubs >/dev/null 2>&1; then
+  record_step_verdict "ubs" "UNRUN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$UBS_LOG"
   gate_unrun "ubs — ubs is not installed"
 elif [ -z "$(git ls-files --cached --others --exclude-standard -- '*.rs')" ]; then
+  record_step_verdict "ubs" "UNRUN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$UBS_LOG"
   gate_unrun "ubs — no tracked Rust files; nothing was checked"
 else
-  UBS_LOG="$LOG_DIR/ubs.log"
+  UBS_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  UBS_T0="$(date +%s)"
   UBS_RC=0
   ubs --only=rust --no-cargo --no-color "$ROOT" >"$UBS_LOG" 2>&1 || UBS_RC=$?
+  UBS_FINISHED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  UBS_DUR=$(( $(date +%s) - UBS_T0 ))
   # A verdict needs a positive file count AND a numeric critical summary;
   # "Files scanned: 0" or a missing summary is "nothing was checked".
   if ! grep -Eq '^[[:space:]]*Files scanned:[[:space:]]*[1-9][0-9]*[[:space:]]*$' "$UBS_LOG" \
     || ! grep -Eq '^[[:space:]]*Critical issues:[[:space:]]*[0-9]+[[:space:]]*$' "$UBS_LOG"; then
+    record_step_verdict "ubs" "UNRUN" "$UBS_STARTED" "$UBS_FINISHED" "$UBS_DUR" "$UBS_LOG"
     gate_unrun "ubs — no positive file count or no critical-issue summary in the scanner output (exit $UBS_RC); nothing was checked; log: $UBS_LOG"
   elif [ "$UBS_RC" -eq 0 ] && ! grep -Eq '^[[:space:]]*Critical issues:[[:space:]]*[1-9][0-9]*[[:space:]]*$' "$UBS_LOG"; then
+    record_step_verdict "ubs" "PASS" "$UBS_STARTED" "$UBS_FINISHED" "$UBS_DUR" "$UBS_LOG"
     gate_pass "ubs (static scan of the project, 0 critical; $(grep -m1 'Files scanned:' "$UBS_LOG" | tr -s ' '))"
   else
+    record_step_verdict "ubs" "FAIL" "$UBS_STARTED" "$UBS_FINISHED" "$UBS_DUR" "$UBS_LOG"
     gate_fail "ubs — critical findings or scanner failure (exit $UBS_RC); log: $UBS_LOG"
     grep -E 'CRITICAL|Critical issues' "$UBS_LOG" >&2 || true
   fi
@@ -279,15 +417,24 @@ run_gate "gate-evidence-negative" "$ROOT/scripts/tests/gate_evidence_negative.sh
 # Registries: every TOML under registries/ is consumed by compiled code and
 # validated by the fa-registry / fa-model tests, which `test` above ran. This
 # step asserts the closure: a registry file nothing embeds is a dead artifact.
-REG_FAIL=0
-for f in registries/*.toml; do
-  base="$(basename "$f")"
-  if ! grep -rq "registries/$base" crates/ --include='*.rs'; then
-    gate_fail "registry $base is not embedded by any crate (dead artifact)"
-    REG_FAIL=1
+if ! try_reuse_step "registries" ""; then
+  REG_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  REG_FAIL=0
+  for f in registries/*.toml; do
+    base="$(basename "$f")"
+    if ! grep -rq "registries/$base" crates/ --include='*.rs'; then
+      gate_fail "registry $base is not embedded by any crate (dead artifact)"
+      REG_FAIL=1
+    fi
+  done
+  REG_FINISHED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [ "$REG_FAIL" -eq 0 ]; then
+    record_step_verdict "registries" "PASS" "$REG_STARTED" "$REG_FINISHED" 0 ""
+    gate_pass "registries — every registries/*.toml is embedded by code"
+  else
+    record_step_verdict "registries" "FAIL" "$REG_STARTED" "$REG_FINISHED" 0 ""
   fi
-done
-[ "$REG_FAIL" -eq 0 ] && gate_pass "registries — every registries/*.toml is embedded by code"
+fi
 if [ "$QUICK" -eq 0 ]; then
   cargo_build "registry-check" test -p registry-check --bins
 fi
@@ -299,10 +446,14 @@ fi
 # closures and are deny.toml's business (cargo deny), not this tripwire's.
 # What this admits that a lockfile grep would not: foundation-transitive paths.
 # What it still catches: any new direct dependency of fa-* on anything else.
-if ! command -v jq >/dev/null 2>&1; then
+DEPS_LOG="$LOG_DIR/forbidden-deps.log"
+if try_reuse_step "forbidden-deps" "$DEPS_LOG"; then
+  :
+elif ! command -v jq >/dev/null 2>&1; then
+  record_step_verdict "forbidden-deps" "UNRUN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$DEPS_LOG"
   gate_unrun "forbidden-deps — jq is not installed; first-party direct dependencies were not checked"
 else
-  DEPS_LOG="$LOG_DIR/forbidden-deps.log"
+  DEPS_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # Two steps, each checked: a failed `cargo metadata` must not become an
   # empty edge list that jq turns into a green zero-edge verdict.
   if cargo metadata --no-deps --format-version 1 >"$DEPS_LOG.json" 2>>"$DEPS_LOG" \
@@ -319,9 +470,13 @@ else
       esac
     done <"$DEPS_LOG.pairs"
     if [ "$DEP_FAIL" -eq 0 ]; then
+      record_step_verdict "forbidden-deps" "PASS" "$DEPS_STARTED" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$DEPS_LOG"
       gate_pass "forbidden-deps — every first-party direct dependency is first-party or a foundation ($(wc -l <"$DEPS_LOG.pairs" | tr -d ' ') edges)"
+    else
+      record_step_verdict "forbidden-deps" "FAIL" "$DEPS_STARTED" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$DEPS_LOG"
     fi
   else
+    record_step_verdict "forbidden-deps" "UNRUN" "$DEPS_STARTED" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$DEPS_LOG"
     gate_unrun "forbidden-deps — cargo metadata or jq did not produce the dependency edges (offloader, toolchain, or empty output); log: $DEPS_LOG"
   fi
 fi
@@ -341,7 +496,9 @@ run_gate "doctrine-negative" "$ROOT/scripts/tests/doctrine_negative.sh" \
 # registry dependency. Observed before fa-pri: fa-reference -> fa-registry ->
 # fa-money. Check the actual resolved normal closure, not just direct edges.
 REFERENCE_LOG="$LOG_DIR/reference-boundary.log"
-if cargo tree --locked -p fa-reference --edges normal --prefix none --format '{p}' >"$REFERENCE_LOG" 2>"$REFERENCE_LOG.stderr" \
+if try_reuse_step "reference-boundary" "$REFERENCE_LOG"; then
+  :
+elif cargo tree --locked -p fa-reference --edges normal --prefix none --format '{p}' >"$REFERENCE_LOG" 2>"$REFERENCE_LOG.stderr" \
   && [ -s "$REFERENCE_LOG" ]; then
   REFERENCE_FAIL=0
   while read -r pkg rest; do
@@ -350,8 +507,14 @@ if cargo tree --locked -p fa-reference --edges normal --prefix none --format '{p
       *) gate_fail "reference-boundary — production dependency in oracle closure: $pkg $rest"; REFERENCE_FAIL=1 ;;
     esac
   done <"$REFERENCE_LOG"
-  [ "$REFERENCE_FAIL" -eq 0 ] && gate_pass "reference-boundary — oracle imports only registry data and calendar primitives"
+  if [ "$REFERENCE_FAIL" -eq 0 ]; then
+    record_step_verdict "reference-boundary" "PASS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$REFERENCE_LOG"
+    gate_pass "reference-boundary — oracle imports only registry data and calendar primitives"
+  else
+    record_step_verdict "reference-boundary" "FAIL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$REFERENCE_LOG"
+  fi
 else
+  record_step_verdict "reference-boundary" "UNRUN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$REFERENCE_LOG"
   gate_unrun "reference-boundary — cargo tree did not resolve the oracle closure; log: $REFERENCE_LOG.stderr"
 fi
 
