@@ -644,22 +644,41 @@ pub struct StringerEvaluation {
     pub upper_misstatement_limit: Amount,
 }
 
+/// The most misstatements the registered Poisson factor tables cover.
+pub const MAX_TABLED_MISSTATEMENTS: usize = 40;
+
+/// The registered one-sided Poisson upper confidence factor R(k) for `k`
+/// misstatements, in basis points: the exact limit (P(X <= k; R) = 1 -
+/// confidence) rounded up to 0.01, so every bound built on it is
+/// conservative. `poisson_factors_are_the_upper_limits_rounded_up_to_a_hundredth`
+/// proves each entry in exact integer arithmetic. Beyond the table the
+/// bound is refused, never extrapolated.
 fn poisson_upper_factor_bps(confidence_level_bps: u32, k: usize) -> Result<u128, LanternError> {
-    const FACTORS_90: &[u128] = &[
-        23_100, 38_900, 53_300, 66_900, 80_000, 92_800, 105_400, 117_800, 130_000, 142_100, 154_100,
+    const FACTORS_90: [u128; MAX_TABLED_MISSTATEMENTS + 1] = [
+        23_100, 38_900, 53_300, 66_900, 80_000, 92_800, 105_400, 117_800, 130_000, 142_100,
+        154_100, 166_000, 177_900, 189_600, 201_300, 213_000, 224_600, 236_100, 247_600, 259_100,
+        270_500, 281_900, 293_300, 304_600, 315_900, 327_200, 338_400, 349_600, 360_800, 372_000,
+        383_200, 394_300, 405_500, 416_600, 427_700, 438_800, 449_800, 460_900, 471_900, 482_900,
+        494_000,
     ];
-    const FACTORS_95: &[u128] = &[
+    const FACTORS_95: [u128; MAX_TABLED_MISSTATEMENTS + 1] = [
         30_000, 47_500, 63_000, 77_600, 91_600, 105_200, 118_500, 131_500, 144_400, 157_100,
-        169_700,
+        169_700, 182_100, 194_500, 206_700, 218_900, 231_000, 243_100, 255_000, 267_000, 278_800,
+        290_700, 302_500, 314_200, 325_900, 337_600, 349_200, 360_800, 372_400, 383_900, 395_500,
+        407_000, 418_400, 429_900, 441_300, 452_700, 464_100, 475_500, 486_800, 498_100, 509_400,
+        520_700,
     ];
-    const FACTORS_99: &[u128] = &[
+    const FACTORS_99: [u128; MAX_TABLED_MISSTATEMENTS + 1] = [
         46_100, 66_400, 84_100, 100_500, 116_100, 131_100, 145_800, 160_000, 174_100, 187_900,
-        201_500,
+        201_500, 214_900, 228_300, 241_400, 254_500, 267_500, 280_400, 293_100, 305_900, 318_500,
+        331_100, 343_600, 356_100, 368_500, 380_800, 393_100, 405_400, 417_600, 429_800, 441_900,
+        454_100, 466_100, 478_200, 490_200, 502_200, 514_100, 526_100, 538_000, 549_800, 561_700,
+        573_500,
     ];
-    let table = match confidence_level_bps {
-        9_000 => FACTORS_90,
-        9_500 => FACTORS_95,
-        9_900 => FACTORS_99,
+    let table: &[u128] = match confidence_level_bps {
+        9_000 => &FACTORS_90,
+        9_500 => &FACTORS_95,
+        9_900 => &FACTORS_99,
         _ => {
             return Err(LanternError::Parameter {
                 procedure: "sample.stringer".into(),
@@ -669,13 +688,19 @@ fn poisson_upper_factor_bps(confidence_level_bps: u32, k: usize) -> Result<u128,
             });
         }
     };
-    if let Some(&val) = table.get(k) {
-        Ok(val)
-    } else {
-        let last = table[table.len() - 1];
-        let extra = (k - (table.len() - 1)) as u128;
-        Ok(last + extra * 13_000)
-    }
+    // The former fixed 1.30-per-misstatement extension understated R(k) at
+    // 99% from k = 11 (21.45 against 21.4899...), and so the bound; the
+    // table carries exact entries instead.
+    table
+        .get(k)
+        .copied()
+        .ok_or_else(|| LanternError::Parameter {
+            procedure: "sample.stringer".into(),
+            name: "misstatements".into(),
+            message: format!(
+                "{k} misstatements exceed the registered Poisson factor table (0..={MAX_TABLED_MISSTATEMENTS}); the Stringer bound is never extrapolated"
+            ),
+        })
 }
 
 fn rate_err(_e: RateError) -> LanternError {
@@ -1084,6 +1109,7 @@ pub fn sample_stratified_neyman(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fa_money::rate::BigInt;
     use fa_reference::lantern::{naive_sample_mus, naive_stringer_bound_mantissa};
 
     fn fixture_population() -> SamplePopulation {
@@ -1285,5 +1311,99 @@ mod tests {
             uni.certificate.selected_item_ids,
             vec!["AR-001", "AR-005", "AR-006"]
         );
+    }
+
+    fn big(value: u128) -> BigInt {
+        BigInt::from_bytes_le(&value.to_le_bytes())
+    }
+
+    /// `(D * S_k(x), D * E_N(x))` for `x = a / 10^4`, where `S_k(x) =
+    /// sum_{j<=k} x^j / j!`, `E_N(x) = sum_{j<=N} x^j / j!` and `D =
+    /// 10^(4N) * N!`, so every term `D * x^j / j! = a^j * 10^(4(N-j)) *
+    /// N!/j!` is an integer.
+    fn scaled_poisson_sums(a: u128, k: usize, n: usize) -> (BigInt, BigInt) {
+        let mut falling = vec![big(1); n + 1];
+        for j in (1..=n).rev() {
+            falling[j - 1] = &falling[j] * &big(j as u128);
+        }
+        let mut tens = vec![big(1); n + 1];
+        for i in 1..=n {
+            tens[i] = &tens[i - 1] * &big(10_000);
+        }
+        let (mut partial, mut total, mut power) = (big(0), big(0), big(1));
+        for j in 0..=n {
+            let term = &(&power * &tens[n - j]) * &falling[j];
+            if j <= k {
+                partial = partial + &term;
+            }
+            total = total + &term;
+            power = &power * &big(a);
+        }
+        (partial, total)
+    }
+
+    /// Every registered Poisson factor is its exact one-sided upper limit
+    /// rounded up to 0.01, proved in integers. P(X <= k; x) = S_k(x) e^-x,
+    /// and E_N(x) <= e^x <= E_N(x) + T_N(x) with the tail bound T_N(x) =
+    /// x^(N+1) / (N+1)! * (N+2) / (N+2-x) for N + 2 > x. With 1 - c = 1/d:
+    /// - d * S_k(R) <= E_N(R) proves P(X <= k; R) <= 1 - c: R is at or above
+    ///   the limit, so the bound is conservative;
+    /// - d * S_k(R - 0.01) > E_N + T_N there proves P > 1 - c: R - 0.01 is
+    ///   below the limit, so R is exactly the limit rounded up to 0.01.
+    #[test]
+    fn poisson_factors_are_the_upper_limits_rounded_up_to_a_hundredth() {
+        for (confidence, d) in [(9_000u32, 10u128), (9_500, 20), (9_900, 100)] {
+            for k in 0..=MAX_TABLED_MISSTATEMENTS {
+                let r = poisson_upper_factor_bps(confidence, k).unwrap();
+                let n = usize::try_from(4 * r / 10_000).unwrap() + 40;
+                let (partial, total) = scaled_poisson_sums(r, k, n);
+                assert!(
+                    &partial * &big(d) <= total,
+                    "{confidence} k={k}: R={r} is below the exact limit"
+                );
+                let mu = r - 100;
+                let (partial, total) = scaled_poisson_sums(mu, k, n);
+                let n = n as u128;
+                // D * T_N(mu) = mu^(N+1) * (N+2) / ((N+1) * (10^4 (N+2) - mu)).
+                let tail_num = big(mu).pow(u32::try_from(n + 1).unwrap()) * big(n + 2);
+                let tail_den = big(n + 1) * big(10_000 * (n + 2) - mu);
+                assert!(
+                    &(&partial * &big(d)) * &tail_den > &total * &tail_den + &tail_num,
+                    "{confidence} k={k}: R - 0.01 = {mu} is not below the exact limit"
+                );
+            }
+            assert!(
+                matches!(
+                    poisson_upper_factor_bps(confidence, MAX_TABLED_MISSTATEMENTS + 1),
+                    Err(LanternError::Parameter { ref name, .. }) if name == "misstatements"
+                ),
+                "beyond the table the factor is refused, never extrapolated"
+            );
+        }
+    }
+
+    /// A sample with more misstatements than the factor table covers is
+    /// refused; one at the table's end is evaluated.
+    #[test]
+    fn stringer_bound_is_refused_beyond_the_factor_table() {
+        let usd = UnitId(1);
+        let tainted = |count: usize| -> Vec<AuditedSampleItem> {
+            (0..count)
+                .map(|i| AuditedSampleItem {
+                    item_id: format!("AR-{i:03}"),
+                    book_value: Amount::new(usd, 10_000),
+                    audited_value: Amount::new(usd, 9_000),
+                })
+                .collect()
+        };
+        let interval = Amount::new(usd, 100_000);
+        for confidence in [9_000, 9_500, 9_900] {
+            let at_end = evaluate_stringer_bound(interval, confidence, &tainted(40)).unwrap();
+            assert_eq!(at_end.misstatement_count, 40);
+            assert!(matches!(
+                evaluate_stringer_bound(interval, confidence, &tainted(41)),
+                Err(LanternError::Parameter { ref name, .. }) if name == "misstatements"
+            ));
+        }
     }
 }

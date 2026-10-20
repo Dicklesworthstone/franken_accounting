@@ -597,8 +597,18 @@ fn evaluate(
             })
         })
         .collect::<Result<Vec<_>, Fail>>()?;
-    let result = sample::evaluate_stringer_bound(plan.interval, confidence_bps, &items)
-        .map_err(sample_error)?;
+    let result = sample::evaluate_stringer_bound(plan.interval, confidence_bps, &items).map_err(
+        |error| match error {
+            LanternError::Parameter { name, message, .. } if name == "misstatements" => usage(
+                format!("sample evaluate: {message}"),
+                format!(
+                    "the Stringer factors are registered for at most {} misstatements; a sample with more needs another evaluation method",
+                    sample::MAX_TABLED_MISSTATEMENTS
+                ),
+            ),
+            other => sample_error(other),
+        },
+    )?;
     let render = |amount: Amount| render_amount(amount, units);
     let taintings: BTreeMap<&str, String> = result
         .ranked_taintings
