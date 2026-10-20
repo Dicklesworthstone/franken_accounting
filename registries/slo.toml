@@ -15,7 +15,7 @@
 #    row must set `requires_watermark_disclosure = true` so `fa-bench` reports
 #    whether the read was served at the watermark or with a tail fold and the
 #    exact `tail_length`.
-# 4. Activation needs a measurement (fa-e75k): `activated = false` is legal only
+# 4. Activation needs a measurement (fa-e75k): `activated = true` is legal only
 #    when the row's manifest carries a [baseline] produced by running the named
 #    workload; fa-bench refuses an activated row whose manifest has none.
 #
