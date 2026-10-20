@@ -502,12 +502,12 @@ example = "fa sample uniform --account 1200 --seed 20260115 --size 25 --book ./b
 name = "checkpoint"
 summary = "Publish a recomputable accumulator state over the book's entry prefix and its TransparencyCheckpoint signed by the book's key."
 writes = true
-subcommands = ["create"]
+subcommands = ["create", "list"]
 flags = ["--grant"]
 switches = []
-events = ["checkpoint_created"]
+events = ["checkpoint_created", "checkpoints"]
 exits = [0, 2, 4, 5, 6, 7, 8]
-usage = ["checkpoint create --grant witness [--as <principal>]", "The state covers entries; its TransparencyCheckpoint is signed by the book's Ed25519 key (public_key) and is exported with `fa proof signed-checkpoint`. It is not an evidence bundle and covers no document receipts."]
+usage = ["checkpoint create --grant witness [--as <principal>]", "checkpoint list   (the journaled states, newest first; recomputes nothing: fa verify accumulator does)", "The state covers entries; its TransparencyCheckpoint is signed by the book's Ed25519 key (public_key) and is exported with `fa proof signed-checkpoint`. It is not an evidence bundle and covers no document receipts."]
 example = "fa checkpoint create --grant witness --book ./books/myco --json"
 
 [[verb]]
@@ -1680,6 +1680,12 @@ name = "open_items"
 book = true
 doc = "Open items, optionally on one account, at the `known_at` snapshot, with historical account metadata and each item's applications and reversal lineage. An unknown account filter refuses. With --certify the envelope identifies the retained certificate emitted next."
 fields = ["account:string?", "count:int", "items:[open_item]"]
+
+[[event]]
+name = "checkpoints"
+book = true
+doc = "Every journaled accumulator state, newest first, following prev_state_oid as fa checkpoint create recorded it. Nothing is recomputed: fa verify accumulator recomputes each state from the journal. Empty when the book has no checkpoint; a link that cannot be followed is an error (exit 5), not a listing."
+fields = ["checkpoints:[checkpoint_state]"]
 
 [[event]]
 name = "checkpoint_created"
@@ -3625,6 +3631,16 @@ mistakes = ["Treating an unchanged net amount as proof that the contribution set
 
 [[mcp.tool]]
 cluster = "fa.notary"
+name = "list_checkpoints"
+verb = "checkpoint"
+subcommands = ["list"]
+positionals = []
+required = []
+dont = ["Don't read a listed state as verified: the listing recomputes nothing; fa_book_verify with target accumulator recomputes each state from the journal."]
+mistakes = ["Expecting signatures or witnesses here: the listing names each state's oid, prefix and root; export a signed checkpoint with fa_notary_export."]
+
+[[mcp.tool]]
+cluster = "fa.notary"
 name = "export"
 verb = "proof"
 subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance", "evidence-disclosure"]
@@ -4233,6 +4249,11 @@ doc = "A bundle-scoped production's evidence bundle: its digest, the recorded ch
 fields = ["digest:hex", "checkpoint:hex", "checkpoint_public_key:hex", "verify:string"]
 
 [[shape]]
+name = "checkpoint_state"
+doc = "One journaled accumulator state: its oid, the commit that recorded it, the entry prefix it covers (through_seq), its leaf count, its evidence boundary (null: entries alone), root and predecessor."
+fields = ["oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "evidence_after_seq:seq?", "root:hex", "prev_state_oid:hex?"]
+
+[[shape]]
 name = "verify_target"
 doc = "One target of fa verify book: its name, its verdict (pass, fail, error or skipped) and the failure or skip reason (empty on pass)."
 fields = ["target:string", "verdict:string", "detail:string"]
@@ -4506,7 +4527,14 @@ ops = ["approve"]
 
 [[bound]]
 verbs = ["checkpoint"]
+subcommands = ["create"]
 ops = ["witness"]
+
+# Listing the recorded chain reads the whole book's checkpoints.
+[[bound]]
+verbs = ["checkpoint"]
+subcommands = ["list"]
+ops = ["read"]
 
 [[bound]]
 verbs = ["proof", "bundle"]

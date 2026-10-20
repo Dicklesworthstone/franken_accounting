@@ -1843,23 +1843,29 @@ mod bound_tests {
 
     #[test]
     fn a_rule_naming_anything_unregistered_is_refused() {
-        let witness = "verbs = [\"checkpoint\"]\nops = [\"witness\"]";
+        let witness = "verbs = [\"checkpoint\"]\nsubcommands = [\"create\"]\nops = [\"witness\"]";
         for (what, result, expected) in [
             (
                 "unknown verb",
-                planted(witness, "verbs = [\"checkpoints\"]\nops = [\"witness\"]"),
+                planted(
+                    witness,
+                    "verbs = [\"checkpoints\"]\nsubcommands = [\"create\"]\nops = [\"witness\"]",
+                ),
                 "unknown verb `checkpoints`",
             ),
             (
                 "unknown op",
-                planted(witness, "verbs = [\"checkpoint\"]\nops = [\"witnes\"]"),
+                planted(
+                    witness,
+                    "verbs = [\"checkpoint\"]\nsubcommands = [\"create\"]\nops = [\"witnes\"]",
+                ),
                 "`witnes` is not a registered capability op",
             ),
             (
                 "unknown key",
                 planted(
                     witness,
-                    "verbs = [\"checkpoint\"]\nwhen = [\"--to\"]\nops = [\"witness\"]",
+                    "verbs = [\"checkpoint\"]\nsubcommands = [\"create\"]\nwhen = [\"--to\"]\nops = [\"witness\"]",
                 ),
                 "unknown key `when`",
             ),

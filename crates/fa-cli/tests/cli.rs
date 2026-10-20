@@ -6613,6 +6613,17 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["verify", "accumulator"]).0, 0);
+    // fa-waow: the chain the create above journaled, newest first.
+    let (code, out) = run(true, &["checkpoint", "list"]);
+    assert_eq!(code, 0, "{out}");
+    let listed = doc(&out);
+    let states = arr(&listed, "checkpoints");
+    assert_eq!(states.len(), 1, "{out}");
+    assert_eq!(states[0].get("prev_state_oid"), Some(&Json::Null), "{out}");
+    assert_eq!(
+        run(true, &["checkpoint", "list", "--period", "FY2026-P03"]).0,
+        2
+    );
     assert_eq!(run(true, &["recover", "projections", "--dry-run"]).0, 0);
     assert_eq!(run(true, &["recover", "outcomes", "--dry-run"]).0, 0);
     assert_eq!(run(true, &["proof", "signed-checkpoint"]).0, 0);

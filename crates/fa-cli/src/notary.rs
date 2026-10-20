@@ -1323,7 +1323,56 @@ fn arguments(args: &Args, example: &str) -> Result<(), Fail> {
     Ok(())
 }
 
+/// `fa checkpoint list` (plan §15.3 Proofs; fa-waow): the journaled
+/// accumulator states, newest first, as `fa checkpoint create` recorded
+/// them. It recomputes nothing; `fa verify accumulator` does.
+fn checkpoint_list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    arguments(args, "fa checkpoint list --book <dir> --json")?;
+    let book = ctx.books.open(args)?;
+    let states = book.checkpoints()?;
+    let mut human = Vec::new();
+    let rows = states
+        .iter()
+        .map(|stored| {
+            let state = &stored.state;
+            human.push(format!(
+                "{} through sequence {}: {} leaves, recorded at {}",
+                hex(&stored.oid.0),
+                state.through_seq.0,
+                state.leaf_count,
+                stored.recorded_at.0
+            ));
+            obj(vec![
+                ("oid", s(hex(&stored.oid.0))),
+                ("recorded_at", Json::Int(i128::from(stored.recorded_at.0))),
+                ("through_seq", Json::Int(i128::from(state.through_seq.0))),
+                ("leaf_count", Json::Int(i128::from(state.leaf_count))),
+                ("evidence_after_seq", evidence_after(state.evidence_after)),
+                ("root", s(hex(&state.root))),
+                (
+                    "prev_state_oid",
+                    state
+                        .prev_state_oid
+                        .map_or(Json::Null, |oid| s(hex(&oid.0))),
+                ),
+            ])
+        })
+        .collect();
+    if human.is_empty() {
+        human.push("no checkpoints: run `fa checkpoint create --grant witness`".to_string());
+    }
+    ctx.out.event(
+        "checkpoints",
+        vec![("checkpoints", Json::Arr(rows))],
+        &human.join("\n"),
+    );
+    Ok(())
+}
+
 pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.get(1).map(String::as_str) == Some("list") {
+        return checkpoint_list(ctx, args);
+    }
     if args.positional.get(1).map(String::as_str) != Some("create") {
         return Err(unhandled(
             "checkpoint",

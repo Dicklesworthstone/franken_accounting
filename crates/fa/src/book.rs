@@ -2779,6 +2779,15 @@ impl Book {
         with_store!(&self.store, core => core.verify_accumulator(&self.purposes()))
     }
 
+    /// Every journaled accumulator state, newest first, following each
+    /// state's `prev_state_oid` (plan §13.2; `fa checkpoint list`). This
+    /// reads the chain as recorded and recomputes nothing: a link it cannot
+    /// follow is an error here, and [`Book::verify_accumulator`] is the
+    /// check that recomputes each state from the journal.
+    pub fn checkpoints(&self) -> Result<Vec<fa_notary::StoredState>, BookError> {
+        with_store!(&self.store, core => core.checkpoints(&self.purposes()))
+    }
+
     /// Export a raw Notary proof or 80-byte checkpoint for the independent
     /// `fa-verify` program. The holder must have current read and produce
     /// authority for this book. The selected checkpoint is recomputed from

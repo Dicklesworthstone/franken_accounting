@@ -2756,6 +2756,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Every journaled accumulator state, newest first, as `checkpoint`
+    /// recorded them ([`crate::Book::checkpoints`] states the contract).
+    pub fn checkpoints(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<Vec<fa_notary::StoredState>, BookError> {
+        self.query(cx, |db, _| Ok(fa_notary::chain(db)?))
+    }
+
     /// The public key this book's transparency checkpoints are signed with
     /// (Ed25519, plan §13.2), for an outsider to verify them with.
     #[must_use]
