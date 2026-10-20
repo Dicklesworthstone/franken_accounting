@@ -2247,6 +2247,16 @@ impl Book {
         with_store!(&self.store, core => core.latest_tick(&self.purposes()))
     }
 
+    /// The latest corroborated TimeEvidence tick known at recorded frontier
+    /// `at`: what a rendering of a report read at `at` is dated by, so the
+    /// same report renders to the same bytes whenever it is rendered.
+    pub fn corroborated_tick_at(
+        &self,
+        at: CommitSeq,
+    ) -> Result<Option<fa_journal::Tick>, BookError> {
+        with_store!(&self.store, core => core.corroborated_tick_at(&self.purposes(), at))
+    }
+
     /// Journal the caller's clock observation under its context and
     /// capability. This adapter reads no clock and creates no runtime.
     pub async fn record_tick(
@@ -2584,6 +2594,16 @@ impl Book {
     /// Refold a period and compare it to its stored registers (`fa verify registers`).
     pub fn verify_registers(&self, period_code: &str) -> Result<Verification, BookError> {
         with_store!(&self.store, core => core.verify_registers(&self.purposes(), period_code))
+    }
+
+    /// Prove one period's per-legal-entity register against the journal
+    /// at the head (FA-INV-01 `per-entity`; see
+    /// [`fa_registers::verify_entities`]).
+    pub fn verify_entities(
+        &self,
+        period_code: &str,
+    ) -> Result<fa_registers::EntityVerification, BookError> {
+        with_store!(&self.store, core => core.verify_entities(&self.purposes(), period_code))
     }
 
     /// Incrementally maintain native posted/pending period registers from
@@ -3508,6 +3528,18 @@ impl Book {
         known_at: Option<CommitSeq>,
     ) -> Result<BalanceExplanation, BookError> {
         with_store!(&self.store, core => core.explain_balance(&self.purposes(), account, period_code, known_at))
+    }
+
+    /// Rank the entries visible at `known_at` (the head when `None`) whose
+    /// description or memos match `query` (`fa search`; see
+    /// [`crate::search`]): an index rebuilt from the journal for this query
+    /// and never stored.
+    pub fn search_entries(
+        &self,
+        query: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Result<crate::SearchResults, BookError> {
+        with_store!(&self.store, core => core.search_entries(&self.purposes(), query, known_at))
     }
 
     /// Run a registered Lantern procedure over the trunk as known at

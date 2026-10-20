@@ -1574,6 +1574,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, _| Ok(fa_journal::latest_tick(db)?))
     }
 
+    /// The latest corroborated TimeEvidence tick known at recorded frontier
+    /// `at` (fa-psz): its `TimeControl` entry carries `monotonic_ok`.
+    pub fn corroborated_tick_at(
+        &self,
+        cx: &PurposeContexts,
+        at: CommitSeq,
+    ) -> Result<Option<fa_journal::Tick>, BookError> {
+        self.query(cx, |db, _| {
+            Ok(fa_journal::sweep::latest_corroborated_tick(db, Some(at))?)
+        })
+    }
+
     /// Journal the caller's daemon-clock observation as TimeEvidence.
     /// The capability's holder is the principal; the kernel enforces the
     /// `witness` authority and monotonicity law. This adapter reads no clock.
@@ -2430,6 +2442,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Result<Verification, BookError> {
         self.query(cx, |db, book| {
             Ok(fa_registers::verify_period(db, book, period)?)
+        })
+    }
+
+    /// Refold one period's per-legal-entity register at the head and prove
+    /// it against the journal (FA-INV-01 `per-entity`): per account and
+    /// unit the entity cells sum to the plain fold's cell, every entry
+    /// balances per unit and entity, and in a multi-entity book every leg
+    /// names a declared entity. Findings are drift, never corrections.
+    pub fn verify_entities(
+        &self,
+        cx: &PurposeContexts,
+        period: &str,
+    ) -> Result<fa_registers::EntityVerification, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::verify_entities(db, book, period, None)?)
         })
     }
 

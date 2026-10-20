@@ -5845,6 +5845,11 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["production", "show", "events-matter"]).0, 0);
     assert_eq!(run(true, &["production", "document", &ev]).0, 0);
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
+    assert_eq!(
+        run(true, &["tb", "--period", "FY2026-P03", "--render", "md"]).0,
+        0
+    );
+    assert_eq!(run(true, &["search", "rent"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(
         run(
@@ -5990,6 +5995,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(
         run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
+        0
+    );
+    assert_eq!(
+        run(true, &["verify", "entities", "--period", "FY2026-P03"]).0,
         0
     );
     assert_eq!(run(true, &["verify", "open-items"]).0, 0);
@@ -15336,5 +15345,244 @@ fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<(
     assert_eq!(code, 7, "pinned Auditor refused at later head: {out}");
     assert!(out.contains("FA-REF-011"), "{out}");
     assert!(out.contains("the token is pinned at <="), "{out}");
+    Ok(())
+}
+
+/// FA-INV-01 per-entity: in a multi-entity book `fa verify entities`
+/// refolds each period's per-legal-entity register and proves it against
+/// the journal; the kernel already refuses a leg without a declared entity
+/// at commit, so the verification is the derived-state half.
+#[test]
+fn verify_entities_proves_each_legal_entitys_register_by_refold() -> std::io::Result<()> {
+    let dir = tmp("entities")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    let (code, out, _) = run(&[
+        "book",
+        "create",
+        "--name",
+        "Two Entities",
+        "--base-unit",
+        "USD",
+        "--entity",
+        "HOLDCO:HoldCo Inc.:USD",
+        "--entity",
+        "SUB-US:Sub US LLC",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let source = write(&dir, "sales.txt", "Sales of both entities");
+    let (code, out, _) = run(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let evidence = text(&doc(&out), "oid").to_string();
+    let post = |key: &str, entity: Option<&str>, amount: &str| {
+        let entity = entity.map_or(String::new(), |code| format!(r#","entity":"{code}""#));
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"idempotency_key":"{key}","effective_date":"2026-03-10","legs":[{{"side":"debit","account":"1000","amount":"{amount} USD"{entity}}},{{"side":"credit","account":"4000","amount":"{amount} USD"{entity}}}]}}"#
+            ),
+        );
+        run(&["post", "--intent", &intent, "--evidence", &evidence])
+    };
+    assert_eq!(post("holdco-sale", Some("HOLDCO"), "10.00").0, 0);
+    assert_eq!(post("sub-sale", Some("SUB-US"), "4.00").0, 0);
+    // The commit-time half: a leg naming no entity is refused.
+    let (code, out, _) = post("no-entity", None, "1.00");
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("names no legal entity"), "{out}");
+
+    let (code, out, _) = run(&["verify", "entities", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    let line = json::parse(out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+    assert_eq!(text(&line, "event"), "entities_verified", "{out}");
+    let periods = arr(&doc(&out), "periods").to_vec();
+    assert_eq!(periods.len(), 1, "{out}");
+    let check = &periods[0];
+    assert_eq!(text(check, "period"), "FY2026-P03");
+    assert_eq!(check.get("green"), Some(&Json::Bool(true)), "{out}");
+    assert_eq!(int(check, "entries_checked"), Some(2), "{out}");
+    // Two accounts in two entities.
+    assert_eq!(int(check, "cells_checked"), Some(4), "{out}");
+    assert!(arr(check, "findings").is_empty(), "{out}");
+    assert_eq!(text(check, "fold_digest").len(), 64, "{out}");
+
+    // An unknown period is a usage error, not an empty green.
+    let (code, out, _) = run(&["verify", "entities", "--period", "FY2099-P01"]);
+    assert_ne!(code, 0, "{out}");
+    Ok(())
+}
+
+/// Explaining a summary account names the command that answers it: the
+/// summary trial balance rooted at that account, which runs as given.
+#[test]
+fn explaining_a_summary_account_points_at_its_roll_up_which_runs() -> std::io::Result<()> {
+    let dir = tmp("summary-explain")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    assert_eq!(run(&["book", "create", "--name", "Summary Co"]).0, 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1","name":"Assets","type":"Asset","leaf":false,"unit":"USD"},{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD","parent":"1"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+
+    let (code, out, _) = run(&["explain", "balance", "1", "--period", "FY2026-P03"]);
+    assert_eq!(code, 2, "{out}");
+    let error = doc(&out);
+    assert!(
+        text(&error, "message").contains("is a summary account"),
+        "{out}"
+    );
+    let fix = text(&error, "fix");
+    let suggested = "fa tb --period FY2026-P03 --summary --root 1 --json";
+    assert!(fix.starts_with(suggested), "{fix}");
+    // The suggestion is a working command, not prose.
+    let argv: Vec<&str> = suggested.split(' ').skip(1).collect();
+    let (code, out, _) = fa(Some(&book), &argv);
+    assert_eq!(code, 0, "{out}");
+    Ok(())
+}
+
+/// `fa search` ranks entries by their description and leg memos, from an
+/// index rebuilt from the journal at the selected frontier: an entry
+/// recorded later is not found at an earlier frontier, the same prefix
+/// rebuilds the same index, and a query nothing matches is an empty
+/// success.
+#[test]
+fn search_finds_entries_by_their_text_at_a_recorded_frontier() -> std::io::Result<()> {
+    let dir = tmp("search")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    assert_eq!(run(&["book", "create", "--name", "Search Co"]).0, 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let source = write(&dir, "evidence.txt", "Lease and sales evidence");
+    let (code, out, _) = run(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let evidence = text(&doc(&out), "oid").to_string();
+    let post = |key: &str, description: &str, memo: &str, debit: &str, credit: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"idempotency_key":"{key}","effective_date":"2026-03-10","description":"{description}","legs":[{{"side":"debit","account":"{debit}","amount":"9.00 USD","memo":"{memo}"}},{{"side":"credit","account":"{credit}","amount":"9.00 USD"}}]}}"#
+            ),
+        );
+        let (code, out, _) = run(&["post", "--intent", &intent, "--evidence", &evidence]);
+        assert_eq!(code, 0, "{out}");
+        text(&doc(&out), "vid").to_string()
+    };
+    let rent = post(
+        "rent",
+        "Office rent for March",
+        "Harbor Street lease",
+        "6000",
+        "1000",
+    );
+    let (_, info, _) = run(&["book", "info"]);
+    let before_sale = json::parse(info.lines().last().unwrap_or_default())
+        .ok()
+        .and_then(|line| line.get("coordinate").and_then(|c| int(c, "known_at")))
+        .unwrap_or_default()
+        .to_string();
+    let sale = post(
+        "sale",
+        "Consulting sale to Acme",
+        "Invoice A-17",
+        "1000",
+        "4000",
+    );
+
+    let search = |args: &[&str]| -> Json {
+        let mut argv = vec!["search"];
+        argv.extend_from_slice(args);
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 0, "{argv:?}: {out}");
+        doc(&out)
+    };
+    let ids = |found: &Json| -> Vec<String> {
+        arr(found, "hits")
+            .iter()
+            .map(|hit| text(hit, "id").to_string())
+            .collect()
+    };
+    // A description and a leg memo are both searchable, and each entry is
+    // found by its own text only (control entries may carry text too).
+    let found = search(&["rent"]);
+    let hits = ids(&found);
+    assert_eq!(hits.first(), Some(&rent), "{found:?}");
+    assert!(!hits.contains(&sale), "{found:?}");
+    for (query, wanted, other) in [
+        ("harbor", &rent, &sale),
+        ("acme", &sale, &rent),
+        ("A-17", &sale, &rent),
+    ] {
+        let hits = ids(&search(&[query]));
+        assert!(hits.contains(wanted), "{query}: {hits:?}");
+        assert!(!hits.contains(other), "{query}: {hits:?}");
+    }
+    // The same journal prefix rebuilds the same index.
+    assert_eq!(
+        text(&search(&["acme"]), "index_digest"),
+        text(&found, "index_digest")
+    );
+    // At a frontier before the sale, the sale is not there to be found.
+    let early = search(&["acme", "--as-known-at", &before_sale]);
+    assert!(!ids(&early).contains(&sale), "{early:?}");
+    assert_eq!(
+        int(&found, "records").unwrap_or_default() - int(&early, "records").unwrap_or_default(),
+        1,
+        "exactly the sale was recorded after the earlier frontier"
+    );
+    // A query nothing matches is an empty success; a bad request is usage.
+    assert!(ids(&search(&["zeppelin"])).is_empty());
+    assert_eq!(run(&["search"]).0, 2);
+    assert_eq!(run(&["search", "rent", "--limit", "0"]).0, 2);
     Ok(())
 }

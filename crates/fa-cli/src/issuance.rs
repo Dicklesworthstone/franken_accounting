@@ -46,7 +46,7 @@ pub(crate) const ISSUE_ONLY: [&str; 8] = [
 ];
 /// The statement verb's report flags and switches: `issue` and `issuances`
 /// refuse each, never ignore it.
-const REPORT_ONLY: [&str; 14] = [
+const REPORT_ONLY: [&str; 16] = [
     "--compare",
     "--definition",
     "--before",
@@ -61,6 +61,8 @@ const REPORT_ONLY: [&str; 14] = [
     "--from-diff",
     "--certify",
     "--as-originally-reported",
+    "--render",
+    "--out",
 ];
 
 /// Whether `flag` (a value flag or a switch) is on the command line.

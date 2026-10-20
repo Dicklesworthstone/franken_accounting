@@ -80,6 +80,7 @@ pub mod proof;
 pub mod report_artifact;
 pub mod roll_forward;
 pub mod scenario;
+pub mod search;
 pub mod settlement;
 pub mod settlement_group;
 pub mod settlement_group_review;
@@ -129,6 +130,7 @@ pub use draft_review::{
     DraftDiffCertificate, DraftDiffRow, MAX_DRAFT_DIFF_CERTIFICATE_BYTES, MAX_DRAFT_DIFF_ROWS,
 };
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
+pub use fa_docket::search::{SearchHit, SearchRecordId, SearchRecordKind};
 pub use fa_intents::{
     IntentError, MAX_BATCH_BYTES, MAX_PLAN_BYTES, PlanCertificate, PostBatch, PostIntent, PostPlan,
     ReplacementPlan,
@@ -170,9 +172,17 @@ pub use fa_registers::{
     Advance, EntityCell, EntityCellKey, EntityFold, EntityVerification, LotDisposalPlan,
     LotDisposalRequest, LotDisposalSlice, LotItem, LotReliefEdge, LotsReport, RegisterEquals,
 };
+pub use fa_statements::markdown::{
+    StatementMarkdownIr, TrialBalanceIrInput, TrialBalanceIrRow, UnitFormatSpec,
+    render_statement_ir, render_trial_balance_ir,
+};
+pub use fa_statements::render::{
+    StatementRenderFormat, format_utc_epoch_iso8601, render_html, render_pdf, render_pdfa,
+    render_svg, validate_pdfa2b,
+};
 pub use fa_statements::{
-    AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementKind,
-    StatementLine,
+    AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementError,
+    StatementKind, StatementLine,
 };
 pub use findings::{RecordedFindings, finding_run_vid, finding_vid};
 pub use fx::{FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms};
@@ -218,6 +228,7 @@ pub use scenario::{
     SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioBook, ScenarioDiff,
     ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
 };
+pub use search::SearchResults;
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,

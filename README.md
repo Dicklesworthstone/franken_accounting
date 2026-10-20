@@ -75,6 +75,10 @@ fa tb --book ./books/acme --period FY2026-P03 --activity --json
 # Effective dates through March 15, using the journal as it stood at sequence 42.
 fa tb --book ./books/acme --as-of 2026-03-15 --as-known-at 42 --json
 fa verify registers --book ./books/acme --period FY2026-P03 --json
+# A multi-entity book: each legal entity's register refolds against the journal.
+fa verify entities --book ./books/acme --period FY2026-P03 --json
+# Find entries by their description or leg memos (an index rebuilt from the journal per query).
+fa search "office rent" --book ./books/acme --json
 fa registers materialize --book ./books/acme --period FY2026-P03 --json
 # General-ledger lines, lead schedules, open-item aging and cash flow at one recorded snapshot.
 fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book ./books/acme --json
@@ -813,6 +817,36 @@ HEAD. A stated `--for`, `--compare` or `--definition` is checked against the
 certificates. With `--certify` the comparison keeps those exact source
 certificates, and `fa statement trace --from-diff C:<oid> --certify` attributes
 it to each intermediate publication.
+
+### Rendered documents
+
+`fa tb` and `fa statement <definition>` also render the report as a document
+with `--render md|html|svg|pdf|pdfa`:
+
+```bash
+fa tb --period FY2026-P03 --render md --book ./books/myco --json
+fa statement balance-sheet --for FY2026-P03 --render pdfa \
+  --out balance-sheet-2026-03.pdf --book ./books/myco --json
+```
+
+Markdown travels inline in the `rendered` event unless `--out <new-file>`
+names a file. HTML, SVG, PDF and PDF/A-2b are written to a new `--out` file,
+never over an existing one. Every format is built from one deterministic
+Markdown IR, whose digest the `rendered` event reports with the file's own
+digest. Amounts come from exact integers at the unit's scale; no float is
+involved.
+
+A document's date is the latest corroborated TimeEvidence tick known at the
+report's own frontier, never the machine's clock. The same report at the
+same `--as-known-at` therefore renders to the same bytes whenever it is
+rendered, and a historical read is never dated by a later tick. A book whose
+frontier has no such tick (one that never ran `fad` with timed work) renders
+Markdown only; the other formats are refused with exit 4. PDF/A output must
+pass the built-in PDF/A-2b validator before it is written. The document is
+written before a `--certify` certificate is retained, so a refused render
+leaves nothing behind. Summary trial balances, functional-currency views,
+scenario branches, statement diffs and traces are not rendered yet. Over MCP,
+`render: md` returns the Markdown inline; file formats are host-only.
 
 This slice covers one book and native units. Custom company layouts, cash-flow
 and equity-roll-forward statements, consolidation, FX translation, and

@@ -666,7 +666,12 @@ pub fn render_trial_balance_ir(
     distinct_units.sort_unstable();
     distinct_units.dedup();
     if distinct_units.is_empty() {
-        distinct_units.push(units[0].unit_id);
+        let first = units.first().ok_or_else(|| {
+            StatementError::Input(
+                "a trial balance without rows needs one unit to present its empty table".into(),
+            )
+        })?;
+        distinct_units.push(first.unit_id);
     }
 
     let definition_name = if input.activity_only {

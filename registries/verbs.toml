@@ -82,7 +82,7 @@ subcommands = ["create", "info"]
 flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods", "--time-zone", "--opening-date", "--entity"]
 switches = []
 events = ["book_created", "book"]
-exits = [0, 2, 3, 4, 5]
+exits = [0, 2, 3, 4, 5, 7]
 usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]]] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC] [--opening-date YYYY-MM-DD] [--entity <code>[:<name>][:<functional_unit>]]...", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info"]
 example = "fa book create --book ./books/myco --name \"My Co\" --json"
 
@@ -347,11 +347,11 @@ name = "tb"
 summary = "Trial balance: native leaf or summary stock/activity, or exact functional-currency stock and period activity, at a known-at frontier. Native reports support retained certification."
 writes = true
 subcommands = []
-flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--certificate-out", "--branch"]
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--certificate-out", "--branch", "--render", "--out"]
 switches = ["--activity", "--summary", "--certify", "--as-originally-reported", "--functional"]
-events = ["trial_balance", "summary_trial_balance", "report_certificate", "functional_trial_balance", "functional_stock_balance"]
+events = ["trial_balance", "summary_trial_balance", "report_certificate", "functional_trial_balance", "functional_stock_balance", "rendered"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "tb --functional --activity --period <one code> [--as-known-at HEAD|<seq>|<RFC3339>]   (exact functional-currency movement from immutable committed valuations, with posted and pending columns separate; requires current whole-book read authority; refuses unvalued foreign legs)", "tb --functional (--period <one code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>]   (cumulative functional stock through the period end or civil date, including opening history across fiscal years; no rate is selected or recalculated at report time)", "Functional --activity requires exactly one period; without --activity select one period end or one --as-of date. Both preserve committed valuations, separate pending holds, require current whole-book read authority, and refuse unvalued foreign contributions. Functional reports do not provide summary, fiscal-year, scenario, original-report or certificate selections. Use retained Rate evidence in intent.fx when posting foreign-currency entries; fa fx --help describes source intake and the admitted valuation laws.", "tb --period <code> --as-originally-reported [--activity] [--certify]   (plan §7.4: one period as first reported, at the known-at of its first Lock transition (a StatementIssuance takes precedence once issuances are journaled); never its first Close, never HEAD. A period with neither is refused with FA-REF-161. Cannot be combined with --as-known-at.)", "tb --as-of YYYY-MM-DD [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed. --summary --certify binds the selected roots and exact group membership as well as the leaf source; it requires read and produce, and a sequence selector (HEAD or <seq>).", "Stock balances include opening history; --activity is selected-period movement. --summary folds disjoint leaf subtrees under each root account (all roots by default, or --root <code>...). Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Native certificates preserve the original instant resolution; the summary certificate format currently binds sequences only. Replay scope is fa-fold-over-prefix; no witness signature or physical timestamp claim.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector."]
+usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "tb --functional --activity --period <one code> [--as-known-at HEAD|<seq>|<RFC3339>]   (exact functional-currency movement from immutable committed valuations, with posted and pending columns separate; requires current whole-book read authority; refuses unvalued foreign legs)", "tb --functional (--period <one code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>]   (cumulative functional stock through the period end or civil date, including opening history across fiscal years; no rate is selected or recalculated at report time)", "Functional --activity requires exactly one period; without --activity select one period end or one --as-of date. Both preserve committed valuations, separate pending holds, require current whole-book read authority, and refuse unvalued foreign contributions. Functional reports do not provide summary, fiscal-year, scenario, original-report or certificate selections. Use retained Rate evidence in intent.fx when posting foreign-currency entries; fa fx --help describes source intake and the admitted valuation laws.", "tb --period <code> --as-originally-reported [--activity] [--certify]   (plan §7.4: one period as first reported, at the known-at of its first Lock transition (a StatementIssuance takes precedence once issuances are journaled); never its first Close, never HEAD. A period with neither is refused with FA-REF-161. Cannot be combined with --as-known-at.)", "tb --as-of YYYY-MM-DD [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed. --summary --certify binds the selected roots and exact group membership as well as the leaf source; it requires read and produce, and a sequence selector (HEAD or <seq>).", "Stock balances include opening history; --activity is selected-period movement. --summary folds disjoint leaf subtrees under each root account (all roots by default, or --root <code>...). Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Native certificates preserve the original instant resolution; the summary certificate format currently binds sequences only. Replay scope is fa-fold-over-prefix; no witness signature or physical timestamp claim.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.", "Add --render md|html|svg|pdf|pdfa to also render the trial balance as a document (stock, activity or as-of; not --summary, --functional or --branch) (fa-cet): md returns the Markdown inline unless --out <new-file> names a file; html, svg, pdf and pdfa write --out <new-file> (never overwriting) and are dated by the latest corroborated TimeEvidence tick known at the report's frontier, never the wall clock, so the same report renders to the same bytes whenever it is rendered; a book with no such tick renders md only (exit 4 otherwise). pdfa is checked by the built-in PDF/A-2b validator before it is written. The rendered event names the IR digest, the file digest and the tick."]
 example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -359,11 +359,11 @@ name = "statement"
 summary = "Balance sheet or income statement from exact journal folds under a registered definition, with optional period comparatives, retained replay certificates, and frontier diff/trace bridges."
 writes = true
 subcommands = []
-flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--certificate", "--issued-to", "--document", "--key", "--date", "--plan", "--approval"]
+flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--certificate", "--issued-to", "--document", "--key", "--date", "--plan", "--approval", "--render", "--out"]
 switches = ["--certify", "--as-originally-reported", "--dry-run"]
-events = ["statement", "statement_diff", "statement_trace", "report_certificate", "statement_issuance_plan", "statement_issued", "statement_issuances"]
+events = ["statement", "statement_diff", "statement_trace", "report_certificate", "statement_issuance_plan", "statement_issued", "statement_issuances", "rendered"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "statement balance-sheet|income-statement --for <period> [--compare <period>] --as-originally-reported [--certify]   (plan §7.4: the statement as it stood when its --for period was first reported: at the known-at of the certificate the period's first StatementIssuance issued, else at its first Lock transition; never its first Close, never HEAD. A --compare column is read at that same snapshot. A period with neither is refused with FA-REF-161. Cannot be combined with a known-at selector, diff, trace or certificate inputs.)","statement diff --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>]", "statement trace --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>] [--max-publications 1..=256]", "statement diff --before-certificate <C:oid|file|-> --after-certificate <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--certify]   (bridge two retained certificates of the same trunk statement selection at ordered frontiers; both replay in full first, and a certified comparison keeps those exact source certificates)", "statement trace --from-diff <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--max-publications 1..=256] --certify   (attribute a saved statement comparison to every intermediate publication; its original endpoint certificates are kept and the trace must reproduce the saved bridge)", "With certificate inputs, the certificates fix both frontiers: --before, --after and known-at selectors are refused. A stated --for, --compare or --definition is checked against the certificates (exit 8 when they answer a different statement), never used to re-select.", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.", "statement issue --certificate C:<oid> [--for <period>] --issued-to board|auditor|lender|regulator|sec|tax-authority|other [--document <oid>] [--key K] [--date YYYY-MM-DD] --dry-run   (plan §12.5, IssueStatements: plans the StatementIssuance of a retained trunk statement certificate for the period it reports (--for may be omitted when it reports one) at the period's next ordinal; needs close and read; writes nothing. An approver who is not the planner runs fa approve --proposal <proposal_digest>.)", "statement issue --plan <file|-> --approval <vid>...   (journals exactly the planned issuance under close and read with one independent Human approval; the plan's ordinal must still be the period's next (exit 6 otherwise: plan again). The period's first issuance is what --as-originally-reported reads from then on; a later issuance never moves it. The same plan committed again returns the recorded issuance.)", "statement issuances [--for <period>]   (every journaled issuance of the period, by ordinal, or of the book)"]
+usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "statement balance-sheet|income-statement --for <period> [--compare <period>] --as-originally-reported [--certify]   (plan §7.4: the statement as it stood when its --for period was first reported: at the known-at of the certificate the period's first StatementIssuance issued, else at its first Lock transition; never its first Close, never HEAD. A --compare column is read at that same snapshot. A period with neither is refused with FA-REF-161. Cannot be combined with a known-at selector, diff, trace or certificate inputs.)", "statement diff --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>]", "statement trace --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>] [--max-publications 1..=256]", "statement diff --before-certificate <C:oid|file|-> --after-certificate <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--certify]   (bridge two retained certificates of the same trunk statement selection at ordered frontiers; both replay in full first, and a certified comparison keeps those exact source certificates)", "statement trace --from-diff <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--max-publications 1..=256] --certify   (attribute a saved statement comparison to every intermediate publication; its original endpoint certificates are kept and the trace must reproduce the saved bridge)", "With certificate inputs, the certificates fix both frontiers: --before, --after and known-at selectors are refused. A stated --for, --compare or --definition is checked against the certificates (exit 8 when they answer a different statement), never used to re-select.", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.", "statement issue --certificate C:<oid> [--for <period>] --issued-to board|auditor|lender|regulator|sec|tax-authority|other [--document <oid>] [--key K] [--date YYYY-MM-DD] --dry-run   (plan §12.5, IssueStatements: plans the StatementIssuance of a retained trunk statement certificate for the period it reports (--for may be omitted when it reports one) at the period's next ordinal; needs close and read; writes nothing. An approver who is not the planner runs fa approve --proposal <proposal_digest>.)", "statement issue --plan <file|-> --approval <vid>...   (journals exactly the planned issuance under close and read with one independent Human approval; the plan's ordinal must still be the period's next (exit 6 otherwise: plan again). The period's first issuance is what --as-originally-reported reads from then on; a later issuance never moves it. The same plan committed again returns the recorded issuance.)", "statement issuances [--for <period>]   (every journaled issuance of the period, by ordinal, or of the book)", "Add --render md|html|svg|pdf|pdfa to also render the statement as a document (not diff, trace or certificate-sourced statements) (fa-cet): md returns the Markdown inline unless --out <new-file> names a file; html, svg, pdf and pdfa write --out <new-file> (never overwriting) and are dated by the latest corroborated TimeEvidence tick known at the report's frontier, never the wall clock, so the same report renders to the same bytes whenever it is rendered; a book with no such tick renders md only (exit 4 otherwise). pdfa is checked by the built-in PDF/A-2b validator before it is written. The rendered event names the IR digest, the file digest and the tick."]
 example = "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --certify --book ./books/myco --json"
 
 [[verb]]
@@ -398,7 +398,7 @@ subcommands = []
 flags = ["--account", "--as-of", "--as-known-at", "--certificate-out", "--branch"]
 switches = ["--certify"]
 events = ["open_items", "report_certificate"]
-exits = [0, 2, 3, 4, 5, 8]
+exits = [0, 2, 3, 4, 5, 7, 8]
 usage = ["open-items [--account <code>] [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "Without certification this is a pure read. --as-of folds open items through an inclusive civil date. --certify retains an immutable report certificate in the book; --certificate-out also creates a new external copy. Unknown account filters refuse, including accounts absent at the selected known-at. Replay fixes that snapshot, account metadata, and application/reversal lineage."]
 example = "fa open-items --account 1200 --book ./books/myco --json"
 
@@ -422,9 +422,21 @@ subcommands = ["balance", "entry", "evidence", "refusal", "period", "register", 
 flags = ["--period", "--unit", "--as-known-at", "--certificate-out", "--branch"]
 switches = ["--certify", "--as-originally-reported"]
 events = ["balance_explained", "entry_explained", "evidence_explained", "refusal_explained", "period_explained", "register_explained", "lineage_explained", "report_certificate"]
-exits = [0, 2, 3, 4, 5, 8]
+exits = [0, 2, 3, 4, 5, 7, 8]
 usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "explain balance <account code> --period <code> --as-originally-reported [--certify | --certificate-out <new-file>]   (plan §7.4: the balance as its period was first reported, at the known-at of the period's first Lock transition, as fa tb --as-originally-reported; FA-REF-161 when the period was never reported; cannot be combined with --as-known-at)","explain entry <vid|E:vid>", "explain lineage <vid|E:vid> [--as-known-at HEAD|<seq>]", "explain evidence <entry-vid|E:vid>", "explain refusal <FA-REF-nnn>", "explain period <period-code>", "explain register <account-code> --period <code> [--unit <CODE>] [--as-known-at HEAD|<seq>]", "Without certification this is a pure read; `explain refusal` requires no book. --certify, --certificate-out and --as-originally-reported apply only to `explain balance`; the other subcommands refuse them (exit 2). --certify (on `explain balance`) retains the exact explanation and native read closure in the book; --certificate-out also creates a new external copy. The certificate binds historical account metadata, contributing entries, evidence references, lineage, cell history, and the whole-period fold."]
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
+
+[[verb]]
+name = "search"
+summary = "Full-text search over entry descriptions and leg memos at a recorded frontier, ranked by exact fixed-point BM25 from an index rebuilt from the journal for each query and never stored (plan §9)."
+writes = false
+subcommands = []
+flags = ["--as-known-at", "--limit"]
+switches = []
+events = ["search_results"]
+exits = [0, 2, 3, 4, 5, 7]
+usage = ["search <query> [--as-known-at HEAD|<seq>|<RFC3339>] [--limit N]   (quote a phrase; terms match whole tokens; hits are best first, at most --limit of them, default 20, 1..=200)", "The index is rebuilt from the journal at the frontier for this query alone (never stored, so it cannot drift from the journal; index_digest names it). Each committed entry's description and leg memos are indexed, opened with the book's key: erased text, or text sealed under a subject's own key, is never indexed and never appears in a snippet. Documents and findings are not indexed yet. A whole-book read: a token carrying any scope caveat is refused. No amount is parsed from a hit; fa entry show <id> reads the entry itself."]
+example = "fa search \"office rent\" --book ./books/myco --json"
 
 [[verb]]
 name = "procedure"
@@ -599,12 +611,12 @@ example = "fa export ads --period FY2026-P03 --out ./ads-2026-03 --book ./books/
 name = "verify"
 summary = "Verify derived state against the journal: leg projections, refolded registers, cumulative daily usage, open-item applied mirrors, limited accounts' availability cells, scheduled reversals, complete native period history, accumulator states, or a replay of the whole history (exit 8 on drift)."
 writes = false
-subcommands = ["registers", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "replay", "close"]
+subcommands = ["registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "replay", "close"]
 flags = ["--period", "--fiscal-year", "--as-known-at"]
 switches = []
-events = ["registers_verified", "open_items_verified", "availability_verified", "usage_verified", "accumulator_verified", "projections_verified", "schedules_verified", "periods_verified", "replay_verified", "close_verified"]
+events = ["registers_verified", "entities_verified", "open_items_verified", "availability_verified", "usage_verified", "accumulator_verified", "projections_verified", "schedules_verified", "periods_verified", "replay_verified", "close_verified"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["verify close FY2026 [--as-known-at <sequence>] (check nominal-zero at the last Closing and later deltas at that recorded prefix; exit 8 when a close or reclose is needed)", "verify registers ((--period <code>)... | --fiscal-year N)   (also verifies cumulative daily usage at current head before checking the selected period folds)", "verify usage [--as-known-at HEAD|<seq>|<RFC3339>]   (refold every native daily charge and UsageCell from retained history at the selected prefix, including original issuance, gross-debit source entries and committed time witnesses; requires current whole-book read and verify authority; no period filter, no writes or implicit repair; FA-REF-167, exit 8 on drift)", "verify replay   (replays every accounting commit's recorded rows into a fresh scratch book and checks it against the source pair by pair: the same entries with the same digests, and the same period folds. It proves the retained history reproduces the book's accounting state, not that the posting laws hold: rows are copied, not re-posted, and both sides fold with the same code. No period filter; exit 8 on any difference; history the scratch replay cannot reproduce, a divergence included, is FA-REF-134, exit 5)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)", "verify periods [--as-known-at HEAD|<seq>|<RFC3339>] (loads the complete native journal history through one selected prefix, verifies immutable Entry births, then checks every Period against its birth baseline and PeriodControl transitions; current read and verify authority required; no period filter; missing history or deleted declarations never produce a successful verification)"]
+usage = ["verify close FY2026 [--as-known-at <sequence>] (check nominal-zero at the last Closing and later deltas at that recorded prefix; exit 8 when a close or reclose is needed)", "verify registers ((--period <code>)... | --fiscal-year N)   (also verifies cumulative daily usage at current head before checking the selected period folds)", "verify usage [--as-known-at HEAD|<seq>|<RFC3339>]   (refold every native daily charge and UsageCell from retained history at the selected prefix, including original issuance, gross-debit source entries and committed time witnesses; requires current whole-book read and verify authority; no period filter, no writes or implicit repair; FA-REF-167, exit 8 on drift)", "verify replay   (replays every accounting commit's recorded rows into a fresh scratch book and checks it against the source pair by pair: the same entries with the same digests, and the same period folds. It proves the retained history reproduces the book's accounting state, not that the posting laws hold: rows are copied, not re-posted, and both sides fold with the same code. No period filter; exit 8 on any difference; history the scratch replay cannot reproduce, a divergence included, is FA-REF-134, exit 5)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)", "verify periods [--as-known-at HEAD|<seq>|<RFC3339>] (loads the complete native journal history through one selected prefix, verifies immutable Entry births, then checks every Period against its birth baseline and PeriodControl transitions; current read and verify authority required; no period filter; missing history or deleted declarations never produce a successful verification)", "verify entities (--period <code>)... | --fiscal-year N   (FA-INV-01 per-entity: refold each period's per-legal-entity register and prove it against the journal: per account and unit the entity cells sum to the plain fold, every entry balances per unit and legal entity, and in a multi-entity book every leg names a declared entity; exit 8 on any finding)"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -639,7 +651,7 @@ subcommands = ["show"]
 flags = []
 switches = []
 events = ["entry"]
-exits = [0, 2, 4, 5]
+exits = [0, 2, 4, 5, 7]
 usage = ["entry show <vid-hex>"]
 example = "fa entry show 3f2a… --book ./books/myco --json"
 
@@ -651,7 +663,7 @@ subcommands = []
 flags = []
 switches = []
 events = ["doctor"]
-exits = [0, 2, 4, 5, 8]
+exits = [0, 2, 4, 5, 7, 8]
 usage = ["doctor   (each check is ok, warn, fail or skipped, with the fix; exit 0 only when none failed, else the first failing check's class: 4 environment, 5 foundation, 8 verification)"]
 example = "fa doctor --book ./books/myco --json"
 
@@ -1430,6 +1442,18 @@ doc = "A registered financial statement evaluated from exact journal folds. The 
 fields = ["name:string", "definition_version:int", "definition_digest:hex", "known_at:seq", "columns:[statement_column]", "lines:[statement_line]", "mappings:[statement_mapping]", "scope:string"]
 
 [[event]]
+name = "rendered"
+book = true
+doc = "A report rendered as a document by --render (fa-cet), from its deterministic Markdown IR. ir_digest commits the IR (the report's rows, units, frontier and definition); digest is BLAKE3(\"fa:rendering-file:v1\" || bytes) of the exact document; out is the new file written (null when Markdown travels inline in markdown). created and tick name the latest corroborated TimeEvidence tick known at the report's frontier that dates HTML, SVG and PDF output (null for Markdown, which carries no date); the same report at the same frontier renders to the same bytes. pdfa_valid is true when a PDF/A-2b passed the built-in validator before it was written (null otherwise). No GAAP conformity or signature is implied."
+fields = ["format:string", "ir_digest:hex", "digest:hex", "bytes:int", "out:string?", "created:string?", "tick:hex?", "pdfa_valid:bool?", "markdown:string?"]
+
+[[event]]
+name = "search_results"
+book = true
+doc = "A full-text search at known_at (fa search): records is how many entries carried searchable text, index_digest names the index rebuilt from that journal prefix (the same prefix rebuilds the same index), total counts every hit and hits holds the first --limit of them, best first. A hit's snippet is the matched text; its score is exact fixed-point BM25 (micro-units), a ranking and never a finding."
+fields = ["query:string", "known_at:seq", "records:int", "index_digest:hex", "total:int", "hits:[search_hit]"]
+
+[[event]]
 name = "statement_issuance_plan"
 book = true
 doc = "A statement issuance was planned (plan §12.5, IssueStatements); nothing was written. The issuance names the retained statement certificate, the period it reports, its known-at (certified_at) and the audience, at the period's next ordinal. bytes is the complete canonical IssuancePlan in hex, with its description sealed once; approvals bind proposal_digest. Scope is statement-issuance-proposal: commit checks authority, approvals, the certificate and the ordinal again."
@@ -1639,6 +1663,12 @@ name = "registers_verified"
 book = true
 doc = "Every selected period's stored registers equal the refold at verified_through. Native cumulative daily usage is also verified at current head before these period checks. Stale means unread journal entries remain after that processed basis, not corruption; exit 8 still means a mismatch. Uninitialized empty caches have no verified_through."
 fields = ["periods:[register_check]"]
+
+[[event]]
+name = "entities_verified"
+book = true
+doc = "Every selected period's per-legal-entity register refolds green against the journal at the head (FA-INV-01 per-entity): per account and unit the entity cells sum to the plain fold's cell, posted and pending; every committed entry of the period balances per unit and legal entity; in a multi-entity book every leg names a declared entity. A finding is exit 8, never a correction."
+fields = ["periods:[entity_check]"]
 
 [[event]]
 name = "projections_verified"
@@ -2392,6 +2422,16 @@ doc = "One period's verify-by-refold at its processed basis (not its last moneta
 fields = ["period:string", "green:bool", "cache_status:string", "verified_through:seq?", "stale:bool", "lag_entries:int", "cells_checked:int", "refold_digest:hex", "stored_digest:hex?", "drift:[cell_drift]", "pending_drift:[cell_drift]", "projection_errors:[string]"]
 
 [[shape]]
+name = "entity_check"
+doc = "One period's per-entity refold: known_at is the frontier it was proved at, cells_checked the (account, unit, entity) cells, entries_checked the period's committed entries, fold_digest the refold's digest, findings each drift found (empty when green)."
+fields = ["period:string", "green:bool", "known_at:seq", "cells_checked:int", "entries_checked:int", "fold_digest:hex", "findings:[string]"]
+
+[[shape]]
+name = "search_hit"
+doc = "One ranked search hit: kind (entry), id (the entry's vid as 32-hex, for fa entry show), recorded_at (its creating sequence), score_micro (BM25 in micro-units), the query terms it matched, and a snippet of its text."
+fields = ["kind:string", "id:hex", "recorded_at:seq", "score_micro:int", "matched_terms:[string]", "snippet:string"]
+
+[[shape]]
 name = "cell_drift"
 doc = "A stored register cell that differs from the refold (raw mantissas)."
 fields = ["account:hex", "unit_id:int", "stored:cell_values?", "refolded:cell_values"]
@@ -2969,7 +3009,7 @@ mistakes = ["Trying to self-issue witness permission: caller grants are forbidde
 name = "verify"
 cluster = "fa.book"
 verb = "verify"
-subcommands = ["registers", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "replay"]
+subcommands = ["registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "replay"]
 selector = "target"
 positionals = []
 required = []
@@ -3110,7 +3150,7 @@ name = "post"
 verb = "post"
 subcommands = []
 positionals = []
-flags = ["--intent", "--evidence", "--event", "--balancing", "--timeout-ns", "--reverse-on", "--draft"]
+flags = ["--intent", "--evidence", "--event", "--balancing", "--timeout-ns", "--reverse-on", "--draft", "--scenario"]
 stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
@@ -3489,7 +3529,7 @@ name = "invoice"
 verb = "invoice"
 subcommands = []
 positionals = []
-flags = ["--party", "--number", "--date", "--receivable", "--revenue", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--draft"]
+flags = ["--party", "--number", "--date", "--receivable", "--revenue", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
 switches = ["--dry-run"]
 required = ["--party", "--date", "--receivable", "--line"]
 dont = ["Don't add a tax line here: there is no tax law yet; post tax explicitly with fa_post_post.", "Don't invent an invoice number: use the document's own number (or a key), so a retry returns the recorded entry."]
@@ -3502,7 +3542,7 @@ name = "bill"
 verb = "bill"
 subcommands = []
 positionals = []
-flags = ["--party", "--number", "--date", "--payable", "--expense", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--draft"]
+flags = ["--party", "--number", "--date", "--payable", "--expense", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
 switches = ["--dry-run"]
 required = ["--party", "--date", "--payable", "--line"]
 dont = ["Don't add a tax line here: there is no tax law yet.", "Don't post a bill without its evidence: cite the vendor's document."]
@@ -3515,7 +3555,7 @@ name = "receipt"
 verb = "receipt"
 subcommands = []
 positionals = []
-flags = ["--party", "--number", "--date", "--cash", "--receivable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--draft"]
+flags = ["--party", "--number", "--date", "--cash", "--receivable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
 switches = ["--dry-run"]
 required = ["--party", "--date", "--cash", "--receivable", "--amount"]
 dont = ["Don't apply more than an invoice's open amount: list open items first (fa_read_open_items).", "Don't invent a reference: use the bank's (or the remittance's) own, so the receipt matches its bank line."]
@@ -3528,7 +3568,7 @@ name = "payment"
 verb = "payment"
 subcommands = []
 positionals = []
-flags = ["--party", "--number", "--date", "--cash", "--payable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--draft"]
+flags = ["--party", "--number", "--date", "--cash", "--payable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
 switches = ["--dry-run"]
 required = ["--party", "--date", "--cash", "--payable", "--amount"]
 dont = ["Don't apply more than a bill's open amount: list open items first."]
@@ -3624,9 +3664,9 @@ name = "trial_balance"
 verb = "tb"
 subcommands = []
 positionals = []
-flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--branch"]
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--branch", "--render"]
 required = []
-dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write.", "For functional currency, supply functional: true with one period or as_of civil date for cumulative stock; add activity: true with one period for movement only. Both use committed base valuations and refuse unvalued foreign legs. Functional reports cannot combine with certify, summary, fiscal_year, branch or as_originally_reported. as_of cannot combine with period or activity. Reporting does not recalculate valuations at current rates."]
+dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write.", "For functional currency, supply functional: true with one period or as_of civil date for cumulative stock; add activity: true with one period for movement only. Both use committed base valuations and refuse unvalued foreign legs. Functional reports cannot combine with certify, summary, fiscal_year, branch or as_originally_reported. as_of cannot combine with period or activity. Reporting does not recalculate valuations at current rates.", "Use render: md to also receive the trial balance as Markdown inline (a rendered item after the report). html, svg, pdf and pdfa write files and are host-only: MCP exposes no out host-file write."]
 mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Treating a known-at instant as an exact physical commit timestamp: it is a retained TimeEvidence bucket, with its frontier and brackets in the coordinate."]
 
 [[mcp.tool]]
@@ -3635,10 +3675,10 @@ name = "statement"
 verb = "statement"
 subcommands = []
 positionals = ["name"]
-flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--branch", "--before-certificate", "--after-certificate", "--from-diff"]
+flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--render"]
 switches = ["--certify", "--as-originally-reported"]
 required = ["name", "--for"]
-dont = ["Use name balance-sheet or income-statement (or diff|trace with definition and before), for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate, including diff and trace, and replay it with fa_read_replay. Certified comparisons and traces require read and produce on the launch capability. certificate_out is forbidden; certificate bytes and oid are returned inline.", "To compare two statements already certified (for example as reported then and as stated now), use name diff with before_certificate and after_certificate set to their C:<oid> values and for (plus compare) naming the statement they certify; the certificates fix both frontiers, so omit before, after and known_at, and a for, compare or definition they do not answer is refused. To attribute a saved comparison to each intermediate publication, use name trace with from_diff set to its C:<oid>, the same for, and certify: true."]
+dont = ["Use name balance-sheet or income-statement (or diff|trace with definition and before), for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate, including diff and trace, and replay it with fa_read_replay. Certified comparisons and traces require read and produce on the launch capability. certificate_out is forbidden; certificate bytes and oid are returned inline.", "To compare two statements already certified (for example as reported then and as stated now), use name diff with before_certificate and after_certificate set to their C:<oid> values and for (plus compare) naming the statement they certify; the certificates fix both frontiers, so omit before, after and known_at, and a for, compare or definition they do not answer is refused. To attribute a saved comparison to each intermediate publication, use name trace with from_diff set to its C:<oid>, the same for, and certify: true.", "Use render: md to also receive the statement as Markdown inline (a rendered item after the report; not for diff or trace). html, svg, pdf and pdfa write files and are host-only: MCP exposes no out host-file write."]
 mistakes = ["Omitting for, passing multiple for or compare periods, or using a date where a period code is required.", "Supplying known_at and as_known_at together: they name the same selector.", "Treating a later-period comparative as a different known-at snapshot; use a separate statement call for that question.", "Passing a file path as a certificate input: MCP accepts retained C:<oid> values only."]
 
 [[mcp.tool]]
@@ -3845,6 +3885,17 @@ positionals = ["id?"]
 required = []
 dont = ["Don't invent a procedure id or a parameter name: `action: \"list\"` returns every registered procedure with its pinned default and meaning.", "Don't treat a finding as a conclusion: it is a statistic with citations; every cited handle resolves and should be read before anything is asserted.", "Don't pass an instant to known_at: procedures run at HEAD or a recorded sequence.", "The bank statement drift procedure requires Read and Reconcile in the launch capability. Recording its findings also requires Produce. A call cannot grant these operations to itself."]
 mistakes = ["Passing a parameter in display units (10000.00) instead of the unit's mantissa (1000000 at scale 2); the listing's `meaning` says which.", "Running aging.* or trace.* without effective_through (they are historical folds and are refused naming it).", "Running trace.* without account and source (the commingled account and the deposit entry).", "Overriding a parameter with a float; parameters are integers in the registered unit."]
+
+[[mcp.tool]]
+cluster = "fa.forensics"
+name = "search"
+verb = "search"
+subcommands = []
+positionals = ["query"]
+flags = ["--as-known-at", "--limit"]
+required = ["query"]
+dont = ["Don't read a high score as evidence of anything: BM25 ranks text, it states no finding, and no amount is parsed from a hit.", "Use the hit's id with the read tools (show entry, explain lineage) to read the entry itself; the snippet is only its matched text."]
+mistakes = ["Expecting documents or findings among the hits: this build indexes entry descriptions and leg memos only.", "Expecting erased or subject-sealed text to match: it is never indexed."]
 
 [[mcp.tool]]
 cluster = "fa.audit"
@@ -4119,6 +4170,11 @@ reach = "judged"
 
 [[bound]]
 verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor"]
+ops = ["read"]
+
+# A search reads every entry: the whole book.
+[[bound]]
+verbs = ["search"]
 ops = ["read"]
 
 [[bound]]
