@@ -12514,16 +12514,19 @@ fn aging_reconciliation_rows(
 
 const AGING_SOURCES_EXAMPLE: &str = "fa gl aging --from-source C:<open-items-oid> --as-of YYYY-MM-DD --certify --json, or fa gl aging --reconcile --account <code> --as-of YYYY-MM-DD --as-known-at <seq> --aging-certificate C:<oid> --control-certificate C:<tb-as-of-oid> --certify --json";
 
+/// `--from-source`, then the `--aging-certificate`/`--control-certificate` pair.
+type AgingSources<'a> = (Option<&'a str>, Option<(&'a str, &'a str)>);
+
 /// `gl aging` from saved certificates: `--from-source` ages one retained
 /// open-items certificate; `--aging-certificate` with `--control-certificate`
 /// reconciles (one leaf or a portfolio) from retained aging and as-of trial
 /// balance certificates. The other flags state the recipient's question, and
 /// each source is reused byte-for-byte, so each form certifies.
-fn aging_source_flags<'a>(
-    args: &'a Args,
+fn aging_source_flags(
+    args: &Args,
     certify: bool,
     reconcile: bool,
-) -> Result<(Option<&'a str>, Option<(&'a str, &'a str)>), Fail> {
+) -> Result<AgingSources<'_>, Fail> {
     for flag in [
         "--from-source",
         "--aging-certificate",
