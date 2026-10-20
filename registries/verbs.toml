@@ -3561,6 +3561,7 @@ verb = "statement"
 subcommands = []
 positionals = ["name"]
 flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--branch", "--before-certificate", "--after-certificate", "--from-diff"]
+switches = ["--certify", "--as-originally-reported"]
 required = ["name", "--for"]
 dont = ["Use name balance-sheet or income-statement (or diff|trace with definition and before), for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate, including diff and trace, and replay it with fa_read_replay. Certified comparisons and traces require read and produce on the launch capability. certificate_out is forbidden; certificate bytes and oid are returned inline.", "To compare two statements already certified (for example as reported then and as stated now), use name diff with before_certificate and after_certificate set to their C:<oid> values and for (plus compare) naming the statement they certify; the certificates fix both frontiers, so omit before, after and known_at, and a for, compare or definition they do not answer is refused. To attribute a saved comparison to each intermediate publication, use name trace with from_diff set to its C:<oid>, the same for, and certify: true."]
 mistakes = ["Omitting for, passing multiple for or compare periods, or using a date where a period code is required.", "Supplying known_at and as_known_at together: they name the same selector.", "Treating a later-period comparative as a different known-at snapshot; use a separate statement call for that question.", "Passing a file path as a certificate input: MCP accepts retained C:<oid> values only."]
@@ -4007,6 +4008,13 @@ ops = ["read"]
 [[bound]]
 verbs = ["statement"]
 when_any = ["--before-certificate", "--after-certificate", "--from-diff"]
+ops = ["read"]
+
+# Statement issuances (fa-wrrw) are book metadata: listing them reaches the
+# whole book.
+[[bound]]
+verbs = ["statement"]
+subcommands = ["issuances"]
 ops = ["read"]
 
 # A statement's columns reach what their basis folds: a stock basis through

@@ -3225,6 +3225,38 @@ fn statement_issue_pins_as_originally_reported_to_the_issued_certificate() -> st
             march,
             "--json",
         ],
+        // Each statement command refuses the other's flags, never ignores them.
+        vec![
+            "statement",
+            "issue",
+            "--certificate",
+            &issued_oid,
+            "--issued-to",
+            "auditor",
+            "--compare",
+            "FY2026-P02",
+            "--dry-run",
+            "--json",
+        ],
+        vec!["statement", "issuances", "--certify", "--json"],
+        vec!["statement", "issuances", "--issued-to", "auditor", "--json"],
+        vec![
+            "statement",
+            "income-statement",
+            "--for",
+            march,
+            "--dry-run",
+            "--json",
+        ],
+        vec![
+            "statement",
+            "income-statement",
+            "--for",
+            march,
+            "--issued-to",
+            "auditor",
+            "--json",
+        ],
     ] {
         let (code, out, err) = fa(Some(&book), &bad);
         assert_eq!(code, 2, "{bad:?}\n{out}\n{err}");
