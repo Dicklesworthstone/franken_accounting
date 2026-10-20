@@ -3174,3 +3174,155 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         "history reads and denials must not publish"
     );
 }
+
+#[test]
+fn agent_upload_is_self_sourced_and_forged_human_grade_is_refused() {
+    let dir = tmp("e2e-agent-upload");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Agent Upload MCP",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    )
+    .unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        chart.to_str().unwrap(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+
+    let mut mcp = Mcp::start_with(&book, &["--principal", "agent-uploader"]);
+    mcp.discover();
+
+    // 1. Agent session uploads inline text -> AgentUpload, self_sourced = true.
+    let (err, text, _) = call_tool(
+        &mut mcp,
+        "fa_evidence_import_document",
+        json!({
+            "text": "INVOICE 901 uploaded by agent-uploader",
+            "kind": "Invoice",
+            "mime": "text/plain"
+        }),
+    );
+    assert!(!err, "agent upload must succeed: {text}");
+    let uploaded: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(uploaded["grade"], json!("AgentUpload"));
+    assert_eq!(uploaded["self_sourced"], json!(true));
+    let oid = uploaded["oid"].as_str().expect("oid").to_string();
+
+    // 2. Planted negative: declaring `--grade HumanUpload` from an Agent session is refused.
+    let (err, forged_out, _) = call_tool(
+        &mut mcp,
+        "fa_evidence_import_document",
+        json!({
+            "text": "INVOICE 902 forged grade",
+            "kind": "Invoice",
+            "mime": "text/plain",
+            "grade": "HumanUpload"
+        }),
+    );
+    assert!(err, "forged HumanUpload grade must be refused: {forged_out}");
+    let refused = structured_error(&forged_out);
+    assert_eq!(refused["refusal_id"], json!("FA-REF-011"));
+
+    // 3. Rehearsing a post citing the unreviewed AgentUpload document fails the self-sourced gate (FA-REF-086).
+    let intent = json!({
+        "idempotency_key": "vwf-self-sourced-post",
+        "class": "Original",
+        "effective_date": "2026-03-15",
+        "description": "Agent-uploaded invoice before review",
+        "evidence": [oid],
+        "legs": [
+            {"side": "debit", "account": "6100", "amount": "25.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "25.00 USD"}
+        ]
+    });
+    let (err, pre_review_out, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({
+            "intent": intent,
+            "dry_run": true
+        }),
+    );
+    assert!(
+        err,
+        "unreviewed AgentUpload must be refused by FA-REF-086: {pre_review_out}"
+    );
+    let refused_post = structured_error(&pre_review_out);
+    assert_eq!(refused_post["refusal_id"], json!("FA-REF-086"));
+
+    // 4. Planted negative: reviewer == uploader (`agent-uploader`) is refused (FA-REF-111).
+    let (self_code, self_out) = cli(&[
+        "document",
+        "attest",
+        "review",
+        "--document",
+        &oid,
+        "--as",
+        "agent-uploader",
+        "--grant",
+        "approve",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(self_code, 7, "self-review must be refused: {self_out}");
+    assert!(self_out.contains("FA-REF-111"), "{self_out}");
+
+    // 5. Independent Human reviewer records a Reviewed attestation -> post rehearsal succeeds.
+    let (rev_code, rev_out) = cli(&[
+        "document",
+        "attest",
+        "review",
+        "--document",
+        &oid,
+        "--as",
+        "human-reviewer",
+        "--grant",
+        "approve",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(rev_code, 0, "independent review must succeed: {rev_out}");
+
+    let (err, post_review_out, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({
+            "intent": intent,
+            "dry_run": true
+        }),
+    );
+    assert!(
+        !err,
+        "reviewed AgentUpload must satisfy the evidence minimum on rehearsal: {post_review_out}"
+    );
+
+    assert_eq!(mcp.finish(), 0);
+}
+

@@ -488,8 +488,8 @@ evidence_class = "invariant"
 checker_strength = "exhaustive"
 first_gate = "G1"
 owner = "fa-lp6"
-checkers = ["fa-registry::lib::evidence_policy::tests::embedded_policy_is_total_over_entry_classes", "fa-journal::lib::evidence::tests::minimum_counts_admissible_kinds_and_names_the_row"]
-negatives = ["fa-journal::tests/genesis.rs::an_entry_below_its_evidence_minimum_is_refused_and_a_cited_document_is_linked", "fa-journal::tests/genesis.rs::target_classes_rest_on_their_target_while_a_hold_needs_its_own_document"]
+checkers = ["fa-registry::lib::evidence_policy::tests::embedded_policy_is_total_over_entry_classes", "fa-journal::lib::evidence::tests::minimum_counts_admissible_kinds_and_names_the_row", "fa-registers::tests/evidence_oracle.rs::capability_bound_uploads_derive_grade_from_profile_and_agree_with_the_oracle"]
+negatives = ["fa-journal::tests/genesis.rs::an_entry_below_its_evidence_minimum_is_refused_and_a_cited_document_is_linked", "fa-journal::tests/genesis.rs::target_classes_rest_on_their_target_while_a_hold_needs_its_own_document", "fa-mcp::tests/e2e_stdio.rs::agent_upload_is_self_sourced_and_forged_human_grade_is_refused"]
 waiver = "forbidden"
 
 [[clause]]

@@ -1768,3 +1768,238 @@ fn every_control_record_carries_its_registered_kind() {
         assert!(seen.contains_key(&kind), "kind {kind} minted: {seen:?}");
     }
 }
+
+/// fa-vwf: capability-bound `upload_document` derives provenance grade from
+/// `(intake source = Upload, capability.profile())`, refuses any mismatched
+/// `--grade` assertion (`FA-REF-084`), preserves an earlier `AgentUpload`
+/// grade and uploader on a later Human re-upload of the same bytes, and agrees
+/// with `fa_reference::evidence` across reviews and postings on 4 seeds.
+#[test]
+fn capability_bound_uploads_derive_grade_from_profile_and_agree_with_the_oracle() {
+    use fa_journal::upload::{UploadRequest, upload_document};
+    use fa_policy::{Op, Profile};
+    use fa_reference::evidence::upload_verdict;
+
+    let law = Law::embedded().expect("registries");
+    let invoice_tag = law.policy.kind_by_name("Invoice").unwrap().tag;
+    let all_grades: Vec<(u8, String)> = law
+        .policy
+        .grades
+        .iter()
+        .map(|g| (g.tag, g.name.clone()))
+        .collect();
+
+    for seed in [
+        0x51a7_c0d3_1122_3344_u64,
+        0x89ab_cdef_0123_4567,
+        0xfeed_face_cafe_babe,
+        0x3141_5926_5358_9793,
+    ] {
+        let mut rng = Rng(seed);
+        let mut b = book();
+        let mut docs: BTreeMap<u64, Doc> = BTreeMap::new();
+        let mut handles: BTreeMap<u64, EvidenceRef> = BTreeMap::new();
+        let mut raw_bytes: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        let mut reviews: BTreeMap<u64, u64> = BTreeMap::new();
+        let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+
+        for step in 0..80_u64 {
+            let uploader = *rng.pick(&PRINCIPALS);
+            let is_human = rng.below(2) == 0;
+            let profile = if is_human {
+                Profile::Human
+            } else {
+                Profile::Agent
+            };
+            let cap = Capability::new(
+                VId(u128::from(uploader)),
+                profile,
+                &[Op::Post],
+                VId(u128::from(uploader)),
+            )
+            .expect("upload capability");
+
+            // 1. Exercise asserted_grade (None, matching, or forged/mismatched).
+            let asserted: Option<(u8, String)> = if rng.below(3) == 0 {
+                None
+            } else {
+                Some(rng.pick(&all_grades).clone())
+            };
+            let bytes = format!("vwf-invoice-{seed:x}-{step}").into_bytes();
+            let req = UploadRequest {
+                kind: invoice_tag,
+                mime: "text/plain".into(),
+                bytes: bytes.clone(),
+                asserted_grade: asserted.as_ref().map(|(tag, _)| *tag),
+            };
+            let ctx = b.ctx();
+            let head_before = b.db.frontier().unwrap();
+            let kernel_res = b
+                .runtime
+                .block_on(upload_document(&mut b.db, &ctx, &b.book, &cap, req))
+                .expect("kernel");
+            let oracle_res = upload_verdict(&law, is_human, asserted.as_ref().map(|(_, n)| n.as_str()));
+
+            match (kernel_res, oracle_res) {
+                (Ok(added), Ok(expected_grade)) => {
+                    let expected_tag = law.policy.grade_by_name(expected_grade).unwrap().tag;
+                    assert_eq!(added.grade, expected_tag, "seed {seed:x} step {step}");
+                    assert!(!added.already_recorded);
+                    let id = step + 1;
+                    docs.insert(
+                        id,
+                        Doc {
+                            kind: "Invoice".into(),
+                            grade: expected_grade.into(),
+                            commit: added.doc_commit,
+                            uploader,
+                            custody: Custody::uploaded(),
+                        },
+                    );
+                    handles.insert(
+                        id,
+                        EvidenceRef {
+                            document_oid: added.oid,
+                            doc_commit: added.doc_commit,
+                            role: 1,
+                        },
+                    );
+                    raw_bytes.insert(id, bytes.clone());
+                    if is_human {
+                        *counts.entry("human_upload").or_default() += 1;
+                    } else {
+                        *counts.entry("agent_upload").or_default() += 1;
+                        // Re-uploading the same bytes from a Human session must not
+                        // upgrade the recorded AgentUpload grade or change uploader.
+                        let human_reuploader = Capability::new(
+                            VId(99),
+                            Profile::Human,
+                            &[Op::Post],
+                            VId(99),
+                        )
+                        .unwrap();
+                        let repeat_req = UploadRequest {
+                            kind: invoice_tag,
+                            mime: "text/plain".into(),
+                            bytes,
+                            asserted_grade: Some(
+                                law.policy.grade_by_name("HumanUpload").unwrap().tag,
+                            ),
+                        };
+                        let ctx = b.ctx();
+                        let repeated = b
+                            .runtime
+                            .block_on(upload_document(
+                                &mut b.db,
+                                &ctx,
+                                &b.book,
+                                &human_reuploader,
+                                repeat_req,
+                            ))
+                            .expect("kernel")
+                            .expect("repeat upload succeeds");
+                        assert!(repeated.already_recorded);
+                        assert_eq!(repeated.grade, added.grade);
+                        assert_eq!(repeated.oid, added.oid);
+                        *counts
+                            .entry("human_reupload_kept_agent_grade")
+                            .or_default() += 1;
+                    }
+
+                    // 2. Post citing the newly uploaded document before review.
+                    let key = format!("vwf-post-pre-{step}").into_bytes();
+                    let prop = b.proposal(EntryClass::ORIGINAL, &key, vec![handles[&id]]);
+                    let post_pre = outcome(&b.post(prop));
+                    let citations = vec![Citation {
+                        doc: id,
+                        commit: added.doc_commit,
+                        role: 1,
+                    }];
+                    let att = Attestations {
+                        reviews: reviews.clone(),
+                        manual: None,
+                    };
+                    let oracle_pre = verdict(&law, "Original", &docs, &citations, &att);
+                    assert_eq!(post_pre, oracle_pre, "seed {seed:x} step {step} pre-review");
+                    if let Some(code) = post_pre {
+                        *counts.entry(code).or_default() += 1;
+                    }
+
+                    // 3. For an AgentUpload document, test self-review refusal and independent review promotion.
+                    if !is_human {
+                        let self_rev = outcome(&b.review(uploader, added.oid, Vec::new()));
+                        assert_eq!(
+                            self_rev,
+                            review_verdict(&docs, id, &[], uploader),
+                            "seed {seed:x} step {step} self-review"
+                        );
+                        assert_eq!(self_rev, Some("FA-REF-111"));
+                        *counts.entry("FA-REF-111").or_default() += 1;
+
+                        let reviewer = PRINCIPALS
+                            .iter()
+                            .copied()
+                            .find(|p| *p != uploader)
+                            .unwrap();
+                        let rev_ok = outcome(&b.review(reviewer, added.oid, Vec::new()));
+                        assert_eq!(
+                            rev_ok,
+                            review_verdict(&docs, id, &[], reviewer),
+                            "seed {seed:x} step {step} independent review"
+                        );
+                        assert_eq!(rev_ok, None);
+                        reviews.insert(id, reviewer);
+
+                        let key_post = format!("vwf-post-after-{step}").into_bytes();
+                        let prop_after =
+                            b.proposal(EntryClass::ORIGINAL, &key_post, vec![handles[&id]]);
+                        let post_after = outcome(&b.post(prop_after));
+                        let att_after = Attestations {
+                            reviews: reviews.clone(),
+                            manual: None,
+                        };
+                        let oracle_after =
+                            verdict(&law, "Original", &docs, &citations, &att_after);
+                        assert_eq!(
+                            post_after, oracle_after,
+                            "seed {seed:x} step {step} post-review"
+                        );
+                        assert_eq!(post_after, None);
+                        *counts.entry("reviewed_post_admitted").or_default() += 1;
+                    }
+                }
+                (Err(refusal), Err(expected_code)) => {
+                    assert_eq!(
+                        refusal.code, expected_code,
+                        "seed {seed:x} step {step}: {refusal}"
+                    );
+                    assert_eq!(
+                        b.db.frontier().unwrap(),
+                        head_before,
+                        "refused upload must not advance frontier"
+                    );
+                    *counts.entry(expected_code).or_default() += 1;
+                }
+                other => panic!("seed {seed:x} step {step} kernel/oracle mismatch: {other:?}"),
+            }
+        }
+
+        eprintln!("vwf upload seed {seed:x}: {counts:?}");
+        for (key, min) in [
+            ("agent_upload", 3usize),
+            ("human_upload", 3),
+            ("FA-REF-084", 5),
+            ("FA-REF-086", 3),
+            ("FA-REF-111", 3),
+            ("reviewed_post_admitted", 3),
+            ("human_reupload_kept_agent_grade", 3),
+        ] {
+            assert!(
+                counts.get(key).copied().unwrap_or(0) >= min,
+                "seed {seed:x}: expected {key} >= {min}, got {:?}",
+                counts.get(key)
+            );
+        }
+    }
+}
+

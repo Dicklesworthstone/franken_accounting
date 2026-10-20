@@ -1134,7 +1134,7 @@ pub fn check_minimum(
                 admissible.len()
             ),
             "plan §9.3 (self-sourced evidence: AgentUpload, Generated; it counts once an approver other than the uploader records a Reviewed attestation)",
-            "have a principal other than the uploader, holding `approve`, record a Reviewed attestation over each such document (the attestation library's record_review), then post again; or cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by that person; never re-declare an agent's upload as a person's",
+            "have a principal other than the uploader, holding `approve`, record a Reviewed attestation over each such document (`fa document attest review --document <oid> --as <reviewer> --grant approve --json` or the attestation library's record_review), then post again; or cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by that person; never re-declare an agent's upload as a person's",
         ));
     }
     let kinds = policy.kind_names(&min.kinds).join(", ");
