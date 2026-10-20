@@ -34,8 +34,9 @@ pub(crate) fn engagement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
         Some("open") => open(ctx, args),
         Some("list") => list(ctx, args),
         Some("show") => show(ctx, args),
+        Some("sud") => sud(ctx, args),
         _ => Err(usage(
-            "engagement has the subcommands open, list and show",
+            "engagement has the subcommands open, list, show and sud",
             OPEN_EXAMPLE,
         )),
     }
@@ -416,6 +417,106 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("proposals", Json::Arr(proposals)),
         ],
         &human.join("\n"),
+    );
+    Ok(())
+}
+
+fn effect_json(
+    effect: fa_journal::StatementEffect,
+    unit: fa_money::UnitId,
+    units: &fa_money::UnitRegistry,
+) -> Result<Json, Fail> {
+    let amount = |m: i128| render_amount(Amount::new(unit, m), units).map(s);
+    Ok(obj(vec![
+        ("income", amount(effect.income)?),
+        ("assets", amount(effect.assets)?),
+        ("liabilities", amount(effect.liabilities)?),
+        ("equity", amount(effect.equity)?),
+    ]))
+}
+
+/// `fa engagement sud <id>`: the summary of uncorrected misstatements (plan
+/// §11.12, `audit.sud`), every passed proposal's effect had it been booked,
+/// against the engagement's stated parameters. The comparisons are
+/// mechanical; the materiality judgment is the auditor's.
+fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let engagement = match args.positional.as_slice() {
+        [_, _, id] => id.clone(),
+        _ => {
+            return Err(usage(
+                "engagement sud takes exactly one engagement id",
+                "fa engagement sud <id> --json",
+            ));
+        }
+    };
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+    let view = book
+        .engagement(&engagement)?
+        .ok_or_else(|| unknown(&engagement))?;
+    let summary = book
+        .uncorrected_misstatements(&engagement)?
+        .ok_or_else(|| unknown(&engagement))?;
+    let units = book.context().units.clone();
+    let items = summary
+        .items
+        .iter()
+        .map(|item| {
+            Ok(obj(vec![
+                ("number", Json::Int(i128::from(item.ordinal))),
+                ("effective_date", s(item.effective_date.render())),
+                ("reason", s(reason_name(item.reason_code)?)),
+                ("effect", effect_json(item.effect, summary.unit, &units)?),
+                ("clearly_trivial", Json::Bool(item.clearly_trivial)),
+                (
+                    "other_units",
+                    Json::Arr(
+                        item.other_units
+                            .iter()
+                            .map(|u| registered_unit_code(*u, &units).map(s))
+                            .collect::<Result<Vec<_>, Fail>>()?,
+                    ),
+                ),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let rollover = render_amount(Amount::new(summary.unit, summary.rollover_income), &units)?;
+    ctx.out.at_book(&book)?;
+    ctx.out.event(
+        "engagement_sud",
+        vec![
+            ("engagement", summary_json(&view, &units)?),
+            ("unit", s(registered_unit_code(summary.unit, &units)?)),
+            ("items", Json::Arr(items)),
+            ("rollover_income", s(rollover.as_str())),
+            (
+                "iron_curtain",
+                effect_json(summary.iron_curtain, summary.unit, &units)?,
+            ),
+            ("prior_period_carry_forward", Json::Bool(false)),
+            (
+                "exceeds_performance",
+                Json::Bool(summary.exceeds_performance),
+            ),
+            ("exceeds_overall", Json::Bool(summary.exceeds_overall)),
+        ],
+        &format!(
+            "engagement {engagement}: {} uncorrected misstatement(s); rollover income effect {rollover}; {} performance materiality, {} overall (mechanical comparisons; materiality is the auditor's judgment)",
+            summary.items.len(),
+            if summary.exceeds_performance {
+                "exceeds"
+            } else {
+                "within"
+            },
+            if summary.exceeds_overall {
+                "exceeds"
+            } else {
+                "within"
+            },
+        ),
     );
     Ok(())
 }
