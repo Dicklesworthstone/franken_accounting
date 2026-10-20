@@ -4137,12 +4137,64 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     },
                 },
             };
-            let reason: u16 = args.flag("--reason").unwrap_or("0").parse().map_err(|_| {
-                usage(
-                    "--reason must be a registered reason code (u16)",
-                    "--reason 0",
-                )
-            })?;
+            // Every transition is journaled with its reason (plan §7.3,
+            // fa-cvg): a registered name or code of the transition's scope.
+            // A routine open or soft close defaults to Scheduled; close, lock
+            // and reopen say why. The kernel refuses an unregistered code. A
+            // plan carries the reason its approvals bind.
+            let scope = fa_journal::period::reason_scope(transition);
+            let reasons = ReasonCodes::embedded()
+                .map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+            let reason: Option<u16> = match args.flag("--reason") {
+                Some(_) if args.flag("--plan").is_some() => {
+                    return Err(usage(
+                        "--reason does not apply to --plan: the plan carries the reason its approvals bind",
+                        format!("fa period {t} {code} --plan <file> [--approval <vid>]..."),
+                    ));
+                }
+                None if args.flag("--plan").is_some() => None,
+                Some(given) => Some(match given.parse::<u16>() {
+                    Ok(number) => number,
+                    Err(_) => reasons
+                        .rows
+                        .iter()
+                        .find(|r| r.scope == scope && r.name == given)
+                        .map(|r| r.code)
+                        .ok_or_else(|| {
+                            usage(
+                                format!("--reason `{given}` is not a registered {scope} reason"),
+                                format!("--reason <name>, one of: {}", reasons.listing(scope)),
+                            )
+                        })?,
+                }),
+                None if matches!(
+                    transition,
+                    PeriodTransition::Open | PeriodTransition::SoftClose
+                ) =>
+                {
+                    Some(
+                        reasons
+                            .rows
+                            .iter()
+                            .find(|r| r.scope == scope && r.name == "Scheduled")
+                            .map(|r| r.code)
+                            .ok_or_else(|| {
+                                Fail::Internal(format!(
+                                    "reason_codes.toml has no {scope} Scheduled"
+                                ))
+                            })?,
+                    )
+                }
+                None => {
+                    return Err(usage(
+                        format!("period {t} needs --reason: the journal records why"),
+                        format!(
+                            "fa period {t} {code} --reason <name>, one of: {}",
+                            reasons.listing(scope)
+                        ),
+                    ));
+                }
+            };
             let who = ctx.principal(args);
             let op = fa_journal::policy::steward()
                 .map_err(BookError::Kernel)?
@@ -4163,13 +4215,17 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .map(|k| k.as_bytes().to_vec())
                 .unwrap_or_else(|| format!("period:{code}:{current}:{t}").into_bytes());
             let approval_flags = args.flag_all("--approval");
+            // Every branch but the plan commit has a reason of its own.
+            let given_reason = || {
+                reason.ok_or_else(|| Fail::Internal("only a period plan carries its reason".into()))
+            };
             // A plan seals the description once (R4), so an approval
             // recorded by another principal, in another process, binds the
             // proposal the commit rebuilds from the plan's inputs. Plan files
             // resolve against the caller's working directory, as every file
             // argument does (a daemon writes and reads the client's).
             if args.switch("--dry-run") {
-                let plan = book.plan_transition(code, transition, who, reason, &key)??;
+                let plan = book.plan_transition(code, transition, who, given_reason()?, &key)??;
                 let digest = book.plan_digest(&plan)??;
                 let bytes = plan
                     .encode()
@@ -4205,7 +4261,7 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "use --dry-run to receive the complete plan bytes as hex on stdout",
                     ));
                 }
-                let plan = book.plan_transition(code, transition, who, reason, &key)??;
+                let plan = book.plan_transition(code, transition, who, given_reason()?, &key)??;
                 let digest = book.plan_digest(&plan)??;
                 let bytes = plan
                     .encode()
@@ -4271,9 +4327,14 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ),
                     ));
                 }
-                None => {
-                    book.transition_period(code, transition, who, reason, &key, &capability)??
-                }
+                None => book.transition_period(
+                    code,
+                    transition,
+                    who,
+                    given_reason()?,
+                    &key,
+                    &capability,
+                )??,
             };
             out.at_book(&book)?;
             out.effective(format!("period:{}", tr.period));
@@ -14418,7 +14479,10 @@ fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .iter()
         .map(|t| {
             let reason_name = reasons
-                .get("period_control", t.reason_code)
+                .get(
+                    fa_journal::period::reason_scope_of(t.from, t.to),
+                    t.reason_code,
+                )
                 .map(|r| r.name.as_str());
             obj(vec![
                 ("control_entry", s(format!("{:032x}", t.entry_vid.0))),

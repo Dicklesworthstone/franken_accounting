@@ -932,15 +932,42 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
     );
     let march = "FY2026-P03";
     assert_eq!(fa(Some(&book), &["period", "open", march]).0, 0);
-    assert_eq!(fa(Some(&book), &["period", "close", march, "--yes"]).0, 0);
+    assert_eq!(
+        fa(
+            Some(&book),
+            &["period", "close", march, "--reason", "Scheduled", "--yes"]
+        )
+        .0,
+        0
+    );
     // Confirmed with --yes, so the kernel's verdict is what refuses it.
-    let (code, out, _) = fa(Some(&book), &["period", "lock", march, "--yes", "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "lock",
+            march,
+            "--reason",
+            "Scheduled",
+            "--yes",
+            "--json",
+        ],
+    );
     assert_eq!(code, 7, "{out}");
     assert!(out.contains("\"refusal_id\":\"FA-REF-012\""), "{out}");
     let plan = dir.join("lock.plan").display().to_string();
     let (code, out, _) = fa(
         Some(&book),
-        &["period", "lock", march, "--plan-out", &plan, "--json"],
+        &[
+            "period",
+            "lock",
+            march,
+            "--reason",
+            "Scheduled",
+            "--plan-out",
+            &plan,
+            "--json",
+        ],
     );
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("\"event\":\"period_planned\""), "{out}");
@@ -959,6 +986,8 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
             "period",
             "lock",
             march,
+            "--reason",
+            "Scheduled",
             "--approval",
             &"0".repeat(32),
             "--yes",
@@ -1056,7 +1085,18 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
     let (_, after, _) = fa(Some(&book), &["book", "info", "--json"]);
     assert_eq!(after, before, "the replay wrote nothing");
     // A different request after the lock is still the illegal transition.
-    let (code, out, _) = fa(Some(&book), &["period", "close", march, "--yes", "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "close",
+            march,
+            "--reason",
+            "Scheduled",
+            "--yes",
+            "--json",
+        ],
+    );
     assert_eq!(code, 7, "{out}");
     assert!(out.contains("\"refusal_id\":\"FA-REF-040\""), "{out}");
     Ok(())
@@ -1648,7 +1688,10 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     assert_eq!(checks[0].get("stale"), Some(&Json::Bool(true)));
     assert!(int(&checks[0], "lag_entries").is_some_and(|n| n >= 1));
     assert!(out.contains("fa registers advance --period FY2026-P03 --json"));
-    let (code, _, _) = fa(Some(&book), &["period", "close", march, "--yes"]);
+    let (code, _, _) = fa(
+        Some(&book),
+        &["period", "close", march, "--reason", "Scheduled", "--yes"],
+    );
     assert_eq!(code, 0);
     let later = write(
         &dir,
@@ -1673,7 +1716,17 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     // verdict, not the confirmation gate, is what refuses it.
     let (code, out, _) = fa(
         Some(&book),
-        &["period", "reopen", march, "--to", "open", "--yes", "--json"],
+        &[
+            "period",
+            "reopen",
+            march,
+            "--reason",
+            "LateTransactions",
+            "--to",
+            "open",
+            "--yes",
+            "--json",
+        ],
     );
     assert_eq!(code, 7, "{out}");
     assert!(
@@ -2746,7 +2799,18 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
     assert_eq!(code, 3, "{out}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-161"), "{out}");
     assert!(out.contains("fa period lock FY2026-P03"), "{out}");
-    let (code, out, _) = fa(Some(&book), &["period", "close", march, "--yes", "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "close",
+            march,
+            "--reason",
+            "Scheduled",
+            "--yes",
+            "--json",
+        ],
+    );
     assert_eq!(code, 0, "{out}");
     let closed_at = field(&out, "recorded_at").unwrap().to_string();
     let (code, out, _) = fa(Some(&book), &originally);
@@ -2757,7 +2821,16 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
     let plan = dir.join("lock.plan").display().to_string();
     let (code, out, _) = fa(
         Some(&book),
-        &["period", "lock", march, "--plan-out", &plan, "--json"],
+        &[
+            "period",
+            "lock",
+            march,
+            "--reason",
+            "Scheduled",
+            "--plan-out",
+            &plan,
+            "--json",
+        ],
     );
     assert_eq!(code, 0, "{out}");
     let digest = field(&out, "proposal_digest").unwrap().to_string();
@@ -5299,13 +5372,49 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     // A planned, approved lock (R4): `period_planned`, then `approved`.
     assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
-    assert_eq!(run(true, &["period", "close", "FY2026-P04", "--yes"]).0, 0);
     assert_eq!(
-        run(true, &["period", "lock", "FY2026-P04", "--dry-run"]).0,
+        run(
+            true,
+            &[
+                "period",
+                "close",
+                "FY2026-P04",
+                "--reason",
+                "Scheduled",
+                "--yes"
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "period",
+                "lock",
+                "FY2026-P04",
+                "--reason",
+                "Scheduled",
+                "--dry-run"
+            ]
+        )
+        .0,
         0
     );
     let plan = dir.join("lock.plan").display().to_string();
-    let (code, out) = run(true, &["period", "lock", "FY2026-P04", "--plan-out", &plan]);
+    let (code, out) = run(
+        true,
+        &[
+            "period",
+            "lock",
+            "FY2026-P04",
+            "--reason",
+            "Scheduled",
+            "--plan-out",
+            &plan,
+        ],
+    );
     assert_eq!(code, 0, "{out}");
     let digest = field(&out, "proposal_digest")
         .unwrap_or_default()
@@ -5366,7 +5475,15 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     run2(&["period", "create", "--fiscal-year", "2026"]);
     run2(&["period", "open", "FY2026-P01"]);
     let close_plan = dir.join("p01_close.plan").display().to_string();
-    let (_, cp_out) = run2(&["period", "close", "FY2026-P01", "--plan-out", &close_plan]);
+    let (_, cp_out) = run2(&[
+        "period",
+        "close",
+        "FY2026-P01",
+        "--reason",
+        "Scheduled",
+        "--plan-out",
+        &close_plan,
+    ]);
     let cp_digest = field(&cp_out, "proposal_digest")
         .unwrap_or_default()
         .to_string();
@@ -5384,7 +5501,15 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         &cp_app,
     ]);
     let lock_plan = dir.join("p01_lock.plan").display().to_string();
-    let (_, lp_out) = run2(&["period", "lock", "FY2026-P01", "--plan-out", &lock_plan]);
+    let (_, lp_out) = run2(&[
+        "period",
+        "lock",
+        "FY2026-P01",
+        "--reason",
+        "Scheduled",
+        "--plan-out",
+        &lock_plan,
+    ]);
     let lp_digest = field(&lp_out, "proposal_digest")
         .unwrap_or_default()
         .to_string();
@@ -7059,7 +7184,15 @@ fn dangerous_operations_need_yes_and_name_the_safe_alternative() -> std::io::Res
         "fa period soft-close",
     );
     assert_eq!(state("FY2026-P03"), "SoftClosed");
-    let (code, out) = confirmed(&["period", "close", "FY2026-P03", "--yes", "--json"]);
+    let (code, out) = confirmed(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(state("FY2026-P03"), "Closed");
 
@@ -7133,12 +7266,22 @@ fn dangerous_operations_need_yes_and_name_the_safe_alternative() -> std::io::Res
         "period",
         "reopen",
         "FY2026-P03",
+        "--reason",
+        "LateTransactions",
         "--to",
         "open",
         "--yes",
         "--json",
     ]);
-    confirmed(&["period", "lock", "FY2026-P03", "--yes", "--json"]);
+    confirmed(&[
+        "period",
+        "lock",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
 
     // Human mode names the safe alternative on stderr.
     let (code, _, err) = fa_b(&["period", "close", "FY2026-P04"]);
@@ -9176,13 +9319,23 @@ fn docket_steward_and_migration_controls_round_trip() -> std::io::Result<()> {
     ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
     ok(&["period", "open", "FY2026-OPEN", "--json"]);
     ok(&["period", "soft-close", "FY2026-OPEN", "--json"]);
-    ok(&["period", "close", "FY2026-OPEN", "--yes", "--json"]);
+    ok(&[
+        "period",
+        "close",
+        "FY2026-OPEN",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
     let lock_plan = dir.join("lock_open.plan");
     let lock_plan_s = lock_plan.to_str().unwrap();
     let lock_planned = ok(&[
         "period",
         "lock",
         "FY2026-OPEN",
+        "--reason",
+        "Scheduled",
         "--plan-out",
         lock_plan_s,
         "--json",

@@ -344,7 +344,17 @@ fn closing_binary_closed_reclose_preserves_review_across_independent_approval() 
     f.close_now("first");
     f.post("adjustment", "6000", "1000", "7.00");
     ok(&f.book, &["period", "soft-close", "FY2026-CLOSE"]);
-    ok(&f.book, &["period", "close", "FY2026-CLOSE", "--yes"]);
+    ok(
+        &f.book,
+        &[
+            "period",
+            "close",
+            "FY2026-CLOSE",
+            "--reason",
+            "Scheduled",
+            "--yes",
+        ],
+    );
     let (review_path, reviewed) = f.review("approved-reclose");
     let before_denial = head(&f.book);
     let (denied, _) = run(

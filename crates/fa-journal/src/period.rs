@@ -204,6 +204,49 @@ pub fn transition_name(t: PeriodTransition) -> &'static str {
     }
 }
 
+/// The `reason_codes.toml` scope a transition's reason is registered in
+/// (plan §7.3, fa-cvg): a reopen says why the period reopens
+/// (`period_reopen`); every other transition is a step of the period's
+/// close (`period_control`).
+#[must_use]
+pub fn reason_scope(t: PeriodTransition) -> &'static str {
+    match t {
+        PeriodTransition::Reopen { .. } => "period_reopen",
+        _ => "period_control",
+    }
+}
+
+/// [`reason_scope`] of a recorded `from → to` transition: a reopen is the
+/// one transition that moves a period back along the state order.
+#[must_use]
+pub fn reason_scope_of(from: PeriodState, to: PeriodState) -> &'static str {
+    if to < from {
+        "period_reopen"
+    } else {
+        "period_control"
+    }
+}
+
+/// The refusal for a reason that `t`'s scope does not register (FA-REF-041).
+fn reason_refusal(t: PeriodTransition, reason_code: u16) -> Result<Option<Refusal>, KernelError> {
+    let reasons = fa_registry::reason_codes::ReasonCodes::embedded()
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let scope = reason_scope(t);
+    if reasons.get(scope, reason_code).is_some() {
+        return Ok(None);
+    }
+    Ok(Some(Refusal::new(
+        code::PERIOD_REASON,
+        exit::REFUSAL,
+        format!(
+            "{} reason {reason_code} is not registered in reason_codes.toml scope {scope} (zero is not a reason)",
+            transition_name(t)
+        ),
+        "plan §7.3 (every transition is journaled with its principal and reason); reason_codes.toml",
+        format!("give a registered reason: {}", reasons.listing(scope)),
+    )))
+}
+
 /// The effective date of the `PeriodControl` entry that moves `period` out
 /// of `from` (plan §7.3, fa-87r). The period fixes it; no caller supplies
 /// it. Opening a `Future` period is dated on the period's first day. Every
@@ -719,6 +762,9 @@ pub fn plan_transition<V: asupersync::fs::Vfs + Clone>(
     let Ok(to) = transition(from, t) else {
         return Ok(Err(illegal_transition(period_code, from, t)));
     };
+    if let Some(r) = reason_refusal(t, reason_code)? {
+        return Ok(Err(r));
+    }
     Ok(Ok(TransitionPlan {
         period_code: period_code.to_string(),
         from,
@@ -978,6 +1024,13 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         };
     }
 
+    // A fresh transition names a reason its scope registers (fa-cvg).
+    // Outcome recognition stays first: an identical retry returns the
+    // recorded outcome, including one recorded before this law.
+    if let Some(r) = reason_refusal(t, reason_code)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     let proposal = transition_proposal(
         book,
         &period,
@@ -1187,7 +1240,7 @@ pub fn originally_reported<V: asupersync::fs::Vfs + Clone>(
             ),
             "plan §7.4 (AS ORIGINALLY REPORTED pins the first StatementIssuance, else the first Lock; never the first Close)",
             format!(
-                "read the period as currently stated (omit --as-originally-reported), or lock it once it is final: fa period lock {period_code}"
+                "read the period as currently stated (omit --as-originally-reported), or lock it once it is final: fa period lock {period_code} --reason AuditComplete --yes"
             ),
         )),
     })

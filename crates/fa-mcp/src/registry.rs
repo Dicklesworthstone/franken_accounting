@@ -113,7 +113,7 @@ pub const MACROS: &[MacroSpec] = &[
     MacroSpec {
         id: "fa.macro.prepare_close",
         name: "prepare_close",
-        summary: "Inspect period state, compute the period's trial balance, verify derived registers against the fold, and rehearse a sealed close proposal (`fa period close <code> --dry-run`) with step-by-step provenance.",
+        summary: "Inspect period state, compute the period's trial balance, verify derived registers against the fold, and rehearse a sealed close proposal (`fa period close <code> --reason Scheduled --dry-run`) with step-by-step provenance.",
         properties: &[(
             "period",
             "fiscal period code to prepare for close (for example `FY2026-P03`)",

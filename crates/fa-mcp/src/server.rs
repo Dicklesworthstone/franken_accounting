@@ -493,10 +493,19 @@ impl Adapter {
                             period.clone(),
                         ],
                     ),
+                    // The macro rehearses the period's scheduled close (fa-cvg:
+                    // a close names its reason).
                     (
                         "close_plan",
                         "fa_time_period_transition",
-                        vec!["period".into(), "close".into(), period, "--dry-run".into()],
+                        vec![
+                            "period".into(),
+                            "close".into(),
+                            period,
+                            "--reason".into(),
+                            "Scheduled".into(),
+                            "--dry-run".into(),
+                        ],
                     ),
                 ]
             }
@@ -628,7 +637,7 @@ impl Adapter {
                 detect::remember(
                     &mut memory,
                     tool,
-                    &json!({"transition": "close", "dry_run": true}),
+                    &json!({"transition": "close", "reason": "Scheduled", "dry_run": true}),
                     &reply,
                     self.authority.principal(),
                 );
@@ -2147,7 +2156,7 @@ mod tests {
         let planned = adapter
             .call(
                 &transition,
-                &json!({"transition": "close", "code": "FY2026-P03", "plan_out": "nested/close.plan"}),
+                &json!({"transition": "close", "code": "FY2026-P03", "reason": "Scheduled", "plan_out": "nested/close.plan"}),
             )
             .expect("plan_out inside --files root");
         assert!(planned.data.contains("proposal_digest"));

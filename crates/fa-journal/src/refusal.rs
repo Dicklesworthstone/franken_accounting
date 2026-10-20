@@ -112,6 +112,9 @@ pub mod code {
     pub const PERIOD_MOVED: &str = "FA-REF-031";
     /// The requested period transition is not a legal edge of the state machine.
     pub const TRANSITION: &str = "FA-REF-040";
+    /// A period transition's reason is not registered in its
+    /// `reason_codes.toml` scope (`period_control`, or `period_reopen` for a reopen).
+    pub const PERIOD_REASON: &str = "FA-REF-041";
     /// The payload violates the schema's structural rules.
     pub const STRUCTURE: &str = "FA-REF-100";
     /// A control class was sent through `post`.

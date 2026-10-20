@@ -1584,12 +1584,14 @@ fn kernel_activate(k: &mut Kernel, step: u64) {
         .expect("activated");
 }
 
-/// One transition by `PRINCIPAL` under `capability`, citing `approvals`.
+/// One transition by `PRINCIPAL` giving `reason` under `capability`, citing
+/// `approvals`.
 fn kernel_transition_under(
     k: &mut Kernel,
     code: &str,
     t: PeriodTransition,
     step: u64,
+    reason: u16,
     capability: &Capability,
     approvals: &[fa_model::ApprovalRef],
 ) -> Result<Transitioned, Refusal> {
@@ -1607,7 +1609,7 @@ fn kernel_transition_under(
                 code,
                 t,
                 PRINCIPAL,
-                1,
+                reason,
                 key.as_bytes(),
                 description,
                 capability,
@@ -1649,9 +1651,64 @@ fn kernel_transition(
         code,
         t,
         step,
+        1,
         &Capability::embedded(PRINCIPAL, &["close", "reopen"]).expect("ops"),
         &approvals,
     )
+}
+
+/// fa-cvg: once the period law admits a transition, its reason must be
+/// registered in its scope (`period_control`, or `period_reopen` for a
+/// reopen), in both engines. At every step of a period's life (open, soft
+/// close, reopen, soft close, close, lock) each unregistered reason is
+/// refused FA-REF-041 with an unchanged frontier, and the registered reason
+/// then moves both engines.
+#[test]
+fn kernel_and_oracle_agree_on_period_transition_reasons() {
+    let (mut k, mut oracle, periods) = setup();
+    let code = periods[4].clone();
+    let capability = Capability::embedded(PRINCIPAL, &["close", "reopen"]).expect("ops");
+    let control = [0, 4, 99, u16::MAX];
+    let steps = [
+        (PeriodTransition::Open, control),
+        (PeriodTransition::SoftClose, control),
+        (
+            PeriodTransition::Reopen {
+                to: PeriodState::Open,
+            },
+            [0, 5, 99, u16::MAX],
+        ),
+        (PeriodTransition::SoftClose, control),
+        (PeriodTransition::Close, control),
+        (PeriodTransition::Lock, control),
+    ];
+    for (i, (t, unregistered)) in steps.into_iter().enumerate() {
+        for (j, reason) in unregistered.into_iter().enumerate() {
+            let before = k.db.frontier().unwrap();
+            let step = 50_000 + 10 * i as u64 + j as u64;
+            let kernel = kernel_transition_under(&mut k, &code, t, step, reason, &capability, &[])
+                .expect_err("an unregistered reason is refused");
+            let model = oracle
+                .transition_with_reason(&code, t, reason)
+                .expect_err("the oracle refuses an unregistered reason");
+            assert_eq!(
+                (kernel.code, kernel.exit),
+                (model, fa_journal::refusal::exit::REFUSAL),
+                "{code} {t:?} reason {reason}: {kernel}"
+            );
+            assert_eq!(
+                k.db.frontier().unwrap(),
+                before,
+                "{code} {t:?} reason {reason}: nothing written"
+            );
+        }
+        let kernel = kernel_transition(&mut k, &code, t, 50_100 + i as u64)
+            .expect("the registered reason 1 admits");
+        let model = oracle
+            .transition_with_reason(&code, t, 1)
+            .expect("the oracle admits reason 1");
+        assert_eq!((kernel.from, kernel.to), model, "{code} {t:?}");
+    }
 }
 
 #[test]
@@ -7889,7 +7946,7 @@ fn kernel_and_oracle_agree_on_period_authority() {
             }
         };
 
-        let kernel = kernel_transition_under(&mut k, &code, t, step, &capability, &approvals);
+        let kernel = kernel_transition_under(&mut k, &code, t, step, 1, &capability, &approvals);
         let model =
             oracle.transition_under(&code, t, PRINCIPAL.0, &authority, book, at.0, &recorded);
         assert_eq!(

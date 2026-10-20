@@ -2090,6 +2090,8 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
         "period",
         "close",
         "FY2026-P03",
+        "--reason",
+        "Scheduled",
         "--plan-out",
         &plan.display().to_string(),
         "--book",
@@ -2259,7 +2261,7 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
     let (error, text, result) = call_tool(
         &mut mcp,
         "fa_time_period_transition",
-        json!({"transition": "close", "code": "FY2026-P03", "dry_run": true}),
+        json!({"transition": "close", "code": "FY2026-P03", "reason": "Scheduled", "dry_run": true}),
     );
     assert!(!error, "read-authorized inline preparation: {text}");
     let planned: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();

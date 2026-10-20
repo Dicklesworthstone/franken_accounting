@@ -323,6 +323,8 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
         "period",
         "close",
         "FY2026-P01",
+        "--reason",
+        "Scheduled",
         "--as",
         "controller",
         "--yes",
@@ -433,12 +435,22 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
         "period",
         "close",
         "FY2025-P12",
+        "--reason",
+        "Scheduled",
         "--as",
         "controller",
         "--yes",
     ]);
     let lock_plan = dir.join("lock-p12.plan").display().to_string();
-    let planned = run_ok(&["period", "lock", "FY2025-P12", "--plan-out", &lock_plan]);
+    let planned = run_ok(&[
+        "period",
+        "lock",
+        "FY2025-P12",
+        "--reason",
+        "Scheduled",
+        "--plan-out",
+        &lock_plan,
+    ]);
     let lock_digest = planned
         .get("data")
         .and_then(|d| d.get("proposal_digest"))

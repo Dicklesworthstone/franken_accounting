@@ -744,7 +744,17 @@ fn period_controls_are_dated_by_their_period_never_by_the_caller() {
         assert_eq!(head(&f.book), before, "{transition}: nothing written");
     }
     ok(&f.book, &["period", "soft-close", "FY2026-P03"]);
-    ok(&f.book, &["period", "close", "FY2026-P03", "--yes"]);
+    ok(
+        &f.book,
+        &[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--yes",
+        ],
+    );
     let explained = ok(&f.book, &["explain", "period", "FY2026-P03"]);
     let dated: Vec<(&str, &str)> = get(&explained, "transitions")
         .as_arr()
@@ -764,12 +774,232 @@ fn period_controls_are_dated_by_their_period_never_by_the_caller() {
     );
 }
 
+/// fa-cvg: every transition journals a registered reason. A close without
+/// `--reason` and an unknown reason name are usage errors (exit 2) naming
+/// the registered reasons; an unregistered code reaches the kernel and is
+/// refused FA-REF-041 (exit 3); `--reason` with `--plan` is refused because
+/// the plan carries the reason its approvals bind. Nothing is written by
+/// any refusal, and `explain period` names each recorded reason.
+#[test]
+fn period_transitions_journal_a_registered_reason() {
+    let f = Fixture::new();
+    let before = head(&f.book);
+    let (code, missing) = run(&f.book, &["period", "close", "FY2026-P03", "--yes"], None);
+    assert_eq!(code, 2, "{}", missing.render());
+    assert!(
+        text(&missing, "fix").contains("Scheduled"),
+        "{}",
+        missing.render()
+    );
+    let (code, unknown) = run(
+        &f.book,
+        &[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Vibes",
+            "--yes",
+        ],
+        None,
+    );
+    assert_eq!(code, 2, "{}", unknown.render());
+    assert!(
+        text(&unknown, "message").contains("Vibes"),
+        "{}",
+        unknown.render()
+    );
+    for unregistered in ["0", "4", "99"] {
+        let (code, refused) = run(
+            &f.book,
+            &[
+                "period",
+                "soft-close",
+                "FY2026-P03",
+                "--reason",
+                unregistered,
+            ],
+            None,
+        );
+        assert_eq!(code, 3, "{unregistered}: {}", refused.render());
+        assert_eq!(text(&refused, "refusal_id"), "FA-REF-041");
+    }
+    let (code, both) = run(
+        &f.book,
+        &[
+            "period",
+            "lock",
+            "FY2026-P03",
+            "--plan",
+            "unused.plan",
+            "--reason",
+            "Scheduled",
+        ],
+        None,
+    );
+    assert_eq!(code, 2, "{}", both.render());
+    assert_eq!(head(&f.book), before, "no refusal wrote anything");
+
+    ok(&f.book, &["period", "soft-close", "FY2026-P03"]);
+    // A SoftClosed reopen needs an independent approval of its plan, and the
+    // plan carries the reason: the commit gives none.
+    let planned = ok(
+        &f.book,
+        &[
+            "period",
+            "reopen",
+            "FY2026-P03",
+            "--to",
+            "open",
+            "--reason",
+            "ErrorCorrection",
+            "--dry-run",
+        ],
+    );
+    let approval = ok(
+        &f.book,
+        &[
+            "approve",
+            "--proposal",
+            text(&planned, "proposal_digest"),
+            "--as",
+            "controller",
+        ],
+    );
+    let (code, reopened) = run(
+        &f.book,
+        &[
+            "period",
+            "reopen",
+            "FY2026-P03",
+            "--to",
+            "open",
+            "--plan",
+            "-",
+            "--approval",
+            text(&approval, "approval_vid"),
+        ],
+        Some(text(&planned, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", reopened.render());
+    // The second soft close of the same Open state needs its own key.
+    ok(
+        &f.book,
+        &[
+            "period",
+            "soft-close",
+            "FY2026-P03",
+            "--reason",
+            "Reclose",
+            "--key",
+            "soft-close-after-reopen",
+        ],
+    );
+    let explained = ok(&f.book, &["explain", "period", "FY2026-P03"]);
+    let reasons: Vec<(&str, &str)> = get(&explained, "transitions")
+        .as_arr()
+        .expect("transitions")
+        .iter()
+        .map(|row| (text(row, "to"), text(row, "reason")))
+        .collect();
+    assert_eq!(
+        reasons,
+        vec![
+            ("Open", "Scheduled"),
+            ("SoftClosed", "Scheduled"),
+            ("Open", "ErrorCorrection"),
+            ("SoftClosed", "Reclose"),
+        ],
+        "{}",
+        explained.render()
+    );
+}
+
+/// fa-cvg parts 1 and 2 at the CLI: a zero leg moves nothing and is never
+/// a journaled fact (FA-REF-100, a structure defect, exit 2), and a manual
+/// reversal cannot cite ScheduledAccrualReversal, the kernel's own scheduled
+/// reason (FA-REF-054, exit 3). Neither writes anything.
+#[test]
+fn zero_legs_and_a_manual_scheduled_reversal_reason_are_refused() {
+    let f = Fixture::new();
+    let before = head(&f.book);
+    let (code, zero) = run(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("zero-legs", "0.00"),
+            "--evidence",
+            &f.evidence,
+        ],
+        None,
+    );
+    assert_eq!(code, 2, "{}", zero.render());
+    assert_eq!(text(&zero, "refusal_id"), "FA-REF-100", "{}", zero.render());
+    assert!(
+        text(&zero, "message").contains("positive"),
+        "{}",
+        zero.render()
+    );
+    assert_eq!(head(&f.book), before, "a zero leg writes nothing");
+
+    let original = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("scheduled-reason-target", "10.00"),
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let posted = head(&f.book);
+    let (code, refused) = run(
+        &f.book,
+        &[
+            "reverse",
+            text(&original, "vid"),
+            "--reason",
+            "ScheduledAccrualReversal",
+        ],
+        None,
+    );
+    assert_eq!(code, 3, "{}", refused.render());
+    assert_eq!(
+        text(&refused, "refusal_id"),
+        "FA-REF-054",
+        "{}",
+        refused.render()
+    );
+    assert_eq!(head(&f.book), posted, "the refused reversal writes nothing");
+}
+
 #[test]
 fn inline_period_plan_survives_independent_approval_and_exact_stdin_commit() {
     let f = Fixture::new();
-    ok(&f.book, &["period", "close", "FY2026-P03", "--yes"]);
+    ok(
+        &f.book,
+        &[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--yes",
+        ],
+    );
     let before = head(&f.book);
-    let planned = ok(&f.book, &["period", "lock", "FY2026-P03", "--dry-run"]);
+    let planned = ok(
+        &f.book,
+        &[
+            "period",
+            "lock",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--dry-run",
+        ],
+    );
     assert_eq!(text(&planned, "event"), "period_plan");
     assert_eq!(text(&planned, "scope"), "period-transition-proposal");
     assert_eq!(text(&planned, "from"), "Closed");
@@ -931,7 +1161,15 @@ fn period_plan_out_never_overwrites_existing_files_or_book_keys() {
     ] {
         let (code, error) = run(
             &f.book,
-            &["period", "close", "FY2026-P03", "--plan-out", &target],
+            &[
+                "period",
+                "close",
+                "FY2026-P03",
+                "--reason",
+                "Scheduled",
+                "--plan-out",
+                &target,
+            ],
             None,
         );
         assert_eq!(code, 2, "target={target}: {}", error.render());
@@ -965,7 +1203,15 @@ fn period_plan_out_never_overwrites_existing_files_or_book_keys() {
     let fresh_str = fresh.display().to_string();
     let planned = ok(
         &f.book,
-        &["period", "close", "FY2026-P03", "--plan-out", &fresh_str],
+        &[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--plan-out",
+            &fresh_str,
+        ],
     );
     assert_eq!(text(&planned, "event"), "period_planned");
     let fresh_bytes = std::fs::read(&fresh).expect("read fresh period plan");
@@ -979,7 +1225,15 @@ fn period_plan_out_never_overwrites_existing_files_or_book_keys() {
     }
     let (code, error) = run(
         &f.book,
-        &["period", "close", "FY2026-P03", "--plan-out", &fresh_str],
+        &[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--plan-out",
+            &fresh_str,
+        ],
         None,
     );
     assert_eq!(code, 2, "{}", error.render());
