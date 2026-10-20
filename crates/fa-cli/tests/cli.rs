@@ -3195,6 +3195,129 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         "{mus:?}"
     );
 
+    // Planned from the auditor's inputs (plan §11.12): (1,500.00 - 100.00 x
+    // 1.6) / 3.00 = 446.666..., rounded down to 446.66 at 95%. The draw is
+    // the stated interval's, reports its inputs, and its replay command
+    // restates them.
+    let planned = doc(&draw(&[
+        "mus",
+        "--account",
+        "1200",
+        "--seed",
+        "7",
+        "--tolerable",
+        "1500.00 USD",
+        "--expected",
+        "100.00 USD",
+        "--confidence",
+        "95",
+        "--as-known-at",
+        first.as_str(),
+    ]));
+    let stated = doc(&draw(&[
+        "mus",
+        "--account",
+        "1200",
+        "--seed",
+        "7",
+        "--interval",
+        "446.66 USD",
+        "--as-known-at",
+        first.as_str(),
+    ]));
+    assert_eq!(text(&planned, "interval"), "446.66 USD");
+    for key in ["population_digest", "sample_digest", "selected", "parameters"] {
+        assert_eq!(planned.get(key), stated.get(key), "{key}");
+    }
+    assert_eq!(text(&planned, "tolerable"), "1500.00 USD");
+    assert_eq!(text(&planned, "expected"), "100.00 USD");
+    assert_eq!(planned.get("confidence_percent"), Some(&Json::Int(95)));
+    assert_eq!(stated.get("tolerable"), Some(&Json::Null));
+    let replay = text(&planned, "replay_command");
+    assert!(
+        replay.contains(r#"--tolerable "1500.00 USD" --expected "100.00 USD" --confidence 95"#),
+        "{replay}"
+    );
+    // Evaluating the planned sample plans the same interval: every item at
+    // its book value leaves the basic precision, 446.66 x 3.00.
+    let clean: Vec<String> = arr(&planned, "selected")
+        .iter()
+        .map(|row| {
+            format!(
+                r#"{{"item_id":"{}","audited":"{}"}}"#,
+                text(row, "item_id"),
+                text(row, "book_value")
+            )
+        })
+        .collect();
+    let clean = write(
+        &dir,
+        "planned-audited.json",
+        &format!(r#"{{"items":[{}]}}"#, clean.join(",")),
+    );
+    let evaluated = doc(&draw(&[
+        "evaluate",
+        "--account",
+        "1200",
+        "--seed",
+        "7",
+        "--tolerable",
+        "1500.00 USD",
+        "--expected",
+        "100.00 USD",
+        "--confidence",
+        "95",
+        "--as-known-at",
+        first.as_str(),
+        "--audited",
+        clean.as_str(),
+    ]));
+    assert_eq!(
+        text(&evaluated, "sample_digest"),
+        text(&planned, "sample_digest")
+    );
+    assert_eq!(text(&evaluated, "tolerable"), "1500.00 USD");
+    assert_eq!(
+        text(&evaluated, "upper_misstatement_limit"),
+        "1339.98 USD"
+    );
+    // Planning refusals (exit 2): no explicit --expected, no --confidence,
+    // both forms at once, a confidence on a stated draw, an expected
+    // misstatement that leaves nothing to plan for (1,000.00 x 1.6 =
+    // 1,600.00 exceeds 1,500.00), and a confidence on a uniform draw.
+    for args in [
+        vec!["mus", "--tolerable", "1500.00 USD", "--confidence", "95"],
+        vec!["mus", "--tolerable", "1500.00 USD", "--expected", "1.00 USD"],
+        vec![
+            "mus",
+            "--interval",
+            "300.00 USD",
+            "--tolerable",
+            "1500.00 USD",
+            "--expected",
+            "0.00 USD",
+            "--confidence",
+            "95",
+        ],
+        vec!["mus", "--interval", "300.00 USD", "--confidence", "95"],
+        vec![
+            "mus",
+            "--tolerable",
+            "1500.00 USD",
+            "--expected",
+            "1000.00 USD",
+            "--confidence",
+            "95",
+        ],
+        vec!["uniform", "--size", "2", "--confidence", "95"],
+    ] {
+        let mut argv = vec!["sample", args[0], "--account", "1200", "--seed", "7"];
+        argv.extend(&args[1..]);
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 2, "{argv:?}\n{out}\n{err}");
+    }
+
     // Evaluation re-draws that sample. The 700.00 top-stratum item is 10.00
     // overstated and the first systematic item 10% overstated; at 95%
     // (R0 = 3.00, R1 = 4.75) and a 300.00 interval: basic precision 900.00,
