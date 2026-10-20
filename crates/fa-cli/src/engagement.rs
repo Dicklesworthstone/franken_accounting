@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use fa_journal::refusal::{Refusal, code, exit};
 use fa_journal::{
     AdjustmentDecision, EngagementKind, EngagementProfile, EngagementView, Materiality,
-    ProposalLeg, ProposalView,
+    ProposalLeg, ProposalView, Uncorrected,
 };
 use fa_model::account_vid;
 use fa_money::{Amount, Side};
@@ -175,6 +175,7 @@ fn proposal_json(
                 ("record", vid_hex(d.record)),
                 ("recorded_at", seq(d.recorded_at)),
                 ("decided_by", vid_hex(d.decided_by)),
+                ("superseded_by", d.superseded_by.map_or(Json::Null, vid_hex)),
             ])
         }
     };
@@ -465,10 +466,18 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .items
         .iter()
         .map(|item| {
+            let (reason, booked_entry, superseded_by) = match item.basis {
+                Uncorrected::Passed { reason_code } => {
+                    (s(reason_name(reason_code)?), Json::Null, Json::Null)
+                }
+                Uncorrected::Superseded { entry, by } => (Json::Null, vid_hex(entry), vid_hex(by)),
+            };
             Ok(obj(vec![
                 ("number", Json::Int(i128::from(item.ordinal))),
                 ("effective_date", s(item.effective_date.render())),
-                ("reason", s(reason_name(item.reason_code)?)),
+                ("reason", reason),
+                ("booked_entry", booked_entry),
+                ("superseded_by", superseded_by),
                 ("effect", effect_json(item.effect, summary.unit, &units)?),
                 ("clearly_trivial", Json::Bool(item.clearly_trivial)),
                 (
@@ -770,9 +779,21 @@ fn decide(ctx: &mut Ctx<'_>, args: &Args, book_it: bool) -> Result<(), Fail> {
     let key = one_flag(args, "--key", DECIDE_EXAMPLE)?
         .unwrap_or(if book_it { "book" } else { "pass" })
         .to_string();
-    let capability = ctx.capability(args, &["produce"])?;
+    // Booking reads the entry it names, so it needs read authority over the
+    // whole book as well as produce; passing reads nothing it does not own.
+    let who = ctx.principal(args);
+    let ops: &[&str] = if book_it {
+        &["read", "produce"]
+    } else {
+        &["produce"]
+    };
+    let capability = ctx.capability(args, ops)?;
     let mut book = ctx.books.open_admitted(args, |book| {
-        admit_writer(book, &capability, "deciding an audit adjustment")
+        admit_writer(book, &capability, "deciding an audit adjustment")?;
+        if book_it {
+            crate::rea::admit_read(book, who, &capability)?;
+        }
+        Ok(())
     })?;
     let date = control_date(args, &book)?;
     let decided = book.decide_adjustment(

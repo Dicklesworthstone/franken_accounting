@@ -81,6 +81,13 @@ pub use draft::{
     DraftView, PlannedIntent, discard_draft, list_drafts, open_draft, plan_into_draft,
     promote_draft, read_draft, rehearse_draft_into,
 };
+pub use engagement::{
+    AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, EngagementKind,
+    EngagementOpened, EngagementProfile, EngagementRequest, EngagementState, EngagementView,
+    Materiality, ProposalLeg, ProposalView, ProposedAdjustment, RecordedDecision, StatementEffect,
+    Uncorrected, UncorrectedItem, UncorrectedSummary, decide_adjustment, list_engagements,
+    open_engagement, propose_adjustment, read_engagement, uncorrected_misstatements,
+};
 pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{
     DerivedExtractionInfo, DerivedFromDocumentSummary, Document, DocumentAdded,
@@ -147,13 +154,6 @@ pub use policy::{
 pub use post::{
     Capability, PostPreparation, PostRequest, Posted, PreparedPost, decide_admissibility_cell,
     explain_entry_lineage, post, post_replacement_pair, prepare_post, superseded_by,
-};
-pub use engagement::{
-    AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, EngagementKind,
-    EngagementOpened, EngagementProfile, EngagementRequest, EngagementState, EngagementView,
-    Materiality, ProposalLeg, ProposalView, ProposedAdjustment, RecordedDecision,
-    StatementEffect, UncorrectedItem, UncorrectedSummary, decide_adjustment, list_engagements,
-    open_engagement, propose_adjustment, read_engagement, uncorrected_misstatements,
 };
 pub use production::{
     BatesRange, Produced, ProducedDocument, ProducedRange, ProductionOpened, ProductionProfile,
