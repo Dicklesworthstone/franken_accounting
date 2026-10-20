@@ -4,11 +4,12 @@
 //! capability-gated disclosures (plan §9).
 
 pub mod intake;
+pub mod search;
 
 pub use fa_journal::{
     AttestationClaim, Attested, BlobStore, CustodyBody, CustodyEvent, CustodyMoved,
     DerivedExtractionInfo, DerivedExtractionMetadata, DerivedFromDocumentSummary, Document,
-    DocumentAdded, DocumentEvidenceSummary, DocumentRead, DocumentRecord, EvidenceExplanation,
+    DocumentAdded, DocumentRead, DocumentRecord, EvidenceExplanation,
     ExtractionMethod, ImportRecorded, ImportRequest, LegalHold, LegalHoldPlaced, LegalHoldReleased,
     LegalHoldRequest, Pinned, PreparedUpload, RedactedView, ReleasePlan, RunReceipt, Storage,
     UploadPreparation, UploadRequest, ViewChunk, ViewDerived, active_legal_holds, add_document,
@@ -18,7 +19,7 @@ pub use fa_journal::{
     import_run, place_legal_hold, plan_release, prepare_upload, read_attestation, read_document,
     read_document_for, read_document_for_with, read_legal_hold, record_manual_assertion,
     record_review, redacted_view_vid, release_legal_hold, transfer_custody, upload_document,
-    verify_receipt, verify_receipt_in,
+    verify_receipt, verify_receipt_in, DocumentEvidenceSummary,
 };
 pub use intake::{
      DeflateError, DerivedDocumentResult, ExternalToolOutcome, FocrConfig, FwConfig,
@@ -26,6 +27,12 @@ pub use intake::{
     decrypt_pdf_standard_security, extract_pdf_text_layer, extract_pdf_text_string, inflate_zlib,
     is_standard_security_encrypted, recover_file_encryption_key_v5_r5, resolve_binary_in_path,
     run_focr_extraction, run_fw_extraction,
+};
+pub use search::{
+    FSLX_SEGMENT_FORMAT, FslxDocEntry, FslxPosting, FslxSegment, QuillLexicalIndex,
+    SEARCH_CORPUS_DOMAIN, SEARCH_MANIFEST_FORMAT, SearchError, SearchHit, SearchIndexManifest,
+    SearchIndexableRecord, SearchRecordId, SearchRecordKind, SearchVerificationReceipt,
+    VerificationDriftDetails, tokenize_with_offsets,
 };
 use fa_model::Oid;
 use fgdb_types::VId;
