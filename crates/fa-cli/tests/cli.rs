@@ -8132,6 +8132,17 @@ fn projection_verification_case(plant: &str) -> std::io::Result<()> {
         "the earlier committed projection remains independently verifiable"
     );
     drop(handle);
+    // `fa doctor` sees the drift and names the read-only preview next.
+    let (code, out, err) = fa(Some(&book), &["doctor", "--json"]);
+    assert_eq!(code, 8, "{out}\n{err}");
+    assert!(
+        doctor_checks(&out).contains(&("projections".into(), "fail".into())),
+        "{out}"
+    );
+    assert!(
+        out.contains("fa recover projections --dry-run --json"),
+        "{out}"
+    );
 
     // The finding names its recovery, which derives every change from the
     // journal: unconfirmed it writes nothing, a dry run previews at this head,
@@ -8231,6 +8242,12 @@ fn projection_verification_case(plant: &str) -> std::io::Result<()> {
         let green = ok(&verify);
         assert_eq!(field(&green, "event"), Some("projections_verified"));
         assert!(arr(&doc(&green), "drift").is_empty(), "{green}");
+        let (code, out, err) = fa(Some(&book), &["doctor", "--json"]);
+        assert_eq!(code, 0, "{out}\n{err}");
+        assert!(
+            doctor_checks(&out).contains(&("projections".into(), "ok".into())),
+            "{out}"
+        );
         let db = runtime
             .block_on(Database::open(
                 &cx.commit(),
@@ -8740,6 +8757,7 @@ fn doctor_reports_every_check_and_its_fix_and_exits_with_the_first_failure() -> 
             "writer_lease",
             "book",
             "registers",
+            "projections",
             "availability",
             "accumulator"
         ],
