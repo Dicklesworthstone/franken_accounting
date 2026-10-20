@@ -754,26 +754,88 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
     let mut batch = WriteBatch::new(relation::CUSTODY_OF);
     stage_document(&mut batch, book, doc, &kind_name)?;
     crate::custody::stage_receipt(&mut batch, book, doc, source, doc.retrieved_by, None)?;
-    match db.write(&ctx.commit(), batch).await {
-        Ok(seq) => Ok(Ok(DocumentAdded {
-            oid,
-            doc_commit: commit,
-            vid,
-            kind: doc.kind,
-            grade: doc.grade,
-            size: len_u64(doc.bytes.len()),
-            recorded_at: seq,
-            already_recorded: false,
-        })),
-        // A concurrent intake of the same bytes won: that is the outcome.
-        Err(fgdb::WriteError::AlreadyLive { .. }) => match db.vertex(vid)? {
-            Some(row) => added_from_row(&row, &policy, &oid, true),
-            None => Err(KernelError::Corrupt(format!(
-                "document {} reported live but is absent",
-                hex(&commit)
-            ))),
-        },
-        Err(e) => Err(e.into()),
+
+    let derived_parents: Vec<Oid> = match crate::import::decode_derivation(&doc.bytes) {
+        Ok((sources, _)) => {
+            let mut valid_parents = Vec::new();
+            for parent_oid in sources {
+                if parent_oid == oid {
+                    continue;
+                }
+                let pvid = document_vid(&parent_oid);
+                if let Some(prow) = db.vertex(pvid)?
+                    && let Ok(prec) = verify_row(&prow, &policy)
+                    && prec.book_id == book.book_id
+                {
+                    valid_parents.push(parent_oid);
+                }
+            }
+            valid_parents
+        }
+        Err(_) => Vec::new(),
+    };
+
+    if derived_parents.is_empty() {
+        match db.write(&ctx.commit(), batch).await {
+            Ok(seq) => Ok(Ok(DocumentAdded {
+                oid,
+                doc_commit: commit,
+                vid,
+                kind: doc.kind,
+                grade: doc.grade,
+                size: len_u64(doc.bytes.len()),
+                recorded_at: seq,
+                already_recorded: false,
+            })),
+            // A concurrent intake of the same bytes won: that is the outcome.
+            Err(fgdb::WriteError::AlreadyLive { .. }) => match db.vertex(vid)? {
+                Some(row) => added_from_row(&row, &policy, &oid, true),
+                None => Err(KernelError::Corrupt(format!(
+                    "document {} reported live but is absent",
+                    hex(&commit)
+                ))),
+            },
+            Err(e) => Err(e.into()),
+        }
+    } else {
+        let txn_cx = ctx.txn();
+        let mut txn = db.begin(&txn_cx)?;
+        let mut derived_batch = WriteBatch::new(relation::DERIVED_FROM);
+        for parent_oid in &derived_parents {
+            let target = document_vid(parent_oid);
+            derived_batch.add_edge(
+                edge_id(relation::DERIVED_FROM, vid, target),
+                vid,
+                target,
+                vec![],
+            );
+        }
+        if let Err(e) = txn.write_ordered(db, vec![batch, derived_batch]) {
+            txn.abort();
+            return Err(e.into());
+        }
+        match txn.commit(db, &ctx.commit()).await {
+            Ok(seq) => Ok(Ok(DocumentAdded {
+                oid,
+                doc_commit: commit,
+                vid,
+                kind: doc.kind,
+                grade: doc.grade,
+                size: len_u64(doc.bytes.len()),
+                recorded_at: seq,
+                already_recorded: false,
+            })),
+            Err(fgdb::WriteTxnError::Write(fgdb::WriteError::AlreadyLive { .. })) => {
+                match db.vertex(vid)? {
+                    Some(row) => added_from_row(&row, &policy, &oid, true),
+                    None => Err(KernelError::Corrupt(format!(
+                        "document {} reported live but is absent",
+                        hex(&commit)
+                    ))),
+                }
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 }
 
@@ -1776,6 +1838,36 @@ pub struct ReviewedSummary {
     pub against: Vec<Oid>,
 }
 
+/// Summary of an extraction step recorded in a derived document's envelope
+/// (`fa:derived-extraction:v1`, plan §9.1–9.3, bead `fa-646`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DerivedExtractionInfo {
+    pub method: String,
+    pub tool_name: String,
+    pub tool_version: String,
+    pub model_artifact_hash: Option<[u8; 32]>,
+    pub command_line: Vec<String>,
+    pub replayable: bool,
+    pub extracted_text_bytes: u64,
+}
+
+/// Metadata summary of an ancestor source document in a cited document's
+/// `DERIVED_FROM` lineage (`fa explain evidence`, bead `fa-646`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DerivedFromDocumentSummary {
+    pub document_oid: Oid,
+    pub doc_commit: [u8; 32],
+    pub kind: u8,
+    pub mime: String,
+    pub grade: u8,
+    pub size: u64,
+    pub retrieved_by: VId,
+    pub recorded_at: CommitSeq,
+    pub edge_recorded: bool,
+    pub extraction: Option<DerivedExtractionInfo>,
+    pub derived_from: Vec<Oid>,
+}
+
 /// Metadata summary of one cited document on an entry (`fa explain evidence`).
 /// Never carries raw document bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1791,6 +1883,96 @@ pub struct DocumentEvidenceSummary {
     pub recorded_at: CommitSeq,
     pub custody_events: usize,
     pub review: Option<ReviewedSummary>,
+    pub extraction: Option<DerivedExtractionInfo>,
+    pub derived_from: Vec<DerivedFromDocumentSummary>,
+}
+
+fn extraction_info_from_record(rec: &DocumentRecord) -> Option<DerivedExtractionInfo> {
+    let Storage::Inline(bytes) = &rec.storage else {
+        return None;
+    };
+    let (_, meta) = crate::import::decode_extraction_derivation(bytes).ok()?;
+    Some(DerivedExtractionInfo {
+        method: meta.method.name().to_string(),
+        tool_name: meta.tool_name,
+        tool_version: meta.tool_version,
+        model_artifact_hash: meta.model_artifact_hash,
+        command_line: meta.command_line,
+        replayable: meta.replayable,
+        extracted_text_bytes: len_u64(meta.extracted_text.len()),
+    })
+}
+
+fn content_bound_sources(rec: &DocumentRecord) -> Vec<Oid> {
+    let Storage::Inline(bytes) = &rec.storage else {
+        return Vec::new();
+    };
+    crate::import::decode_derivation(bytes)
+        .map(|(sources, _)| sources)
+        .unwrap_or_default()
+}
+
+fn walk_derived_from<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    policy: &EvidencePolicy,
+    derived_edges: &std::collections::BTreeSet<(VId, VId)>,
+    root_vid: VId,
+    root_rec: &DocumentRecord,
+) -> Result<Vec<DerivedFromDocumentSummary>, KernelError> {
+    let mut visited = std::collections::BTreeSet::new();
+    visited.insert(root_rec.oid());
+    let mut queue = std::collections::VecDeque::new();
+
+    let enqueue_parents = |cur_vid: VId,
+                           cur_rec: &DocumentRecord,
+                           q: &mut std::collections::VecDeque<(Oid, bool)>| {
+        for parent_oid in content_bound_sources(cur_rec) {
+            let pvid = document_vid(&parent_oid);
+            q.push_back((parent_oid, derived_edges.contains(&(cur_vid, pvid))));
+        }
+    };
+
+    enqueue_parents(root_vid, root_rec, &mut queue);
+
+    let mut out = Vec::new();
+    while let Some((parent_oid, edge_recorded)) = queue.pop_front() {
+        if !visited.insert(parent_oid) {
+            continue;
+        }
+        let pvid = document_vid(&parent_oid);
+        let Some(prow) = db.vertex(pvid)? else {
+            continue;
+        };
+        let prec = match verify_row(&prow, policy) {
+            Ok(prec) => prec,
+            Err(why) => {
+                return Err(KernelError::Corrupt(format!(
+                    "derived-from document {}: {why}",
+                    hex(&parent_oid.0)
+                )));
+            }
+        };
+        if prec.book_id != book.book_id {
+            continue;
+        }
+        let grand_parents = content_bound_sources(&prec);
+        enqueue_parents(pvid, &prec, &mut queue);
+        out.push(DerivedFromDocumentSummary {
+            document_oid: parent_oid,
+            doc_commit: prec.doc_commit,
+            kind: prec.kind,
+            mime: prec.mime.clone(),
+            grade: prec.grade,
+            size: prec.size,
+            retrieved_by: prec.retrieved_by,
+            recorded_at: prow.created_at,
+            edge_recorded,
+            extraction: extraction_info_from_record(&prec),
+            derived_from: grand_parents,
+        });
+    }
+    Ok(out)
 }
 
 /// Metadata summary of one `SupplementalEvidence` attached to an entry (`fa explain evidence`).
@@ -1863,6 +2045,12 @@ pub fn explain_entry_evidence<V: asupersync::fs::Vfs + Clone>(
     let mut documents = Vec::with_capacity(entry.proposal.evidence.len());
     let mut cited = Vec::new();
     let mut seen_oids = std::collections::BTreeSet::new();
+    let derived_edges: std::collections::BTreeSet<(VId, VId)> = db
+        .edges_at(db.frontier()?)?
+        .into_iter()
+        .filter(|e| e.entry.relation == relation::DERIVED_FROM)
+        .map(|e| (e.entry.src, e.entry.dst))
+        .collect();
 
     for ev in &entry.proposal.evidence {
         let dvid = document_vid(&ev.document_oid);
@@ -1911,6 +2099,8 @@ pub fn explain_entry_evidence<V: asupersync::fs::Vfs + Clone>(
                 }),
             });
         }
+        let extraction = extraction_info_from_record(&rec);
+        let derived_from = walk_derived_from(db, book, &policy, &derived_edges, dvid, &rec)?;
         documents.push(DocumentEvidenceSummary {
             document_oid: ev.document_oid,
             doc_commit: ev.doc_commit,
@@ -1923,6 +2113,8 @@ pub fn explain_entry_evidence<V: asupersync::fs::Vfs + Clone>(
             recorded_at: doc_row.created_at,
             custody_events,
             review,
+            extraction,
+            derived_from,
         });
     }
 

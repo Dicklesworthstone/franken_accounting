@@ -52,7 +52,10 @@ pub use bank::{
     BankFormat, BankImportManifest, BankImportPredecessor, BankImportWitness, BankStatementLink,
     bank_statement_link_vid, read_bank_statement_link,
 };
-pub use derived::{decode_derivation, document_sources, encode_derivation};
+pub use derived::{
+    DerivedExtractionMetadata, ExtractionMethod, decode_derivation, decode_extraction_derivation,
+    document_sources, encode_derivation, encode_extraction_derivation,
+};
 pub use external::{import_run_in_store, prepare_import_in_store};
 pub use prepared::{ImportPreparation, PreparedImport, prepare_import};
 

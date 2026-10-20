@@ -73,10 +73,10 @@ pub use draft::{
 };
 pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{
-    Document, DocumentAdded, DocumentEvidenceSummary, DocumentRecord, EvidenceExplanation,
-    ManualAssertionSummary, ReviewedSummary, Storage, SupplementSummary, add_document,
-    add_document_external, document_record, explain_entry_evidence, fetch_document,
-    fetch_document_with, read_document,
+    DerivedExtractionInfo, DerivedFromDocumentSummary, Document, DocumentAdded,
+    DocumentEvidenceSummary, DocumentRecord, EvidenceExplanation, ManualAssertionSummary,
+    ReviewedSummary, Storage, SupplementSummary, add_document, add_document_external,
+    document_record, explain_entry_evidence, fetch_document, fetch_document_with, read_document,
 };
 pub use fa_intents::{PostBatch, PostIntent, ReplacementPlan};
 pub use fa_palimpsest::{
@@ -92,7 +92,9 @@ pub use genesis::{
     UnitPolicy, check_entity_functional_unit, create_book, create_periods, install_chart,
 };
 pub use import::{
-    ImportRecorded, ImportRequest, RunReceipt, import_run, verify_receipt, verify_receipt_in,
+    DerivedExtractionMetadata, ExtractionMethod, ImportRecorded, ImportRequest, RunReceipt,
+    decode_derivation, decode_extraction_derivation, document_sources, encode_derivation,
+    encode_extraction_derivation, import_run, verify_receipt, verify_receipt_in,
 };
 pub use legal_hold::{
     LegalHold, LegalHoldPlaced, LegalHoldReleased, LegalHoldRequest, Pinned, ReleasePlan,
