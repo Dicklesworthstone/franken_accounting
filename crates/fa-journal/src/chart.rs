@@ -1288,6 +1288,19 @@ fn db_book_ref(book: &BookContext) -> &BookContext {
     book
 }
 
+#[deny(clippy::arithmetic_side_effects)]
+fn close_balance_after(balance: i128, side: Side, magnitude: i128) -> Result<i128, KernelError> {
+    let signed = match side {
+        Side::Debit => magnitude,
+        Side::Credit => magnitude.checked_neg().ok_or_else(|| {
+            KernelError::Corrupt("account credit amount negation overflow".into())
+        })?,
+    };
+    balance
+        .checked_add(signed)
+        .ok_or_else(|| KernelError::Corrupt("account balance overflow".into()))
+}
+
 /// Close an account at `closed_on` as a journaled `SchemaChange` (`kind = 3`,
 /// plan §5.6, `FA-INV-01.account-effective`).
 ///
@@ -1475,14 +1488,8 @@ pub async fn close_account<V: asupersync::fs::Vfs + Clone>(
             if leg.account_ref != avid {
                 continue;
             }
-            let signed = match leg.side {
-                Side::Debit => leg.amount.mantissa,
-                Side::Credit => -leg.amount.mantissa,
-            };
             let bal = net_balances.entry(leg.amount.unit).or_insert(0);
-            *bal = bal
-                .checked_add(signed)
-                .ok_or_else(|| KernelError::Corrupt("account balance overflow".into()))?;
+            *bal = close_balance_after(*bal, leg.side, leg.amount.mantissa)?;
 
             if !leg.settles.is_empty() {
                 has_settlement_activity = true;
@@ -1808,6 +1815,29 @@ mod tests {
             CommitSeq(5),
             accounts.into_iter().map(|a| (a, CommitSeq(2))).collect(),
         )
+    }
+
+    #[test]
+    fn account_close_balance_checks_signed_boundaries() {
+        // A valid sequence may reach MIN and return to zero. Preserve that
+        // domain while rejecting an overflowing prefix, even if later legs
+        // would make the final balance representable again.
+        let balance = close_balance_after(0, Side::Credit, i128::MAX).unwrap();
+        let balance = close_balance_after(balance, Side::Credit, 1).unwrap();
+        assert_eq!(balance, i128::MIN);
+        assert!(matches!(
+            close_balance_after(balance, Side::Credit, 1),
+            Err(KernelError::Corrupt(message)) if message == "account balance overflow"
+        ));
+        let balance = close_balance_after(balance, Side::Debit, i128::MAX).unwrap();
+        assert_eq!(close_balance_after(balance, Side::Debit, 1).unwrap(), 0);
+
+        // A corrupt supplied magnitude must never panic before the checked
+        // fold has a chance to report its typed foundation error.
+        assert!(matches!(
+            close_balance_after(0, Side::Credit, i128::MIN),
+            Err(KernelError::Corrupt(message)) if message == "account credit amount negation overflow"
+        ));
     }
 
     // Independent encoding of the documented base layout, not the reader's

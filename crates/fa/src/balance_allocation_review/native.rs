@@ -70,10 +70,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ///
     /// The existing observer revalidates every source contribution, including
     /// same-net changes, before the existing native kernel rehearses the exact
-    /// sealed proposal. No suspension separates observation from planning.
+    /// sealed proposal. The exclusive handle spans history loading, source
+    /// observation and planning at one writer's prefix.
     /// Persist the returned PostPlan before commit_plan; this method never
     /// refreshes a plan following uncertain publication and writes no journal.
-    pub fn plan_balance_allocation(
+    pub async fn plan_balance_allocation(
         &mut self,
         cx: &PurposeContexts,
         review: &BalanceAllocationReview,
@@ -102,6 +103,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             approvals,
             capability,
         )
+        .await
     }
 
     /// Approve from the restored complete handoff under the recipient's own

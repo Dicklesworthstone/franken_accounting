@@ -68,7 +68,7 @@ pub const RESOURCES: &[(&str, &str)] = &[
     ),
     (
         "resource://fa/intents",
-        "the intent documents this build accepts: entry classes, worked examples and portable PostEntry planning under the launch authority; a machine-readable JSON intent schema is not registered yet",
+        "the registered input schemas and worked examples for inline intent tools, including atomic batches and portable plans; schemas describe tool arguments, while the kernel validates each accounting proposal",
     ),
     (
         "resource://fa/open-items/{book}/{party}",
@@ -79,24 +79,30 @@ pub const RESOURCES: &[(&str, &str)] = &[
         "the launch-bound book's forensic procedures and a fresh, unrecorded jet.round_amounts preview; discover recorded runs with cursor-paged fa_findings_runs in on-demand fa.findings, then select a certificate with fa_findings_list for its observations and review history; recorded-run discovery does not establish detector coverage or current review status; `{book}` as above",
     ),
     (
-        "resource://fa/cases/{book}",
-        "the launch-bound book's period state and reopen/restatement case status (`fa period list`); `{book}` as above",
-    ),
-    (
         "resource://fa/drafts/{book}",
-        "the launch-bound book's draft and portable-plan posture; `{book}` as above",
+        "the launch-bound book's recorded drafts, including owners, states, intent counts and promotion outcomes (`fa draft list`); `{book}` as above",
     ),
     (
         "resource://fa/certificates/{id}",
         "the status of retained report certificate `{id}` (`fa certificate status`); `{id}` is `C:<oid>`, a 64-hex digest, or complete canonical hex bytes",
     ),
     (
-        "resource://fa/bundles/{id}",
-        "the launch-bound book's accumulator verification status and bundle verification guidance for `{id}` (`fa verify accumulator`)",
-    ),
-    (
         "resource://fa/capabilities/{token}",
         "the launch-bound book's issued capability or the session's bound capability (`fa capability show|list`); `{token}` is `session`, `current`, `list`, or a 64-hex commitment digest",
+    ),
+];
+
+/// Unimplemented resources are not advertised as successful empty inventories.
+/// Keep the reason beside the live resource registry so discovery and direct
+/// adapter calls give the same account of the available functionality.
+pub const UNAVAILABLE_RESOURCES: &[(&str, &str)] = &[
+    (
+        "resource://fa/cases/{book}",
+        "Restatement cases are not implemented (fa-75j4); period state is available through resource://fa/periods/{book}, but is not a case inventory.",
+    ),
+    (
+        "resource://fa/bundles/{id}",
+        "Bundles are returned inline by fa_notary_bundle and are not retained in a searchable bundle inventory; an identifier cannot be resolved by this build. Use the returned bytes, receipt and checkpoint public key with fa-verify.",
     ),
 ];
 
@@ -110,6 +116,8 @@ pub struct MacroSpec {
     pub properties: &'static [(&'static str, &'static str)],
     pub required: &'static [&'static str],
     pub example: &'static str,
+    /// Whether a successful run retains certificates in the book.
+    pub publishes: bool,
 }
 
 /// The workflow macros the server exposes (plan §15.4).
@@ -124,10 +132,11 @@ pub const MACROS: &[MacroSpec] = &[
         )],
         required: &["period"],
         example: r#"{"period":"FY2026-P03"}"#,
+        publishes: false,
     },
     MacroSpec {
-        id: "fa.macro.record_and_match_cash",
-        name: "record_and_match_cash",
+        id: "fa.macro.inspect_cash_matching",
+        name: "inspect_cash_matching",
         summary: "Inspect open items for an account, verify the open-item mirror against the fold, and optionally compute the period's trial balance with step-by-step provenance.",
         properties: &[
             (
@@ -141,6 +150,7 @@ pub const MACROS: &[MacroSpec] = &[
         ],
         required: &["account"],
         example: r#"{"account":"1200","period":"FY2026-P03"}"#,
+        publishes: false,
     },
     MacroSpec {
         id: "fa.macro.investigate_account",
@@ -158,10 +168,11 @@ pub const MACROS: &[MacroSpec] = &[
         ],
         required: &["account", "period"],
         example: r#"{"account":"1000","period":"FY2026-P03"}"#,
+        publishes: true,
     },
     MacroSpec {
-        id: "fa.macro.produce_audit_package",
-        name: "produce_audit_package",
+        id: "fa.macro.certify_period_reports",
+        name: "certify_period_reports",
         summary: "Retain certified trial-balance, balance-sheet, and income-statement reports for a period and verify the book's entry accumulator with step-by-step provenance.",
         properties: &[(
             "period",
@@ -169,6 +180,7 @@ pub const MACROS: &[MacroSpec] = &[
         )],
         required: &["period"],
         example: r#"{"period":"FY2026-P03"}"#,
+        publishes: true,
     },
 ];
 
@@ -1041,6 +1053,10 @@ impl McpRegistry {
         text.push_str("\nResources:\n");
         for (uri, doc) in RESOURCES {
             text.push_str(&format!("- {uri} — {doc}\n"));
+        }
+        text.push_str("\nUnavailable resources (not advertised):\n");
+        for (uri, reason) in UNAVAILABLE_RESOURCES {
+            text.push_str(&format!("- {uri} — {reason}\n"));
         }
         text
     }
@@ -3353,7 +3369,7 @@ mod tests {
             .tool_by_wire("fa_findings_runs")
             .expect("recorded run discovery");
         assert_eq!(mcp.tools_of("fa.findings").count(), 7);
-        assert_eq!(mcp.exposed(&[]).count(), 40);
+        assert_eq!(mcp.exposed(&[]).count(), 35);
         assert!(mcp.cluster("fa.findings").unwrap().on_demand);
         assert!(
             !mcp.exposed(&[])

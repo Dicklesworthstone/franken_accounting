@@ -101,10 +101,10 @@ externally_verifiable = false
 # checks precede history/outcome observation. New approvals require a new plan.
 
 # Capacity boundary: max_members is a request/decoder ceiling, not an accepted
-# native transaction size. The existing IntentOutcome remains one scalar;
-# its canonical body is 52 + 48*N bytes before native row/scalar framing and
-# must fit the pinned native 16384-byte row limit. Outcome storage has NOT
-# migrated to object fragments. Entry rows, transaction witnesses and all
-# other native resource limits also remain in force. A capacity failure
+# native transaction size. The IntentOutcome canonical body is 52 + 48*N bytes;
+# above 4096 bytes it uses object kind 4, with its root and all fragments in
+# the authenticated native effect set and the same publication as its entries.
+# Its maximum 393172-byte body uses 96 fragments. Entry rows, transaction
+# witnesses and all other native resource limits remain in force. A capacity failure
 # publishes nothing; this slice does not claim acceptance of 8190 members,
 # durable refused outcomes, atomic batch drafts or outsider-verifiable plans.

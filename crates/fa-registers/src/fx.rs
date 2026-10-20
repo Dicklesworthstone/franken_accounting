@@ -19,7 +19,7 @@ use fa_journal::{FxLawId, FxRateDocument, FxRatePurpose, KernelError};
 use fa_model::symbols::{label, property};
 use fa_model::{AccountType, BaseTotals, Entry, EntryClass, EntryPayload, LegPayload, Writer};
 use fa_money::rate::ArithmeticBudget;
-use fa_money::{Amount, Side, UnitId, UnitRegistry};
+use fa_money::{Amount, AmountError, Side, UnitId, UnitRegistry};
 use fa_time::DateDay;
 use fgdb::Database;
 use fgdb_crypto::Hasher;
@@ -849,6 +849,39 @@ fn fx_unbalanced(why: impl core::fmt::Display) -> Refusal {
     )
 }
 
+fn fx_overflow(why: impl core::fmt::Display) -> Refusal {
+    Refusal::new(
+        code::LIMIT_CEILING,
+        exit::REFUSAL,
+        format!("fx translation/remeasurement arithmetic overflow: {why}"),
+        "plan §4.4, §6.1, FA-INV-06 (every intermediate amount must fit i128)",
+        "narrow the reporting scope or split activity across accounts so each exact total fits the registered amount range",
+    )
+}
+
+fn fx_add(left: i128, right: i128, accumulator: &'static str) -> Result<i128, Refusal> {
+    left.checked_add(right)
+        .ok_or_else(|| fx_overflow(format!("{accumulator}: {left} + {right}")))
+}
+
+fn fx_sub(left: i128, right: i128, accumulator: &'static str) -> Result<i128, Refusal> {
+    left.checked_sub(right)
+        .ok_or_else(|| fx_overflow(format!("{accumulator}: {left} - {right}")))
+}
+
+fn fx_magnitude(value: i128, amount: &'static str) -> Result<i128, Refusal> {
+    value
+        .checked_abs()
+        .ok_or_else(|| fx_overflow(format!("{amount}: abs({value})")))
+}
+
+fn fx_amount_error(error: AmountError) -> Refusal {
+    match error {
+        AmountError::Overflow => fx_overflow("converted amount exceeds the i128 range"),
+        other => fx_refusal(other),
+    }
+}
+
 /// Execute current-rate translation (`FxLawId::TranslationCurrentRate`, `ASC 830-30 / IAS 21.39`)
 /// from `functional_unit` into `reporting_unit` for `period` ending at `period_end`.
 ///
@@ -860,6 +893,7 @@ fn fx_unbalanced(why: impl core::fmt::Display) -> Refusal {
 /// Returns a [`TranslatedStatement`] with exact [`CtaRollForwardSchedule`] tie-out and
 /// replayable `certificate_digest`.
 #[allow(clippy::too_many_arguments)]
+#[deny(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
 pub fn translate_current_rate(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
     period: &str,
@@ -932,9 +966,10 @@ pub fn translate_current_rate(
     let mut func_debits = 0i128;
     let mut func_credits = prior_retained_earnings_functional.max(0);
     if prior_retained_earnings_functional < 0 {
-        func_debits = func_debits
-            .checked_add(-prior_retained_earnings_functional)
-            .ok_or_else(|| fx_refusal("functional debit overflow"))?;
+        func_debits = fx_magnitude(
+            prior_retained_earnings_functional,
+            "prior functional retained earnings",
+        )?;
     }
 
     let mut out_lines = Vec::with_capacity(lines.len());
@@ -959,14 +994,18 @@ pub fn translate_current_rate(
         }
         match line.side {
             Side::Debit => {
-                func_debits = func_debits
-                    .checked_add(line.functional_amount.mantissa)
-                    .ok_or_else(|| fx_refusal("functional debit overflow"))?;
+                func_debits = fx_add(
+                    func_debits,
+                    line.functional_amount.mantissa,
+                    "functional debits",
+                )?;
             }
             Side::Credit => {
-                func_credits = func_credits
-                    .checked_add(line.functional_amount.mantissa)
-                    .ok_or_else(|| fx_refusal("functional credit overflow"))?;
+                func_credits = fx_add(
+                    func_credits,
+                    line.functional_amount.mantissa,
+                    "functional credits",
+                )?;
             }
         }
 
@@ -981,7 +1020,7 @@ pub fn translate_current_rate(
                         closing_rate_doc.rounding,
                         units,
                     )
-                    .map_err(fx_refusal)?;
+                    .map_err(fx_amount_error)?;
                 (amt, closing_commit, FxRatePurpose::PeriodClose)
             }
             TranslationItemKind::Revenue | TranslationItemKind::Expense => {
@@ -994,7 +1033,7 @@ pub fn translate_current_rate(
                         average_rate_doc.rounding,
                         units,
                     )
-                    .map_err(fx_refusal)?;
+                    .map_err(fx_amount_error)?;
                 (amt, average_commit, FxRatePurpose::PeriodAverage)
             }
             TranslationItemKind::ContributedEquity { originating_date } => {
@@ -1014,7 +1053,7 @@ pub fn translate_current_rate(
                 let amt = line
                     .functional_amount
                     .convert(budget, reporting_unit, &rate, doc.rounding, units)
-                    .map_err(fx_refusal)?;
+                    .map_err(fx_amount_error)?;
                 (amt, *commit, FxRatePurpose::SpotClose)
             }
             TranslationItemKind::Dividend { declaration_date } => {
@@ -1034,7 +1073,7 @@ pub fn translate_current_rate(
                 let amt = line
                     .functional_amount
                     .convert(budget, reporting_unit, &rate, doc.rounding, units)
-                    .map_err(fx_refusal)?;
+                    .map_err(fx_amount_error)?;
                 (amt, *commit, FxRatePurpose::SpotClose)
             }
         };
@@ -1048,50 +1087,84 @@ pub fn translate_current_rate(
                 closing_rate_doc.rounding,
                 units,
             )
-            .map_err(fx_refusal)?
+            .map_err(fx_amount_error)?
             .mantissa;
         let rep = reporting_amount.mantissa;
 
         match (line.kind, line.side) {
-            (TranslationItemKind::Asset, Side::Debit) => total_assets_reporting += rep,
-            (TranslationItemKind::Asset, Side::Credit) => total_assets_reporting -= rep,
-            (TranslationItemKind::Liability, Side::Credit) => total_liabilities_reporting += rep,
-            (TranslationItemKind::Liability, Side::Debit) => total_liabilities_reporting -= rep,
+            (TranslationItemKind::Asset, Side::Debit) => {
+                total_assets_reporting = fx_add(total_assets_reporting, rep, "reporting assets")?;
+            }
+            (TranslationItemKind::Asset, Side::Credit) => {
+                total_assets_reporting = fx_sub(total_assets_reporting, rep, "reporting assets")?;
+            }
+            (TranslationItemKind::Liability, Side::Credit) => {
+                total_liabilities_reporting =
+                    fx_add(total_liabilities_reporting, rep, "reporting liabilities")?;
+            }
+            (TranslationItemKind::Liability, Side::Debit) => {
+                total_liabilities_reporting =
+                    fx_sub(total_liabilities_reporting, rep, "reporting liabilities")?;
+            }
             (TranslationItemKind::ContributedEquity { .. }, Side::Credit) => {
-                total_contributed_equity_reporting += rep;
+                total_contributed_equity_reporting = fx_add(
+                    total_contributed_equity_reporting,
+                    rep,
+                    "reporting contributed equity",
+                )?;
                 if line.is_current_period_activity {
-                    current_equity_spread += at_closing - rep;
+                    let spread = fx_sub(at_closing, rep, "equity closing/historical spread")?;
+                    current_equity_spread =
+                        fx_add(current_equity_spread, spread, "current equity spread")?;
                 }
             }
             (TranslationItemKind::ContributedEquity { .. }, Side::Debit) => {
-                total_contributed_equity_reporting -= rep;
+                total_contributed_equity_reporting = fx_sub(
+                    total_contributed_equity_reporting,
+                    rep,
+                    "reporting contributed equity",
+                )?;
                 if line.is_current_period_activity {
-                    current_equity_spread -= at_closing - rep;
+                    let spread = fx_sub(at_closing, rep, "equity closing/historical spread")?;
+                    current_equity_spread =
+                        fx_sub(current_equity_spread, spread, "current equity spread")?;
                 }
             }
             (TranslationItemKind::Revenue, Side::Credit) => {
-                total_revenue_reporting += rep;
-                revenue_at_closing += at_closing;
+                total_revenue_reporting =
+                    fx_add(total_revenue_reporting, rep, "reporting revenue")?;
+                revenue_at_closing =
+                    fx_add(revenue_at_closing, at_closing, "closing-rate revenue")?;
             }
             (TranslationItemKind::Revenue, Side::Debit) => {
-                total_revenue_reporting -= rep;
-                revenue_at_closing -= at_closing;
+                total_revenue_reporting =
+                    fx_sub(total_revenue_reporting, rep, "reporting revenue")?;
+                revenue_at_closing =
+                    fx_sub(revenue_at_closing, at_closing, "closing-rate revenue")?;
             }
             (TranslationItemKind::Expense, Side::Debit) => {
-                total_expense_reporting += rep;
-                expense_at_closing += at_closing;
+                total_expense_reporting =
+                    fx_add(total_expense_reporting, rep, "reporting expense")?;
+                expense_at_closing =
+                    fx_add(expense_at_closing, at_closing, "closing-rate expense")?;
             }
             (TranslationItemKind::Expense, Side::Credit) => {
-                total_expense_reporting -= rep;
-                expense_at_closing -= at_closing;
+                total_expense_reporting =
+                    fx_sub(total_expense_reporting, rep, "reporting expense")?;
+                expense_at_closing =
+                    fx_sub(expense_at_closing, at_closing, "closing-rate expense")?;
             }
             (TranslationItemKind::Dividend { .. }, Side::Debit) => {
-                total_dividends_reporting += rep;
-                dividend_spread += rep - at_closing;
+                total_dividends_reporting =
+                    fx_add(total_dividends_reporting, rep, "reporting dividends")?;
+                let spread = fx_sub(rep, at_closing, "dividend historical/closing spread")?;
+                dividend_spread = fx_add(dividend_spread, spread, "dividend spread")?;
             }
             (TranslationItemKind::Dividend { .. }, Side::Credit) => {
-                total_dividends_reporting -= rep;
-                dividend_spread -= rep - at_closing;
+                total_dividends_reporting =
+                    fx_sub(total_dividends_reporting, rep, "reporting dividends")?;
+                let spread = fx_sub(rep, at_closing, "dividend historical/closing spread")?;
+                dividend_spread = fx_sub(dividend_spread, spread, "dividend spread")?;
             }
         }
 
@@ -1112,41 +1185,66 @@ pub fn translate_current_rate(
         )));
     }
 
-    let translated_net_income_reporting = total_revenue_reporting
-        .checked_sub(total_expense_reporting)
-        .ok_or_else(|| fx_refusal("translated net income overflow"))?;
-    let ending_retained_earnings_reporting = prior_retained_earnings_reporting
-        .checked_add(translated_net_income_reporting)
-        .and_then(|v| v.checked_sub(total_dividends_reporting))
-        .ok_or_else(|| fx_refusal("ending retained earnings overflow"))?;
+    let translated_net_income_reporting = fx_sub(
+        total_revenue_reporting,
+        total_expense_reporting,
+        "translated net income",
+    )?;
+    let ending_retained_earnings_reporting = fx_sub(
+        fx_add(
+            prior_retained_earnings_reporting,
+            translated_net_income_reporting,
+            "retained earnings before dividends",
+        )?,
+        total_dividends_reporting,
+        "ending retained earnings",
+    )?;
 
-    let net_assets_reporting = total_assets_reporting
-        .checked_sub(total_liabilities_reporting)
-        .ok_or_else(|| fx_refusal("net assets overflow"))?;
-    let non_cta_equity_reporting = total_contributed_equity_reporting
-        .checked_add(ending_retained_earnings_reporting)
-        .ok_or_else(|| fx_refusal("non-CTA equity overflow"))?;
-    let ending_cumulative_cta_credit =
-        net_assets_reporting
-            .checked_sub(non_cta_equity_reporting)
-            .ok_or_else(|| fx_refusal("ending cumulative CTA overflow"))?;
-    let delta_cta_credit = ending_cumulative_cta_credit
-        .checked_sub(prior_cumulative_cta_credit)
-        .ok_or_else(|| fx_refusal("delta CTA overflow"))?;
+    let net_assets_reporting = fx_sub(
+        total_assets_reporting,
+        total_liabilities_reporting,
+        "net assets",
+    )?;
+    let non_cta_equity_reporting = fx_add(
+        total_contributed_equity_reporting,
+        ending_retained_earnings_reporting,
+        "non-CTA equity",
+    )?;
+    let ending_cumulative_cta_credit = fx_sub(
+        net_assets_reporting,
+        non_cta_equity_reporting,
+        "ending cumulative CTA",
+    )?;
+    let delta_cta_credit = fx_sub(
+        ending_cumulative_cta_credit,
+        prior_cumulative_cta_credit,
+        "delta CTA",
+    )?;
 
-    let ni_at_closing = revenue_at_closing
-        .checked_sub(expense_at_closing)
-        .ok_or_else(|| fx_refusal("closing-rate net income overflow"))?;
-    let period_net_income_spread = ni_at_closing
-        .checked_sub(translated_net_income_reporting)
-        .ok_or_else(|| fx_refusal("period net income spread overflow"))?;
-    let equity_and_dividend_spread = current_equity_spread
-        .checked_add(dividend_spread)
-        .ok_or_else(|| fx_refusal("equity and dividend spread overflow"))?;
-    let opening_net_assets_retranslation = delta_cta_credit
-        .checked_sub(period_net_income_spread)
-        .and_then(|v| v.checked_sub(equity_and_dividend_spread))
-        .ok_or_else(|| fx_refusal("opening net assets retranslation overflow"))?;
+    let ni_at_closing = fx_sub(
+        revenue_at_closing,
+        expense_at_closing,
+        "closing-rate net income",
+    )?;
+    let period_net_income_spread = fx_sub(
+        ni_at_closing,
+        translated_net_income_reporting,
+        "period net income spread",
+    )?;
+    let equity_and_dividend_spread = fx_add(
+        current_equity_spread,
+        dividend_spread,
+        "equity and dividend spread",
+    )?;
+    let opening_net_assets_retranslation = fx_sub(
+        fx_sub(
+            delta_cta_credit,
+            period_net_income_spread,
+            "opening net assets before equity/dividends",
+        )?,
+        equity_and_dividend_spread,
+        "opening net assets retranslation",
+    )?;
 
     let cta_schedule = CtaRollForwardSchedule {
         prior_cumulative_cta_credit,
@@ -1284,6 +1382,7 @@ pub fn verify_translation_certificate(
 /// Plan the deconsolidation CTA recycling entry (`ASC 830-30-40-1 / IAS 21.48`, plan §12.4)
 /// that reclassifies accumulated `ending_cumulative_cta_credit` out of AOCI (`cta_account`)
 /// into P&L (`disposal_gain_loss_account`) upon disposal/deconsolidation of the foreign operation.
+#[deny(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
 pub fn plan_cta_deconsolidation_recycling(
     mut template: EntryPayload,
     statement: &TranslatedStatement,
@@ -1316,7 +1415,7 @@ pub fn plan_cta_deconsolidation_recycling(
             "accumulated CTA is zero; no deconsolidation recycling entry is required",
         ));
     }
-    let mag = cta_credit.abs();
+    let mag = fx_magnitude(cta_credit, "CTA recycling leg")?;
     let amt = Amount::new(statement.reporting_unit, mag);
     // If ending CTA is a credit (> 0), debit cta_account to zero AOCI and credit disposal_gain_loss_account.
     // If ending CTA is a debit (< 0), credit cta_account to zero AOCI and debit disposal_gain_loss_account.
@@ -1446,6 +1545,7 @@ pub struct RemeasurementRunResult {
 ///
 /// Recognizes the delta-cumulative remeasurement gain or loss in P&L (`delta_remeasurement_gain_credit`).
 #[allow(clippy::too_many_arguments)]
+#[deny(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
 pub fn remeasure_temporal(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
     period: &str,
@@ -1518,9 +1618,10 @@ pub fn remeasure_temporal(
     let mut rec_debits = 0i128;
     let mut rec_credits = prior_retained_earnings_record.max(0);
     if prior_retained_earnings_record < 0 {
-        rec_debits = rec_debits
-            .checked_add(-prior_retained_earnings_record)
-            .ok_or_else(|| fx_refusal("record debit overflow"))?;
+        rec_debits = fx_magnitude(
+            prior_retained_earnings_record,
+            "prior record retained earnings",
+        )?;
     }
 
     let mut out_lines = Vec::with_capacity(lines.len());
@@ -1560,14 +1661,10 @@ pub fn remeasure_temporal(
 
         match line.side {
             Side::Debit => {
-                rec_debits = rec_debits
-                    .checked_add(line.record_amount.mantissa)
-                    .ok_or_else(|| fx_refusal("record debit overflow"))?;
+                rec_debits = fx_add(rec_debits, line.record_amount.mantissa, "record debits")?;
             }
             Side::Credit => {
-                rec_credits = rec_credits
-                    .checked_add(line.record_amount.mantissa)
-                    .ok_or_else(|| fx_refusal("record credit overflow"))?;
+                rec_credits = fx_add(rec_credits, line.record_amount.mantissa, "record credits")?;
             }
         }
 
@@ -1582,7 +1679,7 @@ pub fn remeasure_temporal(
                         closing_rate_doc.rounding,
                         units,
                     )
-                    .map_err(fx_refusal)?;
+                    .map_err(fx_amount_error)?;
                 (amt, closing_commit, FxRatePurpose::PeriodClose)
             }
             RemeasurementBasis::FlowAverage => {
@@ -1595,7 +1692,7 @@ pub fn remeasure_temporal(
                         average_rate_doc.rounding,
                         units,
                     )
-                    .map_err(fx_refusal)?;
+                    .map_err(fx_amount_error)?;
                 (amt, average_commit, FxRatePurpose::PeriodAverage)
             }
             RemeasurementBasis::NonMonetaryHistorical { acquisition_date }
@@ -1616,7 +1713,7 @@ pub fn remeasure_temporal(
                 let amt = line
                     .record_amount
                     .convert(budget, functional_unit, &rate, doc.rounding, units)
-                    .map_err(fx_refusal)?;
+                    .map_err(fx_amount_error)?;
                 (amt, *commit, FxRatePurpose::SpotClose)
             }
         };
@@ -1624,12 +1721,20 @@ pub fn remeasure_temporal(
         let func = functional_amount.mantissa;
         match line.account_type {
             AccountType::REVENUE | AccountType::EXPENSE => match line.side {
-                Side::Credit => pre_fx_pnl_cr_minus_dr += func,
-                Side::Debit => pre_fx_pnl_cr_minus_dr -= func,
+                Side::Credit => {
+                    pre_fx_pnl_cr_minus_dr = fx_add(pre_fx_pnl_cr_minus_dr, func, "pre-FX income")?
+                }
+                Side::Debit => {
+                    pre_fx_pnl_cr_minus_dr = fx_sub(pre_fx_pnl_cr_minus_dr, func, "pre-FX income")?
+                }
             },
             AccountType::ASSET | AccountType::LIABILITY | AccountType::EQUITY => match line.side {
-                Side::Debit => bs_dr_minus_cr += func,
-                Side::Credit => bs_dr_minus_cr -= func,
+                Side::Debit => {
+                    bs_dr_minus_cr = fx_add(bs_dr_minus_cr, func, "remeasured balance sheet")?
+                }
+                Side::Credit => {
+                    bs_dr_minus_cr = fx_sub(bs_dr_minus_cr, func, "remeasured balance sheet")?
+                }
             },
             _ => {
                 return Err(fx_refusal(
@@ -1656,21 +1761,31 @@ pub fn remeasure_temporal(
         )));
     }
 
-    let pre_fx_equity_carry = prior_retained_earnings_functional
-        .checked_add(pre_fx_pnl_cr_minus_dr)
-        .ok_or_else(|| fx_refusal("pre-FX equity carry overflow"))?;
-    let delta_remeasurement_gain_credit = bs_dr_minus_cr
-        .checked_sub(pre_fx_equity_carry)
-        .ok_or_else(|| fx_refusal("delta remeasurement gain overflow"))?;
-    let cumulative_remeasurement_gain_credit = prior_cumulative_remeasurement_gain_credit
-        .checked_add(delta_remeasurement_gain_credit)
-        .ok_or_else(|| fx_refusal("cumulative remeasurement gain overflow"))?;
-    let remeasured_net_income_functional = pre_fx_pnl_cr_minus_dr
-        .checked_add(delta_remeasurement_gain_credit)
-        .ok_or_else(|| fx_refusal("remeasured net income overflow"))?;
-    let ending_retained_earnings_functional = prior_retained_earnings_functional
-        .checked_add(remeasured_net_income_functional)
-        .ok_or_else(|| fx_refusal("ending retained earnings overflow"))?;
+    let pre_fx_equity_carry = fx_add(
+        prior_retained_earnings_functional,
+        pre_fx_pnl_cr_minus_dr,
+        "pre-FX equity carry",
+    )?;
+    let delta_remeasurement_gain_credit = fx_sub(
+        bs_dr_minus_cr,
+        pre_fx_equity_carry,
+        "delta remeasurement gain",
+    )?;
+    let cumulative_remeasurement_gain_credit = fx_add(
+        prior_cumulative_remeasurement_gain_credit,
+        delta_remeasurement_gain_credit,
+        "cumulative remeasurement gain",
+    )?;
+    let remeasured_net_income_functional = fx_add(
+        pre_fx_pnl_cr_minus_dr,
+        delta_remeasurement_gain_credit,
+        "remeasured net income",
+    )?;
+    let ending_retained_earnings_functional = fx_add(
+        prior_retained_earnings_functional,
+        remeasured_net_income_functional,
+        "ending retained earnings",
+    )?;
 
     let certificate_digest = compute_remeasurement_digest(
         period,
@@ -1806,6 +1921,7 @@ pub fn verify_remeasurement_certificate(
 /// and `remeasurement_gain_loss_account` (P&L), citing the period's `closing_rate_doc`, `average_rate_doc`,
 /// and `historical_rate_docs`.
 #[allow(clippy::too_many_arguments)]
+#[deny(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
 pub fn plan_remeasurement_entry(
     mut template: EntryPayload,
     run: &RemeasurementRunResult,
@@ -1832,7 +1948,7 @@ pub fn plan_remeasurement_entry(
             "delta_remeasurement_gain_credit is zero; no remeasurement entry is required",
         ));
     }
-    let mag = delta.abs();
+    let mag = fx_magnitude(delta, "remeasurement gain/loss leg")?;
     let amt = Amount::new(run.functional_unit, mag);
     let (adj_side, pnl_side) = if delta > 0 {
         (Side::Debit, Side::Credit)
@@ -1876,4 +1992,306 @@ pub fn plan_remeasurement_entry(
     });
     template.validate().map_err(fx_refusal)?;
     Ok(template)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fa_journal::FxRateTerms;
+    use fa_model::{EntryOrigin, Erasable, Id128, Oid, SealKey};
+    use fa_money::{BudgetLimits, RoundingLaw};
+
+    struct FxFixture {
+        units: UnitRegistry,
+        source: UnitId,
+        target: UnitId,
+        date: DateDay,
+        close: FxRateDocument,
+        average: FxRateDocument,
+    }
+
+    impl FxFixture {
+        fn new(rate_num: u128) -> Self {
+            let units = UnitRegistry::with_defaults();
+            let source = units.lookup("EUR").unwrap();
+            let target = units.lookup("USD").unwrap();
+            let date = DateDay::from_ymd(2026, 1, 31).unwrap();
+            let rate_doc = |purpose| {
+                FxRateDocument::new(
+                    FxRateTerms {
+                        base_unit: target,
+                        quote_unit: source,
+                        rate_num,
+                        rate_den: 1,
+                        rounding: RoundingLaw::HalfEven,
+                    },
+                    date,
+                    1,
+                    purpose,
+                    "exact boundary fixture",
+                )
+                .unwrap()
+            };
+            Self {
+                units,
+                source,
+                target,
+                date,
+                close: rate_doc(FxRatePurpose::PeriodClose),
+                average: rate_doc(FxRatePurpose::PeriodAverage),
+            }
+        }
+
+        fn lines(&self, amount: i128) -> Vec<TranslationInputLine> {
+            [
+                (TranslationItemKind::Asset, Side::Debit),
+                (TranslationItemKind::Asset, Side::Debit),
+                (TranslationItemKind::Liability, Side::Credit),
+                (TranslationItemKind::Liability, Side::Credit),
+            ]
+            .into_iter()
+            .map(|(kind, side)| TranslationInputLine {
+                account: VId(1),
+                kind,
+                side,
+                functional_amount: Amount::new(self.source, amount),
+                is_current_period_activity: true,
+            })
+            .collect()
+        }
+
+        fn translate(
+            &self,
+            lines: &[TranslationInputLine],
+            prior_functional: i128,
+        ) -> Result<TranslatedStatement, Refusal> {
+            let cx = asupersync::Cx::detached_cancel_context();
+            let mut budget = ArithmeticBudget::new(&cx, BudgetLimits::uniform(1_000_000, 0), 4096);
+            translate_current_rate(
+                &mut budget,
+                "2026-01",
+                self.date,
+                self.source,
+                self.target,
+                lines,
+                &self.close,
+                &self.average,
+                &[],
+                prior_functional,
+                0,
+                0,
+                &self.units,
+            )
+        }
+
+        fn remeasure(
+            &self,
+            lines: &[RemeasurementInputLine],
+            prior_record: i128,
+        ) -> Result<RemeasurementRunResult, Refusal> {
+            let cx = asupersync::Cx::detached_cancel_context();
+            let mut budget = ArithmeticBudget::new(&cx, BudgetLimits::uniform(1_000_000, 0), 4096);
+            remeasure_temporal(
+                &mut budget,
+                "2026-01",
+                self.date,
+                self.source,
+                self.target,
+                lines,
+                &self.close,
+                &self.average,
+                &[],
+                prior_record,
+                0,
+                0,
+                &self.units,
+            )
+        }
+
+        fn remeasurement_lines(&self, amount: i128) -> Vec<RemeasurementInputLine> {
+            self.lines(amount)
+                .into_iter()
+                .map(|line| RemeasurementInputLine {
+                    account: line.account,
+                    account_type: if line.side == Side::Debit {
+                        AccountType::ASSET
+                    } else {
+                        AccountType::LIABILITY
+                    },
+                    basis: RemeasurementBasis::MonetaryClosing,
+                    side: line.side,
+                    record_amount: line.functional_amount,
+                })
+                .collect()
+        }
+
+        fn template(&self) -> EntryPayload {
+            EntryPayload {
+                schema_minor: 0,
+                book_id: Id128([1; 16]),
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ADJUSTING,
+                effective_date: self.date,
+                document_date: None,
+                description: Erasable::seal(
+                    &"FX boundary fixture".to_string(),
+                    None,
+                    &SealKey([2; 32]),
+                    [3; 32],
+                    [4; 24],
+                ),
+                effective_period: None,
+                unit_totals: Vec::new(),
+                legs: Vec::new(),
+                control: None,
+                base_totals: None,
+                idempotency_key: b"fx-boundary".to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([5; 32]),
+                    intent_kind: 1,
+                },
+                principal_ref: VId(7),
+                session_ref: None,
+                evidence: Vec::new(),
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            }
+        }
+    }
+
+    fn assert_overflow(refusal: &Refusal, accumulator: &str) {
+        assert_eq!(refusal.code, code::LIMIT_CEILING);
+        assert_eq!(refusal.exit, exit::REFUSAL);
+        assert!(refusal.cite.contains("FA-INV-06"));
+        assert!(refusal.message.contains(accumulator), "{refusal}");
+    }
+
+    #[test]
+    fn translation_overflow_is_refused() {
+        let fixture = FxFixture::new(2);
+        // Every source amount, source-side total, and converted line fits.
+        // Only the second reporting-asset accumulation exceeds i128::MAX.
+        let lines = fixture.lines(i128::MAX / 4 + 1);
+        let error = fixture.translate(&lines, 0).unwrap_err();
+        assert_overflow(&error, "reporting assets");
+
+        // A later offset cannot rescue an overflowing intermediate fold.
+        let mut offsetting = lines;
+        offsetting[2].kind = TranslationItemKind::Asset;
+        assert_overflow(
+            &fixture.translate(&offsetting, 0).unwrap_err(),
+            "reporting assets",
+        );
+
+        let mut underflow = fixture.lines(i128::MAX / 4 + 1);
+        for line in &mut underflow {
+            line.side = line.side.flipped();
+        }
+        let mut extra = underflow[0].clone();
+        extra.functional_amount.mantissa = 1;
+        underflow.insert(2, extra.clone());
+        extra.kind = TranslationItemKind::Liability;
+        extra.side = Side::Debit;
+        underflow.push(extra);
+        assert_overflow(
+            &fixture.translate(&underflow, 0).unwrap_err(),
+            "reporting assets",
+        );
+
+        let within_range = fixture.translate(&fixture.lines(i128::MAX / 4), 0).unwrap();
+        assert_eq!(within_range.total_assets_reporting, i128::MAX - 3);
+        assert_eq!(within_range.total_liabilities_reporting, i128::MAX - 3);
+        assert_eq!(within_range.cta_schedule.ending_cumulative_cta_credit, 0);
+    }
+
+    #[test]
+    fn remeasurement_overflow_is_refused() {
+        let fixture = FxFixture::new(2);
+        let error = fixture
+            .remeasure(&fixture.remeasurement_lines(i128::MAX / 4 + 1), 0)
+            .unwrap_err();
+        assert_overflow(&error, "remeasured balance sheet");
+        // Although the complete BS nets to zero, the declared left fold must
+        // refuse its overflowing intermediate debits before later credits.
+        let within_range = fixture
+            .remeasure(&fixture.remeasurement_lines(i128::MAX / 4), 0)
+            .unwrap();
+        assert_eq!(within_range.pre_fx_net_income_functional, 0);
+        assert_eq!(within_range.delta_remeasurement_gain_credit, 0);
+        assert_eq!(within_range.ending_retained_earnings_functional, 0);
+
+        // MIN is a lawful signed reporting result when each fold fits; it
+        // becomes unrepresentable only when a positive posting magnitude is
+        // required. Do not reject all negative boundary results.
+        let mut minimum_income = fixture.remeasurement_lines(i128::MAX / 4 + 1);
+        for line in &mut minimum_income {
+            if line.side == Side::Debit {
+                line.account_type = AccountType::EXPENSE;
+                line.basis = RemeasurementBasis::FlowAverage;
+            } else {
+                line.account_type = AccountType::ASSET;
+            }
+        }
+        let minimum = fixture.remeasure(&minimum_income, 0).unwrap();
+        assert_eq!(minimum.pre_fx_net_income_functional, i128::MIN);
+        assert_eq!(minimum.delta_remeasurement_gain_credit, 0);
+        assert_eq!(minimum.ending_retained_earnings_functional, i128::MIN);
+    }
+
+    #[test]
+    fn minimum_retained_earnings_and_unrepresentable_conversion_are_refused() {
+        let fixture = FxFixture::new(1);
+        assert_overflow(
+            &fixture.translate(&fixture.lines(1), i128::MIN).unwrap_err(),
+            "prior functional retained earnings",
+        );
+        assert_overflow(
+            &fixture
+                .remeasure(&fixture.remeasurement_lines(1), i128::MIN)
+                .unwrap_err(),
+            "prior record retained earnings",
+        );
+        let double = FxFixture::new(2);
+        assert_overflow(
+            &double.translate(&double.lines(i128::MAX), 0).unwrap_err(),
+            "converted amount",
+        );
+    }
+
+    #[test]
+    fn fx_posting_plans_refuse_unrepresentable_leg_magnitudes() {
+        let fixture = FxFixture::new(1);
+        let mut statement = fixture.translate(&fixture.lines(1), 0).unwrap();
+        statement.cta_schedule.ending_cumulative_cta_credit = i128::MIN;
+        let error = plan_cta_deconsolidation_recycling(
+            fixture.template(),
+            &statement,
+            VId(11),
+            VId(12),
+            &fixture.close,
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert_overflow(&error, "CTA recycling leg");
+
+        let mut run = fixture
+            .remeasure(&fixture.remeasurement_lines(1), 0)
+            .unwrap();
+        run.delta_remeasurement_gain_credit = i128::MIN;
+        let error = plan_remeasurement_entry(
+            fixture.template(),
+            &run,
+            VId(11),
+            VId(12),
+            &fixture.close,
+            &fixture.average,
+            &[],
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert_overflow(&error, "remeasurement gain/loss leg");
+    }
 }

@@ -343,8 +343,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// allocation order, before/after amount and unapplied amount must match.
     /// Even a competing payment that leaves enough capacity requires new review.
     /// This does not authenticate the claimed OLD snapshot or the review author.
-    pub fn refresh_settlement_review(
-        &self,
+    pub async fn refresh_settlement_review(
+        &mut self,
         cx: &PurposeContexts,
         review: &SettlementReview,
         capability: &Capability,
@@ -361,7 +361,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 )));
             }
         };
-        let prepared = match self.prepare_settlement(cx, request, capability)? {
+        let prepared = match self.prepare_settlement(cx, request, capability).await? {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -383,18 +383,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ///
     /// Preserve the returned PostPlan before publication. The strict original
     /// plan_prepared_settlement API and exact commit retry contract are unchanged.
-    pub fn plan_settlement_review(
+    pub async fn plan_settlement_review(
         &mut self,
         cx: &PurposeContexts,
         review: &SettlementReview,
         approvals: Vec<ApprovalRef>,
         capability: &Capability,
     ) -> Outcome<SettlementPostPlan> {
-        let prepared = match self.refresh_settlement_review(cx, review, capability)? {
+        let prepared = match self
+            .refresh_settlement_review(cx, review, capability)
+            .await?
+        {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
         self.plan_prepared_settlement(cx, prepared, approvals, capability)
+            .await
     }
 }
 

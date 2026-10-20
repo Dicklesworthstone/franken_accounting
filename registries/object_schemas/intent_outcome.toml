@@ -1,0 +1,36 @@
+# Durable batch results (plan §5.8-§5.9, fa-nl7).
+schema_version = 1
+owner = "fa-journal::batch::OutcomeBody"
+format = "FA-OUTCOME"
+major = 1
+minor = 0
+batch_kind = 1
+storage_kind = 4
+max_members = 8190
+max_body_bytes = 393172
+max_fragments = 96
+identity_domain = "fa:vid:intent-outcome:v1"
+request_domain = "fa:batch-request:v1"
+
+# Canonical body bytes are unchanged by storage chunking:
+# fixed("FA-OUTCOME\0") || u16le major || u16le minor || u8 kind
+# || request_digest[32] || u32le member_count
+# || member_count * (entry_vid:u128le || entry_digest[32]).
+# Exactly 52 + 48*N bytes; N must be 1..=8190. Unknown versions/kinds,
+# oversized counts/bodies and trailing bytes are rejected before allocation.
+# request_digest = domain_digest(request_domain, [batch_key, ordered_vid_bytes]);
+# exact retry also judges each proposal by the kernel's sealed semantic law.
+# No plaintext-derived digest is stored.
+
+# New roots through 4096 body bytes retain the historical single FA_PAYLOAD
+# scalar. Larger roots have exactly FA_PAYLOAD (kind-4 object manifest) and
+# BOOK_ID; fragments follow object_storage.toml and use IntentOutcome label.
+# Historical one-property raw roots above 4096 bytes remain readable under
+# this codec. The root plus all fragments and member IN_BATCH links publish
+# in the same WriteTxn. Fragments must have the root's original creation
+# sequence, exact label/properties, book, length, digest and Merkle commitment.
+# Reassembly pins a single snapshot and accepts a caller-supplied QueryCx.
+# A malformed/missing/changed fragment is corruption, never a partial outcome.
+# BatchPlan's native effect digest includes the complete outcome object.
+# These are format bounds: no claim of full 8190-member native transaction
+# acceptance, durable refusal recording, or universal per-entry key coverage.

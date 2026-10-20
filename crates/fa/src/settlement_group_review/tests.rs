@@ -213,8 +213,8 @@ impl Harness {
         };
         let cx = self.cx();
         let plan = self
-            .book
-            .plan_settlement(&cx, request, Vec::new(), &cap())
+            .runtime
+            .block_on(self.book.plan_settlement(&cx, request, Vec::new(), &cap()))
             .unwrap()
             .unwrap();
         self.runtime
@@ -303,9 +303,10 @@ fn fixture() -> Fixture {
             },
         ],
     };
+    let cx = h.cx();
     let prepared = h
-        .book
-        .prepare_settlement_group(&h.cx(), request, &cap())
+        .runtime
+        .block_on(h.book.prepare_settlement_group(&cx, request, &cap()))
         .unwrap()
         .unwrap();
     let review = prepared.export_review().unwrap();
@@ -320,7 +321,7 @@ fn fixture() -> Fixture {
 
 #[test]
 fn portable_bytes_keep_one_combined_proposal_and_all_unused_targets() {
-    let f = fixture();
+    let mut f = fixture();
     let review = &f.review;
     let head = f.h.head();
     let bytes = review.canonical_bytes().unwrap();
@@ -362,9 +363,13 @@ fn portable_bytes_keep_one_combined_proposal_and_all_unused_targets() {
         expected.extend_from_slice(&part.allocation.unapplied.to_le_bytes());
     }
     assert_eq!(bytes, expected);
+    let cx = f.h.cx();
     let fresh =
-        f.h.book
-            .refresh_settlement_group_review(&f.h.cx(), review, &cap())
+        f.h.runtime
+            .block_on(
+                f.h.book
+                    .refresh_settlement_group_review(&cx, review, &cap()),
+            )
             .unwrap()
             .unwrap();
     assert_eq!(fresh.export_review().unwrap(), *review);
@@ -490,8 +495,11 @@ fn reopened_review_accepts_approval_publications_then_one_commit_and_exact_plan_
     let head = h.head();
     let cx = h.cx();
     let plan = h
-        .book
-        .plan_settlement_group_review(&cx, &decoded, vec![approved], &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group_review(&cx, &decoded, vec![approved], &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().intent().proposal(), decoded.proposal());
@@ -546,14 +554,20 @@ fn competing_consumption_requires_new_review_even_when_all_payment_effects_still
     let head = h.head();
     let cx = h.cx();
     let fresh = h
-        .book
-        .prepare_settlement_group(&cx, review.request().unwrap(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .prepare_settlement_group(&cx, review.request().unwrap(), &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(fresh.proposal().proposal_digest().unwrap(), original);
     let denial = h
-        .book
-        .plan_settlement_group_review(&cx, &review, Vec::new(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group_review(&cx, &review, Vec::new(), &cap()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(denial.code, fa_journal::refusal::code::PLAN_INVALIDATED);
@@ -567,7 +581,7 @@ fn competing_consumption_requires_new_review_even_when_all_payment_effects_still
 
 #[test]
 fn internally_consistent_false_witnesses_and_full_target_substitution_fail_live_revalidation() {
-    let f = fixture();
+    let mut f = fixture();
     let head = f.h.head();
     let cx = f.h.cx();
     let mut false_amounts = f.review.clone();
@@ -588,8 +602,11 @@ fn internally_consistent_false_witnesses_and_full_target_substitution_fail_live_
         let decoded = SettlementGroupReview::decode(&changed.canonical_bytes().unwrap()).unwrap();
         assert_ne!(decoded.digest().unwrap(), f.review.digest().unwrap());
         let denial =
-            f.h.book
-                .refresh_settlement_group_review(&cx, &decoded, &cap())
+            f.h.runtime
+                .block_on(
+                    f.h.book
+                        .refresh_settlement_group_review(&cx, &decoded, &cap()),
+                )
                 .unwrap()
                 .unwrap_err();
         assert_eq!(denial.code, fa_journal::refusal::code::PLAN_INVALIDATED);
@@ -599,16 +616,20 @@ fn internally_consistent_false_witnesses_and_full_target_substitution_fail_live_
 
 #[test]
 fn current_read_and_post_authority_are_required_even_for_an_unchanged_saved_review() {
-    let f = fixture();
+    let mut f = fixture();
     let head = f.h.head();
+    let cx = f.h.cx();
     for denied in [
         Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
         Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
         Capability::embedded(VId(8), &["read", "post"]).unwrap(),
     ] {
         assert!(
-            f.h.book
-                .refresh_settlement_group_review(&f.h.cx(), &f.review, &denied)
+            f.h.runtime
+                .block_on(
+                    f.h.book
+                        .refresh_settlement_group_review(&cx, &f.review, &denied)
+                )
                 .unwrap()
                 .is_err()
         );
@@ -685,8 +706,8 @@ fn large_native_amounts_remain_exact_across_transport_and_resume() {
     };
     let cx = h.cx();
     let review = h
-        .book
-        .prepare_settlement_group(&cx, request, &cap())
+        .runtime
+        .block_on(h.book.prepare_settlement_group(&cx, request, &cap()))
         .unwrap()
         .unwrap()
         .export_review()
@@ -701,8 +722,11 @@ fn large_native_amounts_remain_exact_across_transport_and_resume() {
         2
     );
     let plan = h
-        .book
-        .plan_settlement_group_review(&cx, &decoded, Vec::new(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group_review(&cx, &decoded, Vec::new(), &cap()),
+        )
         .unwrap()
         .unwrap();
     h.runtime

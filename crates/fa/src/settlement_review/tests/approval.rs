@@ -41,8 +41,11 @@ fn distinct_read_and_approve_authority_can_complete_the_review_workflow_without_
     assert_eq!(retry.recorded_at(), approval.recorded_at());
     assert_eq!(h.head(), approved_at);
     let plan = h
-        .book
-        .plan_settlement_review(&cx, &review, vec![approval.approval()], &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_review(&cx, &review, vec![approval.approval()], &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().proposal(), review.proposal());
@@ -104,8 +107,11 @@ fn stale_capacity_cannot_be_approved_even_when_the_reviewed_payment_still_fits()
     let other = h.prepare("other", 10, &[invoice]);
     let cx = h.cx();
     let plan = h
-        .book
-        .plan_prepared_settlement(&cx, other, Vec::new(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement(&cx, other, Vec::new(), &cap()),
+        )
         .unwrap()
         .unwrap();
     h.runtime

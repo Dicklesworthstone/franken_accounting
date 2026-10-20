@@ -4144,12 +4144,12 @@ impl Book {
 
     /// Derive a period-balance allocation instruction from the current immutable journal.
     pub fn prepare_balance_allocation(
-        &self,
+        &mut self,
         request: &crate::BalanceAllocationRequest,
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::PreparedBalanceAllocation> {
         let purposes = self.purposes();
-        with_store!(&self.store, core => core.prepare_balance_allocation(&purposes, request, capability))
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_balance_allocation(&purposes, request, capability)))
     }
 
     /// Revalidate a source-bound balance allocation review and rehearse through the real kernel.
@@ -4161,13 +4161,13 @@ impl Book {
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::PostPlan> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => core.plan_balance_allocation(
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_balance_allocation(
             &purposes,
             review,
             expected_digest,
             approvals,
             capability,
-        ))
+        )))
     }
 
     /// Record an approval from a restored source-bound balance allocation review.
@@ -4188,12 +4188,12 @@ impl Book {
 
     /// Prepare a single-leg open-item settlement against the current HEAD snapshot.
     pub fn prepare_settlement(
-        &self,
+        &mut self,
         request: crate::SettlementPostRequest,
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::PreparedSettlement> {
         let purposes = self.purposes();
-        with_store!(&self.store, core => core.prepare_settlement(&purposes, request, capability))
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_settlement(&purposes, request, capability)))
     }
 
     /// Prepare and rehearse a single-leg open-item settlement through the real kernel.
@@ -4204,12 +4204,12 @@ impl Book {
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::SettlementPostPlan> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => core.plan_settlement(
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_settlement(
             &purposes,
             request,
             approvals,
             capability,
-        ))
+        )))
     }
 
     /// Rehearse an exact prepared single-leg settlement through the real kernel.
@@ -4220,22 +4220,22 @@ impl Book {
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::SettlementPostPlan> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => core.plan_prepared_settlement(
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_prepared_settlement(
             &purposes,
             prepared,
             approvals,
             capability,
-        ))
+        )))
     }
 
     /// Revalidate a saved single-leg settlement review against current HEAD.
     pub fn refresh_settlement_review(
-        &self,
+        &mut self,
         review: &crate::SettlementReview,
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::PreparedSettlement> {
         let purposes = self.purposes();
-        with_store!(&self.store, core => core.refresh_settlement_review(&purposes, review, capability))
+        with_store!(&mut self.store, core => self.runtime.block_on(core.refresh_settlement_review(&purposes, review, capability)))
     }
 
     /// Revalidate a saved single-leg settlement review and rehearse through the real kernel.
@@ -4246,12 +4246,12 @@ impl Book {
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::SettlementPostPlan> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => core.plan_settlement_review(
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_settlement_review(
             &purposes,
             review,
             approvals,
             capability,
-        ))
+        )))
     }
 
     /// Record an approval of an exact saved single-leg settlement review.
@@ -4272,12 +4272,12 @@ impl Book {
 
     /// Prepare a multi-leg open-item settlement group against the current HEAD snapshot.
     pub fn prepare_settlement_group(
-        &self,
+        &mut self,
         request: crate::SettlementGroupRequest,
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::PreparedSettlementGroup> {
         let purposes = self.purposes();
-        with_store!(&self.store, core => core.prepare_settlement_group(&purposes, request, capability))
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_settlement_group(&purposes, request, capability)))
     }
 
     /// Prepare and rehearse a multi-leg open-item settlement group through the real kernel.
@@ -4288,12 +4288,12 @@ impl Book {
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::SettlementGroupPostPlan> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => core.plan_settlement_group(
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_settlement_group(
             &purposes,
             request,
             approvals,
             capability,
-        ))
+        )))
     }
 
     /// Rehearse an exact prepared multi-leg settlement group through the real kernel.
@@ -4304,22 +4304,22 @@ impl Book {
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::SettlementGroupPostPlan> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => core.plan_prepared_settlement_group(
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_prepared_settlement_group(
             &purposes,
             prepared,
             approvals,
             capability,
-        ))
+        )))
     }
 
     /// Revalidate a saved multi-leg settlement group review against current HEAD.
     pub fn refresh_settlement_group_review(
-        &self,
+        &mut self,
         review: &crate::SettlementGroupReview,
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::PreparedSettlementGroup> {
         let purposes = self.purposes();
-        with_store!(&self.store, core => core.refresh_settlement_group_review(&purposes, review, capability))
+        with_store!(&mut self.store, core => self.runtime.block_on(core.refresh_settlement_group_review(&purposes, review, capability)))
     }
 
     /// Revalidate a saved multi-leg settlement group review and rehearse through the real kernel.
@@ -4330,12 +4330,12 @@ impl Book {
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::SettlementGroupPostPlan> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => core.plan_settlement_group_review(
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_settlement_group_review(
             &purposes,
             review,
             approvals,
             capability,
-        ))
+        )))
     }
 
     /// Record an approval of an exact saved multi-leg settlement group review.

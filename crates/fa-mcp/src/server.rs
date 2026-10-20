@@ -31,7 +31,8 @@ use crate::detect::{self, Memory};
 use crate::dispatch::{self, Reply, to_wire};
 use crate::errors::StructuredError;
 use crate::registry::{
-    Invocation, MACROS, MacroSpec, McpRegistry, RESOURCES, ToolSpec, macro_by_wire,
+    Invocation, MACROS, MacroSpec, McpRegistry, RESOURCES, ToolSpec, UNAVAILABLE_RESOURCES,
+    macro_by_wire,
 };
 
 /// The law registries `resource://fa/laws` serves verbatim (the TOML the
@@ -514,7 +515,7 @@ impl Adapter {
                     ),
                 ]
             }
-            "fa.macro.record_and_match_cash" => {
+            "fa.macro.inspect_cash_matching" => {
                 let account = get_str("account", true)?.unwrap_or_default();
                 let period = get_str("period", false)?;
                 let mut steps = vec![
@@ -572,7 +573,7 @@ impl Adapter {
                     ),
                 ]
             }
-            "fa.macro.produce_audit_package" => {
+            "fa.macro.certify_period_reports" => {
                 let period = get_str("period", true)?.unwrap_or_default();
                 vec![
                     (
@@ -759,6 +760,15 @@ impl Adapter {
         {
             return Err(StructuredError::forbidden_argument("book"));
         }
+        if let Some((_, reason)) = UNAVAILABLE_RESOURCES
+            .iter()
+            .find(|(uri, _)| *uri == template)
+        {
+            return Err(StructuredError::arguments(
+                format!("resource `{template}` is unavailable: {reason}"),
+                *reason,
+            ));
+        }
         match template {
             "resource://fa/book" => Ok((json_mime, self.read(&["book", "info"])?.render())),
             "resource://fa/chart/{book}" => {
@@ -787,28 +797,47 @@ impl Adapter {
             "resource://fa/intents" => {
                 let caps = self.read(&["capabilities"])?;
                 let examples = self.read(&["robot-docs", "examples"])?;
-                let tools: Vec<String> = self
+                let intent_tools: Vec<&ToolSpec> = self
                     .mcp
                     .tools
                     .iter()
                     .filter(|t| detect::intent_of(t, &json!({"intent": {}})).is_some())
-                    .map(ToolSpec::wire_name)
+                    .collect();
+                let tools: Vec<String> = intent_tools.iter().map(|tool| tool.wire_name()).collect();
+                let schemas: Vec<JsonValue> = intent_tools
+                    .iter()
+                    .map(|tool| {
+                        json!({
+                            "type": "object",
+                            "properties": {
+                                "name": { "const": tool.wire_name() },
+                                "arguments": tool.input_schema_with_files(&self.mcp, self.reg, self.authority.files().is_some()),
+                            },
+                            "required": ["name", "arguments"],
+                            "additionalProperties": false,
+                        })
+                    })
                     .collect();
                 let v = json!({
                     "entry_classes": caps.get("entry_classes").map_or(JsonValue::Null, to_wire),
                     "examples": examples.get("text").map_or(JsonValue::Null, to_wire),
                     "tools": tools,
-                    "schema": JsonValue::Null,
+                    "schema": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "title": "Registered inline intent tool calls",
+                        "oneOf": schemas,
+                    },
+                    "schema_scope": "tool-call-arguments",
                     "planning": {
                         "dry_run": "Set dry_run=true on a posting tool to run the actual laws without publishing. A bounded Preparer session can review the plan event and pass its complete bytes hex string as plan to fa_post_commit_plan under the same launch principal and capability.",
                         "period_transition": "Set dry_run=true on fa_time_period_transition to receive existing canonical TransitionPlan bytes inline. This prepares a sealed period-transition proposal; commit independently checks authority, approvals and current period state. It is not a PostEntry effects certificate, and dangerous MCP commits remain unavailable.",
                         "files": "Caller filesystem paths are refused. Supply content inline; no --files root is supported.",
-                        "scope": "same-snapshot-post",
-                        "invalidation": "Any intervening publication before the first commit requires another dry run. This slice preserves supplied approvals; it does not gather new approvals, create drafts, or rehearse balancing.",
-                        "authority": "The artifact grants no authority. The default Agent profile cannot plan or commit accounting entries to trunk. Tool calls cannot select another principal, profile, book or grants. Dangerous void plan commits remain unavailable until a separate confirmation exchange exists.",
+                        "scope": "same-snapshot-post-or-atomic-batch",
+                        "invalidation": "Any intervening publication before the first commit requires another dry run. Supplied approvals are preserved and independently revalidated. Use the draft tools to retain proposals for independent review and promotion.",
+                        "authority": "The artifact grants no authority. The default Agent profile can rehearse entries and atomic batches but cannot commit them to trunk. Tool calls cannot select another principal, profile, book or grants. Dangerous void plan commits remain unavailable until a separate confirmation exchange exists.",
                         "commit_tool": "fa_post_commit_plan",
                     },
-                    "note": "the JSON intent document forms this build accepts, as the examples show them (an intent is the `intent` object of the tools listed); a machine-readable JSON intent schema is not registered yet. The fa-intents PostEntry artifact has a separate bounded canonical binary format, returned as complete hex bytes for MCP transport",
+                    "note": "The schema is generated from the same verb registry as tools/list and describes a {name, arguments} tool call. Accounting document fields are validated by the dispatcher and kernel; the examples describe those fields. Portable PostEntry, Replacement and BatchPlan artifacts have separate bounded canonical binary formats, returned as complete hex bytes for MCP transport.",
                 });
                 Ok((json_mime, v.to_string()))
             }
@@ -866,28 +895,8 @@ impl Adapter {
                 });
                 Ok((json_mime, v.to_string()))
             }
-            "resource://fa/cases/{book}" => {
-                let periods = self.read(&["period", "list"])?;
-                let v = json!({
-                    "periods": to_wire(&periods),
-                    "cases": [],
-                    "note": "period state and reopen/restatement case status for the launch-bound book",
-                });
-                Ok((json_mime, v.to_string()))
-            }
             "resource://fa/drafts/{book}" => {
-                let book = self.read(&["book", "info"])?;
-                let v = json!({
-                    "book": to_wire(&book),
-                    "authority": self.authority_json(),
-                    "drafts": [],
-                    "portable_planning": {
-                        "dry_run": true,
-                        "commit_tool": "fa_post_commit_plan",
-                        "scope": "same-snapshot-post",
-                    },
-                });
-                Ok((json_mime, v.to_string()))
+                Ok((json_mime, self.read(&["draft", "list"])?.render()))
             }
             "resource://fa/certificates/{id}" => {
                 let id = params
@@ -923,31 +932,6 @@ impl Adapter {
                         StructuredError::foundation("the dispatcher exited 0 without a robot line")
                     })?;
                 Ok((json_mime, data.render()))
-            }
-            "resource://fa/bundles/{id}" => {
-                let id = params
-                    .get("id")
-                    .map(String::as_str)
-                    .map(percent_decode)
-                    .unwrap_or_default();
-                if id.is_empty() || id.starts_with('-') {
-                    return Err(StructuredError::arguments(
-                        "bundle `{id}` must be a non-empty identifier",
-                        "pass a bundle identifier in resource://fa/bundles/{id}",
-                    ));
-                }
-                let book = self.read(&["book", "info"])?;
-                let accumulator = self
-                    .read(&["verify", "accumulator"])
-                    .ok()
-                    .map(|v| to_wire(&v));
-                let v = json!({
-                    "bundle_id": id,
-                    "book": to_wire(&book),
-                    "accumulator": accumulator.unwrap_or(JsonValue::Null),
-                    "verify_command": "fa-verify bundle <bundle.fab> --key <checkpoint_public_key> --receipt <receipt>",
-                });
-                Ok((json_mime, v.to_string()))
             }
             "resource://fa/capabilities/{token}" => {
                 let token = params
@@ -1235,8 +1219,8 @@ impl MacroTool {
             tags: vec!["fa.macro".to_string()],
             annotations: Some(ToolAnnotations {
                 destructive: Some(false),
-                idempotent: Some(true),
-                read_only: Some(true),
+                idempotent: Some(!spec.publishes),
+                read_only: Some(!spec.publishes),
                 open_world_hint: Some(false),
             }),
         };
@@ -1586,6 +1570,44 @@ mod tests {
             intents.contains("fa_post_post") && intents.contains("idempotency_key"),
             "{intents}"
         );
+        let intents: JsonValue = fastmcp_rust::serde_json::from_str(&intents).unwrap();
+        assert_eq!(intents["schema_scope"], "tool-call-arguments");
+        let schemas = intents["schema"]["oneOf"]
+            .as_array()
+            .expect("intent schemas");
+        assert!(!schemas.is_empty());
+        for schema in schemas {
+            let wire = schema["properties"]["name"]["const"].as_str().unwrap();
+            let tool = adapter.mcp.tool_by_wire(wire).expect("registered tool");
+            assert_eq!(
+                schema["properties"]["arguments"],
+                tool.input_schema_with_files(
+                    &adapter.mcp,
+                    adapter.reg,
+                    adapter.authority.files().is_some()
+                ),
+                "resource must serve the actual registered schema for {wire}",
+            );
+            assert_eq!(schema["required"], json!(["name", "arguments"]));
+        }
+        for (uri, reason) in UNAVAILABLE_RESOURCES {
+            assert!(!RESOURCES.iter().any(|(live, _)| live == uri));
+            let error = adapter
+                .read_resource(uri, &HashMap::new())
+                .expect_err("unavailable resource");
+            assert_eq!(error.exit, 2);
+            assert!(error.message.contains(reason));
+            assert_eq!(error.authority, Some(adapter.authority_json()));
+        }
+        for old in [
+            "fa_macro_record_and_match_cash",
+            "fa_macro_produce_audit_package",
+        ] {
+            assert!(
+                macro_by_wire(old).is_none(),
+                "unsupported workflow promise {old}"
+            );
+        }
         assert!(
             adapter
                 .read_resource("resource://fa/nothing", &HashMap::new())
@@ -1797,9 +1819,13 @@ mod tests {
     fn macros_and_book_resources_enforce_forbidden_arguments_paths_and_read_capability_before_opening_the_book()
      {
         let adapter = Adapter::new(config()).expect("adapter");
-        assert_eq!(RESOURCES.len(), 13);
+        assert_eq!(RESOURCES.len(), 11);
         assert_eq!(MACROS.len(), 4);
         for mac in MACROS {
+            let tool = MacroTool::new(Arc::new(Adapter::new(config()).unwrap()), mac);
+            let annotations = tool.definition.annotations.unwrap();
+            assert_eq!(annotations.read_only, Some(!mac.publishes));
+            assert_eq!(annotations.idempotent, Some(!mac.publishes));
             for argument in crate::registry::FORBIDDEN_ARGUMENTS {
                 let mut input = json!({"period": "FY2026-P03", "account": "1000"});
                 input[*argument] = JsonValue::Null;
@@ -1885,20 +1911,12 @@ mod tests {
                 HashMap::from([("book".into(), "default".into())]),
             ),
             (
-                "resource://fa/cases/{book}",
-                HashMap::from([("book".into(), "default".into())]),
-            ),
-            (
                 "resource://fa/drafts/{book}",
                 HashMap::from([("book".into(), "default".into())]),
             ),
             (
                 "resource://fa/certificates/{id}",
                 HashMap::from([("id".into(), "a".repeat(64))]),
-            ),
-            (
-                "resource://fa/bundles/{id}",
-                HashMap::from([("id".into(), "bundle-1".into())]),
             ),
             (
                 "resource://fa/capabilities/{token}",
@@ -1921,7 +1939,7 @@ mod tests {
                 json!({"period": "FY2026-P03"}),
             ),
             (
-                macro_by_wire("fa_macro_record_and_match_cash").unwrap(),
+                macro_by_wire("fa_macro_inspect_cash_matching").unwrap(),
                 json!({"account": "1000", "period": "FY2026-P03"}),
             ),
             (
@@ -1929,7 +1947,7 @@ mod tests {
                 json!({"account": "1000", "period": "FY2026-P03"}),
             ),
             (
-                macro_by_wire("fa_macro_produce_audit_package").unwrap(),
+                macro_by_wire("fa_macro_certify_period_reports").unwrap(),
                 json!({"period": "FY2026-P03"}),
             ),
         ] {

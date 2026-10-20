@@ -9003,13 +9003,62 @@ fn a_batch_commits_an_invoice_and_its_application_atomically_in_one_commit() {
         20_000,
         "the application folded"
     );
-    let (body, seq) = fa_journal::read_outcome(&h.db, posted.outcome)
+    let (body, seq) = fa_journal::read_outcome(&h.db, &h.ctx().query(), posted.outcome)
         .unwrap()
         .expect("the IntentOutcome is recorded");
     assert_eq!(seq, posted.recorded_at);
     let vids: Vec<VId> = posted.entries.iter().map(|e| e.vid).collect();
     assert_eq!(body.request_digest, request_digest(b"batch-1", &vids));
     assert_eq!(body.entries, posted.entries);
+}
+
+/// The format permits more entries than one native scalar can hold. The
+/// ordered outcome and its fragments must publish with all members and retry.
+#[test]
+fn large_batch_records_a_chunked_outcome_and_retries_without_another_commit() {
+    let mut h = harness();
+    let members = (0..350)
+        .map(|index| {
+            h.proposal(
+                h.rent_legs(1),
+                format!("large-member-{index}").as_bytes(),
+                EntryClass::ORIGINAL,
+            )
+        })
+        .collect();
+    let batch = h.batch(b"large-outcome", members);
+    let basis = h.db.frontier().unwrap();
+    let posted = h.post_batch(batch.clone()).unwrap();
+    assert_eq!(posted.recorded_at.0, basis.0 + 1);
+    assert_eq!(posted.entries.len(), 350);
+    let (body, seq) = read_outcome(&h.db, &h.ctx().query(), posted.outcome)
+        .unwrap()
+        .unwrap();
+    assert!(body.canonical_bytes().unwrap().len() > 16_384);
+    assert_eq!(body.entries, posted.entries);
+    assert_eq!(seq, posted.recorded_at);
+    let outcome_rows: Vec<_> =
+        h.db.vertices()
+            .unwrap()
+            .into_iter()
+            .filter(|row| {
+                row.labels
+                    .contains(&fa_model::symbols::label::INTENT_OUTCOME)
+            })
+            .collect();
+    assert_eq!(
+        outcome_rows.len(),
+        1 + body.canonical_bytes().unwrap().len().div_ceil(4096)
+    );
+    assert!(
+        outcome_rows
+            .iter()
+            .all(|row| row.created_at == posted.recorded_at)
+    );
+    let retry = h.post_batch(batch).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.entries, posted.entries);
+    assert_eq!(h.db.frontier().unwrap(), posted.recorded_at);
 }
 
 /// fa-nl7: a member refusal refuses the whole batch and names the member;
@@ -9533,6 +9582,55 @@ fn batch_plan_retains_large_transcripts_and_refuses_an_ordinary_batch_as_its_ret
 }
 
 #[test]
+fn batch_plan_authenticates_chunked_outcomes_and_rejects_a_damaged_fragment() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let members = (0..90)
+        .map(|index| {
+            h.proposal(
+                h.rent_legs(1),
+                format!("planned-outcome-{index}").as_bytes(),
+                EntryClass::ORIGINAL,
+            )
+        })
+        .collect();
+    let batch = h.batch(b"planned-chunked-outcome", members);
+    let plan = h.planned_batch(batch, &capability).unwrap();
+    let posted = h.publish_batch_plan(plan.clone(), &capability).unwrap();
+    assert!(
+        h.publish_batch_plan(plan.clone(), &capability)
+            .unwrap()
+            .already_recorded
+    );
+    let fragment =
+        h.db.vertices()
+            .unwrap()
+            .into_iter()
+            .find(|row| {
+                row.labels.as_slice() == [fa_model::symbols::label::INTENT_OUTCOME]
+                    && row.props.len() == 3
+            })
+            .unwrap();
+    assert_eq!(fragment.created_at, posted.recorded_at);
+    let mut damaged = fa_journal::rows::bytes(&fragment, property::FA_PAYLOAD, "fragment").unwrap();
+    damaged[0] ^= 1;
+    let mut corrupt = fgdb::WriteBatch::new(relation::IN_BATCH);
+    corrupt.set_vertex_property(
+        fragment.vid,
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(damaged).unwrap()),
+    );
+    h.write_raw(corrupt);
+    let ctx = h.ctx();
+    assert!(matches!(
+        h.runtime.block_on(commit_batch_plan(
+            &mut h.db, &ctx, &h.book, capability, plan
+        )),
+        Err(KernelError::Corrupt(_))
+    ));
+}
+
+#[test]
 fn batch_plan_retry_derives_member_identity_from_the_authenticated_request() {
     let mut h = harness();
     let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
@@ -9707,7 +9805,7 @@ impl Harness {
     }
 
     fn draft(&self, name: &str) -> DraftView {
-        read_draft(&self.db, &self.book, name)
+        read_draft(&self.db, &self.ctx().query(), &self.book, name)
             .expect("kernel")
             .expect("the draft exists")
     }

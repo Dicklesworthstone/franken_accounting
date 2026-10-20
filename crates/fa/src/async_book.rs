@@ -966,13 +966,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         name: &str,
     ) -> Result<Option<fa_journal::DraftView>, BookError> {
         self.query(cx, |db, context| {
-            Ok(fa_journal::read_draft(db, context, name)?)
+            Ok(fa_journal::read_draft(db, &cx.query(), context, name)?)
         })
     }
 
     /// Every draft of the book.
     pub fn drafts(&self, cx: &PurposeContexts) -> Result<Vec<fa_journal::DraftView>, BookError> {
-        self.query(cx, |db, context| Ok(fa_journal::list_drafts(db, context)?))
+        self.query(cx, |db, context| {
+            Ok(fa_journal::list_drafts(db, &cx.query(), context)?)
+        })
     }
 
     /// The issuance `certificate` records for `period` to `issued_to` (plan
@@ -2952,6 +2954,52 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         periods: &[String],
     ) -> Result<TrialBalance, BookError> {
         self.trial_balance_at(cx, periods, None)
+    }
+
+    /// Load the authoritative source history for a monetary workflow. Both
+    /// Read and the actual operation must cover the whole current book before
+    /// any frontier or history observation. In particular, a saved review is
+    /// not authority, and an approver needs no manufactured Post permission.
+    /// Loading a checkpoint-opened delta window changes no journal state.
+    pub(crate) async fn prepare_source_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        op: fa_policy::Op,
+        legs: &[(fa_money::UnitId, i128)],
+    ) -> Outcome<()> {
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| {
+                fa_policy::admit(
+                    capability,
+                    &fa_policy::Intent {
+                        principal,
+                        trunk: true,
+                        op,
+                        book: self.context.book_id,
+                        legs,
+                    },
+                )
+            })
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = query.with_restriction(|| {
+            fa_journal::policy::current_at(&self.db, &self.context, capability)
+                .map(|current| current.map(|_| ()))
+        })? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        query.checkpoint().map_err(BookError::Context)?;
+        self.query(cx, |db, book| {
+            Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
+        })
     }
 
     /// Prepare retained history for an admitted report without publishing.

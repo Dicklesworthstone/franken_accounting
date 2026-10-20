@@ -2803,6 +2803,7 @@ doc = "Period law: create a fiscal year's periods, list them, move one along the
 
 [[mcp.cluster]]
 name = "fa.evidence"
+on_demand = true
 doc = "Evidence: record a source document, content-addressed, so an entry can cite it."
 
 [[mcp.cluster]]
@@ -2824,6 +2825,7 @@ on_demand = true
 doc = "Customer invoices, vendor bills, receipts and payments (plan §15.3, Appendix B): typed sugar over fa.post's entry intent. The caller names every account; no posting rule or tax is inferred; dry_run returns the plan."
 [[mcp.cluster]]
 name = "fa.proof"
+on_demand = true
 doc = "General-ledger views at one coordinate (detail, roll-forward, aging, cash flow, lots) that reconcile to the journal fold."
 [[mcp.cluster]]
 name = "fa.findings"
@@ -2928,6 +2930,7 @@ reason = "host-only: revokes a capability commitment with --grant issue_capabili
 
 [[mcp.cluster]]
 name = "fa.forensics"
+on_demand = true
 doc = "Lantern: the registered forensic and audit procedures (journal-entry tests, duplicates, sequence gaps, cutoff, aging, digit tests, round trips, structuring, tracing laws) run as pure reads; findings are statistics with typed citations."
 
 [[mcp.cluster]]
@@ -2938,7 +2941,7 @@ doc = "Full-text search over entry descriptions and leg memos at a recorded fron
 [[mcp.cluster]]
 name = "fa.audit"
 on_demand = true
-doc = "Audit sampling (plan §11.7): reproducible uniform and monetary-unit samples of an account's open items from a declared seed, and the Stringer evaluation of an MUS sample's audited values. Pure reads. On demand (fa-mcp --cluster fa.audit): the default surface is at its 40-tool limit."
+doc = "Audit sampling (plan §11.7): reproducible uniform and monetary-unit samples of an account's open items from a declared seed, and the Stringer evaluation of an MUS sample's audited values. Pure reads. On demand (fa-mcp --cluster fa.audit)."
 
 [[mcp.tool]]
 cluster = "fa.orient"

@@ -248,7 +248,9 @@ impl Harness {
     }
 
     pub(super) fn draft(&self, name: &str) -> DraftView {
-        read_draft(&self.db, &self.book, name).unwrap().unwrap()
+        read_draft(&self.db, &self.ctx().query(), &self.book, name)
+            .unwrap()
+            .unwrap()
     }
 
     pub(super) fn approve(&mut self, proposal: &EntryPayload, principal: VId) -> ApprovalRef {

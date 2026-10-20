@@ -25,8 +25,8 @@ use crate::{AsyncBook, BookError, Outcome};
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Internal only: `prepare_settlement_group` owns envelope validation,
     /// canonical ordering, disjointness, work bounds and read admission.
-    pub(super) fn prepare_settlement_group_snapshot(
-        &self,
+    pub(super) async fn prepare_settlement_group_snapshot(
+        &mut self,
         cx: &PurposeContexts,
         request: SettlementGroupRequest,
         capability: &Capability,
@@ -50,6 +50,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         ) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
+        if let Err(refusal) = self
+            .prepare_source_history(
+                cx,
+                request.proposal.principal_ref,
+                capability,
+                fa_policy::Op::Post,
+                &explicit,
+            )
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let book = self.context();
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
         query.with_restriction(|| {

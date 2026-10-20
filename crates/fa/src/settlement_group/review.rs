@@ -14,8 +14,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// It writes nothing, grants no approval and does not reserve capacity.
     /// Approval objects bind the COMPLETE proposal, not any intermediate
     /// single-leg preparation; the kernel still authenticates those objects.
-    pub fn refresh_settlement_group(
-        &self,
+    pub async fn refresh_settlement_group(
+        &mut self,
         cx: &PurposeContexts,
         reviewed: &PreparedSettlementGroup,
         capability: &Capability,
@@ -28,7 +28,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         cx.query().checkpoint().map_err(BookError::Context)?;
-        let fresh = match self.prepare_settlement_group(cx, reviewed.request.clone(), capability)? {
+        let fresh = match self
+            .prepare_settlement_group(cx, reviewed.request.clone(), capability)
+            .await?
+        {
             Ok(fresh) => fresh,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -64,17 +67,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ///
     /// After an uncertain commit, retry the SAVED PostPlan instead: refreshing
     /// would inspect balances which the successful payment already changed.
-    pub fn plan_reviewed_settlement_group(
+    pub async fn plan_reviewed_settlement_group(
         &mut self,
         cx: &PurposeContexts,
         reviewed: &PreparedSettlementGroup,
         approvals: Vec<ApprovalRef>,
         capability: &Capability,
     ) -> Outcome<SettlementGroupPostPlan> {
-        let fresh = match self.refresh_settlement_group(cx, reviewed, capability)? {
+        let fresh = match self
+            .refresh_settlement_group(cx, reviewed, capability)
+            .await?
+        {
             Ok(fresh) => fresh,
             Err(refusal) => return Ok(Err(refusal)),
         };
         self.plan_prepared_settlement_group(cx, fresh, approvals, capability)
+            .await
     }
 }

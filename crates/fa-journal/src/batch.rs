@@ -26,7 +26,7 @@ use fa_model::{
 use fa_policy::Capability;
 use fgdb::{Database, VertexRow, WriteBatch, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CanonicalScalar, CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 
 use crate::genesis::BookContext;
 use crate::object::{self, ObjectKind};
@@ -40,6 +40,8 @@ const OUTCOME_MAJOR: u16 = 1;
 const OUTCOME_MINOR: u16 = 0;
 /// The outcome kind of a committed PostBatch.
 const KIND_BATCH: u8 = 1;
+/// Header and count framing plus the maximum ordered list of EntryRefs.
+pub const MAX_OUTCOME_BYTES: usize = 52 + 48 * fa_model::limits::MAX_BATCH_ENTRIES;
 
 /// A verified batch artifact satisfies an explicit `requires_dry_run`
 /// caveat without adding a circular certificate digest to its entry bytes.
@@ -62,6 +64,11 @@ impl OutcomeBody {
     /// `magic ‖ u16 major ‖ u16 minor ‖ u8 kind ‖ request_digest[32] ‖
     /// list(EntryRef)`.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
+        if self.entries.is_empty() || self.entries.len() > fa_model::limits::MAX_BATCH_ENTRIES {
+            return Err(KernelError::Corrupt(
+                "intent outcome member count is outside its format bound".into(),
+            ));
+        }
         let mut w = Writer::new();
         w.fixed(OUTCOME_MAGIC)
             .u16(OUTCOME_MAJOR)
@@ -74,6 +81,9 @@ impl OutcomeBody {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
         let corrupt = |what: &str| KernelError::Corrupt(format!("intent outcome: {what}"));
+        if bytes.len() > MAX_OUTCOME_BYTES {
+            return Err(corrupt("payload exceeds its format bound"));
+        }
         let mut r = Reader::new(bytes);
         let decode = |e: fa_model::DecodeError| KernelError::Model(e.into());
         if r.fixed::<11>("outcome.magic").map_err(decode)? != *OUTCOME_MAGIC {
@@ -96,6 +106,9 @@ impl OutcomeBody {
             )
             .map_err(decode)?;
         r.finish().map_err(decode)?;
+        if entries.is_empty() {
+            return Err(corrupt("empty member list"));
+        }
         Ok(Self {
             request_digest,
             entries,
@@ -133,13 +146,24 @@ pub fn outcome_vid(book: &BookContext, batch: &PostBatch) -> VId {
 /// Read a recorded IntentOutcome.
 pub fn read_outcome<V: Vfs + Clone>(
     db: &Database<V>,
+    cx: &QueryCx,
     vid: VId,
 ) -> Result<Option<(OutcomeBody, CommitSeq)>, KernelError> {
-    db.vertex(vid)?.map(|row| outcome_of(&row)).transpose()
+    cx.checkpoint().map_err(WriteTxnError::Interrupted)?;
+    let at = db.frontier()?;
+    db.vertex_at(vid, at)?
+        .map(|row| outcome_of(db, cx, &row, at))
+        .transpose()
 }
 
-fn outcome_of(row: &VertexRow) -> Result<(OutcomeBody, CommitSeq), KernelError> {
-    if !row.labels.contains(&label::INTENT_OUTCOME) {
+fn outcome_of<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    row: &VertexRow,
+    at: CommitSeq,
+) -> Result<(OutcomeBody, CommitSeq), KernelError> {
+    cx.checkpoint().map_err(WriteTxnError::Interrupted)?;
+    if row.labels.as_slice() != [label::INTENT_OUTCOME] {
         return Err(KernelError::Corrupt(format!(
             "vertex {:032x} at an intent outcome identity is not an IntentOutcome",
             row.vid.0
@@ -150,8 +174,79 @@ fn outcome_of(row: &VertexRow) -> Result<(OutcomeBody, CommitSeq), KernelError> 
             "intent outcome without _fa_payload".into(),
         ));
     };
-    let bytes = bytes.as_slice();
-    Ok((OutcomeBody::decode(bytes)?, row.created_at))
+    let body = if row.props.len() == 1 {
+        // Historical outcomes used one raw scalar, including bodies above
+        // the new 4096-byte inline threshold. Preserve their exact bytes.
+        OutcomeBody::decode(bytes.as_slice())?
+    } else if row.props.len() == 2 {
+        let Some(CanonicalScalar::Bytes(book)) = prop(row, property::BOOK_ID) else {
+            return Err(KernelError::Corrupt(
+                "chunked outcome without book identity".into(),
+            ));
+        };
+        let book: [u8; 16] = book.as_slice().try_into().map_err(|_| {
+            KernelError::Corrupt("chunked outcome has an invalid book identity".into())
+        })?;
+        let bytes = object::read(
+            db,
+            cx,
+            Id128(book),
+            row,
+            label::INTENT_OUTCOME,
+            ObjectKind::IntentOutcome,
+            at,
+            MAX_OUTCOME_BYTES,
+        )?;
+        if bytes.len() <= object::CHUNK_BYTES
+            || prop(row, property::FA_PAYLOAD)
+                != Some(&scalar_bytes(
+                    "intent outcome",
+                    object::payload(ObjectKind::IntentOutcome, &bytes)?,
+                )?)
+        {
+            return Err(KernelError::Corrupt("invalid chunked outcome root".into()));
+        }
+        OutcomeBody::decode(&bytes)?
+    } else {
+        return Err(KernelError::Corrupt(
+            "intent outcome has unexpected properties".into(),
+        ));
+    };
+    Ok((body, row.created_at))
+}
+
+fn stage_outcome(
+    cx: &QueryCx,
+    stage: &mut WriteBatch,
+    book: Id128,
+    vid: VId,
+    body: &OutcomeBody,
+) -> Result<(), KernelError> {
+    let bytes = body.canonical_bytes()?;
+    let mut props = vec![(
+        property::FA_PAYLOAD,
+        scalar_bytes(
+            "intent outcome",
+            object::payload(ObjectKind::IntentOutcome, &bytes)?,
+        )?,
+    )];
+    if bytes.len() > object::CHUNK_BYTES {
+        props.push((
+            property::BOOK_ID,
+            scalar_bytes("intent outcome book", book.0.to_vec())?,
+        ));
+    }
+    object::stage(
+        cx,
+        stage,
+        book,
+        vid,
+        label::INTENT_OUTCOME,
+        ObjectKind::IntentOutcome,
+        &bytes,
+    )?;
+    stage.create_vertex(vid, vec![label::INTENT_OUTCOME], props);
+    Ok(())
 }
 
 fn member_refusal(index: usize, refusal: Refusal) -> Refusal {
@@ -211,7 +306,7 @@ fn judge_retry<V: Vfs + Clone>(
     admission: Admission,
     outcome: VId,
 ) -> Outcome<BatchPosted> {
-    let Some((body, recorded_at)) = read_outcome(db, outcome)? else {
+    let Some((body, recorded_at)) = read_outcome(db, &ctx.query(), outcome)? else {
         return Err(KernelError::Corrupt(
             "an intent outcome vanished between two reads".into(),
         ));
@@ -431,16 +526,7 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
         entries: members.iter().map(|m| m.entry_ref).collect(),
     };
     let mut stage = WriteBatch::new(relation::IN_BATCH);
-    stage.create_vertex(
-        ovid,
-        vec![label::INTENT_OUTCOME],
-        vec![(
-            property::FA_PAYLOAD,
-            CanonicalScalar::bytes(body.canonical_bytes()?).map_err(|e| {
-                KernelError::Corrupt(format!("intent outcome payload scalar: {e:?}"))
-            })?,
-        )],
-    );
+    stage_outcome(&ctx.query(), &mut stage, book.book_id, ovid, &body)?;
     for m in &members {
         let evid = m.entry_ref.vid;
         stage.add_edge(edge_id(relation::IN_BATCH, evid, ovid), evid, ovid, vec![]);
@@ -788,14 +874,9 @@ fn recorded_batch_plan<V: Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     let member_vids: Vec<_> = entries.iter().map(|entry| entry.vid).collect();
-    let (body, _) = outcome_of(&outcome)?;
+    let (body, _) = outcome_of(db, &ctx.query(), &outcome, db.frontier()?)?;
     if !original_vertex(db, &outcome, born, before)?
-        || outcome.labels.as_slice() != [label::INTENT_OUTCOME]
-        || outcome.props
-            != vec![(
-                property::FA_PAYLOAD,
-                scalar_bytes("intent outcome", body.canonical_bytes()?)?,
-            )]
+        || matches!(prop(&outcome, property::BOOK_ID), Some(CanonicalScalar::Bytes(v)) if v.as_slice() != book.book_id.0)
         || body.entries != entries
         || body.request_digest != request_digest(plan.batch().idempotency_key(), &member_vids)
     {
@@ -983,6 +1064,11 @@ pub async fn commit_batch_plan<V: Vfs + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fgdb::{DatabaseKeys, MemVfs};
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+    use std::path::Path;
 
     #[test]
     fn outcome_body_bytes_are_fixed_and_round_trip() {
@@ -1019,5 +1105,103 @@ mod tests {
         let mut kind = bytes;
         kind[15] = 2;
         assert!(OutcomeBody::decode(&kind).is_err());
+    }
+
+    #[test]
+    fn maximum_outcome_survives_reopen_and_rejects_fragment_corruption() {
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(Budget::INFINITE);
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let vfs = cx.commit().with_restriction(MemVfs::new).unwrap();
+        let keys = DatabaseKeys::new([41; 32], DatabaseSecurityNamespaceId([42; 32]), [43; 32]);
+        let path = Path::new("outcome-objects");
+        let mut db = runtime
+            .block_on(Database::create_with_vfs(
+                &cx.commit(),
+                vfs.clone(),
+                path,
+                keys.clone(),
+            ))
+            .unwrap();
+        let body = OutcomeBody {
+            request_digest: [44; 32],
+            entries: (0..fa_model::limits::MAX_BATCH_ENTRIES)
+                .map(|index| EntryRef {
+                    vid: VId(index as u128 + 10),
+                    entry_digest: [45; 32],
+                })
+                .collect(),
+        };
+        assert_eq!(body.canonical_bytes().unwrap().len(), MAX_OUTCOME_BYTES);
+        let book = Id128([46; 16]);
+        let vid = VId(1);
+        let mut stage = WriteBatch::new(relation::IN_BATCH);
+        stage_outcome(&cx.query(), &mut stage, book, vid, &body).unwrap();
+        assert!(read_outcome(&db, &cx.query(), vid).unwrap().is_none());
+        let seq = runtime.block_on(db.write(&cx.commit(), stage)).unwrap();
+        assert_eq!(
+            db.vertices().unwrap().len(),
+            1 + MAX_OUTCOME_BYTES.div_ceil(object::CHUNK_BYTES)
+        );
+        drop(db);
+        let mut db = runtime
+            .block_on(Database::open_with_vfs(&cx.commit(), vfs, path, keys))
+            .unwrap();
+        assert!(matches!(
+            db.delta_since(CommitSeq(0)),
+            Err(fgdb::ReadError::DeltaCursorRetired { .. })
+        ));
+        assert_eq!(
+            read_outcome(&db, &cx.query(), vid).unwrap(),
+            Some((body.clone(), seq))
+        );
+        assert!(matches!(
+            db.delta_since(CommitSeq(0)),
+            Err(fgdb::ReadError::DeltaCursorRetired { .. })
+        ));
+
+        // A legacy raw scalar above the current inline threshold remains valid.
+        let legacy = OutcomeBody {
+            entries: body.entries[..90].to_vec(),
+            ..body
+        };
+        let legacy_bytes = legacy.canonical_bytes().unwrap();
+        assert!(legacy_bytes.len() > object::CHUNK_BYTES);
+        let mut stage = WriteBatch::new(relation::IN_BATCH);
+        stage.create_vertex(
+            VId(2),
+            vec![label::INTENT_OUTCOME],
+            vec![(
+                property::FA_PAYLOAD,
+                scalar_bytes("legacy outcome", legacy_bytes).unwrap(),
+            )],
+        );
+        let legacy_seq = runtime.block_on(db.write(&cx.commit(), stage)).unwrap();
+        assert_eq!(
+            read_outcome(&db, &cx.query(), VId(2)).unwrap(),
+            Some((legacy, legacy_seq))
+        );
+
+        let fragment = db
+            .vertices()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.labels.as_slice() == [label::INTENT_OUTCOME] && row.props.len() == 3)
+            .unwrap();
+        let mut damaged = crate::rows::bytes(&fragment, property::FA_PAYLOAD, "fragment").unwrap();
+        damaged[0] ^= 1;
+        let mut corruption = WriteBatch::new(relation::IN_BATCH);
+        corruption.set_vertex_property(
+            fragment.vid,
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("corruption", damaged).unwrap()),
+        );
+        runtime
+            .block_on(db.write(&cx.commit(), corruption))
+            .unwrap();
+        assert!(matches!(
+            read_outcome(&db, &cx.query(), vid),
+            Err(KernelError::Corrupt(_))
+        ));
     }
 }

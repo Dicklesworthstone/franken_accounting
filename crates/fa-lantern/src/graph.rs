@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use fa_journal::genesis::BookContext;
 use fa_model::{AccountType, EntryClass};
+use fa_money::wide::U256;
 use fa_money::{UnitId, UnitKind};
 use fgdb_types::VId;
 
@@ -39,6 +40,28 @@ fn finding(
 
 fn days(params: &Params, name: &'static str) -> Result<i32, LanternError> {
     i32::try_from(params.get_u32(name)?).map_err(|_| LanternError::Overflow(name))
+}
+
+fn amount_sum(left: i128, right: i128, accumulator: &'static str) -> Result<i128, LanternError> {
+    left.checked_add(right)
+        .ok_or(LanternError::Overflow(accumulator))
+}
+
+/// Exact, truncated basis points. A valid large flow must not be refused merely
+/// because multiplying its mantissa by 10,000 needs more than 128 bits.
+fn amount_share_bps(
+    numerator: i128,
+    denominator: i128,
+    statistic: &'static str,
+) -> Result<i128, LanternError> {
+    let numerator = u128::try_from(numerator).map_err(|_| LanternError::Overflow(statistic))?;
+    let denominator = u128::try_from(denominator).map_err(|_| LanternError::Overflow(statistic))?;
+    U256::from_u128(numerator)
+        .checked_mul_u128(10_000)
+        .and_then(|scaled| scaled.checked_div_rem(U256::from_u128(denominator)))
+        .and_then(|(quotient, _)| quotient.to_u128())
+        .and_then(|quotient| i128::try_from(quotient).ok())
+        .ok_or(LanternError::Overflow(statistic))
 }
 
 /// Whether `account` is an asset account of the snapshot's chart.
@@ -429,7 +452,12 @@ impl Rule {
             .filter(|entry| seen.insert(*entry))
             .collect();
         entries.truncate(MAX_CITES - 2);
-        let severity = if sum >= self.threshold.saturating_mul(2)
+        let high_threshold = U256::from_u128(self.threshold.unsigned_abs())
+            .checked_mul_u128(2)
+            .ok_or(LanternError::Overflow(
+                "graph.structuring severity threshold",
+            ))?;
+        let severity = if U256::from_u128(sum.unsigned_abs()) >= high_threshold
             || chain.len() >= self.min_count.saturating_mul(2)
         {
             Severity::High
@@ -658,7 +686,11 @@ impl Procedure for CircularFlows {
                             })
                         {
                             let candidate_min = min_flow.min(close_leg.mantissa);
-                            let ret_bps = (candidate_min * 10_000) / first.mantissa;
+                            let ret_bps = amount_share_bps(
+                                candidate_min,
+                                first.mantissa,
+                                "graph.circular_flows retention",
+                            )?;
                             if ret_bps >= min_retention_bps {
                                 path_indices.push(close_idx);
                                 min_flow = candidate_min;
@@ -669,22 +701,24 @@ impl Procedure for CircularFlows {
                         if path_indices.len() + 1 >= max_hops {
                             break;
                         }
-                        let next_opt =
-                            scc_legs
-                                .iter()
-                                .enumerate()
-                                .skip(start_idx + 1)
-                                .find(|(idx, l)| {
-                                    !used[*idx]
-                                        && !path_indices.contains(idx)
-                                        && l.from == cur_acct
-                                        && !visited_accts.contains(&l.to)
-                                        && l.effective_date.0 >= cur_day
-                                        && (l.effective_date.0 - first.effective_date.0)
-                                            <= window_days
-                                        && (l.mantissa.min(min_flow) * 10_000) / first.mantissa
-                                            >= min_retention_bps
-                                });
+                        let mut next_opt = None;
+                        for (idx, l) in scc_legs.iter().enumerate().skip(start_idx + 1) {
+                            if !used[idx]
+                                && !path_indices.contains(&idx)
+                                && l.from == cur_acct
+                                && !visited_accts.contains(&l.to)
+                                && l.effective_date.0 >= cur_day
+                                && (l.effective_date.0 - first.effective_date.0) <= window_days
+                                && amount_share_bps(
+                                    l.mantissa.min(min_flow),
+                                    first.mantissa,
+                                    "graph.circular_flows retention",
+                                )? >= min_retention_bps
+                            {
+                                next_opt = Some((idx, l));
+                                break;
+                            }
+                        }
                         if let Some((next_idx, next_leg)) = next_opt {
                             path_indices.push(next_idx);
                             visited_accts.insert(next_leg.to);
@@ -699,7 +733,11 @@ impl Procedure for CircularFlows {
                         for &idx in &path_indices {
                             used[idx] = true;
                         }
-                        let ret_bps = (min_flow * 10_000) / first.mantissa;
+                        let ret_bps = amount_share_bps(
+                            min_flow,
+                            first.mantissa,
+                            "graph.circular_flows retention",
+                        )?;
                         let mut cites = Vec::new();
                         let mut decisions = Vec::new();
                         for &idx in &path_indices {
@@ -824,20 +862,22 @@ impl Procedure for Layering {
                 let mut min_amt = first.mantissa;
                 while chain.len() < 8 {
                     work.compare(1);
-                    let next_opt = legs
-                        .iter()
-                        .enumerate()
-                        .skip(start_idx + 1)
-                        .find(|(idx, l)| {
-                            !used[*idx]
-                                && !chain.contains(idx)
-                                && l.from == cur_acct
-                                && !visited.contains(&l.to)
-                                && l.effective_date.0 >= cur_day
-                                && (l.effective_date.0 - first.effective_date.0) <= window_days
-                                && l.mantissa <= prev_amt
-                                && (l.mantissa * 10_000) / prev_amt >= min_pass_bps
-                        });
+                    let mut next_opt = None;
+                    for (idx, l) in legs.iter().enumerate().skip(start_idx + 1) {
+                        if !used[idx]
+                            && !chain.contains(&idx)
+                            && l.from == cur_acct
+                            && !visited.contains(&l.to)
+                            && l.effective_date.0 >= cur_day
+                            && (l.effective_date.0 - first.effective_date.0) <= window_days
+                            && l.mantissa <= prev_amt
+                            && amount_share_bps(l.mantissa, prev_amt, "graph.layering passthrough")?
+                                >= min_pass_bps
+                        {
+                            next_opt = Some((idx, l));
+                            break;
+                        }
+                    }
                     if let Some((next_idx, next_leg)) = next_opt {
                         chain.push(next_idx);
                         visited.insert(next_leg.to);
@@ -945,11 +985,8 @@ impl Procedure for Communities {
             } else {
                 (e.to, e.from)
             };
-            *edge_weights.entry(pair).or_insert(0) = edge_weights
-                .get(&pair)
-                .copied()
-                .unwrap_or(0)
-                .saturating_add(e.mantissa);
+            let weight = edge_weights.entry(pair).or_insert(0);
+            *weight = amount_sum(*weight, e.mantissa, "graph.communities edge volume")?;
         }
         for &n in &nodes {
             g.add_node(vid_node(n));
@@ -985,16 +1022,23 @@ impl Procedure for Communities {
                 let u_in = member_vids.contains(&u);
                 let v_in = member_vids.contains(&v);
                 if u_in && v_in {
-                    internal_vol = internal_vol.saturating_add(w);
-                    total_incident_vol = total_incident_vol.saturating_add(w);
+                    internal_vol =
+                        amount_sum(internal_vol, w, "graph.communities internal volume")?;
+                    total_incident_vol =
+                        amount_sum(total_incident_vol, w, "graph.communities incident volume")?;
                 } else if u_in || v_in {
-                    total_incident_vol = total_incident_vol.saturating_add(w);
+                    total_incident_vol =
+                        amount_sum(total_incident_vol, w, "graph.communities incident volume")?;
                 }
             }
             if total_incident_vol <= 0 {
                 continue;
             }
-            let share_bps = (internal_vol * 10_000) / total_incident_vol;
+            let share_bps = amount_share_bps(
+                internal_vol,
+                total_incident_vol,
+                "graph.communities internal share",
+            )?;
             if share_bps >= min_share_bps {
                 let decisions: Vec<(String, String)> = member_vids
                     .iter()
@@ -1116,7 +1160,11 @@ impl Procedure for RelatedPartyExposure {
                     }
                 }
                 if leg.side == fa_money::Side::Debit {
-                    total_exposure = total_exposure.saturating_add(leg.amount.mantissa);
+                    total_exposure = amount_sum(
+                        total_exposure,
+                        leg.amount.mantissa,
+                        "graph.related_party_exposure debit exposure",
+                    )?;
                 }
             }
             if !related_hits.is_empty() {
@@ -1201,10 +1249,20 @@ impl Procedure for ShellSignature {
                 acct_entries.entry(leg.account_ref).or_default().push(e.vid);
                 match leg.side {
                     fa_money::Side::Debit => {
-                        *acct_in.entry(leg.account_ref).or_insert(0) += leg.amount.mantissa;
+                        let inflow = acct_in.entry(leg.account_ref).or_insert(0);
+                        *inflow = amount_sum(
+                            *inflow,
+                            leg.amount.mantissa,
+                            "graph.shell_signature account inflow",
+                        )?;
                     }
                     fa_money::Side::Credit => {
-                        *acct_out.entry(leg.account_ref).or_insert(0) += leg.amount.mantissa;
+                        let outflow = acct_out.entry(leg.account_ref).or_insert(0);
+                        *outflow = amount_sum(
+                            *outflow,
+                            leg.amount.mantissa,
+                            "graph.shell_signature account outflow",
+                        )?;
                     }
                 }
             }
@@ -1220,7 +1278,7 @@ impl Procedure for ShellSignature {
             }
             let hi = inflow.max(outflow);
             let lo = inflow.min(outflow);
-            let pass_bps = (lo * 10_000) / hi;
+            let pass_bps = amount_share_bps(lo, hi, "graph.shell_signature passthrough")?;
             if pass_bps >= min_pass_bps {
                 let cgse = cgse_digest_hex(
                     &[(&vid_node(acct_vid), "shell_conduit")],
@@ -1300,9 +1358,16 @@ impl Procedure for Concentration {
             dg.add_node(u.clone());
             dg.add_node(v.clone());
             let _ = dg.add_edge(u, v);
-            *by_unit_total.entry(e.unit_id).or_insert(0) += e.mantissa;
-            *by_acct_unit.entry((e.from, e.unit_id)).or_insert(0) += e.mantissa;
-            *by_acct_unit.entry((e.to, e.unit_id)).or_insert(0) += e.mantissa;
+            let unit_total = by_unit_total.entry(e.unit_id).or_insert(0);
+            *unit_total = amount_sum(*unit_total, e.mantissa, "graph.concentration unit volume")?;
+            let from_total = by_acct_unit.entry((e.from, e.unit_id)).or_insert(0);
+            *from_total = amount_sum(
+                *from_total,
+                e.mantissa,
+                "graph.concentration account volume",
+            )?;
+            let to_total = by_acct_unit.entry((e.to, e.unit_id)).or_insert(0);
+            *to_total = amount_sum(*to_total, e.mantissa, "graph.concentration account volume")?;
         }
         let ((bet, deg), _) = fnx_cgse::collect_witnesses(|| {
             (
@@ -1321,7 +1386,8 @@ impl Procedure for Concentration {
             if total_vol <= 0 {
                 continue;
             }
-            let share_bps = (acct_vol * 10_000) / total_vol;
+            let share_bps =
+                amount_share_bps(acct_vol, total_vol, "graph.concentration flow share")?;
             if share_bps >= min_share_bps {
                 let node_str = vid_node(acct_vid);
                 let cgse = cgse_digest_hex(

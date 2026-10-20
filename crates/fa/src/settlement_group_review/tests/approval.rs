@@ -7,6 +7,115 @@ fn approver() -> Capability {
 }
 
 #[test]
+fn reopened_workflows_refuse_current_authority_before_loading_source_history() {
+    let Fixture { mut h, review, .. } = fixture();
+    let revoked_post = cap().expiring_at(CommitSeq(u64::MAX));
+    let revoked_approver = approver().expiring_at(CommitSeq(u64::MAX));
+    let cx = h.cx();
+    for (authority, key) in [
+        (&revoked_post, b"revoke-source-poster".as_slice()),
+        (&revoked_approver, b"revoke-source-approver".as_slice()),
+    ] {
+        h.runtime
+            .block_on(h.book.revoke_capability(
+                &cx,
+                Capability::embedded(PRINCIPAL, &["issue_capability"]).unwrap(),
+                authority.commitment().unwrap(),
+                day("2026-03-20"),
+                key,
+                "Revoke a saved workflow capability",
+            ))
+            .unwrap()
+            .unwrap();
+    }
+    let mut h = h.reopen();
+    let cx = h.cx();
+    let head = h.head();
+    let assert_cold = |h: &Harness| {
+        assert!(matches!(
+            h.book.db.delta_since(CommitSeq(0)),
+            Err(fgdb::ReadError::DeltaCursorRetired {
+                asked: CommitSeq(0),
+                ..
+            })
+        ));
+    };
+    assert_cold(&h);
+    for denied in [
+        Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+        Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        cap().expiring_at(head),
+        cap().known_at_most(review.known_at()),
+        cap().for_accounts(&["receivable"]).unwrap(),
+        cap().for_periods(&["FY2026-P03"]).unwrap(),
+        revoked_post,
+    ] {
+        assert!(
+            h.runtime
+                .block_on(
+                    h.book
+                        .plan_settlement_group_review(&cx, &review, Vec::new(), &denied)
+                )
+                .unwrap()
+                .is_err()
+        );
+        assert_cold(&h);
+        assert_eq!(h.head(), head);
+    }
+    let digest = review.digest().unwrap();
+    for denied in [
+        Capability::embedded(VId(8), &["read"]).unwrap(),
+        Capability::embedded(VId(8), &["approve"]).unwrap(),
+        approver().expiring_at(head),
+        approver().known_at_most(review.known_at()),
+        approver().for_accounts(&["receivable"]).unwrap(),
+        approver().for_periods(&["FY2026-P03"]).unwrap(),
+        revoked_approver,
+    ] {
+        assert!(
+            h.runtime
+                .block_on(
+                    h.book
+                        .approve_settlement_group_review(&cx, &review, digest, &denied)
+                )
+                .unwrap()
+                .is_err()
+        );
+        assert_cold(&h);
+        assert_eq!(h.head(), head);
+    }
+    let fresh = h
+        .runtime
+        .block_on(h.book.refresh_settlement_group_review(&cx, &review, &cap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(fresh.proposal(), review.proposal());
+    assert_eq!(fresh.known_at(), head);
+    assert!(h.book.db.delta_since(CommitSeq(0)).is_ok());
+    assert_eq!(h.head(), head, "source hydration publishes nothing");
+
+    // An independent approver must also hydrate a cold book using only Read
+    // and Approve. The retained sealed proposal is neither refreshed nor resealed.
+    let mut h = h.reopen();
+    assert_cold(&h);
+    let cx = h.cx();
+    let approved = h
+        .runtime
+        .block_on(
+            h.book
+                .approve_settlement_group_review(&cx, &review, digest, &approver()),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        approved.approval().approved_digest,
+        review.proposal().proposal_digest().unwrap()
+    );
+    assert_eq!(h.head(), CommitSeq(head.0 + 1));
+    assert!(h.book.db.delta_since(CommitSeq(0)).is_ok());
+}
+
+#[test]
 fn independent_approver_without_post_authority_records_one_full_proposal_approval() {
     let Fixture {
         mut h,
@@ -61,8 +170,11 @@ fn independent_approver_without_post_authority_records_one_full_proposal_approva
     assert_eq!(denied.code, fa_policy::denial::code::APPROVAL_BINDING);
     assert_eq!(h.head(), head);
     let plan = h
-        .book
-        .plan_settlement_group_review(&cx, &review, vec![approved], &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group_review(&cx, &review, vec![approved], &cap()),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(plan.post_plan().intent().proposal(), review.proposal());
@@ -161,8 +273,8 @@ fn changed_first_or_later_allocation_never_publishes_a_partial_group_approval() 
                 targets: vec![(bill.vid, 1)],
             };
             let plan = h
-                .book
-                .plan_settlement(&cx, request, Vec::new(), &cap())
+                .runtime
+                .block_on(h.book.plan_settlement(&cx, request, Vec::new(), &cap()))
                 .unwrap()
                 .unwrap();
             h.runtime
@@ -276,8 +388,11 @@ fn approval_never_skips_the_production_kernels_accounting_laws() {
         .approval();
     let head = h.head();
     let refusal = h
-        .book
-        .plan_settlement_group_review(&cx, &review, vec![approval], &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group_review(&cx, &review, vec![approval], &cap()),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, fa_journal::refusal::code::UNBALANCED);

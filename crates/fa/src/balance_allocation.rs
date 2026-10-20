@@ -194,8 +194,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// expiry/revocation precede the fold. All computed leg ceilings are then
     /// checked, including signed residuals, not merely the net source amount.
     /// No evidence import, approval, sealing, planning or journal write occurs.
-    pub fn prepare_balance_allocation(
-        &self,
+    pub async fn prepare_balance_allocation(
+        &mut self,
         cx: &PurposeContexts,
         request: &BalanceAllocationRequest,
         capability: &Capability,
@@ -207,6 +207,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Op::Post,
             &[],
         ) {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self
+            .prepare_source_history(cx, capability.holder(), capability, Op::Post, &[])
+            .await?
+        {
             return Ok(Err(refusal));
         }
         let prepared = match self.observe_balance_allocation(cx, request, capability, false)? {
@@ -244,11 +250,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// excludes HEAD, allowing unrelated commits without changing the source.
     /// This digest is a recipient-retained expectation, NOT a signed proof.
     ///
-    /// The exclusive mutable handle and absence of suspension keep source
-    /// validation and planning on the same writer's prefix. The native plan
+    /// History hydration precedes source validation under the exclusive mutable
+    /// handle, keeping validation and planning on the same writer's prefix. The native plan
     /// supplies the ordinary unchanged-prefix check at eventual publication.
     #[allow(clippy::too_many_arguments)]
-    pub fn plan_balance_allocation_review(
+    pub async fn plan_balance_allocation_review(
         &mut self,
         cx: &PurposeContexts,
         request: &BalanceAllocationRequest,
@@ -279,6 +285,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(changed()));
         }
+        if let Err(refusal) = self
+            .prepare_source_history(
+                cx,
+                review.proposal().principal_ref,
+                capability,
+                Op::Post,
+                &explicit,
+            )
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
         let prepared = match self.observe_balance_allocation(cx, request, capability, true)? {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
@@ -288,6 +306,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(changed()));
         }
         self.plan_allocation_review(cx, review, expected_review_digest, approvals, capability)
+            .await
     }
 
     // Read-only shared observation. Callers separately admit their actual
@@ -502,6 +521,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             || review.verify_for(&expected_review_digest).is_err()
         {
             return Ok(Err(changed()));
+        }
+        if let Err(refusal) = self
+            .prepare_source_history(cx, capability.holder(), capability, Op::Approve, &explicit)
+            .await?
+        {
+            return Ok(Err(refusal));
         }
         let prepared = match self.observe_balance_allocation(cx, request, capability, true)? {
             Ok(prepared) => prepared,

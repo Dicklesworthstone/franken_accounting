@@ -233,19 +233,22 @@ fn fixture(amount: i128) -> (Harness, EntryRef, SettlementGroupRequest) {
 
 #[test]
 fn shared_snapshot_matches_each_single_leg_and_preserves_full_source_digests() {
-    let (h, source, request) = fixture((1_i128 << 100) + 1);
+    let (mut h, source, request) = fixture((1_i128 << 100) + 1);
     let at = h.head();
     let cx = h.cx();
     let prepared = h
-        .book
-        .prepare_settlement_group(&cx, request.clone(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .prepare_settlement_group(&cx, request.clone(), &cap()),
+        )
         .unwrap()
         .unwrap();
     let mut expected = request.proposal.clone();
     for selection in &request.payments {
         let single = h
-            .book
-            .prepare_settlement(
+            .runtime
+            .block_on(h.book.prepare_settlement(
                 &cx,
                 SettlementPostRequest {
                     proposal: request.proposal.clone(),
@@ -253,7 +256,7 @@ fn shared_snapshot_matches_each_single_leg_and_preserves_full_source_digests() {
                     targets: selection.targets.clone(),
                 },
                 &cap(),
-            )
+            ))
             .unwrap()
             .unwrap();
         let group = prepared
@@ -279,14 +282,15 @@ fn shared_snapshot_matches_each_single_leg_and_preserves_full_source_digests() {
 
 #[test]
 fn invalid_unused_target_in_later_selection_returns_no_partial_group() {
-    let (h, source, mut request) = fixture(100);
+    let (mut h, source, mut request) = fixture(100);
     // The valid payable target already covers the entire payment; an extra
     // capital/USD target is nevertheless ineligible and must be checked.
     request.payments[0].targets.push((source.vid, 1));
     let at = h.head();
+    let cx = h.cx();
     assert!(
-        h.book
-            .prepare_settlement_group(&h.cx(), request, &cap())
+        h.runtime
+            .block_on(h.book.prepare_settlement_group(&cx, request, &cap()))
             .unwrap()
             .is_err()
     );
@@ -295,13 +299,17 @@ fn invalid_unused_target_in_later_selection_returns_no_partial_group() {
 
 #[test]
 fn full_entry_read_and_post_admission_are_required_before_preparation() {
-    let (h, _, request) = fixture(100);
+    let (mut h, _, request) = fixture(100);
     let at = h.head();
+    let cx = h.cx();
     for operations in [vec!["read"], vec!["post"]] {
         let capability = Capability::embedded(PRINCIPAL, &operations).unwrap();
         assert!(
-            h.book
-                .prepare_settlement_group(&h.cx(), request.clone(), &capability)
+            h.runtime
+                .block_on(
+                    h.book
+                        .prepare_settlement_group(&cx, request.clone(), &capability)
+                )
                 .unwrap()
                 .is_err()
         );
@@ -315,13 +323,16 @@ fn prepared_shared_snapshot_still_commits_atomically_and_retries_the_same_plan()
     let cx = h.cx();
     let at = h.head();
     let prepared = h
-        .book
-        .prepare_settlement_group(&cx, request, &cap())
+        .runtime
+        .block_on(h.book.prepare_settlement_group(&cx, request, &cap()))
         .unwrap()
         .unwrap();
     let plan = h
-        .book
-        .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap())
+        .runtime
+        .block_on(
+            h.book
+                .plan_prepared_settlement_group(&cx, prepared, Vec::new(), &cap()),
+        )
         .unwrap()
         .unwrap();
     let saved = plan.post_plan().canonical_bytes().unwrap();
@@ -392,9 +403,10 @@ fn maximum_supported_selections_share_one_basis_and_one_source_entry() {
             .collect(),
     };
     let at = h.head();
+    let cx = h.cx();
     let prepared = h
-        .book
-        .prepare_settlement_group(&h.cx(), request, &cap())
+        .runtime
+        .block_on(h.book.prepare_settlement_group(&cx, request, &cap()))
         .unwrap()
         .unwrap();
     assert_eq!(prepared.allocations().len(), count);

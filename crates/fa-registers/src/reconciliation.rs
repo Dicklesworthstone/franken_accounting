@@ -418,6 +418,7 @@ pub struct ThreeWayMatchResult {
 
 /// Execute deterministic three-way matching (`PO <-> Receipt <-> VendorInvoice`)
 /// with a replayable [`DecisionCard`].
+#[deny(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
 pub fn match_three_way(
     po: &PurchaseOrderLine,
     receipt: &ReceivingReportLine,
@@ -434,15 +435,38 @@ pub fn match_three_way(
         });
     }
     let unit = po.unit_price.unit;
-    let qty_diff = (po.quantity - receipt.quantity_received).abs()
-        + (receipt.quantity_received - invoice.quantity_billed).abs();
-    let price_diff = (po.unit_price.mantissa - invoice.unit_price_billed.mantissa).abs();
+    let po_receipt_diff = po
+        .quantity
+        .checked_sub(receipt.quantity_received)
+        .and_then(i128::checked_abs)
+        .ok_or(ReconciliationError::Overflow(
+            "three-way PO/receipt quantity difference",
+        ))?;
+    let receipt_invoice_diff = receipt
+        .quantity_received
+        .checked_sub(invoice.quantity_billed)
+        .and_then(i128::checked_abs)
+        .ok_or(ReconciliationError::Overflow(
+            "three-way receipt/invoice quantity difference",
+        ))?;
+    let qty_diff =
+        po_receipt_diff
+            .checked_add(receipt_invoice_diff)
+            .ok_or(ReconciliationError::Overflow(
+                "three-way quantity difference total",
+            ))?;
+    let price_diff = po
+        .unit_price
+        .mantissa
+        .checked_sub(invoice.unit_price_billed.mantissa)
+        .and_then(i128::checked_abs)
+        .ok_or(ReconciliationError::Overflow(
+            "three-way unit price difference",
+        ))?;
     let expected_total = invoice
         .quantity_billed
         .checked_mul(invoice.unit_price_billed.mantissa)
-        .ok_or(ReconciliationError::InvalidField(
-            "invoice extension overflow",
-        ))?;
+        .ok_or(ReconciliationError::Overflow("three-way invoice extension"))?;
 
     let verdict = if po.quantity != receipt.quantity_received
         || receipt.quantity_received != invoice.quantity_billed
@@ -936,5 +960,104 @@ mod tests {
                 invoice_unit_price: 1_600,
             }
         );
+    }
+
+    #[test]
+    fn three_way_overflow_is_refused() {
+        let epoch = fixture_epoch();
+        let unit = UnitId(1);
+        let po = PurchaseOrderLine {
+            po_oid: Oid([1; 32]),
+            vendor: "boundary vendor".into(),
+            item_code: "one item".into(),
+            quantity: 1,
+            unit_price: Amount::new(unit, 1),
+        };
+        let receipt = ReceivingReportLine {
+            receipt_oid: Oid([2; 32]),
+            po_oid: po.po_oid,
+            item_code: po.item_code.clone(),
+            quantity_received: 1,
+        };
+        let invoice = VendorInvoiceLine {
+            invoice_oid: Oid([3; 32]),
+            po_oid: po.po_oid,
+            vendor: po.vendor.clone(),
+            item_code: po.item_code.clone(),
+            quantity_billed: 1,
+            unit_price_billed: Amount::new(unit, 1),
+            total_billed: Amount::new(unit, 1),
+        };
+        for (po_qty, receipt_qty, invoice_qty, po_price, invoice_price, operation) in [
+            (
+                i128::MAX,
+                i128::MIN,
+                0,
+                1,
+                1,
+                "three-way PO/receipt quantity difference",
+            ),
+            (
+                i128::MIN,
+                0,
+                0,
+                1,
+                1,
+                "three-way PO/receipt quantity difference",
+            ),
+            (
+                0,
+                0,
+                i128::MIN,
+                1,
+                1,
+                "three-way receipt/invoice quantity difference",
+            ),
+            (
+                i128::MAX,
+                0,
+                i128::MAX,
+                0,
+                0,
+                "three-way quantity difference total",
+            ),
+            (1, 1, 1, i128::MIN, 0, "three-way unit price difference"),
+            (1, 1, 1, i128::MAX, -1, "three-way unit price difference"),
+            (
+                i128::MAX,
+                i128::MAX,
+                i128::MAX,
+                2,
+                2,
+                "three-way invoice extension",
+            ),
+        ] {
+            let mut po = po.clone();
+            let mut receipt = receipt.clone();
+            let mut invoice = invoice.clone();
+            po.quantity = po_qty;
+            receipt.quantity_received = receipt_qty;
+            invoice.quantity_billed = invoice_qty;
+            po.unit_price.mantissa = po_price;
+            invoice.unit_price_billed.mantissa = invoice_price;
+            assert_eq!(
+                match_three_way(&po, &receipt, &invoice, Some(epoch), epoch),
+                Err(ReconciliationError::Overflow(operation)),
+                "PO {po_qty}/{po_price}; receipt {receipt_qty}; invoice {invoice_qty}/{invoice_price}",
+            );
+        }
+
+        // Exact boundary values remain usable; overflow hardening must not
+        // silently shrink the representable invoice domain.
+        let mut po = po;
+        let mut receipt = receipt;
+        let mut invoice = invoice;
+        po.quantity = i128::MAX;
+        receipt.quantity_received = i128::MAX;
+        invoice.quantity_billed = i128::MAX;
+        invoice.total_billed.mantissa = i128::MAX;
+        let matched = match_three_way(&po, &receipt, &invoice, Some(epoch), epoch).unwrap();
+        assert_eq!(matched.verdict, ThreeWayMatchVerdict::Matched);
+        matched.decision_card.verify_replay(epoch).unwrap();
     }
 }
