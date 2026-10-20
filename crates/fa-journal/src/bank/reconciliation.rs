@@ -447,6 +447,16 @@ fn verify_sources<V: Vfs + Clone>(
     book: &BookContext,
     claim: &ReconciledClaim,
 ) -> Outcome<()> {
+    verify_sources_at(db, cx, book, claim, claim.evaluated_known_at)
+}
+
+fn verify_sources_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    claim: &ReconciledClaim,
+    at: CommitSeq,
+) -> Outcome<()> {
     let mut manifest = &claim.manifest;
     let mut manifest_oid = claim.manifest_oid;
     let mut run = claim.import_run;
@@ -473,7 +483,7 @@ fn verify_sources<V: Vfs + Clone>(
             run,
             receipt,
             imported,
-            claim.evaluated_known_at,
+            at,
         )? {
             return Ok(Err(refusal));
         }
@@ -1197,35 +1207,21 @@ fn citing_entries_at<V: Vfs + Clone>(
     Ok(Ok(references.into_iter().collect()))
 }
 
-/// Metadata-only current-authority view: original claims are verified at their
-/// pinned prefixes, while drift is evaluated at the caller's selected prefix.
-pub async fn bank_reconciliation_status<V: Vfs + Clone>(
-    db: &mut Database<V>,
+fn states_at<V: Vfs + Clone>(
+    db: &Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
-    capability: &Capability,
-    manifest_oid: Oid,
-    known_at: Option<CommitSeq>,
-) -> Outcome<BankReconciliationStatus> {
-    if let Err(refusal) = lifecycle::admit_bank_match_history(db, book, capability, known_at)? {
-        return Ok(Err(refusal));
-    }
-    if let Err(refusal) = crate::scratch::ensure_history(db, cx).await? {
-        return Ok(Err(refusal));
-    }
-    let at = match lifecycle::admit_bank_match_history(db, book, capability, known_at)? {
-        Ok(at) => at,
-        Err(refusal) => return Ok(Err(refusal)),
-    };
+    manifest_oid: Option<Oid>,
+    at: CommitSeq,
+) -> Outcome<Vec<BankReconciliationState>> {
     let history = match history_at(db, cx, book, at)? {
         Ok(history) => history,
         Err(refusal) => return Ok(Err(refusal)),
     };
     let mut reconciliations = Vec::new();
-    let mut reconciled_through = None;
     for recorded in history
         .into_iter()
-        .filter(|recorded| recorded.claim.manifest_oid == manifest_oid)
+        .filter(|recorded| manifest_oid.is_none_or(|oid| recorded.claim.manifest_oid == oid))
     {
         let claim = &recorded.claim;
         let current = match cash_fold(db, cx, book, &claim.manifest, at)? {
@@ -1250,8 +1246,6 @@ pub async fn bank_reconciliation_status<V: Vfs + Clone>(
             Ok(entries) => entries,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let day = claim.manifest.statement_date;
-        reconciled_through = Some(reconciled_through.map_or(day, |prior: DateDay| prior.max(day)));
         reconciliations.push(BankReconciliationState {
             balance_drift: current.balance != claim.cash_balance,
             cash_drift: current.digest != claim.cash_fold_digest,
@@ -1264,6 +1258,99 @@ pub async fn bank_reconciliation_status<V: Vfs + Clone>(
             citing_entries,
         });
     }
+    Ok(Ok(reconciliations))
+}
+
+/// Verify every native statement close and evaluate its drift at one prefix.
+/// This synchronous reader requires resident complete native history; callers
+/// that open a checkpointed book must hydrate through `scratch::ensure_history`
+/// only after current admission. No source bytes or Privileged grant are needed.
+/// Both standalone metadata views and certified Lantern procedures use this
+/// exact native calculation instead of accepting caller-supplied balances.
+pub fn read_bank_reconciliation_states<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    known_at: Option<CommitSeq>,
+) -> Outcome<Vec<BankReconciliationState>> {
+    let at = match lifecycle::admit_bank_match_history(db, book, capability, known_at)? {
+        Ok(at) => at,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    states_at(db, cx, book, None, at)
+}
+
+/// Verify immutable reconciliation history through a retained prefix without
+/// making a historical output depend on later cash amounts. Every original
+/// claim is still refolded at its own evaluated prefix; this additionally
+/// authenticates current Entry/decision history, retained source metadata and
+/// durable late-posting citations. Legitimate document custody changes do not
+/// change a source's content commitment. Requires the same current whole-book
+/// Read/Reconcile admission and resident history as the states reader.
+pub fn verify_bank_reconciliation_history<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    known_at: Option<CommitSeq>,
+) -> Outcome<()> {
+    let at = match lifecycle::admit_bank_match_history(db, book, capability, known_at)? {
+        Ok(at) => at,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if let Err(error) = crate::entry_history::verify_entry_history(db, cx, book, Some(at)) {
+        return match error {
+            KernelError::Corrupt(message) => Ok(Err(drift(message))),
+            error => Err(error),
+        };
+    }
+    if let Err(refusal) = lifecycle::history_at(db, cx, book, at)? {
+        return Ok(Err(refusal));
+    }
+    let history = match history_at(db, cx, book, at)? {
+        Ok(history) => history,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    for recorded in history {
+        if let Err(refusal) = verify_sources_at(db, cx, book, &recorded.claim, at)? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = citing_entries_at(db, cx, &recorded, at)? {
+            return Ok(Err(refusal));
+        }
+    }
+    Ok(Ok(()))
+}
+
+/// Metadata-only current-authority view: original claims are verified at their
+/// pinned prefixes, while drift is evaluated at the caller's selected prefix.
+pub async fn bank_reconciliation_status<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    manifest_oid: Oid,
+    known_at: Option<CommitSeq>,
+) -> Outcome<BankReconciliationStatus> {
+    if let Err(refusal) = lifecycle::admit_bank_match_history(db, book, capability, known_at)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, cx).await? {
+        return Ok(Err(refusal));
+    }
+    let at = match lifecycle::admit_bank_match_history(db, book, capability, known_at)? {
+        Ok(at) => at,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let reconciliations = match states_at(db, cx, book, Some(manifest_oid), at)? {
+        Ok(states) => states,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let reconciled_through = reconciliations
+        .iter()
+        .map(|state| state.recorded.claim.manifest.statement_date)
+        .max();
     Ok(Ok(BankReconciliationStatus {
         manifest_oid,
         known_at: at,

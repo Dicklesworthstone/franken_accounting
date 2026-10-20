@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod aging;
+pub mod bank_reconciliation;
 pub mod catalog;
 pub mod conformal;
 pub mod cutoff;
@@ -288,12 +289,17 @@ impl Severity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cite {
     Entry(VId),
-    Leg { entry: VId, ordinal: u16 },
+    Leg {
+        entry: VId,
+        ordinal: u16,
+    },
     Account(VId),
     Period(String),
     Document(Oid),
     Principal(VId),
     Approval(VId),
+    /// An immutable native Attestation, including an exact statement close.
+    Attestation(VId),
 }
 
 impl Cite {
@@ -320,6 +326,9 @@ impl Cite {
             Self::Approval(v) => {
                 w.u8(7).u128(v.0);
             }
+            Self::Attestation(v) => {
+                w.u8(8).u128(v.0);
+            }
         }
     }
 
@@ -336,6 +345,7 @@ impl Cite {
             5 => Self::Document(Oid(r.fixed::<32>("cite.document")?)),
             6 => Self::Principal(VId(r.u128("cite.principal")?)),
             7 => Self::Approval(VId(r.u128("cite.approval")?)),
+            8 => Self::Attestation(VId(r.u128("cite.attestation")?)),
             other => return Err(r.bad_tag("cite.tag", other)),
         })
     }
@@ -373,6 +383,7 @@ impl Cite {
             ),
             Self::Principal(v) => labelled(*v, None),
             Self::Approval(v) => labelled(*v, Some(label::APPROVAL)),
+            Self::Attestation(v) => labelled(*v, Some(label::ATTESTATION)),
         }
     }
 }
@@ -579,6 +590,29 @@ impl Work {
             .saturating_mul(u64::from((n + 1).ilog2().max(1)))
             .saturating_mul(4);
         match complexity {
+            "O((reconciliations + references) log (reconciliations + references))" => {
+                let Some(states) = &snapshot.bank_reconciliations else {
+                    return false;
+                };
+                let closes = states.len() as u64;
+                let references = states.iter().fold(0_u64, |count, state| {
+                    count
+                        .saturating_add(state.changed_entries.len() as u64)
+                        .saturating_add(state.citing_entries.len() as u64)
+                        .saturating_add(state.active_matches.len() as u64)
+                        .saturating_add(state.recorded.claim.matches.len() as u64)
+                        .saturating_add(state.recorded.claim.manifest.line_oids.len() as u64)
+                });
+                let n = closes
+                    .saturating_add(references)
+                    .saturating_add(snapshot.attestations.len() as u64)
+                    .max(1);
+                self.entries <= closes
+                    && self.legs == 0
+                    && self.comparisons
+                        <= n.saturating_mul(u64::from(n.saturating_add(1).ilog2().max(1)))
+                            .saturating_mul(8)
+            }
             "O(entries)" => self.entries <= entries && self.legs == 0 && self.comparisons == 0,
             "O(legs)" => self.entries <= entries && self.legs <= legs && self.comparisons == 0,
             "O(entries + transitions)" => {
@@ -856,6 +890,7 @@ mod tests {
             Cite::Document(Oid([3; 32])),
             Cite::Principal(VId(7)),
             Cite::Approval(VId(11)),
+            Cite::Attestation(VId(13)),
         ];
         for c in &cites {
             let bytes = c.canonical_bytes().unwrap();

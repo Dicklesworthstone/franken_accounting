@@ -192,6 +192,7 @@ impl ReportArtifact {
             .map_err(|error| invalid(format!("malformed report artifact: {error}")))?;
         let inner = if format == crate::procedure_certificate::PROCEDURE_CERTIFICATE_FORMAT
             || format == crate::procedure_certificate::EXTENDED_PROCEDURE_CERTIFICATE_FORMAT
+            || format == crate::procedure_certificate::BANK_PROCEDURE_CERTIFICATE_FORMAT
         {
             Artifact::Procedure(Box::new(
                 crate::procedure_certificate::ProcedureCertificate::decode(bytes)?,
@@ -443,6 +444,93 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             expected_digest,
             ReportArtifactExpectation::AsSupplied,
         )
+    }
+
+    /// Prepare a retained procedure's native inputs without granting scope from
+    /// its saved producer. Reading the artifact identity requires current Read;
+    /// bank history is loaded only after current Reconcile admission as well.
+    pub async fn prepare_retained_procedure_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        digest: &[u8; 32],
+    ) -> Outcome<()> {
+        let artifact = match self
+            .read_report_artifact(cx, principal, capability, digest)
+            .await?
+        {
+            Ok(artifact) => artifact,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Artifact::Procedure(certificate) = &artifact.inner {
+            if let Err(refusal) = self
+                .prepare_procedure_history(
+                    cx,
+                    principal,
+                    capability,
+                    &certificate.report().procedure,
+                    false,
+                )
+                .await?
+            {
+                return Ok(Err(refusal));
+            }
+            return self
+                .prepare_report_history(cx, principal, capability, Some(certificate.known_at()))
+                .await;
+        }
+        Ok(Ok(()))
+    }
+
+    /// Replay a complete artifact from a cold book after current admission and
+    /// authenticated history hydration. The synchronous entrypoint still
+    /// requires resident history; it never substitutes a partial input set.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn replay_report_artifact_for_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        bytes: &[u8],
+        expected_digest: Option<&[u8; 32]>,
+        expected: ReportArtifactExpectation<'_>,
+    ) -> Outcome<ReplayedReportArtifact> {
+        if let Err(refusal) = authorize(self, cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        let artifact = match ReportArtifact::decode(bytes) {
+            Ok(artifact) => artifact,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if artifact.book_id() != self.context().book_id {
+            return Ok(Err(invalid("report artifact belongs to another book")));
+        }
+        if expected_digest.is_some_and(|expected| expected != artifact.digest()) {
+            return Ok(Err(invalid(
+                "report artifact differs from the independently expected digest",
+            )));
+        }
+        if let Artifact::Procedure(certificate) = &artifact.inner
+            && let Err(refusal) = self
+                .prepare_procedure_history(
+                    cx,
+                    principal,
+                    capability,
+                    &certificate.report().procedure,
+                    false,
+                )
+                .await?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self
+            .prepare_report_history(cx, principal, capability, Some(artifact.known_at()))
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        self.replay_report_artifact_for(cx, principal, capability, bytes, expected_digest, expected)
     }
 
     /// The same bounded dispatch with independent expected scope/definitions.

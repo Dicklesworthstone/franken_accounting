@@ -16726,6 +16726,7 @@ fn cite_json(c: &fa_lantern::Cite) -> Json {
         ("document", Json::Null),
         ("principal", Json::Null),
         ("approval", Json::Null),
+        ("attestation", Json::Null),
     ];
     let (kind, set): (&str, Vec<(&str, Json)>) = match c {
         C::Entry(v) => ("entry", vec![("entry", vid(v))]),
@@ -16741,6 +16742,7 @@ fn cite_json(c: &fa_lantern::Cite) -> Json {
         C::Document(oid) => ("document", vec![("document", s(hex(&oid.0)))]),
         C::Principal(v) => ("principal", vec![("principal", vid(v))]),
         C::Approval(v) => ("approval", vec![("approval", vid(v))]),
+        C::Attestation(v) => ("attestation", vec![("attestation", vid(v))]),
     };
     for (key, value) in set {
         if let Some(slot) = fields.iter_mut().find(|(name, _)| *name == key) {
@@ -16849,7 +16851,27 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     )
                 })?),
             };
-            let book = ctx.books.open(args)?;
+            let who = ctx.principal(args);
+            let bank_cap = if id == "recon.bank_statement_drift" {
+                let cap = ctx.capability(args, &["read"])?;
+                for op in [fa_policy::Op::Read, fa_policy::Op::Reconcile] {
+                    fa_policy::require(&cap, op, "observing bank statement drift")
+                        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+                }
+                fa_policy::reach(&cap, &fa_policy::Reach::whole_book(true), None)
+                    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+                Some(cap)
+            } else {
+                None
+            };
+            let mut book = if let Some(cap) = &bank_cap {
+                ctx.books.open_admitted(args, |book| {
+                    book.read_scope(who, cap)??;
+                    Ok(())
+                })?
+            } else {
+                ctx.books.open(args)?
+            };
             let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
             if requested_utc_ns.is_some() {
                 return Err(usage(
@@ -16866,8 +16888,20 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .map(|text| parse_vid(text.strip_prefix("E:").unwrap_or(text), "--source"))
                     .transpose()?,
             };
-            let built = fa_lantern::catalog::build(id, params, inputs).map_err(lantern_usage)?;
-            let run = book.run_procedure(built.as_ref(), known_at, effective_through)?;
+            let run = if let Some(cap) = &bank_cap {
+                let request = fa::ProcedureRequest {
+                    procedure: id.clone(),
+                    parameters: params,
+                    inputs,
+                    known_at,
+                    effective_through,
+                };
+                book.run_procedure_with_history(who, cap, &request)??
+            } else {
+                let built =
+                    fa_lantern::catalog::build(id, params, inputs).map_err(lantern_usage)?;
+                book.run_procedure(built.as_ref(), known_at, effective_through)?
+            };
             out.known_at(run.coordinate.known_at);
             // Human mode prints one finding per line; robot mode carries
             // them in the event alone (stdout is one JSON object a line).

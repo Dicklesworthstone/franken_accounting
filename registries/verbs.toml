@@ -443,8 +443,8 @@ subcommands = ["list", "run"]
 flags = ["--known-at", "--effective-through", "--param", "--account", "--source"]
 switches = []
 events = ["procedure_list", "procedure_run"]
-exits = [0, 2, 3, 4, 5]
-usage = ["procedure list", "procedure run <procedure id> [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--param <name>=<integer>]... [--account <code>] [--source <entry vid>]", "Parameters default to procedures.toml's pinned values; --param overrides one registered parameter. aging.* and trace.* need --effective-through; trace.* also need --account (the commingled account) and --source (the deposit entry)."]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["procedure list", "procedure run <procedure id> [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--param <name>=<integer>]... [--account <code>] [--source <entry vid>]", "Parameters default to procedures.toml's pinned values; --param overrides one registered parameter. aging.* and trace.* need --effective-through; trace.* also need --account (the commingled account) and --source (the deposit entry).", "recon.bank_statement_drift needs current whole-book read and reconcile authority; supply --grant reconcile on the embedded owner route. An unrecorded run needs no produce grant. It evaluates every retained exact statement close at --known-at; --effective-through selects statement close dates without changing their immutable cash cutoff. Use finding record recon.bank_statement_drift to certify and retain the complete observations."]
 example = "fa procedure run jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
@@ -565,7 +565,7 @@ flags = ["--certificate", "--param", "--account", "--source", "--effective-throu
 switches = ["--include-reviews"]
 events = ["findings_recorded", "finding_runs", "finding_list", "finding_shown", "finding_reviewed", "finding_exported", "finding_replayed"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["finding record <procedure-id> [--param <name=integer>]... [--account <code>] [--source E:<vid>] [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD]", "finding record --certificate C:<digest>   (the exact idempotent retry; a new run at HEAD may select a later source prefix)", "finding runs [--page-size 1..32] [--cursor <192-hex>] [--known-at HEAD|<seq>]   (discover recorded runs; default page size 16)", "finding list --certificate C:<digest> [--known-at HEAD|<seq>]   (every finding in this certified run, not a global inventory)", "finding show F:<vid> [--known-at HEAD|<seq>]", "finding review F:<vid> --action acknowledge|dismiss|reopen --note <text> [--previous R:<latest-review>] [--dismissal-reason explained|duplicate|data-quality|outside-scope|other] [--evidence D:<oid>]...", "finding review --certificate C:<run> --file <reviews.json|->   (an explicit selection from ONE run reviewed in one transaction: a JSON array of {finding, action, note, previous?, dismissal_reason?, evidence?: [D:<oid>]}, each validated as a single review; any refused decision refuses the whole set, and one finding_reviewed event is emitted per decision in certified order)", "finding export --certificate C:<digest> [--export-format md|jsonl|canonical] [--include-reviews [--known-at HEAD|<seq>]] [--out <new-file>]", "finding replay <canonical-workpaper|-> [--certificate C:<expected-digest> --known-at <exact-seq>]", "Recording and exporting require read and produce; discovering runs, listing, showing and replaying require read. Review requires a Human with read and approve who is independent of the run producer. Dismissal also requires a registered reason and retained evidence. Supply the current --previous after the first decision; stale decisions refuse instead of overwriting history.", "Run discovery has scope recorded-runs: total_recorded_runs counts the structurally checked inventory at known_at; only summaries in the returned page also undergo full certificate and computation replay. It establishes neither current review status nor complete detector coverage. Pass next_cursor unchanged to continue the same book and inventory: omitted known_at or HEAD inherits the cursor cutoff; an explicit sequence must equal it. Current authority is always rechecked, and checked_through names the current validation frontier.", "The original numbered workpaper remains unchanged when later reviews are appended. --include-reviews adds a separate review appendix with its own fixed cutoff. Canonical exports replay against retained native evidence; Markdown and JSONL are presentations. Recipient-bound replay requires both the independently expected certificate and exact review cutoff; replay without them states its as-supplied historical scope. Complete responses refuse if they exceed transport limits, never truncate."]
+usage = ["finding record <procedure-id> [--param <name=integer>]... [--account <code>] [--source E:<vid>] [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD]", "finding record --certificate C:<digest>   (the exact idempotent retry; a new run at HEAD may select a later source prefix)", "finding runs [--page-size 1..32] [--cursor <192-hex>] [--known-at HEAD|<seq>]   (discover recorded runs; default page size 16)", "finding list --certificate C:<digest> [--known-at HEAD|<seq>]   (every finding in this certified run, not a global inventory)", "finding show F:<vid> [--known-at HEAD|<seq>]", "finding review F:<vid> --action acknowledge|dismiss|reopen --note <text> [--previous R:<latest-review>] [--dismissal-reason explained|duplicate|data-quality|outside-scope|other] [--evidence D:<oid>]...", "finding review --certificate C:<run> --file <reviews.json|->   (an explicit selection from ONE run reviewed in one transaction: a JSON array of {finding, action, note, previous?, dismissal_reason?, evidence?: [D:<oid>]}, each validated as a single review; any refused decision refuses the whole set, and one finding_reviewed event is emitted per decision in certified order)", "finding export --certificate C:<digest> [--export-format md|jsonl|canonical] [--include-reviews [--known-at HEAD|<seq>]] [--out <new-file>]", "finding replay <canonical-workpaper|-> [--certificate C:<expected-digest> --known-at <exact-seq>]", "Recording and exporting require read and produce; discovering runs, listing, showing and replaying require read. Review requires a Human with read and approve who is independent of the run producer. Dismissal also requires a registered reason and retained evidence. Supply the current --previous after the first decision; stale decisions refuse instead of overwriting history.", "Run discovery has scope recorded-runs: total_recorded_runs counts the structurally checked inventory at known_at; only summaries in the returned page also undergo full certificate and computation replay. It establishes neither current review status nor complete detector coverage. Pass next_cursor unchanged to continue the same book and inventory: omitted known_at or HEAD inherits the cursor cutoff; an explicit sequence must equal it. Current authority is always rechecked, and checked_through names the current validation frontier.", "The original numbered workpaper remains unchanged when later reviews are appended. --include-reviews adds a separate review appendix with its own fixed cutoff. Canonical exports replay against retained native evidence; Markdown and JSONL are presentations. Recipient-bound replay requires both the independently expected certificate and exact review cutoff; replay without them states its as-supplied historical scope. Complete responses refuse if they exceed transport limits, never truncate.", "Bank statement drift observations additionally require current reconcile authority when recording, reading, reviewing, exporting or replaying their retained run. A saved certificate or workpaper never grants that authority; ordinary procedure runs keep their existing operation requirements."]
 example = "fa finding record jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
@@ -2020,8 +2020,8 @@ fields = ["name:string", "value:int", "scale:int", "population:int"]
 
 [[shape]]
 name = "cite"
-doc = "A typed citation: `kind` is entry, leg, account, period, document, principal or approval, and exactly the fields that kind carries are non-null."
-fields = ["kind:string", "entry:hex?", "ordinal:int?", "account:hex?", "period:string?", "document:hex?", "principal:hex?", "approval:hex?"]
+doc = "A typed citation: `kind` is entry, leg, account, period, document, principal, approval or attestation, and exactly the fields that kind carries are non-null. Attestation references name their native Attestation vertex; they are never presented as Entry references."
+fields = ["kind:string", "entry:hex?", "ordinal:int?", "account:hex?", "period:string?", "document:hex?", "principal:hex?", "approval:hex?", "attestation:hex?"]
 
 [[shape]]
 name = "evidence_ref"
@@ -3760,7 +3760,7 @@ subcommands = ["list", "run"]
 selector = "action"
 positionals = ["id?"]
 required = []
-dont = ["Don't invent a procedure id or a parameter name: `action: \"list\"` returns every registered procedure with its pinned default and meaning.", "Don't treat a finding as a conclusion: it is a statistic with citations; every cited handle resolves and should be read before anything is asserted.", "Don't pass an instant to known_at: procedures run at HEAD or a recorded sequence."]
+dont = ["Don't invent a procedure id or a parameter name: `action: \"list\"` returns every registered procedure with its pinned default and meaning.", "Don't treat a finding as a conclusion: it is a statistic with citations; every cited handle resolves and should be read before anything is asserted.", "Don't pass an instant to known_at: procedures run at HEAD or a recorded sequence.", "The bank statement drift procedure requires Read and Reconcile in the launch capability. Recording its findings also requires Produce. A call cannot grant these operations to itself."]
 mistakes = ["Passing a parameter in display units (10000.00) instead of the unit's mantissa (1000000 at scale 2); the listing's `meaning` says which.", "Running aging.* or trace.* without effective_through (they are historical folds and are refused naming it).", "Running trace.* without account and source (the commingled account and the deposit entry).", "Overriding a parameter with a float; parameters are integers in the registered unit."]
 
 [[mcp.tool]]
@@ -3946,6 +3946,21 @@ when_all = ["--summary"]
 when_any = ["--certify", "--certificate-out"]
 ops = ["read", "produce"]
 
+# Bank reconciliation metadata has its own admitted scope even when reached
+# through the generic procedure and finding tools. Retained certificates are
+# identified under Read, then their native bank replay requires Reconcile.
+[[bound]]
+verbs = ["procedure"]
+subcommands = ["run"]
+args = ["recon.bank_statement_drift"]
+ops = ["read", "reconcile"]
+
+[[bound]]
+verbs = ["finding"]
+subcommands = ["record"]
+args = ["recon.bank_statement_drift"]
+ops = ["read", "reconcile", "produce"]
+
 # Data embedded in this build: nothing is read from the book.
 [[bound]]
 verbs = ["capabilities", "robot-docs", "help"]
@@ -4060,6 +4075,12 @@ ops = ["read", "produce"]
 reach = "judged"
 
 [[bound]]
+verbs = ["fx"]
+subcommands = ["rate"]
+args = ["add"]
+ops = ["post"]
+
+[[bound]]
 verbs = ["production"]
 subcommands = ["open"]
 ops = ["produce"]
@@ -4072,12 +4093,6 @@ ops = ["read"]
 [[bound]]
 verbs = ["produce"]
 ops = ["read", "produce"]
-
-[[bound]]
-verbs = ["fx"]
-subcommands = ["rate"]
-args = ["add"]
-ops = ["post"]
 
 [[bound]]
 verbs = ["bank"]

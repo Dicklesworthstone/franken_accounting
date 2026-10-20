@@ -2657,6 +2657,52 @@ mod tests {
     }
 
     #[test]
+    fn bank_drift_procedure_preserves_launch_reconciliation_authority() {
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_by_wire("fa_forensics_procedure")
+            .expect("procedure tool");
+        for (id, expected) in [
+            ("jet.round_amounts", vec!["read"]),
+            ("recon.bank_statement_drift", vec!["read", "reconcile"]),
+        ] {
+            let invocation = tool
+                .invocation(&mcp, reg, &json!({"action": "run", "id": id}))
+                .expect("registered procedure invocation");
+            let parsed = args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+                .expect("registered procedure arguments");
+            assert_eq!(
+                fa_cli::cli::bound_command_ops("procedure", &parsed)
+                    .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+                Some(expected)
+            );
+        }
+        let parsed = args::parse(
+            &[
+                "finding".to_string(),
+                "record".to_string(),
+                "recon.bank_statement_drift".to_string(),
+            ],
+            &reg.value_flags(),
+            &reg.switches(),
+        )
+        .unwrap();
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("finding", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read", "reconcile", "produce"])
+        );
+        assert!(
+            tool.invocation(
+                &mcp,
+                reg,
+                &json!({"action": "run", "id": "recon.bank_statement_drift", "grant": ["reconcile"]}),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn gl_certification_schema_routes_inline_and_requires_produce() {
         let (mcp, reg) = embedded();
         let tool = mcp.tool_by_wire("fa_proof_gl").expect("GL tool");

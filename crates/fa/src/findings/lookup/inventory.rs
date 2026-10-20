@@ -346,7 +346,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         for manifest in &catalog.manifests[start..end] {
             cx.query().checkpoint().map_err(BookError::Context)?;
             let run = match self
-                .read_findings(cx, principal, capability, &manifest.certificate)
+                .read_findings_with_history(cx, principal, capability, &manifest.certificate)
                 .await?
             {
                 Ok(r) => r,

@@ -9,6 +9,7 @@
 //! Current whole-book read/produce authority admits creation; current whole-book
 //! read authority admits replay. Saved principal/commitment fields grant nothing.
 
+mod bank;
 mod extended;
 pub use extended::EXTENDED_CERTIFIABLE_PROCEDURES;
 
@@ -32,6 +33,7 @@ use std::collections::BTreeSet;
 
 pub const PROCEDURE_CERTIFICATE_FORMAT: &[u8] = b"fa:procedure-certificate:v1";
 pub const EXTENDED_PROCEDURE_CERTIFICATE_FORMAT: &[u8] = extended::FORMAT;
+pub const BANK_PROCEDURE_CERTIFICATE_FORMAT: &[u8] = bank::FORMAT;
 pub const PROCEDURE_OUTPUT_FORMAT: &[u8] = b"fa:procedure-output:v1";
 pub const MAX_PROCEDURE_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_OUTPUT: usize = 32 * 1024 * 1024;
@@ -437,10 +439,13 @@ impl ProcedureCertificate {
         &self.capability_commitment
     }
     /// Original procedures use v1. Extended procedures carry six additional
-    /// native population witnesses and use v2; neither format is auto-upgraded.
+    /// native population witnesses and use v2. Bank drift uses its complete v3
+    /// native populations and relations; no earlier format is auto-upgraded.
     #[must_use]
     pub fn format(&self) -> &'static [u8] {
-        if self.extended_inputs.is_empty() {
+        if bank::supported(&self.report.procedure, self.report.version) {
+            bank::FORMAT
+        } else if self.extended_inputs.is_empty() {
             PROCEDURE_CERTIFICATE_FORMAT
         } else {
             extended::FORMAT
@@ -470,7 +475,11 @@ impl ProcedureCertificate {
                 "procedure and complete native source coordinates disagree",
             ));
         }
-        extended::validate(self)?;
+        if bank::supported(&self.report.procedure, self.report.version) {
+            bank::validate(self)?;
+        } else {
+            extended::validate(self)?;
+        }
         let source = self.source.canonical_bytes().map_err(encode_error)?;
         ReportCertificate::decode(&source)?;
         let native = self.approvals.canonical_bytes();
@@ -541,7 +550,10 @@ impl ProcedureCertificate {
         let format = r
             .bytes(64, "procedure certificate format")
             .map_err(decode_error)?;
-        if format != PROCEDURE_CERTIFICATE_FORMAT && format != extended::FORMAT {
+        if format != PROCEDURE_CERTIFICATE_FORMAT
+            && format != extended::FORMAT
+            && format != bank::FORMAT
+        {
             return Err(invalid("unsupported procedure certificate version"));
         }
         let source = ReportCertificate::decode(
@@ -554,11 +566,16 @@ impl ProcedureCertificate {
         )
         .map_err(|_| invalid("malformed native approval source"))?;
         let mut extended_inputs = Vec::new();
-        if format == extended::FORMAT {
+        if format == extended::FORMAT || format == bank::FORMAT {
+            let required = if format == bank::FORMAT {
+                bank::COUNT
+            } else {
+                extended::COUNT
+            };
             let count = r
-                .count(extended::COUNT, "extended native inputs")
+                .count(required, "extended native inputs")
                 .map_err(decode_error)?;
-            if count != extended::COUNT {
+            if count != required {
                 return Err(invalid("incomplete extended native input closure"));
             }
             for _ in 0..count {
@@ -600,6 +617,7 @@ impl ProcedureCertificate {
     fn request(&self) -> Result<ProcedureRequest, Refusal> {
         if !supported(&self.report.procedure, self.report.version)
             && !extended::supported(&self.report.procedure, self.report.version)
+            && !bank::supported(&self.report.procedure, self.report.version)
         {
             return Err(invalid(
                 "this procedure version has no complete registered native certificate closure",
@@ -679,9 +697,21 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
     principal: VId,
     capability: &Capability,
     produce: bool,
+    reconcile: bool,
 ) -> Outcome<()> {
     if let Err(denial) = fa_policy::admit_read(capability, principal, book.context().book_id)
         .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| {
+            if reconcile {
+                fa_policy::require(
+                    capability,
+                    Op::Reconcile,
+                    "reading bank reconciliation procedures",
+                )
+            } else {
+                Ok(())
+            }
+        })
         .and_then(|()| {
             if produce {
                 fa_policy::require(capability, Op::Produce, "certifying a procedure")
@@ -758,6 +788,142 @@ fn unchanged_approvals<V: Vfs + Clone>(db: &Database<V>, snapshot: &Snapshot) ->
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Hydrate the native history needed by a procedure only after current
+    /// admission. Bank drift needs the original birth and correction history
+    /// even when its output selects HEAD. No accounting record is published.
+    pub async fn prepare_procedure_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        procedure: &str,
+        produce: bool,
+    ) -> Outcome<()> {
+        let reconcile = procedure == bank::PROCEDURE;
+        if let Err(refusal) = authorize(self, cx, principal, capability, produce, reconcile)? {
+            return Ok(Err(refusal));
+        }
+        if reconcile
+            && let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await?
+        {
+            return Ok(Err(refusal));
+        }
+        authorize(self, cx, principal, capability, produce, reconcile)
+    }
+
+    /// Run with explicit current authority and admitted history hydration.
+    /// Unlike certification, execution requires no Produce grant. The original
+    /// capability-free runner cannot manufacture native bank reconciliation
+    /// inputs and continues to refuse that procedure.
+    pub async fn run_procedure_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &ProcedureRequest,
+    ) -> Outcome<ProcedureRun> {
+        if let Err(refusal) = self
+            .prepare_procedure_history(cx, principal, capability, &request.procedure, false)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self
+            .prepare_report_history(cx, principal, capability, request.known_at)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let built = match catalog::build(
+            &request.procedure,
+            request.parameters.clone(),
+            request.inputs,
+        ) {
+            Ok(procedure) => procedure,
+            Err(error) => return Ok(Err(lantern_error(error))),
+        };
+        let row = fa_lantern::bind(built.id())?;
+        for (name, present) in [
+            ("account", request.inputs.account.is_some()),
+            ("source", request.inputs.source.is_some()),
+        ] {
+            if present != row.inputs.iter().any(|input| input.name == name) {
+                return Ok(Err(invalid(
+                    "procedure handles must exactly match its declared inputs",
+                )));
+            }
+        }
+        let reconcile = request.procedure == bank::PROCEDURE;
+        let result = self.query(cx, |db, book| {
+            let mut snapshot =
+                Snapshot::read(db, book, request.known_at, request.effective_through)?;
+            if reconcile
+                && let Err(refusal) = bank::populate(db, cx, book, capability, &mut snapshot)?
+            {
+                return Ok(Err(refusal));
+            }
+            Ok(Ok(fa_lantern::run_over(&snapshot, book, built.as_ref())?))
+        })?;
+        if let Err(refusal) = authorize(self, cx, principal, capability, false, reconcile)? {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    /// Create a certificate from a cold or resident book. Read, Reconcile for
+    /// bank inputs, and Produce all precede native history hydration.
+    pub async fn certify_procedure_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &ProcedureRequest,
+    ) -> Outcome<CertifiedProcedure> {
+        if let Err(refusal) = self
+            .prepare_procedure_history(cx, principal, capability, &request.procedure, true)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self
+            .prepare_report_history(cx, principal, capability, request.known_at)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        self.certify_procedure(cx, principal, capability, request)
+    }
+
+    /// Replay the saved coordinate after loading authenticated native history.
+    /// Saved producer fields never supply current Reconcile authority.
+    pub async fn replay_procedure_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &ProcedureCertificate,
+    ) -> Outcome<ProcedureRun> {
+        if let Err(refusal) = self
+            .prepare_procedure_history(
+                cx,
+                principal,
+                capability,
+                &certificate.report.procedure,
+                false,
+            )
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self
+            .prepare_report_history(cx, principal, capability, Some(certificate.known_at()))
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        self.replay_procedure(cx, principal, capability, certificate)
+    }
+
     /// Compute and certify a catalog procedure without publishing any record.
     /// Canonical bytes can be saved by the host and replayed after restarting.
     pub fn certify_procedure(
@@ -767,7 +933,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: &ProcedureRequest,
     ) -> Outcome<CertifiedProcedure> {
-        if let Err(r) = authorize(self, cx, principal, capability, true)? {
+        let bank_procedure = request.procedure == bank::PROCEDURE;
+        if let Err(r) = authorize(self, cx, principal, capability, true, bank_procedure)? {
             return Ok(Err(r));
         }
         let built = match catalog::build(
@@ -779,7 +946,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(e) => return Ok(Err(lantern_error(e))),
         };
         let row = fa_lantern::bind(built.id())?;
-        if !supported(&row.id, row.version) && !extended::supported(&row.id, row.version) {
+        if !supported(&row.id, row.version)
+            && !extended::supported(&row.id, row.version)
+            && !bank::supported(&row.id, row.version)
+        {
             return Ok(Err(invalid(
                 "this procedure version has no complete registered native certificate closure; ordinary procedure execution is unchanged",
             )));
@@ -814,14 +984,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     policy(),
                 )
                 .map_err(BookError::CertifiedRead)?;
-            let extended_inputs = if extended::supported(&row.id, row.version) {
+            let extended_inputs = if bank_procedure {
+                bank::capture(db, cx, book, source.known_at)?
+            } else if extended::supported(&row.id, row.version) {
                 extended::capture(db, cx, book, source.known_at)?
             } else {
                 Vec::new()
             };
-            let snapshot =
+            let mut snapshot =
                 Snapshot::read(db, book, Some(source.known_at), request.effective_through)?;
-            if !extended_inputs.is_empty()
+            if bank_procedure
+                && let Err(r) = bank::populate(db, cx, book, capability, &mut snapshot)?
+            {
+                return Ok(Err(r));
+            }
+            if extended::supported(&row.id, row.version)
                 && let Err(r) = extended::unchanged_attestations(db, cx, &snapshot)?
             {
                 return Ok(Err(r));
@@ -861,7 +1038,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 certificate,
             }))
         })?;
-        if let Err(r) = authorize(self, cx, principal, capability, true)? {
+        if let Err(r) = authorize(self, cx, principal, capability, true, bank_procedure)? {
             return Ok(Err(r));
         }
         Ok(result)
@@ -876,7 +1053,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         certificate: &ProcedureCertificate,
     ) -> Outcome<ProcedureRun> {
-        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+        let bank_procedure = certificate.report.procedure == bank::PROCEDURE;
+        if let Err(r) = authorize(self, cx, principal, capability, false, bank_procedure)? {
             return Ok(Err(r));
         }
         if certificate.book_id() != self.context().book_id {
@@ -912,13 +1090,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if let Err(r) = extended::replay(db, cx, book, certificate)? {
                 return Ok(Err(r));
             }
-            let snapshot = Snapshot::read(
+            let mut snapshot = Snapshot::read(
                 db,
                 book,
                 Some(certificate.known_at()),
                 request.effective_through,
             )?;
-            if !certificate.extended_inputs.is_empty()
+            if bank_procedure
+                && let Err(r) = bank::populate(db, cx, book, capability, &mut snapshot)?
+            {
+                return Ok(Err(r));
+            }
+            if extended::supported(&certificate.report.procedure, certificate.report.version)
                 && let Err(r) = extended::unchanged_attestations(db, cx, &snapshot)?
             {
                 return Ok(Err(r));
@@ -938,7 +1121,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
             Ok(Ok(report))
         })?;
-        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+        if let Err(r) = authorize(self, cx, principal, capability, false, bank_procedure)? {
             return Ok(Err(r));
         }
         Ok(result)

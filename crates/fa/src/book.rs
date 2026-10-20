@@ -2336,6 +2336,20 @@ impl Book {
         )))
     }
 
+    /// Replay a retained artifact from a cold book under current authority.
+    pub fn replay_retained_report_artifact_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        digest: &[u8; 32],
+        expected: crate::ReportArtifactExpectation<'_>,
+    ) -> Outcome<crate::ReplayedReportArtifact> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.replay_retained_report_artifact_with_history(
+            &purposes, principal, capability, digest, expected
+        )))
+    }
+
     /// Materialize a period's registers from a fresh fold.
     pub fn materialize_registers(
         &mut self,
@@ -2878,6 +2892,22 @@ impl Book {
         ))
     }
 
+    /// Load native history only after the artifact's current scope is admitted,
+    /// then replay its original coordinate and independently expected scope.
+    pub fn replay_report_artifact_for_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+        expected_digest: Option<&[u8; 32]>,
+        expected: crate::ReportArtifactExpectation<'_>,
+    ) -> Outcome<crate::ReplayedReportArtifact> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.replay_report_artifact_for_with_history(
+            &purposes, principal, capability, bytes, expected_digest, expected
+        )))
+    }
+
     /// Fold a summary trial balance by chart roots under current whole-book read authority.
     pub fn summary_trial_balance(
         &self,
@@ -3270,6 +3300,48 @@ impl Book {
         with_store!(&self.store, core => core.run_procedure(&self.purposes(), procedure, known_at, effective_through))
     }
 
+    /// Admit explicit current procedure scope before loading its native history.
+    pub fn prepare_procedure_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        procedure: &str,
+        produce: bool,
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_procedure_history(
+            &purposes, principal, capability, procedure, produce
+        )))
+    }
+
+    /// Discover a retained procedure's identity under Read and admit its
+    /// additional scope before hydrating the native inputs needed for replay.
+    pub fn prepare_retained_procedure_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_retained_procedure_history(
+            &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Execute with current Read and procedure-specific authority, hydrating
+    /// retained native history as needed. Does not require Produce or publish.
+    pub fn run_procedure_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::ProcedureRequest,
+    ) -> Outcome<fa_lantern::ProcedureRun> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.run_procedure_with_history(
+            &purposes, principal, capability, request
+        )))
+    }
+
     /// Certify a registered procedure under current read and produce authority.
     /// The complete source closure is retained only when explicitly published.
     pub fn certify_procedure(
@@ -3281,6 +3353,33 @@ impl Book {
         with_store!(&self.store, core => core.certify_procedure(
             &self.purposes(), principal, capability, request
         ))
+    }
+
+    /// Certify a procedure from a cold book after Read, Produce and any bank
+    /// Reconcile scope are all admitted. Retains no artifact until requested.
+    pub fn certify_procedure_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::ProcedureRequest,
+    ) -> Outcome<crate::CertifiedProcedure> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_procedure_with_history(
+            &purposes, principal, capability, request
+        )))
+    }
+
+    /// Replay an original procedure after admitted native history hydration.
+    pub fn replay_procedure_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::ProcedureCertificate,
+    ) -> Outcome<fa_lantern::ProcedureRun> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.replay_procedure_with_history(
+            &purposes, principal, capability, certificate
+        )))
     }
 
     /// Publish every occurrence in a retained procedure run atomically.
@@ -3307,6 +3406,32 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&self.store, core => self.runtime.block_on(core.read_findings(
             &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Read and replay a recorded run from a cold book with admitted history.
+    pub fn read_findings_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+    ) -> Outcome<crate::findings::RecordedFindings> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.read_findings_with_history(
+            &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Resolve an immutable finding with the retained run's admitted history.
+    pub fn finding_by_vid_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        finding: VId,
+    ) -> Outcome<crate::findings::RecordedFinding> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.finding_by_vid_with_history(
+            &purposes, principal, capability, finding
         )))
     }
 
@@ -3406,6 +3531,32 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&self.store, core => self.runtime.block_on(core.finding_workpaper(
             &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Produce a verified source workpaper after admitted native hydration.
+    pub fn finding_workpaper_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &[u8; 32],
+    ) -> Outcome<crate::findings::FindingWorkpaper> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.finding_workpaper_with_history(
+            &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Recompute a saved finding workpaper from a cold book's native history.
+    pub fn replay_finding_workpaper_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        bytes: &[u8],
+    ) -> Outcome<crate::findings::RecordedFindings> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.replay_finding_workpaper_with_history(
+            &purposes, principal, capability, bytes
         )))
     }
 

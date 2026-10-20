@@ -491,7 +491,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(r) => return Ok(Err(r)),
         };
         let original = match self
-            .replay_finding_workpaper(cx, principal, capability, &original_bytes)
+            .replay_finding_workpaper_with_history(cx, principal, capability, &original_bytes)
             .await?
         {
             Ok(r) => r,

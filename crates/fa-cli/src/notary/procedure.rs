@@ -12,6 +12,7 @@ fn cite(value: &Cite) -> Json {
         ("document", Json::Null),
         ("principal", Json::Null),
         ("approval", Json::Null),
+        ("attestation", Json::Null),
     ];
     let (kind, key, value, ordinal) = match value {
         Cite::Entry(v) => ("entry", "entry", s(format!("{:032x}", v.0)), None),
@@ -26,6 +27,12 @@ fn cite(value: &Cite) -> Json {
         Cite::Document(v) => ("document", "document", s(hex(&v.0)), None),
         Cite::Principal(v) => ("principal", "principal", s(format!("{:032x}", v.0)), None),
         Cite::Approval(v) => ("approval", "approval", s(format!("{:032x}", v.0)), None),
+        Cite::Attestation(v) => (
+            "attestation",
+            "attestation",
+            s(format!("{:032x}", v.0)),
+            None,
+        ),
     };
     for (name, slot) in &mut fields {
         if *name == key {
