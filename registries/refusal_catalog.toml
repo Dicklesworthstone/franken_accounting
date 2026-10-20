@@ -1123,8 +1123,8 @@ code = "FA-REF-182"
 name = "BOOKED_ENTRY_DIFFERS"
 owners = ["fa-journal"]
 exit = "refusal"
-cite = "plan §11.12 (Booked names the committed entry that makes the proposed correction)"
-fix = "book the proposal with the committed trunk entry that posts exactly its legs (fa adjustment show <engagement> <n> --json lists them), or pass it with fa adjustment pass"
+cite = "plan §11.12 (Booked names the committed entry that makes the proposed correction: a standing trunk posting, recorded after the proposal, effective in its period, with exactly its legs, booking no other proposal)"
+fix = "book the proposal with the standing trunk entry, recorded after the proposal and effective in its period, that posts exactly its legs (fa engagement show <engagement> --json lists them), or pass it with fa adjustment pass"
 
 [[refusal]]
 code = "FA-REF-183"
