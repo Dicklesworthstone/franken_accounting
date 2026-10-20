@@ -14863,3 +14863,41 @@ fn verify_entities_proves_each_legal_entitys_register_by_refold() -> std::io::Re
     assert_ne!(code, 0, "{out}");
     Ok(())
 }
+
+/// Explaining a summary account names the command that answers it: the
+/// summary trial balance rooted at that account, which runs as given.
+#[test]
+fn explaining_a_summary_account_points_at_its_roll_up_which_runs() -> std::io::Result<()> {
+    let dir = tmp("summary-explain")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    assert_eq!(run(&["book", "create", "--name", "Summary Co"]).0, 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1","name":"Assets","type":"Asset","leaf":false,"unit":"USD"},{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD","parent":"1"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+
+    let (code, out, _) = run(&["explain", "balance", "1", "--period", "FY2026-P03"]);
+    assert_eq!(code, 2, "{out}");
+    let error = doc(&out);
+    assert!(
+        text(&error, "message").contains("is a summary account"),
+        "{out}"
+    );
+    let fix = text(&error, "fix");
+    let suggested = "fa tb --period FY2026-P03 --summary --root 1 --json";
+    assert!(fix.starts_with(suggested), "{fix}");
+    // The suggestion is a working command, not prose.
+    let argv: Vec<&str> = suggested.split(' ').skip(1).collect();
+    let (code, out, _) = fa(Some(&book), &argv);
+    assert_eq!(code, 0, "{out}");
+    Ok(())
+}

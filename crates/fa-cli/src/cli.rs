@@ -16320,9 +16320,11 @@ fn explanation_selection_error(
         if !account.is_leaf {
             return usage(
                 format!(
-                    "account `{code}` is a summary account: registers hold leaf cells, and a summary roll-up is not available yet"
+                    "account `{code}` is a summary account: an explanation lists one leaf account's postings, and a summary's balance is the roll-up of its leaves"
                 ),
-                "explain one of its leaf accounts (fa chart list --book <dir>)",
+                format!(
+                    "fa tb --period {period} --summary --root {code} --json (the roll-up with its leaf drilldown), then explain one of its leaves"
+                ),
             );
         }
     }
