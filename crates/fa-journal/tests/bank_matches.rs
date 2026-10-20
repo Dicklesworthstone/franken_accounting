@@ -117,7 +117,7 @@ impl Harness {
                 normal_balance: 0,
                 is_leaf: true,
                 unit_policy: if multiple_currencies {
-                    UnitPolicy::Any
+                    UnitPolicy::AnyCurrency
                 } else {
                     UnitPolicy::Single(usd)
                 },
@@ -131,7 +131,7 @@ impl Harness {
                 normal_balance: 1,
                 is_leaf: true,
                 unit_policy: if multiple_currencies {
-                    UnitPolicy::Any
+                    UnitPolicy::AnyCurrency
                 } else {
                     UnitPolicy::Single(usd)
                 },

@@ -428,7 +428,7 @@ fn native_attestation_births_cannot_be_deleted_relabelled_or_rewritten_then_rest
                 property::CODE,
                 Some(CanonicalScalar::ucs_basic_text("Changed").unwrap()),
             ),
-        }
+        };
         h.write(damage);
         if attack == 3 {
             let mut restore = WriteBatch::new(relation::ATTESTS);
