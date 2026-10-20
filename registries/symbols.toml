@@ -383,9 +383,6 @@ name = "unit_table_digest"
 [[property]]
 id = 69
 name = "next_bates"
-[[property]]
-id = 80
-name = "next_proposal"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]

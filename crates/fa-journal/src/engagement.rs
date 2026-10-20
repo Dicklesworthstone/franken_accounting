@@ -10,7 +10,10 @@
 //!   firm principal that opened it, its scope periods and the materiality
 //!   parameters in the book's base unit. The parameters are stated by the
 //!   auditor and never judged here. The vertex starts at `state = Open` and
-//!   `next_proposal = 1`.
+//!   its `ordinal` property, the next proposal number, at 1. (An existing
+//!   property key: a new label is the only symbol this class adds, so books
+//!   created before it keep the label-prefix compatibility their retained
+//!   certificates replay under.)
 //! - **Propose** (`Open → Open` on the Engagement) journals a draft
 //!   correcting entry (extension 17 `fa:proposed-adjustment:v1`): balanced per
 //!   unit, on posting leaves effective at its date, dated inside a scope
@@ -867,8 +870,9 @@ fn engagement_row(
 }
 
 /// Open `profile.engagement`: one commit journaling the Open record, the
-/// `Engagement` vertex with its immutable profile, `state = Open` and
-/// `next_proposal = 1`, and the record's `IN_CASE` edge to it. Every scope
+/// `Engagement` vertex with its immutable profile, `state = Open` and its
+/// next proposal number (`ordinal`) at 1, and the record's `IN_CASE` edge to
+/// it. Every scope
 /// period must exist, and the parameters are stated in the base unit.
 pub async fn open_engagement<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
@@ -995,7 +999,7 @@ pub async fn open_engagement<V: asupersync::fs::Vfs + Clone>(
             scalar_text("engagement.code", &profile.engagement)?,
         ),
         (property::STATE, EngagementState::Open.scalar()),
-        (property::NEXT_PROPOSAL, CanonicalScalar::Int(1)),
+        (property::ORDINAL, CanonicalScalar::Int(1)),
     ];
     props.sort_by_key(|(k, _)| k.0);
     let mut in_case = WriteBatch::new(relation::IN_CASE);
@@ -1207,7 +1211,7 @@ pub async fn propose_adjustment<V: asupersync::fs::Vfs + Clone>(
     }
     // Property-granular point read: a concurrent proposal that takes this
     // number first makes this transaction a first-committer conflict.
-    let read_next = txn.vertex_property(db, vid, property::NEXT_PROPOSAL)?;
+    let read_next = txn.vertex_property(db, vid, property::ORDINAL)?;
     let ordinal = next_of(read_next.as_ref(), vid)?;
     let Some(after) = ordinal.checked_add(1) else {
         txn.abort();
@@ -1267,7 +1271,7 @@ pub async fn propose_adjustment<V: asupersync::fs::Vfs + Clone>(
     batch.add_edge(edge_id(relation::IN_CASE, evid, pvid), evid, pvid, vec![]);
     batch.compare_and_set_vertex_property(
         vid,
-        property::NEXT_PROPOSAL,
+        property::ORDINAL,
         read_next,
         CanonicalScalar::Int(i64::from(after)),
         WriteMismatchPolicy::AbortWrite,
@@ -1557,8 +1561,7 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
         // point-read witness, so a concurrent booking of the same entry
         // conflicts at commit (first committer wins).
         let next = next_of(
-            txn.vertex_property(db, vid, property::NEXT_PROPOSAL)?
-                .as_ref(),
+            txn.vertex_property(db, vid, property::ORDINAL)?.as_ref(),
             vid,
         )?;
         let seq = db.frontier()?;
@@ -1738,7 +1741,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     }
     let state = EngagementState::from_scalar(prop(row, property::STATE))
         .ok_or_else(|| KernelError::Corrupt(format!("engagement {:032x} state mirror", vid.0)))?;
-    let next_proposal = next_of(prop(row, property::NEXT_PROPOSAL), vid)?;
+    let next_proposal = next_of(prop(row, property::ORDINAL), vid)?;
     let seq = db.frontier()?;
     let open = EngagementState::Open.tag();
     let mut opened = None;
