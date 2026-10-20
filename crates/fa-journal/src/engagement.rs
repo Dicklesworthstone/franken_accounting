@@ -1864,6 +1864,167 @@ fn decision_of<V: asupersync::fs::Vfs + Clone>(
     Ok(decided)
 }
 
+/// A correction's effect on the statements, in one unit: what booking it
+/// would change. A positive `income` raises net income; `assets` is debits
+/// less credits on asset accounts, `liabilities` and `equity` credits less
+/// debits on theirs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatementEffect {
+    pub income: i128,
+    pub assets: i128,
+    pub liabilities: i128,
+    pub equity: i128,
+}
+
+impl StatementEffect {
+    fn add(self, other: Self) -> Result<Self, KernelError> {
+        let sum = |a: i128, b: i128| {
+            a.checked_add(b)
+                .ok_or_else(|| KernelError::Corrupt("uncorrected misstatements overflow".into()))
+        };
+        Ok(Self {
+            income: sum(self.income, other.income)?,
+            assets: sum(self.assets, other.assets)?,
+            liabilities: sum(self.liabilities, other.liabilities)?,
+            equity: sum(self.equity, other.equity)?,
+        })
+    }
+
+    /// The largest absolute effect on any line.
+    #[must_use]
+    pub fn largest(self) -> u128 {
+        [self.income, self.assets, self.liabilities, self.equity]
+            .into_iter()
+            .map(i128::unsigned_abs)
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// One passed proposal in the summary of uncorrected misstatements.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UncorrectedItem {
+    pub ordinal: u32,
+    pub effective_date: DateDay,
+    pub reason_code: u16,
+    /// Its effect in the engagement's unit.
+    pub effect: StatementEffect,
+    /// Every line's effect is at most the stated clearly trivial threshold.
+    pub clearly_trivial: bool,
+    /// Units of its legs other than the engagement's: listed, never converted.
+    pub other_units: Vec<UnitId>,
+}
+
+/// The summary of uncorrected misstatements (plan §11.12, `audit.sud`):
+/// every passed proposal's effect had it been booked, in the engagement's
+/// unit, and mechanical comparisons with the stated parameters. With no
+/// prior-period engagement linked there is no carry-forward, so the rollover
+/// (current-period income) and iron-curtain (period-end balance sheet)
+/// quantifications sum the same items; both are reported.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UncorrectedSummary {
+    pub unit: UnitId,
+    pub items: Vec<UncorrectedItem>,
+    /// Rollover: the passed items' effect on the period's income.
+    pub rollover_income: i128,
+    /// Iron curtain: the passed items' cumulative effect at period end.
+    pub iron_curtain: StatementEffect,
+    /// The largest absolute total exceeds the stated performance materiality.
+    pub exceeds_performance: bool,
+    /// The largest absolute total exceeds the stated overall materiality.
+    pub exceeds_overall: bool,
+}
+
+/// The summary of uncorrected misstatements for `view`'s passed proposals.
+/// `account_type` names each leg account's type (from the chart); memo legs
+/// are outside the statements and are not summarized.
+pub fn uncorrected_misstatements(
+    view: &EngagementView,
+    account_type: impl Fn(VId) -> Option<fa_model::AccountType>,
+) -> Result<UncorrectedSummary, KernelError> {
+    use fa_model::AccountType;
+    let unit = view.profile.unit;
+    let mut items = Vec::new();
+    let mut total = StatementEffect::default();
+    for p in &view.proposals {
+        let Some(RecordedDecision {
+            decision: AdjustmentDecision::Pass { reason_code },
+            ..
+        }) = &p.decision
+        else {
+            continue;
+        };
+        let reason_code = *reason_code;
+        let mut effect = StatementEffect::default();
+        let mut other_units = Vec::new();
+        for leg in &p.proposal.legs {
+            if leg.amount.unit != unit {
+                if !other_units.contains(&leg.amount.unit) {
+                    other_units.push(leg.amount.unit);
+                }
+                continue;
+            }
+            let ty = account_type(leg.account).ok_or_else(|| {
+                KernelError::Corrupt(format!(
+                    "proposal {} names account {:032x}, which the chart does not have",
+                    p.proposal.ordinal, leg.account.0
+                ))
+            })?;
+            // A debit raises an asset; a credit raises a liability, equity
+            // or income. Amounts are positive, so both signs are exact.
+            let negated = leg
+                .amount
+                .mantissa
+                .checked_neg()
+                .ok_or_else(|| KernelError::Corrupt("leg amount overflow".into()))?;
+            let (debit_less_credit, credit_less_debit) = match leg.side {
+                Side::Debit => (leg.amount.mantissa, negated),
+                Side::Credit => (negated, leg.amount.mantissa),
+            };
+            let line = match ty {
+                AccountType::ASSET => StatementEffect {
+                    assets: debit_less_credit,
+                    ..StatementEffect::default()
+                },
+                AccountType::LIABILITY => StatementEffect {
+                    liabilities: credit_less_debit,
+                    ..StatementEffect::default()
+                },
+                AccountType::EQUITY => StatementEffect {
+                    equity: credit_less_debit,
+                    ..StatementEffect::default()
+                },
+                AccountType::REVENUE | AccountType::EXPENSE => StatementEffect {
+                    income: credit_less_debit,
+                    ..StatementEffect::default()
+                },
+                _ => continue,
+            };
+            effect = effect.add(line)?;
+        }
+        other_units.sort();
+        total = total.add(effect)?;
+        items.push(UncorrectedItem {
+            ordinal: p.proposal.ordinal,
+            effective_date: p.proposal.effective_date,
+            reason_code,
+            effect,
+            clearly_trivial: effect.largest()
+                <= view.profile.materiality.clearly_trivial.unsigned_abs(),
+            other_units,
+        });
+    }
+    let m = view.profile.materiality;
+    Ok(UncorrectedSummary {
+        unit,
+        items,
+        rollover_income: total.income,
+        iron_curtain: total,
+        exceeds_performance: total.largest() > m.performance.unsigned_abs(),
+        exceeds_overall: total.largest() > m.overall.unsigned_abs(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2012,5 +2173,173 @@ mod tests {
         assert_eq!(Kind::Propose.states(), (1, 1));
         assert_eq!(Kind::Book.states(), (1, 2));
         assert_eq!(Kind::Pass.states(), (1, 3));
+    }
+
+    fn proposal_view(ordinal: u32, legs: Vec<ProposalLeg>) -> ProposalView {
+        ProposalView {
+            vid: VId(100 + u128::from(ordinal)),
+            proposal: ProposedAdjustment {
+                engagement: "FY2026 audit".into(),
+                ordinal,
+                effective_date: DateDay(20_500),
+                legs,
+            },
+            record: VId(200 + u128::from(ordinal)),
+            proposed_at: CommitSeq(3),
+            proposed_by: VId(9),
+            state: AdjustmentState::Proposed,
+            decision: None,
+        }
+    }
+
+    fn decided(mut p: ProposalView, decision: AdjustmentDecision) -> ProposalView {
+        p.state = decision.state();
+        p.decision = Some(RecordedDecision {
+            decision,
+            record: VId(300),
+            recorded_at: CommitSeq(4),
+            decided_by: VId(9),
+        });
+        p
+    }
+
+    fn engagement_view(proposals: Vec<ProposalView>) -> EngagementView {
+        EngagementView {
+            vid: VId(50),
+            profile: profile(),
+            state: EngagementState::Open,
+            opened_at: CommitSeq(2),
+            opened_by: VId(9),
+            next_proposal: u32::try_from(proposals.len()).unwrap() + 1,
+            proposals,
+        }
+    }
+
+    /// Cash 1 (asset), accrued 2 (liability), revenue 4, expense 5.
+    fn chart(account: VId) -> Option<fa_model::AccountType> {
+        use fa_model::AccountType;
+        match account.0 {
+            1 => Some(AccountType::ASSET),
+            2 => Some(AccountType::LIABILITY),
+            4 => Some(AccountType::REVENUE),
+            5 => Some(AccountType::EXPENSE),
+            _ => None,
+        }
+    }
+
+    /// Passed corrections only, each line in its own sign, other units
+    /// listed and never converted, and the totals compared mechanically
+    /// with the stated parameters (performance 37,500.00, overall
+    /// 50,000.00, clearly trivial 2,500.00).
+    #[test]
+    fn the_summary_sums_passed_corrections_by_line_against_the_stated_parameters() {
+        let pass = |reason_code| AdjustmentDecision::Pass { reason_code };
+        let eur = UnitId(2);
+        let view = engagement_view(vec![
+            // Unrecorded fees: expense up 40.00, accrued liabilities up 40.00.
+            decided(
+                proposal_view(
+                    1,
+                    vec![leg(Side::Debit, 5, 4_000), leg(Side::Credit, 2, 4_000)],
+                ),
+                pass(3),
+            ),
+            // Booked: not an uncorrected misstatement.
+            decided(
+                proposal_view(
+                    2,
+                    vec![
+                        leg(Side::Debit, 1, 9_999_999),
+                        leg(Side::Credit, 4, 9_999_999),
+                    ],
+                ),
+                AdjustmentDecision::Book { entry: VId(77) },
+            ),
+            // Unrecorded revenue with a EUR leg pair beside it.
+            decided(
+                proposal_view(
+                    3,
+                    vec![
+                        leg(Side::Debit, 1, 100),
+                        leg(Side::Credit, 4, 100),
+                        ProposalLeg {
+                            side: Side::Debit,
+                            account: VId(1),
+                            amount: Amount::new(eur, 7),
+                        },
+                        ProposalLeg {
+                            side: Side::Credit,
+                            account: VId(4),
+                            amount: Amount::new(eur, 7),
+                        },
+                    ],
+                ),
+                pass(1),
+            ),
+            // Still proposed: not summarized.
+            proposal_view(4, vec![leg(Side::Debit, 5, 1), leg(Side::Credit, 2, 1)]),
+        ]);
+        let summary = uncorrected_misstatements(&view, chart).unwrap();
+        assert_eq!(summary.unit, usd());
+        assert_eq!(
+            summary
+                .items
+                .iter()
+                .map(|i| (i.ordinal, i.reason_code))
+                .collect::<Vec<_>>(),
+            [(1, 3), (3, 1)]
+        );
+        assert_eq!(
+            summary.items[0].effect,
+            StatementEffect {
+                income: -4_000,
+                liabilities: 4_000,
+                ..StatementEffect::default()
+            }
+        );
+        assert_eq!(
+            summary.items[1].effect,
+            StatementEffect {
+                income: 100,
+                assets: 100,
+                ..StatementEffect::default()
+            }
+        );
+        assert_eq!(summary.items[1].other_units, [eur]);
+        assert!(summary.items.iter().all(|i| i.clearly_trivial));
+        assert_eq!(summary.rollover_income, -3_900);
+        assert_eq!(
+            summary.iron_curtain,
+            StatementEffect {
+                income: -3_900,
+                assets: 100,
+                liabilities: 4_000,
+                equity: 0
+            }
+        );
+        assert!(!summary.exceeds_performance && !summary.exceeds_overall);
+
+        // Above performance (37,500.00) but not overall (50,000.00), then
+        // above both; neither is clearly trivial.
+        for (amount, performance, overall) in [(4_000_000, true, false), (6_000_000, true, true)] {
+            let view = engagement_view(vec![decided(
+                proposal_view(
+                    1,
+                    vec![leg(Side::Debit, 5, amount), leg(Side::Credit, 2, amount)],
+                ),
+                pass(3),
+            )]);
+            let summary = uncorrected_misstatements(&view, chart).unwrap();
+            assert_eq!(summary.exceeds_performance, performance, "{amount}");
+            assert_eq!(summary.exceeds_overall, overall, "{amount}");
+            assert!(!summary.items[0].clearly_trivial);
+        }
+
+        // A leg on an account the chart does not have is corruption.
+        let view = engagement_view(vec![decided(
+            proposal_view(1, vec![leg(Side::Debit, 99, 5), leg(Side::Credit, 2, 5)]),
+            pass(4),
+        )]);
+        assert!(uncorrected_misstatements(&view, chart).is_err());
     }
 }

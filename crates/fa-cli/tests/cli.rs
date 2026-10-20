@@ -5757,6 +5757,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["engagement", "list"]).0, 0);
     assert_eq!(run(true, &["engagement", "show", "events-engagement"]).0, 0);
+    assert_eq!(run(true, &["engagement", "sud", "events-engagement"]).0, 0);
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(
