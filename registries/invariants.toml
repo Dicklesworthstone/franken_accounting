@@ -940,11 +940,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-13"
 id = "core"
-status = "dormant"
+status = "live"
 statement = "Intercompany pairs match under the FX law or carry an explicit difference leg; eliminations derive deterministically; consolidated equity reconciles."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G3"
-activating = ["fa-9ae"]
+owner = "fa-9ae"
+checkers = ["fa-statements::lib::concordat::tests::intercompany_pairs_eliminations_and_consolidated_equity_reconcile_exactly", "fa-statements::lib::concordat::tests::book_to_book_bridge_explains_every_difference_by_rule_version_and_m1_m3_reason"]
+negatives = ["fa-statements::lib::concordat::tests::unmatched_intercompany_pair_and_unexplained_bridge_or_restated_parent_are_refused"]
 waiver = "forbidden"
 
 [[clause]]

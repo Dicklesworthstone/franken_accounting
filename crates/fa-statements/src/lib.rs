@@ -20,6 +20,11 @@
 
 mod definition;
 
+/// Concordat: multi-book adjustment layers, book-to-book bridges, intercompany pair matching,
+/// deterministic elimination derivation, and consolidated equity reconciliation (plan §12.2, §12.3, FA-INV-13).
+pub mod concordat;
+/// Deterministic Markdown IR for certified financial statements and restatement diffs (fa-9ae, fa-cet).
+pub mod markdown;
 /// Exact account lead schedules with classified activity and stock tie-outs.
 pub mod roll_forward;
 
