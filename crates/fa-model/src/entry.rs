@@ -662,6 +662,9 @@ impl LegPayload {
                 "a settlement amount is non-negative",
             ));
         }
+        if self.memo.as_ref().is_some_and(|m| !m.fits(MAX_MEMO_BYTES)) {
+            return Err(invalid("leg.memo", "exceeds max_memo_bytes"));
+        }
         Ok(())
     }
 }
@@ -1704,6 +1707,42 @@ impl EntryPayload {
         {
             return Err(invalid("effective_period", "exceeds max_period_ref_bytes"));
         }
+        // Sealed fields are bounded by the plaintext limits the decoder
+        // enforces; a field that cannot be read back is never encoded.
+        if !self.description.fits(MAX_DESCRIPTION_BYTES) {
+            return Err(invalid("description", "exceeds max_description_bytes"));
+        }
+        if self
+            .external_ids
+            .iter()
+            .any(|e| !e.id.fits(MAX_EXTERNAL_ID_BYTES))
+        {
+            return Err(invalid("external_ids.id", "exceeds max_external_id_bytes"));
+        }
+        if self
+            .tags
+            .iter()
+            .any(|t| !t.value.fits(MAX_TAG_BYTES_VALUE + 1))
+        {
+            return Err(invalid("tags.value", "exceeds max_tag_bytes_value"));
+        }
+        if let EntryOrigin::Migration {
+            source_id,
+            source_entered_by,
+            source_approved_by,
+            ..
+        } = &self.origin
+            && (!source_id.fits(MAX_EXTERNAL_ID_BYTES)
+                || [source_entered_by, source_approved_by]
+                    .into_iter()
+                    .flatten()
+                    .any(|e| !e.fits(MAX_EXTERNAL_ID_BYTES)))
+        {
+            return Err(invalid(
+                "origin.migration",
+                "a migrated source field exceeds max_external_id_bytes",
+            ));
+        }
         if let Some(b) = &self.base_totals {
             if b.rate_doc_oids.len() > MAX_RATE_DOCS
                 || !strictly_ascending(&b.rate_doc_oids, |o| *o)
@@ -2680,6 +2719,70 @@ mod tests {
         assert!(matches!(
             proposal(big).validate().unwrap_err(),
             EntryError::Invalid { what: "legs", .. }
+        ));
+    }
+
+    /// A sealed field longer than its decode bound is refused before
+    /// encoding: a 1,200-byte description once committed and then read back
+    /// as Corrupt. The bound itself (1,024 bytes) still validates and
+    /// round-trips.
+    #[test]
+    fn sealed_fields_beyond_their_decode_bound_are_refused() {
+        let mut at_bound = proposal(two_legs());
+        at_bound.description = desc(&"d".repeat(MAX_DESCRIPTION_BYTES));
+        let bytes = at_bound.canonical_bytes().unwrap();
+        let mut r = Reader::new(&bytes);
+        assert_eq!(EntryPayload::decode_from(&mut r).unwrap(), at_bound);
+        r.finish().unwrap();
+
+        let mut long = proposal(two_legs());
+        long.description = desc(&"d".repeat(MAX_DESCRIPTION_BYTES + 1));
+        assert!(matches!(
+            long.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "description",
+                ..
+            }
+        ));
+        assert!(long.canonical_bytes().is_err());
+
+        let mut memo = proposal(two_legs());
+        memo.legs[0].memo = Some(desc(&"m".repeat(MAX_MEMO_BYTES + 1)));
+        assert!(matches!(
+            memo.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "leg.memo",
+                ..
+            }
+        ));
+
+        let mut external = proposal(two_legs());
+        external.external_ids.push(ExternalId {
+            system: "erp".into(),
+            id: desc(&"x".repeat(MAX_EXTERNAL_ID_BYTES + 1)),
+        });
+        assert!(matches!(
+            external.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "external_ids.id",
+                ..
+            }
+        ));
+
+        let mut tag = proposal(two_legs());
+        tag.tags[0].value = Erasable::seal(
+            &TagValue::Text("t".repeat(MAX_TAG_BYTES_VALUE + 1)),
+            None,
+            &KEY,
+            [5; 32],
+            [6; 24],
+        );
+        assert!(matches!(
+            tag.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "tags.value",
+                ..
+            }
         ));
     }
 

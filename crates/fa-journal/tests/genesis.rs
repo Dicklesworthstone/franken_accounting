@@ -9542,14 +9542,16 @@ fn batch_plan_rechecks_revocation_even_when_its_original_outcome_is_recorded() {
 fn batch_plan_retains_large_transcripts_and_refuses_an_ordinary_batch_as_its_retry() {
     let mut h = harness();
     let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
-    let members = (0..12)
+    // Each description sits just under max_description_bytes (1,020 of
+    // 1,024); sixteen of them carry the plan past 16,384 bytes.
+    let members = (0..16)
         .map(|index| {
             let mut proposal = h.proposal(
                 h.rent_legs(100),
                 format!("chunked-plan-{index}").as_bytes(),
                 EntryClass::ORIGINAL,
             );
-            proposal.description = h.statement(&"batch evidence ".repeat(80), index + 1);
+            proposal.description = h.statement(&"batch evidence ".repeat(68), index + 1);
             proposal
         })
         .collect();
@@ -9557,7 +9559,7 @@ fn batch_plan_retains_large_transcripts_and_refuses_an_ordinary_batch_as_its_ret
     let plan = h.planned_batch(batch.clone(), &capability).unwrap();
     assert!(plan.canonical_bytes().unwrap().len() > 16_384);
     let posted = h.publish_batch_plan(plan.clone(), &capability).unwrap();
-    assert_eq!(posted.entries.len(), 12);
+    assert_eq!(posted.entries.len(), 16);
     assert!(
         h.publish_batch_plan(plan, &capability)
             .unwrap()
@@ -9579,6 +9581,29 @@ fn batch_plan_retains_large_transcripts_and_refuses_an_ordinary_batch_as_its_ret
         "FA-REF-034"
     );
     assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+/// A description one byte past max_description_bytes is refused as a
+/// structure error before anything is written, and cannot become a batch
+/// member: inside a batch it used to commit and then read back as Corrupt.
+#[test]
+fn an_unreadably_long_description_is_refused_before_commit() {
+    let mut h = harness();
+    let before = h.db.frontier().unwrap();
+    let mut proposal = h.proposal(h.rent_legs(100), b"long-description", EntryClass::ORIGINAL);
+    proposal.description = h.statement(&"d".repeat(1_025), 1);
+    let r = h.post(h.request(proposal.clone(), &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(r.message.contains("description"), "{r}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    assert!(matches!(
+        fa_intents::PostIntent::new(proposal, Vec::new()).unwrap_err(),
+        fa_intents::IntentError::Entry(fa_model::EntryError::Invalid {
+            what: "description",
+            ..
+        })
+    ));
 }
 
 #[test]

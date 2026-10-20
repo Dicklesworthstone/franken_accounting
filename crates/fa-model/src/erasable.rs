@@ -214,6 +214,19 @@ impl<T> Erasable<T> {
             .bytes(&self.sealed);
     }
 
+    /// The largest sealed length a value of at most `max_plain` canonical
+    /// bytes can have (salt, length prefix, and tag around it).
+    const fn sealed_bound(max_plain: usize) -> usize {
+        SALT_BYTES + 4 + max_plain + TAG_BYTES
+    }
+
+    /// True iff this field decodes under `max_plain`: the bound the decoder
+    /// enforces, checked before encoding so nothing writes what cannot be read.
+    #[must_use]
+    pub fn fits(&self, max_plain: usize) -> bool {
+        self.sealed.len() <= Self::sealed_bound(max_plain)
+    }
+
     /// `max_plain` bounds the value's canonical length; the sealed bound
     /// follows from it (salt, length prefix, and tag).
     pub fn decode(r: &mut Reader<'_>, max_plain: usize) -> Result<Self, DecodeError> {
@@ -221,7 +234,7 @@ impl<T> Erasable<T> {
         let subject_ref = r.opt("erasable.subject", |r| r.u128("erasable.subject").map(VId))?;
         let nonce = r.fixed("erasable.nonce")?;
         let sealed = r
-            .bytes(SALT_BYTES + 4 + max_plain + TAG_BYTES, "erasable.sealed")?
+            .bytes(Self::sealed_bound(max_plain), "erasable.sealed")?
             .to_vec();
         Ok(Self {
             field_digest,
