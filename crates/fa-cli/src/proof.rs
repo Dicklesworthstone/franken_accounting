@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use fa::{ProofKind, ProofRequest};
+use fa::{Book, ProofKind, ProofRequest};
 use fa_model::{Oid, account_vid};
 use fa_policy::Op;
 use fa_time::DateDay;
@@ -486,29 +486,23 @@ pub(crate) fn write_new(
 
 const BUNDLE_EXAMPLE: &str = "fa bundle produce [--state <oid|latest>] [--account <code> --from YYYY-MM-DD --to YYYY-MM-DD | --entry <vid>...] [--balance <code>:<UNIT>[:YYYY-MM-DD]]... [--inline-documents] [--out <new.fab> --receipt-out <new-file>] --json";
 
-/// `fa bundle produce` (plan §13.2): an evidence bundle over a recorded
-/// state's prefix (the default), one account's effective-day interval, or
-/// named entries, with optional recomputed balances, and its detached
-/// production receipt signed by the book's key. Nothing is written to the
-/// book; `fa-verify bundle <file> --key <checkpoint_public_key> --receipt
-/// <receipt>` checks both offline.
-pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    if args.positional.get(1).map(String::as_str) != Some("produce") || args.positional.len() != 2 {
-        return Err(usage("bundle has one subcommand: produce", BUNDLE_EXAMPLE));
-    }
-    for flag in [
-        "--state",
-        "--account",
-        "--from",
-        "--to",
-        "--out",
-        "--receipt-out",
-    ] {
+/// A bundle's scope arguments, checked before the book is opened: `--state`
+/// (a recorded state's 64-hex oid, or `latest`), and one scope, `--account`
+/// with `--from`/`--to`, `--entry`..., or neither (the complete prefix).
+/// Shared by `fa bundle produce` and `fa produce --bundle`.
+pub(crate) struct BundleScopeArgs<'a> {
+    pub(crate) state: Option<Oid>,
+    account: Option<(&'a str, i32, i32)>,
+    entries: Vec<VId>,
+}
+
+pub(crate) fn bundle_scope_args<'a>(
+    args: &'a Args,
+    example: &str,
+) -> Result<BundleScopeArgs<'a>, Fail> {
+    for flag in ["--state", "--account", "--from", "--to"] {
         if args.flag_all(flag).len() > 1 {
-            return Err(usage(
-                format!("bundle takes only one {flag}"),
-                BUNDLE_EXAMPLE,
-            ));
+            return Err(usage(format!("bundle takes only one {flag}"), example));
         }
     }
     let state = match args.flag("--state") {
@@ -521,20 +515,17 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if account.is_some() && !entries.is_empty() {
         return Err(usage(
             "a bundle has one scope: --account with --from/--to, or --entry, or neither (the complete prefix)",
-            BUNDLE_EXAMPLE,
+            example,
         ));
     }
     if account.is_none() && (interval.0.is_some() || interval.1.is_some()) {
-        return Err(usage(
-            "--from and --to bound an --account scope",
-            BUNDLE_EXAMPLE,
-        ));
+        return Err(usage("--from and --to bound an --account scope", example));
     }
     let day = |flag: &str, text: Option<&str>| -> Result<i32, Fail> {
         let text = text.ok_or_else(|| {
             usage(
                 format!("an --account scope needs {flag} YYYY-MM-DD"),
-                BUNDLE_EXAMPLE,
+                example,
             )
         })?;
         DateDay::parse(text).map(|d| d.0).map_err(|e| {
@@ -544,59 +535,48 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         })
     };
-    let output = args.flag("--out");
-    let receipt_output = args.flag("--receipt-out");
-    if output.is_some() != receipt_output.is_some() {
-        return Err(usage(
-            "--out and --receipt-out go together: the receipt is the bundle's detached signature",
-            BUNDLE_EXAMPLE,
-        ));
+    let account = match account {
+        Some(code) => Some((code, day("--from", interval.0)?, day("--to", interval.1)?)),
+        None => None,
+    };
+    let mut vids = Vec::with_capacity(entries.len());
+    for text in &entries {
+        let bytes = fixed_hex::<16>(text.strip_prefix("E:").unwrap_or(text), "--entry")?;
+        vids.push(VId(u128::from_be_bytes(bytes)));
     }
-    for path in [output, receipt_output].into_iter().flatten() {
-        if path.is_empty() || path == "-" {
-            return Err(usage(
-                "--out and --receipt-out name new binary files; - is not an output file",
-                "omit both to receive the bundle and its receipt as inline hex",
-            ));
-        }
-    }
-    let principal = ctx.principal(args);
-    let capability = ctx.capability(args, &["read", "produce"])?;
-    for op in [Op::Read, Op::Produce] {
-        fa_policy::require(&capability, op, "producing an evidence bundle")
-            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-    }
-    let mut book = ctx.books.open(args)?;
+    Ok(BundleScopeArgs {
+        state,
+        account,
+        entries: vids,
+    })
+}
+
+/// The bundle request over `book`: its scope, each `--balance
+/// <code>:<UNIT>[:YYYY-MM-DD]`, and `--inline-documents`.
+pub(crate) fn bundle_request(
+    scope: &BundleScopeArgs<'_>,
+    args: &Args,
+    book: &Book,
+    example: &str,
+) -> Result<fa::BundleRequest, Fail> {
     let book_id = book.context().book_id;
-    let scope = if let Some(code) = account {
-        let from = day("--from", interval.0)?;
-        let to = day("--to", interval.1)?;
+    let request_scope = if let Some((code, from, to)) = scope.account {
         fa::BundleScope::Index(fa::ScopeRequest::Account {
             account: account_vid(book_id, code),
             from,
             to,
         })
-    } else if !entries.is_empty() {
-        let mut vids = Vec::with_capacity(entries.len());
-        for text in &entries {
-            let bytes = fixed_hex::<16>(text.strip_prefix("E:").unwrap_or(text), "--entry")?;
-            vids.push(VId(u128::from_be_bytes(bytes)));
-        }
-        fa::BundleScope::Entries(vids)
+    } else if !scope.entries.is_empty() {
+        fa::BundleScope::Entries(scope.entries.clone())
     } else {
         fa::BundleScope::Prefix
-    };
-    let scope_name = match &scope {
-        fa::BundleScope::Prefix => "prefix",
-        fa::BundleScope::Index(_) => "account",
-        fa::BundleScope::Entries(_) => "entries",
     };
     let mut balances = Vec::new();
     for spec in args.flag_all("--balance") {
         let malformed = || {
             usage(
                 format!("--balance {spec}: expected <account-code>:<UNIT>[:YYYY-MM-DD]"),
-                BUNDLE_EXAMPLE,
+                example,
             )
         };
         let mut parts = spec.split(':');
@@ -629,11 +609,62 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             effective_through,
         });
     }
-    let request = fa::BundleRequest {
-        scope,
+    Ok(fa::BundleRequest {
+        scope: request_scope,
         balances,
         inline_documents: args.switch("--inline-documents"),
+    })
+}
+
+/// `fa bundle produce` (plan §13.2): an evidence bundle over a recorded
+/// state's prefix (the default), one account's effective-day interval, or
+/// named entries, with optional recomputed balances, and its detached
+/// production receipt signed by the book's key. Nothing is written to the
+/// book; `fa-verify bundle <file> --key <checkpoint_public_key> --receipt
+/// <receipt>` checks both offline.
+pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.get(1).map(String::as_str) != Some("produce") || args.positional.len() != 2 {
+        return Err(usage("bundle has one subcommand: produce", BUNDLE_EXAMPLE));
+    }
+    for flag in ["--out", "--receipt-out"] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("bundle takes only one {flag}"),
+                BUNDLE_EXAMPLE,
+            ));
+        }
+    }
+    let scope_args = bundle_scope_args(args, BUNDLE_EXAMPLE)?;
+    let output = args.flag("--out");
+    let receipt_output = args.flag("--receipt-out");
+    if output.is_some() != receipt_output.is_some() {
+        return Err(usage(
+            "--out and --receipt-out go together: the receipt is the bundle's detached signature",
+            BUNDLE_EXAMPLE,
+        ));
+    }
+    for path in [output, receipt_output].into_iter().flatten() {
+        if path.is_empty() || path == "-" {
+            return Err(usage(
+                "--out and --receipt-out name new binary files; - is not an output file",
+                "omit both to receive the bundle and its receipt as inline hex",
+            ));
+        }
+    }
+    let principal = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "produce"])?;
+    for op in [Op::Read, Op::Produce] {
+        fa_policy::require(&capability, op, "producing an evidence bundle")
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
+    let mut book = ctx.books.open(args)?;
+    let request = bundle_request(&scope_args, args, &book, BUNDLE_EXAMPLE)?;
+    let scope_name = match &request.scope {
+        fa::BundleScope::Prefix => "prefix",
+        fa::BundleScope::Index(_) => "account",
+        fa::BundleScope::Entries(_) => "entries",
     };
+    let state = scope_args.state;
     let Some(produced) = book.produce_bundle(principal, &capability, state, &request)?? else {
         return Err(fa_journal::Refusal::new(
             fa::proof::code::PROOF_STATE_UNKNOWN,

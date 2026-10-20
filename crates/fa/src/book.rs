@@ -585,6 +585,11 @@ pub struct ProducedBundle {
     pub bundle: fa_notary::Bundle,
     /// The `ProductionReceipt`'s canonical bytes, signed by the book's key.
     pub receipt: Vec<u8>,
+    /// The signed checkpoint the bundle was produced against.
+    pub checkpoint: fa_notary::StoredCheckpoint,
+    /// The documents its in-scope entries cite, each once, in journal order
+    /// (a litigation production numbers them in this order; fa-6l9).
+    pub documents: Vec<fa_model::Oid>,
 }
 
 /// One open book.

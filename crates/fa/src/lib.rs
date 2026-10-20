@@ -186,7 +186,8 @@ pub use procedure_certificate::{
     PROCEDURE_CERTIFICATE_FORMAT, PROCEDURE_OUTPUT_FORMAT, ProcedureCertificate, ProcedureRequest,
 };
 pub use production::{
-    DEFAULT_VOLUME as DEFAULT_PRODUCTION_VOLUME, PrivilegeClaims, PrivilegeEntry, ProductionVolume,
+    BundleDelivery, DEFAULT_VOLUME as DEFAULT_PRODUCTION_VOLUME, PrivilegeClaims, PrivilegeEntry,
+    ProductionVolume,
 };
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};

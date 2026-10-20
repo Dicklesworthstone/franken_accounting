@@ -591,7 +591,7 @@ fn refused_productions_journal_nothing_and_create_no_volume() {
             "--bates-prefix",
             "M2",
             "--load-file",
-            "edrm",
+            "pdf",
         ],
         vec!["production", "open", "M-2", "--bates-prefix", "M 2"],
         vec![
@@ -809,4 +809,224 @@ fn withheld_documents_and_claims_fill_the_privilege_log_and_are_checked_before_j
     );
     let shown = ok(&f.book, &["production", "show", "M-1"]);
     assert_eq!(rows(data(&shown), "ranges").len(), 2);
+}
+
+fn unhex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("hex"))
+        .collect()
+}
+
+#[test]
+fn a_bundle_production_numbers_the_cited_documents_and_delivers_the_bundle_edrm_and_fre902() {
+    let f = Fixture::new();
+    let chart = f.dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    )
+    .expect("chart");
+    ok(
+        &f.book,
+        &["chart", "import", chart.to_str().expect("utf-8")],
+    );
+    ok(&f.book, &["period", "create", "--fiscal-year", "2026"]);
+    ok(&f.book, &["period", "open", "FY2026-P03"]);
+    let lease = f.document("lease.txt", "OFFICE LEASE, MARCH RENT", "Invoice");
+    let rent = f.dir.join("rent.json");
+    std::fs::write(
+        &rent,
+        r#"{"effective_date":"2026-03-15","idempotency_key":"rent","legs":[{"side":"debit","account":"6000","amount":"100.00 USD"},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
+    )
+    .expect("intent");
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            rent.to_str().expect("utf-8"),
+            "--evidence",
+            &lease,
+        ],
+    );
+    ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
+    ok(
+        &f.book,
+        &[
+            "production",
+            "open",
+            "M-B",
+            "--bates-prefix",
+            "MB",
+            "--load-file",
+            "both",
+        ],
+    );
+    let before = head(&f.book);
+
+    // EDRM binds a bundle digest: a document-named production of this matter
+    // is refused, and so is naming documents beside --bundle.
+    for args in [
+        vec![
+            "produce",
+            "--matter",
+            "M-B",
+            "--document",
+            lease.as_str(),
+            "--out",
+            "unused-1",
+        ],
+        vec![
+            "produce",
+            "--matter",
+            "M-B",
+            "--bundle",
+            "--document",
+            lease.as_str(),
+            "--out",
+            "unused-2",
+        ],
+        vec![
+            "produce",
+            "--matter",
+            "M-B",
+            "--account",
+            "1000",
+            "--out",
+            "unused-3",
+        ],
+    ] {
+        let (status, output) = run(&f.book, &args);
+        assert_eq!(status, 2, "{args:?}: {}", output.render());
+    }
+    assert_eq!(head(&f.book), before);
+
+    let out = f.path("bundle-vol");
+    let produced = ok(
+        &f.book,
+        &["produce", "--matter", "M-B", "--bundle", "--out", &out],
+    );
+    assert_eq!(
+        spans(&produced),
+        vec![(
+            lease.clone(),
+            "MB-00000001".into(),
+            "MB-00000001".into(),
+            true
+        )],
+        "the one document the in-scope entry cites"
+    );
+    let files: Vec<&str> = rows(data(&produced), "files")
+        .iter()
+        .map(|f| text(f, "name"))
+        .collect();
+    assert_eq!(
+        files,
+        vec![
+            "VOL001.dat",
+            "VOL001.opt",
+            "VOL001.xml",
+            "PRIVILEGE_LOG.md",
+            "VOL001.fab",
+            "VOL001.receipt",
+            "FRE902_DECLARATION.md",
+            "FRE902_VERIFICATION.md",
+            "FRE902_NOTICE.md",
+            "NATIVES/MB-00000001.txt",
+        ]
+    );
+    let bundle = data(&produced).get("bundle").expect("bundle");
+    let digest = text(bundle, "digest");
+    let key: [u8; 32] = unhex(text(bundle, "checkpoint_public_key"))
+        .try_into()
+        .expect("32-byte key");
+    assert!(text(bundle, "verify").starts_with("fa-verify bundle "));
+    let fab = std::fs::read(format!("{out}/VOL001.fab")).expect("bundle");
+    let receipt = std::fs::read(format!("{out}/VOL001.receipt")).expect("receipt");
+    let report =
+        fa_verify::verify_bundle(&fab, &[key], Some(&receipt)).expect("a well-formed bundle");
+    assert!(report.verified(), "{:#?}", report.checks);
+    assert!(report.receipt.is_some(), "the receipt verified");
+    assert_eq!(fa_verify::blake3::hex(&report.digest), digest);
+    let edrm = std::fs::read_to_string(format!("{out}/VOL001.xml")).expect("edrm");
+    assert!(
+        edrm.contains(&format!("BundleDigestBlake3=\"{digest}\"")),
+        "{edrm}"
+    );
+    assert!(edrm.contains("MB-00000001"), "{edrm}");
+    let declaration =
+        std::fs::read_to_string(format!("{out}/FRE902_DECLARATION.md")).expect("declaration");
+    assert!(declaration.contains(digest), "{declaration}");
+    assert!(declaration.contains("MB-00000001"), "{declaration}");
+    assert!(declaration.contains("M-B"), "{declaration}");
+    assert_eq!(
+        std::fs::read(format!("{out}/NATIVES/MB-00000001.txt")).expect("native"),
+        b"OFFICE LEASE, MARCH RENT"
+    );
+
+    // The identical production is its recorded outcome; the bundle is the
+    // same bytes.
+    let after = head(&f.book);
+    let again_out = f.path("bundle-vol-again");
+    let again = ok(
+        &f.book,
+        &[
+            "produce", "--matter", "M-B", "--bundle", "--out", &again_out,
+        ],
+    );
+    assert!(flag(data(&again), "already_recorded"));
+    assert_eq!(spans(&again), spans(&produced));
+    assert_eq!(
+        std::fs::read(format!("{again_out}/VOL001.fab")).expect("bundle"),
+        fab
+    );
+    assert_eq!(head(&f.book), after);
+
+    // A withheld cited document never rides the bundle.
+    let claims = f.dir.join("claims.json");
+    std::fs::write(
+        &claims,
+        format!(
+            r#"[{{"document": "{lease}", "date": "2026-03-01", "author": "Landlord", "description": "Lease", "basis": "Work product"}}]"#
+        ),
+    )
+    .expect("claims");
+    let inline_out = f.path("inline-withheld");
+    let (status, output) = run(
+        &f.book,
+        &[
+            "produce",
+            "--matter",
+            "M-B",
+            "--bundle",
+            "--inline-documents",
+            "--withhold",
+            &lease,
+            "--privilege",
+            claims.to_str().expect("utf-8"),
+            "--out",
+            &inline_out,
+        ],
+    );
+    assert_eq!(status, 2, "{}", output.render());
+    assert!(!Path::new(&inline_out).exists());
+    // Withholding every cited document leaves nothing to number.
+    let (status, output) = run(
+        &f.book,
+        &[
+            "produce",
+            "--matter",
+            "M-B",
+            "--bundle",
+            "--withhold",
+            &lease,
+            "--privilege",
+            claims.to_str().expect("utf-8"),
+            "--out",
+            &f.path("nothing"),
+        ],
+    );
+    assert_eq!(status, 2, "{}", output.render());
+    assert_eq!(head(&f.book), after);
 }

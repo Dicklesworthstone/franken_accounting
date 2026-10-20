@@ -2302,6 +2302,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(cited) => cited,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        let cited_order = cited.clone();
         let mut documents = BTreeMap::new();
         let inline_documents = request.inline_documents;
         let query = cx.query();
@@ -2368,7 +2369,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .map_err(|e| KernelError::Corrupt(e.to_string()))?
         .canonical_bytes()
         .map_err(|e| KernelError::Model(e.into()))?;
-        Ok(Ok(Some(ProducedBundle { bundle, receipt })))
+        Ok(Ok(Some(ProducedBundle {
+            bundle,
+            receipt,
+            checkpoint,
+            documents: cited_order,
+        })))
     }
 
     /// Export a portable proof from a supported recorded checkpoint, under

@@ -590,8 +590,26 @@ document withheld in full with `--withhold <oid>`; that document is never
 produced and takes no Bates number. `--privilege <claims.json>` states each
 claim's date, author, recipients, description and basis. A withheld document
 must have a claim. A redacted row without a claim states no date. Claims are
-checked before anything is journaled. EDRM XML and the `.fab` bundle with its
-FRE 902(13)/(14) package are not written yet (`fa-6l9`).
+checked before anything is journaled.
+
+`fa produce --bundle` is the plan's `Produce`. It makes an evidence bundle
+over a scope against a recorded checkpoint, exactly as `fa bundle produce`
+does, and numbers the documents its in-scope entries cite, in journal order.
+On top of the load files, privilege log and natives above, the volume then
+adds three things. First, `<VOLUME>.fab` and its signed `<VOLUME>.receipt`,
+which `fa-verify bundle` checks offline. Second, EDRM XML (`<VOLUME>.xml`)
+when the matter was opened with `--load-file edrm|both`; it binds the
+bundle's digest. Third, the FRE 902(13)/(14) declaration, verification
+procedure and notice templates over the journaled ranges.
+
+```bash
+fa checkpoint create --grant witness --book ./books/acme --json
+fa production open Doe-v-Acme --bates-prefix DOE --load-file both --book ./books/acme --json
+fa produce --matter Doe-v-Acme --bundle --account 1000 --from 2026-03-01 --to 2026-03-31 --out ./prod-002 --book ./books/acme --json
+```
+
+The FRE 902 package states technical predicates; admissibility is counsel's
+call. `fa exhibit mark` is not wired yet (`fa-6l9`).
 
 ### Exact arithmetic available now
 

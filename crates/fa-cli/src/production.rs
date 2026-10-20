@@ -19,6 +19,7 @@ use crate::json::{Json, obj, s};
 
 const OPEN_EXAMPLE: &str = "fa production open <matter> --bates-prefix <PREFIX> [--start <n>] [--load-file dat] [--protective-order <oid>] --json";
 const PRODUCE_EXAMPLE: &str = "fa produce --matter <matter> --document <oid>[:pages[:designation]]... --out <new-dir> [--withhold <oid>]... [--privilege <claims.json>] [--volume VOL001] --json";
+const BUNDLE_PRODUCE_EXAMPLE: &str = "fa produce --matter <matter> --bundle [--state <oid>|latest] [--account <code> --from YYYY-MM-DD --to YYYY-MM-DD | --entry <vid>...] [--balance <code>:<UNIT>[:YYYY-MM-DD]]... [--inline-documents] --out <new-dir> --json";
 const PRIVILEGE_EXAMPLE: &str = "--privilege claims.json: [{\"document\": \"<oid>\", \"date\": \"YYYY-MM-DD\", \"author\": \"...\", \"recipients\": [\"...\"], \"description\": \"...\", \"basis\": \"Attorney-client privilege\"}]";
 /// The designation names `--document` accepts, by tag (Appendix A).
 const DESIGNATIONS: [&str; 4] = ["none", "confidential", "aeo", "highly-confidential"];
@@ -150,18 +151,14 @@ fn open(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let load_file_format = match one_flag(args, "--load-file", OPEN_EXAMPLE)? {
         None | Some("dat") => 1,
-        Some(other @ ("edrm" | "both")) => {
-            return Err(usage(
-                format!(
-                    "--load-file {other}: EDRM XML needs the production bundle, which this build does not write (bead fa-6l9); it writes Concordance DAT/OPT"
-                ),
-                "--load-file dat",
-            ));
-        }
+        // EDRM XML binds the bundle digest: such a matter produces through
+        // `fa produce --bundle`.
+        Some("edrm") => 2,
+        Some("both") => 3,
         Some(other) => {
             return Err(usage(
                 format!("--load-file `{other}` is not a load-file format"),
-                "--load-file dat",
+                "--load-file dat|edrm|both",
             ));
         }
     };
@@ -444,9 +441,11 @@ fn parse_claims(ctx: &Ctx<'_>, args: &Args) -> Result<fa::PrivilegeClaims, Fail>
 }
 
 /// `fa produce`: journal the Bates numbers, then write the volume into a
-/// new directory. The directory is refused before anything is journaled,
-/// and the default key is the request itself, so re-running the identical
-/// command after a failed write returns the recorded production.
+/// new directory. The directory is refused before anything is journaled.
+/// With `--document`, the default key is the request itself; with
+/// `--bundle`, it is the bundle's digest (its scope against its
+/// checkpoint). Either way the identical command after a failed write
+/// returns the recorded production.
 pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 1 {
         return Err(usage(
@@ -462,12 +461,48 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage("--matter is given once", PRODUCE_EXAMPLE));
     }
     let named = args.flag_all("--document");
-    if named.is_empty() {
-        return Err(usage(
-            "produce needs at least one --document",
-            PRODUCE_EXAMPLE,
-        ));
-    }
+    let bundled = args.switch("--bundle");
+    let scope = if bundled {
+        if !named.is_empty() {
+            return Err(usage(
+                "a production names its documents with --document or through --bundle, not both",
+                BUNDLE_PRODUCE_EXAMPLE,
+            ));
+        }
+        Some(crate::proof::bundle_scope_args(
+            args,
+            BUNDLE_PRODUCE_EXAMPLE,
+        )?)
+    } else {
+        for flag in [
+            "--state",
+            "--account",
+            "--from",
+            "--to",
+            "--entry",
+            "--balance",
+        ] {
+            if args.flag(flag).is_some() {
+                return Err(usage(
+                    format!("{flag} scopes a bundle: add --bundle"),
+                    BUNDLE_PRODUCE_EXAMPLE,
+                ));
+            }
+        }
+        if args.switch("--inline-documents") {
+            return Err(usage(
+                "--inline-documents scopes a bundle: add --bundle",
+                BUNDLE_PRODUCE_EXAMPLE,
+            ));
+        }
+        if named.is_empty() {
+            return Err(usage(
+                "produce needs at least one --document, or --bundle",
+                PRODUCE_EXAMPLE,
+            ));
+        }
+        None
+    };
     let documents = named
         .iter()
         .map(|d| parse_document(d))
@@ -482,19 +517,9 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let volume = one_flag(args, "--volume", PRODUCE_EXAMPLE)?
         .unwrap_or(fa::DEFAULT_PRODUCTION_VOLUME)
         .to_string();
-    let key = match one_flag(args, "--key", PRODUCE_EXAMPLE)? {
-        Some(k) => k.to_string(),
-        None => {
-            let parts: Vec<&[u8]> = std::iter::once(matter.as_bytes())
-                .chain(named.iter().map(|d| d.as_bytes()))
-                .collect();
-            format!(
-                "produce:{}",
-                hex(&fa_model::domain_digest(b"fa:cli-produce-key:v1", &parts))
-            )
-        }
-    };
+    let explicit_key = one_flag(args, "--key", PRODUCE_EXAMPLE)?.map(str::to_string);
     let claims = parse_claims(ctx, args)?;
+    let principal = ctx.principal(args);
     let capability = ctx.capability(args, &["read", "produce"])?;
     let mut book = ctx.books.open(args)?;
     let target = ctx.files.resolve(out);
@@ -507,35 +532,110 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let date = control_date(args, &book)?;
     // Every document's read and every claim are judged before the numbers
     // are journaled.
-    let (produced, volume) = book.produce_volume(
-        &capability,
-        matter,
-        documents,
-        &claims,
-        &volume,
-        date,
-        key.as_bytes(),
-    )??;
-    std::fs::create_dir(&target).map_err(|e| {
+    let (produced, volume) = match &scope {
+        None => {
+            let key = explicit_key.unwrap_or_else(|| {
+                let parts: Vec<&[u8]> = std::iter::once(matter.as_bytes())
+                    .chain(named.iter().map(|d| d.as_bytes()))
+                    .collect();
+                format!(
+                    "produce:{}",
+                    hex(&fa_model::domain_digest(b"fa:cli-produce-key:v1", &parts))
+                )
+            });
+            book.produce_volume(
+                &capability,
+                matter,
+                documents,
+                &claims,
+                &volume,
+                date,
+                key.as_bytes(),
+            )??
+        }
+        Some(scope) => {
+            let request = crate::proof::bundle_request(scope, args, &book, BUNDLE_PRODUCE_EXAMPLE)?;
+            book.produce_bundle_volume(
+                principal,
+                &capability,
+                matter,
+                scope.state,
+                &request,
+                &claims,
+                &volume,
+                date,
+                explicit_key.as_deref().map(str::as_bytes),
+            )??
+            .ok_or_else(|| {
+                Fail::from(Refusal::new(
+                    fa::proof::code::PROOF_STATE_UNKNOWN,
+                    exit::USAGE,
+                    match scope.state {
+                        Some(oid) => format!(
+                            "accumulator state {} is not on this book's recorded checkpoint chain",
+                            hex(&oid.0)
+                        ),
+                        None => "the book has no recorded accumulator checkpoint to produce against"
+                            .into(),
+                    },
+                    "plan §13.2 (a bundle is produced against a journaled AccumulatorState)",
+                    "use fa verify accumulator --json to find a recorded state; the owner can publish one with fa checkpoint create --grant witness",
+                ))
+            })?
+        }
+    };
+    write_volume(
+        &ctx.out, &ctx.files, &book, out, &target, &produced, &volume,
+    )
+}
+
+/// Write the volume's files into the new directory `target` and emit
+/// `production_recorded`.
+fn write_volume(
+    sink: &crate::cli::Out,
+    host: &crate::cli::Files,
+    book: &fa::Book,
+    out: &str,
+    target: &std::path::Path,
+    produced: &fa_journal::Produced,
+    volume: &fa::ProductionVolume,
+) -> Result<(), Fail> {
+    std::fs::create_dir(target).map_err(|e| {
         usage(
             format!("cannot create the production directory {out}: {e}"),
             "choose a new --out directory; the Bates numbers stay journaled, and the identical command returns this production",
         )
     })?;
-    let mut files = vec![
-        (
-            format!("{}.dat", volume.volume),
-            volume.dat.clone().into_bytes(),
-        ),
-        (
-            format!("{}.opt", volume.volume),
-            volume.opt.clone().into_bytes(),
-        ),
-        (
-            "PRIVILEGE_LOG.md".to_string(),
-            volume.privilege_log.to_markdown().into_bytes(),
-        ),
-    ];
+    let name = &volume.volume;
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    if let (Some(dat), Some(opt)) = (&volume.dat, &volume.opt) {
+        files.push((format!("{name}.dat"), dat.clone().into_bytes()));
+        files.push((format!("{name}.opt"), opt.clone().into_bytes()));
+    }
+    if let Some(edrm) = &volume.edrm {
+        files.push((format!("{name}.xml"), edrm.clone().into_bytes()));
+    }
+    files.push((
+        "PRIVILEGE_LOG.md".to_string(),
+        volume.privilege_log.to_markdown().into_bytes(),
+    ));
+    if let Some(delivery) = &volume.bundle {
+        files.push((format!("{name}.fab"), delivery.bundle.bundle.bytes.clone()));
+        files.push((format!("{name}.receipt"), delivery.bundle.receipt.clone()));
+        let fre902 = &delivery.fre902;
+        files.push((
+            "FRE902_DECLARATION.md".to_string(),
+            fre902.declaration_template_md.clone().into_bytes(),
+        ));
+        files.push((
+            "FRE902_VERIFICATION.md".to_string(),
+            fre902.verification_procedure_md.clone().into_bytes(),
+        ));
+        files.push((
+            "FRE902_NOTICE.md".to_string(),
+            fre902.adverse_party_notice_template_md.clone().into_bytes(),
+        ));
+    }
     if !volume.natives.is_empty() {
         std::fs::create_dir(target.join("NATIVES")).map_err(|e| {
             Fail::Environment(format!(
@@ -545,11 +645,11 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         files.extend(volume.natives.iter().cloned());
     }
     let mut written = Vec::with_capacity(files.len());
-    for (name, bytes) in &files {
-        let path = format!("{out}/{name}");
-        write_new_output_file(&ctx.files, &path, bytes, "production", "--out")?;
+    for (file, bytes) in &files {
+        let path = format!("{out}/{file}");
+        write_new_output_file(host, &path, bytes, "production", "--out")?;
         written.push(obj(vec![
-            ("name", s(name)),
+            ("name", s(file)),
             ("bytes", Json::Int(bytes.len() as i128)),
             (
                 "digest",
@@ -560,7 +660,7 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ),
         ]));
     }
-    ctx.out.at_book(&book)?;
+    sink.at_book(book)?;
     let profile = &produced.profile;
     let ranges: Vec<Json> = produced
         .ranges
@@ -607,11 +707,25 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ])
         })
         .collect();
+    let bundle = volume.bundle.as_ref().map_or(Json::Null, |delivery| {
+        let key = hex(&delivery.checkpoint_public_key);
+        obj(vec![
+            ("digest", s(hex(&delivery.bundle.bundle.digest))),
+            ("checkpoint", s(hex(&delivery.bundle.checkpoint.oid.0))),
+            ("checkpoint_public_key", s(&key)),
+            (
+                "verify",
+                s(format!(
+                    "fa-verify bundle {out}/{name}.fab --key {key} --receipt {out}/{name}.receipt"
+                )),
+            ),
+        ])
+    });
     let assigned = produced.ranges.iter().filter(|r| r.assigned).count();
     let (record, recorded_at) = produced
         .record
         .map_or((Json::Null, Json::Null), |(v, at)| (vid_hex(v), seq(at)));
-    ctx.out.event(
+    sink.event(
         "production_recorded",
         vec![
             ("matter", s(&profile.matter)),
@@ -619,17 +733,23 @@ pub(crate) fn produce_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("recorded_at", recorded_at),
             ("already_recorded", Json::Bool(produced.already_recorded)),
             ("next_bates", s(profile.label(produced.next_bates))),
-            ("volume", s(&volume.volume)),
+            ("volume", s(name)),
             ("out", s(out)),
             ("ranges", Json::Arr(ranges)),
             ("privilege_log", Json::Arr(privilege_log)),
+            ("bundle", bundle),
             ("files", Json::Arr(written)),
         ],
         &format!(
-            "matter {}: {} document(s) in {out} ({assigned} newly numbered, next {})",
+            "matter {}: {} document(s) in {out} ({assigned} newly numbered, next {}){}",
             profile.matter,
             produced.ranges.len(),
-            profile.label(produced.next_bates)
+            profile.label(produced.next_bates),
+            if volume.bundle.is_some() {
+                "; the bundle and its receipt verify offline with fa-verify bundle"
+            } else {
+                ""
+            }
         ),
     );
     Ok(())
