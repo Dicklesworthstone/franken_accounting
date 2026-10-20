@@ -9743,6 +9743,15 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "issuances" => return crate::issuance::issuances(ctx, args),
         _ => {}
     }
+    if let Some(flag) = crate::issuance::ISSUE_ONLY
+        .iter()
+        .find(|flag| crate::issuance::present(args, flag))
+    {
+        return Err(usage(
+            format!("{flag} applies only to `fa statement issue`, never to a statement report"),
+            "fa statement issue --certificate C:<oid> --issued-to <audience> --dry-run --json",
+        ));
+    }
     for flag in [
         "--for",
         "--compare",

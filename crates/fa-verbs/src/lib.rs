@@ -1810,6 +1810,8 @@ mod bound_tests {
             ("verify", Some("periods"), &[][..]),
             ("post", None, &[][..]),
             ("draft", Some("list"), &[][..]),
+            ("statement", Some("issue"), &["--dry-run"][..]),
+            ("statement", Some("issuances"), &[][..]),
         ] {
             assert_eq!(judged(verb, sub, present), Some(false), "{verb} {sub:?}");
         }

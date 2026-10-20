@@ -32,6 +32,51 @@ const PLAN_FLAGS: [&str; 6] = [
     "--key",
     "--date",
 ];
+/// What only `fa statement issue` reads: a statement report refuses each,
+/// never ignores it.
+pub(crate) const ISSUE_ONLY: [&str; 8] = [
+    "--certificate",
+    "--issued-to",
+    "--document",
+    "--key",
+    "--date",
+    "--plan",
+    "--approval",
+    "--dry-run",
+];
+/// The statement verb's report flags and switches: `issue` and `issuances`
+/// refuse each, never ignore it.
+const REPORT_ONLY: [&str; 14] = [
+    "--compare",
+    "--definition",
+    "--before",
+    "--after",
+    "--max-publications",
+    "--known-at",
+    "--as-known-at",
+    "--certificate-out",
+    "--branch",
+    "--before-certificate",
+    "--after-certificate",
+    "--from-diff",
+    "--certify",
+    "--as-originally-reported",
+];
+
+/// Whether `flag` (a value flag or a switch) is on the command line.
+pub(crate) fn present(args: &Args, flag: &str) -> bool {
+    args.switch(flag) || !args.flag_all(flag).is_empty()
+}
+
+fn refuse_foreign(args: &Args, sub: &str, foreign: &[&str], example: &str) -> Result<(), Fail> {
+    match foreign.iter().find(|flag| present(args, flag)) {
+        Some(flag) => Err(usage(
+            format!("{flag} does not apply to `fa statement {sub}`"),
+            example,
+        )),
+        None => Ok(()),
+    }
+}
 
 fn one_flag<'a>(args: &'a Args, flag: &str, example: &str) -> Result<Option<&'a str>, Fail> {
     if args.flag_all(flag).len() > 1 {
@@ -118,6 +163,7 @@ fn line(issuance: &StatementIssuance) -> String {
 
 /// `fa statement issue`: plan with `--dry-run`, or commit a plan.
 pub(crate) fn issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    refuse_foreign(args, "issue", &REPORT_ONLY, PLAN_EXAMPLE)?;
     let approvals = args.flag_all("--approval");
     match (
         args.switch("--dry-run"),
@@ -295,6 +341,8 @@ fn commit(ctx: &mut Ctx<'_>, args: &Args, path: &str, approvals: &[&str]) -> Res
 
 /// `fa statement issuances [--for <period>]`.
 pub(crate) fn issuances(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    refuse_foreign(args, "issuances", &REPORT_ONLY, LIST_EXAMPLE)?;
+    refuse_foreign(args, "issuances", &ISSUE_ONLY, LIST_EXAMPLE)?;
     let period = one_flag(args, "--for", LIST_EXAMPLE)?;
     let who = ctx.principal(args);
     let cap = ctx.capability(args, &["read"])?;
