@@ -2121,6 +2121,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--intent",
         "--plan",
         "--policy",
+        "--audited",
         "--file",
         "--replace-with",
         "--issuer-token",
