@@ -608,6 +608,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // rows, and slices 2 to 5 extend those rows' comments; every report
     // certificate binds that registry's bytes. The fold, every report-byte
     // pin and the evidence bundle are unchanged.
+    // fa-zgn then moved the three certificates and the bundle, measured
+    // together on x86_64: the EngagementControl class (29) and its control
+    // kind (16, replacing the reservation) are `entry_classes` rows every
+    // report certificate binds, and the ProposedAdjustment label (53, the
+    // only symbol added) changes the symbol-table digest the book's genesis
+    // records, which the bundle's checkpoint covers. The fold and every
+    // report-byte pin are unchanged.
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
