@@ -3176,6 +3176,99 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         "{mus:?}"
     );
 
+    // Evaluation re-draws that sample. The 700.00 top-stratum item is 10.00
+    // overstated and the first systematic item 10% overstated; at 95%
+    // (R0 = 3.00, R1 = 4.75) and a 300.00 interval: basic precision 900.00,
+    // most likely error 10.00 + 300.00 x 1/10 = 40.00, incremental allowance
+    // (4.75 - 3.00 - 1) x 30.00 = 22.50, upper limit 962.50, whichever
+    // systematic item the seed hit.
+    let mut tainted = false;
+    let rows: Vec<String> = arr(&mus, "selected")
+        .iter()
+        .map(|row| {
+            let book_value = text(row, "book_value");
+            let audited = match (text(row, "basis"), book_value) {
+                ("top_stratum", _) => "690.00 USD",
+                ("systematic", "100.00 USD") if !tainted => "90.00 USD",
+                ("systematic", "250.00 USD") if !tainted => "225.00 USD",
+                ("systematic", "50.00 USD") if !tainted => "45.00 USD",
+                _ => book_value,
+            };
+            tainted |= text(row, "basis") == "systematic";
+            format!(
+                r#"{{"item_id":"{}","audited":"{audited}"}}"#,
+                text(row, "item_id")
+            )
+        })
+        .collect();
+    let audited = write(
+        &dir,
+        "audited.json",
+        &format!(r#"{{"items":[{}]}}"#, rows.join(",")),
+    );
+    let evaluate = |audited: &str| {
+        vec![
+            "evaluate".to_string(),
+            "--account".into(),
+            "1200".into(),
+            "--seed".into(),
+            "7".into(),
+            "--interval".into(),
+            "300.00 USD".into(),
+            "--as-known-at".into(),
+            first.clone(),
+            "--audited".into(),
+            audited.to_string(),
+            "--confidence".into(),
+            "95".into(),
+        ]
+    };
+    let argv = evaluate(&audited);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let evaluated = doc(&draw(&argv));
+    assert_eq!(text(&evaluated, "basic_precision"), "900.00 USD");
+    assert_eq!(text(&evaluated, "top_stratum_misstatement"), "10.00 USD");
+    assert_eq!(text(&evaluated, "most_likely_error"), "40.00 USD");
+    assert_eq!(text(&evaluated, "incremental_allowance"), "22.50 USD");
+    assert_eq!(text(&evaluated, "upper_misstatement_limit"), "962.50 USD");
+    assert_eq!(
+        text(&evaluated, "upper_misstatement_limit_exact"),
+        "96250/1"
+    );
+    assert_eq!(evaluated.get("misstatement_count"), Some(&Json::Int(2)));
+    assert_eq!(evaluated.get("understatement_count"), Some(&Json::Int(0)));
+    assert_eq!(
+        text(&evaluated, "sample_digest"),
+        text(&mus, "sample_digest")
+    );
+    let taints: Vec<&str> = arr(&evaluated, "misstatements")
+        .iter()
+        .map(|row| text(row, "tainting"))
+        .collect();
+    assert!(taints.contains(&"1/10"), "{evaluated:?}");
+    // An audited set that leaves out a selected item answers another sample
+    // (exit 8), and evaluation needs the sample's recorded sequence (exit 2).
+    let partial = write(
+        &dir,
+        "partial.json",
+        &format!(r#"{{"items":[{}]}}"#, rows[1..].join(",")),
+    );
+    let argv = evaluate(&partial);
+    let mut argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    argv.insert(0, "sample");
+    argv.push("--json");
+    let (code, out, err) = fa(Some(&book), &argv);
+    assert_eq!(code, 8, "{out}\n{err}");
+    assert!(out.contains("missing"), "{out}");
+    let mut argv = evaluate(&audited);
+    assert_eq!(argv[7], "--as-known-at");
+    argv.drain(7..9);
+    let mut argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    argv.insert(0, "sample");
+    argv.push("--json");
+    let (code, out, err) = fa(Some(&book), &argv);
+    assert_eq!(code, 2, "{out}\n{err}");
+
     // Usage errors (exit 2), nothing drawn.
     for args in [
         vec!["sample", "uniform", "--account", "1200", "--size", "2"],

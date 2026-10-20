@@ -440,14 +440,14 @@ example = "fa procedure run jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
 name = "sample"
-summary = "Audit sampling (plan §11.7): a reproducible uniform or monetary-unit (MUS) sample of one account's open items at one recorded coordinate, from a declared seed. Nothing is written."
+summary = "Audit sampling (plan §11.7): a reproducible uniform or monetary-unit (MUS) sample of one account's open items at one recorded coordinate, from a declared seed, and the Stringer evaluation of an MUS sample's audited values. Nothing is written."
 writes = false
-subcommands = ["uniform", "mus"]
-flags = ["--account", "--seed", "--size", "--interval", "--as-of", "--as-known-at"]
+subcommands = ["uniform", "mus", "evaluate"]
+flags = ["--account", "--seed", "--size", "--interval", "--as-of", "--as-known-at", "--audited", "--confidence"]
 switches = []
-events = ["sample_drawn"]
-exits = [0, 2, 3, 4, 5, 7]
-usage = ["sample uniform --account <code> --seed <u64> --size <n> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample mus --account <code> --seed <u64> --interval \"<amount> <UNIT>\" [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "The population is the account's open items (fa open-items) on its normal-balance side with a positive open amount, in one unit, at --as-known-at (and, with --as-of, through that effective date). Items are <entry vid hex>:<five-digit ordinal> valued at their open amount, canonically ordered and digested (population_digest). Open items on the other side cannot carry a positive book value: they are listed in excluded, to be tested separately, never silently dropped. Fully applied items are not open. Read authority is required.", "uniform selects --size items without replacement; mus selects every item whose open amount is at least --interval (top stratum) and a systematic dollar hit every --interval from a seeded random start. Selection is a pure function of the population digest, the declared --seed and the parameters over PCG64DXSM, reproducible in Python with numpy.random.PCG64DXSM(seed) and the snippet documented on fa_lantern::sample::Pcg64Dxsm. The seed is never drawn from entropy.", "sample_digest binds the method, population digest, seed, parameters and selected item ids; it is recomputed, not a retained report certificate. replay_command repeats the draw at the same recorded sequence. Evaluating audited values (the Stringer bound) is not on the CLI yet."]
+events = ["sample_drawn", "sample_evaluated"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["sample uniform --account <code> --seed <u64> --size <n> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample mus --account <code> --seed <u64> --interval \"<amount> <UNIT>\" [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample evaluate --account <code> --seed <u64> --interval \"<amount> <UNIT>\" --as-known-at <seq> [--as-of YYYY-MM-DD] --audited <audited.json|-> --confidence 90|95|99", "evaluate re-draws the MUS sample from the same --account, --seed, --interval, --as-of and a numeric --as-known-at, then takes {\"items\":[{\"item_id\",\"audited\":\"<amount> <UNIT>\"}]} with exactly one audited value for every selected item and none for any other (exit 8 otherwise, naming the missing and unexpected ids). Book values come from the sample, never from the file. The Stringer upper misstatement limit is the basic precision (interval times the Poisson factor at zero errors) plus the most likely error (top-stratum overstatement in full, and interval times each tainting) plus the incremental allowance for ranked taintings; each component is exact and rounded up to the unit, and upper_misstatement_limit_exact keeps the exact value in minor units. Overstatements are bounded; understatements are counted. The limit is a statistic for the auditor's conclusion, not the conclusion.","The population is the account's open items (fa open-items) on its normal-balance side with a positive open amount, in one unit, at --as-known-at (and, with --as-of, through that effective date). Items are <entry vid hex>:<five-digit ordinal> valued at their open amount, canonically ordered and digested (population_digest). Open items on the other side cannot carry a positive book value: they are listed in excluded, to be tested separately, never silently dropped. Fully applied items are not open. Read authority is required.", "uniform selects --size items without replacement; mus selects every item whose open amount is at least --interval (top stratum) and a systematic dollar hit every --interval from a seeded random start. Selection is a pure function of the population digest, the declared --seed and the parameters over PCG64DXSM, reproducible in Python with numpy.random.PCG64DXSM(seed) and the snippet documented on fa_lantern::sample::Pcg64Dxsm. The seed is never drawn from entropy.", "sample_digest binds the method, population digest, seed, parameters and selected item ids; it is recomputed, not a retained report certificate. replay_command repeats the draw at the same recorded sequence. Stratified (Neyman) selection is not on the CLI yet."]
 example = "fa sample uniform --account 1200 --seed 20260115 --size 25 --book ./books/myco --json"
 
 [[verb]]
@@ -1866,6 +1866,17 @@ name = "sample_item"
 doc = "One selected population item: its id (entry vid hex and five-digit leg ordinal), entry and ordinal, open amount as book value, and for MUS its selection basis and the cumulative dollar hit (null for top-stratum items and uniform samples)."
 fields = ["item_id:string", "entry:hex", "ordinal:int", "book_value:amount", "basis:string?", "hit:amount?"]
 
+[[event]]
+name = "sample_evaluated"
+book = true
+doc = "The Stringer evaluation of one re-drawn MUS sample (same account, seed, interval, as_of and known_at) against the auditor's value for every selected item: the confidence, the sample's digests, the counts, the exact-then-ceiling components (basic precision, most likely error, incremental allowance) and the upper misstatement limit, with its exact value in minor units, and each overstated item with its tainting and rank (top-stratum items carry their overstatement in full, without a tainting). A statistic for the auditor's conclusion, not the conclusion. Nothing is written to the book."
+fields = ["account:string", "unit:string", "as_of:date?", "known_at:seq", "seed:int", "interval:amount", "confidence_percent:int", "population_digest:hex", "sample_digest:hex", "sample_size:int", "misstatement_count:int", "understatement_count:int", "top_stratum_misstatement:amount", "basic_precision:amount", "most_likely_error:amount", "incremental_allowance:amount", "upper_misstatement_limit:amount", "upper_misstatement_limit_exact:string", "misstatements:[sample_misstatement]"]
+
+[[shape]]
+name = "sample_misstatement"
+doc = "One overstated sample item: book and audited values, the overstatement, whether it is in the top stratum, and for the other items the exact tainting (overstatement over book value, as numerator/denominator) and its rank among the taintings (1 is the largest)."
+fields = ["item_id:string", "book_value:amount", "audited_value:amount", "overstatement:amount", "top_stratum:bool", "tainting:string?", "rank:int?"]
+
 [[shape]]
 name = "sample_excluded"
 doc = "An open item on the account's other side, outside the positive-value population, to be tested separately."
@@ -2505,7 +2516,7 @@ hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--versio
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--date-window", "--page-size", "--line-ordinal", "--source-known-at"]
+integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -3571,12 +3582,15 @@ mistakes = ["Passing a parameter in display units (10000.00) instead of the unit
 cluster = "fa.forensics"
 name = "sample"
 verb = "sample"
-subcommands = ["uniform", "mus"]
+subcommands = ["uniform", "mus", "evaluate"]
 selector = "method"
 positionals = []
+stdin_property = "audited"
+stdin_kind = "object"
+stdin_via = "--audited"
 required = ["--account", "--seed"]
-dont = ["Don't pick or change a seed to get a different sample: the seed is declared before drawing and recorded with the sample, and an examiner reproduces the draw from it.", "Don't treat excluded items as tested: they are the account's opposite-side open items, outside the positive-value population, and need their own procedure.", "Don't claim a sample was evaluated: this tool selects; the Stringer evaluation of audited values is not exposed yet."]
-mistakes = ["Passing --interval as a bare number: it is an amount with its unit, \"500.00 USD\", in the population's unit.", "Asking for a uniform size larger than population_count, or passing size to mus or interval to uniform."]
+dont = ["Don't pick or change a seed to get a different sample: the seed is declared before drawing and recorded with the sample, and an examiner reproduces the draw from it.", "Don't treat excluded items as tested: they are the account's opposite-side open items, outside the positive-value population, and need their own procedure.", "Don't present upper_misstatement_limit as a conclusion: it is the Stringer statistic; comparing it with tolerable misstatement is the auditor's judgment.", "Don't supply book values to evaluate: they come from the re-drawn sample; audited carries only item_id and audited for every selected item."]
+mistakes = ["Passing --interval as a bare number: it is an amount with its unit, \"500.00 USD\", in the population's unit.", "Asking for a uniform size larger than population_count, or passing size to mus or interval to uniform.", "Evaluating without the sample's numeric as_known_at, or with audited values for only some selected items (exit 8 names the missing and unexpected ids)."]
 
 # Intrinsic fiscal-year closing (fa-4o0).
 [[event]]
