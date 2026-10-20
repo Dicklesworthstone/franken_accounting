@@ -2722,8 +2722,8 @@ fields = ["entry:hex", "entry_digest:hex", "qty_ordinal:int", "cost_ordinal:int"
 
 [[shape]]
 name = "lineage_step"
-doc = "One entry in a `SUPERSEDES` lineage component, with its liveness and supersession links and registered netting laws."
-fields = ["entry:hex", "entry_digest:hex", "class:string", "effective_date:date", "recorded_at:seq", "live:bool", "supersedes:[lineage_edge]"]
+doc = "One entry in a `SUPERSEDES` lineage component, with its liveness and supersession links and registered netting laws. reverses_reversal flags an entry that reverses a Reversal, reviving what that reversal negated (plan §8.2)."
+fields = ["entry:hex", "entry_digest:hex", "class:string", "effective_date:date", "recorded_at:seq", "live:bool", "reverses_reversal:bool", "supersedes:[lineage_edge]"]
 
 [[shape]]
 name = "lineage_edge"

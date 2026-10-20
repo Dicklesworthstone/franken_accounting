@@ -15612,6 +15612,7 @@ fn explain_lineage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("effective_date", s(st.effective_date.render())),
                 ("recorded_at", Json::Int(i128::from(st.recorded_at.0))),
                 ("live", Json::Bool(st.live)),
+                ("reverses_reversal", Json::Bool(st.reverses_reversal)),
                 ("supersedes", Json::Arr(supersedes)),
             ])
         })

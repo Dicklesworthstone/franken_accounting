@@ -5,7 +5,9 @@
 #
 # Consumers: fa-registry (g0::SupersessionKinds), fa-palimpsest (netting laws
 # and lineage), fa-journal (reversal/replacement/reclassification/restatement
-# validation), registry-check.
+# validation; the Reverses admission reads `target_class` directly, and its
+# `why` and `corrective_route` are the refusal's message and fix, so a route
+# must name a command that runs), registry-check.
 
 schema_version = 1
 
@@ -131,21 +133,21 @@ corrective_route = "reverse with Reversal"
 
 [[target_class]]
 class = "Revaluation"
-reversible = "yes"
-why = "posted revaluation legs"
-corrective_route = "reverse with Reversal"
+reversible = "no"
+why = "no negation law is registered for a cumulative, source-bound revaluation (plan §5.2; fa-3ock): each revaluation books only the delta from the original carrying amount plus every prior adjustment to the retained closing-rate target"
+corrective_route = "revalue again with `fa fx revalue`: the new revaluation books the delta to the corrected target"
 
 [[target_class]]
 class = "Elimination"
-reversible = "yes"
-why = "posted elimination legs"
-corrective_route = "reverse with Reversal"
+reversible = "no"
+why = "this build posts no Elimination entry (consolidation rules, plan §10), so no Elimination target exists to reverse"
+corrective_route = "none: consolidation across books is not available yet (fa-76hy)"
 
 [[target_class]]
 class = "Migration"
-reversible = "yes"
-why = "finalized migration chunk legs"
-corrective_route = "reverse with Reversal after Finalize"
+reversible = "no"
+why = "the side-swap of migrated legs is not admitted yet: it would first have to prove the target's MigrationRun was finalized, which the reversal law does not check"
+corrective_route = "post a correcting entry with `fa post` in an open period, citing the migrated entry in its description"
 
 [[target_class]]
 class = "Revision"
@@ -193,7 +195,7 @@ corrective_route = "record a new monotonic TimeEvidence tick"
 class = "SweepControl"
 reversible = "no"
 why = "SweepControl cursors are book-scoped control watermarks with no legs"
-corrective_route = "advance the expiry sweep watermark via `fa sweep`"
+corrective_route = "none: a sweep cursor is never reversed; the expiry sweep advances its own watermark (fad serve --bootstrap-system runs it)"
 
 [[target_class]]
 class = "ScheduleControl"

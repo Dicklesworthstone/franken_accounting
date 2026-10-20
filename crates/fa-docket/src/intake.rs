@@ -26,8 +26,9 @@ use fgdb_types::VId;
 pub const GRADE_HUMAN_UPLOAD: u8 = 3;
 /// Registered `evidence_policy.toml` grade tag for `AgentUpload` (self-sourced / advisory).
 pub const GRADE_AGENT_UPLOAD: u8 = 4;
-/// Registered `evidence_policy.toml` kind tag for `Workpaper`.
-pub const KIND_WORKPAPER: u8 = 8;
+/// Registered `evidence_policy.toml` kind tag for `Workpaper`. (It was 8,
+/// Remittance's tag, until fa-s3wz; only this crate's tests ever passed it.)
+pub const KIND_WORKPAPER: u8 = 21;
 
 /// Maximum decompressed PDF stream size (16 MiB) to prevent zip-bomb expansion.
 const MAX_INFLATED_STREAM_BYTES: usize = 16 * 1024 * 1024;
@@ -2015,6 +2016,30 @@ mod tests {
         pdf.extend_from_slice(&enc_stream);
         pdf.extend_from_slice(b"\nendstream\nendobj\n%%EOF\n");
         pdf
+    }
+
+    #[test]
+    fn workpaper_tag_matches_registry() {
+        let policy = fa_registry::evidence_policy::EvidencePolicy::embedded().unwrap();
+        let kind = |name: &str| policy.kind_by_name(name).map(|kind| kind.tag);
+        let grade = |name: &str| policy.grade_by_name(name).map(|grade| grade.tag);
+        assert_eq!(kind("Workpaper"), Some(KIND_WORKPAPER));
+        // The tag this constant used to carry names another kind.
+        assert_eq!(kind("Remittance"), Some(8));
+        assert_eq!(grade("HumanUpload"), Some(GRADE_HUMAN_UPLOAD));
+        assert_eq!(grade("AgentUpload"), Some(GRADE_AGENT_UPLOAD));
+        assert!(
+            policy
+                .grade_by_tag(GRADE_AGENT_UPLOAD)
+                .unwrap()
+                .self_sourced
+        );
+        assert!(
+            !policy
+                .grade_by_tag(GRADE_HUMAN_UPLOAD)
+                .unwrap()
+                .self_sourced
+        );
     }
 
     #[test]

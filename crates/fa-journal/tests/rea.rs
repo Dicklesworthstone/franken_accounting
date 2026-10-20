@@ -412,7 +412,8 @@ fn rea_objects_party_dimensions_instruments_and_temporal_closure() {
 
     // Planted functional-currency mismatch: a legal entity whose functional_unit (EUR)
     // differs from the book's base_unit (USD) is refused with FA-REF-003 (exit 3) naming
-    // the Concordat fix, matching fa_reference::rea::validate_legal_entity.
+    // the book that runs today (never a consolidation surface that does not exist yet,
+    // fa-s3wz), matching fa_reference::rea::validate_legal_entity.
     let eur = book.units.lookup("EUR").unwrap();
     let sub_eu = LegalEntityFullSpec {
         code: "SUB-EU".into(),
@@ -440,8 +441,10 @@ fn rea_objects_party_dimensions_instruments_and_temporal_closure() {
     assert_eq!(eu_err.code, "FA-REF-003");
     assert_eq!(eu_err.exit, fa_journal::exit::REFUSAL);
     assert!(
-        eu_err.fix.contains("Concordat") && eu_err.fix.contains("--base-unit EUR"),
-        "expected refusal fix to name Concordat fix, got: {}",
+        eu_err.fix.contains("fa book create")
+            && eu_err.fix.contains("--base-unit EUR")
+            && !eu_err.fix.contains("Concordat"),
+        "expected refusal fix to name `fa book create --base-unit EUR`, got: {}",
         eu_err.fix
     );
     assert_eq!(

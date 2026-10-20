@@ -574,6 +574,9 @@ pub struct LineageEntrySummary {
     pub effective_period: Option<String>,
     pub recorded_at: CommitSeq,
     pub live: bool,
+    /// This entry reverses an entry that is itself a Reversal: it revives
+    /// what that reversal negated, by parity (plan §8.2, flagged here).
+    pub reverses_reversal: bool,
     pub supersedes: Vec<LineageEdgeSummary>,
 }
 
@@ -772,6 +775,12 @@ pub fn explain_lineage(
                 reason_code: s.reason_code,
             })
             .collect();
+        let reverses_reversal = entry.proposal.supersession.iter().any(|s| {
+            s.kind == SupersessionKind::Reverses
+                && by_vid
+                    .get(&s.target.vid)
+                    .is_some_and(|(target, _)| target.proposal.class == EntryClass::REVERSAL)
+        });
 
         summaries.push(LineageEntrySummary {
             vid,
@@ -785,6 +794,7 @@ pub fn explain_lineage(
                 .map(|p| p.code.clone()),
             recorded_at,
             live,
+            reverses_reversal,
             supersedes,
         });
 
