@@ -3597,7 +3597,12 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         first.as_str(),
     ]));
     assert_eq!(text(&planned, "interval"), "446.66 USD");
-    for key in ["population_digest", "sample_digest", "selected", "parameters"] {
+    for key in [
+        "population_digest",
+        "sample_digest",
+        "selected",
+        "parameters",
+    ] {
         assert_eq!(planned.get(key), stated.get(key), "{key}");
     }
     assert_eq!(text(&planned, "tolerable"), "1500.00 USD");
@@ -3648,17 +3653,20 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         text(&planned, "sample_digest")
     );
     assert_eq!(text(&evaluated, "tolerable"), "1500.00 USD");
-    assert_eq!(
-        text(&evaluated, "upper_misstatement_limit"),
-        "1339.98 USD"
-    );
+    assert_eq!(text(&evaluated, "upper_misstatement_limit"), "1339.98 USD");
     // Planning refusals (exit 2): no explicit --expected, no --confidence,
     // both forms at once, a confidence on a stated draw, an expected
     // misstatement that leaves nothing to plan for (1,000.00 x 1.6 =
     // 1,600.00 exceeds 1,500.00), and a confidence on a uniform draw.
     for args in [
         vec!["mus", "--tolerable", "1500.00 USD", "--confidence", "95"],
-        vec!["mus", "--tolerable", "1500.00 USD", "--expected", "1.00 USD"],
+        vec![
+            "mus",
+            "--tolerable",
+            "1500.00 USD",
+            "--expected",
+            "1.00 USD",
+        ],
         vec![
             "mus",
             "--interval",
@@ -3921,9 +3929,25 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         assert_eq!(code, 7, "{args:?}\n{out}\n{err}");
         assert!(out.contains("FA-REF-011") && out.contains(caveat), "{out}");
     }
-    let argv = evaluate(&audited);
-    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let (code, out, err) = scoped(&march, &argv);
+    // A token's host paths are confined to its launch directory (fa-yha),
+    // so the evaluation runs there and names its audited file relative to
+    // it: the refusal is the scope's, not the path's.
+    let argv = evaluate("audited.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .current_dir(&dir)
+        .arg("--book")
+        .arg(&book)
+        .args(["--token", march.as_str(), "sample"])
+        .args(&argv)
+        .arg("--json")
+        .env_remove("FA_BOOK")
+        .output()
+        .expect("run fa");
+    let (code, err) = (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    );
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
     assert_eq!(code, 7, "{out}\n{err}");
     assert!(
         out.contains("FA-REF-011") && out.contains("`periods`"),
