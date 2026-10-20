@@ -1,6 +1,9 @@
 //! Exercise the Cargo-built offline command with the existing fixed signatures.
 //! The fixtures are synthetic trees, not claims of accounting correctness.
 
+#[path = "witness_cli/advance.rs"]
+mod advance;
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{Command, Output};
