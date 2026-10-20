@@ -236,3 +236,9 @@ class = "ProductionControl"
 reversible = "no"
 why = "ProductionControl records are a matter's production history with no legs; a produced Bates number is never withdrawn or reassigned"
 corrective_route = "produce the corrected documents again in the matter with `fa produce`: they receive the next Bates numbers, and the earlier ranges stay on record"
+
+[[target_class]]
+class = "EngagementControl"
+reversible = "no"
+why = "EngagementControl records are an engagement's history with no legs; a proposal, once booked or passed, stays decided on the record"
+corrective_route = "propose a new adjustment in the engagement with `fa adjustment propose`; the earlier proposal and its decision stay on record"

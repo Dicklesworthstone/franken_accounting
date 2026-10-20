@@ -596,3 +596,55 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §13.2 (a document produced in two matters carries both ranges); Appendix B Produce"
+
+# An audit engagement's records are the auditor's work product: `produce`,
+# which the Auditor template holds and which never writes a posting. An Agent
+# prepares none of them (trunk records). Booking names an entry someone else
+# already committed under its own posting authority; nothing here posts.
+[[rule]]
+name = "engagement-open"
+class = "EngagementControl"
+transition = "Open"
+preparer_op = "produce"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §11.12 (an Engagement with stated materiality parameters, never judgments); Appendix B OpenEngagement"
+
+[[rule]]
+name = "engagement-propose"
+class = "EngagementControl"
+transition = "Propose"
+preparer_op = "produce"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §11.12 (a ProposedAdjustment is a draft correcting entry authored under the auditor's capability); Appendix B ProposeAdjustment"
+
+[[rule]]
+name = "engagement-book"
+class = "EngagementControl"
+transition = "Book"
+preparer_op = "produce"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §11.12 (Booked names the committed entry that makes the correction); Appendix B BookAdjustment"
+
+[[rule]]
+name = "engagement-pass"
+class = "EngagementControl"
+transition = "Pass"
+preparer_op = "produce"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §11.12 (Passed records the reason and the principal; the summary of uncorrected misstatements aggregates them); Appendix B PassAdjustment"

@@ -451,6 +451,30 @@ usage = ["sample uniform --account <code> --seed <u64> --size <n> [--as-of YYYY-
 example = "fa sample uniform --account 1200 --seed 20260115 --size 25 --book ./books/myco --json"
 
 [[verb]]
+name = "engagement"
+summary = "Audit engagements (plan §11.12, §0.4 decision 3): open an engagement (its kind, scope periods and the materiality parameters the auditor states, journaled once by an EngagementControl record under produce authority), list the book's engagements, or show one with every proposed adjustment and its decision."
+writes = true
+subcommands = ["open", "list", "show"]
+flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date", "--grant"]
+switches = []
+events = ["engagement_opened", "engagements", "engagement_detail"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["engagement open <id> --kind audit|review|examination|investigation|litigation --period <code>... --overall \"<amount> <UNIT>\" --performance \"<amount> <UNIT>\" --clearly-trivial \"<amount> <UNIT>\" [--report-release YYYY-MM-DD] [--key K] [--date YYYY-MM-DD]   (journals the engagement once, under produce authority; the parameters are in the book's base unit with 0 <= clearly trivial <= performance <= overall, and are stated, never judged; every scope period must exist)", "engagement list   (every engagement of the book, under read authority)", "engagement show <id>   (the engagement and each proposed adjustment: its legs, its state proposed|booked|passed, and its decision)"]
+example = "fa engagement open FY2026-audit --kind audit --period FY2026-P01 --period FY2026-P02 --overall \"50000.00 USD\" --performance \"37500.00 USD\" --clearly-trivial \"2500.00 USD\" --book ./books/myco --json"
+
+[[verb]]
+name = "adjustment"
+summary = "Proposed audit adjustments (plan §11.12): propose a draft correcting entry in an engagement (balanced per unit on posting leaves, dated inside a scope period; it never posts), book it by naming the committed entry that makes the correction, or pass it with a registered reason. A proposal is decided once."
+writes = true
+subcommands = ["propose", "book", "pass"]
+flags = ["--engagement", "--intent", "--proposal", "--entry", "--reason", "--key", "--date", "--grant"]
+switches = []
+events = ["adjustment_proposed", "adjustment_decided"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["adjustment propose --engagement <id> --intent <entry.json|-> [--key K]   (the intent is {\"effective_date\": \"YYYY-MM-DD\", \"description\": \"...\", \"legs\": [{\"side\": \"debit|credit\", \"account\": \"<code>\", \"amount\": \"<amount> <UNIT>\"}, ...]}; proposals are numbered from 1 per engagement; the default key is the proposal's content, so the identical proposal retries exactly and different proposals never collide)", "adjustment book --engagement <id> --proposal <n> --entry E:<vid>   (the committed trunk entry whose legs equal the proposal's; FA-REF-182 otherwise)", "adjustment pass --engagement <id> --proposal <n> --reason ClearlyTrivial|BelowPerformanceMateriality|ManagementDeclined|Other   (reason_codes.toml scope adjustment_pass; a decided proposal is FA-REF-181)"]
+example = "fa adjustment propose --engagement FY2026-audit --intent accrual.json --book ./books/myco --json"
+
+[[verb]]
 name = "checkpoint"
 summary = "Publish a recomputable accumulator state over the book's entry prefix and its TransparencyCheckpoint signed by the book's key."
 writes = true
@@ -1891,6 +1915,36 @@ doc = "One selected population item: its id (entry vid hex and five-digit leg or
 fields = ["item_id:string", "entry:hex", "ordinal:int", "book_value:amount", "basis:string?", "hit:amount?"]
 
 [[event]]
+name = "engagement_opened"
+book = true
+doc = "An engagement was journaled by an EngagementControl Open record (or the identical engagement was already open: then nothing was written). Its materiality parameters are stated by the auditor, never judged by the system."
+fields = ["engagement:engagement_summary", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "engagements"
+book = true
+doc = "Every engagement of the book, by opening sequence."
+fields = ["engagements:[engagement_summary]"]
+
+[[event]]
+name = "engagement_detail"
+book = true
+doc = "One engagement and every proposed adjustment it journaled, by number, each with its legs, state and decision."
+fields = ["engagement:engagement_summary", "proposals:[proposal_row]"]
+
+[[event]]
+name = "adjustment_proposed"
+book = true
+doc = "A draft correcting entry was journaled in an engagement by an EngagementControl Propose record (or the identical proposal was already recorded). It never posts; it is booked or passed later, once."
+fields = ["proposal:proposal_row", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "adjustment_decided"
+book = true
+doc = "A proposed adjustment was booked (the committed entry that made the correction, compared leg for leg) or passed (with its registered reason) by an EngagementControl record, or the identical decision was already recorded."
+fields = ["proposal:proposal_row", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
 name = "sample_evaluated"
 book = true
 doc = "The Stringer evaluation of one re-drawn MUS sample (same account, seed, interval, as_of and known_at) against the auditor's value for every selected item: the confidence, the sample's digests, the counts, the exact-then-ceiling components (basic precision, most likely error, incremental allowance) and the upper misstatement limit, with its exact value in minor units, and each overstated item with its tainting and rank (top-stratum items carry their overstatement in full, without a tainting). A statistic for the auditor's conclusion, not the conclusion. Nothing is written to the book."
@@ -1900,6 +1954,26 @@ fields = ["account:string", "unit:string", "as_of:date?", "known_at:seq", "seed:
 name = "sample_misstatement"
 doc = "One overstated sample item: book and audited values, the overstatement, whether it is in the top stratum, and for the other items the exact tainting (overstatement over book value, as numerator/denominator) and its rank among the taintings (1 is the largest)."
 fields = ["item_id:string", "book_value:amount", "audited_value:amount", "overstatement:amount", "top_stratum:bool", "tainting:string?", "rank:int?"]
+
+[[shape]]
+name = "engagement_summary"
+doc = "One engagement: its id and vertex, kind, firm principal, scope periods, the stated materiality parameters in its unit, the report release day, state, who opened it and when, its next proposal number, and how many proposals are proposed, booked and passed."
+fields = ["engagement:string", "vid:hex", "kind:string", "firm_principal:hex", "scope_periods:[string]", "unit:string", "overall:amount", "performance:amount", "clearly_trivial:amount", "report_release:date?", "state:string", "opened_at:seq", "opened_by:hex", "next_proposal:int", "proposed:int", "booked:int", "passed:int"]
+
+[[shape]]
+name = "proposal_leg"
+doc = "One leg of a proposed correcting entry: side, the account's code and vertex, and the amount."
+fields = ["side:string", "account:string?", "account_vid:hex", "amount:amount"]
+
+[[shape]]
+name = "proposal_decision"
+doc = "How a proposal was decided: book (the committed entry that made the correction) or pass (the registered reason it was left uncorrected), with the record, its sequence and who decided."
+fields = ["kind:string", "entry:hex?", "reason:string?", "record:hex", "recorded_at:seq", "decided_by:hex"]
+
+[[shape]]
+name = "proposal_row"
+doc = "One proposed adjustment: its engagement and number, vertex, the effective date and legs of the draft correcting entry (which never posts), the Propose record, its sequence and principal, its state (proposed, booked or passed), and its decision."
+fields = ["engagement:string", "number:int", "vid:hex", "effective_date:date", "legs:[proposal_leg]", "record:hex", "proposed_at:seq", "proposed_by:hex", "state:string", "decision:proposal_decision?"]
 
 [[shape]]
 name = "sample_excluded"
@@ -2545,7 +2619,7 @@ hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--versio
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at"]
+integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--proposal"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -3643,6 +3717,35 @@ required = ["--account", "--seed"]
 dont = ["Don't pick or change a seed to get a different sample: the seed is declared before drawing and recorded with the sample, and an examiner reproduces the draw from it.", "Don't treat excluded items as tested: they are the account's opposite-side open items, outside the positive-value population, and need their own procedure.", "Don't present upper_misstatement_limit as a conclusion: it is the Stringer statistic; comparing it with tolerable misstatement is the auditor's judgment.", "Don't supply book values to evaluate: they come from the re-drawn sample; audited carries only item_id and audited for every selected item."]
 mistakes = ["Passing --interval as a bare number: it is an amount with its unit, \"500.00 USD\", in the population's unit.", "Planning with tolerable but without an explicit expected (\"0.00 USD\" when none is expected) and confidence, or passing interval together with tolerable.", "Asking for a uniform size larger than population_count, or passing size to mus or interval to uniform.", "Evaluating without the sample's numeric as_known_at, or with audited values for only some selected items (exit 8 names the missing and unexpected ids)."]
 
+[[mcp.tool]]
+cluster = "fa.audit"
+name = "engagement"
+verb = "engagement"
+subcommands = ["open", "list", "show"]
+selector = "action"
+positionals = ["engagement?"]
+flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date"]
+switches = []
+required = []
+dont = ["Opening an engagement needs produce and a Human launch profile: an Agent-profile session journals no trunk record (FA-REF-013). Reads need read.", "Don't treat the materiality parameters as conclusions: overall, performance and clearly trivial are the auditor's stated parameters; the system compares against them mechanically and never judges materiality.", "Don't reopen an engagement to change its parameters: its profile is immutable; open a new engagement under another id."]
+mistakes = ["Giving a parameter as a bare number: amounts carry their unit (\"50000.00 USD\") in the book's base unit.", "Stating clearly trivial above performance, or performance above overall (refused, exit 2).", "Naming a scope period the book does not have: create the fiscal year's periods first."]
+
+[[mcp.tool]]
+cluster = "fa.audit"
+name = "adjustment"
+verb = "adjustment"
+subcommands = ["propose", "book", "pass"]
+selector = "action"
+positionals = []
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+flags = ["--engagement", "--proposal", "--entry", "--reason", "--key", "--date"]
+switches = []
+required = ["--engagement"]
+dont = ["Don't expect a proposal to post: it is a draft correcting entry journaled in the engagement; the client books it with its own posting, and booking then names that committed entry.", "Don't decide a proposal twice: booked or passed is final (FA-REF-181); propose a new adjustment if the correction must change.", "Don't present passed adjustments as immaterial by themselves: the reason records the stated basis; the evaluation against materiality is the auditor's."]
+mistakes = ["Booking with an entry whose legs differ from the proposal's (FA-REF-182): book exactly the correction that was proposed, or pass it.", "Proposing outside the engagement's scope periods (FA-REF-183).", "Passing a reason name over MCP: reason is the adjustment_pass code (1 ClearlyTrivial, 2 BelowPerformanceMateriality, 3 ManagementDeclined, 4 Other)."]
+
 # Intrinsic fiscal-year closing (fa-4o0).
 [[event]]
 name = "closing_routes_recorded"
@@ -3896,6 +3999,21 @@ ops = ["read"]
 [[bound]]
 verbs = ["produce"]
 ops = ["read", "produce"]
+
+# An engagement's records are the auditor's work product (fa-zgn).
+[[bound]]
+verbs = ["engagement"]
+subcommands = ["open"]
+ops = ["produce"]
+
+[[bound]]
+verbs = ["engagement"]
+subcommands = ["list", "show"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["adjustment"]
+ops = ["produce"]
 
 [[bound]]
 verbs = ["bank"]

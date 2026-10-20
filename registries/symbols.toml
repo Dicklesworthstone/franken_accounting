@@ -189,6 +189,9 @@ name = "ProductionProfile"
 [[label]]
 id = 51
 name = "BatesRange"
+[[label]]
+id = 60
+name = "ProposedAdjustment"
 
 # ---- property keys --------------------------------------------------------
 [[property]]
@@ -380,6 +383,9 @@ name = "unit_table_digest"
 [[property]]
 id = 69
 name = "next_bates"
+[[property]]
+id = 80
+name = "next_proposal"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]
