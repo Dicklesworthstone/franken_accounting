@@ -315,9 +315,12 @@ impl Book {
 }
 
 /// An intent as the scratch book posts it: under an embedded capability of
-/// its planner holding `post`, and `reconcile` only when that planner's
-/// admitted capability carries it. The planner's own authority (ops, ceilings,
-/// scope caveats, currency and revocation) was admitted on trunk when the
+/// its planner holding only the posting operations that planner actually
+/// carried: `post`, `post_softclosed`, `post_closed` and `reconcile`. Period
+/// exceptions and protected cash therefore retain their native admission
+/// without granting close, restatement or any unrelated authority. The
+/// planner's own authority (ops, ceilings, scope caveats, currency and
+/// revocation) was admitted on trunk when the
 /// intent was recorded, as a dry run of it is. The scratch book is the
 /// scenario's review copy, where an Agent's trunk-write denial (a rule about
 /// the real trunk) does not apply; every posting law does, and the intent's
@@ -329,12 +332,20 @@ fn scratch_request(
     planner: &fa_journal::Capability,
 ) -> Result<PostRequest, BookError> {
     let principal = intent.proposal().principal_ref;
-    let ops = if planner.ops().contains(&fa_policy::Op::Reconcile) {
-        &["post", "reconcile"][..]
-    } else {
-        &["post"][..]
-    };
-    let capability = fa_journal::Capability::embedded(principal, ops)
+    // These are the only additional operations used by the batchable
+    // posting classes. A Closing or Restatement intent cannot enter a
+    // scenario, so their more powerful operations are never copied.
+    let ops: Vec<&str> = [
+        fa_policy::Op::Post,
+        fa_policy::Op::PostSoftclosed,
+        fa_policy::Op::PostClosed,
+        fa_policy::Op::Reconcile,
+    ]
+    .into_iter()
+    .filter(|op| planner.ops().contains(op))
+    .map(fa_policy::Op::name)
+    .collect();
+    let capability = fa_journal::Capability::embedded(principal, &ops)
         .map_err(|e| BookError::Kernel(fa_journal::KernelError::Corrupt(e.to_string())))?;
     let approvals = intent.approvals().to_vec();
     Ok(PostRequest {
