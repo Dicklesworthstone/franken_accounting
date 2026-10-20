@@ -281,7 +281,7 @@ pub enum PalimpsestError {
         replacement_vid: VId,
         target_vid: VId,
     },
-    /// RestatementCase transition or SoD error.
+    /// A restatement diff certificate could not be encoded.
     InvalidRestatementCase(String),
     /// Overflow while computing net positions.
     Overflow,
@@ -858,313 +858,8 @@ pub fn explain_lineage(
 }
 
 // ---------------------------------------------------------------------------
-// RestatementCase lifecycle, dual control, and diff certificates (plan §8.4)
+// Restatement diff certificates (plan §8.3)
 // ---------------------------------------------------------------------------
-
-/// Scope of a restatement case (`RestatementCase`, plan §8.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RestatementScope {
-    /// Immaterial revision (`Revision`, `SupersessionKind::Revises`): adjusts
-    /// comparative figures without reopening a `Locked` period.
-    ImmaterialRevision,
-    /// Material prior-period restatement (`Restatement`, `SupersessionKind::Restates`):
-    /// authorizes reopening `Closed` or `Locked` periods in `affected_periods`.
-    PriorPeriodRestatement,
-    /// Prior-period adjustment (`PriorPeriodAdjustment`): posts in the current
-    /// `Open` or `SoftClosed` period against opening retained earnings.
-    PriorPeriodAdjustment,
-}
-
-impl RestatementScope {
-    #[must_use]
-    pub fn tag(self) -> u8 {
-        match self {
-            Self::ImmaterialRevision => 1,
-            Self::PriorPeriodRestatement => 2,
-            Self::PriorPeriodAdjustment => 3,
-        }
-    }
-
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::ImmaterialRevision => "ImmaterialRevision",
-            Self::PriorPeriodRestatement => "PriorPeriodRestatement",
-            Self::PriorPeriodAdjustment => "PriorPeriodAdjustment",
-        }
-    }
-
-    #[must_use]
-    pub fn admits_class(self, class: EntryClass) -> bool {
-        matches!(
-            (self, class),
-            (Self::ImmaterialRevision, EntryClass::REVISION)
-                | (Self::PriorPeriodRestatement, EntryClass::RESTATEMENT)
-                | (
-                    Self::PriorPeriodAdjustment,
-                    EntryClass::PRIOR_PERIOD_ADJUSTMENT
-                )
-        )
-    }
-}
-
-/// Lifecycle state of a restatement case (`RestatementCase`, plan §8.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RestatementCaseState {
-    Open,
-    Approved,
-    Applied,
-    Closed,
-}
-
-impl RestatementCaseState {
-    #[must_use]
-    pub fn tag(self) -> u8 {
-        match self {
-            Self::Open => 0,
-            Self::Approved => 1,
-            Self::Applied => 2,
-            Self::Closed => 3,
-        }
-    }
-
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Open => "Open",
-            Self::Approved => "Approved",
-            Self::Applied => "Applied",
-            Self::Closed => "Closed",
-        }
-    }
-
-    #[must_use]
-    pub fn can_transition_to(self, next: Self) -> bool {
-        matches!(
-            (self, next),
-            (Self::Open, Self::Approved)
-                | (Self::Approved, Self::Applied)
-                | (Self::Applied, Self::Closed)
-        )
-    }
-}
-
-/// First-class `RestatementCase` governance object (plan §8.4).
-///
-/// Immutable per transition; every transition produces a new state with
-/// monotone `CommitSeq` witnesses, enforces SoD (`case_preparer` exclusion),
-/// and upon `Close` binds a replayable `RestatementDiffCertificate` between
-/// `as_reported_seq` and `as_restated_seq`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RestatementCase {
-    pub case_id: Id128,
-    pub book_id: Id128,
-    pub vid: VId,
-    pub scope: RestatementScope,
-    pub reason_code: u16,
-    pub affected_periods: Vec<String>,
-    pub materiality_workpaper_oid: Oid,
-    pub preparer: Id128,
-    pub approvers: Vec<Id128>,
-    pub state: RestatementCaseState,
-    pub opened_at: CommitSeq,
-    pub approved_at: Option<CommitSeq>,
-    pub applied_at: Option<CommitSeq>,
-    pub closed_at: Option<CommitSeq>,
-    pub as_reported_seq: CommitSeq,
-    pub as_restated_seq: Option<CommitSeq>,
-    pub entry_vids: Vec<VId>,
-}
-
-/// Deterministic `VId` for a `RestatementCase`.
-#[must_use]
-pub fn restatement_case_vid(book_id: Id128, case_id: Id128) -> VId {
-    let d = domain_digest(b"fa:vid:restatement-case:v1", &[&book_id.0, &case_id.0]);
-    let mut lo = [0u8; 16];
-    lo.copy_from_slice(&d[..16]);
-    VId(u128::from_le_bytes(lo))
-}
-
-impl RestatementCase {
-    /// Open a new `RestatementCase` in `RestatementCaseState::Open`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn open(
-        case_id: Id128,
-        book_id: Id128,
-        scope: RestatementScope,
-        reason_code: u16,
-        affected_periods: Vec<String>,
-        materiality_workpaper_oid: Oid,
-        preparer: Id128,
-        opened_at: CommitSeq,
-        as_reported_seq: CommitSeq,
-    ) -> Result<Self, PalimpsestError> {
-        if affected_periods.is_empty() {
-            return Err(PalimpsestError::InvalidRestatementCase(
-                "affected_periods must not be empty".into(),
-            ));
-        }
-        let reasons = fa_registry::reason_codes::ReasonCodes::embedded()
-            .map_err(|e| PalimpsestError::InvalidRestatementCase(e.to_string()))?;
-        if reasons.get("supersession", reason_code).is_none() {
-            return Err(PalimpsestError::InvalidRestatementCase(format!(
-                "unregistered supersession reason_code {reason_code}"
-            )));
-        }
-        Ok(Self {
-            case_id,
-            book_id,
-            vid: restatement_case_vid(book_id, case_id),
-            scope,
-            reason_code,
-            affected_periods,
-            materiality_workpaper_oid,
-            preparer,
-            approvers: Vec::new(),
-            state: RestatementCaseState::Open,
-            opened_at,
-            approved_at: None,
-            applied_at: None,
-            closed_at: None,
-            as_reported_seq,
-            as_restated_seq: None,
-            entry_vids: Vec::new(),
-        })
-    }
-
-    /// Transition `Open -> Approved` under dual control (`sod_policy.toml` `case_preparer` exclusion).
-    pub fn approve(
-        &mut self,
-        approvers: Vec<Id128>,
-        required_approvers: usize,
-        at: CommitSeq,
-    ) -> Result<(), PalimpsestError> {
-        if !self.state.can_transition_to(RestatementCaseState::Approved) {
-            return Err(PalimpsestError::InvalidRestatementCase(format!(
-                "cannot transition RestatementCase from {} to Approved",
-                self.state.name()
-            )));
-        }
-        if at < self.opened_at {
-            return Err(PalimpsestError::InvalidRestatementCase(
-                "approved_at precedes opened_at".into(),
-            ));
-        }
-        let mut distinct = BTreeSet::new();
-        for a in &approvers {
-            if *a == self.preparer {
-                return Err(PalimpsestError::InvalidRestatementCase(
-                    "SoD violation (case_preparer): case preparer cannot approve their own RestatementCase".into(),
-                ));
-            }
-            distinct.insert(*a);
-        }
-        if distinct.len() < required_approvers.max(1) {
-            return Err(PalimpsestError::InvalidRestatementCase(format!(
-                "RestatementCase requires at least {} distinct approvers, found {}",
-                required_approvers.max(1),
-                distinct.len()
-            )));
-        }
-        self.approvers = approvers;
-        self.state = RestatementCaseState::Approved;
-        self.approved_at = Some(at);
-        Ok(())
-    }
-
-    /// Validate that an entry is admissible under this `RestatementCase` and record its `VId`.
-    pub fn record_entry(
-        &mut self,
-        entry_vid: VId,
-        payload: &EntryPayload,
-        effective_period: &str,
-    ) -> Result<(), PalimpsestError> {
-        if !matches!(
-            self.state,
-            RestatementCaseState::Approved | RestatementCaseState::Applied
-        ) {
-            return Err(PalimpsestError::InvalidRestatementCase(format!(
-                "RestatementCase must be Approved before applying entries (current state: {})",
-                self.state.name()
-            )));
-        }
-        if !self.scope.admits_class(payload.class) {
-            return Err(PalimpsestError::InvalidRestatementCase(format!(
-                "RestatementCase scope `{}` does not admit entry class `{}`",
-                self.scope.name(),
-                payload.class.name().unwrap_or("?")
-            )));
-        }
-        if self.scope != RestatementScope::PriorPeriodAdjustment
-            && !self.affected_periods.iter().any(|p| p == effective_period)
-        {
-            return Err(PalimpsestError::InvalidRestatementCase(format!(
-                "period `{effective_period}` is not in RestatementCase affected_periods {:?}",
-                self.affected_periods
-            )));
-        }
-        self.entry_vids.push(entry_vid);
-        Ok(())
-    }
-
-    /// Transition `Approved -> Applied` once all case entries are committed.
-    pub fn mark_applied(&mut self, as_restated_seq: CommitSeq) -> Result<(), PalimpsestError> {
-        if !self.state.can_transition_to(RestatementCaseState::Applied) {
-            return Err(PalimpsestError::InvalidRestatementCase(format!(
-                "cannot transition RestatementCase from {} to Applied",
-                self.state.name()
-            )));
-        }
-        if self.entry_vids.is_empty() {
-            return Err(PalimpsestError::InvalidRestatementCase(
-                "cannot mark RestatementCase Applied with zero committed entries".into(),
-            ));
-        }
-        if as_restated_seq <= self.as_reported_seq {
-            return Err(PalimpsestError::InvalidRestatementCase(
-                "as_restated_seq must be strictly greater than as_reported_seq".into(),
-            ));
-        }
-        self.state = RestatementCaseState::Applied;
-        self.applied_at = Some(as_restated_seq);
-        self.as_restated_seq = Some(as_restated_seq);
-        Ok(())
-    }
-
-    /// Transition `Applied -> Closed` and emit the replayable `RestatementDiffCertificate`
-    /// between the `as_reported` and `as_restated` period snapshots (plan §8.4).
-    pub fn close(
-        &mut self,
-        closed_at: CommitSeq,
-        as_reported_positions: &[PeriodPosition],
-        as_restated_positions: &[PeriodPosition],
-    ) -> Result<RestatementDiffCertificate, PalimpsestError> {
-        if !self.state.can_transition_to(RestatementCaseState::Closed) {
-            return Err(PalimpsestError::InvalidRestatementCase(format!(
-                "cannot transition RestatementCase from {} to Closed",
-                self.state.name()
-            )));
-        }
-        let as_restated_seq = self.as_restated_seq.ok_or_else(|| {
-            PalimpsestError::InvalidRestatementCase("missing as_restated_seq".into())
-        })?;
-        if closed_at < as_restated_seq {
-            return Err(PalimpsestError::InvalidRestatementCase(
-                "closed_at precedes as_restated_seq".into(),
-            ));
-        }
-        self.state = RestatementCaseState::Closed;
-        self.closed_at = Some(closed_at);
-        RestatementDiffCertificate::compute(
-            self.case_id,
-            self.book_id,
-            self.as_reported_seq,
-            as_restated_seq,
-            as_reported_positions,
-            as_restated_positions,
-        )
-    }
-}
 
 /// One `(period, account, unit)` balance observation at a known-at coordinate.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1187,7 +882,8 @@ pub struct RestatementDiffLine {
 }
 
 /// Replayable certificate of the exact `as-originally-reported` vs `as-restated`
-/// balance differences produced by a `RestatementCase` (plan §8.4).
+/// balance differences of a restatement (plan §8.3); the journaled case
+/// itself is fa-journal `case` (fa-75j4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestatementDiffCertificate {
     pub case_id: Id128,
@@ -1409,14 +1105,6 @@ mod tests {
     }
 
     #[test]
-    fn palimpsest_restatement_case_state_transitions_are_monotone() {
-        assert!(RestatementCaseState::Open.can_transition_to(RestatementCaseState::Approved));
-        assert!(RestatementCaseState::Approved.can_transition_to(RestatementCaseState::Applied));
-        assert!(RestatementCaseState::Applied.can_transition_to(RestatementCaseState::Closed));
-        assert!(!RestatementCaseState::Closed.can_transition_to(RestatementCaseState::Open));
-    }
-
-    #[test]
     fn every_supersession_kind_maps_to_registered_netting_law_and_computes_net_effect() {
         let classes = EntryClasses::embedded().expect("entry_classes.toml");
         let sup_reg = SupersessionKinds::embedded(&classes).expect("supersession_kinds.toml");
@@ -1600,57 +1288,10 @@ mod tests {
     }
 
     #[test]
-    fn restatement_case_enforces_sod_and_emits_replayable_diff_certificate() {
+    fn restatement_diff_certificate_replays_exactly_and_refuses_another_snapshot() {
         let usd = UnitId(1);
         let case_id = Id128([0xAA; 16]);
         let book_id = Id128([0xBB; 16]);
-        let preparer = Id128([1; 16]);
-        let approver1 = Id128([2; 16]);
-        let approver2 = Id128([3; 16]);
-
-        let mut rc = RestatementCase::open(
-            case_id,
-            book_id,
-            RestatementScope::PriorPeriodRestatement,
-            9, // MaterialMisstatement
-            vec!["FY2026-P02".to_string()],
-            Oid([0xCC; 32]),
-            preparer,
-            CommitSeq(10),
-            CommitSeq(10),
-        )
-        .expect("open case");
-
-        // Self-approval by preparer is refused (case_preparer exclusion).
-        let err = rc
-            .approve(vec![preparer, approver1], 2, CommitSeq(11))
-            .expect_err("preparer self-approval must fail");
-        assert!(err.to_string().contains("case_preparer"), "{err}");
-
-        // Dual control with two distinct non-preparer approvers succeeds.
-        rc.approve(vec![approver1, approver2], 2, CommitSeq(11))
-            .expect("dual control approval");
-        assert_eq!(rc.state, RestatementCaseState::Approved);
-
-        let restate_entry = sample_payload(
-            EntryClass::RESTATEMENT,
-            vec![
-                LegPayload::simple(Side::Debit, VId(6000), Amount::new(usd, 500)),
-                LegPayload::simple(Side::Credit, VId(2000), Amount::new(usd, 500)),
-            ],
-            vec![Supersession {
-                kind: SupersessionKind::Restates,
-                target: EntryRef {
-                    vid: VId(100),
-                    entry_digest: [0x11; 32],
-                },
-                reason_code: 9,
-            }],
-        );
-        rc.record_entry(VId(200), &restate_entry, "FY2026-P02")
-            .expect("record restatement entry");
-        rc.mark_applied(CommitSeq(12)).expect("mark applied");
-
         let before = vec![
             PeriodPosition {
                 period_code: "FY2026-P02".into(),
@@ -1679,11 +1320,17 @@ mod tests {
                 net_debit: -1_500,
             },
         ];
-        let cert = rc
-            .close(CommitSeq(13), &before, &after)
-            .expect("close case and emit diff certificate");
-        assert_eq!(rc.state, RestatementCaseState::Closed);
+        let cert = RestatementDiffCertificate::compute(
+            case_id,
+            book_id,
+            CommitSeq(10),
+            CommitSeq(13),
+            &before,
+            &after,
+        )
+        .expect("diff certificate");
         assert_eq!(cert.lines.len(), 2);
+        assert!(cert.lines.iter().all(|l| l.delta_net.abs() == 500));
         assert!(cert.verify_replay(&before, &after));
         assert!(!cert.verify_replay(&before, &before));
     }
