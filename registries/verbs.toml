@@ -669,26 +669,26 @@ example = "fa doctor --book ./books/myco --json"
 
 [[verb]]
 name = "triage"
-summary = "The book's state in one call (periods by state, open periods, pending cells, derived-state health, the daemon), with the commands to run next in next_actions."
+summary = "The book's state in one call (periods by state, open periods, pending cells, derived-state health, register watermark lag, drafts awaiting promotion, open findings by severity, the daemon), with the commands to run next in next_actions."
 writes = false
 subcommands = []
 flags = []
 switches = []
 events = ["book_triage"]
 exits = [0, 2, 4, 5, 7]
-usage = ["triage   (next_actions: what to run next, computed from the book's state)", "Requires current read authority over the whole book at its head; scoped tokens are refused before the survey."]
+usage = ["triage   (next_actions: what to run next, computed from the book's state)", "Requires current read authority over the whole book at its head; scoped tokens are refused before the survey.", "Open findings are counted across every recorded finding run at their current review status. drafts_awaiting_promotion counts open drafts holding planned intents: no other approval is persisted before its commit (a plan is portable bytes until then), and a draft never holds an intent the kernel refused. Bank lines are not surveyed here: fa bank status needs reconcile and privileged authority."]
 example = "fa triage --book ./books/myco --json"
 
 [[verb]]
 name = "next"
-summary = "The single most urgent next step for the book, as data (the rest of fa triage's steps follow in next_actions)."
+summary = "The single most urgent next step for the book that the caller's capability can run, as data (the rest of fa triage's steps follow in next_actions)."
 writes = false
 subcommands = []
 flags = []
 switches = []
 events = ["next_step"]
 exits = [0, 2, 4, 5, 7]
-usage = ["next   (command and why; null when there is nothing to do)", "Requires the same current whole-book read authority as triage."]
+usage = ["next   (command and why; null when there is nothing to do)", "Requires the same current whole-book read authority as triage.", "Under a launch capability (token, fad session, MCP), steps whose registered ops it holds come first, and the rest follow naming the ops they need; an Agent profile is never offered a step that writes the book. The embedded owner grants itself each command's ops, so it gets the book's order."]
 example = "fa next --book ./books/myco --json"
 
 
@@ -1166,8 +1166,8 @@ fields = ["version:string"]
 
 [[event]]
 name = "triage"
-doc = "Bare `fa`: where to start, as text."
-fields = ["version:string", "text:text"]
+doc = "Bare `fa`: where to start, as text. It opens no book and takes no lease: `book` is the directory this invocation would use (--book, else FA_BOOK, else the working directory when it is a book), and `daemon` is serving, absent or not answering (a fad lease is held but its socket does not answer), from the lease file and one status call; both are null when there is no book. A book directory's text lists five commands to run against it."
+fields = ["version:string", "text:text", "book:string?", "daemon:string?"]
 
 [[event]]
 name = "help"
@@ -1660,13 +1660,13 @@ fields = ["healthy:bool", "checks:[doctor_check]"]
 [[event]]
 name = "book_triage"
 book = true
-doc = "`fa triage`: the book's state. `health` is ok, or failing when derived state differs from the journal's refold (`derived` has the checks); `daemon` is serving (this answer came through the fad), absent, or held (with the holder). `pending_cells` counts register cells of open periods carrying reserved amounts. `due_holds` counts timed holds the latest tick has made due that no sweep has expired yet (plan §5.4, FA-CFG-02: still pending in every register); `due_reversals` counts scheduled reversals the latest tick has reached that the next reversal sweep mints, and `blocked_reversals` those whose period refuses the scheduler (reverse them by hand). The envelope's next_actions are computed from this state, most urgent first."
-fields = ["health:string", "daemon:string", "periods:int", "periods_by_state:object", "open_periods:[string]", "accounts:int", "pending_cells:int", "due_holds:int", "due_reversals:int", "blocked_reversals:int", "derived:[doctor_check]"]
+doc = "`fa triage`: the book's state. `health` is ok, or failing when derived state differs from the journal's refold (`derived` has the checks); `daemon` is serving (this answer came through the fad), absent, or held (with the holder). `pending_cells` counts register cells of open periods carrying reserved amounts. `due_holds` counts timed holds the latest tick has made due that no sweep has expired yet (plan §5.4, FA-CFG-02: still pending in every register); `due_reversals` counts scheduled reversals the latest tick has reached that the next reversal sweep mints, and `blocked_reversals` those whose period refuses the scheduler (reverse them by hand). `register_watermark_lag` lists each materialized period's register cache, its verified_through watermark and the journal entries after it; `open_drafts` and `drafts_awaiting_promotion` (open drafts holding planned intents, which an approver who is not the owner promotes); `finding_runs` counts recorded finding runs and `open_findings_by_severity` their findings still Open at the head, every severity listed. The envelope's next_actions are computed from this state, most urgent first and ranked for the caller's capability."
+fields = ["health:string", "daemon:string", "periods:int", "periods_by_state:object", "open_periods:[string]", "accounts:int", "pending_cells:int", "due_holds:int", "due_reversals:int", "blocked_reversals:int", "derived:[doctor_check]", "register_watermark_lag:[register_lag]", "open_drafts:int", "drafts_awaiting_promotion:int", "finding_runs:int", "open_findings_by_severity:object"]
 
 [[event]]
 name = "next_step"
 book = true
-doc = "`fa next`: the most urgent step `fa triage` would list for the book now, as `command` (run it with the same --book) and `why`; both null when there is nothing to do. The envelope's next_actions carry the steps after it."
+doc = "`fa next`: the most urgent step `fa triage` would list for the book now that the caller can run, as `command` (run it with the same --book) and `why`; both null when there is nothing to do. The envelope's next_actions carry the steps after it, ranked for the caller's capability (an Agent profile is never offered a book write)."
 fields = ["command:string?", "why:string?"]
 
 
@@ -2444,6 +2444,11 @@ fields = ["entry:hex", "ordinal:int", "account:string", "side:string", "effectiv
 name = "application"
 doc = "One application against an open item."
 fields = ["entry:hex", "ordinal:int", "amount:amount", "recorded_at:seq", "live:bool"]
+
+[[shape]]
+name = "register_lag"
+doc = "One materialized period's register cache in fa triage: its cache_status (verified, corrupt or uninitialized), the verified_through watermark of the journal prefix it folded, and lag_entries, the journal entries recorded after it (fa registers advance folds them in)."
+fields = ["period:string", "cache_status:string", "verified_through:seq?", "lag_entries:int"]
 
 [[shape]]
 name = "register_check"

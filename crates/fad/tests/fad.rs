@@ -600,6 +600,29 @@ fn a_killed_daemon_releases_the_lease_and_the_next_one_replaces_its_socket() {
     );
 }
 
+/// Bare `fa` (plan §15.3; fa-g8em) names the book and whether a fad serves
+/// it, from the lease and one status call, without opening the book: the
+/// serving daemon keeps its lease and answers the next command.
+#[test]
+fn bare_fa_reports_whether_a_fad_serves_the_book() {
+    let dir = tmp("bare");
+    let (book, _) = book(&dir);
+    let b = book.display().to_string();
+    let daemon = start(&book);
+    let served = ok(&["--book", &b, "--json"]);
+    assert_eq!(field(&served, "event"), Some("triage"), "{served}");
+    assert_eq!(field(&served, "daemon"), Some("serving"), "{served}");
+    assert!(served.contains("a fad serves it"), "{served}");
+    // The probe took nothing from the daemon: it still serves.
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"]);
+    assert!(tb.contains("\"credits\":\"10.00 USD\""), "{tb}");
+    let (code, _, _) = fad(&["stop", "--book", &b, "--json"]);
+    assert_eq!(code, 0);
+    assert_eq!(daemon.finish().0, 0);
+    let stopped = ok(&["--book", &b, "--json"]);
+    assert_eq!(field(&stopped, "daemon"), Some("absent"), "{stopped}");
+}
+
 #[test]
 fn every_daemon_event_is_emitted_and_fad_refuses_what_it_does_not_know() {
     let dir = tmp("events");
