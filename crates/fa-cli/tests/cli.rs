@@ -6657,6 +6657,30 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["period", "list"]).0, 0);
+    // fa-waow: the calendar's rule and its periods, created or not.
+    let (code, out) = run(true, &["calendar", "show"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(text(&doc(&out), "kind"), "monthly", "{out}");
+    let (code, out) = run(true, &["calendar", "periods", "--fiscal-year", "2027"]);
+    assert_eq!(code, 0, "{out}");
+    let previewed = doc(&out);
+    let previewed = arr(&previewed, "periods");
+    assert!(!previewed.is_empty(), "{out}");
+    assert!(
+        previewed
+            .iter()
+            .all(|p| p.get("created") == Some(&Json::Bool(false))),
+        "{out}"
+    );
+    let (code, out) = run(true, &["calendar", "periods", "--fiscal-year", "2026"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        arr(&doc(&out), "periods")
+            .iter()
+            .any(|p| text(p, "code") == "FY2026-P03" && p.get("created") == Some(&Json::Bool(true))),
+        "{out}"
+    );
+    assert_eq!(run(true, &["calendar", "periods"]).0, 2);
     assert_eq!(run(true, &["period", "open", "FY2026-P03"]).0, 0);
     let source = write(
         &dir,

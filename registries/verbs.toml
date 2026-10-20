@@ -134,6 +134,19 @@ exits = [0, 2, 3, 4, 5, 6, 7]
 usage = ["period create --fiscal-year N", "period list", "period open|soft-close|close|lock|reopen <code> [--to open|soft-closed] [--reason <name|code>] [--key K]   (--reason is required for close, lock and reopen: Scheduled, Reclose or AuditComplete; reopen gives LateTransactions, AuditAdjustment, ErrorCorrection or Restatement; open and soft-close default to Scheduled. The period dates the control: open on its first day, every other transition on its last day)", "period <transition> <code> --dry-run   (returns the sealed proposal, its proposal_digest and canonical bytes as hex; writes no file or book data; commit authority and approvals are checked separately)", "period lock|reopen <code> --plan-out <file>   (owner CLI only: writes the planned proposal and prints its proposal_digest; commits nothing)", "period lock|reopen <code> --plan <file|-> --approval <vid>...   (owner CLI commits exactly the planned proposal, citing approvals of its digest; stdin accepts binary or complete bytes hex)"]
 example = "fa period open FY2026-P03 --book ./books/myco --json"
 
+
+[[verb]]
+name = "calendar"
+summary = "The book's fiscal calendar (plan §7.2), as journaled at genesis, and the periods it generates for a fiscal year, each marked created or not. Reads only; fa period create records a year's periods."
+writes = false
+subcommands = ["show", "periods"]
+flags = ["--fiscal-year"]
+switches = []
+events = ["calendar", "calendar_periods"]
+exits = [0, 2, 4, 5, 7]
+usage = ["calendar show   (id, kind, fiscal-year start month or week pattern and year-end rule, adjustment periods)", "calendar periods --fiscal-year N   (every period the calendar generates for FY N, with its kind and civil bounds, and whether fa period create has recorded it)"]
+example = "fa calendar periods --fiscal-year 2026 --book ./books/myco --json"
+
 [[verb]]
 name = "close"
 summary = "Rehearse an existing draft atomically with exact balance changes and a replayable certificate, or journal routes and prepare an incremental year-end close for independent approval."
@@ -1307,6 +1320,18 @@ name = "periods_created"
 book = true
 doc = "A fiscal year's periods, all Future."
 fields = ["fiscal_year:int", "periods:[string]", "recorded_at:seq"]
+
+[[event]]
+name = "calendar"
+book = true
+doc = "The book's fiscal calendar: its id, kind (monthly, weeks, thirteen-period), the month a monthly fiscal year starts in (null otherwise), the week pattern and year-end rule of a week-based calendar (null otherwise) and the number of adjustment periods per year."
+fields = ["id:string", "kind:string", "year_start_month:int?", "week_pattern:string?", "year_end_rule:string?", "adjustment_periods:int"]
+
+[[event]]
+name = "calendar_periods"
+book = true
+doc = "Every period the book's calendar generates for fiscal_year, in order, with its ordinal, kind and civil bounds as period list renders them, and created: whether fa period create has recorded it. start and end are the fiscal year's bounds."
+fields = ["fiscal_year:int", "start:date", "end:date", "periods:[calendar_period]"]
 
 [[event]]
 name = "periods"
@@ -3114,7 +3139,7 @@ doc = "Restatement cases (plan §8.3): read one journaled case, or every case of
 [[mcp.cluster]]
 name = "fa.registry"
 on_demand = true
-doc = "The registered laws (rounding, allocation, conversion, FX, lot, tracing) and unit versions this build embeds (plan §6.2–§6.4): the law names an intent may use and each unit's immutable scale. Pure reads without a book. On demand (fa-mcp --cluster fa.registry): the default surface is at its 40-tool budget."
+doc = "The registered laws (rounding, allocation, conversion, FX, lot, tracing) and unit versions this build embeds (plan §6.2–§6.4): the law names an intent may use and each unit's immutable scale; and the book's fiscal calendar with the periods it generates. Pure reads. On demand (fa-mcp --cluster fa.registry): the default surface is at its 40-tool budget."
 
 [[mcp.cluster]]
 name = "fa.audit"
@@ -4179,6 +4204,19 @@ dont = ["Call it before writing an amount to see each unit version's immutable s
 mistakes = ["Expecting a unit's scale to change: a precision change is a new unit version."]
 
 [[mcp.tool]]
+cluster = "fa.registry"
+name = "calendar"
+verb = "calendar"
+subcommands = ["show", "periods"]
+selector = "action"
+positionals = []
+flags = ["--fiscal-year"]
+switches = []
+required = []
+dont = ["Use action periods with fiscal_year to preview a year's period codes and bounds before fa period create records them; created says which already exist."]
+mistakes = ["Passing a date as fiscal_year: it is a year such as 2026, numbered by the calendar year the fiscal year ends in."]
+
+[[mcp.tool]]
 cluster = "fa.audit"
 name = "sample"
 verb = "sample"
@@ -4302,6 +4340,11 @@ fields = ["digest:hex", "checkpoint:hex", "checkpoint_public_key:hex", "verify:s
 name = "checkpoint_state"
 doc = "One journaled accumulator state: its oid, the commit that recorded it, the entry prefix it covers (through_seq), its leaf count, its evidence boundary (null: entries alone), root and predecessor."
 fields = ["oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "evidence_after_seq:seq?", "root:hex", "prev_state_oid:hex?"]
+
+[[shape]]
+name = "calendar_period"
+doc = "A period the calendar generates: code, ordinal in its fiscal year, kind, civil bounds and whether the book has recorded it."
+fields = ["code:string", "ordinal:int", "kind:string", "start:date", "end:date", "created:bool"]
 
 [[shape]]
 name = "verify_target"
@@ -4832,6 +4875,10 @@ ops = ["read"]
 
 [[bound]]
 verbs = ["branch"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["calendar"]
 ops = ["read"]
 
 # party identifiers is absent on purpose: a bank-detail change is the

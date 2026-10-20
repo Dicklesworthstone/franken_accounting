@@ -79,6 +79,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("law", crate::laws::law_cmd),
     ("unit", crate::laws::unit_cmd),
     ("period", period_cmd),
+    ("calendar", calendar_cmd),
     ("close", crate::closing::close_cmd),
     ("approve", approve_cmd),
     ("capability", capability_cmd),
@@ -5830,6 +5831,160 @@ pub(crate) fn parse_digest(text: &str, what: &str) -> Result<[u8; 32], Fail> {
         *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).map_err(|_| bad())?;
     }
     Ok(digest)
+}
+
+// ---------------------------------------------------------------------------
+// calendar
+// ---------------------------------------------------------------------------
+
+/// `fa calendar show|periods` (plan §7.2, §15.3 Chart and registries;
+/// fa-waow): the fiscal calendar the book journaled at genesis, and the
+/// periods it generates for a fiscal year (whether or not `fa period create`
+/// has recorded them yet). Reads only.
+fn calendar_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa calendar show --json; fa calendar periods --fiscal-year 2026 --json";
+    let sub = args.positional.get(1).map(String::as_str);
+    if args.positional.len() != 2 || !matches!(sub, Some("show" | "periods")) {
+        return Err(usage("calendar needs show or periods", EXAMPLE));
+    }
+    if sub == Some("show") && args.flag("--fiscal-year").is_some() {
+        return Err(usage(
+            "calendar show takes no --fiscal-year; calendar periods does",
+            EXAMPLE,
+        ));
+    }
+    let fiscal_year = if sub == Some("periods") {
+        if args.flag_all("--fiscal-year").len() != 1 {
+            return Err(usage(
+                "calendar periods needs exactly one --fiscal-year",
+                EXAMPLE,
+            ));
+        }
+        let text = args.flag("--fiscal-year").unwrap_or_default();
+        Some(
+            text.parse::<i32>()
+                .map_err(|_| usage(format!("--fiscal-year `{text}` is not a year"), EXAMPLE))?,
+        )
+    } else {
+        None
+    };
+    let book = ctx.books.open(args)?;
+    let calendar = book.context().calendar.clone();
+    let Some(fy) = fiscal_year else {
+        let (kind, year_start_month, pattern, end_rule) = match &calendar.kind {
+            fa_time::CalendarKind::Monthly12 { year_start_month } => {
+                ("monthly", Some(*year_start_month), None, None)
+            }
+            fa_time::CalendarKind::Weeks { pattern, end_rule } => (
+                "weeks",
+                None,
+                Some(match pattern {
+                    fa_time::WeekPattern::W445 => "4-4-5",
+                    fa_time::WeekPattern::W454 => "4-5-4",
+                    fa_time::WeekPattern::W544 => "5-4-4",
+                }),
+                Some(year_end_rule(end_rule)),
+            ),
+            fa_time::CalendarKind::Week5253 { end_rule } => {
+                ("thirteen-period", None, None, Some(year_end_rule(end_rule)))
+            }
+        };
+        ctx.out.event(
+            "calendar",
+            vec![
+                ("id", s(&calendar.id)),
+                ("kind", s(kind)),
+                (
+                    "year_start_month",
+                    year_start_month.map_or(Json::Null, |m| Json::Int(i128::from(m))),
+                ),
+                ("week_pattern", pattern.map_or(Json::Null, s)),
+                ("year_end_rule", end_rule.as_ref().map_or(Json::Null, s)),
+                (
+                    "adjustment_periods",
+                    Json::Int(i128::from(calendar.adjustment_periods)),
+                ),
+            ],
+            &format!(
+                "calendar {} ({kind}{}{}), {} adjustment period(s)",
+                calendar.id,
+                year_start_month.map_or_else(String::new, |m| format!(
+                    ", fiscal year starts in month {m}"
+                )),
+                end_rule.map_or_else(String::new, |r| format!(", year ends on the {r}")),
+                calendar.adjustment_periods
+            ),
+        );
+        return Ok(());
+    };
+    let refused = |e: fa_time::DateError| {
+        usage(
+            format!("the book's calendar has no fiscal year {fy}: {e:?}"),
+            EXAMPLE,
+        )
+    };
+    let (start, end) = calendar.year_bounds(fy).map_err(refused)?;
+    let periods = calendar.periods_for_year(fy).map_err(refused)?;
+    let recorded: std::collections::BTreeSet<String> =
+        book.periods()?.into_iter().map(|p| p.code).collect();
+    let human = periods
+        .iter()
+        .map(|p| {
+            format!(
+                "{:<14} {:<11} {} .. {}{}",
+                p.code,
+                kind_name(p.kind),
+                p.start.render(),
+                p.end.render(),
+                if recorded.contains(&p.code) {
+                    ""
+                } else {
+                    "  (not created)"
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ctx.out.event(
+        "calendar_periods",
+        vec![
+            ("fiscal_year", Json::Int(i128::from(fy))),
+            ("start", s(start.render())),
+            ("end", s(end.render())),
+            (
+                "periods",
+                Json::Arr(
+                    periods
+                        .iter()
+                        .map(|p| {
+                            obj(vec![
+                                ("code", s(&p.code)),
+                                ("ordinal", Json::Int(i128::from(p.ordinal))),
+                                ("kind", s(kind_name(p.kind))),
+                                ("start", s(p.start.render())),
+                                ("end", s(p.end.render())),
+                                ("created", Json::Bool(recorded.contains(&p.code))),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+/// A week-based year-end rule as one phrase.
+fn year_end_rule(rule: &fa_time::YearEndRule) -> String {
+    match rule {
+        fa_time::YearEndRule::LastWeekdayOfMonth { weekday, month } => {
+            format!("last {weekday:?} of month {month}")
+        }
+        fa_time::YearEndRule::WeekdayNearestEnd { weekday, month } => {
+            format!("{weekday:?} nearest the end of month {month}")
+        }
+    }
 }
 
 fn kind_name(k: PeriodKind) -> &'static str {
