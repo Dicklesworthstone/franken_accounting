@@ -440,6 +440,32 @@ fn an_engagement_proposes_books_and_passes_adjustments_and_posts_nothing_itself(
     ]);
     assert_eq!(exit, 2, "an unregistered reason is a usage error");
 
+    // The summary of uncorrected misstatements holds the passed proposal
+    // only: had it been booked, income 10.00 lower and accrued liabilities
+    // 10.00 higher, within every stated parameter.
+    let sud = f.ok(&["engagement", "sud", "FY26-audit"]);
+    let sud = data(&sud);
+    let items = rows(sud, "items");
+    assert_eq!(items.len(), 1, "{}", sud.render());
+    assert_eq!(int(&items[0], "number"), 2);
+    assert_eq!(text(&items[0], "reason"), "ClearlyTrivial");
+    let effect = items[0].get("effect").unwrap();
+    assert_eq!(text(effect, "income"), "-10.00 USD");
+    assert_eq!(text(effect, "liabilities"), "10.00 USD");
+    assert_eq!(text(effect, "assets"), "0.00 USD");
+    assert_eq!(items[0].get("clearly_trivial"), Some(&Json::Bool(true)));
+    assert_eq!(text(sud, "rollover_income"), "-10.00 USD");
+    assert_eq!(
+        text(sud.get("iron_curtain").unwrap(), "liabilities"),
+        "10.00 USD"
+    );
+    assert_eq!(sud.get("exceeds_performance"), Some(&Json::Bool(false)));
+    assert_eq!(sud.get("exceeds_overall"), Some(&Json::Bool(false)));
+    assert_eq!(
+        sud.get("prior_period_carry_forward"),
+        Some(&Json::Bool(false))
+    );
+
     // Show and list: the journal states both decisions.
     let shown = f.ok(&["engagement", "show", "FY26-audit"]);
     let summary = data(&shown).get("engagement").unwrap();
