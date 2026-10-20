@@ -142,7 +142,7 @@ impl Check {
 }
 
 /// What a failure says, whatever its kind.
-fn describe(fail: &Fail) -> String {
+pub(crate) fn describe(fail: &Fail) -> String {
     match fail {
         Fail::Usage(e) => format!("{} (fix: {})", e.message, e.fix),
         Fail::Refusal(r) => format!("{}: {}", r.code, r.message),

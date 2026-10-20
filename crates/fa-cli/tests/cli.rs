@@ -3825,6 +3825,72 @@ fn statement_issue_pins_as_originally_reported_to_the_issued_certificate() -> st
     Ok(())
 }
 
+/// fa-waow (plan §15.3 Proofs): `fa verify book` runs every book-level
+/// verify target over a posted book, each emitting its own event, then one
+/// green `book_verification` naming each target's pass.
+#[test]
+fn verify_book_runs_every_verify_target() -> std::io::Result<()> {
+    let dir = tmp("verify-book")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Verify Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let rent = write(
+        &dir,
+        "rent.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"rent","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    ok(&["post", "--intent", &rent, "--evidence", &evidence, "--json"]);
+    // A register cache never advanced differs from its refold (fa-q2z):
+    // advance March's so the registers target can pass.
+    ok(&["registers", "advance", "--period", "FY2026-P03", "--json"]);
+    let out = ok(&["verify", "book", "--json"]);
+    for event in [
+        "projections_verified",
+        "periods_verified",
+        "schedules_verified",
+        "accumulator_verified",
+        "open_items_verified",
+        "availability_verified",
+        "usage_verified",
+        "entities_verified",
+        "registers_verified",
+        "replay_verified",
+        "book_verification",
+    ] {
+        assert!(
+            out.contains(&format!("\"event\":\"{event}\"")),
+            "{event}: {out}"
+        );
+    }
+    let verdict = doc(&out);
+    assert_eq!(verdict.get("green"), Some(&Json::Bool(true)), "{out}");
+    let targets = arr(&verdict, "targets");
+    assert_eq!(targets.len(), 10, "{out}");
+    assert!(
+        targets.iter().all(|t| text(t, "verdict") == "pass"),
+        "{out}"
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["verify", "book", "--fiscal-year", "2026", "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
 /// `fa law list|show` and `fa unit list` (plan §6.2–§6.4, Appendix D): the
 /// registered laws and unit versions, without a book.
 #[test]
@@ -6909,6 +6975,51 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["verify", "schedules"]).0, 0);
     // FY2026 exists and FY2026-P03 was opened by a journaled transition.
     assert_eq!(run(true, &["verify", "periods"]).0, 0);
+    // fa-waow: every target above in one call, each with its own event, then
+    // one verdict.
+    let (code, out) = run(true, &["verify", "book"]);
+    assert_eq!(code, 0, "{out}");
+    let verdict = doc(&out);
+    assert_eq!(verdict.get("green"), Some(&Json::Bool(true)), "{out}");
+    let ran: Vec<&str> = arr(&verdict, "targets")
+        .iter()
+        .map(|t| text(t, "target"))
+        .collect();
+    assert_eq!(
+        ran,
+        [
+            "projections",
+            "periods",
+            "schedules",
+            "accumulator",
+            "open-items",
+            "availability",
+            "usage",
+            "entities",
+            "registers",
+            "replay"
+        ]
+    );
+    assert!(
+        arr(&verdict, "targets")
+            .iter()
+            .all(|t| text(t, "verdict") == "pass"),
+        "{out}"
+    );
+    for event in [
+        "projections_verified",
+        "registers_verified",
+        "replay_verified",
+    ] {
+        assert!(
+            out.contains(&format!("\"event\":\"{event}\"")),
+            "{event}: {out}"
+        );
+    }
+    assert_eq!(
+        run(true, &["verify", "book", "--period", "FY2026-P03"]).0,
+        2
+    );
     let more = write(
         &dir,
         "more.json",

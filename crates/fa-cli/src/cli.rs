@@ -11643,6 +11643,113 @@ fn verify_usage_at(
     Ok(verified)
 }
 
+/// The targets `fa verify book` runs, cheapest first (plan §15.3 Proofs;
+/// fa-waow). `verify close` is not one: it asks whether a fiscal year needs a
+/// close, which is not a question about the book's integrity.
+const BOOK_VERIFY_TARGETS: [&str; 10] = [
+    "projections",
+    "periods",
+    "schedules",
+    "accumulator",
+    "open-items",
+    "availability",
+    "usage",
+    "entities",
+    "registers",
+    "replay",
+];
+
+/// `fa verify book`: every book-level verify target in one call, entities
+/// and registers over every period. Each target emits its own event; then
+/// `book_verification` names each target's verdict. Any target's
+/// verification failure is exit 8; otherwise the first other failure (a
+/// refusal, an I/O error) is returned as itself, after the remaining
+/// targets ran.
+fn verify_book(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2
+        || args.flag("--period").is_some()
+        || args.flag("--fiscal-year").is_some()
+    {
+        return Err(usage(
+            "verify book runs every target over the whole book and takes no positional argument or period filter",
+            "fa verify book --book <dir> --json",
+        ));
+    }
+    let periods: Vec<String> = {
+        let principal = ctx.principal(args);
+        let capability = ctx.capability(args, &["read", "verify"])?;
+        let book = ctx.books.open_admitted(args, |book| {
+            admit_registers(book, principal, &capability, "verifying the book")
+        })?;
+        book.periods()?.into_iter().map(|p| p.code).collect()
+    };
+    let mut targets = Vec::new();
+    let mut human = Vec::new();
+    let mut failed = Vec::new();
+    let mut first_error = None;
+    for target in BOOK_VERIFY_TARGETS {
+        let by_period = matches!(target, "entities" | "registers");
+        let (verdict, detail) = if by_period && periods.is_empty() {
+            ("skipped", "the book has no periods".to_string())
+        } else {
+            let mut sub = args.clone();
+            sub.positional = vec!["verify".to_string(), target.to_string()];
+            if by_period {
+                sub.flags.insert("--period".to_string(), periods.clone());
+            }
+            match verify_cmd(ctx, &sub) {
+                Ok(()) => ("pass", String::new()),
+                Err(fail @ Fail::Verification { .. }) => {
+                    failed.push(target);
+                    ("fail", crate::triage::describe(&fail))
+                }
+                Err(fail) => {
+                    let detail = crate::triage::describe(&fail);
+                    first_error.get_or_insert(fail);
+                    ("error", detail)
+                }
+            }
+        };
+        human.push(if detail.is_empty() {
+            format!("{target:<13} {verdict}")
+        } else {
+            format!("{target:<13} {verdict}: {detail}")
+        });
+        targets.push(obj(vec![
+            ("target", s(target)),
+            ("verdict", s(verdict)),
+            ("detail", s(&detail)),
+        ]));
+    }
+    let green = failed.is_empty() && first_error.is_none();
+    ctx.out.event(
+        "book_verification",
+        vec![
+            ("green", Json::Bool(green)),
+            ("targets", Json::Arr(targets.clone())),
+        ],
+        &human.join("\n"),
+    );
+    if !failed.is_empty() {
+        return Err(Fail::Verification {
+            message: format!("book verification failed: {}", failed.join(", ")),
+            detail: Json::Arr(targets),
+            cite: Some(
+                "plan §16: the journal is the truth; every derived structure refolds to it".into(),
+            ),
+            fix: Some(format!(
+                "run each failing target alone for its finding: {}",
+                failed
+                    .iter()
+                    .map(|t| format!("fa verify {t} --json"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )),
+        });
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
 fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let target = args.positional.get(1).map(String::as_str);
@@ -11655,6 +11762,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     match target {
+        Some("book") => verify_book(ctx, args),
         Some("accumulator") => notary::verify_accumulator(ctx, args),
         Some("close") => crate::closing::verify_close(ctx, args),
         Some("usage") => {

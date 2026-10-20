@@ -59,6 +59,11 @@ fa verify registers --period FY2026-P03 --book acme --json
 fa verify projections --book acme --json
 fa checkpoint create --grant witness --book acme --json
 fa verify accumulator --book acme --json
+# Every book-level verify target (entities and registers over every period), then one verdict.
+fa verify book --book acme --json
+# The registered rounding, allocation, FX, conversion, lot and tracing laws, and the unit versions.
+fa law list --json
+fa unit list --json
 ```
 
 `fa chart templates` lists the charts (`us-gaap-smb`, `ifrs-sme`, `us-bank-call-report`); they are starting points, not GAAP, IFRS or regulatory advice. `--grade HumanUpload` declares that a human supplied the document; an agent's own upload is `AgentUpload`. Bare `fa`, `fa --help` and `fa robot-docs guide` orient an agent. Bare `fa` also names the book it would use (`--book`, `FA_BOOK`, or the working directory when it is a book) and whether a `fad` serves it, without opening the book. `fa triage` reports periods, pending cells, register watermark lag, drafts awaiting promotion and open findings by severity. `fa next` ranks the next steps for the caller's capability, and an Agent token is never offered a step that writes the book.
