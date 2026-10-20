@@ -537,9 +537,16 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
                 &["book", "create", "--name", "Other", "--json"],
             );
             assert_eq!(code, 0, "{out}");
-            let (code, out, _) = fa(Some(&other), &["replay", &path, "--json"]);
-            assert_eq!(code, 8, "{out}");
-            assert!(out.contains("another book"), "{out}");
+            // The identity refusal precedes any prefix check: this book's head
+            // is lower than the certificate's prefix.
+            for verb in [vec!["replay"], vec!["certificate", "status"]] {
+                let mut args = verb;
+                args.extend([path.as_str(), "--json"]);
+                let (code, out, _) = fa(Some(&other), &args);
+                assert_eq!(code, 8, "{out}");
+                assert!(out.contains("another book"), "{out}");
+                assert!(out.contains("FA-REF-150"), "{out}");
+            }
         }
         retained.push((oid.to_string(), original));
     }

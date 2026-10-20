@@ -48,6 +48,13 @@ fn prepare_artifact_history(
     artifact: &ReportArtifact,
     bytes: &[u8],
 ) -> Result<(), Fail> {
+    // Another book's prefix means nothing here: refuse the certificate as
+    // another book's before selecting any prefix of this one.
+    if artifact.book_id() != book.context().book_id {
+        return Err(certificate_invalid(
+            "report artifact belongs to another book",
+        ));
+    }
     let known_at = match artifact.family() {
         ReportArtifactFamily::StatementDiff => {
             let certificate = fa::StatementDiffCertificate::decode(bytes)?;
