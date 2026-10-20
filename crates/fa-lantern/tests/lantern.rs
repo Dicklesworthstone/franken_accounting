@@ -4180,3 +4180,341 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     assert!(!r_cc.findings.is_empty());
     witness::determinism(&snapshot, &h.book, &ConfirmCoverage::new().unwrap()).unwrap();
 }
+
+/// Deterministic SplitMix64 generator + greedy shrinker (`fs-propcheck` style,
+/// zero floats, no ambient entropy) for `fa-vpk` property and differential suites.
+struct PropGen {
+    state: u64,
+}
+
+impl PropGen {
+    const fn from_seed(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn u64_in(&mut self, lo: u64, hi_inclusive: u64) -> u64 {
+        let span = (hi_inclusive - lo).saturating_add(1);
+        if span == 0 {
+            self.next_u64()
+        } else {
+            lo + (self.next_u64() % span)
+        }
+    }
+}
+
+fn shrink_u64(v: u64) -> Vec<u64> {
+    if v == 0 {
+        return Vec::new();
+    }
+    let mut out = vec![0];
+    let mut cur = v / 2;
+    while cur > 0 && v - cur != 0 {
+        out.push(v - cur);
+        cur /= 2;
+    }
+    if v > 1 {
+        out.push(v - 1);
+    }
+    out.dedup();
+    out
+}
+
+fn shrink_vec_u64(xs: &[u64]) -> Vec<Vec<u64>> {
+    let mut out = Vec::new();
+    for i in 0..xs.len() {
+        for cand in shrink_u64(xs[i]) {
+            let mut next = xs.to_vec();
+            next[i] = cand;
+            out.push(next);
+        }
+    }
+    out
+}
+
+fn check_property_with_shrinking<T: Clone>(
+    base_seed: u64,
+    cases: u64,
+    mut make: impl FnMut(&mut PropGen) -> T,
+    mut shrink: impl FnMut(&T) -> Vec<T>,
+    mut check: impl FnMut(&T) -> Result<(), String>,
+) -> Result<(), (u64, T, T, usize, String)> {
+    for case in 0..cases {
+        let case_seed = base_seed.wrapping_add(case.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let mut g = PropGen::from_seed(case_seed);
+        let original = make(&mut g);
+        if let Err(mut reason) = check(&original) {
+            let mut minimal = original.clone();
+            let mut steps = 0usize;
+            while steps < 256 {
+                let mut improved = false;
+                for cand in shrink(&minimal) {
+                    if let Err(r) = check(&cand) {
+                        minimal = cand;
+                        reason = r;
+                        steps += 1;
+                        improved = true;
+                        break;
+                    }
+                }
+                if !improved {
+                    break;
+                }
+            }
+            return Err((case_seed, original, minimal, steps, reason));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn statistical_audit_lane_oracles_numpy_sampling_and_propcheck_suites() {
+    use fa_lantern::digits::{
+        BENFORD_1E9, BENFORD_FIRST_TWO_1E9, BENFORD_SECOND_1E9, FirstTwoDigits, SecondDigit,
+        chi_square_1e6, chi_square_table_1e6, expected_counts_1e9, first_digit_expected_counts,
+        first_two_digits_expected_counts, ks_1e9, ks_critical_1e9, ks_table_1e9, mad_1e9,
+        mad_table_1e9, second_digit_expected_counts,
+    };
+    use fa_lantern::sample::{
+        Pcg64Dxsm, PopulationItem, SamplePopulation, SeedSequence, sample_mus,
+        sample_stratified_neyman, sample_uniform,
+    };
+    use fa_registry::procedures::Claim;
+
+    // 1. Registry claim class check: statistical procedures are registered with Claim::Statistical.
+    let registered = fa_lantern::catalog::registered().unwrap();
+    for id in [
+        "benford.first_digit",
+        "benford.second_digit",
+        "benford.first_two_digits",
+        "numbers.relative_size_factor",
+        "numbers.threshold_splitting",
+    ] {
+        let row = registered
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("missing procedure {id}"));
+        assert_eq!(row.claim, Claim::Statistical);
+        assert_eq!(row.claim.name(), "statistical");
+    }
+
+    // 2. End-to-end Benford procedure runs emit KS + chi-square in certified narratives
+    // and match `fa-reference::lantern` naive oracles on the posted corpus.
+    let (h, c) = posted_corpus();
+    let rows = naive_rows(&h, &c);
+    let counts1 = naive::first_digit_counts_for(&rows, h.usd.0, true);
+    let r1 = h.run(&FirstDigit::with(
+        Params::defaults(FirstDigit::ID)
+            .unwrap()
+            .set("min_population", 1)
+            .unwrap(),
+    ));
+    assert_eq!(r1.findings.len(), 1);
+    assert!(r1.findings[0].narrative.contains("chi-square"));
+    assert!(r1.findings[0].narrative.contains("KS "));
+    assert_eq!(
+        ks_1e9(&counts1).unwrap(),
+        naive::naive_ks_table_1e9(&counts1, &BENFORD_1E9)
+    );
+    assert_eq!(
+        ks_table_1e9(&counts1, &BENFORD_1E9).unwrap(),
+        naive::naive_ks_table_1e9(&counts1, &BENFORD_1E9)
+    );
+    assert_eq!(
+        chi_square_1e6(&counts1).unwrap(),
+        naive::naive_chi_square_table_1e6(&counts1, &BENFORD_1E9)
+    );
+    assert_eq!(
+        chi_square_table_1e6(&counts1, &BENFORD_1E9).unwrap(),
+        naive::naive_chi_square_table_1e6(&counts1, &BENFORD_1E9)
+    );
+    assert_eq!(
+        mad_table_1e9(&counts1, &BENFORD_1E9).unwrap(),
+        naive::naive_mad_table_1e9(&counts1, &BENFORD_1E9)
+    );
+
+    let r2 = h.run(&SecondDigit::with(
+        Params::defaults(SecondDigit::ID)
+            .unwrap()
+            .set("min_population", 1)
+            .unwrap(),
+    ));
+    assert_eq!(r2.findings.len(), 1);
+    assert!(r2.findings[0].narrative.contains("KS "));
+
+    let r12 = h.run(&FirstTwoDigits::with(
+        Params::defaults(FirstTwoDigits::ID)
+            .unwrap()
+            .set("min_population", 1)
+            .unwrap(),
+    ));
+    assert_eq!(r12.findings.len(), 1);
+    assert!(r12.findings[0].narrative.contains("KS "));
+
+    // 3. Planted-negative test for the greedy shrinker: a property that fails for
+    // `n >= 42` shrinks deterministically to the minimal counterexample `42`.
+    let planted_err = check_property_with_shrinking(
+        0xCAFE_BABE,
+        32,
+        |g| g.u64_in(100, 10_000),
+        |&v| shrink_u64(v),
+        |&v| {
+            if v >= 42 {
+                Err(format!("{v} >= 42"))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .expect_err("planted property must fail and shrink");
+    assert_eq!(planted_err.2, 42);
+    assert!(planted_err.3 > 0);
+
+    // 4. Property suite: Benford expected-count conservation and oracle agreement
+    // across 9, 10, and 90 buckets.
+    check_property_with_shrinking(
+        0x2026_1020_0001,
+        64,
+        |g| g.u64_in(1, 500_000),
+        |&n| shrink_u64(n),
+        |&n| {
+            if n == 0 {
+                return Ok(());
+            }
+            let e1 = first_digit_expected_counts(n).map_err(|e| e.to_string())?;
+            if e1.iter().sum::<u64>() != n {
+                return Err(format!("9-bucket sum != {n}"));
+            }
+            if e1.to_vec() != naive::naive_benford_expected_counts(n, &BENFORD_1E9) {
+                return Err("9-bucket oracle mismatch".into());
+            }
+            let e2 = second_digit_expected_counts(n).map_err(|e| e.to_string())?;
+            if e2.iter().sum::<u64>() != n {
+                return Err(format!("10-bucket sum != {n}"));
+            }
+            if e2.to_vec() != naive::naive_benford_expected_counts(n, &BENFORD_SECOND_1E9) {
+                return Err("10-bucket oracle mismatch".into());
+            }
+            let e12 = first_two_digits_expected_counts(n).map_err(|e| e.to_string())?;
+            if e12.iter().sum::<u64>() != n {
+                return Err(format!("90-bucket sum != {n}"));
+            }
+            if e12.to_vec() != naive::naive_benford_expected_counts(n, &BENFORD_FIRST_TWO_1E9) {
+                return Err("90-bucket oracle mismatch".into());
+            }
+            let _ = expected_counts_1e9(n, &BENFORD_1E9).map_err(|e| e.to_string())?;
+            let c10 = ks_critical_1e9(n, 1_000).map_err(|e| e.to_string())?;
+            let c05 = ks_critical_1e9(n, 500).map_err(|e| e.to_string())?;
+            let c01 = ks_critical_1e9(n, 100).map_err(|e| e.to_string())?;
+            if !(c10 <= c05 && c05 <= c01) {
+                return Err("KS critical values must increase as alpha decreases".into());
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    // 5. Property suite: MAD, chi-square, and KS non-negativity and exact differential
+    // agreement with `fa-reference::lantern` across generated 9-bucket histograms.
+    check_property_with_shrinking(
+        0x2026_1020_0002,
+        64,
+        |g| (0..9).map(|_| g.u64_in(0, 5_000)).collect::<Vec<u64>>(),
+        |xs| shrink_vec_u64(xs),
+        |xs| {
+            let counts: [u64; 9] = core::array::from_fn(|i| xs[i]);
+            let mad = mad_1e9(&counts).map_err(|e| e.to_string())?;
+            let chi = chi_square_1e6(&counts).map_err(|e| e.to_string())?;
+            let ks = ks_1e9(&counts).map_err(|e| e.to_string())?;
+            if mad < 0 || chi < 0 || !(0..=1_000_000_000).contains(&ks) {
+                return Err(format!(
+                    "out-of-range statistic: mad={mad}, chi={chi}, ks={ks}"
+                ));
+            }
+            if mad != naive::benford_mad_1e9(&counts)
+                || mad != naive::naive_mad_table_1e9(&counts, &BENFORD_1E9)
+            {
+                return Err("MAD oracle mismatch".into());
+            }
+            if chi != naive::naive_chi_square_table_1e6(&counts, &BENFORD_1E9) {
+                return Err("chi-square oracle mismatch".into());
+            }
+            if ks != naive::naive_ks_table_1e9(&counts, &BENFORD_1E9) {
+                return Err("KS oracle mismatch".into());
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    // 6. Property suite: `SeedSequence` + `Pcg64Dxsm` jump-ahead (`advance`) and
+    // MUS / uniform / stratified sampling invariants across generated seeds.
+    check_property_with_shrinking(
+        0x2026_1020_0003,
+        32,
+        |g| (g.next_u64(), g.u64_in(1, 64)),
+        |&(seed, steps)| {
+            shrink_u64(steps)
+                .into_iter()
+                .filter(|&s| s >= 1)
+                .map(|s| (seed, s))
+                .collect()
+        },
+        |&(seed, steps)| {
+            let seq = SeedSequence::from_seed(seed);
+            if seq.generate_state_u64(4).len() != 4 {
+                return Err("SeedSequence must emit 4 u64 words".into());
+            }
+            let mut stepped = Pcg64Dxsm::from_seed(seed);
+            for _ in 0..steps {
+                let _ = stepped.next_u64();
+            }
+            let mut advanced = Pcg64Dxsm::from_seed(seed);
+            advanced.advance(u128::from(steps));
+            if stepped.raw_state() != advanced.raw_state() {
+                return Err("Pcg64Dxsm::advance diverged from sequential stepping".into());
+            }
+
+            let usd = UnitId(1);
+            let items: Vec<PopulationItem> = (0..8)
+                .map(|idx| PopulationItem {
+                    item_id: format!("ITEM-{idx:02}"),
+                    reference_vid: VId((idx + 1) as u128),
+                    stratum: Some(if idx < 4 { "s1" } else { "s2" }.into()),
+                    book_value: Amount::new(usd, ((idx as i128) + 1) * 10_000),
+                })
+                .collect();
+            let pop = SamplePopulation::new("prop-pop", usd, items).map_err(|e| e.to_string())?;
+            let mus =
+                sample_mus(&pop, seed, Amount::new(usd, 55_000)).map_err(|e| e.to_string())?;
+            let raw: Vec<(String, i128)> = pop
+                .items
+                .iter()
+                .map(|i| (i.item_id.clone(), i.book_value.mantissa))
+                .collect();
+            let oracle_mus = naive::naive_sample_mus(&raw, mus.start_dollar_mantissa, 55_000);
+            if mus.certificate.selected_item_ids != oracle_mus {
+                return Err("sample_mus diverged from naive_sample_mus".into());
+            }
+            let uni = sample_uniform(&pop, seed, 4).map_err(|e| e.to_string())?;
+            if uni.selected.len() != 4 {
+                return Err("sample_uniform selected count mismatch".into());
+            }
+            let epoch = [0x42; 32];
+            let strat = sample_stratified_neyman(&pop, seed, 4, Some(epoch), epoch, VId(1))
+                .map_err(|e| e.to_string())?;
+            if strat.selected.len() != 4 {
+                return Err("sample_stratified_neyman selected count mismatch".into());
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+}
