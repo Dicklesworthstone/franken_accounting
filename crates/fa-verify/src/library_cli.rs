@@ -22,7 +22,14 @@ use fa_verify::cli::{EXIT_IO, MAX_INPUT_BYTES};
 const PLACEHOLDER: &str = "\u{0}non-UTF-8 argument #";
 
 /// Commands only the library verifies.
-const LIBRARY_COMMANDS: [&str; 6] = ["state", "checkpoint", "scope", "doc-commit", "bundle", "witness"];
+const LIBRARY_COMMANDS: [&str; 6] = [
+    "state",
+    "checkpoint",
+    "scope",
+    "doc-commit",
+    "bundle",
+    "witness",
+];
 /// Commands both grammars verify; the raw grammar always names `--proof`.
 const SHARED_COMMANDS: [&str; 4] = ["inclusion", "prefix", "balance", "consistency"];
 /// Commands only this binary's own parser verifies.
@@ -137,7 +144,9 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
     }
     if args.is_empty() {
         return emit(fa_verify::cli::Output {
-            exit: 0, stdout: format!("{}\n", usage()), stderr: String::new(),
+            exit: 0,
+            stdout: format!("{}\n", usage()),
+            stderr: String::new(),
         });
     }
     let mut raw: Vec<OsString> = Vec::new();

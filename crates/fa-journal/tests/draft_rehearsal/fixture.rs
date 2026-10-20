@@ -160,7 +160,7 @@ impl Harness {
         h
     }
 
-    fn ctx(&self) -> PurposeContexts {
+    pub(super) fn ctx(&self) -> PurposeContexts {
         PurposeContexts::narrow_runtime_root(&self.root)
     }
 

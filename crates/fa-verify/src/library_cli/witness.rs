@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use fa_verify::checkpoint::signer_key_id;
 use fa_verify::checkpoint::witness::{
-    AdvanceStatus, MAX_WITNESSED_CHECKPOINT_BYTES, MAX_WITNESS_CONSISTENCY_BYTES,
+    AdvanceStatus, MAX_WITNESS_CONSISTENCY_BYTES, MAX_WITNESSED_CHECKPOINT_BYTES,
     RecipientWitnessPolicy, WitnessedCheckpoint, verify_checkpoint_advance,
     verify_witnessed_checkpoint,
 };
@@ -81,13 +81,22 @@ impl Continuity {
 }
 
 fn required<'a>(value: Option<&'a OsString>, name: &str) -> Result<&'a OsString, Failure> {
-    value.ok_or_else(|| Failure::usage(format!("{name} is required independently of the checkpoint")))
+    value.ok_or_else(|| {
+        Failure::usage(format!(
+            "{name} is required independently of the checkpoint"
+        ))
+    })
 }
 
 fn fixed<const N: usize>(value: &OsString, name: &str) -> Result<[u8; N], Failure> {
-    let text = value.to_str().ok_or_else(|| Failure::usage(format!("{name} must be ASCII hex")))?;
+    let text = value
+        .to_str()
+        .ok_or_else(|| Failure::usage(format!("{name} must be ASCII hex")))?;
     if text.len() != N * 2 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(Failure::usage(format!("{name} requires exactly {} ASCII hex digits", N * 2)));
+        return Err(Failure::usage(format!(
+            "{name} requires exactly {} ASCII hex digits",
+            N * 2
+        )));
     }
     let mut result = [0; N];
     for (i, slot) in result.iter_mut().enumerate() {
@@ -98,9 +107,13 @@ fn fixed<const N: usize>(value: &OsString, name: &str) -> Result<[u8; N], Failur
 }
 
 fn quorum(value: &OsString) -> Result<usize, Failure> {
-    let text = value.to_str().ok_or_else(|| Failure::usage("--quorum must be ASCII decimal"))?;
+    let text = value
+        .to_str()
+        .ok_or_else(|| Failure::usage("--quorum must be ASCII decimal"))?;
     if text.is_empty() || text.len() > 2 || !text.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(Failure::usage("--quorum requires a decimal integer from 1 through 63"));
+        return Err(Failure::usage(
+            "--quorum requires a decimal integer from 1 through 63",
+        ));
     }
     text.parse().map_err(|_| Failure::usage("invalid --quorum"))
 }
@@ -114,22 +127,40 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     let mut index = 1;
     while let Some(argument) = args.get(index) {
         if argument == "--json" {
-            if json { return Err(Failure::usage("--json may be supplied only once")); }
+            if json {
+                return Err(Failure::usage("--json may be supplied only once"));
+            }
             json = true;
             index += 1;
             continue;
         }
-        let name = argument.to_str().ok_or_else(|| Failure::usage("unknown witness option"))?;
-        if !matches!(name, "--checkpoint" | "--expect-book" | "--expect-branch"
-            | "--expect-policy" | "--publisher-key" | "--witness-key" | "--quorum"
-            | "--previous" | "--expect-previous-body" | "--consistency")
-        {
-            return Err(Failure::usage("unknown witness option; run fa-verify witness --help"));
+        let name = argument
+            .to_str()
+            .ok_or_else(|| Failure::usage("unknown witness option"))?;
+        if !matches!(
+            name,
+            "--checkpoint"
+                | "--expect-book"
+                | "--expect-branch"
+                | "--expect-policy"
+                | "--publisher-key"
+                | "--witness-key"
+                | "--quorum"
+                | "--previous"
+                | "--expect-previous-body"
+                | "--consistency"
+        ) {
+            return Err(Failure::usage(
+                "unknown witness option; run fa-verify witness --help",
+            ));
         }
-        let value = args.get(index + 1)
+        let value = args
+            .get(index + 1)
             .ok_or_else(|| Failure::usage(format!("{name} requires a value")))?;
         if value.is_empty() || value.to_str().is_some_and(|s| s.starts_with("--")) {
-            return Err(Failure::usage(format!("{name} requires a value; use ./ for paths beginning with --")));
+            return Err(Failure::usage(format!(
+                "{name} requires a value; use ./ for paths beginning with --"
+            )));
         }
         if name == "--witness-key" {
             if witnesses.len() == 63 {
@@ -161,9 +192,11 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             expected_body: fixed::<32>(body, "--expect-previous-body")?,
             proof: PathBuf::from(proof),
         }),
-        _ => return Err(Failure::usage(
-            "--previous, --expect-previous-body and --consistency are required together",
-        )),
+        _ => {
+            return Err(Failure::usage(
+                "--previous, --expect-previous-body and --consistency are required together",
+            ));
+        }
     };
     let path = PathBuf::from(required(path, "--checkpoint")?);
     let book = fixed::<16>(required(book, "--expect-book")?, "--expect-book")?;
@@ -171,10 +204,15 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     let policy_id = fixed::<32>(required(policy, "--expect-policy")?, "--expect-policy")?;
     let publisher = fixed::<32>(required(publisher, "--publisher-key")?, "--publisher-key")?;
     let threshold = quorum(required(threshold, "--quorum")?)?;
-    let policy = RecipientWitnessPolicy::new(book, branch, policy_id, publisher, &witnesses, threshold)
-        .map_err(|error| Failure::usage(error.to_string()))?;
+    let policy =
+        RecipientWitnessPolicy::new(book, branch, policy_id, publisher, &witnesses, threshold)
+            .map_err(|error| Failure::usage(error.to_string()))?;
     Ok(Request {
-        path, policy, publisher_id: signer_key_id(&publisher), witness_count: witnesses.len(), advance,
+        path,
+        policy,
+        publisher_id: signer_key_id(&publisher),
+        witness_count: witnesses.len(),
+        advance,
     })
 }
 
@@ -204,7 +242,12 @@ fn verify(args: &[OsString], json: bool) -> Result<String, Failure> {
             previous_body: advance.expected_body,
             previous_seq: previous.signed_checkpoint().checkpoint.through_seq,
         };
-        return Ok(render(verified.checkpoint(), &request, Some(&continuity), json));
+        return Ok(render(
+            verified.checkpoint(),
+            &request,
+            Some(&continuity),
+            json,
+        ));
     }
     let bytes = read_bounded(&request.path, MAX_WITNESSED_CHECKPOINT_BYTES)?;
     let verified = verify_witnessed_checkpoint(&bytes, &request.policy)
@@ -215,17 +258,28 @@ fn verify(args: &[OsString], json: bool) -> Result<String, Failure> {
 pub(super) fn run(args: &[OsString]) -> Output {
     let json = args.iter().any(|argument| argument == "--json");
     match verify(args, json) {
-        Ok(report) => Output { exit: 0, stdout: format!("{report}\n"), stderr: String::new() },
+        Ok(report) => Output {
+            exit: 0,
+            stdout: format!("{report}\n"),
+            stderr: String::new(),
+        },
         Err(error) => Output {
             exit: i32::from(error.exit),
-            stdout: if json { format!("{}\n", error.json()) } else { String::new() },
+            stdout: if json {
+                format!("{}\n", error.json())
+            } else {
+                String::new()
+            },
             stderr: format!("fa-verify: {}\n", error.message),
         },
     }
 }
 
 fn render(
-    report: &WitnessedCheckpoint, request: &Request, continuity: Option<&Continuity>, json: bool,
+    report: &WitnessedCheckpoint,
+    request: &Request,
+    continuity: Option<&Continuity>,
+    json: bool,
 ) -> String {
     let signed = report.signed_checkpoint();
     let checkpoint = &signed.checkpoint;
@@ -239,55 +293,121 @@ fn render(
         );
         return format!(
             "Verified checkpoint signatures: publisher and {} distinct witnesses ({} required of {} configured).\nBook {} branch {} at sequence {}, {} leaves.\nSigned body digest: {}.\nArtifact digest: {}.\n{} unknown signatures were not judged. {history}\nPolicy ID binding does not verify policy registration, witness authority, key validity/rotation, organizational independence, index construction or accounting truth. No pin was written.",
-            report.witnesses().len(), report.required_witnesses(), request.witness_count,
-            hex(&checkpoint.book_id), hex(&checkpoint.branch_id), checkpoint.through_seq,
-            checkpoint.leaf_count, hex(&signed.body_digest), hex(&signed.oid), signed.not_judged.len(),
+            report.witnesses().len(),
+            report.required_witnesses(),
+            request.witness_count,
+            hex(&checkpoint.book_id),
+            hex(&checkpoint.branch_id),
+            checkpoint.through_seq,
+            checkpoint.leaf_count,
+            hex(&signed.body_digest),
+            hex(&signed.oid),
+            signed.not_judged.len(),
         );
     }
     let mut checks = vec![
-        "expected_book_and_branch", "expected_policy_id", "publisher_signature",
-        "all_configured_signatures", "distinct_witness_quorum",
+        "expected_book_and_branch",
+        "expected_policy_id",
+        "publisher_signature",
+        "all_configured_signatures",
+        "distinct_witness_quorum",
     ];
     if continuity.is_some() {
-        checks.extend(["previous_body_matches_retained_pin", "previous_publisher_and_quorum",
-            "same_recipient_policy", "append_only_consistency", "same_sequence_body_identity"]);
+        checks.extend([
+            "previous_body_matches_retained_pin",
+            "previous_publisher_and_quorum",
+            "same_recipient_policy",
+            "append_only_consistency",
+            "same_sequence_body_identity",
+        ]);
     }
     object([
         ("event", quote("proof_verified")),
         ("proof_kind", quote("witnessed_checkpoint")),
-        ("anchor", object([
-            ("source", quote("recipient_owned_witness_policy")),
-            ("publisher_key_id", quote(&hex(&request.publisher_id))),
-            ("configured_witnesses", request.witness_count.to_string()),
-            ("required_witnesses", report.required_witnesses().to_string()),
-            ("policy_oid", signed.witness_policy_oid.map_or_else(|| "null".into(), |id| quote(&hex(&id)))),
-        ])),
-        ("checkpoint", object([
-            ("book_id", quote(&hex(&checkpoint.book_id))),
-            ("branch_id", quote(&hex(&checkpoint.branch_id))),
-            ("through_seq", quote(&checkpoint.through_seq.to_string())),
-            ("leaf_count", quote(&checkpoint.leaf_count.to_string())),
-            ("root", quote(&hex(&checkpoint.root))),
-            ("body_digest", quote(&hex(&signed.body_digest))),
-            ("artifact_oid", quote(&hex(&signed.oid))),
-        ])),
-        ("checks", array(checks.into_iter().map(|name| object([
-            ("name", quote(name)), ("status", quote("pass")),
-        ])))),
-        ("witnesses", array(report.witnesses().iter().map(|id| quote(&hex(id))))),
-        ("not_judged_signers", array(signed.not_judged.iter().map(|id| quote(&hex(id))))),
-        ("continuity", quote(continuity.map_or("not_checked", Continuity::name))),
-        ("continuity_scope", continuity.map_or_else(|| "null".into(), |_| quote("consistency"))),
-        ("previous_pin", continuity.map_or_else(|| "null".into(), |pin| object([
-            ("body_digest", quote(&hex(&pin.previous_body))),
-            ("through_seq", quote(&pin.previous_seq.to_string())),
-        ]))),
+        (
+            "anchor",
+            object([
+                ("source", quote("recipient_owned_witness_policy")),
+                ("publisher_key_id", quote(&hex(&request.publisher_id))),
+                ("configured_witnesses", request.witness_count.to_string()),
+                (
+                    "required_witnesses",
+                    report.required_witnesses().to_string(),
+                ),
+                (
+                    "policy_oid",
+                    signed
+                        .witness_policy_oid
+                        .map_or_else(|| "null".into(), |id| quote(&hex(&id))),
+                ),
+            ]),
+        ),
+        (
+            "checkpoint",
+            object([
+                ("book_id", quote(&hex(&checkpoint.book_id))),
+                ("branch_id", quote(&hex(&checkpoint.branch_id))),
+                ("through_seq", quote(&checkpoint.through_seq.to_string())),
+                ("leaf_count", quote(&checkpoint.leaf_count.to_string())),
+                ("root", quote(&hex(&checkpoint.root))),
+                ("body_digest", quote(&hex(&signed.body_digest))),
+                ("artifact_oid", quote(&hex(&signed.oid))),
+            ]),
+        ),
+        (
+            "checks",
+            array(
+                checks
+                    .into_iter()
+                    .map(|name| object([("name", quote(name)), ("status", quote("pass"))])),
+            ),
+        ),
+        (
+            "witnesses",
+            array(report.witnesses().iter().map(|id| quote(&hex(id)))),
+        ),
+        (
+            "not_judged_signers",
+            array(signed.not_judged.iter().map(|id| quote(&hex(id)))),
+        ),
+        (
+            "continuity",
+            quote(continuity.map_or("not_checked", Continuity::name)),
+        ),
+        (
+            "continuity_scope",
+            continuity.map_or_else(|| "null".into(), |_| quote("consistency")),
+        ),
+        (
+            "previous_pin",
+            continuity.map_or_else(
+                || "null".into(),
+                |pin| {
+                    object([
+                        ("body_digest", quote(&hex(&pin.previous_body))),
+                        ("through_seq", quote(&pin.previous_seq.to_string())),
+                    ])
+                },
+            ),
+        ),
         ("pin_written", "false".into()),
-        ("not_checked", array([
-            "global_freshness", "policy_registration", "witness_authorization",
-            "key_validity_intervals", "key_rotation", "organizational_independence",
-            "index_derivation", "accounting_truth", "durable_pin_storage",
-        ].map(quote))),
+        (
+            "not_checked",
+            array(
+                [
+                    "global_freshness",
+                    "policy_registration",
+                    "witness_authorization",
+                    "key_validity_intervals",
+                    "key_rotation",
+                    "organizational_independence",
+                    "index_derivation",
+                    "accounting_truth",
+                    "durable_pin_storage",
+                ]
+                .map(quote),
+            ),
+        ),
         ("v", "1".into()),
         ("verified", "true".into()),
     ])

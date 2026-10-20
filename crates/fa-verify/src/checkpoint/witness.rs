@@ -62,17 +62,23 @@ impl RecipientWitnessPolicy {
         quorum: usize,
     ) -> Result<Self, WitnessError> {
         if witness_keys.is_empty() || witness_keys.len() >= super::MAX_SIGNATURES {
-            return Err(WitnessError::Policy("require between one and 63 witness keys"));
+            return Err(WitnessError::Policy(
+                "require between one and 63 witness keys",
+            ));
         }
         if quorum == 0 || quorum > witness_keys.len() {
-            return Err(WitnessError::Policy("quorum must be between one and the witness count"));
+            return Err(WitnessError::Policy(
+                "quorum must be between one and the witness count",
+            ));
         }
         let publisher_id = signer_key_id(&publisher_key);
         let mut witness_ids = BTreeSet::new();
         for key in witness_keys {
             let id = signer_key_id(key);
             if id == publisher_id || !witness_ids.insert(id) {
-                return Err(WitnessError::Policy("publisher and witness keys must all be distinct"));
+                return Err(WitnessError::Policy(
+                    "publisher and witness keys must all be distinct",
+                ));
             }
         }
         let mut trusted_keys = Vec::with_capacity(witness_keys.len() + 1);
@@ -146,11 +152,17 @@ impl fmt::Display for WitnessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Policy(why) => write!(f, "invalid recipient witness policy: {why}"),
-            Self::InputLimit(what) => write!(f, "witness verification input exceeds the {what} bound"),
+            Self::InputLimit(what) => {
+                write!(f, "witness verification input exceeds the {what} bound")
+            }
             Self::Verification(error) => write!(f, "{error}"),
             Self::Coordinate => write!(f, "checkpoint is for a different expected book or branch"),
-            Self::PolicyIdentity => write!(f, "checkpoint does not bind the expected witness policy ID"),
-            Self::PublisherMissing => write!(f, "checkpoint lacks the required publisher signature"),
+            Self::PolicyIdentity => {
+                write!(f, "checkpoint does not bind the expected witness policy ID")
+            }
+            Self::PublisherMissing => {
+                write!(f, "checkpoint lacks the required publisher signature")
+            }
             Self::Quorum { required, verified } => write!(
                 f,
                 "checkpoint requires {required} distinct witness signatures; {verified} verified"
@@ -187,7 +199,9 @@ pub fn verify_witnessed_checkpoint(
         return Err(WitnessError::InputLimit("signed checkpoint"));
     }
     let signed = verify_checkpoint(bytes, &policy.trusted_keys)?;
-    if signed.checkpoint.book_id != policy.book_id || signed.checkpoint.branch_id != policy.branch_id {
+    if signed.checkpoint.book_id != policy.book_id
+        || signed.checkpoint.branch_id != policy.branch_id
+    {
         return Err(WitnessError::Coordinate);
     }
     if signed.witness_policy_oid != Some(policy.policy_oid) {
@@ -198,8 +212,12 @@ pub fn verify_witnessed_checkpoint(
     }
     // Use a set even though canonical Ed25519 signature rows are already unique:
     // quorum semantics must never become signature-count semantics.
-    let witnesses: BTreeSet<_> = signed.signed_by.iter().copied()
-        .filter(|id| policy.witness_ids.contains(id)).collect();
+    let witnesses: BTreeSet<_> = signed
+        .signed_by
+        .iter()
+        .copied()
+        .filter(|id| policy.witness_ids.contains(id))
+        .collect();
     if witnesses.len() < policy.quorum {
         return Err(WitnessError::Quorum {
             required: policy.quorum,

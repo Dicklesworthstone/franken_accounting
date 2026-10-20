@@ -66,8 +66,14 @@ impl fmt::Display for AdvanceError {
             Self::Witness(error) => write!(f, "{error}"),
             Self::Consistency(error) => write!(f, "{error}"),
             Self::ProofLimit => write!(f, "witness consistency proof exceeds its v1 byte bound"),
-            Self::Regression => write!(f, "checkpoint regresses the retained sequence or leaf count"),
-            Self::Equivocation => write!(f, "different signed checkpoint bodies claim the same sequence"),
+            Self::Regression => write!(
+                f,
+                "checkpoint regresses the retained sequence or leaf count"
+            ),
+            Self::Equivocation => write!(
+                f,
+                "different signed checkpoint bodies claim the same sequence"
+            ),
         }
     }
 }
@@ -121,5 +127,8 @@ pub fn verify_checkpoint_advance(
         AdvanceStatus::Advanced
     };
     verify_consistency(consistency_proof, old, new).map_err(AdvanceError::Consistency)?;
-    Ok(CheckpointAdvance { checkpoint: candidate, status })
+    Ok(CheckpointAdvance {
+        checkpoint: candidate,
+        status,
+    })
 }

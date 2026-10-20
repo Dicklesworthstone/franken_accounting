@@ -307,6 +307,10 @@ fn full_document_file_reads_share_the_prefix_transport_budget() {
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS filesystems refuse non-UTF-8 file names (EILSEQ); exercised on Linux hosts"
+)]
 fn non_utf8_prefix_checkpoint_and_document_paths_remain_usable() {
     use std::os::unix::ffi::OsStringExt;
     let citation = fixture::citation(doc_commit(1, DOCUMENT), 3);
