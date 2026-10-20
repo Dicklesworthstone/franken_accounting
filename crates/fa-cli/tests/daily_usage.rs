@@ -708,6 +708,10 @@ fn daemon_issuer_credentials_stay_inside_the_configured_files_root() {
     fixture.issue_root(true);
     let allowed = fixture.dir.join("allowed");
     std::fs::create_dir(&allowed).unwrap();
+    // fad canonicalizes its --files-root at launch; so does this test, so a
+    // temp dir reached through a symlink (macOS /var -> /private/var) is
+    // the root the daemon would hold.
+    let allowed = fa_cli::authority::validate_files_root(allowed).unwrap();
     let issuer = fixture.dir.join("root.token");
     let output = allowed.join("must-not-be-issued.token");
     assert!(issuer.is_absolute());
