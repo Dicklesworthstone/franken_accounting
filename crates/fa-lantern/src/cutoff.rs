@@ -1418,3 +1418,1757 @@ impl Procedure for ConfirmCoverage {
         Ok(out)
     }
 }
+
+fn is_liquid_cash_account(code: &str, name: &str, account_type: AccountType) -> bool {
+    if account_type != AccountType::ASSET {
+        return false;
+    }
+    let cl = code.to_ascii_lowercase();
+    let nl = name.to_ascii_lowercase();
+    cl.starts_with("10")
+        || nl.contains("cash")
+        || nl.contains("bank")
+        || nl.contains("checking")
+        || nl.contains("operating")
+        || nl.contains("treasury")
+        || nl.contains("trust")
+}
+
+/// `solvency.balance_sheet_test` (plan §11.6, `FA-EVID-L52`):
+/// Balance-sheet solvency test (11 U.S.C. §101(32)). Compares fair-value-adjusted
+/// total assets (honoring `RegisterEquals` valuation attestations and
+/// `fair_value_haircut_bps`) against total liabilities per unit through the
+/// coordinate's effective date, emitting a finding when liabilities exceed
+/// adjusted assets.
+pub struct SolvencyBalanceSheetTest {
+    params: Params,
+}
+procedure_boilerplate!(SolvencyBalanceSheetTest, "solvency.balance_sheet_test");
+
+impl Procedure for SolvencyBalanceSheetTest {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let haircut_bps = self.params.get("fair_value_haircut_bps")?;
+        if !(0..=10_000).contains(&haircut_bps) {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "fair_value_haircut_bps".into(),
+                message: "must be in 0..=10000".into(),
+            });
+        }
+
+        let through = snapshot.coordinate.effective_through;
+        let mut live = snapshot.live_postings_through(through)?;
+        live.sort_by_key(|e| e.vid);
+
+        // Collect latest RegisterEquals fair-value/balance attestation per (account, unit_id)
+        let mut attested_values: BTreeMap<(VId, u32), (DateDay, VId, i128)> = BTreeMap::new();
+        for (att_vid, att) in &snapshot.attestations {
+            if let AttestationClaim::RegisterEquals(c) = &att.attestation.claim {
+                if through.is_some_and(|d| c.as_of_effective > d) {
+                    continue;
+                }
+                let key = (c.account, c.unit_id);
+                let replace = attested_values.get(&key).is_none_or(|(prev_d, prev_v, _)| {
+                    (c.as_of_effective, *att_vid) >= (*prev_d, *prev_v)
+                });
+                if replace {
+                    attested_values.insert(key, (c.as_of_effective, *att_vid, c.mantissa));
+                }
+            }
+        }
+
+        // Accumulate posted net debit-minus-credit per (account_vid, unit_id)
+        let mut acct_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
+        let mut unit_entries: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
+        let mut population = 0u64;
+
+        for e in &live {
+            work.entry();
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
+                    continue;
+                };
+                let at = AccountType(acct.account_type);
+                if !matches!(at, AccountType::ASSET | AccountType::LIABILITY) {
+                    continue;
+                }
+                population += 1;
+                let signed = match leg.side {
+                    Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
+                    Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
+                };
+                let cell = acct_net
+                    .entry((leg.account_ref, leg.amount.unit.0))
+                    .or_default();
+                *cell = cell
+                    .checked_add(signed)
+                    .ok_or(LanternError::Overflow("solvency balance sheet fold"))?;
+                unit_entries
+                    .entry(leg.amount.unit.0)
+                    .or_default()
+                    .insert(e.vid);
+            }
+        }
+
+        // Ensure attested accounts are also represented in acct_net keys
+        for &(acct_vid, unit_id) in attested_values.keys() {
+            acct_net.entry((acct_vid, unit_id)).or_default();
+        }
+
+        // Aggregate per unit_id: (adjusted_assets, total_liabilities, cited_accounts)
+        type UnitSolvency = (i128, i128, BTreeSet<VId>);
+        let mut by_unit: BTreeMap<u32, UnitSolvency> = BTreeMap::new();
+        for ((acct_vid, unit_id), posted_net) in acct_net {
+            work.compare(1);
+            let Some(acct) = snapshot.accounts.get(&acct_vid) else {
+                continue;
+            };
+            let at = AccountType(acct.account_type);
+            let row = by_unit.entry(unit_id).or_default();
+            match at {
+                AccountType::ASSET => {
+                    let adj_asset =
+                        if let Some(&(_, _, att_val)) = attested_values.get(&(acct_vid, unit_id)) {
+                            att_val.max(0)
+                        } else {
+                            let raw = posted_net.max(0);
+                            raw.checked_mul(10_000 - haircut_bps)
+                                .ok_or(LanternError::Overflow("solvency asset haircut"))?
+                                / 10_000
+                        };
+                    row.0 = row
+                        .0
+                        .checked_add(adj_asset)
+                        .ok_or(LanternError::Overflow("solvency adjusted assets sum"))?;
+                    row.2.insert(acct_vid);
+                }
+                AccountType::LIABILITY => {
+                    let liab =
+                        if let Some(&(_, _, att_val)) = attested_values.get(&(acct_vid, unit_id)) {
+                            att_val.unsigned_abs() as i128
+                        } else {
+                            (-posted_net).max(0)
+                        };
+                    row.1 = row
+                        .1
+                        .checked_add(liab)
+                        .ok_or(LanternError::Overflow("solvency liabilities sum"))?;
+                    row.2.insert(acct_vid);
+                }
+                _ => {}
+            }
+        }
+
+        let mut out = Vec::new();
+        for (unit_id, (adjusted_assets, total_liabilities, accts)) in by_unit {
+            if total_liabilities <= adjusted_assets {
+                continue;
+            }
+            let deficit = total_liabilities
+                .checked_sub(adjusted_assets)
+                .ok_or(LanternError::Overflow("solvency deficit"))?;
+            let mut cites: Vec<Cite> = accts.into_iter().map(Cite::Account).collect();
+            if let Some(entries) = unit_entries.get(&unit_id) {
+                for &evid in entries {
+                    if cites.len() < MAX_CITES {
+                        cites.push(Cite::Entry(evid));
+                    }
+                }
+            }
+            let scale = crate::unit_scale(book, unit_id)?;
+            out.push(finding(
+                Self::ID,
+                Severity::Critical,
+                Statistic {
+                    name: "insolvency_deficit".into(),
+                    value: deficit,
+                    scale,
+                    population: population.max(1),
+                },
+                cites,
+                format!(
+                    "unit {unit_id} balance-sheet insolvent: adjusted_assets={adjusted_assets}, total_liabilities={total_liabilities}, insolvency_deficit={deficit} (haircut_bps={haircut_bps})"
+                ),
+            ));
+        }
+        Ok(out)
+    }
+}
+
+/// `solvency.cash_flow_test` (plan §11.6, `FA-EVID-L53`):
+/// Equitable cash-flow solvency test (ability to pay debts as they come due).
+/// Compares liquid cash and cash-equivalent asset balances against unpaid
+/// liabilities and pending commitments maturing within `horizon_days` of the
+/// coordinate's effective date.
+pub struct SolvencyCashFlowTest {
+    params: Params,
+}
+procedure_boilerplate!(SolvencyCashFlowTest, "solvency.cash_flow_test");
+
+impl Procedure for SolvencyCashFlowTest {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let horizon_days = self.params.get_u32("horizon_days")?;
+        if horizon_days == 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "horizon_days".into(),
+                message: "must be >= 1".into(),
+            });
+        }
+
+        let mut all_live = snapshot.live_postings()?;
+        all_live.sort_by_key(|e| e.vid);
+        let ref_date = snapshot.coordinate.effective_through.unwrap_or_else(|| {
+            all_live
+                .iter()
+                .map(|e| e.entry.proposal.effective_date)
+                .max()
+                .unwrap_or(DateDay(0))
+        });
+        let horizon_end = DateDay(ref_date.0.saturating_add(horizon_days as i32));
+
+        let mut cash_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
+        let mut liab_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
+        let mut unit_accts: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
+        let mut unit_entries: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
+        let mut population = 0u64;
+
+        for e in &all_live {
+            work.entry();
+            let eff = e.entry.proposal.effective_date;
+            if eff > horizon_end {
+                continue;
+            }
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
+                    continue;
+                };
+                let at = AccountType(acct.account_type);
+                let signed = match leg.side {
+                    Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
+                    Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
+                };
+                if eff <= ref_date && is_liquid_cash_account(&acct.code, &acct.name, at) {
+                    population += 1;
+                    let c = cash_net
+                        .entry((leg.account_ref, leg.amount.unit.0))
+                        .or_default();
+                    *c = c
+                        .checked_add(signed)
+                        .ok_or(LanternError::Overflow("cash_flow_test cash fold"))?;
+                    unit_accts
+                        .entry(leg.amount.unit.0)
+                        .or_default()
+                        .insert(leg.account_ref);
+                    unit_entries
+                        .entry(leg.amount.unit.0)
+                        .or_default()
+                        .insert(e.vid);
+                } else if at == AccountType::LIABILITY {
+                    population += 1;
+                    let l = liab_net
+                        .entry((leg.account_ref, leg.amount.unit.0))
+                        .or_default();
+                    *l = l
+                        .checked_add(signed)
+                        .ok_or(LanternError::Overflow("cash_flow_test liability fold"))?;
+                    unit_accts
+                        .entry(leg.amount.unit.0)
+                        .or_default()
+                        .insert(leg.account_ref);
+                    unit_entries
+                        .entry(leg.amount.unit.0)
+                        .or_default()
+                        .insert(e.vid);
+                }
+            }
+        }
+
+        let mut units: BTreeSet<u32> = BTreeSet::new();
+        for &(_, u) in cash_net.keys().chain(liab_net.keys()) {
+            units.insert(u);
+        }
+
+        let mut out = Vec::new();
+        for unit_id in units {
+            work.compare(1);
+            let mut liquid_cash = 0i128;
+            for (&(_, u), &net) in &cash_net {
+                if u == unit_id && net > 0 {
+                    liquid_cash = liquid_cash
+                        .checked_add(net)
+                        .ok_or(LanternError::Overflow("cash_flow_test liquid_cash sum"))?;
+                }
+            }
+            let mut maturing_obligations = 0i128;
+            for (&(_, u), &net) in &liab_net {
+                if u == unit_id && net < 0 {
+                    maturing_obligations = maturing_obligations
+                        .checked_add(-net)
+                        .ok_or(LanternError::Overflow("cash_flow_test obligations sum"))?;
+                }
+            }
+            if maturing_obligations > liquid_cash {
+                let shortfall = maturing_obligations
+                    .checked_sub(liquid_cash)
+                    .ok_or(LanternError::Overflow("cash_flow_test shortfall"))?;
+                let mut cites: Vec<Cite> = unit_accts
+                    .remove(&unit_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Cite::Account)
+                    .collect();
+                if let Some(entries) = unit_entries.remove(&unit_id) {
+                    for evid in entries {
+                        if cites.len() < MAX_CITES {
+                            cites.push(Cite::Entry(evid));
+                        }
+                    }
+                }
+                let scale = crate::unit_scale(book, unit_id)?;
+                out.push(finding(
+                    Self::ID,
+                    Severity::High,
+                    Statistic {
+                        name: "cash_flow_shortfall".into(),
+                        value: shortfall,
+                        scale,
+                        population: population.max(1),
+                    },
+                    cites,
+                    format!(
+                        "unit {unit_id} cash-flow insolvent over {horizon_days}-day horizon: liquid_cash={liquid_cash}, maturing_obligations={maturing_obligations}, shortfall={shortfall}"
+                    ),
+                ));
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn party_lookup_tables(snapshot: &Snapshot) -> (BTreeMap<VId, VId>, BTreeMap<VId, String>) {
+    let mut pval_to_party = BTreeMap::new();
+    let mut party_codes = BTreeMap::new();
+    for p in snapshot.rea.parties.values() {
+        pval_to_party.insert(p.dimension_value_vid, p.vid);
+        pval_to_party.insert(p.vid, p.vid);
+        party_codes.insert(p.vid, p.code.clone());
+    }
+    (pval_to_party, party_codes)
+}
+
+fn is_insider_at(snapshot: &Snapshot, party_vid: VId, as_of: DateDay) -> bool {
+    if let Some(p) = snapshot.rea.parties.get(&party_vid)
+        && matches!(
+            p.kind,
+            fa_model::PartyKind::RelatedEntity | fa_model::PartyKind::BeneficialOwner
+        )
+    {
+        return true;
+    }
+    for &root in snapshot.rea.legal_entities.keys() {
+        if snapshot
+            .rea
+            .related_as_of(root, as_of, 4)
+            .iter()
+            .any(|h| h.vid == party_vid)
+        {
+            return true;
+        }
+    }
+    snapshot
+        .rea
+        .relationships
+        .iter()
+        .any(|r| r.spec.is_active_on(as_of) && (r.spec.from == party_vid || r.spec.to == party_vid))
+}
+
+/// `lookback.preferences` (plan §11.6, `FA-EVID-L54`):
+/// Avoidable preference lookback under 11 U.S.C. §547(b)-(c). Identifies
+/// transfers to creditors within `window_days` (or `insider_window_days` for
+/// insiders under §101(31) via `RELATED_TO`/`OWNS`/`CONTROLS`) and computes:
+/// - §547(c)(1) contemporaneous exchange (`days_to_pay <= contemporaneous_days`),
+/// - §547(c)(2) ordinary course of business (`|days_to_pay - baseline_avg| <= ordinary_course_tolerance_days`),
+/// - §547(c)(4) subsequent new value (unpaid subsequent credit extended after a preference transfer),
+///
+/// emitting net avoidable preference exposure per creditor.
+pub struct LookbackPreferences {
+    params: Params,
+}
+procedure_boilerplate!(LookbackPreferences, "lookback.preferences");
+
+impl Procedure for LookbackPreferences {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let window_days = self.params.get_u32("window_days")?;
+        let insider_window_days = self.params.get_u32("insider_window_days")?;
+        let baseline_days = self.params.get_u32("baseline_days")?;
+        let ordinary_tol = self.params.get("ordinary_course_tolerance_days")?;
+        let contemp_days = self.params.get("contemporaneous_days")?;
+
+        if window_days == 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "window_days".into(),
+                message: "must be >= 1".into(),
+            });
+        }
+        if insider_window_days < window_days {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "insider_window_days".into(),
+                message: "must be >= window_days".into(),
+            });
+        }
+        if baseline_days == 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "baseline_days".into(),
+                message: "must be >= 1".into(),
+            });
+        }
+        if ordinary_tol < 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "ordinary_course_tolerance_days".into(),
+                message: "must be >= 0".into(),
+            });
+        }
+        if contemp_days < 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "contemporaneous_days".into(),
+                message: "must be >= 0".into(),
+            });
+        }
+
+        let through = snapshot.coordinate.effective_through;
+        let mut live = snapshot.live_postings_through(through)?;
+        live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
+        if live.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let petition_date = through.unwrap_or_else(|| {
+            live.iter()
+                .map(|e| e.entry.proposal.effective_date)
+                .max()
+                .unwrap_or(DateDay(0))
+        });
+
+        let mut by_vid: BTreeMap<VId, &crate::SnapshotEntry> = BTreeMap::new();
+        for e in &snapshot.entries {
+            by_vid.insert(e.vid, e);
+        }
+
+        let (pval_to_party, party_codes) = party_lookup_tables(snapshot);
+
+        #[derive(Clone, Debug)]
+        enum CreditorEventKind {
+            Payment {
+                amount: i128,
+                days_to_pay: Option<i128>,
+            },
+            NewValue {
+                amount: i128,
+            },
+        }
+
+        #[derive(Clone, Debug)]
+        struct CreditorEvent {
+            date: DateDay,
+            vid: VId,
+            kind: CreditorEventKind,
+            accounts: BTreeSet<VId>,
+        }
+
+        // Per (party_vid, unit_id): chronological creditor events + latest unpaid invoice date
+        let mut events_by_creditor: BTreeMap<(VId, u32), Vec<CreditorEvent>> = BTreeMap::new();
+        let mut open_invoice_date: BTreeMap<(VId, u32), DateDay> = BTreeMap::new();
+        let mut population = 0u64;
+
+        for e in &live {
+            work.entry();
+            let eff = e.entry.proposal.effective_date;
+            let mut parties_in_entry: BTreeSet<VId> = BTreeSet::new();
+            let mut cash_credit_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
+            let mut ob_debit_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
+            let mut liab_credit_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
+            let mut accts_by_unit: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
+
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                for &(_, d) in &leg.dimension_set {
+                    if let Some(&pvid) = pval_to_party.get(&d) {
+                        parties_in_entry.insert(pvid);
+                    }
+                }
+                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
+                    continue;
+                };
+                let at = AccountType(acct.account_type);
+                let mag = leg.amount.mantissa.unsigned_abs() as i128;
+                let u = leg.amount.unit.0;
+                accts_by_unit.entry(u).or_default().insert(leg.account_ref);
+
+                match (leg.side, at) {
+                    (Side::Credit, AccountType::ASSET)
+                        if is_liquid_cash_account(&acct.code, &acct.name, at) =>
+                    {
+                        *cash_credit_by_unit.entry(u).or_default() += mag;
+                    }
+                    (Side::Debit, AccountType::LIABILITY | AccountType::EXPENSE) => {
+                        *ob_debit_by_unit.entry(u).or_default() += mag;
+                    }
+                    (Side::Credit, AccountType::LIABILITY) => {
+                        *liab_credit_by_unit.entry(u).or_default() += mag;
+                    }
+                    _ => {}
+                }
+            }
+
+            if parties_in_entry.is_empty() {
+                continue;
+            }
+
+            let settled_date = e
+                .entry
+                .proposal
+                .legs
+                .iter()
+                .flat_map(|l| l.settles.iter())
+                .filter_map(|s| {
+                    by_vid
+                        .get(&s.target.vid)
+                        .map(|t| t.entry.proposal.effective_date)
+                })
+                .min();
+
+            for &party_vid in &parties_in_entry {
+                for (&unit_id, accts) in &accts_by_unit {
+                    let cash_cr = cash_credit_by_unit.get(&unit_id).copied().unwrap_or(0);
+                    let ob_dr = ob_debit_by_unit.get(&unit_id).copied().unwrap_or(0);
+                    let liab_cr = liab_credit_by_unit.get(&unit_id).copied().unwrap_or(0);
+
+                    if cash_cr > 0 && ob_dr > 0 {
+                        population += 1;
+                        let amt = cash_cr.min(ob_dr);
+                        let inv_date = settled_date
+                            .or(e.entry.proposal.document_date)
+                            .or_else(|| open_invoice_date.get(&(party_vid, unit_id)).copied());
+                        let dtp = inv_date.map(|d| i128::from((eff.0 - d.0).max(0)));
+                        open_invoice_date.remove(&(party_vid, unit_id));
+                        events_by_creditor
+                            .entry((party_vid, unit_id))
+                            .or_default()
+                            .push(CreditorEvent {
+                                date: eff,
+                                vid: e.vid,
+                                kind: CreditorEventKind::Payment {
+                                    amount: amt,
+                                    days_to_pay: dtp,
+                                },
+                                accounts: accts.clone(),
+                            });
+                    } else if liab_cr > 0 && cash_cr == 0 {
+                        population += 1;
+                        let inv_d = e.entry.proposal.document_date.unwrap_or(eff);
+                        open_invoice_date
+                            .entry((party_vid, unit_id))
+                            .and_modify(|d| {
+                                if inv_d < *d {
+                                    *d = inv_d;
+                                }
+                            })
+                            .or_insert(inv_d);
+                        events_by_creditor
+                            .entry((party_vid, unit_id))
+                            .or_default()
+                            .push(CreditorEvent {
+                                date: eff,
+                                vid: e.vid,
+                                kind: CreditorEventKind::NewValue { amount: liab_cr },
+                                accounts: accts.clone(),
+                            });
+                    }
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        for ((party_vid, unit_id), evs) in events_by_creditor {
+            work.compare(1);
+            let insider = evs
+                .iter()
+                .any(|ev| is_insider_at(snapshot, party_vid, ev.date))
+                || is_insider_at(snapshot, party_vid, petition_date);
+            let lookback = if insider {
+                insider_window_days
+            } else {
+                window_days
+            };
+            let pref_start = DateDay(petition_date.0.saturating_sub(lookback as i32));
+            let base_start = DateDay(pref_start.0.saturating_sub(baseline_days as i32));
+
+            // Compute baseline average days-to-pay in [base_start, pref_start)
+            let mut base_sum = 0i128;
+            let mut base_cnt = 0i128;
+            for ev in &evs {
+                if ev.date >= base_start
+                    && ev.date < pref_start
+                    && let CreditorEventKind::Payment {
+                        days_to_pay: Some(dtp),
+                        ..
+                    } = ev.kind
+                {
+                    base_sum += dtp;
+                    base_cnt += 1;
+                }
+            }
+            let baseline_avg = if base_cnt > 0 {
+                Some(base_sum / base_cnt)
+            } else {
+                None
+            };
+
+            let mut gross_preference = 0i128;
+            let mut c1_contemporaneous = 0i128;
+            let mut c2_ordinary_course = 0i128;
+            let mut c4_new_value = 0i128;
+            let mut unprotected_running = 0i128;
+            let mut seen_pref_payment = false;
+            let mut cited_accts: BTreeSet<VId> = BTreeSet::new();
+            let mut cited_entries: BTreeSet<VId> = BTreeSet::new();
+
+            for ev in &evs {
+                if ev.date < pref_start || ev.date > petition_date {
+                    continue;
+                }
+                match ev.kind {
+                    CreditorEventKind::Payment {
+                        amount,
+                        days_to_pay,
+                    } => {
+                        seen_pref_payment = true;
+                        gross_preference = gross_preference
+                            .checked_add(amount)
+                            .ok_or(LanternError::Overflow("preference gross sum"))?;
+                        cited_entries.insert(ev.vid);
+                        cited_accts.extend(ev.accounts.iter().copied());
+
+                        if days_to_pay.is_some_and(|d| d <= contemp_days) {
+                            c1_contemporaneous = c1_contemporaneous
+                                .checked_add(amount)
+                                .ok_or(LanternError::Overflow("preference c1 sum"))?;
+                        } else if let (Some(d), Some(avg)) = (days_to_pay, baseline_avg)
+                            && (d - avg).abs() <= ordinary_tol
+                        {
+                            c2_ordinary_course = c2_ordinary_course
+                                .checked_add(amount)
+                                .ok_or(LanternError::Overflow("preference c2 sum"))?;
+                        } else {
+                            unprotected_running = unprotected_running
+                                .checked_add(amount)
+                                .ok_or(LanternError::Overflow("preference unprotected sum"))?;
+                        }
+                    }
+                    CreditorEventKind::NewValue { amount } if seen_pref_payment => {
+                        let offset = amount.min(unprotected_running);
+                        if offset > 0 {
+                            unprotected_running -= offset;
+                            c4_new_value = c4_new_value
+                                .checked_add(offset)
+                                .ok_or(LanternError::Overflow("preference c4 sum"))?;
+                            cited_entries.insert(ev.vid);
+                            cited_accts.extend(ev.accounts.iter().copied());
+                        }
+                    }
+                    CreditorEventKind::NewValue { .. } => {}
+                }
+            }
+
+            if gross_preference == 0 || unprotected_running == 0 {
+                continue;
+            }
+
+            let mut cites: Vec<Cite> = cited_accts.into_iter().map(Cite::Account).collect();
+            for evid in cited_entries {
+                if cites.len() < MAX_CITES {
+                    cites.push(Cite::Entry(evid));
+                }
+            }
+            let party_code = party_codes
+                .get(&party_vid)
+                .cloned()
+                .unwrap_or_else(|| format!("{:032x}", party_vid.0));
+            let scale = crate::unit_scale(book, unit_id)?;
+            out.push(finding(
+                Self::ID,
+                Severity::High,
+                Statistic {
+                    name: "net_preference_exposure".into(),
+                    value: unprotected_running,
+                    scale,
+                    population: population.max(1),
+                },
+                cites,
+                format!(
+                    "creditor {party_code} (insider={insider}): gross_preference={gross_preference}, c1_contemporaneous={c1_contemporaneous}, c2_ordinary_course={c2_ordinary_course}, c4_new_value={c4_new_value}, net_exposure={unprotected_running}"
+                ),
+            ));
+        }
+        Ok(out)
+    }
+}
+
+/// `lookback.fraudulent_transfer` (plan §11.6, `FA-EVID-L55`):
+/// Constructive and actual fraudulent transfer lookback under 11 U.S.C. §548
+/// (`section_548_days`) and UVTA §9 (`uvta_days`). Scans asset outflows for
+/// badges of fraud:
+/// 1. Transfer to an insider/related party (`RELATED_TO`/`OWNS`/`CONTROLS`),
+/// 2. Transfer while balance-sheet insolvent,
+/// 3. Absence of corroborating evidence (`evidence` empty),
+/// 4. Manual/concealed or round-amount outflow.
+pub struct LookbackFraudulentTransfer {
+    params: Params,
+}
+procedure_boilerplate!(LookbackFraudulentTransfer, "lookback.fraudulent_transfer");
+
+impl Procedure for LookbackFraudulentTransfer {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let s548_days = self.params.get_u32("section_548_days")?;
+        let uvta_days = self.params.get_u32("uvta_days")?;
+        if s548_days == 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "section_548_days".into(),
+                message: "must be >= 1".into(),
+            });
+        }
+        if uvta_days < s548_days {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "uvta_days".into(),
+                message: "must be >= section_548_days".into(),
+            });
+        }
+
+        let through = snapshot.coordinate.effective_through;
+        let mut live = snapshot.live_postings_through(through)?;
+        live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
+        if live.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let petition_date = through.unwrap_or_else(|| {
+            live.iter()
+                .map(|e| e.entry.proposal.effective_date)
+                .max()
+                .unwrap_or(DateDay(0))
+        });
+        let uvta_start = DateDay(petition_date.0.saturating_sub(uvta_days as i32));
+        let s548_start = DateDay(petition_date.0.saturating_sub(s548_days as i32));
+
+        let (pval_to_party, _) = party_lookup_tables(snapshot);
+        let mut running_assets: BTreeMap<u32, i128> = BTreeMap::new();
+        let mut running_liabs: BTreeMap<u32, i128> = BTreeMap::new();
+        let population = live.len() as u64;
+        let mut out = Vec::new();
+
+        for e in &live {
+            work.entry();
+            let eff = e.entry.proposal.effective_date;
+            let mut asset_cr: BTreeMap<u32, i128> = BTreeMap::new();
+            let mut asset_dr: BTreeMap<u32, i128> = BTreeMap::new();
+            let mut liab_dr: BTreeMap<u32, i128> = BTreeMap::new();
+            let mut liab_cr: BTreeMap<u32, i128> = BTreeMap::new();
+            let mut accts_by_unit: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
+            let mut parties: BTreeSet<VId> = BTreeSet::new();
+
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                for &(_, d) in &leg.dimension_set {
+                    if let Some(&pvid) = pval_to_party.get(&d) {
+                        parties.insert(pvid);
+                    }
+                }
+                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
+                    continue;
+                };
+                let at = AccountType(acct.account_type);
+                let mag = leg.amount.mantissa.unsigned_abs() as i128;
+                let u = leg.amount.unit.0;
+                accts_by_unit.entry(u).or_default().insert(leg.account_ref);
+
+                match (leg.side, at) {
+                    (Side::Debit, AccountType::ASSET) => {
+                        *asset_dr.entry(u).or_default() += mag;
+                        *running_assets.entry(u).or_default() += mag;
+                    }
+                    (Side::Credit, AccountType::ASSET) => {
+                        *asset_cr.entry(u).or_default() += mag;
+                        *running_assets.entry(u).or_default() -= mag;
+                    }
+                    (Side::Credit, AccountType::LIABILITY) => {
+                        *liab_cr.entry(u).or_default() += mag;
+                        *running_liabs.entry(u).or_default() += mag;
+                    }
+                    (Side::Debit, AccountType::LIABILITY) => {
+                        *liab_dr.entry(u).or_default() += mag;
+                        *running_liabs.entry(u).or_default() -= mag;
+                    }
+                    _ => {}
+                }
+            }
+
+            if eff < uvta_start || eff > petition_date {
+                continue;
+            }
+
+            let insider = parties
+                .iter()
+                .any(|&pvid| is_insider_at(snapshot, pvid, eff));
+            let uncorroborated = e.entry.proposal.evidence.is_empty();
+            let opened_desc = e
+                .entry
+                .proposal
+                .description
+                .open(&book.seal_key, fa_model::limits::MAX_DESCRIPTION_BYTES)
+                .unwrap_or_default();
+            let thin_desc = opened_desc.trim().len() < 12;
+
+            for (&unit_id, &cr) in &asset_cr {
+                work.compare(1);
+                let dr = asset_dr.get(&unit_id).copied().unwrap_or(0);
+                let l_dr = liab_dr.get(&unit_id).copied().unwrap_or(0);
+                // Net value leaving the estate without commensurate asset receipt or debt reduction
+                let uncompensated_outflow = cr.saturating_sub(dr).saturating_sub(l_dr);
+                if uncompensated_outflow <= 0 {
+                    continue;
+                }
+                let cur_assets = running_assets.get(&unit_id).copied().unwrap_or(0);
+                let cur_liabs = running_liabs.get(&unit_id).copied().unwrap_or(0);
+                let insolvent = cur_liabs > cur_assets;
+                let round_or_thin = thin_desc || (uncompensated_outflow % 100_000 == 0);
+
+                // Require either insider transfer OR insolvency as an anchor badge, plus >= 2 total badges
+                if !insider && !insolvent {
+                    continue;
+                }
+                let badge_count = u8::from(insider)
+                    + u8::from(insolvent)
+                    + u8::from(uncorroborated)
+                    + u8::from(round_or_thin);
+                if badge_count < 2 {
+                    continue;
+                }
+
+                let window = if eff >= s548_start {
+                    "11_usc_548"
+                } else {
+                    "uvta_section_9"
+                };
+                let severity = if eff >= s548_start && insider && insolvent {
+                    Severity::Critical
+                } else {
+                    Severity::High
+                };
+                let mut cites: Vec<Cite> = accts_by_unit
+                    .get(&unit_id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Cite::Account)
+                    .collect();
+                cites.push(Cite::Entry(e.vid));
+                if snapshot.periods.contains_key(&e.period) {
+                    cites.push(Cite::Period(e.period.clone()));
+                }
+                let scale = crate::unit_scale(book, unit_id)?;
+                out.push(finding(
+                    Self::ID,
+                    severity,
+                    Statistic {
+                        name: "fraudulent_transfer_amount".into(),
+                        value: uncompensated_outflow,
+                        scale,
+                        population: population.max(1),
+                    },
+                    cites,
+                    format!(
+                        "window {window}: asset outflow {uncompensated_outflow} with {badge_count} badge(s) of fraud (insider={insider}, insolvent={insolvent}, uncorroborated={uncorroborated}, round_or_thin={round_or_thin})"
+                    ),
+                ));
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct InvestorPosition {
+    party_vid: VId,
+    party_code: String,
+    unit_id: u32,
+    cash_in: i128,
+    cash_out: i128,
+    first_inflow_date: Option<DateDay>,
+    first_entry_vid: VId,
+    accounts: BTreeSet<VId>,
+    entries: BTreeSet<VId>,
+}
+
+fn is_investor_contra_account(code: &str, name: &str, account_type: AccountType) -> bool {
+    if account_type == AccountType::EQUITY {
+        return true;
+    }
+    let cl = code.to_ascii_lowercase();
+    let nl = name.to_ascii_lowercase();
+    cl.starts_with("21")
+        || cl.starts_with("25")
+        || cl.starts_with("30")
+        || nl.contains("investor")
+        || nl.contains("capital")
+        || nl.contains("subscription")
+        || nl.contains("redemption")
+        || nl.contains("distribution")
+        || nl.contains("deposit")
+        || nl.contains("ponzi")
+        || nl.contains("partner")
+}
+
+type InvestorPopulation = (Vec<InvestorPosition>, BTreeMap<u32, i128>, u64);
+
+/// Collect investor cash-in and cash-out positions per `(party_vid, unit_id)`,
+/// plus ending positive cash balance per `unit_id`.
+fn collect_investor_positions(
+    snapshot: &Snapshot,
+    book: &BookContext,
+    work: &mut Work,
+) -> Result<InvestorPopulation, LanternError> {
+    let through = snapshot.coordinate.effective_through;
+    let mut live = snapshot.live_postings_through(through)?;
+    live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
+
+    let (pval_to_party, party_codes) = party_lookup_tables(snapshot);
+    let mut positions: BTreeMap<(VId, u32), InvestorPosition> = BTreeMap::new();
+    let mut explicit_investor_party: BTreeSet<(VId, u32)> = BTreeSet::new();
+    let mut cash_balance_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
+    let mut population = 0u64;
+
+    for e in &live {
+        work.entry();
+        let eff = e.entry.proposal.effective_date;
+        let desc_lower = e
+            .entry
+            .proposal
+            .description
+            .open(&book.seal_key, fa_model::limits::MAX_DESCRIPTION_BYTES)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let desc_investor = desc_lower.contains("investor")
+            || desc_lower.contains("subscription")
+            || desc_lower.contains("redemption")
+            || desc_lower.contains("distribution")
+            || desc_lower.contains("ponzi");
+
+        let mut parties_in_entry: BTreeSet<VId> = BTreeSet::new();
+        let mut cash_dr_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
+        let mut cash_cr_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
+        let mut contra_investor_flag: BTreeMap<u32, bool> = BTreeMap::new();
+        let mut accts_by_unit: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
+
+        for leg in &e.entry.proposal.legs {
+            work.leg();
+            for &(_, d) in &leg.dimension_set {
+                let pvid = pval_to_party.get(&d).copied().unwrap_or(d);
+                parties_in_entry.insert(pvid);
+            }
+            let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
+                continue;
+            };
+            let at = AccountType(acct.account_type);
+            let mag = leg.amount.mantissa.unsigned_abs() as i128;
+            let u = leg.amount.unit.0;
+            accts_by_unit.entry(u).or_default().insert(leg.account_ref);
+
+            if is_liquid_cash_account(&acct.code, &acct.name, at) {
+                match leg.side {
+                    Side::Debit => {
+                        *cash_dr_by_unit.entry(u).or_default() += mag;
+                        *cash_balance_by_unit.entry(u).or_default() += mag;
+                    }
+                    Side::Credit => {
+                        *cash_cr_by_unit.entry(u).or_default() += mag;
+                        *cash_balance_by_unit.entry(u).or_default() -= mag;
+                    }
+                }
+            } else if is_investor_contra_account(&acct.code, &acct.name, at) || desc_investor {
+                contra_investor_flag.insert(u, true);
+            }
+        }
+
+        if parties_in_entry.is_empty() {
+            continue;
+        }
+
+        for &party_vid in &parties_in_entry {
+            let code = party_codes
+                .get(&party_vid)
+                .cloned()
+                .unwrap_or_else(|| format!("{:032x}", party_vid.0));
+            for (&unit_id, accts) in &accts_by_unit {
+                let dr = cash_dr_by_unit.get(&unit_id).copied().unwrap_or(0);
+                let cr = cash_cr_by_unit.get(&unit_id).copied().unwrap_or(0);
+                if dr == 0 && cr == 0 {
+                    continue;
+                }
+                if contra_investor_flag.get(&unit_id).copied().unwrap_or(false) {
+                    explicit_investor_party.insert((party_vid, unit_id));
+                }
+                population += 1;
+                let pos =
+                    positions
+                        .entry((party_vid, unit_id))
+                        .or_insert_with(|| InvestorPosition {
+                            party_vid,
+                            party_code: code.clone(),
+                            unit_id,
+                            cash_in: 0,
+                            cash_out: 0,
+                            first_inflow_date: None,
+                            first_entry_vid: e.vid,
+                            accounts: BTreeSet::new(),
+                            entries: BTreeSet::new(),
+                        });
+                if e.vid < pos.first_entry_vid {
+                    pos.first_entry_vid = e.vid;
+                }
+                if dr > 0 {
+                    pos.cash_in = pos
+                        .cash_in
+                        .checked_add(dr)
+                        .ok_or(LanternError::Overflow("investor cash_in sum"))?;
+                    if pos.first_inflow_date.is_none_or(|d| eff < d) {
+                        pos.first_inflow_date = Some(eff);
+                    }
+                }
+                if cr > 0 {
+                    pos.cash_out = pos
+                        .cash_out
+                        .checked_add(cr)
+                        .ok_or(LanternError::Overflow("investor cash_out sum"))?;
+                }
+                pos.accounts.extend(accts.iter().copied());
+                pos.entries.insert(e.vid);
+            }
+        }
+    }
+
+    // Retain parties that invested principal (cash_in > 0) or touched an explicit investor account
+    let filtered: Vec<InvestorPosition> = positions
+        .into_iter()
+        .filter(|(k, p)| p.cash_in > 0 || explicit_investor_party.contains(k))
+        .map(|(_, p)| p)
+        .collect();
+
+    Ok((filtered, cash_balance_by_unit, population))
+}
+
+fn allocate_quotas_largest_remainder(
+    pool: i128,
+    numerators: &[i128],
+    denominator: i128,
+    tie_breaks: &[VId],
+) -> Result<Vec<i128>, LanternError> {
+    if numerators.is_empty() || pool <= 0 || denominator <= 0 {
+        return Ok(vec![0; numerators.len()]);
+    }
+    let mut quotas = Vec::with_capacity(numerators.len());
+    let mut remainders = Vec::with_capacity(numerators.len());
+    let mut sum_quotas = 0i128;
+    for (idx, &num) in numerators.iter().enumerate() {
+        let q = num / denominator;
+        let r = num % denominator;
+        sum_quotas = sum_quotas
+            .checked_add(q)
+            .ok_or(LanternError::Overflow("largest remainder quota sum"))?;
+        quotas.push(q);
+        remainders.push((idx, r, tie_breaks[idx]));
+    }
+    let shortfall = pool.saturating_sub(sum_quotas);
+    remainders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
+    for &(idx, _, _) in remainders.iter().take(shortfall as usize) {
+        quotas[idx] = quotas[idx]
+            .checked_add(1)
+            .ok_or(LanternError::Overflow("largest remainder increment"))?;
+    }
+    Ok(quotas)
+}
+
+/// `ponzi.net_investment` (plan §11.5, `FA-EVID-L56`):
+/// Madoff net-equity Ponzi schedule (*In re Bernard L. Madoff Investment
+/// Securities LLC*, 654 F.3d 229). Computes per-investor `cash_in - cash_out`,
+/// assigns investor cohorts by first-inflow date (`cohort_window_days`), and
+/// classifies net losers (net equity claims) and net winners (fictitious
+/// profits subject to clawback).
+pub struct PonziNetInvestment {
+    params: Params,
+}
+procedure_boilerplate!(PonziNetInvestment, "ponzi.net_investment");
+
+impl Procedure for PonziNetInvestment {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let cohort_window_days = self.params.get_u32("cohort_window_days")?;
+        if cohort_window_days == 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "cohort_window_days".into(),
+                message: "must be >= 1".into(),
+            });
+        }
+
+        let (investors, _, population) = collect_investor_positions(snapshot, book, work)?;
+        if investors.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let earliest_inflow = investors
+            .iter()
+            .filter_map(|p| p.first_inflow_date)
+            .min()
+            .unwrap_or(DateDay(0));
+
+        let mut out = Vec::new();
+        for pos in investors {
+            work.compare(1);
+            let cohort = pos.first_inflow_date.map_or(1, |d| {
+                ((d.0 - earliest_inflow.0).max(0) as u32 / cohort_window_days) + 1
+            });
+            let mut cites: Vec<Cite> = pos.accounts.into_iter().map(Cite::Account).collect();
+            for evid in pos.entries {
+                if cites.len() < MAX_CITES {
+                    cites.push(Cite::Entry(evid));
+                }
+            }
+            let scale = crate::unit_scale(book, pos.unit_id)?;
+            if pos.cash_out > pos.cash_in {
+                let clawback = pos.cash_out - pos.cash_in;
+                out.push(finding(
+                    Self::ID,
+                    Severity::High,
+                    Statistic {
+                        name: "fictitious_profit_clawback".into(),
+                        value: clawback,
+                        scale,
+                        population: population.max(1),
+                    },
+                    cites,
+                    format!(
+                        "investor {} (cohort {cohort}, status=net_winner): cash_in={}, cash_out={}, fictitious_profit_clawback={clawback}",
+                        pos.party_code, pos.cash_in, pos.cash_out
+                    ),
+                ));
+            } else if pos.cash_in > pos.cash_out {
+                let claim = pos.cash_in - pos.cash_out;
+                out.push(finding(
+                    Self::ID,
+                    Severity::Medium,
+                    Statistic {
+                        name: "net_equity_claim".into(),
+                        value: claim,
+                        scale,
+                        population: population.max(1),
+                    },
+                    cites,
+                    format!(
+                        "investor {} (cohort {cohort}, status=net_loser): cash_in={}, cash_out={}, net_equity_claim={claim}",
+                        pos.party_code, pos.cash_in, pos.cash_out
+                    ),
+                ));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `distribution.rising_tide` (plan §11.5, `FA-EVID-L57`):
+/// Rising-tide receivership distribution (*SEC v. Huber*, 702 F.3d 903).
+/// Equalizes cumulative recovery rates `(cash_out + distribution) / cash_in`
+/// across net-loser investors up to the exact rational water level supported
+/// by the distributable pool under `LargestRemainder`.
+pub struct DistributionRisingTide {
+    params: Params,
+}
+procedure_boilerplate!(DistributionRisingTide, "distribution.rising_tide");
+
+impl Procedure for DistributionRisingTide {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let explicit_pool = self.params.get("distributable_pool")?;
+        if explicit_pool < 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "distributable_pool".into(),
+                message: "must be >= 0".into(),
+            });
+        }
+
+        let (investors, cash_by_unit, population) =
+            collect_investor_positions(snapshot, book, work)?;
+        let mut by_unit: BTreeMap<u32, Vec<InvestorPosition>> = BTreeMap::new();
+        for pos in investors {
+            if pos.cash_in > pos.cash_out {
+                by_unit.entry(pos.unit_id).or_default().push(pos);
+            }
+        }
+
+        let mut out = Vec::new();
+        for (unit_id, mut losers) in by_unit {
+            work.compare(1);
+            if losers.is_empty() {
+                continue;
+            }
+            // Sort ascending by pre-receivership recovery ratio w_i / p_i via cross-multiplication
+            losers.sort_by(|a, b| {
+                let lhs = a.cash_out.saturating_mul(b.cash_in);
+                let rhs = b.cash_out.saturating_mul(a.cash_in);
+                lhs.cmp(&rhs)
+                    .then_with(|| a.first_entry_vid.cmp(&b.first_entry_vid))
+            });
+
+            let total_unrecovered: i128 = losers.iter().map(|p| p.cash_in - p.cash_out).sum();
+            let raw_pool = if explicit_pool > 0 {
+                explicit_pool
+            } else {
+                cash_by_unit.get(&unit_id).copied().unwrap_or(0).max(0)
+            };
+            let pool_eff = raw_pool.min(total_unrecovered);
+            if pool_eff <= 0 {
+                continue;
+            }
+
+            // Find the active prefix 0..k whose recovery rate is raised to the water level
+            let mut k = 0usize;
+            let mut p_sum = 0i128;
+            let mut w_sum = 0i128;
+            for (idx, pos) in losers.iter().enumerate() {
+                if idx > 0 {
+                    // Pool needed to raise 0..idx to pos's recovery rate w_idx / p_idx:
+                    // need = (w_idx * p_sum - p_idx * w_sum) / p_idx
+                    let need_num = pos
+                        .cash_out
+                        .checked_mul(p_sum)
+                        .ok_or(LanternError::Overflow("rising_tide need_num"))?
+                        .checked_sub(
+                            pos.cash_in
+                                .checked_mul(w_sum)
+                                .ok_or(LanternError::Overflow("rising_tide need_sub"))?,
+                        )
+                        .ok_or(LanternError::Overflow("rising_tide need diff"))?;
+                    let cap_num = pool_eff
+                        .checked_mul(pos.cash_in)
+                        .ok_or(LanternError::Overflow("rising_tide cap_num"))?;
+                    if need_num >= cap_num {
+                        break;
+                    }
+                }
+                p_sum = p_sum
+                    .checked_add(pos.cash_in)
+                    .ok_or(LanternError::Overflow("rising_tide p_sum"))?;
+                w_sum = w_sum
+                    .checked_add(pos.cash_out)
+                    .ok_or(LanternError::Overflow("rising_tide w_sum"))?;
+                k = idx + 1;
+            }
+
+            let mut numerators = Vec::with_capacity(k);
+            let mut tie_breaks = Vec::with_capacity(k);
+            for pos in losers.iter().take(k) {
+                let num = (pool_eff + w_sum)
+                    .checked_mul(pos.cash_in)
+                    .ok_or(LanternError::Overflow("rising_tide numerator"))?
+                    .checked_sub(
+                        p_sum
+                            .checked_mul(pos.cash_out)
+                            .ok_or(LanternError::Overflow("rising_tide numerator sub"))?,
+                    )
+                    .ok_or(LanternError::Overflow("rising_tide numerator diff"))?;
+                numerators.push(num);
+                tie_breaks.push(pos.first_entry_vid);
+            }
+            let active_allocs =
+                allocate_quotas_largest_remainder(pool_eff, &numerators, p_sum, &tie_breaks)?;
+            let water_bps = (pool_eff + w_sum)
+                .checked_mul(10_000)
+                .ok_or(LanternError::Overflow("rising_tide water_bps"))?
+                / p_sum;
+            let scale = crate::unit_scale(book, unit_id)?;
+
+            for (idx, pos) in losers.into_iter().enumerate() {
+                let dist = active_allocs.get(idx).copied().unwrap_or(0);
+                let mut cites: Vec<Cite> = pos.accounts.into_iter().map(Cite::Account).collect();
+                for evid in pos.entries {
+                    if cites.len() < MAX_CITES {
+                        cites.push(Cite::Entry(evid));
+                    }
+                }
+                let severity = if dist > 0 {
+                    Severity::Medium
+                } else {
+                    Severity::Info
+                };
+                out.push(finding(
+                    Self::ID,
+                    severity,
+                    Statistic {
+                        name: "rising_tide_distribution".into(),
+                        value: dist,
+                        scale,
+                        population: population.max(1),
+                    },
+                    cites,
+                    format!(
+                        "investor {}: principal={}, prior_withdrawals={}, rising_tide_distribution={dist} (water_level_bps={water_bps})",
+                        pos.party_code, pos.cash_in, pos.cash_out
+                    ),
+                ));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `distribution.pro_rata` (plan §11.5, `FA-EVID-L58`):
+/// *Cunningham v. Brown* pro-rata receivership distribution. Allocates the
+/// distributable pool across net-loser investors in exact proportion to their
+/// net unrecovered principal (`cash_in - cash_out`) under `LargestRemainder`.
+pub struct DistributionProRata {
+    params: Params,
+}
+procedure_boilerplate!(DistributionProRata, "distribution.pro_rata");
+
+impl Procedure for DistributionProRata {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let explicit_pool = self.params.get("distributable_pool")?;
+        if explicit_pool < 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "distributable_pool".into(),
+                message: "must be >= 0".into(),
+            });
+        }
+
+        let (investors, cash_by_unit, population) =
+            collect_investor_positions(snapshot, book, work)?;
+        let mut by_unit: BTreeMap<u32, Vec<InvestorPosition>> = BTreeMap::new();
+        for pos in investors {
+            if pos.cash_in > pos.cash_out {
+                by_unit.entry(pos.unit_id).or_default().push(pos);
+            }
+        }
+
+        let mut out = Vec::new();
+        for (unit_id, mut losers) in by_unit {
+            work.compare(1);
+            if losers.is_empty() {
+                continue;
+            }
+            losers.sort_by_key(|p| (p.first_entry_vid, p.party_vid));
+
+            let total_unrecovered: i128 = losers.iter().map(|p| p.cash_in - p.cash_out).sum();
+            let raw_pool = if explicit_pool > 0 {
+                explicit_pool
+            } else {
+                cash_by_unit.get(&unit_id).copied().unwrap_or(0).max(0)
+            };
+            let pool_eff = raw_pool.min(total_unrecovered);
+            if pool_eff <= 0 {
+                continue;
+            }
+
+            let mut numerators = Vec::with_capacity(losers.len());
+            let mut tie_breaks = Vec::with_capacity(losers.len());
+            for pos in &losers {
+                let claim = pos.cash_in - pos.cash_out;
+                let num = pool_eff
+                    .checked_mul(claim)
+                    .ok_or(LanternError::Overflow("pro_rata numerator"))?;
+                numerators.push(num);
+                tie_breaks.push(pos.first_entry_vid);
+            }
+            let allocs = allocate_quotas_largest_remainder(
+                pool_eff,
+                &numerators,
+                total_unrecovered,
+                &tie_breaks,
+            )?;
+            let scale = crate::unit_scale(book, unit_id)?;
+
+            for (pos, dist) in losers.into_iter().zip(allocs) {
+                let claim = pos.cash_in - pos.cash_out;
+                let mut cites: Vec<Cite> = pos.accounts.into_iter().map(Cite::Account).collect();
+                for evid in pos.entries {
+                    if cites.len() < MAX_CITES {
+                        cites.push(Cite::Entry(evid));
+                    }
+                }
+                out.push(finding(
+                    Self::ID,
+                    Severity::Medium,
+                    Statistic {
+                        name: "pro_rata_distribution".into(),
+                        value: dist,
+                        scale,
+                        population: population.max(1),
+                    },
+                    cites,
+                    format!(
+                        "investor {}: principal={}, prior_withdrawals={}, net_claim={claim}, pro_rata_distribution={dist}",
+                        pos.party_code, pos.cash_in, pos.cash_out
+                    ),
+                ));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `damages.but_for` (plan §11.6, `FA-EVID-L59`):
+/// But-for damages schedule. Computes per-account and per-period damages deltas
+/// between the actual live posted fold and counterfactual baseline expectations
+/// (from `RegisterEquals` baseline attestations or pre-supersession / restated
+/// entry lineages). See also [`compute_scenario_but_for_damages`] for comparing
+/// a trunk snapshot directly against a counterfactual scenario scratch-book snapshot.
+pub struct DamagesButFor {
+    params: Params,
+}
+procedure_boilerplate!(DamagesButFor, "damages.but_for");
+
+impl Procedure for DamagesButFor {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let through = snapshot.coordinate.effective_through;
+        let mut live = snapshot.live_postings_through(through)?;
+        live.sort_by_key(|e| e.vid);
+
+        // Actual live fold per (account_vid, period, unit_id)
+        type CellKey = (VId, String, u32);
+        let mut actual_fold: BTreeMap<CellKey, (i128, BTreeSet<VId>)> = BTreeMap::new();
+        for e in &live {
+            work.entry();
+            for leg in &e.entry.proposal.legs {
+                work.leg();
+                let signed = match leg.side {
+                    Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
+                    Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
+                };
+                let cell = actual_fold
+                    .entry((leg.account_ref, e.period.clone(), leg.amount.unit.0))
+                    .or_default();
+                cell.0 = cell
+                    .0
+                    .checked_add(signed)
+                    .ok_or(LanternError::Overflow("damages.but_for actual fold"))?;
+                cell.1.insert(e.vid);
+            }
+        }
+
+        // Counterfactual baseline from RegisterEquals attestations
+        let mut but_for_cells: BTreeMap<CellKey, (i128, BTreeSet<VId>)> = BTreeMap::new();
+        for att in snapshot.attestations.values() {
+            if let AttestationClaim::RegisterEquals(c) = &att.attestation.claim {
+                if through.is_some_and(|d| c.as_of_effective > d) {
+                    continue;
+                }
+                let key = (c.account, c.period.clone(), c.unit_id);
+                let entries = actual_fold
+                    .get(&key)
+                    .map(|(_, es)| es.clone())
+                    .unwrap_or_default();
+                but_for_cells.insert(key, (c.mantissa, entries));
+            }
+        }
+
+        // Also include cells whereOriginal postings were superseded/reversed by restatement
+        let live_vids: BTreeSet<VId> = live.iter().map(|e| e.vid).collect();
+        let mut original_fold: BTreeMap<CellKey, (i128, BTreeSet<VId>)> = BTreeMap::new();
+        let mut has_superseded_cell: BTreeSet<CellKey> = BTreeSet::new();
+        for e in &snapshot.entries {
+            if !e.posts() || through.is_some_and(|d| e.entry.proposal.effective_date > d) {
+                continue;
+            }
+            let is_original = e.entry.proposal.class == EntryClass::ORIGINAL
+                && e.entry.proposal.supersession.is_empty();
+            let was_superseded = is_original && !live_vids.contains(&e.vid);
+            if is_original {
+                for leg in &e.entry.proposal.legs {
+                    let signed = match leg.side {
+                        Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
+                        Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
+                    };
+                    let key = (leg.account_ref, e.period.clone(), leg.amount.unit.0);
+                    let cell = original_fold.entry(key.clone()).or_default();
+                    cell.0 = cell
+                        .0
+                        .checked_add(signed)
+                        .ok_or(LanternError::Overflow("damages.but_for original fold"))?;
+                    cell.1.insert(e.vid);
+                    if was_superseded {
+                        has_superseded_cell.insert(key);
+                    }
+                }
+            }
+        }
+        for key in has_superseded_cell {
+            if !but_for_cells.contains_key(&key)
+                && let Some(orig) = original_fold.remove(&key)
+            {
+                but_for_cells.insert(key, orig);
+            }
+        }
+
+        let population = (live.len() + snapshot.attestations.len()).max(1) as u64;
+        let mut out = Vec::new();
+        for ((acct_vid, period, unit_id), (but_for_net, mut cites_set)) in but_for_cells {
+            work.compare(1);
+            let actual_net = actual_fold
+                .get(&(acct_vid, period.clone(), unit_id))
+                .map_or(0, |(v, _)| *v);
+            if let Some((_, act_entries)) = actual_fold.get(&(acct_vid, period.clone(), unit_id)) {
+                cites_set.extend(act_entries.iter().copied());
+            }
+            if actual_net == but_for_net {
+                continue;
+            }
+            let delta = reconciliation_arithmetic::discrepancy(actual_net, but_for_net)
+                .ok_or(LanternError::Overflow("damages.but_for delta"))?;
+            let mut cites = vec![Cite::Account(acct_vid)];
+            if snapshot.periods.contains_key(&period) {
+                cites.push(Cite::Period(period.clone()));
+            }
+            for evid in cites_set {
+                if cites.len() < MAX_CITES {
+                    cites.push(Cite::Entry(evid));
+                }
+            }
+            let code = snapshot
+                .accounts
+                .get(&acct_vid)
+                .map_or("?", |a| a.code.as_str());
+            let scale = crate::unit_scale(book, unit_id)?;
+            out.push(finding(
+                Self::ID,
+                Severity::High,
+                Statistic {
+                    name: "but_for_damages_delta".into(),
+                    value: delta,
+                    scale,
+                    population,
+                },
+                cites,
+                format!(
+                    "account {code} period {period} unit {unit_id}: actual_net={actual_net}, but_for_net={but_for_net}, damages_delta={delta}"
+                ),
+            ));
+        }
+        Ok(out)
+    }
+}
+
+/// Compute a certified `damages.but_for` schedule by comparing an actual trunk
+/// [`Snapshot`] directly against a counterfactual scenario scratch-book [`Snapshot`]
+/// (plan §11.6).
+pub fn compute_scenario_but_for_damages(
+    actual: &Snapshot,
+    but_for_scenario: &Snapshot,
+    book: &BookContext,
+) -> Result<Vec<Finding>, LanternError> {
+    type CellKey = (VId, String, u32);
+    let fold_snapshot =
+        |snap: &Snapshot| -> Result<BTreeMap<CellKey, (i128, BTreeSet<VId>)>, LanternError> {
+            let mut live = snap.live_postings_through(snap.coordinate.effective_through)?;
+            live.sort_by_key(|e| e.vid);
+            let mut map: BTreeMap<CellKey, (i128, BTreeSet<VId>)> = BTreeMap::new();
+            for e in &live {
+                for leg in &e.entry.proposal.legs {
+                    let signed = match leg.side {
+                        Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
+                        Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
+                    };
+                    let cell = map
+                        .entry((leg.account_ref, e.period.clone(), leg.amount.unit.0))
+                        .or_default();
+                    cell.0 = cell
+                        .0
+                        .checked_add(signed)
+                        .ok_or(LanternError::Overflow("scenario but_for fold"))?;
+                    cell.1.insert(e.vid);
+                }
+            }
+            Ok(map)
+        };
+
+    let actual_map = fold_snapshot(actual)?;
+    let scenario_map = fold_snapshot(but_for_scenario)?;
+    let mut keys: BTreeSet<CellKey> = BTreeSet::new();
+    for k in actual_map.keys().chain(scenario_map.keys()) {
+        keys.insert(k.clone());
+    }
+
+    let population = (actual.entries.len() + but_for_scenario.entries.len()).max(1) as u64;
+    let mut out = Vec::new();
+    for key in keys {
+        let (acct_vid, period, unit_id) = &key;
+        let actual_net = actual_map.get(&key).map_or(0, |(v, _)| *v);
+        let but_for_net = scenario_map.get(&key).map_or(0, |(v, _)| *v);
+        if actual_net == but_for_net {
+            continue;
+        }
+        let delta = reconciliation_arithmetic::discrepancy(actual_net, but_for_net)
+            .ok_or(LanternError::Overflow("scenario but_for delta"))?;
+        let mut cites = vec![Cite::Account(*acct_vid)];
+        if actual.periods.contains_key(period) {
+            cites.push(Cite::Period(period.clone()));
+        }
+        if let Some((_, act_entries)) = actual_map.get(&key) {
+            for &evid in act_entries {
+                if cites.len() < MAX_CITES {
+                    cites.push(Cite::Entry(evid));
+                }
+            }
+        }
+        let code = actual
+            .accounts
+            .get(acct_vid)
+            .or_else(|| but_for_scenario.accounts.get(acct_vid))
+            .map_or("?", |a| a.code.as_str());
+        let scale = crate::unit_scale(book, *unit_id)?;
+        out.push(finding(
+            DamagesButFor::ID,
+            Severity::High,
+            Statistic {
+                name: "but_for_damages_delta".into(),
+                value: delta,
+                scale,
+                population,
+            },
+            cites,
+            format!(
+                "account {code} period {period} unit {unit_id}: actual_net={actual_net}, scenario_but_for_net={but_for_net}, damages_delta={delta}"
+            ),
+        ));
+    }
+    Ok(out)
+}

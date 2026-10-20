@@ -12,9 +12,11 @@ use fgdb_types::VId;
 
 use crate::aging::{InventoryAging, OpenItemsAging};
 use crate::cutoff::{
-    ConfirmCoverage, ExpenseCapitalization, PartyMasterChanges, PayrollGhost, PeriodBoundary,
-    ReconBookToBook, ReconIntercompany, ReconLapping, ReversalPatterns, SubsequentEvents,
-    UnrecordedLiabilities,
+    ConfirmCoverage, DamagesButFor, DistributionProRata, DistributionRisingTide,
+    ExpenseCapitalization, LookbackFraudulentTransfer, LookbackPreferences, PartyMasterChanges,
+    PayrollGhost, PeriodBoundary, PonziNetInvestment, ReconBookToBook, ReconIntercompany,
+    ReconLapping, ReversalPatterns, SolvencyBalanceSheetTest, SolvencyCashFlowTest,
+    SubsequentEvents, UnrecordedLiabilities,
 };
 use crate::digits::{FirstDigit, FirstTwoDigits, SecondDigit};
 use crate::duplicates::{SameSameDifferent, SameSameSame};
@@ -84,6 +86,14 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         ExpenseCapitalization::ID => Box::new(ExpenseCapitalization::with(params)),
         ReversalPatterns::ID => Box::new(ReversalPatterns::with(params)),
         ConfirmCoverage::ID => Box::new(ConfirmCoverage::with(params)),
+        SolvencyBalanceSheetTest::ID => Box::new(SolvencyBalanceSheetTest::with(params)),
+        SolvencyCashFlowTest::ID => Box::new(SolvencyCashFlowTest::with(params)),
+        LookbackPreferences::ID => Box::new(LookbackPreferences::with(params)),
+        LookbackFraudulentTransfer::ID => Box::new(LookbackFraudulentTransfer::with(params)),
+        PonziNetInvestment::ID => Box::new(PonziNetInvestment::with(params)),
+        DistributionRisingTide::ID => Box::new(DistributionRisingTide::with(params)),
+        DistributionProRata::ID => Box::new(DistributionProRata::with(params)),
+        DamagesButFor::ID => Box::new(DamagesButFor::with(params)),
         FirstDigit::ID => Box::new(FirstDigit::with(params)),
         SecondDigit::ID => Box::new(SecondDigit::with(params)),
         FirstTwoDigits::ID => Box::new(FirstTwoDigits::with(params)),

@@ -1619,7 +1619,7 @@ fn tracing_follows_recorded_same_day_order_and_repays_an_overdraft_first() {
 fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
     let (h, _) = posted_corpus();
     let rows = fa_lantern::catalog::registered().unwrap();
-    assert_eq!(rows.len(), 51, "every registry row is listed");
+    assert_eq!(rows.len(), 59, "every registry row is listed");
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -4517,4 +4517,617 @@ fn statistical_audit_lane_oracles_numpy_sampling_and_propcheck_suites() {
         },
     )
     .unwrap();
+}
+
+#[test]
+fn fa_y4v_solvency_lookback_ponzi_distribution_and_damages_procedures() {
+    use fa_journal::attestation::{
+        Attestation, AttestationClaim, CapabilityBinding, RegisterEqualsClaim, StoredAttestation,
+        Subject,
+    };
+    use fa_lantern::cutoff::{
+        DamagesButFor, DistributionProRata, DistributionRisingTide, LookbackFraudulentTransfer,
+        LookbackPreferences, PonziNetInvestment, SolvencyBalanceSheetTest, SolvencyCashFlowTest,
+        compute_scenario_but_for_damages,
+    };
+    use fa_model::{AccountType, EntryClass, account_vid};
+    use fa_policy::Profile;
+
+    let mut h = harness();
+    let usd = h.usd;
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = Some(day(2026, 4, 30));
+
+    let inv_cap_vid = account_vid(h.book.book_id, "2100");
+    snapshot.accounts.insert(
+        inv_cap_vid,
+        fa_journal::rows::AccountRow {
+            vid: inv_cap_vid,
+            code: "2100".into(),
+            name: "Investor Capital Liability".into(),
+            account_type: AccountType::LIABILITY.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            limit: None,
+            created_at: CommitSeq(1),
+        },
+    );
+
+    let seal_key = h.book.seal_key.clone();
+    let seal = move |text: &str, salt: u8| {
+        fa_model::Erasable::seal(
+            &text.to_string(),
+            None,
+            &seal_key,
+            [salt; 32],
+            [salt.wrapping_add(1); 24],
+        )
+    };
+
+    // Register parties:
+    // - VEND-PREF (non-insider vendor with §547(c)(1), (c)(2), and (c)(4) defenses)
+    // - INSIDER-P (related party via RELATED_TO edge)
+    // - INV-WIN, INV-A, INV-B, INV-C (Ponzi investors)
+    let mut add_party = |code: &str, kind: fa_model::PartyKind, salt: u8| -> (VId, VId) {
+        let pvid = fa_model::party_vid(h.book.book_id, code);
+        let pval = fa_model::party_value_vid(h.book.book_id, code);
+        snapshot.rea.parties.insert(
+            pvid,
+            fa_journal::rea::PartyRow {
+                vid: pvid,
+                dimension_value_vid: pval,
+                code: code.into(),
+                kind,
+                name: seal(code, salt),
+                identifiers: Vec::new(),
+                external_ids: Vec::new(),
+                created_at: CommitSeq(1),
+            },
+        );
+        (pvid, pval)
+    };
+
+    let (_vend_vid, vend_val) = add_party("VEND-PREF", fa_model::PartyKind::Vendor, 21);
+    let (insider_vid, insider_val) = add_party("INSIDER-P", fa_model::PartyKind::RelatedEntity, 23);
+    let (_win_vid, win_val) = add_party("INV-WIN", fa_model::PartyKind::Counterparty, 25);
+    let (_inva_vid, inva_val) = add_party("INV-A", fa_model::PartyKind::Counterparty, 27);
+    let (_invb_vid, invb_val) = add_party("INV-B", fa_model::PartyKind::Counterparty, 29);
+    let (_invc_vid, invc_val) = add_party("INV-C", fa_model::PartyKind::Counterparty, 31);
+
+    // Active RELATED_TO edge marking INSIDER-P as an insider
+    snapshot
+        .rea
+        .relationships
+        .push(fa_journal::rea::RelationshipRow {
+            eid: fgdb_types::EId(96_001),
+            spec: fa_model::RelationshipSpec {
+                from: insider_vid,
+                to: insider_vid,
+                kind: fa_model::RelationshipKind::RelatedTo,
+                basis: "executive_officer_or_director".into(),
+                valid_from: day(2025, 1, 1),
+                valid_to: None,
+            },
+            recorded_at: CommitSeq(2),
+            control_entry: VId(96_000),
+        });
+
+    let jan = h.period_code(day(2026, 1, 15));
+    let feb = h.period_code(day(2026, 2, 15));
+    let mar = h.period_code(day(2026, 3, 15));
+    let apr = h.period_code(day(2026, 4, 15));
+
+    // Helper to attach party dimension to all legs of an entry
+    let tag_party = |e: &mut fa_lantern::SnapshotEntry, pval: VId| {
+        for leg in &mut e.entry.proposal.legs {
+            leg.dimension_set.push((fa_model::PARTY_DIMENSION, pval));
+        }
+    };
+
+    // --- 1. Ponzi investor flows on 2100 Investor Capital ---
+    // INV-WIN: invests 100_000 on Jan 5, withdraws 140_000 on Feb 10 (net winner, clawback = 40_000)
+    let mut e_win_in = make_snapshot_entry(
+        &mut h,
+        VId(97_001),
+        CommitSeq(701),
+        day(2026, 1, 5),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 100_000),
+            ("2000", Side::Credit, usd, 100_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 5)),
+        None,
+        Vec::new(),
+    );
+    e_win_in.entry.proposal.legs[1].account_ref = inv_cap_vid;
+    tag_party(&mut e_win_in, win_val);
+
+    let mut e_win_out = make_snapshot_entry(
+        &mut h,
+        VId(97_002),
+        CommitSeq(702),
+        day(2026, 2, 10),
+        &feb,
+        EntryClass::ORIGINAL,
+        vec![
+            ("2000", Side::Debit, usd, 140_000),
+            ("1000", Side::Credit, usd, 140_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 2, 10)),
+        None,
+        Vec::new(),
+    );
+    e_win_out.entry.proposal.legs[0].account_ref = inv_cap_vid;
+    tag_party(&mut e_win_out, win_val);
+
+    // INV-A: invests 100_000 on Jan 6, withdraws 0 (0% pre-receivership recovery)
+    let mut e_a_in = make_snapshot_entry(
+        &mut h,
+        VId(97_003),
+        CommitSeq(703),
+        day(2026, 1, 6),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 100_000),
+            ("2000", Side::Credit, usd, 100_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 6)),
+        None,
+        Vec::new(),
+    );
+    e_a_in.entry.proposal.legs[1].account_ref = inv_cap_vid;
+    tag_party(&mut e_a_in, inva_val);
+
+    // INV-B: invests 100_000 on Jan 7, withdraws 50_000 on Feb 12 (50% pre-receivership recovery)
+    let mut e_b_in = make_snapshot_entry(
+        &mut h,
+        VId(97_004),
+        CommitSeq(704),
+        day(2026, 1, 7),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 100_000),
+            ("2000", Side::Credit, usd, 100_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 7)),
+        None,
+        Vec::new(),
+    );
+    e_b_in.entry.proposal.legs[1].account_ref = inv_cap_vid;
+    tag_party(&mut e_b_in, invb_val);
+
+    let mut e_b_out = make_snapshot_entry(
+        &mut h,
+        VId(97_005),
+        CommitSeq(705),
+        day(2026, 2, 12),
+        &feb,
+        EntryClass::ORIGINAL,
+        vec![
+            ("2000", Side::Debit, usd, 50_000),
+            ("1000", Side::Credit, usd, 50_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 2, 12)),
+        None,
+        Vec::new(),
+    );
+    e_b_out.entry.proposal.legs[0].account_ref = inv_cap_vid;
+    tag_party(&mut e_b_out, invb_val);
+
+    // INV-C: invests 100_000 on Jan 8, withdraws 80_000 on Feb 15 (80% pre-receivership recovery)
+    let mut e_c_in = make_snapshot_entry(
+        &mut h,
+        VId(97_006),
+        CommitSeq(706),
+        day(2026, 1, 8),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 100_000),
+            ("2000", Side::Credit, usd, 100_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 8)),
+        None,
+        Vec::new(),
+    );
+    e_c_in.entry.proposal.legs[1].account_ref = inv_cap_vid;
+    tag_party(&mut e_c_in, invc_val);
+
+    let mut e_c_out = make_snapshot_entry(
+        &mut h,
+        VId(97_007),
+        CommitSeq(707),
+        day(2026, 2, 15),
+        &feb,
+        EntryClass::ORIGINAL,
+        vec![
+            ("2000", Side::Debit, usd, 80_000),
+            ("1000", Side::Credit, usd, 80_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 2, 15)),
+        None,
+        Vec::new(),
+    );
+    e_c_out.entry.proposal.legs[0].account_ref = inv_cap_vid;
+    tag_party(&mut e_c_out, invc_val);
+
+    // --- 2. Preference payments & §547(c)(1), (c)(2), (c)(4) defenses for VEND-PREF ---
+    // Baseline payment before the 90-day window (Jan 10, doc_date Dec 11 -> 30 days to pay)
+    let mut e_pref_base = make_snapshot_entry(
+        &mut h,
+        VId(97_008),
+        CommitSeq(708),
+        day(2026, 1, 10),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("2000", Side::Debit, usd, 25_000),
+            ("1000", Side::Credit, usd, 25_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2025, 12, 11)),
+        None,
+        Vec::new(),
+    );
+    tag_party(&mut e_pref_base, vend_val);
+
+    // Preference window [Jan 30, Apr 30]:
+    // (a) §547(c)(1) contemporaneous exchange: paid Mar 5, doc_date Mar 2 (3 days <= 5) -> 20_000
+    let mut e_pref_c1 = make_snapshot_entry(
+        &mut h,
+        VId(97_009),
+        CommitSeq(709),
+        day(2026, 3, 5),
+        &mar,
+        EntryClass::ORIGINAL,
+        vec![
+            ("2000", Side::Debit, usd, 20_000),
+            ("1000", Side::Credit, usd, 20_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 3, 2)),
+        None,
+        Vec::new(),
+    );
+    tag_party(&mut e_pref_c1, vend_val);
+
+    // (b) §547(c)(2) ordinary course: paid Mar 20, doc_date Feb 16 (32 days vs 30 baseline, diff 2 <= 15) -> 35_000
+    let mut e_pref_c2 = make_snapshot_entry(
+        &mut h,
+        VId(97_010),
+        CommitSeq(710),
+        day(2026, 3, 20),
+        &mar,
+        EntryClass::ORIGINAL,
+        vec![
+            ("2000", Side::Debit, usd, 35_000),
+            ("1000", Side::Credit, usd, 35_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 2, 16)),
+        None,
+        Vec::new(),
+    );
+    tag_party(&mut e_pref_c2, vend_val);
+
+    // (c) Unprotected late payment: paid Apr 10, doc_date Jan 25 (75 days > 30 + 15) -> 100_000
+    let mut e_pref_unprot = make_snapshot_entry(
+        &mut h,
+        VId(97_011),
+        CommitSeq(711),
+        day(2026, 4, 10),
+        &apr,
+        EntryClass::ORIGINAL,
+        vec![
+            ("2000", Side::Debit, usd, 100_000),
+            ("1000", Side::Credit, usd, 100_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 25)),
+        None,
+        Vec::new(),
+    );
+    tag_party(&mut e_pref_unprot, vend_val);
+
+    // (d) §547(c)(4) subsequent new value: unpaid credit invoice on Apr 18 after the Apr 10 payment -> 40_000
+    let mut e_pref_c4 = make_snapshot_entry(
+        &mut h,
+        VId(97_012),
+        CommitSeq(712),
+        day(2026, 4, 18),
+        &apr,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, usd, 40_000),
+            ("2000", Side::Credit, usd, 40_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 4, 18)),
+        None,
+        Vec::new(),
+    );
+    tag_party(&mut e_pref_c4, vend_val);
+
+    // --- 3. Insider preference & fraudulent transfer to INSIDER-P ---
+    // Uncorroborated round transfer of 50_000 to INSIDER-P on Apr 25 while insolvent (4 badges of fraud)
+    let mut e_fraud = make_snapshot_entry(
+        &mut h,
+        VId(97_013),
+        CommitSeq(713),
+        day(2026, 4, 25),
+        &apr,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, usd, 50_000),
+            ("1000", Side::Credit, usd, 50_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 1)),
+        None,
+        Vec::new(),
+    );
+    e_fraud.entry.proposal.evidence.clear();
+    e_fraud.entry.proposal.description = seal("xfer", 35);
+    tag_party(&mut e_fraud, insider_val);
+
+    snapshot.entries = vec![
+        e_win_in,
+        e_win_out,
+        e_a_in,
+        e_b_in,
+        e_b_out,
+        e_c_in,
+        e_c_out,
+        e_pref_base,
+        e_pref_c1,
+        e_pref_c2,
+        e_pref_unprot,
+        e_pref_c4,
+        e_fraud,
+    ];
+
+    // Add a counterfactual baseline RegisterEquals attestation on Revenue (4000) in Apr claiming 125_000
+    let rev_claim = RegisterEqualsClaim {
+        account: h.account("4000"),
+        unit_id: usd.0,
+        period: apr.clone(),
+        entity: None,
+        mantissa: -125_000,
+        as_of_effective: day(2026, 4, 30),
+        evaluated_known_at: CommitSeq(720),
+        fold_digest: [0x11; 32],
+    };
+    let rev_cell = rev_claim.cell_digest();
+    snapshot.attestations.insert(
+        VId(97_500),
+        StoredAttestation {
+            attestation: Attestation {
+                book_id: h.book.book_id,
+                claim: AttestationClaim::RegisterEquals(rev_claim),
+                subject: Subject::Cell(rev_cell),
+                principal: REVIEWER,
+                evidence_refs: Vec::new(),
+            },
+            signed_digest: [0x22; 32],
+            binding: CapabilityBinding {
+                profile: Profile::Human,
+                capability_commitment: [0x33; 32],
+            },
+        },
+    );
+
+    // 1. Balance-sheet solvency test
+    let bs_proc = SolvencyBalanceSheetTest::new().unwrap();
+    let r_bs = run_over(&snapshot, &h.book, &bs_proc).unwrap();
+    assert_eq!(r_bs.findings.len(), 1);
+    assert_eq!(r_bs.findings[0].severity, Severity::Critical);
+    assert_eq!(r_bs.findings[0].statistic.name, "insolvency_deficit");
+    assert!(
+        witness::determinism(&snapshot, &h.book, &bs_proc)
+            .unwrap()
+            .deterministic()
+    );
+
+    // 2. Cash-flow solvency test
+    let cf_proc = SolvencyCashFlowTest::new().unwrap();
+    let r_cf = run_over(&snapshot, &h.book, &cf_proc).unwrap();
+    assert_eq!(r_cf.findings.len(), 1);
+    assert_eq!(r_cf.findings[0].severity, Severity::High);
+    assert_eq!(r_cf.findings[0].statistic.name, "cash_flow_shortfall");
+    assert!(
+        witness::determinism(&snapshot, &h.book, &cf_proc)
+            .unwrap()
+            .deterministic()
+    );
+
+    // 3. Avoidable preferences with §547(c)(1), (c)(2), and (c)(4) defenses
+    let pref_proc = LookbackPreferences::new().unwrap();
+    let r_pref = run_over(&snapshot, &h.book, &pref_proc).unwrap();
+    let vend_finding = r_pref
+        .findings
+        .iter()
+        .find(|f| f.narrative.contains("VEND-PREF"))
+        .expect("VEND-PREF preference finding");
+    // Gross = 20_000 + 35_000 + 100_000 = 155_000; c1 = 20_000; c2 = 35_000; c4 = 40_000 => net = 60_000
+    assert_eq!(vend_finding.statistic.value, 60_000);
+    assert!(vend_finding.narrative.contains("gross_preference=155000"));
+    assert!(vend_finding.narrative.contains("c1_contemporaneous=20000"));
+    assert!(vend_finding.narrative.contains("c2_ordinary_course=35000"));
+    assert!(vend_finding.narrative.contains("c4_new_value=40000"));
+    assert!(
+        r_pref
+            .findings
+            .iter()
+            .any(|f| f.narrative.contains("INSIDER-P (insider=true)")),
+        "insider transfer flagged with insider=true"
+    );
+    assert!(
+        witness::determinism(&snapshot, &h.book, &pref_proc)
+            .unwrap()
+            .deterministic()
+    );
+
+    // 4. Fraudulent transfer lookback (§548 & UVTA)
+    let ft_proc = LookbackFraudulentTransfer::new().unwrap();
+    let r_ft = run_over(&snapshot, &h.book, &ft_proc).unwrap();
+    assert!(
+        r_ft.findings
+            .iter()
+            .any(|f| f.cites.contains(&Cite::Entry(VId(97_013)))
+                && f.severity == Severity::Critical
+                && f.statistic.value == 50_000)
+    );
+    assert!(
+        witness::determinism(&snapshot, &h.book, &ft_proc)
+            .unwrap()
+            .deterministic()
+    );
+
+    // 5. Ponzi net-investment schedule (Madoff net-equity method)
+    let ponzi_proc = PonziNetInvestment::new().unwrap();
+    let r_ponzi = run_over(&snapshot, &h.book, &ponzi_proc).unwrap();
+    let win_f = r_ponzi
+        .findings
+        .iter()
+        .find(|f| f.narrative.contains("INV-WIN"))
+        .expect("INV-WIN finding");
+    assert_eq!(win_f.statistic.name, "fictitious_profit_clawback");
+    assert_eq!(win_f.statistic.value, 40_000);
+    for (code, expected_claim) in [("INV-A", 100_000), ("INV-B", 50_000), ("INV-C", 20_000)] {
+        let f = r_ponzi
+            .findings
+            .iter()
+            .find(|f| f.narrative.contains(code))
+            .expect(code);
+        assert_eq!(f.statistic.name, "net_equity_claim");
+        assert_eq!(f.statistic.value, expected_claim);
+    }
+    assert!(
+        witness::determinism(&snapshot, &h.book, &ponzi_proc)
+            .unwrap()
+            .deterministic()
+    );
+
+    // 6. Rising-tide distribution (SEC v. Huber) vs Pro-rata distribution (Cunningham v. Brown)
+    // Pool = 70_000 across INV-A (0% recovered), INV-B (50% recovered), INV-C (80% recovered).
+    let rt_proc = DistributionRisingTide::with(
+        Params::defaults(DistributionRisingTide::ID)
+            .unwrap()
+            .set("distributable_pool", 70_000)
+            .unwrap(),
+    );
+    let r_rt = run_over(&snapshot, &h.book, &rt_proc).unwrap();
+    let rt_by_inv = |code: &str| -> i128 {
+        r_rt.findings
+            .iter()
+            .find(|f| f.narrative.contains(code))
+            .expect(code)
+            .statistic
+            .value
+    };
+    assert_eq!(rt_by_inv("INV-A"), 60_000);
+    assert_eq!(rt_by_inv("INV-B"), 10_000);
+    assert_eq!(rt_by_inv("INV-C"), 0);
+    assert_eq!(
+        rt_by_inv("INV-A") + rt_by_inv("INV-B") + rt_by_inv("INV-C"),
+        70_000
+    );
+    assert!(
+        witness::determinism(&snapshot, &h.book, &rt_proc)
+            .unwrap()
+            .deterministic()
+    );
+
+    let pr_proc = DistributionProRata::with(
+        Params::defaults(DistributionProRata::ID)
+            .unwrap()
+            .set("distributable_pool", 70_000)
+            .unwrap(),
+    );
+    let r_pr = run_over(&snapshot, &h.book, &pr_proc).unwrap();
+    let pr_by_inv = |code: &str| -> i128 {
+        r_pr.findings
+            .iter()
+            .find(|f| f.narrative.contains(code))
+            .expect(code)
+            .statistic
+            .value
+    };
+    assert_eq!(pr_by_inv("INV-A"), 41_177);
+    assert_eq!(pr_by_inv("INV-B"), 20_588);
+    assert_eq!(pr_by_inv("INV-C"), 8_235);
+    assert_eq!(
+        pr_by_inv("INV-A") + pr_by_inv("INV-B") + pr_by_inv("INV-C"),
+        70_000
+    );
+    assert!(
+        witness::determinism(&snapshot, &h.book, &pr_proc)
+            .unwrap()
+            .deterministic()
+    );
+
+    // 7. But-for damages schedule (both single-snapshot and scenario scratch-book comparison)
+    let bf_proc = DamagesButFor::new().unwrap();
+    let r_bf = run_over(&snapshot, &h.book, &bf_proc).unwrap();
+    assert_eq!(r_bf.findings.len(), 1);
+    assert_eq!(r_bf.findings[0].statistic.name, "but_for_damages_delta");
+    assert_eq!(r_bf.findings[0].statistic.value, 125_000);
+    assert!(
+        witness::determinism(&snapshot, &h.book, &bf_proc)
+            .unwrap()
+            .deterministic()
+    );
+
+    let mut scenario_snap = snapshot.clone();
+    let e_counterfactual = make_snapshot_entry(
+        &mut h,
+        VId(97_999),
+        CommitSeq(799),
+        day(2026, 4, 28),
+        &apr,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 125_000),
+            ("4000", Side::Credit, usd, 125_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 4, 28)),
+        None,
+        Vec::new(),
+    );
+    scenario_snap.entries.push(e_counterfactual);
+    let scenario_findings =
+        compute_scenario_but_for_damages(&snapshot, &scenario_snap, &h.book).unwrap();
+    assert_eq!(scenario_findings.len(), 2);
+    assert!(
+        scenario_findings
+            .iter()
+            .all(|f| f.statistic.value == 125_000)
+    );
 }
