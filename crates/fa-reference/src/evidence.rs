@@ -383,11 +383,7 @@ pub fn upload_verdict(
     } else {
         "AgentUpload"
     };
-    if !law
-        .policy
-        .grade_by_name(derived)
-        .is_some_and(|g| g.intake)
-    {
+    if !law.policy.grade_by_name(derived).is_some_and(|g| g.intake) {
         return Err(DOCUMENT_INTAKE);
     }
     if asserted_grade.is_some_and(|asserted| asserted != derived) {

@@ -146,8 +146,18 @@ fn capability_caveats_registry_agrees_with_op_caveat_and_profile_laws() {
             .iter()
             .map(|n| Op::from_name(n).unwrap())
             .collect();
-        assert_eq!(template.ops_ceiling(), ceiling_ops.as_slice(), "{}", profile.name);
-        assert_eq!(template.default_ops(), default_ops.as_slice(), "{}", profile.name);
+        assert_eq!(
+            template.ops_ceiling(),
+            ceiling_ops.as_slice(),
+            "{}",
+            profile.name
+        );
+        assert_eq!(
+            template.default_ops(),
+            default_ops.as_slice(),
+            "{}",
+            profile.name
+        );
         assert_eq!(
             template.required_caveats(),
             profile

@@ -3934,13 +3934,22 @@ fn replay_takes_the_retained_raw_text_closure_and_names_an_unavailable_one() {
         );
     }
     for (certified, closure) in [
-        (&open_items, open_items.certificate.legacy_registry_closure()),
-        (&open_items, open_items.certificate.legacy_v2_registry_closure()),
+        (
+            &open_items,
+            open_items.certificate.legacy_registry_closure(),
+        ),
+        (
+            &open_items,
+            open_items.certificate.legacy_v2_registry_closure(),
+        ),
         (&explain, explain.certificate.legacy_registry_closure()),
         (&explain, explain.certificate.legacy_v2_registry_closure()),
     ] {
         let legacy = certified.certificate.resealed_under(closure);
-        assert_ne!(legacy.registry_digest, certified.certificate.registry_digest);
+        assert_ne!(
+            legacy.registry_digest,
+            certified.certificate.registry_digest
+        );
         assert_eq!(
             book.replay_report(&legacy).unwrap().unwrap(),
             certified.report

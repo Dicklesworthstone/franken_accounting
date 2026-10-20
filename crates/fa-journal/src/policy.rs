@@ -992,10 +992,7 @@ pub fn payload_reach(
     if !capability.admits_class(proposal.class) {
         return Err(Denial::OutOfScope {
             caveat: "classes",
-            value: format!(
-                "class `{}`",
-                proposal.class.name().unwrap_or("unknown")
-            ),
+            value: format!("class `{}`", proposal.class.name().unwrap_or("unknown")),
         });
     }
     let legs: Vec<VId> = proposal.legs.iter().map(|l| l.account_ref).collect();

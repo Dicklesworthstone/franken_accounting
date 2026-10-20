@@ -1184,8 +1184,7 @@ impl Capability {
             return Err(CapabilityError::BadClasses);
         }
         let named: BTreeSet<EntryClass> = classes.iter().copied().collect();
-        self.classes =
-            Some(narrow(self.classes.take(), named).ok_or(CapabilityError::BadClasses)?);
+        self.classes = Some(narrow(self.classes.take(), named).ok_or(CapabilityError::BadClasses)?);
         Ok(self)
     }
 
@@ -1527,7 +1526,9 @@ impl Capability {
                         daily_root = Some(root);
                     }
                     CAVEAT_OPERATOR_KIND => {
-                        if profile != Profile::Human || payload.as_slice() != [OperatorKind::Agent.tag()] {
+                        if profile != Profile::Human
+                            || payload.as_slice() != [OperatorKind::Agent.tag()]
+                        {
                             return Err(CapabilityError::BadOperatorKind);
                         }
                         operator_kind = Some(OperatorKind::Agent);
