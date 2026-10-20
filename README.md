@@ -608,7 +608,7 @@ foundation revision are recorded with the implementation landing.
 |---|---|
 | Truth | The journal. There are no balance rows; registers, trial balances, statements, agings, and findings are derived folds, never authoritative, always verifiable by recomputation (`fa verify registers` — available now). |
 | Immutability | Append-only. Corrections are `Reverse` and one-step `Replace` (`fa reverse --replace-with`) entries with `SUPERSEDES` lineage (available now); a typed `fa reclass` verb is target (`fa-i7e`), and restatement cases are target (`fa-75j4`). Period close, reopen, and lock are journaled, approved control entries — never a flag (available now). |
-| Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied (available now). Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence (available now). GQL selectors `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03` (`fa-5c1`), `AS ORIGINALLY REPORTED`, `AS CURRENTLY STATED` and `AS REPORTED IN <certificate>` (`fa-wrrw`) are target selectors, not backups; `fa tb --as-originally-reported` already reads one period as of its first Lock. |
+| Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied (available now). Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence (available now). GQL selectors `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03` (`fa-5c1`), `AS ORIGINALLY REPORTED`, `AS CURRENTLY STATED` and `AS REPORTED IN <certificate>` (`fa-wrrw`) are target selectors, not backups; `--as-originally-reported` on `fa tb`, `fa statement` and `fa explain balance` already reads one period as of its first Lock. |
 | Exactness | `Amount { unit, mantissa: i128 }` at the unit's registered scale; every rounding, allocation, and FX conversion names a registered law and exact error bound (available now). Native residual postings are explicit where the law requires them; base-valuation residuals are recorded and absorbed under plan §5.2 (`fa-s3c`). No float ever touches an amount. No tolerance. No auto-balancing. |
 | Evidence | Nothing posts without a why: documents, attestations, supplements, REA events (`fa event record`), and `fa explain evidence <entry-vid>` are available now; posting-rule versions (`fa-c34`) complete the target content-addressed provenance closure. |
 | Proofs | A journal-level Merkle accumulator with signed `TransparencyCheckpoint`s, `.fab` evidence bundles with signed production receipts, and `fa-verify`, a dependency-free static verifier a regulator runs on an air-gapped laptop (available now; an external witness quorum is target, `fa-qtfd`). |
@@ -646,8 +646,9 @@ fa explain balance 1200 --period FY2026-P03 --as-known-at '2026-04-02T00:00:00Z'
 
 # The books as they stood on a date, for a period — a selector, not a restore (available today with `--period` / `--fiscal-year`).
 fa tb --fiscal-year 2025 --as-known-at '2026-02-01T00:00:00Z' --book acme.fabook --json
-# As originally reported: one period at its first Lock (available today; the StatementIssuance basis is target fa-wrrw).
+# As originally reported: one period at its first Lock, on tb, statements and balance explanations (available today; the StatementIssuance basis is target fa-wrrw).
 fa tb --period FY2025-P12 --as-originally-reported --book acme.fabook --json
+fa statement balance-sheet --for FY2025-P12 --compare FY2024-P12 --as-originally-reported --certify --book acme.fabook --json
 
 # Corrections are lineage. The original stays (`fa reverse <vid> --reason <name|code>` available today).
 fa reverse <vid> --reason WrongAccount --book acme.fabook --json
