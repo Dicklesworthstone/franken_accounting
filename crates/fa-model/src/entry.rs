@@ -133,6 +133,13 @@ pub const RESTATEMENT_CASE_EXTENSION: u16 = 19;
 /// determination a `CaseControl` Determine record journals — `u16 version
 /// ‖ i32 day ‖ oid authority`.
 pub const CASE_DETERMINATION_EXTENSION: u16 = 20;
+/// Extension tag 21, `fa:case-rehearsal:v1` (bead fa-75j4): the rehearsal a
+/// `CaseControl` Rehearse record journals — `u16 version ‖ str scenario ‖
+/// [32] certificate ‖ u64 fork_at ‖ list(str period) ‖ list(u128 plan)`:
+/// the scenario the correction was rehearsed on, the digest of its retained
+/// diff certificate, the trunk sequence it forked at, the periods the diff
+/// covers and the scenario's Plan records it covers, in planning order.
+pub const CASE_REHEARSAL_EXTENSION: u16 = 21;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -154,6 +161,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     FX_REVALUATION_EXTENSION,
     RESTATEMENT_CASE_EXTENSION,
     CASE_DETERMINATION_EXTENSION,
+    CASE_REHEARSAL_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------

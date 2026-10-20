@@ -490,6 +490,11 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(
+            &["case", "rehearse", "1", "--certificate", "rehearsal.cert"],
+            &[Op::Read, Op::Restate, Op::Produce],
+            Reaches,
+        ),
+        row(
             &[
                 "statement",
                 "issue",

@@ -1,4 +1,4 @@
-//! `fa case open|determine|show|list` (plan §8.3, Appendix B
+//! `fa case open|determine|rehearse|show|list` (plan §8.3, Appendix B
 //! `OpenRestatementCase`; bead fa-75j4): restatement cases, the control
 //! objects that make a material correction legal in a `Closed` or `Locked`
 //! period.
@@ -6,8 +6,10 @@
 //! A case is opened over the periods it affects (`Proposed`), and its
 //! determination (for a `Restatement`, the non-reliance determination that
 //! starts the Item 4.02 clock) is journaled with its day and authority
-//! document (`Determined`). Rehearsal, approval, posting, disclosure and
-//! closing are later slices: a case cannot yet leave `Determined`.
+//! document (`Determined`). It is rehearsed on a scenario whose diff
+//! certificate is replayed, retained and attached (`Rehearsed`). Approval,
+//! posting, disclosure and closing are later slices: a case cannot yet leave
+//! `Rehearsed`.
 
 use fa_journal::{CaseKind, CaseRecorded, CaseView, Determination};
 use fa_model::Oid;
@@ -20,15 +22,17 @@ use crate::json::{Json, obj, s};
 const OPEN_EXAMPLE: &str = "fa case open --kind Restatement|Revision|PriorPeriodAdjustment|PolicyChangeRetrospective --periods <code>[,<code>]... [--narrative <oid>] [--determined-on YYYY-MM-DD --authority <oid>] [--key K] --json";
 const DETERMINE_EXAMPLE: &str =
     "fa case determine <case> --on YYYY-MM-DD --authority <oid> [--key K] --json";
+const REHEARSE_EXAMPLE: &str = "fa case rehearse <case> --certificate <scenario-diff-certificate> [--key K] --json  (fa scenario diff <name> --period <code> --certificate-out <file> writes one)";
 
 pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
         Some("open") => open(ctx, args),
         Some("determine") => determine(ctx, args),
+        Some("rehearse") => rehearse(ctx, args),
         Some("show") => show(ctx, args),
         Some("list") => list(ctx, args),
         _ => Err(usage(
-            "case needs open, determine, show or list",
+            "case needs open, determine, rehearse, show or list",
             OPEN_EXAMPLE,
         )),
     }
@@ -88,6 +92,21 @@ fn case_json(view: &CaseView) -> Json {
             }),
         ),
         (
+            "rehearsal",
+            view.rehearsal.as_ref().map_or(Json::Null, |r| {
+                obj(vec![
+                    ("scenario", s(&r.scenario)),
+                    ("certificate", s(hex(&r.certificate))),
+                    ("fork_at", Json::Int(i128::from(r.fork_at.0))),
+                    ("periods", Json::Arr(r.periods.iter().map(s).collect())),
+                    (
+                        "intents",
+                        Json::Arr(r.intents.iter().map(|v| vid(*v)).collect()),
+                    ),
+                ])
+            }),
+        ),
+        (
             "transitions",
             Json::Arr(
                 view.transitions
@@ -129,7 +148,7 @@ fn recorded(ctx: &mut Ctx<'_>, event: &str, done: &CaseRecorded, verb: &str) {
             ("already_recorded", Json::Bool(done.already_recorded)),
         ],
         &format!(
-            "{}{} (record {}); rehearsal, approval and posting are not available yet (fa-75j4)",
+            "{}{} (record {}); approval, posting and disclosure are later fa-75j4 slices",
             if done.already_recorded {
                 format!("already {verb}: ")
             } else {
@@ -273,6 +292,35 @@ fn determine(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let done = book.determine_case(capability, ordinal, determination, date, key.as_bytes())??;
     ctx.out.at_book(&book)?;
     recorded(ctx, "case_determined", &done, "determined");
+    Ok(())
+}
+
+fn rehearse(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "rehearse", REHEARSE_EXAMPLE)?;
+    for flag in ["--certificate", "--key", "--date"] {
+        one_flag(args, flag, REHEARSE_EXAMPLE)?;
+    }
+    let path = args.flag("--certificate").ok_or_else(|| {
+        usage(
+            "case rehearse needs --certificate <file>: the scenario's diff certificate",
+            REHEARSE_EXAMPLE,
+        )
+    })?;
+    // Authority before any read of the certificate file or the book.
+    let capability = ctx.capability(args, &["restate", "read", "produce"])?;
+    let certificate = fa::ScenarioDiffCertificate::decode(&ctx.files.read_bytes(path)?)?;
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => hex(&fa_model::domain_digest(
+            b"fa-cli:case-rehearse-key:v1",
+            &[&ordinal.to_le_bytes(), certificate.digest()],
+        )),
+    };
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let done = book.rehearse_case(capability, ordinal, &certificate, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    recorded(ctx, "case_rehearsed", &done, "rehearsed");
     Ok(())
 }
 

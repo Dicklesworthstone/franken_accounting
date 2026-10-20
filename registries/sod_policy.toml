@@ -641,3 +641,15 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §8.3 (Determined: the non-reliance determination, its date and authority, journaled when made)"
+
+[[rule]]
+name = "case-rehearse"
+class = "CaseControl"
+transition = "Rehearse"
+preparer_op = "restate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.3 (Rehearsed: on a branch, with the as-reported-vs-as-restated diff certificate attached)"

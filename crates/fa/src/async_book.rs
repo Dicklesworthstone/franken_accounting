@@ -1318,6 +1318,33 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )
     }
 
+    /// Rehearse case `ordinal` (Determined → Rehearsed) with `rehearsal`.
+    /// Crate-private: [`crate::Book::rehearse_case`] derives the rehearsal
+    /// from a diff certificate it has replayed and retained, so no caller
+    /// names a scenario, fork or periods the certificate does not state.
+    pub(crate) async fn rehearse_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        rehearsal: fa_journal::Rehearsal,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let description = format!("rehearse case {ordinal} on scenario {}", rehearsal.scenario);
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::rehearse_case(&mut self.db, cx, &self.context, ordinal, rehearsal, req)
+                .await?,
+        )
+    }
+
     /// Restatement case `ordinal` as its records state it.
     pub fn case(
         &self,

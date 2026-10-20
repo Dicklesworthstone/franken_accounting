@@ -1239,6 +1239,62 @@ impl Book {
         )))
     }
 
+    /// Rehearse case `ordinal` on a scenario (plan §8.3: Determined →
+    /// Rehearsed, "with the as-reported-vs-as-restated diff certificate
+    /// attached"). `certificate` is the scenario's diff certificate (`fa
+    /// scenario diff --certify`): it is replayed in full and retained in the
+    /// book under its digest (read and produce), then the Rehearse record
+    /// (restate) journals the scenario, the retained certificate, the fork
+    /// and the periods the diff covers, which must include every period the
+    /// case affects. `restate` is judged before the replay writes anything.
+    pub fn rehearse_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        certificate: &crate::ScenarioDiffCertificate,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        if let Err(denial) = fa_policy::require(
+            &capability,
+            fa_policy::Op::Restate,
+            "rehearsing a restatement case",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let periods = match &certificate.trunk().selection {
+            crate::ReportSelection::TrialBalance(
+                crate::TrialBalanceSelection::Periods(periods)
+                | crate::TrialBalanceSelection::Activity(periods),
+            ) => periods.clone(),
+            _ => {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_journal::refusal::code::CASE_REHEARSAL,
+                    fa_journal::exit::REFUSAL,
+                    "a rehearsal's diff certificate compares named periods; this one does not",
+                    "plan §8.3 (Rehearsed: with the as-reported-vs-as-restated diff certificate attached)",
+                    "certify the scenario's diff with --period <code> for every period the case affects",
+                )));
+            }
+        };
+        let principal = capability.holder();
+        let retained = match self.retain_scenario_diff(principal, &capability, certificate)? {
+            Ok(retained) => retained,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let rehearsal = fa_journal::Rehearsal {
+            scenario: certificate.name().to_string(),
+            certificate: retained.digest,
+            fork_at: certificate.trunk().known_at,
+            periods,
+            intents: certificate.intents().to_vec(),
+        };
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.rehearse_case(
+            &purposes, capability, ordinal, rehearsal, effective_date, idempotency_key,
+        )))
+    }
+
     /// Restatement case `ordinal` as its records state it.
     pub fn case(&self, ordinal: u32) -> Result<Option<fa_journal::CaseView>, BookError> {
         with_store!(&self.store, core => core.case(&self.purposes(), ordinal))

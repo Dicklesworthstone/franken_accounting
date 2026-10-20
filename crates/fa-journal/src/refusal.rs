@@ -120,6 +120,10 @@ pub mod code {
     /// (plan §8.3: Proposed → Determined → Rehearsed → Approved → Posted →
     /// Disclosed → Closed).
     pub const CASE_STATE: &str = "FA-REF-176";
+    /// A case's rehearsal does not cover the periods it affects, or its
+    /// scenario or retained diff certificate is not what the record names
+    /// (plan §8.3).
+    pub const CASE_REHEARSAL: &str = "FA-REF-177";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

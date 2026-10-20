@@ -72,7 +72,7 @@ pub use batch::{
 pub use blob::BlobStore;
 pub use case::{
     CaseBody, CaseKind, CaseRecorded, CaseRequest, CaseState, CaseTransition, CaseView,
-    Determination, determine_case, list_cases, open_case, read_case,
+    Determination, Rehearsal, determine_case, list_cases, open_case, read_case, rehearse_case,
 };
 pub use chart::{
     AccountEffectivity, AccountLifecycleRecorded, ChartSnapshot, close_account, open_account,

@@ -18,25 +18,31 @@
 //!   determination was made and the document that records its authority.
 //!   For a `Restatement` the Item 4.02 Form 8-K clock starts that day, so the
 //!   date is a journaled fact rather than a later reconstruction.
+//! - **Rehearse** (`Determined → Rehearsed`) journals the rehearsal in
+//!   extension 21 `fa:case-rehearsal:v1`: the scenario the correction was
+//!   rehearsed on, the digest of its diff certificate (retained in this
+//!   book, replayed by the facade before this record), the trunk sequence it
+//!   forked at and the periods the diff covers, which must include every
+//!   period the case affects. The scenario must still be open.
 //!
 //! The narrative and authority documents are the records' proof refs and
 //! must be verified documents of this book; every affected period must
 //! exist. The vertex's `state` moves by compare-and-set, so two concurrent
 //! transitions of one case race and the first committer wins.
 //!
-//! **Authority.** Both records are trunk records under `restate`
-//! (`sod_policy.toml` `case-open`, `case-determine`); an Agent prepares
-//! neither. Rehearsal, dual-control approval of the case's effect manifest,
+//! **Authority.** Every record is a trunk record under `restate`
+//! (`sod_policy.toml` `case-open`, `case-determine`, `case-rehearse`); an
+//! Agent prepares none. Dual-control approval of the case's effect manifest,
 //! posting, disclosure and closing are later slices of fa-75j4: until they
-//! land, a case cannot leave `Determined`, and Revision, Restatement and
+//! land, a case cannot leave `Rehearsed`, and Revision, Restatement and
 //! PriorPeriodAdjustment entries stay refused.
 
-use fa_model::limits::MAX_PERIOD_REF_BYTES;
+use fa_model::limits::{MAX_BATCH_ENTRIES, MAX_PERIOD_REF_BYTES};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, Oid,
     Reader, TypedRef, Writer, domain_digest, entry_mirrors, entry_vid, period_vid,
-    restatement_case_vid,
+    report_certificate_vid, restatement_case_vid, scenario_vid,
 };
 use fa_policy::{Capability, Intent};
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -58,10 +64,15 @@ pub const CASE_VERSION: u16 = 1;
 /// Canonical bytes of a determination (extension 20): `u16 version ‖ i32
 /// day ‖ oid authority`.
 pub const DETERMINATION_VERSION: u16 = 1;
+/// Canonical bytes of a rehearsal (extension 21): `u16 version ‖ str
+/// scenario ‖ [32] certificate ‖ u64 fork_at ‖ list(str period) ‖
+/// list(u128 plan record)`.
+pub const REHEARSAL_VERSION: u16 = 1;
 /// The periods one case may affect.
 pub const MAX_CASE_PERIODS: usize = 64;
 const BODY_DOMAIN: &[u8] = b"fa:restatement-case:v1";
 const DETERMINATION_DOMAIN: &[u8] = b"fa:case-determination:v1";
+const REHEARSAL_DOMAIN: &[u8] = b"fa:case-rehearsal:v1";
 const RECORD_KEY_DOMAIN: &[u8] = b"fa:case-record-key:v1";
 
 /// What a case corrects (plan §8.3 `RestatementCase.kind`).
@@ -222,6 +233,115 @@ impl Determination {
     }
 }
 
+/// A case's rehearsal: the scenario the correction ran on and the diff
+/// certificate that compares it with trunk as reported, retained in the book
+/// under its digest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rehearsal {
+    pub scenario: String,
+    /// The retained certificate's digest (its
+    /// [`fa_model::report_certificate_vid`] locator).
+    pub certificate: [u8; 32],
+    /// The trunk sequence the scenario forked at, which the certificate's
+    /// trunk side is certified at.
+    pub fork_at: CommitSeq,
+    /// The periods the diff covers, sorted and distinct.
+    pub periods: Vec<String>,
+    /// The scenario's Plan records the diff covers, in planning order: a
+    /// prefix of the scenario's intents, and the entries the case will post.
+    pub intents: Vec<VId>,
+}
+
+impl Rehearsal {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
+        let mut w = Writer::with_capacity(64 + self.scenario.len() + self.periods.len() * 16);
+        w.u16(REHEARSAL_VERSION)
+            .str(&self.scenario)
+            .fixed(&self.certificate)
+            .u64(self.fork_at.0)
+            .list(&self.periods, |w, p| {
+                w.str(p);
+            })
+            .list(&self.intents, |w, v| {
+                w.u128(v.0);
+            });
+        Ok(w.finish()?)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
+        let mut r = Reader::new(bytes);
+        if r.u16("case.rehearsal.version").map_err(decode)? != REHEARSAL_VERSION {
+            return Err(KernelError::Corrupt(
+                "unsupported case rehearsal version".into(),
+            ));
+        }
+        let scenario = r
+            .str(
+                crate::scenario::MAX_SCENARIO_NAME_BYTES,
+                "case.rehearsal.scenario",
+            )
+            .map_err(decode)?
+            .to_string();
+        let certificate = r.fixed("case.rehearsal.certificate").map_err(decode)?;
+        let fork_at = CommitSeq(r.u64("case.rehearsal.fork_at").map_err(decode)?);
+        let periods = r
+            .list(MAX_CASE_PERIODS, "case.rehearsal.periods", |r| {
+                Ok(r.str(MAX_PERIOD_REF_BYTES, "case.rehearsal.period")?
+                    .to_string())
+            })
+            .map_err(decode)?;
+        let intents = r
+            .list(MAX_BATCH_ENTRIES, "case.rehearsal.intents", |r| {
+                Ok(VId(r.u128("case.rehearsal.intent")?))
+            })
+            .map_err(decode)?;
+        r.finish().map_err(decode)?;
+        let rehearsal = Self {
+            scenario,
+            certificate,
+            fork_at,
+            periods,
+            intents,
+        };
+        rehearsal
+            .check()
+            .map_err(|why| KernelError::Corrupt(format!("case rehearsal: {why}")))?;
+        Ok(rehearsal)
+    }
+
+    /// The field domains a rehearsal must satisfy, as one sentence.
+    pub fn check(&self) -> Result<(), String> {
+        let max_name = crate::scenario::MAX_SCENARIO_NAME_BYTES;
+        if self.scenario.is_empty() || self.scenario.len() > max_name {
+            return Err(format!("a scenario name is 1..={max_name} bytes"));
+        }
+        if self.intents.len() > MAX_BATCH_ENTRIES {
+            return Err(format!(
+                "a rehearsal covers at most {MAX_BATCH_ENTRIES} intents"
+            ));
+        }
+        if self
+            .intents
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != self.intents.len()
+        {
+            return Err("a rehearsal names each Plan record once".into());
+        }
+        if self.periods.is_empty() || self.periods.len() > MAX_CASE_PERIODS {
+            return Err(format!(
+                "a rehearsal's diff covers 1..={MAX_CASE_PERIODS} periods; this one names {}",
+                self.periods.len()
+            ));
+        }
+        if !self.periods.windows(2).all(|w| w[0] < w[1]) {
+            return Err("a rehearsal's periods are sorted and distinct".into());
+        }
+        Ok(())
+    }
+}
+
 /// A case's immutable body, fixed when it is opened (Appendix A
 /// `RestatementCase` body). Approvals bind the effect manifest an `Approved`
 /// record names, never fields of this body.
@@ -361,6 +481,8 @@ pub struct CaseView {
     pub state: CaseState,
     /// The determination, from the body or from the Determine record.
     pub determination: Option<Determination>,
+    /// The rehearsal, from the Rehearse record.
+    pub rehearsal: Option<Rehearsal>,
     /// Every transition, in commit order; the first is the Open record.
     pub transitions: Vec<CaseTransition>,
 }
@@ -378,6 +500,7 @@ pub struct CaseRecorded {
 enum Act {
     Open,
     Determine,
+    Rehearse,
 }
 
 impl Act {
@@ -385,6 +508,7 @@ impl Act {
         match self {
             Self::Open => "Open",
             Self::Determine => "Determine",
+            Self::Rehearse => "Rehearse",
         }
     }
 
@@ -392,6 +516,7 @@ impl Act {
         match self {
             Self::Open => 0,
             Self::Determine => 1,
+            Self::Rehearse => 2,
         }
     }
 }
@@ -497,7 +622,7 @@ fn record_proposal(
 ) -> EntryPayload {
     let named = match act {
         Act::Open => None,
-        Act::Determine => Some(case),
+        Act::Determine | Act::Rehearse => Some(case),
     };
     EntryPayload {
         schema_minor: fa_model::entry::SCHEMA_MINOR,
@@ -906,6 +1031,183 @@ pub async fn determine_case<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+fn rehearsal_refused(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::CASE_REHEARSAL,
+        exit::REFUSAL,
+        message.into(),
+        "plan §8.3 (Rehearsed: on a branch, with the as-reported-vs-as-restated diff certificate attached)",
+        "certify the scenario's diff over every period the case affects (fa scenario diff <name> --period <code>... --certify --certificate-out <file>) while the scenario is open, then rehearse with that certificate",
+    )
+}
+
+/// Rehearse case `ordinal` (Determined → Rehearsed): one commit journaling
+/// the Rehearse record and the compare-and-set of the case's `state`. The
+/// caller has replayed the diff certificate and retained it in this book;
+/// this record witnesses the retained certificate and the open scenario, and
+/// refuses a diff that does not cover every period the case affects.
+pub async fn rehearse_case<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    ordinal: u32,
+    rehearsal: Rehearsal,
+    req: CaseRequest,
+) -> Outcome<CaseRecorded> {
+    const FIX: &str = "fa case rehearse <case> --certificate <scenario-diff-certificate>";
+    if ordinal == 0 {
+        return Ok(Err(unknown(ordinal)));
+    }
+    if let Err(why) = rehearsal.check() {
+        return Ok(Err(usage(why, FIX)));
+    }
+    if let Err(r) = admit(db, book, &req.capability, Act::Rehearse)? {
+        return Ok(Err(r));
+    }
+    let vid = restatement_case_vid(book.book_id, ordinal);
+    let scenario = scenario_vid(book.book_id, &rehearsal.scenario);
+    let certificate = report_certificate_vid(book.book_id, &rehearsal.certificate);
+    let principal = req.capability.holder();
+    let proposal = record_proposal(
+        book,
+        &req,
+        Act::Rehearse,
+        vid,
+        CaseState::Determined.tag(),
+        CaseState::Rehearsed,
+        vec![TypedRef::Vertex(certificate), TypedRef::Vertex(scenario)],
+        domain_digest(REHEARSAL_DOMAIN, &[&rehearsal.canonical_bytes()?]),
+        (
+            fa_model::entry::CASE_REHEARSAL_EXTENSION,
+            rehearsal.canonical_bytes()?,
+        ),
+    );
+    let evid = entry_vid(
+        book.book_id,
+        &principal.0.to_le_bytes(),
+        &proposal.idempotency_key,
+    );
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if let Some(row) = txn.vertex(db, evid)? {
+        txn.abort();
+        return Ok(match recorded_or_conflict(book, &row, &proposal)? {
+            Ok(recorded_at) => Ok(CaseRecorded {
+                case: read_case(db, book, ordinal)?
+                    .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
+                control_entry: evid,
+                recorded_at,
+                already_recorded: true,
+            }),
+            Err(r) => Err(r),
+        });
+    }
+    let Some(row) = txn.vertex(db, vid)? else {
+        txn.abort();
+        return Ok(Err(unknown(ordinal)));
+    };
+    let state = CaseState::from_scalar(prop(&row, property::STATE))
+        .ok_or_else(|| KernelError::Corrupt(format!("restatement case {ordinal} state mirror")))?;
+    if state != CaseState::Determined {
+        txn.abort();
+        return Ok(Err(wrong_state(ordinal, state, "Rehearse", "Determined")));
+    }
+    let body = CaseBody::decode(&bytes(&row, property::FA_PAYLOAD, "case._fa_payload")?)?;
+    let missing: Vec<&str> = body
+        .periods
+        .iter()
+        .filter(|p| rehearsal.periods.binary_search(p).is_err())
+        .map(String::as_str)
+        .collect();
+    if !missing.is_empty() {
+        txn.abort();
+        return Ok(Err(rehearsal_refused(format!(
+            "the diff certificate covers {} but case {ordinal} affects {} as well",
+            rehearsal.periods.join(", "),
+            missing.join(", ")
+        ))));
+    }
+    match txn.vertex(db, certificate)? {
+        Some(row) if row.labels.as_slice() == [label::CERTIFICATE] => {}
+        _ => {
+            txn.abort();
+            return Ok(Err(rehearsal_refused(format!(
+                "diff certificate {} is not retained in this book",
+                hex(&rehearsal.certificate)
+            ))));
+        }
+    }
+    match txn.vertex(db, scenario)? {
+        Some(row)
+            if row.labels.contains(&label::SCENARIO)
+                && crate::scenario::ScenarioState::from_scalar(prop(&row, property::STATE))
+                    == Some(crate::scenario::ScenarioState::Open) => {}
+        Some(_) => {
+            txn.abort();
+            return Ok(Err(rehearsal_refused(format!(
+                "scenario `{}` is not open: a discarded scenario is no rehearsal",
+                rehearsal.scenario
+            ))));
+        }
+        None => {
+            txn.abort();
+            return Ok(Err(rehearsal_refused(format!(
+                "this book has no scenario `{}`",
+                rehearsal.scenario
+            ))));
+        }
+    }
+    // The Plan records are immutable; the open scenario's planning order
+    // must begin with exactly the ones the diff certificate covers.
+    let planned: Vec<VId> = crate::scenario::read_scenario(db, book, &rehearsal.scenario)?
+        .map(|view| view.intents.iter().map(|p| p.record).collect())
+        .unwrap_or_default();
+    if !planned.starts_with(&rehearsal.intents) {
+        txn.abort();
+        return Ok(Err(rehearsal_refused(format!(
+            "the diff certificate covers {} intent(s) that are not the first ones scenario `{}` planned",
+            rehearsal.intents.len(),
+            rehearsal.scenario
+        ))));
+    }
+    if proposal.validate().is_err() {
+        txn.abort();
+        return Ok(Err(usage(
+            "the Rehearse record is not a valid CaseControl entry",
+            FIX,
+        )));
+    }
+    let entry = proposal.clone().seal(Vec::new(), None)?;
+    let mut batch = WriteBatch::new(relation::IN_CASE);
+    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.compare_and_set_vertex_property(
+        vid,
+        property::STATE,
+        Some(CaseState::Determined.scalar()),
+        CaseState::Rehearsed.scalar(),
+        WriteMismatchPolicy::AbortWrite,
+    );
+    batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
+    txn.write(db, batch)?;
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(recorded_at) => Ok(Ok(CaseRecorded {
+            case: read_case(db, book, ordinal)?
+                .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
+            control_entry: evid,
+            recorded_at,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(fcw(&detail)))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Case `ordinal` as its records state it, each cross-checked against its
 /// vertex, at the head.
 pub fn read_case<V: asupersync::fs::Vfs + Clone>(
@@ -959,6 +1261,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         .ok_or_else(|| KernelError::Corrupt(format!("restatement case {:032x} state", vid.0)))?;
     let mut transitions = Vec::new();
     let mut determination = body.determination;
+    let mut rehearsal = None;
     for evid in db.in_neighbours(vid, relation::IN_CASE)? {
         let Some(src) = db.vertex(evid)? else {
             continue;
@@ -1011,6 +1314,14 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         {
             determination = Some(Determination::decode(ext)?);
         }
+        if let Some((_, ext)) = entry
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::CASE_REHEARSAL_EXTENSION)
+        {
+            rehearsal = Some(Rehearsal::decode(ext)?);
+        }
         transitions.push(CaseTransition {
             from,
             to,
@@ -1036,6 +1347,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         body,
         state,
         determination,
+        rehearsal,
         transitions,
     })
 }
@@ -1097,6 +1409,46 @@ mod tests {
             Determination::decode(&d.canonical_bytes().unwrap()).unwrap(),
             d
         );
+    }
+
+    #[test]
+    fn a_rehearsal_round_trips_and_refuses_bytes_out_of_its_domain() {
+        let base = Rehearsal {
+            scenario: "restated".into(),
+            certificate: [9; 32],
+            fork_at: CommitSeq(41),
+            periods: vec!["FY2025-P11".into(), "FY2025-P12".into()],
+            intents: vec![VId(5), VId(3)],
+        };
+        let bytes = base.canonical_bytes().unwrap();
+        assert_eq!(Rehearsal::decode(&bytes).unwrap(), base);
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(Rehearsal::decode(&trailing).is_err(), "trailing byte");
+        for bad in [
+            Rehearsal {
+                scenario: String::new(),
+                ..base.clone()
+            },
+            Rehearsal {
+                periods: Vec::new(),
+                ..base.clone()
+            },
+            Rehearsal {
+                periods: vec!["FY2025-P12".into(), "FY2025-P11".into()],
+                ..base.clone()
+            },
+            Rehearsal {
+                intents: vec![VId(5), VId(5)],
+                ..base.clone()
+            },
+        ] {
+            assert!(bad.check().is_err(), "{bad:?}");
+            assert!(
+                Rehearsal::decode(&bad.canonical_bytes().unwrap()).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

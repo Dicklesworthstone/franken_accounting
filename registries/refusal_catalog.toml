@@ -1053,6 +1053,14 @@ exit = "refusal"
 cite = "plan §8.3 (Proposed → Determined → Rehearsed → Approved → Posted → Disclosed → Closed; bead fa-75j4)"
 fix = "inspect the case with fa case show <case>; each transition is journaled once, in order"
 
+[[refusal]]
+code = "FA-REF-177"
+name = "CASE_REHEARSAL"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.3 (Rehearsed: on a branch, with the as-reported-vs-as-restated diff certificate attached; bead fa-75j4)"
+fix = "certify the scenario's diff over every period the case affects (fa scenario diff <name> --period <code>... --certify --certificate-out <file>) while the scenario is open, then rehearse with that certificate"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-145"

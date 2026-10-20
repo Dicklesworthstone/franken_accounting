@@ -5,7 +5,8 @@
 use fa::{Book, BookKeys, Entropy};
 use fa_journal::refusal::code;
 use fa_journal::{
-    AccountSpec, BookSpec, Capability, CaseKind, CaseState, Determination, Document, UnitPolicy,
+    AccountSpec, BookSpec, Capability, CaseKind, CaseState, Determination, Document, ScenarioFork,
+    UnitPolicy,
 };
 use fa_model::{AccountType, Id128, Oid};
 use fa_money::UnitRegistry;
@@ -282,4 +283,153 @@ fn a_case_is_refused_before_anything_is_written() {
     );
     assert_eq!(book.head().unwrap(), opened_at);
     assert_eq!(book.case(1).unwrap().unwrap().state, CaseState::Proposed);
+}
+
+/// fa-75j4 slice 2 (plan §8.3: Rehearsed "on a branch or scratch book, with
+/// the as-reported-vs-as-restated diff certificate attached"): a Determined
+/// case is rehearsed with its scenario's replayed and retained diff
+/// certificate, once; a diff that misses an affected period, a discarded
+/// scenario and a case not yet Determined are refused before any record.
+#[test]
+fn a_determined_case_is_rehearsed_with_its_retained_diff_certificate() {
+    let (mut book, narrative, authority) = book(0xc7);
+    let restate = Capability::embedded(PRINCIPAL, &["restate", "read", "produce"]).unwrap();
+    let post = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let date = day(2026, 2, 1);
+    let determination = Determination {
+        day: day(2026, 1, 28),
+        authority,
+    };
+    let opened = book
+        .open_case(
+            restate.clone(),
+            CaseKind::Restatement,
+            vec!["FY2025-P12".into()],
+            Some(narrative),
+            Some(determination),
+            date,
+            b"determined",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened.case.state, CaseState::Determined);
+    book.open_scenario(
+        post.clone(),
+        "restated",
+        ScenarioFork::default(),
+        date,
+        "The December cutoff, corrected",
+    )
+    .unwrap()
+    .unwrap();
+    let periods = |codes: &[&str]| codes.iter().map(|c| (*c).to_string()).collect::<Vec<_>>();
+    let covering = book
+        .certify_scenario_diff(
+            PRINCIPAL,
+            &restate,
+            "restated",
+            &periods(&["FY2025-P12"]),
+            false,
+        )
+        .unwrap()
+        .unwrap()
+        .certificate;
+    let elsewhere = book
+        .certify_scenario_diff(
+            PRINCIPAL,
+            &restate,
+            "restated",
+            &periods(&["FY2025-P11"]),
+            false,
+        )
+        .unwrap()
+        .unwrap()
+        .certificate;
+
+    // A diff over another period does not rehearse this case.
+    let head = book.head().unwrap();
+    let missed = book
+        .rehearse_case(restate.clone(), 1, &elsewhere, date, b"elsewhere")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(missed.code, code::CASE_REHEARSAL, "{missed:?}");
+    assert!(missed.message.contains("FY2025-P12"), "{missed:?}");
+    assert_eq!(book.case(1).unwrap().unwrap().state, CaseState::Determined);
+    assert!(
+        book.head().unwrap() > head,
+        "the replayed certificate was retained"
+    );
+
+    let rehearsed = book
+        .rehearse_case(restate.clone(), 1, &covering, date, b"rehearsal")
+        .unwrap()
+        .unwrap();
+    assert!(!rehearsed.already_recorded);
+    let case = &rehearsed.case;
+    assert_eq!(case.state, CaseState::Rehearsed);
+    let attached = case.rehearsal.as_ref().unwrap();
+    assert_eq!(attached.scenario, "restated");
+    assert_eq!(&attached.certificate, covering.digest());
+    assert_eq!(attached.fork_at, covering.trunk().known_at);
+    assert_eq!(attached.periods, ["FY2025-P12"]);
+    assert_eq!(attached.intents, covering.intents());
+    assert_eq!(
+        case.transitions.last().map(|t| (t.from, t.to)),
+        Some((Some(CaseState::Determined), CaseState::Rehearsed))
+    );
+    // The identical request is the recorded rehearsal; another is refused.
+    let head = book.head().unwrap();
+    let again = book
+        .rehearse_case(restate.clone(), 1, &covering, date, b"rehearsal")
+        .unwrap()
+        .unwrap();
+    assert!(again.already_recorded);
+    assert_eq!(again.case, rehearsed.case);
+    assert_eq!(book.head().unwrap(), head);
+    let twice = book
+        .rehearse_case(restate.clone(), 1, &covering, date, b"second")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(twice.code, code::CASE_STATE, "{twice:?}");
+
+    // A Proposed case is not rehearsed; nor is any case on a discarded
+    // scenario.
+    book.open_case(
+        restate.clone(),
+        CaseKind::Revision,
+        vec!["FY2025-P12".into()],
+        None,
+        None,
+        date,
+        b"proposed",
+    )
+    .unwrap()
+    .unwrap();
+    let early = book
+        .rehearse_case(restate.clone(), 2, &covering, date, b"early")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(early.code, code::CASE_STATE, "{early:?}");
+    book.determine_case(restate.clone(), 2, determination, date, b"determine-2")
+        .unwrap()
+        .unwrap();
+    book.discard_scenario(post, "restated", date, "superseded")
+        .unwrap()
+        .unwrap();
+    let gone = book
+        .rehearse_case(restate.clone(), 2, &covering, date, b"gone")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(gone.code, code::CASE_REHEARSAL, "{gone:?}");
+    assert_eq!(book.case(2).unwrap().unwrap().state, CaseState::Determined);
+
+    // Without restate nothing is replayed, retained or recorded.
+    let head = book.head().unwrap();
+    let reader = Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap();
+    let denied = book
+        .rehearse_case(reader, 2, &covering, date, b"denied")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(denied.exit, 7, "{denied:?}");
+    assert_eq!(book.head().unwrap(), head);
 }

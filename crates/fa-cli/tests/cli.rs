@@ -7378,6 +7378,45 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         .0,
         0
     );
+    // Rehearsed on a scenario whose diff certificate covers the period.
+    assert_eq!(run(true, &["scenario", "fork", "restated"]).0, 0);
+    let restated = write(&dir, "restated.json", &draft_intent("restated-rent"));
+    assert_eq!(
+        run(
+            true,
+            &["scenario", "run", "restated", "--intent", &restated]
+        )
+        .0,
+        0
+    );
+    let rehearsal = dir.join("rehearsal.cert").display().to_string();
+    assert_eq!(
+        run(
+            true,
+            &[
+                "scenario",
+                "diff",
+                "restated",
+                "--period",
+                "FY2026-P03",
+                "--certificate-out",
+                &rehearsal
+            ]
+        )
+        .0,
+        0
+    );
+    let (code, out) = run(
+        true,
+        &["case", "rehearse", "1", "--certificate", &rehearsal],
+    );
+    assert_eq!(code, 0, "{out}");
+    let rehearsed = doc(&out);
+    let case = rehearsed.get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&case, "state"), "Rehearsed", "{out}");
+    let attached = case.get("rehearsal").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&attached, "scenario"), "restated", "{out}");
+    assert_eq!(arr(&attached, "intents").len(), 1, "{out}");
     assert_eq!(run(true, &["case", "show", "1"]).0, 0);
     assert_eq!(run(true, &["case", "list"]).0, 0);
     // A statement issuance (fa-wrrw): planned, approved in another hand,
