@@ -611,6 +611,50 @@ fa produce --matter Doe-v-Acme --bundle --account 1000 --from 2026-03-01 --to 20
 The FRE 902 package states technical predicates; admissibility is counsel's
 call. `fa exhibit mark` is not wired yet (`fa-6l9`).
 
+### Audit engagements
+
+An audit's mechanics are journaled; the judgments stay the auditor's.
+
+- **Open.** `fa engagement open` records the engagement once, with its kind,
+  scope periods and the materiality parameters the auditor states: overall,
+  performance and clearly trivial, in the book's base unit.
+- **Propose.** `fa adjustment propose` journals a draft correcting entry. It
+  must balance in every unit, use posting leaves, and be dated inside a scope
+  period. It never posts.
+- **Book or pass, once.**
+  - `fa adjustment book` names the committed entry that makes the correction.
+    That entry's legs must equal the proposal's, and one entry books one
+    proposal.
+  - `fa adjustment pass` records why the proposal was left uncorrected, from
+    the registered `adjustment_pass` reasons.
+- **Summarize.** `fa engagement sud` is the summary of uncorrected
+  misstatements. For each passed proposal it gives the effect on income,
+  assets, liabilities and equity had it been booked. It totals them under
+  rollover and iron curtain, and compares them with the stated parameters.
+
+```bash
+fa engagement open FY26-audit --kind audit --period FY2026-P12 --overall "50000.00 USD" --performance "37500.00 USD" --clearly-trivial "2500.00 USD" --book ./books/acme --json
+fa adjustment propose --engagement FY26-audit --intent accrual.json --book ./books/acme --json
+fa adjustment book --engagement FY26-audit --proposal 1 --entry E:<vid> --json
+fa adjustment pass --engagement FY26-audit --proposal 2 --reason ClearlyTrivial --json
+fa engagement sud FY26-audit --json
+```
+
+Writes need `produce`, which the Auditor profile holds, and an
+Agent-profile capability makes none of them. The summary's comparisons are
+mechanical; whether a misstatement is material is the auditor's call.
+
+What the summary does not do yet:
+
+- **No prior-period carry-forward.** Without it, the rollover and
+  iron-curtain totals sum the same items. The event states this as
+  `prior_period_carry_forward: false`.
+- **No foreign-currency conversion.** Legs in other units are listed, never
+  converted.
+
+Documentation completion, representations and confirmations are not wired
+yet (`fa-zgn`).
+
 ### Exact arithmetic available now
 
 `fa-money` supports the full signed `i128` amount range, including parsing,
