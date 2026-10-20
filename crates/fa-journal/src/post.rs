@@ -412,8 +412,17 @@ impl PreparedPost {
                 }
                 match db.vertex(entry_ref.vid)? {
                     Some(row) => {
-                        checked_entry(db, &row)?;
+                        let (recorded, _) = checked_entry(db, &row)?;
+                        if crate::outcome::covered_class(recorded.proposal.class)
+                            && (recorded.approvals != request.approvals
+                                || !crate::outcome::verify_atomic_recorded(db, &row, &recorded)?)
+                        {
+                            return Ok(Err(crate::outcome::key_conflict()));
+                        }
                         recorded_or_conflict(&row, &request.proposal, &seal_key, identity)
+                    }
+                    None if crate::outcome::covered_class(request.proposal.class) => {
+                        Ok(Err(crate::outcome::key_conflict()))
                     }
                     None => Err(KernelError::Corrupt(
                         "identity spent but no live row".into(),
@@ -1685,10 +1694,27 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(identity_conflict(identity, evid)));
     }
+    // The target-derived Entry identity and the caller's common key are
+    // independent laws. Check the common point before accepting an old
+    // target outcome. Its VID-only mirror refuses a cross-target or batch
+    // collision before loading any request bytes outside this footprint.
+    let claimed = match crate::outcome::witness_key(&txn, db, proposal, evid)? {
+        Ok(claimed) => claimed,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
     if let Some(row) = txn.vertex(db, evid)? {
         let checked = checked_entry_staged(&txn, db, &row);
         txn.abort();
         let (recorded, _) = checked?;
+        if crate::outcome::covered_class(recorded.proposal.class)
+            && (recorded.approvals != req.approvals
+                || !crate::outcome::verify_recorded(db, &ctx.query(), book, &row, &recorded)?)
+        {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         if is_replacement && pair_recorded_at != Some(row.created_at) {
             return Ok(Err(identity_conflict(identity, evid)));
         }
@@ -1703,9 +1729,17 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 .map(PostPreparation::AlreadyRecorded),
         );
     }
+    if claimed {
+        txn.abort();
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
     if is_replacement && pair_recorded_at.is_some() {
         txn.abort();
         return Ok(Err(identity_conflict(Identity::Replacement, evid)));
+    }
+    if let Err(refusal) = crate::outcome::require_fresh_key(&txn, db, book, proposal, evid)? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
 
     // Outcome recognition remains first. A new close must reproduce its
@@ -3173,6 +3207,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
     let mut in_period = WriteBatch::new(relation::IN_PERIOD);
     has_leg.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    let outcome_digest = crate::outcome::stage_entry(&mut has_leg, &entry, evid)?;
     let leg_edges = crate::projections::stage_legs(&mut has_leg, evid, &entry, book)?;
     in_period.add_edge(edge_id(relation::IN_PERIOD, evid, pvid), evid, pvid, vec![]);
     for m in &judged.moves {
@@ -3422,6 +3457,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     }
     if let Some(usage) = &usage {
         usage.bind_effects(&mut effect_hasher)?;
+    }
+    if let Some(outcome_digest) = outcome_digest {
+        effect_hasher.update(b"fa:post-intent-outcome:v1");
+        effect_hasher.update(&outcome_digest);
     }
     let effects_digest = effect_hasher.finalize().0;
 

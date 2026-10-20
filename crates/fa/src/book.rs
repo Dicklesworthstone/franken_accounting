@@ -3519,6 +3519,46 @@ impl Book {
         ))
     }
 
+    /// Verify native history and preview an explicit common-idempotency
+    /// recovery without publishing. Requires current whole-book Read and
+    /// SchemaChange authority before loading any retained history. Call
+    /// `prepared.abort()` to release a preview without publishing it.
+    pub fn prepare_outcome_rebuild(
+        &mut self,
+        capability: fa_policy::Capability,
+    ) -> Outcome<crate::PreparedOutcomeRebuild> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_outcome_rebuild(&purposes, capability)
+        ))
+    }
+
+    /// Publish the exact prepared idempotency recovery in one commit. The
+    /// original capability, current policy and source head are rechecked;
+    /// an already-covered book consumes no sequence.
+    pub fn publish_outcome_rebuild(
+        &mut self,
+        prepared: crate::PreparedOutcomeRebuild,
+    ) -> Outcome<crate::OutcomeRebuild> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.publish_outcome_rebuild(&purposes, prepared)
+        ))
+    }
+
+    /// Explicitly establish common idempotency coverage from verified native
+    /// history. Legacy collisions or rewritten source entries refuse without
+    /// publishing any part of the recovery.
+    pub fn rebuild_outcomes(
+        &mut self,
+        capability: fa_policy::Capability,
+    ) -> Outcome<crate::OutcomeRebuild> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.rebuild_outcomes(&purposes, capability)
+        ))
+    }
+
     /// Compare every posted leg's `applied` mirror with the open-item fold.
     pub fn verify_open_items(&self) -> Result<OpenItemVerification, BookError> {
         with_store!(&self.store, core => core.verify_open_items(&self.purposes()))

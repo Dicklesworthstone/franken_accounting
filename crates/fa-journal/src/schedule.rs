@@ -818,11 +818,15 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     )? {
         return Ok(Err(r));
     }
+    if let Err(refusal) = crate::outcome::require_fresh_key(txn, db, book, &proposal, rvid)? {
+        return Ok(Err(refusal));
+    }
     let entry = proposal.seal(Vec::new(), None)?;
     let pvid = period_vid(&book.calendar.id, &schedule.period);
     mints
         .has_leg
         .create_vertex(rvid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_entry(&mut mints.has_leg, &entry, rvid)?;
     let leg_edges = crate::projections::stage_legs(&mut mints.has_leg, rvid, &entry, book)?;
     for (aggregate, batch) in mints.leg_edges.iter_mut().zip(leg_edges) {
         aggregate.extend(batch)?;

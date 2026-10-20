@@ -422,6 +422,7 @@ async fn recorded_plan<V: Vfs + Clone>(
             .vertex_at(evid, fgdb_types::CommitSeq(before_entry))?
             .is_some()
         || db.vertex_at(evid, entry.created_at)?.as_ref() != Some(&entry)
+        || !crate::outcome::verify_recorded(db, &ctx.query(), book, &entry, plan.prepared_entry())?
         || !accounting_unchanged_between(
             db,
             ctx,
@@ -895,6 +896,13 @@ async fn recorded_replacement<V: Vfs + Clone>(
             || row.props != entry_mirrors(member.prepared_entry())?
             || db.vertex_at(vid, before)?.is_some()
             || db.vertex_at(vid, sequence)?.as_ref() != Some(row)
+            || !crate::outcome::verify_recorded(
+                db,
+                &ctx.query(),
+                book,
+                row,
+                member.prepared_entry(),
+            )?
         {
             return Ok(Err(invalidated(
                 "a planned correction member differs from its original immutable entry",

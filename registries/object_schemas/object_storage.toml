@@ -36,3 +36,5 @@ intent_outcome_kind = 4
 # batch_plan.toml. IntentOutcome kind 4 uses the IntentOutcome label for root
 # and fragments, preserving their accounting-object scratch replay together.
 # intent_outcome.toml defines its body bound and historical raw-root compatibility.
+# Successful EntryClaim/coverage/key-tree/replay-witness rows share the label,
+# but use small independent inline codecs in posting_outcomes.toml, not kind 4.

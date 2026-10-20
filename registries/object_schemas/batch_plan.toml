@@ -95,6 +95,8 @@ externally_verifiable = false
 # rows, full retained bytes and links born at snapshot_seq+1. Later ordinary
 # publications are allowed on this retry path; copied/rewritten evidence and
 # an ordinary batch without the original retained plan are refused.
+# Each member's common-key claim is an authenticated original native effect
+# and is verified on retry, including legitimate explicitly recovered claims.
 # A private authenticated-batch token satisfies requires_dry_run only after
 # full MAC and capability matching. It does not grant trunk authority: Agent
 # rehearsals cannot publish and current holder, scope, expiry and revocation

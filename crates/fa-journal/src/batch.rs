@@ -306,12 +306,17 @@ fn judge_retry<V: Vfs + Clone>(
     admission: Admission,
     outcome: VId,
 ) -> Outcome<BatchPosted> {
-    let Some((body, recorded_at)) = read_outcome(db, &ctx.query(), outcome)? else {
-        return Err(KernelError::Corrupt(
-            "an intent outcome vanished between two reads".into(),
-        ));
-    };
+    // A single-entry claim at this common key is a conflict. Read only its
+    // VID-only metadata here: a batch capability need not reach that entry.
+    let lookup = db.begin(&ctx.txn())?;
+    let label = lookup.vertex_has_label(db, outcome, label::INTENT_OUTCOME)?;
+    let target = lookup.vertex_property(db, outcome, property::TARGET_REF)?;
+    lookup.abort();
+    if label != Some(true) || target.is_some() {
+        return Ok(Err(outcome_conflict(outcome)));
+    }
     let mut entries = Vec::with_capacity(batch.members().len());
+    let mut publications = Vec::with_capacity(batch.members().len());
     for (i, (intent, capability)) in batch.members().iter().zip(capabilities).enumerate() {
         match prepare_member(
             db,
@@ -322,7 +327,10 @@ fn judge_retry<V: Vfs + Clone>(
             None,
         )? {
             Err(refusal) => return Ok(Err(member_refusal(i, refusal))),
-            Ok(PostPreparation::AlreadyRecorded(posted)) => entries.push(posted.entry_ref()),
+            Ok(PostPreparation::AlreadyRecorded(posted)) => {
+                publications.push(posted.recorded_at());
+                entries.push(posted.entry_ref());
+            }
             Ok(PostPreparation::Ready(prepared)) => {
                 prepared.abort();
                 return Ok(Err(outcome_conflict(outcome)));
@@ -330,6 +338,37 @@ fn judge_retry<V: Vfs + Clone>(
         }
     }
     let vids: Vec<VId> = entries.iter().map(|e| e.vid).collect();
+    // Admission above established reach of every requested Entry. Match the
+    // complete stored membership from adjacency metadata before loading the
+    // outcome's ordered refs/digests, including for scoped capabilities.
+    let mut members = db.in_neighbours(outcome, relation::IN_BATCH)?;
+    let mut expected_members = vids.clone();
+    members.sort_unstable();
+    expected_members.sort_unstable();
+    if members != expected_members {
+        return Ok(Err(outcome_conflict(outcome)));
+    }
+    let Some((body, recorded_at)) = read_outcome(db, &ctx.query(), outcome)? else {
+        return Err(KernelError::Corrupt(
+            "an intent outcome vanished between two reads".into(),
+        ));
+    };
+    let Some(before) = recorded_at.0.checked_sub(1).map(CommitSeq) else {
+        return Ok(Err(outcome_conflict(outcome)));
+    };
+    let Some(root) = db.vertex(outcome)? else {
+        return Ok(Err(outcome_conflict(outcome)));
+    };
+    if !original_vertex(db, &root, recorded_at, before)?
+        || publications.iter().any(|sequence| *sequence != recorded_at)
+    {
+        return Ok(Err(outcome_conflict(outcome)));
+    }
+    for vid in &vids {
+        if !original_edge(db, relation::IN_BATCH, *vid, outcome, recorded_at)? {
+            return Ok(Err(outcome_conflict(outcome)));
+        }
+    }
     if entries != body.entries
         || body.request_digest != request_digest(batch.idempotency_key(), &vids)
     {
@@ -457,6 +496,13 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
             "post the allocation or migration chunk through its own verb, and batch only Original, Adjusting, Reversal, Pending and Resolution entries",
         )));
     }
+    if batch
+        .members()
+        .iter()
+        .any(|member| member.proposal().idempotency_key == batch.idempotency_key())
+    {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
     let ovid = outcome_vid(book, batch);
     let mut txn: Option<WriteTxn> = None;
     let mut members: Vec<BatchMember> = Vec::with_capacity(batch.members().len());
@@ -472,7 +518,12 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
             // the identical retry or a conflict; without one, the member was
             // posted outside any batch.
             Ok(PostPreparation::AlreadyRecorded(posted)) => {
-                if db.vertex(ovid)?.is_some() {
+                let lookup = db.begin(&ctx.txn())?;
+                let present = lookup
+                    .vertex_has_label(db, ovid, label::INTENT_OUTCOME)?
+                    .is_some();
+                lookup.abort();
+                if present {
                     return if i == 0 {
                         Ok(
                             judge_retry(db, ctx, book, capabilities, batch, admission, ovid)?
@@ -508,9 +559,28 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
         // After the first member's admission, the outcome identity is a
         // witness: absent here, and a concurrent identical batch conflicts.
         // A recorded outcome whose first member is new is another request.
-        if i == 0 && staged.vertex(db, ovid)?.is_some() {
-            staged.abort();
-            return Ok(Err(outcome_conflict(ovid)));
+        if i == 0 {
+            let legacy_key_vid = fa_model::entry_vid(
+                book.book_id,
+                &batch.principal().0.to_le_bytes(),
+                batch.idempotency_key(),
+            );
+            if staged
+                .vertex_has_label(db, ovid, label::INTENT_OUTCOME)?
+                .is_some()
+                || staged
+                    .vertex_has_label(db, legacy_key_vid, label::ENTRY)?
+                    .is_some()
+            {
+                staged.abort();
+                return Ok(Err(outcome_conflict(ovid)));
+            }
+            if let Err(refusal) =
+                crate::outcome::require_unused_legacy_key(&staged, db, book, ovid)?
+            {
+                staged.abort();
+                return Ok(Err(refusal));
+            }
         }
         members.push(member);
         txn = Some(staged);
@@ -599,16 +669,24 @@ pub(crate) async fn commit_batch<V: Vfs + Clone>(
         }
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => match db.vertex(ovid)? {
-            Some(_) => judge_retry(db, ctx, book, capabilities, batch, admission, ovid),
-            None => Ok(Err(Refusal::new(
-                code::IDEMPOTENCY_CONFLICT,
-                exit::CONFLICT,
-                "a member's identity was taken by a concurrent commit; nothing in the batch was recorded",
-                "plan §4.9 (identities are derived, first committer wins)",
-                "retry the identical batch: a member recorded outside it is then named",
-            ))),
-        },
+        )) => {
+            let lookup = db.begin(&ctx.txn())?;
+            let present = lookup
+                .vertex_has_label(db, ovid, label::INTENT_OUTCOME)?
+                .is_some();
+            lookup.abort();
+            if present {
+                judge_retry(db, ctx, book, capabilities, batch, admission, ovid)
+            } else {
+                Ok(Err(Refusal::new(
+                    code::IDEMPOTENCY_CONFLICT,
+                    exit::CONFLICT,
+                    "a member's identity was taken by a concurrent commit; nothing in the batch was recorded",
+                    "plan §4.9 (identities are derived, first committer wins)",
+                    "retry the identical batch: a member recorded outside it is then named",
+                )))
+            }
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -858,6 +936,11 @@ fn recorded_batch_plan<V: Vfs + Clone>(
     let Some(outcome) = db.vertex(ovid)? else {
         return Ok(Ok(None));
     };
+    if prop(&outcome, property::TARGET_REF).is_some() {
+        return Ok(Err(plan_invalidated(
+            "the batch key belongs to another posting intent",
+        )));
+    }
     let certificate_digest = plan.certificate_digest().map_err(plan_codec)?;
     let cvid = crate::plan::plan_certificate_vid(book.book_id, &certificate_digest);
     let before = plan.certificate().snapshot_seq;
@@ -892,6 +975,7 @@ fn recorded_batch_plan<V: Vfs + Clone>(
             || entry.labels.as_slice() != [label::ENTRY]
             || entry.props != entry_mirrors(prepared)?
             || !original_vertex(db, &entry, born, before)?
+            || !crate::outcome::verify_recorded(db, &ctx.query(), book, &entry, prepared)?
             || !original_edge(db, relation::IN_BATCH, reference.vid, ovid, born)?
             || !original_edge(db, relation::CITES, reference.vid, cvid, born)?
         {

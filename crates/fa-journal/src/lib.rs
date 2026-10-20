@@ -38,6 +38,7 @@ pub mod legal_hold;
 pub mod limit;
 pub mod migration;
 pub mod object;
+pub mod outcome;
 pub mod period;
 pub mod period_creation;
 pub mod period_history;
@@ -120,6 +121,10 @@ pub use migration::{
     PeriodBalance, Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode, RunState,
     TieOut, TieOutLine, TrialBalanceLine, open_proposal, open_run, plan_run_transition,
     run_entries, tie_out, transition_run, visible_at,
+};
+pub use outcome::{
+    OutcomeRebuild, OutcomeRebuildPreview, PreparedOutcomeRebuild, prepare_outcome_rebuild,
+    publish_outcome_rebuild,
 };
 pub use period::{
     OriginallyReported, PeriodCheck, PeriodTransitionRecord, PeriodVerification,
