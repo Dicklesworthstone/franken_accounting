@@ -31,6 +31,12 @@ use crate::book::{BookError, BookKeys, Entropy, Outcome, ProducedBundle};
 
 pub(crate) const BOOK_BLOB_STORE: u16 = 1;
 
+#[derive(Clone, Copy)]
+pub(crate) enum ScratchReplayMode {
+    ProtectedCoordinates,
+    LegacyScenarioV1,
+}
+
 /// The journal prefix and the checkpoint a bundle is assembled over.
 type BundleBasis = (fa_notary::Journal, fa_notary::StoredCheckpoint);
 
@@ -1747,21 +1753,55 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     pub async fn replay_into<W: Vfs + Clone>(
         &mut self,
         cx: &PurposeContexts,
-        mut target: Database<W>,
+        target: Database<W>,
         keys: &BookKeys,
         prefix: Option<CommitSeq>,
         entropy: Entropy,
     ) -> Outcome<(AsyncBook<W, B>, fa_journal::SeqMap)> {
-        cx.commit().checkpoint().map_err(BookError::Context)?;
-        let map = match fa_journal::scratch::replay_into(
-            &mut self.db,
-            &mut target,
+        self.replay_into_with_mode(
             cx,
-            &self.context,
+            target,
+            keys,
             prefix,
+            entropy,
+            ScratchReplayMode::ProtectedCoordinates,
         )
-        .await?
-        {
+        .await
+    }
+
+    pub(crate) async fn replay_into_with_mode<W: Vfs + Clone>(
+        &mut self,
+        cx: &PurposeContexts,
+        mut target: Database<W>,
+        keys: &BookKeys,
+        prefix: Option<CommitSeq>,
+        entropy: Entropy,
+        mode: ScratchReplayMode,
+    ) -> Outcome<(AsyncBook<W, B>, fa_journal::SeqMap)> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let replayed = match mode {
+            ScratchReplayMode::ProtectedCoordinates => {
+                fa_journal::scratch::replay_into(
+                    &mut self.db,
+                    &mut target,
+                    cx,
+                    &self.context,
+                    prefix,
+                )
+                .await?
+            }
+            ScratchReplayMode::LegacyScenarioV1 => {
+                fa_journal::scratch::replay_into_legacy_scenario_v1(
+                    &mut self.db,
+                    &mut target,
+                    cx,
+                    &self.context,
+                    prefix,
+                )
+                .await?
+            }
+        };
+        let map = match replayed {
             Ok(map) => map,
             Err(refusal) => return Ok(Err(refusal)),
         };

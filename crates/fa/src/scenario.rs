@@ -31,10 +31,20 @@ mod certificate;
 
 pub use certificate::{
     CERTIFICATE_FORMAT as SCENARIO_DIFF_CERTIFICATE_FORMAT, CertifiedScenarioDiff,
+    LEGACY_CERTIFICATE_FORMAT as LEGACY_SCENARIO_DIFF_CERTIFICATE_FORMAT,
     OUTPUT_FORMAT as SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioDiffCertificate,
 };
 
 const INTENTS_DOMAIN: &[u8] = b"fa:scenario-intents:v1";
+
+/// The ordinary replay preserves the native coordinates needed by bank
+/// closes. Compressed replay exists only to reproduce an older v1
+/// certificate; it never selects the policy for a new scenario result.
+#[derive(Clone, Copy)]
+enum ScenarioReplay {
+    Protected,
+    LegacyCertificateV1,
+}
 
 /// A scenario's materialization: a scratch replay of its trunk prefix plus
 /// its intents.
@@ -153,12 +163,30 @@ impl Book {
     /// intents, in planning order (all of them except when a certificate
     /// replays the prefix it covered).
     fn materialize(&mut self, view: ScenarioView, through: usize) -> Outcome<ScenarioBook> {
+        self.materialize_with_replay(view, through, ScenarioReplay::Protected)
+    }
+
+    fn materialize_with_replay(
+        &mut self,
+        view: ScenarioView,
+        through: usize,
+        replay: ScenarioReplay,
+    ) -> Outcome<ScenarioBook> {
         let keys = BookKeys::generate(&Entropy::production())?;
-        let (mut book, map) =
-            match self.replay_into_scratch(Some(view.body.fork_at), keys, Entropy::production())? {
-                Ok(replayed) => replayed,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let replayed = match replay {
+            ScenarioReplay::Protected => {
+                self.replay_into_scratch(Some(view.body.fork_at), keys, Entropy::production())?
+            }
+            ScenarioReplay::LegacyCertificateV1 => self.replay_into_scratch_legacy_scenario_v1(
+                Some(view.body.fork_at),
+                keys,
+                Entropy::production(),
+            )?,
+        };
+        let (mut book, map) = match replayed {
+            Ok(replayed) => replayed,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let mut entries = Vec::with_capacity(through);
         for (i, planned) in view.intents.iter().take(through).enumerate() {
             match book.post(scratch_request(
@@ -277,8 +305,27 @@ impl Book {
         periods: &[String],
         activity: bool,
     ) -> Outcome<ScenarioDiff> {
+        self.diff_view_with_replay(
+            view,
+            through,
+            trunk,
+            periods,
+            activity,
+            ScenarioReplay::Protected,
+        )
+    }
+
+    fn diff_view_with_replay(
+        &mut self,
+        view: ScenarioView,
+        through: usize,
+        trunk: &TrialBalance,
+        periods: &[String],
+        activity: bool,
+        replay: ScenarioReplay,
+    ) -> Outcome<ScenarioDiff> {
         let fork_at = view.body.fork_at;
-        let scenario = match self.materialize(view, through)? {
+        let scenario = match self.materialize_with_replay(view, through, replay)? {
             Ok(scenario) => scenario,
             Err(refusal) => return Ok(Err(refusal)),
         };

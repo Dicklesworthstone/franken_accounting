@@ -208,8 +208,9 @@ pub use roll_forward::{
     ROLL_FORWARD_CERTIFICATE_FORMAT, RollForward, RollForwardCertificate, RollForwardRequest,
 };
 pub use scenario::{
-    CertifiedScenarioDiff, SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT,
-    ScenarioBook, ScenarioDiff, ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
+    CertifiedScenarioDiff, LEGACY_SCENARIO_DIFF_CERTIFICATE_FORMAT,
+    SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioBook, ScenarioDiff,
+    ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
 };
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{

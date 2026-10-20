@@ -34,7 +34,7 @@ use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::AsyncBook;
-use crate::async_book::{rooted_path, sync_file};
+use crate::async_book::{ScratchReplayMode, rooted_path, sync_file};
 
 /// The three secrets a book directory needs: the object-identity key, the
 /// security namespace, and the data-encryption key (the substrate's
@@ -1495,8 +1495,10 @@ impl Book {
 
     /// Replay this book's accounting history through `prefix` (head when
     /// `None`) into a fresh in-memory scratch book (plan §15.2): the same
-    /// objects, byte for byte, one scratch commit per source commit that
-    /// carries any, under the scratch book's own commit sequences. Returns
+    /// objects, byte for byte. Normally only accounting commits consume
+    /// scratch sequences. Prefixes containing native reconciliation claims
+    /// preserve their source coordinates with real no-op publications for
+    /// omitted maintenance, after verifying the source history. Returns
     /// the scratch book (its database opened with `keys`, sealing with
     /// `entropy`, its checkpoints signed with `keys`' checkpoint key) and
     /// the [`fa_journal::SeqMap`] binding the two histories. External
@@ -1508,6 +1510,38 @@ impl Book {
         keys: BookKeys,
         entropy: Entropy,
     ) -> Outcome<(Book, fa_journal::SeqMap)> {
+        self.replay_into_scratch_with_mode(
+            prefix,
+            keys,
+            entropy,
+            ScratchReplayMode::ProtectedCoordinates,
+        )
+    }
+
+    /// Reconstruct only a retained v1 scenario certificate's original
+    /// compressed coordinates. The caller must compare its exact map, head
+    /// and output; new materializations always use the public protected path.
+    pub(crate) fn replay_into_scratch_legacy_scenario_v1(
+        &mut self,
+        prefix: Option<CommitSeq>,
+        keys: BookKeys,
+        entropy: Entropy,
+    ) -> Outcome<(Book, fa_journal::SeqMap)> {
+        self.replay_into_scratch_with_mode(
+            prefix,
+            keys,
+            entropy,
+            ScratchReplayMode::LegacyScenarioV1,
+        )
+    }
+
+    fn replay_into_scratch_with_mode(
+        &mut self,
+        prefix: Option<CommitSeq>,
+        keys: BookKeys,
+        entropy: Entropy,
+        mode: ScratchReplayMode,
+    ) -> Outcome<(Book, fa_journal::SeqMap)> {
         let owner_token = keys.owner_token();
         let (scratch_runtime, scratch_root) = Self::runtime_and_root()?;
         let scratch_purposes = PurposeContexts::narrow_runtime_root(&scratch_root);
@@ -1516,13 +1550,34 @@ impl Book {
         })?;
         let replayed = match &mut self.store {
             Store::Memory(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
+                .block_on(core.replay_into_with_mode(
+                    &scratch_purposes,
+                    db,
+                    &keys,
+                    prefix,
+                    entropy,
+                    mode,
+                ))?
                 .map(|(copy, map)| (Store::Memory(copy), map)),
             Store::Dir(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
+                .block_on(core.replay_into_with_mode(
+                    &scratch_purposes,
+                    db,
+                    &keys,
+                    prefix,
+                    entropy,
+                    mode,
+                ))?
                 .map(|(copy, map)| (Store::ScratchDir(copy), map)),
             Store::ScratchDir(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
+                .block_on(core.replay_into_with_mode(
+                    &scratch_purposes,
+                    db,
+                    &keys,
+                    prefix,
+                    entropy,
+                    mode,
+                ))?
                 .map(|(copy, map)| (Store::ScratchDir(copy), map)),
         };
         let (store, map) = match replayed {

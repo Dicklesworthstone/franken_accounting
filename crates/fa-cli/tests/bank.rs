@@ -655,6 +655,20 @@ fn reconciled_cash_scenarios_preserve_native_coordinates_and_planner_authority()
     );
     assert_eq!(certified.len(), 2);
     assert_eq!(data(&certified[0]), data(&diff));
+    let encoded = text(data(&certified[1]), "bytes");
+    let bytes: Vec<u8> = (0..encoded.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&encoded[i..i + 2], 16).unwrap())
+        .collect();
+    let mut reader = fa_model::Reader::new(&bytes);
+    assert_eq!(
+        reader.bytes(64, "scenario certificate format").unwrap(),
+        b"fa:scenario-diff-certificate:v2"
+    );
+    assert_eq!(
+        text(data(&certified[1]), "output_format"),
+        "fa:scenario-diff:v1"
+    );
     let locator = format!("C:{}", text(data(&certified[1]), "oid"));
     let before_replay = head(&f.book);
     let replayed = ok(&f.book, &["replay", &locator]);

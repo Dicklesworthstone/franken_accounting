@@ -7,7 +7,7 @@ use fa_journal::bank::{
     reconcile_bank_statement,
 };
 use fa_journal::evidence::document_vid;
-use fa_journal::scratch::{SeqMap, replay_into};
+use fa_journal::scratch::{SeqMap, replay_into, replay_into_legacy_scenario_v1};
 
 const MAINTENANCE_VERTEX: VId = VId(0x7265_706c_6179_6d61_696e_7465_6e61_6e63);
 
@@ -16,16 +16,24 @@ struct ClosedSource {
     matched: BankMatchRecorded,
     closed: BankReconciliationRecorded,
     before_close: CommitSeq,
-    maintenance: CommitSeq,
+    maintenance: Option<CommitSeq>,
 }
 
 fn closed_source(h: &mut Harness) -> ClosedSource {
+    closed_source_with_maintenance(h, true)
+}
+
+fn closed_source_with_maintenance(h: &mut Harness, before_close: bool) -> ClosedSource {
     // A real native maintenance publication separates the source cash and
     // import coordinates from those produced by the old compressed replay.
-    let mut maintenance = WriteBatch::new(relation::IN_BOOK);
-    maintenance.create_vertex(MAINTENANCE_VERTEX, vec![label::REGISTER], vec![]);
-    h.write(maintenance);
-    let maintenance = h.head();
+    let maintenance = if before_close {
+        let mut maintenance = WriteBatch::new(relation::IN_BOOK);
+        maintenance.create_vertex(MAINTENANCE_VERTEX, vec![label::REGISTER], vec![]);
+        h.write(maintenance);
+        Some(h.head())
+    } else {
+        None
+    };
     let cash = h.entry(&[10_000], "WIRE", b"replayed-cash");
     let (import, line) = h.imported("WIRE", 10_000, b"replayed-statement");
     let request = h.request(import.clone(), line, cash, 0);
@@ -72,25 +80,52 @@ fn replay(
     target: &mut Database<MemVfs>,
     prefix: Option<CommitSeq>,
 ) -> Result<SeqMap, Refusal> {
+    replay_with_policy(h, target, prefix, ReplayPolicy::Protected)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ReplayPolicy {
+    Protected,
+    LegacyScenarioV1,
+}
+
+fn replay_with_policy(
+    h: &mut Harness,
+    target: &mut Database<MemVfs>,
+    prefix: Option<CommitSeq>,
+    policy: ReplayPolicy,
+) -> Result<SeqMap, Refusal> {
     let cx = h.cx();
-    h.runtime
-        .block_on(replay_into(&mut h.db, target, &cx, &h.book, prefix))
-        .unwrap()
+    match policy {
+        ReplayPolicy::Protected => h
+            .runtime
+            .block_on(replay_into(&mut h.db, target, &cx, &h.book, prefix))
+            .unwrap(),
+        ReplayPolicy::LegacyScenarioV1 => h
+            .runtime
+            .block_on(replay_into_legacy_scenario_v1(
+                &mut h.db, target, &cx, &h.book, prefix,
+            ))
+            .unwrap(),
+    }
 }
 
 fn assert_source_refused_before_copy(h: &mut Harness, source: &ClosedSource, expected_code: &str) {
     let head = h.head();
+    for policy in [ReplayPolicy::Protected, ReplayPolicy::LegacyScenarioV1] {
+        let mut target = empty_target(h);
+        let refusal = replay_with_policy(h, &mut target, None, policy).unwrap_err();
+        assert_eq!(refusal.code, expected_code, "{policy:?}");
+        assert_eq!(refusal.exit, refusal::exit::VERIFICATION, "{policy:?}");
+        assert_eq!(h.head(), head, "source verification never changes trunk");
+        assert_eq!(
+            target.frontier().unwrap(),
+            CommitSeq(0),
+            "{policy:?}: corrupted original history is refused before any scratch publication"
+        );
+        assert!(target.vertices_at(CommitSeq(0)).unwrap().is_empty());
+    }
     let mut target = empty_target(h);
-    let refusal = replay(h, &mut target, None).unwrap_err();
-    assert_eq!(refusal.code, expected_code);
-    assert_eq!(refusal.exit, refusal::exit::VERIFICATION);
-    assert_eq!(h.head(), head, "source verification never changes trunk");
-    assert_eq!(
-        target.frontier().unwrap(),
-        CommitSeq(0),
-        "corrupted original history is refused before any scratch publication"
-    );
-    assert!(target.vertices_at(CommitSeq(0)).unwrap().is_empty());
 
     // Later corruption cannot rewrite the intact source prefix. The same
     // original close remains readable when that exact prefix is replayed.
@@ -131,7 +166,7 @@ fn reconciled_scratch_preserves_native_sequences_without_copying_maintenance_obj
     assert!(
         map.pairs
             .iter()
-            .all(|pair| { pair.source_seq != source.maintenance && pair.source_seq != head })
+            .all(|pair| { Some(pair.source_seq) != source.maintenance && pair.source_seq != head })
     );
     assert_eq!(
         map.translate(head),
@@ -162,6 +197,60 @@ fn reconciled_scratch_preserves_native_sequences_without_copying_maintenance_obj
         "a fork before the first close retains its original compressed mapping"
     );
     assert_eq!(h.head(), head);
+}
+
+#[test]
+fn legacy_scenario_replay_compresses_only_trailing_maintenance_without_damaging_the_close() {
+    let mut h = Harness::new();
+    let source = closed_source_with_maintenance(&mut h, false);
+    let closed_row = h.db.vertex(source.closed.attestation_vid).unwrap().unwrap();
+    let mut maintenance = WriteBatch::new(relation::IN_BOOK);
+    maintenance.create_vertex(MAINTENANCE_VERTEX, vec![label::REGISTER], vec![]);
+    h.write(maintenance);
+    let head = h.head();
+    assert_eq!(head.0, source.closed.recorded_at.0 + 1);
+
+    let mut maps = Vec::new();
+    for policy in [ReplayPolicy::Protected, ReplayPolicy::LegacyScenarioV1] {
+        let mut target = empty_target(&h);
+        let map = replay_with_policy(&mut h, &mut target, None, policy).unwrap();
+        let expected_head = match policy {
+            ReplayPolicy::Protected => head,
+            ReplayPolicy::LegacyScenarioV1 => source.closed.recorded_at,
+        };
+        assert_eq!(target.frontier().unwrap(), expected_head, "{policy:?}");
+        assert_eq!(map.source_prefix, head);
+        assert!(
+            map.pairs
+                .iter()
+                .all(|pair| pair.source_seq == pair.scratch_seq)
+        );
+        assert!(map.pairs.iter().all(|pair| pair.source_seq != head));
+        assert_eq!(map.translate(head), Some(source.closed.recorded_at));
+        assert!(target.vertex(MAINTENANCE_VERTEX).unwrap().is_none());
+
+        let copied = target
+            .vertex(source.closed.attestation_vid)
+            .unwrap()
+            .unwrap();
+        assert_eq!(copied.created_at, source.closed.recorded_at);
+        assert_eq!(copied.labels, closed_row.labels);
+        assert_eq!(copied.props, closed_row.props);
+        let states =
+            read_bank_reconciliation_states(&target, &h.cx(), &h.book, &metadata_cap(OWNER), None)
+                .unwrap()
+                .unwrap();
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].recorded, source.closed, "{policy:?}");
+        assert!(!states[0].balance_drift && !states[0].cash_drift && !states[0].match_drift);
+        assert_eq!(h.head(), head);
+        maps.push(map);
+    }
+    assert_eq!(
+        maps[0], maps[1],
+        "an accounting-only map cannot distinguish the two scratch-head policies"
+    );
+    assert_eq!(maps[0].digest().unwrap(), maps[1].digest().unwrap());
 }
 
 #[test]
@@ -245,12 +334,17 @@ fn scratch_refuses_a_reconciled_claim_manufactured_from_a_maintenance_birth() {
     relabel.set_vertex_label(attestation.vid, label::ATTESTATION, true);
     h.write(relabel);
     let head = h.head();
-    let mut target = empty_target(&h);
-    let refusal = replay(&mut h, &mut target, None).unwrap_err();
-    assert_eq!(refusal.code, refusal::code::ATTESTATION_DRIFT);
-    assert_eq!(target.frontier().unwrap(), CommitSeq(0));
-    assert_eq!(h.head(), head);
-    let map = replay(&mut h, &mut target, Some(intact_prefix)).unwrap();
-    assert_eq!(map.source_prefix, intact_prefix);
-    assert!(target.vertex(attestation.vid).unwrap().is_none());
+    for policy in [ReplayPolicy::Protected, ReplayPolicy::LegacyScenarioV1] {
+        let mut target = empty_target(&h);
+        let refusal = replay_with_policy(&mut h, &mut target, None, policy).unwrap_err();
+        assert_eq!(refusal.code, refusal::code::ATTESTATION_DRIFT, "{policy:?}");
+        assert_eq!(refusal.exit, refusal::exit::VERIFICATION);
+        assert_eq!(target.frontier().unwrap(), CommitSeq(0), "{policy:?}");
+        assert!(target.vertices_at(CommitSeq(0)).unwrap().is_empty());
+        assert_eq!(h.head(), head);
+        let map = replay_with_policy(&mut h, &mut target, Some(intact_prefix), policy).unwrap();
+        assert_eq!(map.source_prefix, intact_prefix);
+        assert!(target.vertex(attestation.vid).unwrap().is_none());
+        assert_eq!(h.head(), head);
+    }
 }

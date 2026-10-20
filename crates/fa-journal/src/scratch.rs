@@ -522,6 +522,12 @@ fn contains_reconciled_claim(batches: &[LogicalDeltaBatch]) -> bool {
     })
 }
 
+#[derive(Clone, Copy)]
+enum ReplayPolicy {
+    ProtectedCoordinates,
+    LegacyScenarioV1,
+}
+
 /// Re-commit `batches` into the empty `target` and return the [`SeqMap`].
 /// Ordinarily only accounting publications consume scratch sequences. A
 /// prefix containing a Reconciled claim instead preserves every source
@@ -540,6 +546,25 @@ pub async fn replay_batches<W: asupersync::fs::Vfs + Clone>(
     prefix: CommitSeq,
     batches: &[LogicalDeltaBatch],
 ) -> Outcome<SeqMap> {
+    replay_batches_with_policy(
+        target,
+        ctx,
+        source_book,
+        prefix,
+        batches,
+        ReplayPolicy::ProtectedCoordinates,
+    )
+    .await
+}
+
+async fn replay_batches_with_policy<W: asupersync::fs::Vfs + Clone>(
+    target: &mut Database<W>,
+    ctx: &PurposeContexts,
+    source_book: Id128,
+    prefix: CommitSeq,
+    batches: &[LogicalDeltaBatch],
+    policy: ReplayPolicy,
+) -> Outcome<SeqMap> {
     let at = target.frontier()?;
     if !target.vertices_at(at)?.is_empty() {
         return Ok(Err(Refusal::new(
@@ -550,7 +575,8 @@ pub async fn replay_batches<W: asupersync::fs::Vfs + Clone>(
             "replay into a newly opened, empty database",
         )));
     }
-    let preserve_sequences = contains_reconciled_claim(batches);
+    let preserve_sequences =
+        matches!(policy, ReplayPolicy::ProtectedCoordinates) && contains_reconciled_claim(batches);
     let mut maintenance = Maintenance::default();
     let mut pairs = Vec::new();
     for batch in batches {
@@ -659,6 +685,62 @@ where
     V: asupersync::fs::Vfs + Clone,
     W: asupersync::fs::Vfs + Clone,
 {
+    replay_into_with_policy(
+        source,
+        target,
+        ctx,
+        book,
+        prefix,
+        ReplayPolicy::ProtectedCoordinates,
+    )
+    .await
+}
+
+/// Reconstruct the compressed scratch coordinates retained by an older v1
+/// scenario certificate. This is only a durable certificate replay path;
+/// ordinary materialization must use [`replay_into`] so native reconciliation
+/// coordinates remain valid for subsequent scratch accounting operations.
+///
+/// Source reconciliation history is verified before any maintenance filtering,
+/// exactly as in the default path. Only sequence allocation changes: omitted
+/// maintenance publications consume no scratch sequence. The caller must match
+/// the reconstructed map, head and output against the retained certificate;
+/// this helper does not establish that an arbitrary compressed target is valid
+/// for new postings or new certificates.
+pub async fn replay_into_legacy_scenario_v1<V, W>(
+    source: &mut Database<V>,
+    target: &mut Database<W>,
+    ctx: &PurposeContexts,
+    book: &crate::genesis::BookContext,
+    prefix: Option<CommitSeq>,
+) -> Outcome<SeqMap>
+where
+    V: asupersync::fs::Vfs + Clone,
+    W: asupersync::fs::Vfs + Clone,
+{
+    replay_into_with_policy(
+        source,
+        target,
+        ctx,
+        book,
+        prefix,
+        ReplayPolicy::LegacyScenarioV1,
+    )
+    .await
+}
+
+async fn replay_into_with_policy<V, W>(
+    source: &mut Database<V>,
+    target: &mut Database<W>,
+    ctx: &PurposeContexts,
+    book: &crate::genesis::BookContext,
+    prefix: Option<CommitSeq>,
+    policy: ReplayPolicy,
+) -> Outcome<SeqMap>
+where
+    V: asupersync::fs::Vfs + Clone,
+    W: asupersync::fs::Vfs + Clone,
+{
     if let Err(r) = ensure_history(source, ctx).await? {
         return Ok(Err(r));
     }
@@ -672,7 +754,7 @@ where
     {
         return Ok(Err(refusal));
     }
-    replay_batches(target, ctx, book.book_id, prefix, &batches).await
+    replay_batches_with_policy(target, ctx, book.book_id, prefix, &batches, policy).await
 }
 
 #[cfg(test)]
