@@ -1068,7 +1068,6 @@ mod tests {
     use asupersync::runtime::RuntimeBuilder;
     use fgdb::{DatabaseKeys, MemVfs};
     use fgdb_types::ids::DatabaseSecurityNamespaceId;
-    use std::path::Path;
 
     #[test]
     fn outcome_body_bytes_are_fixed_and_round_trip() {
@@ -1114,12 +1113,12 @@ mod tests {
         let cx = PurposeContexts::narrow_runtime_root(&root);
         let vfs = cx.commit().with_restriction(MemVfs::new).unwrap();
         let keys = DatabaseKeys::new([41; 32], DatabaseSecurityNamespaceId([42; 32]), [43; 32]);
-        let path = Path::new("outcome-objects");
+        let path = vfs.database_dir();
         let mut db = runtime
             .block_on(Database::create_with_vfs(
                 &cx.commit(),
                 vfs.clone(),
-                path,
+                &path,
                 keys.clone(),
             ))
             .unwrap();
@@ -1145,7 +1144,7 @@ mod tests {
         );
         drop(db);
         let mut db = runtime
-            .block_on(Database::open_with_vfs(&cx.commit(), vfs, path, keys))
+            .block_on(Database::open_with_vfs(&cx.commit(), vfs, &path, keys))
             .unwrap();
         assert!(matches!(
             db.delta_since(CommitSeq(0)),
