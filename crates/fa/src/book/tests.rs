@@ -4410,6 +4410,91 @@ fn retained_roll_forward_status_tracks_migration_activation_without_writing() {
 }
 
 #[test]
+fn retained_aging_status_tracks_migration_activation_without_rewriting_history() {
+    use crate::{
+        AgingBuckets, AgingRequest, CertificateStatus, ReportArtifact, ReportArtifactExpectation,
+    };
+    use fa_journal::migration::kind;
+    let capability = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
+    for outcome in [kind::ABANDON, kind::FINALIZE] {
+        let (mut book, _usd, evidence, body) = certificate_migration_fixture(false);
+        let certify = |book: &Book| {
+            let certified = book
+                .certify_effective_date_aging(
+                    VId(1),
+                    &capability,
+                    &AgingRequest {
+                        account: Some(account_vid(body.book_id, "1000")),
+                        effective_through: body.opening_date,
+                        known_at: Some(book.head().unwrap()),
+                        buckets: AgingBuckets::new(vec![30]).unwrap(),
+                    },
+                )
+                .unwrap()
+                .unwrap();
+            let artifact = ReportArtifact::try_from(&certified.certificate).unwrap();
+            (certified, artifact)
+        };
+        let status = |book: &Book, artifact: &ReportArtifact| {
+            book.report_artifact_status(
+                VId(1),
+                &capability,
+                &artifact.canonical_bytes().unwrap(),
+                Some(artifact.digest()),
+                ReportArtifactExpectation::AsSupplied,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let (before_report, before_run) = certify(&book);
+        let run = certificate_open_run(&mut book, evidence, &body);
+        let chunk =
+            certificate_stage_chunk(&mut book, evidence, &body, "FY2026-OPEN", body.opening_date);
+        let (staged_report, staged) = certify(&book);
+        for artifact in [&before_run, &staged] {
+            assert_eq!(
+                status(&book, artifact),
+                CertificateStatus::Current {
+                    checked_at: book.head().unwrap()
+                },
+                "unfinalized migration entries cannot supersede an aging"
+            );
+        }
+        let control = certificate_transition_run(&mut book, run, outcome);
+        let head = book.head().unwrap();
+        for (certified, artifact, causes) in [
+            (&before_report, &before_run, vec![chunk, control]),
+            (&staged_report, &staged, vec![control]),
+        ] {
+            assert_eq!(
+                status(&book, artifact),
+                if outcome == kind::FINALIZE {
+                    CertificateStatus::SupersededBy {
+                        checked_at: head,
+                        later_entries: causes,
+                    }
+                } else {
+                    CertificateStatus::Current { checked_at: head }
+                },
+                "finalization activates even chunks that predate the certificate; abandonment never does"
+            );
+            assert_eq!(
+                book.replay_effective_date_aging(VId(1), &capability, &certified.certificate)
+                    .unwrap()
+                    .unwrap(),
+                certified.report,
+                "the historical aging remains reproducible after activation or abandonment"
+            );
+        }
+        assert_eq!(
+            book.head().unwrap(),
+            head,
+            "status and replay are read-only"
+        );
+    }
+}
+
+#[test]
 fn certificate_status_excludes_full_detail_summarized_by_opening_balances() {
     use crate::{CertificateStatus, TrialBalanceSelection};
     let (mut book, usd, evidence, body) = certificate_migration_fixture(true);
