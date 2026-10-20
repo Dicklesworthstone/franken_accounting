@@ -869,6 +869,19 @@ fn tamper_evidence_red_team_matrix() {
             out.contains("applied mirrors differ from the open-item fold"),
             "{out}"
         );
+        // The fix names the recovery, which rebuilds exactly this mirror from
+        // the journal's open-item fold: one leg, and open items verify again.
+        assert!(
+            text(&parsed(&out), "fix").contains("fa recover projections --dry-run --json"),
+            "{out}"
+        );
+        let (recovered, repaired, err) = run(&book, &["recover", "projections", "--yes", "--json"]);
+        assert_eq!(recovered, 0, "{repaired}\n{err}");
+        let repaired = parsed(&repaired);
+        assert_eq!(get(&repaired, "wrote"), Some(&Json::Bool(true)));
+        assert_eq!(get(&repaired, "legs_repaired"), Some(&Json::Int(1)));
+        let (reverified, green, err) = run(&book, &["verify", "open-items", "--json"]);
+        assert_eq!(reverified, 0, "{green}\n{err}");
         rows.push(MatrixRow {
             id: "T12",
             attack: "Edit an open-item `Leg.applied` settlement mirror in place",

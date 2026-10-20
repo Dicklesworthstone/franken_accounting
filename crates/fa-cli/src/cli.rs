@@ -11087,8 +11087,12 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         v.drift.len()
                     ),
                     detail: obj(fields),
-                    cite: None,
-                    fix: None,
+                    cite: Some(
+                        "FA-INV-04.open-amount (an applied mirror is the fold of SETTLES and UNSETTLES over the lineage)".into(),
+                    ),
+                    fix: Some(
+                        "retain this finding with fa verify open-items --json and the same --book; the leg-projection recovery rebuilds applied mirrors from the journal: preview it with fa recover projections --dry-run --json, and publish it with --yes if intended".into(),
+                    ),
                 })
             }
         }
