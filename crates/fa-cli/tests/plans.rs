@@ -191,6 +191,115 @@ impl Fixture {
 }
 
 #[test]
+fn large_post_and_replacement_plans_commit_atomically_and_retry_after_reopen() {
+    let f = Fixture::new();
+    let legs = |amount: &str| {
+        (0..40)
+        .map(|i| {
+            let (side, account) = if i % 2 == 0 {
+                ("debit", "1000")
+            } else {
+                ("credit", "4000")
+            };
+            format!(
+                r#"{{"side":"{side}","account":"{account}","amount":"{amount} USD","memo":"{}"}}"#,
+                "supporting detail ".repeat(8),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+    };
+    let intent = write(
+        &f.dir,
+        "large.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-10","idempotency_key":"large-plan","legs":[{legs}]}}"#,
+            legs = legs("1.00"),
+        ),
+    );
+    let output = f.dir.join("large.plan");
+    let before = head(&f.book);
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &intent,
+            "--evidence",
+            &f.evidence,
+            "--dry-run",
+            "--plan-out",
+            &output.display().to_string(),
+        ],
+    );
+    let bytes = std::fs::read(&output).unwrap();
+    assert!(bytes.len() > 16_384, "must cross the old native row limit");
+    let plan = fa::PostPlan::decode(&bytes).unwrap();
+    assert_eq!(plan.proposal().legs.len(), 40);
+    assert_eq!(head(&f.book), before);
+    let committed = ok(
+        &f.book,
+        &["commit", "--plan", &output.display().to_string()],
+    );
+    assert_eq!(
+        head(&f.book),
+        before + 1,
+        "root, fragments and entry are atomic"
+    );
+    let retry = ok(
+        &f.book,
+        &["commit", "--plan", &output.display().to_string()],
+    );
+    assert_eq!(get(&retry, "already_recorded"), &Json::Bool(true));
+    assert_eq!(head(&f.book), before + 1);
+    let correction = f.dir.join("large-correction.plan");
+    let replacement = write(
+        &f.dir,
+        "large-replacement.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-10","idempotency_key":"large-replacement","legs":[{legs}]}}"#,
+            legs = legs("2.00"),
+        ),
+    );
+    ok(
+        &f.book,
+        &[
+            "reverse",
+            text(&committed, "vid"),
+            "--reason",
+            "WrongAmount",
+            "--replace-with",
+            &replacement,
+            "--evidence",
+            &f.evidence,
+            "--dry-run",
+            "--plan-out",
+            &correction.display().to_string(),
+        ],
+    );
+    let bytes = std::fs::read(&correction).unwrap();
+    assert!(bytes.len() > 16_384);
+    let correction_head = head(&f.book);
+    assert_eq!(
+        correction_head,
+        before + 1,
+        "correction planning cannot publish"
+    );
+    ok(
+        &f.book,
+        &["commit", "--plan", &correction.display().to_string()],
+    );
+    assert_eq!(head(&f.book), correction_head + 1);
+    let retry = ok(
+        &f.book,
+        &["commit", "--plan", &correction.display().to_string()],
+    );
+    assert_eq!(get(&retry, "already_recorded"), &Json::Bool(true));
+    assert_eq!(head(&f.book), correction_head + 1);
+    ok(&f.book, &["verify", "projections"]);
+}
+
+#[test]
 fn binary_replacement_plan_survives_reopen_and_commits_both_reviewed_members() {
     let f = Fixture::new();
     let original = ok(

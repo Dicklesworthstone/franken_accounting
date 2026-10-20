@@ -23,6 +23,7 @@ use fgdb_types::VId;
 use fgdb_types::context::PurposeContexts;
 
 use crate::genesis::BookContext;
+use crate::object::{self, ObjectKind};
 use crate::policy;
 use crate::post::{
     PostPreparation, PostRequest, Posted, prepare_plan, prepare_post, prepare_replacement_pair,
@@ -202,7 +203,13 @@ fn retention_props(
     Ok(vec![
         (
             property::FA_PAYLOAD,
-            scalar_bytes("post plan payload", plan.canonical_bytes().map_err(codec)?)?,
+            scalar_bytes(
+                "post plan payload",
+                object::payload(
+                    ObjectKind::PostPlan,
+                    &plan.canonical_bytes().map_err(codec)?,
+                )?,
+            )?,
         ),
         (
             property::FA_DIGEST,
@@ -216,6 +223,37 @@ fn retention_props(
             scalar_bytes("post plan book_id", book.book_id.0.to_vec())?,
         ),
     ])
+}
+
+/// Root mirrors and complete bytes are both checked. Historical inline plan
+/// records retain their durable representation when retried.
+fn retained_bytes_match<V: Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    row: &fgdb::VertexRow,
+    kind: ObjectKind,
+    digest: [u8; 32],
+    expected: &[u8],
+) -> Result<bool, KernelError> {
+    use crate::rows::prop;
+    use fgdb_types::CanonicalScalar;
+    if row.props.len() != 3
+        || !matches!(prop(row, property::BOOK_ID), Some(CanonicalScalar::Bytes(v)) if v.as_slice() == book.book_id.0)
+        || !matches!(prop(row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(v)) if v.as_slice() == digest)
+    {
+        return Ok(false);
+    }
+    Ok(object::read(
+        db,
+        &ctx.query(),
+        book.book_id,
+        row,
+        label::CERTIFICATE,
+        kind,
+        db.frontier()?,
+        fa_intents::MAX_PLAN_BYTES,
+    )? == expected)
 }
 
 /// Labels whose commits are pure derived/certified metadata and never change
@@ -403,7 +441,15 @@ async fn recorded_plan<V: Vfs + Clone>(
     };
     if certificate.labels.as_slice() != [label::CERTIFICATE]
         || certificate.retired_at.is_some()
-        || certificate.props != retention_props(book, plan)?
+        || !retained_bytes_match(
+            db,
+            ctx,
+            book,
+            &certificate,
+            ObjectKind::PostPlan,
+            plan.certificate().digest().map_err(codec)?,
+            &plan.canonical_bytes().map_err(codec)?,
+        )?
         || certificate.created_at != entry.created_at
         || db
             .vertex_at(cvid, fgdb_types::CommitSeq(before_entry))?
@@ -570,6 +616,15 @@ pub async fn commit_plan<V: Vfs + Clone>(
         )));
     }
     let mut batch = WriteBatch::new(relation::CITES);
+    object::stage(
+        &ctx.query(),
+        &mut batch,
+        book.book_id,
+        cvid,
+        label::CERTIFICATE,
+        ObjectKind::PostPlan,
+        &plan.canonical_bytes().map_err(codec)?,
+    )?;
     batch.create_vertex(
         cvid,
         vec![label::CERTIFICATE],
@@ -614,7 +669,10 @@ fn replacement_retention(
             property::FA_PAYLOAD,
             scalar_bytes(
                 "correction plan payload",
-                plan.canonical_bytes().map_err(codec)?,
+                object::payload(
+                    ObjectKind::ReplacementPlan,
+                    &plan.canonical_bytes().map_err(codec)?,
+                )?,
             )?,
         ),
         (
@@ -642,11 +700,21 @@ fn replacement_members(plan: &ReplacementPlan) -> [(VId, &PostPlan); 2] {
 }
 
 fn replacement_retention_batch(
+    ctx: &PurposeContexts,
     book: &BookContext,
     plan: &ReplacementPlan,
 ) -> Result<WriteBatch, KernelError> {
     let cvid = plan_certificate_vid(book.book_id, &plan.certificate_digest().map_err(codec)?);
     let mut batch = WriteBatch::new(relation::CITES);
+    object::stage(
+        &ctx.query(),
+        &mut batch,
+        book.book_id,
+        cvid,
+        label::CERTIFICATE,
+        ObjectKind::ReplacementPlan,
+        &plan.canonical_bytes().map_err(codec)?,
+    )?;
     batch.create_vertex(
         cvid,
         vec![label::CERTIFICATE],
@@ -743,7 +811,7 @@ pub fn plan_replacement<V: Vfs + Clone>(
         .map_err(codec)?;
     // Check the actual native retention budget before presenting a plan that
     // another process will commit. This stages only; abort publishes nothing.
-    prepared.retain_plan(db, replacement_retention_batch(book, &plan)?)?;
+    prepared.retain_plan(db, replacement_retention_batch(ctx, book, &plan)?)?;
     prepared.abort();
     Ok(Ok(plan))
 }
@@ -864,7 +932,15 @@ async fn recorded_replacement<V: Vfs + Clone>(
     if certificate.labels.as_slice() != [label::CERTIFICATE]
         || certificate.retired_at.is_some()
         || certificate.created_at != sequence
-        || certificate.props != replacement_retention(book, plan)?
+        || !retained_bytes_match(
+            db,
+            ctx,
+            book,
+            &certificate,
+            ObjectKind::ReplacementPlan,
+            plan.certificate_digest().map_err(codec)?,
+            &plan.canonical_bytes().map_err(codec)?,
+        )?
         || db.vertex_at(cvid, before)?.is_some()
         || db.vertex_at(cvid, sequence)?.as_ref() != Some(&certificate)
     {
@@ -990,7 +1066,7 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
             "the correction certificate locator is occupied without both original outcomes",
         )));
     }
-    prepared.retain_plan(db, replacement_retention_batch(book, &plan)?)?;
+    prepared.retain_plan(db, replacement_retention_batch(ctx, book, &plan)?)?;
     match prepared.commit(db, ctx).await? {
         Ok(replacement @ Posted::Committed { .. }) => {
             let (vid, first) = replacement_members(&plan)[0];

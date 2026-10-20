@@ -5,6 +5,9 @@
 /// Hard bound on one `fa:entry:v1` payload; the substrate's scalar bound
 /// (64 MiB) is the outer wall.
 pub const MAX_ENTRY_BYTES: usize = 8 * 1024 * 1024;
+/// One document-commit Merkle leaf. Object storage uses one leaf per row.
+/// 4 KiB plus the fixed three-property envelope fits the 16 KiB substrate row.
+pub const OBJECT_CHUNK_BYTES: usize = 4096;
 pub const MAX_LEGS_PER_ENTRY: usize = 4096;
 pub const MAX_DESCRIPTION_BYTES: usize = 1024;
 pub const MAX_MEMO_BYTES: usize = 512;
@@ -59,6 +62,7 @@ pub const MAX_BANK_PREDECESSOR_DEPTH: usize = 4096;
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
     ("max_entry_bytes", MAX_ENTRY_BYTES as u64),
+    ("object_chunk_bytes", OBJECT_CHUNK_BYTES as u64),
     ("max_legs_per_entry", MAX_LEGS_PER_ENTRY as u64),
     ("max_description_bytes", MAX_DESCRIPTION_BYTES as u64),
     ("max_memo_bytes", MAX_MEMO_BYTES as u64),

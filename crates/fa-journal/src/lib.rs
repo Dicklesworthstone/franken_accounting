@@ -36,6 +36,7 @@ pub mod import;
 pub mod legal_hold;
 pub mod limit;
 pub mod migration;
+pub mod object;
 pub mod period;
 pub mod period_creation;
 pub mod period_history;

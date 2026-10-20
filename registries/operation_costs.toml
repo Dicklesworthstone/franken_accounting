@@ -88,11 +88,11 @@ today_posture = "0 publications for dry-run planning (aborted WriteTxn); 1 publi
 today_transactions = 1
 barrier_count = 2
 today_barrier_count = 2
-derived_objects = "admitted posting census + 1 immutable graph Certificate containing the bounded plan bytes + 1 CITES edge"
+derived_objects = "admitted posting census + 1 immutable graph Certificate + 1 CITES edge; above 4096 plan bytes, ceil(bytes/4096) immutable Certificate fragments in the same transaction"
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "O(legs) rehearsed and aborted on plan; O(legs) + 1 Certificate vertex + 1 CITES edge on commit"
-notes = "same-basis native effects comparison; certificate retention extends the same transaction; no shared mutable object; durable IntentOutcome remains a separate unimplemented contract"
+complexity_witness = "O(legs) rehearsed and aborted on plan; O(legs + plan_bytes) with 1 root and ceil(plan_bytes/4096) fragment vertices above the inline bound; exact retry verifies every fragment"
+notes = "same-basis native effects comparison; certificate retention extends the same transaction; correction plans use the same chunk representation with two CITES edges; no shared mutable object or additional publication; durable IntentOutcome remains a separate unimplemented contract"
 
 [[operation_class]]
 id = "batch_post"

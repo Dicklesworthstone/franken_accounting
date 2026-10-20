@@ -1,0 +1,31 @@
+# Transaction-local canonical payload storage (fa-nd7g).
+# First consumers: PostPlan and ReplacementPlan. Other object families
+# have not migrated; this format does not claim their capacity acceptance.
+schema_version = 1
+manifest_format = "fa:object:v1"
+content_domain = "fa:object-content:v1"
+fragment_domain = "fa:object-fragment:v1"
+chunk_bytes = 4096
+inline_bytes = 4096
+post_plan_kind = 1
+replacement_plan_kind = 2
+
+# At/below one document Merkle leaf, preserve raw canonical bytes.
+# Above it, the root payload is fixed(manifest_format) || u16 kind ||
+# u64 length || digest[32] || chunk_root[32], little-endian integers.
+# digest = H(content_domain || u16 kind || canonical_bytes).
+# chunk_root uses precisely the document commitment tree in plan §9.1.
+# A fragment contains at most one 4096-byte leaf and exactly three properties:
+# FA_PAYLOAD (raw bytes), FA_DIGEST (full object digest), BOOK_ID (16 bytes).
+# At the b323bd17 substrate pin, a full fragment's encoded row is 4794 bytes:
+# 10 patch header + 40 identity/birth/time + 16 label/property counts and label
+# + 36 property-key/length framing + 4618 payload + 46 digest + 28 book.
+# The three byte scalars include their tag and memcomparable terminator.
+# Thus one document leaf fits the native 16384-byte ceiling without splitting.
+# Fragment VId = low128(H(fragment_domain || book[16] || root_vid[16] ||
+# digest[32] || u64 ordinal)). Root and every fragment publish in one WriteTxn.
+# No fragment may predate the root, be rewritten, or have a different birth.
+# The caller's format bound admits the length before allocation or lookup.
+# Reassembly checks exact lengths, full content digest and Merkle root.
+# Corruption is a KernelError (exit 5), never a partial successful read.
+# Historical raw plan payloads remain readable under their original codec.

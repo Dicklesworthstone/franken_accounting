@@ -5253,7 +5253,9 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(code, 0, "{out}");
     assert_eq!(
         text(
-            doc(&out).get("target").expect("exact released confirmation"),
+            doc(&out)
+                .get("target")
+                .expect("exact released confirmation"),
             "vid"
         ),
         text(&confirmed, "match_vid")

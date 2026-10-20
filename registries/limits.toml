@@ -12,6 +12,9 @@ schema_version = 1
 name = "max_entry_bytes"
 value = 8388608
 [[limit]]
+name = "object_chunk_bytes"
+value = 4096
+[[limit]]
 name = "max_legs_per_entry"
 value = 4096
 [[limit]]
