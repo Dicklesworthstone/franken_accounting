@@ -1789,6 +1789,8 @@ mod bound_tests {
             ("entry", Some("show")),
             ("statement", Some("balance-sheet")),
             ("statement", Some("income-statement")),
+            ("sample", Some("mus")),
+            ("sample", Some("evaluate")),
         ] {
             assert_eq!(judged(verb, sub, &[]), Some(true), "{verb} {sub:?}");
         }

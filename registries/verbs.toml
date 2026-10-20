@@ -3905,10 +3905,11 @@ ops = ["read"]
 
 # Each judges what it reaches at its recorded frontier: a trial balance its
 # periods (a stock balance from inception), an explanation of a balance,
-# period or register its period, open items their day, and an entry, its
-# lineage or its evidence the whole book.
+# period or register its period, open items their day, an entry, its
+# lineage or its evidence the whole book, and a sample its population (the
+# day it is drawn at, or the account's open items).
 [[bound]]
-verbs = ["tb", "open-items", "explain", "entry"]
+verbs = ["tb", "open-items", "explain", "entry", "sample"]
 ops = ["read"]
 reach = "judged"
 
