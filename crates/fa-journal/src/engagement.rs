@@ -1552,6 +1552,30 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
                 "names an entry whose legs differ from the proposal's",
             )));
         }
+        // One committed entry makes one correction: it books no other
+        // proposal of the engagement. Each other proposal's state is a
+        // point-read witness, so a concurrent booking of the same entry
+        // conflicts at commit (first committer wins).
+        let next = next_of(
+            txn.vertex_property(db, vid, property::NEXT_PROPOSAL)?
+                .as_ref(),
+            vid,
+        )?;
+        let seq = db.frontier()?;
+        for other in (1..next).filter(|other| *other != ordinal) {
+            let ovid = proposed_adjustment_vid(book.book_id, engagement, other);
+            let state = txn.vertex_property(db, ovid, property::STATE)?;
+            if AdjustmentState::from_scalar(state.as_ref()) == Some(AdjustmentState::Booked)
+                && decision_of(db, ovid, seq)?.is_some_and(|d| d.decision == decision)
+            {
+                txn.abort();
+                return Ok(Err(differs(
+                    engagement,
+                    ordinal,
+                    &format!("names the entry that already books proposal {other}"),
+                )));
+            }
+        }
     }
     if record.validate().is_err() {
         txn.abort();

@@ -440,6 +440,42 @@ fn an_engagement_proposes_books_and_passes_adjustments_and_posts_nothing_itself(
     ]);
     assert_eq!(exit, 2, "an unregistered reason is a usage error");
 
+    // One committed entry makes one correction: a third proposal with the
+    // same legs cannot be booked by the entry that booked proposal 1.
+    f.intent(
+        "fees-again.json",
+        "2026-03-30",
+        &[("debit", "6000", "40.00"), ("credit", "2100", "40.00")],
+    );
+    let third = f.ok(&[
+        "adjustment",
+        "propose",
+        "--engagement",
+        "FY26-audit",
+        "--intent",
+        "fees-again.json",
+    ]);
+    assert_eq!(int(data(&third).get("proposal").unwrap(), "number"), 3);
+    let refusal = f.refused(
+        &[
+            "adjustment",
+            "book",
+            "--engagement",
+            "FY26-audit",
+            "--proposal",
+            "3",
+            "--entry",
+            &format!("E:{correction}"),
+        ],
+        3,
+        "FA-REF-182",
+    );
+    assert!(
+        text(data(&refusal), "message").contains("already books proposal 1"),
+        "{}",
+        refusal.render()
+    );
+
     // The summary of uncorrected misstatements holds the passed proposal
     // only: had it been booked, income 10.00 lower and accrued liabilities
     // 10.00 higher, within every stated parameter.
@@ -466,7 +502,7 @@ fn an_engagement_proposes_books_and_passes_adjustments_and_posts_nothing_itself(
         Some(&Json::Bool(false))
     );
 
-    // Show and list: the journal states both decisions.
+    // Show and list: the journal states both decisions and the open third.
     let shown = f.ok(&["engagement", "show", "FY26-audit"]);
     let summary = data(&shown).get("engagement").unwrap();
     assert_eq!(
@@ -475,13 +511,13 @@ fn an_engagement_proposes_books_and_passes_adjustments_and_posts_nothing_itself(
             int(summary, "booked"),
             int(summary, "passed")
         ),
-        (0, 1, 1)
+        (1, 1, 1)
     );
     let states: Vec<&str> = rows(data(&shown), "proposals")
         .iter()
         .map(|p| text(p, "state"))
         .collect();
-    assert_eq!(states, ["booked", "passed"]);
+    assert_eq!(states, ["booked", "passed", "proposed"]);
     let listed = f.ok(&["engagement", "list"]);
     assert_eq!(rows(data(&listed), "engagements").len(), 1);
 }
