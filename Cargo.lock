@@ -903,10 +903,14 @@ dependencies = [
 name = "fa-docket"
 version = "0.0.1"
 dependencies = [
+ "asupersync",
  "fa-journal",
  "fa-model",
+ "fa-money",
  "fa-policy",
  "fa-registry",
+ "fa-time",
+ "fgdb",
  "fgdb-types",
 ]
 
