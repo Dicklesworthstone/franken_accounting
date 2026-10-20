@@ -1388,10 +1388,12 @@ mod tests {
             (
                 "flag that is both a value flag and a switch",
                 with(|s| {
-                    s.replace(
-                        "switches = [\"--activity\", \"--summary\", \"--certify\", \"--as-originally-reported\"]",
-                        "switches = [\"--period\"]",
-                    )
+                    // tb's own switches row (whose flags change) becomes
+                    // ["--period"], a flag tb already takes as a value.
+                    let verb = s.find("name = \"tb\"").expect("the tb verb");
+                    let row = verb + s[verb..].find("\nswitches = [").expect("tb switches");
+                    let end = row + 1 + s[row + 1..].find('\n').expect("row end");
+                    format!("{}\nswitches = [\"--period\"]{}", &s[..row], &s[end..])
                 }),
             ),
             (
@@ -1404,7 +1406,9 @@ mod tests {
             ),
             (
                 "exit 1",
-                with(|s| s.replace("exits = [0, 2, 4, 5]", "exits = [0, 1]")),
+                // Plant exit 1 in the first verb's exit set; anchored on the
+                // row shape, not on one verb's exact exits, which change.
+                with(|s| s.replacen("\nexits = [0, ", "\nexits = [0, 1, ", 1)),
             ),
             (
                 "an envelope without warnings",
@@ -1802,6 +1806,9 @@ mod bound_tests {
             ("export", Some("csv-gl")),
             ("event", Some("show")),
             ("event", Some("list")),
+            // Plain detail and roll-forward judge a complete recorded prefix.
+            ("gl", Some("detail")),
+            ("gl", Some("roll-forward")),
         ] {
             assert_eq!(judged(verb, sub, &[]), Some(true), "{verb} {sub:?}");
         }
@@ -1814,7 +1821,9 @@ mod bound_tests {
                 Some("balance-sheet"),
                 &["--before-certificate"][..],
             ),
-            ("gl", Some("detail"), &[][..]),
+            // Certification keeps the earlier whole-head rule.
+            ("gl", Some("detail"), &["--certify"][..]),
+            ("gl", Some("aging"), &[][..]),
             ("event", Some("record"), &[][..]),
             ("document", Some("read"), &[][..]),
             ("verify", Some("periods"), &[][..]),

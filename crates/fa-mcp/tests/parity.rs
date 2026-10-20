@@ -95,6 +95,10 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
                 && matches!(e.subcommand.as_deref(), Some("map" | "year-end")))
             // Releasing a bank claim requires explicit Human host confirmation.
             || (e.verb == "bank" && e.subcommand.as_deref() == Some("unmatch"))
+            // Attesting a statement close needs an independently authorized
+            // Human, full-source authority and --yes (8e7ee49); sessions read
+            // verified closes through fa_bank_reconciliation.
+            || (e.verb == "bank" && e.subcommand.as_deref() == Some("reconcile"))
             // Leg-projection recovery needs schema_change on trunk, outside
             // both launch templates and issued-token ceilings, and --yes.
             || (e.verb == "recover" && e.subcommand.as_deref() == Some("projections"))
@@ -434,7 +438,12 @@ fn the_gate_fails_on_planted_defects() {
 fn closing_reads_lower_to_exact_history_and_mutations_remain_host_only() {
     let (mcp, reg) = embedded();
     assert!(mcp.cluster("fa.close").unwrap().on_demand);
-    assert_eq!(mcp.tools_of("fa.close").count(), 2);
+    // routes, verify, and the draft review (5082454) are the closing reads.
+    assert_eq!(mcp.tools_of("fa.close").count(), 3);
+    assert_eq!(
+        mcp.tool_for("close", Some("dry-run")).unwrap().wire_name(),
+        "fa_close_dry_run"
+    );
     let routes = mcp.tool_for("close", Some("routes")).unwrap();
     assert_eq!(routes.wire_name(), "fa_close_routes");
     let route_args = json!({"as_of": "2026-12-31", "as_known_at": "17"});
