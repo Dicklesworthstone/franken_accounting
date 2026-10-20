@@ -1094,10 +1094,17 @@ fn generic_aging_artifacts_replay_by_digest_and_export_through_the_held_dispatch
     assert_eq!(text(&replay[1], "event"), "report_replayed");
     assert_eq!(text(data(&replay[1]), "family"), "effective-date-aging");
     assert_eq!(std::fs::read(output).unwrap(), artifact.output());
+    // Aging has a freshness law (9f30e90): nothing in its selector was
+    // recorded after the certificate, so the retained artifact is Current.
     let (exit, events, _) = run(&fixture.book, &["certificate", "status", &handle]);
-    assert_eq!(exit, 8, "{events:?}");
+    assert_eq!(exit, 0, "{events:?}");
     assert_eq!(events.len(), 1);
-    assert_eq!(text(&events[0], "event"), "error");
+    assert_eq!(text(&events[0], "event"), "certificate_status");
+    assert_eq!(text(data(&events[0]), "status"), "Current");
+    assert_eq!(
+        data(&events[0]).get("later_entries"),
+        Some(&Json::Arr(Vec::new()))
+    );
 
     let mut book =
         fa::Book::open_dir(&fixture.book, keys, fa::Entropy::deterministic(118)).unwrap();
