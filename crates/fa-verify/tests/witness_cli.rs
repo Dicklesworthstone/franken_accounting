@@ -317,6 +317,10 @@ fn human_help_and_existing_any_signer_command_remain_available() {
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS filesystems refuse non-UTF-8 file names (EILSEQ); exercised on Linux hosts"
+)]
 fn non_utf8_paths_work_but_scalar_expectations_are_not_lossy() {
     use std::os::unix::ffi::OsStringExt;
     let (mut input, dir) = args(&fixture("initial"));

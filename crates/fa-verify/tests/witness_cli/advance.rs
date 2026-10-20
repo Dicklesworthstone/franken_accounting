@@ -251,6 +251,10 @@ fn empty_extension_and_later_same_tree_work_but_bounded_bad_proofs_do_not() {
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS filesystems refuse non-UTF-8 file names (EILSEQ); exercised on Linux hosts"
+)]
 fn pin_and_proof_paths_preserve_non_utf8_bytes_while_the_expected_digest_does_not() {
     use std::os::unix::ffi::OsStringExt;
     let (mut input, dir) = invocation(
