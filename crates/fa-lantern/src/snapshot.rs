@@ -80,9 +80,14 @@ pub struct Snapshot {
     /// Validated REA graph snapshot (`Party`, `Instrument`, `LegalEntity`,
     /// `ExternalId`, and valid-time `OWNS`/`CONTROLS`/`RELATED_TO` edges) at `known_at`.
     pub rea: fa_journal::rea::ReaSnapshot,
-    /// Journaled attestations (`Reviewed`, `ManualAssertion`, `RegisterEquals`)
+    /// Journaled attestations (`Reviewed`, `ManualAssertion`, `RegisterEquals`,
+    /// `Reconciled`)
     /// belonging to this book as known at `known_at`.
     pub attestations: BTreeMap<VId, fa_journal::attestation::StoredAttestation>,
+    /// Native-verified exact statement closes and their drift at this snapshot's
+    /// recorded prefix. Populated by admitted bank-procedure orchestration only;
+    /// `None` means the additional bank input closure has not been evaluated.
+    pub bank_reconciliations: Option<Vec<fa_journal::bank::BankReconciliationState>>,
     /// `H(domain ‖ known_at ‖ (vid, entry_digest, recorded_at)*)`.
     pub inputs_digest: [u8; 32],
 }
@@ -234,6 +239,7 @@ impl Snapshot {
             open_items_as_of,
             rea,
             attestations,
+            bank_reconciliations: None,
             inputs_digest,
         })
     }

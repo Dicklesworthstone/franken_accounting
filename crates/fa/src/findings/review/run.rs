@@ -217,6 +217,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(r) = authorize(self, cx, principal, capability, false)? {
             return Ok(Err(r));
         }
+        if let Err(r) = self
+            .prepare_retained_procedure_history(cx, principal, capability, certificate)
+            .await?
+        {
+            return Ok(Err(r));
+        }
         if let Err(r) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
             return Ok(Err(r));
         }

@@ -74,14 +74,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         let verified_at = self.head(cx)?;
-        if let Err(refusal) = self.replay_report_artifact_for(
-            cx,
-            principal,
-            capability,
-            bytes,
-            expected_digest,
-            expected,
-        )? {
+        if let Err(refusal) = self
+            .replay_report_artifact_for_with_history(
+                cx,
+                principal,
+                capability,
+                bytes,
+                expected_digest,
+                expected,
+            )
+            .await?
+        {
             return Ok(Err(refusal));
         }
         let artifact = match ReportArtifact::decode(bytes) {
@@ -199,5 +202,37 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         self.replay_report_artifact_for(cx, principal, capability, &bytes, Some(digest), expected)
+    }
+
+    /// Resolve and replay a retained artifact after admitted history hydration.
+    /// Keeps the immutable artifact bytes and original coordinate unchanged.
+    pub async fn replay_retained_report_artifact_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        digest: &[u8; 32],
+        expected: ReportArtifactExpectation<'_>,
+    ) -> Outcome<ReplayedReportArtifact> {
+        let artifact = match self
+            .read_report_artifact(cx, principal, capability, digest)
+            .await?
+        {
+            Ok(artifact) => artifact,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let bytes = match artifact.canonical_bytes() {
+            Ok(bytes) => bytes,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        self.replay_report_artifact_for_with_history(
+            cx,
+            principal,
+            capability,
+            &bytes,
+            Some(digest),
+            expected,
+        )
+        .await
     }
 }

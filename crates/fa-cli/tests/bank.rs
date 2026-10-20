@@ -506,6 +506,563 @@ fn exact_bank_reconciliation_carries_opening_cash_and_survives_reopen_retry_and_
 }
 
 #[test]
+fn bank_drift_becomes_typed_recorded_findings_with_replayable_original_workpapers() {
+    const PROCEDURE: &str = "recon.bank_statement_drift";
+    let f = Fixture::new();
+    let before = head(&f.book);
+    let (exit, refused) = run(&f.book, &["finding", "record", PROCEDURE]);
+    assert_eq!(
+        exit, 7,
+        "missing reconcile refuses even an empty bank population: {refused:?}"
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+    assert_eq!(head(&f.book), before);
+
+    f.post(
+        "finding-source-cash",
+        "2026-03-10",
+        "debit",
+        "100.00",
+        "SOURCE",
+    );
+    let imported = f.import("finding-statement.csv", "csv", &format!(
+        "{CSV_HEADER}1,BANK-FINDING,USD,2026-03-15,0.00,100.00,2026-03-10,2026-03-10,CRDT,100.00,Private bank customer,SOURCE\n"
+    ));
+    let manifest = text(data(&imported), "manifest_oid");
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    let confirmed = confirm_selection(
+        &f.book,
+        &confirmation_args(&matched, 0, "finding-cash-reviewer"),
+    );
+    let closed = reconcile_selection(&f.book, &reconciliation_args(manifest, head(&f.book)));
+    let close = data(&closed).get("reconciliation").unwrap();
+    let attestation = text(close, "attestation_vid");
+    let closed_at = head(&f.book).to_string();
+    let clean = ok(
+        &f.book,
+        &[
+            "finding",
+            "record",
+            PROCEDURE,
+            "--known-at",
+            &closed_at,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    assert_eq!(integer(data(&clean), "finding_count"), 0);
+    assert_eq!(
+        integer(data(&clean), "source_known_at").to_string(),
+        closed_at
+    );
+
+    let late = f.file("finding-late.json", r#"{"effective_date":"2026-03-12","idempotency_key":"finding-late","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#);
+    let posted = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &late,
+            "--evidence",
+            &f.evidence,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let late_entry = text(data(&posted), "vid");
+    let late_at = head(&f.book).to_string();
+    let balance_run = ok(
+        &f.book,
+        &[
+            "finding",
+            "record",
+            PROCEDURE,
+            "--known-at",
+            &late_at,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    assert_eq!(text(&balance_run, "event"), "findings_recorded");
+    assert_eq!(integer(data(&balance_run), "finding_count"), 1);
+    let certificate = text(data(&balance_run), "certificate");
+    let published_at = integer(data(&balance_run), "recorded_at");
+
+    let (exit, refused) = run(&f.book, &["finding", "list", "--certificate", certificate]);
+    assert_eq!(
+        exit, 7,
+        "saved certificate grants no bank observation authority: {refused:?}"
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+    let listed = ok(
+        &f.book,
+        &[
+            "finding",
+            "list",
+            "--certificate",
+            certificate,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let findings = rows(data(&listed), "findings");
+    assert_eq!(findings.len(), 1);
+    let finding_id = text(&findings[0], "finding_vid");
+    let original_finding = findings[0].get("finding").unwrap();
+    let statistic = original_finding.get("statistic").unwrap();
+    assert_eq!(text(statistic, "name"), "bank_statement_balance_drift");
+    assert_eq!(integer(statistic, "value"), 100);
+    assert_eq!(integer(statistic, "scale"), 2);
+    let citations = rows(original_finding, "cites");
+    assert!(
+        citations.iter().any(|cite| {
+            text(cite, "kind") == "attestation"
+                && cite.get("attestation") == Some(&Json::Str(attestation.into()))
+                && cite.get("entry") == Some(&Json::Null)
+        }),
+        "the native close is a typed attestation, never a fabricated Entry"
+    );
+    assert!(citations.iter().any(|cite| {
+        text(cite, "kind") == "entry" && cite.get("entry") == Some(&Json::Str(late_entry.into()))
+    }));
+    let selected = ok(
+        &f.book,
+        &["finding", "show", finding_id, "--grant", "reconcile"],
+    );
+    assert_eq!(
+        data(&selected).get("row").unwrap().get("finding"),
+        Some(original_finding)
+    );
+    assert!(!listed.render().contains("Private bank customer"));
+
+    // An unrecorded observation is a read: a bound investigator needs
+    // Reconcile, but neither Produce nor a monetary posting capability.
+    let observer = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "bank-drift-observer",
+        LaunchProfile::Human,
+        &["read", "reconcile"],
+    )
+    .unwrap();
+    let args = [
+        "procedure",
+        "run",
+        PROCEDURE,
+        "--known-at",
+        &late_at,
+        "--json",
+    ]
+    .map(str::to_string);
+    let (exit, output) = fa_with_authority(
+        &args,
+        Files {
+            cwd: Some(f.dir.clone()),
+            stdin: Stdin::Missing,
+        },
+        &observer,
+        true,
+    );
+    assert_eq!(
+        exit, 0,
+        "an unrecorded observation requires no Produce: {output:?}"
+    );
+    let observed = json::parse(output.stdout.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        rows(data(&observed), "findings"),
+        std::slice::from_ref(original_finding)
+    );
+
+    let review = ok(
+        &f.book,
+        &[
+            "finding",
+            "review",
+            finding_id,
+            "--action",
+            "acknowledge",
+            "--note",
+            "The retained close predates this admitted cash correction.",
+            "--as",
+            "bank-drift-reviewer",
+            "--grant",
+            "reconcile",
+            "--yes",
+        ],
+    );
+    assert_eq!(
+        text(data(&review).get("review").unwrap(), "action"),
+        "acknowledge"
+    );
+    let reviewed_at = head(&f.book).to_string();
+    let selected = ok(
+        &f.book,
+        &["finding", "show", finding_id, "--grant", "reconcile"],
+    );
+    let row = data(&selected).get("row").unwrap();
+    assert_eq!(text(row, "status"), "Reviewed");
+    assert_eq!(row.get("finding"), Some(original_finding));
+
+    let reviewed_path = f.dir.join("bank-drift-review.fawp");
+    ok(
+        &f.book,
+        &[
+            "finding",
+            "export",
+            "--certificate",
+            certificate,
+            "--grant",
+            "reconcile",
+            "--include-reviews",
+            "--known-at",
+            &reviewed_at,
+            "--export-format",
+            "canonical",
+            "--out",
+            reviewed_path.to_str().unwrap(),
+        ],
+    );
+
+    let packet_path = f.dir.join("bank-drift.fawp");
+    let exported = ok(
+        &f.book,
+        &[
+            "finding",
+            "export",
+            "--certificate",
+            certificate,
+            "--grant",
+            "reconcile",
+            "--export-format",
+            "canonical",
+            "--out",
+            packet_path.to_str().unwrap(),
+        ],
+    );
+    let packet_bytes = std::fs::read(&packet_path).unwrap();
+    let packet = fa::findings::FindingWorkpaper::decode(&packet_bytes).unwrap();
+    assert_eq!(packet.id(), text(data(&exported), "workpaper"));
+    assert_eq!(i128::from(packet.recorded_at().0), published_at);
+    assert!(
+        packet
+            .markdown()
+            .contains(&format!("Attestation {attestation}"))
+    );
+    assert!(packet.jsonl().contains(&format!(
+        "\"kind\":\"attestation\",\"vid\":\"{attestation}\""
+    )));
+    assert!(!packet.markdown().contains("Private bank customer"));
+    let source = fa::ProcedureCertificate::decode(packet.certificate_bytes()).unwrap();
+    assert_eq!(source.known_at().0.to_string(), late_at);
+    assert_eq!(source.report().findings.len(), 1);
+    let native_attestation = fgdb_types::VId(u128::from_str_radix(attestation, 16).unwrap());
+    assert!(
+        source.report().findings[0]
+            .cites
+            .contains(&fa_lantern::Cite::Attestation(native_attestation))
+    );
+    let artifact_path = f.dir.join("bank-drift-procedure.fac");
+    std::fs::write(&artifact_path, packet.certificate_bytes()).unwrap();
+
+    // Returning the cash amount to its original value does not erase the
+    // changed contribution set. Releasing a match is a separate exact drift.
+    let offset = f.file("finding-offset.json", r#"{"effective_date":"2026-03-12","idempotency_key":"finding-offset","legs":[{"side":"credit","account":"1000","amount":"1.00 USD"},{"side":"debit","account":"6000","amount":"1.00 USD"}]}"#);
+    let offset_posted = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &offset,
+            "--evidence",
+            &f.evidence,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let mut release = unmatch_args(&confirmed);
+    release.push("--yes".into());
+    ok(
+        &f.book,
+        &release.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let changed_at = head(&f.book).to_string();
+    let changed = ok(
+        &f.book,
+        &[
+            "finding",
+            "record",
+            PROCEDURE,
+            "--known-at",
+            &changed_at,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    assert_eq!(integer(data(&changed), "finding_count"), 2);
+    let changed_certificate = text(data(&changed), "certificate");
+    let changes = ok(
+        &f.book,
+        &[
+            "finding",
+            "list",
+            "--certificate",
+            changed_certificate,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let changes = rows(data(&changes), "findings");
+    let changed_value = |name: &str| {
+        changes
+            .iter()
+            .map(|row| row.get("finding").unwrap())
+            .find(|finding| text(finding.get("statistic").unwrap(), "name") == name)
+            .expect(name)
+    };
+    let contribution = changed_value("bank_statement_contribution_drift");
+    assert_eq!(integer(contribution.get("statistic").unwrap(), "value"), 2);
+    for entry in [late_entry, text(data(&offset_posted), "vid")] {
+        assert!(rows(contribution, "cites").iter().any(|cite| {
+            text(cite, "kind") == "entry" && cite.get("entry") == Some(&Json::Str(entry.into()))
+        }));
+    }
+    let match_drift = changed_value("bank_statement_match_drift");
+    assert_eq!(integer(match_drift.get("statistic").unwrap(), "value"), 1);
+    for finding in [contribution, match_drift] {
+        assert!(rows(finding, "cites").iter().any(|cite| {
+            text(cite, "kind") == "attestation"
+                && cite.get("attestation") == Some(&Json::Str(attestation.into()))
+        }));
+    }
+    assert!(changes.iter().all(|row| {
+        text(
+            row.get("finding").unwrap().get("statistic").unwrap(),
+            "name",
+        ) != "bank_statement_balance_drift"
+    }));
+    let net_packet_path = f.dir.join("bank-net-zero-drift.fawp");
+    ok(
+        &f.book,
+        &[
+            "finding",
+            "export",
+            "--certificate",
+            changed_certificate,
+            "--grant",
+            "reconcile",
+            "--export-format",
+            "canonical",
+            "--out",
+            net_packet_path.to_str().unwrap(),
+        ],
+    );
+
+    // A further lawful cash change cannot rewrite either original observation.
+    let later = f.file("finding-later.json", r#"{"effective_date":"2026-03-14","idempotency_key":"finding-later","legs":[{"side":"debit","account":"1000","amount":"2.00 USD"},{"side":"credit","account":"4000","amount":"2.00 USD"}]}"#);
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &later,
+            "--evidence",
+            &f.evidence,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let frontier = head(&f.book);
+    let (exit, refused) = run(&f.book, &["finding", "runs"]);
+    assert_eq!(
+        exit, 7,
+        "inventory returns no partial bank page: {refused:?}"
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+    let inventory = ok(&f.book, &["finding", "runs", "--grant", "reconcile"]);
+    assert_eq!(integer(data(&inventory), "total_recorded_runs"), 3);
+    assert_eq!(integer(data(&inventory), "page_count"), 3);
+    assert!(
+        rows(data(&inventory), "runs")
+            .iter()
+            .all(|run| text(run, "procedure") == PROCEDURE)
+    );
+    let (exit, refused) = run(
+        &f.book,
+        &["finding", "replay", packet_path.to_str().unwrap()],
+    );
+    assert_eq!(
+        exit, 7,
+        "portable bytes do not confer bank authority: {refused:?}"
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+    for (path, expected_count, expected_at) in [
+        (&packet_path, 1, late_at.as_str()),
+        (&net_packet_path, 2, changed_at.as_str()),
+    ] {
+        let replayed = ok(
+            &f.book,
+            &[
+                "finding",
+                "replay",
+                path.to_str().unwrap(),
+                "--grant",
+                "reconcile",
+            ],
+        );
+        assert_eq!(text(&replayed, "event"), "finding_replayed");
+        assert_eq!(integer(data(&replayed), "finding_count"), expected_count);
+        assert_eq!(
+            integer(data(&replayed), "source_known_at").to_string(),
+            expected_at
+        );
+    }
+    let reviewed = ok(
+        &f.book,
+        &[
+            "finding",
+            "replay",
+            reviewed_path.to_str().unwrap(),
+            "--grant",
+            "reconcile",
+            "--certificate",
+            certificate,
+            "--known-at",
+            &reviewed_at,
+        ],
+    );
+    assert_eq!(integer(data(&reviewed), "finding_count"), 1);
+    assert_eq!(
+        integer(data(&reviewed), "source_known_at").to_string(),
+        late_at
+    );
+    assert_eq!(
+        integer(data(&reviewed), "review_known_at").to_string(),
+        reviewed_at
+    );
+    assert_eq!(
+        data(&reviewed).get("includes_reviews"),
+        Some(&Json::Bool(true))
+    );
+    let analytic = ok(
+        &f.book,
+        &[
+            "replay",
+            artifact_path.to_str().unwrap(),
+            "--grant",
+            "reconcile",
+        ],
+    );
+    assert_eq!(text(&analytic, "event"), "procedure_run");
+    assert_eq!(integer(data(&analytic), "known_at").to_string(), late_at);
+    assert_eq!(
+        rows(data(&analytic), "findings"),
+        std::slice::from_ref(original_finding)
+    );
+    let retry = ok(
+        &f.book,
+        &[
+            "finding",
+            "record",
+            "--certificate",
+            certificate,
+            "--grant",
+            "reconcile",
+        ],
+    );
+    assert_eq!(
+        data(&retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(integer(data(&retry), "recorded_at"), published_at);
+    let second_path = f.dir.join("bank-drift-again.fawp");
+    ok(
+        &f.book,
+        &[
+            "finding",
+            "export",
+            "--certificate",
+            certificate,
+            "--grant",
+            "reconcile",
+            "--export-format",
+            "canonical",
+            "--out",
+            second_path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(std::fs::read(second_path).unwrap(), packet_bytes);
+    assert_eq!(
+        head(&f.book),
+        frontier,
+        "read, replay, export and exact retry publish no new history"
+    );
+}
+
+#[test]
+fn bank_drift_admission_precedes_open_and_read_only_procedures_keep_their_authority() {
+    const PROCEDURE: &str = "recon.bank_statement_drift";
+    let f = Fixture::new();
+    let missing = f.dir.join("bank-procedure-no-book");
+    let producer_without_reconcile = LaunchAuthority::new(
+        missing.clone(),
+        None,
+        "bank-drift-denied",
+        LaunchProfile::Human,
+        &["read", "produce"],
+    )
+    .unwrap();
+    for args in [
+        ["procedure", "run", PROCEDURE, "--json"],
+        ["finding", "record", PROCEDURE, "--json"],
+    ] {
+        let (exit, output) = fa_with_authority(
+            &args.map(str::to_string),
+            Files {
+                cwd: Some(f.dir.clone()),
+                stdin: Stdin::Missing,
+            },
+            &producer_without_reconcile,
+            true,
+        );
+        assert_eq!(
+            exit, 7,
+            "missing Reconcile must precede a cold open: {output:?}"
+        );
+        let refused = json::parse(output.stdout.lines().last().unwrap()).unwrap();
+        assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+        assert_eq!(refused.get("book"), Some(&Json::Null));
+    }
+    assert!(!missing.exists());
+
+    let before = head(&f.book);
+    let reader = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "ordinary-procedure-reader",
+        LaunchProfile::Human,
+        &["read"],
+    )
+    .unwrap();
+    let args = ["procedure", "run", "jet.weekend", "--json"].map(str::to_string);
+    let (exit, output) = fa_with_authority(
+        &args,
+        Files {
+            cwd: Some(f.dir.clone()),
+            stdin: Stdin::Missing,
+        },
+        &reader,
+        true,
+    );
+    assert_eq!(
+        exit, 0,
+        "ordinary procedures do not gain a Reconcile requirement: {output:?}"
+    );
+    let observed = json::parse(output.stdout.lines().last().unwrap()).unwrap();
+    assert_eq!(integer(data(&observed), "finding_count"), 0);
+    assert_eq!(head(&f.book), before);
+}
+
+#[test]
 fn bank_reconciliation_refuses_unmatched_stale_unbalanced_and_postdated_closes() {
     let f = Fixture::new();
     f.post("unclosed-sale", "2026-03-10", "debit", "100.00", "UNCLOSED");

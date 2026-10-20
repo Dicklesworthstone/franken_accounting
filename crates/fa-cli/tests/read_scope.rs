@@ -643,10 +643,23 @@ fn event_reads_and_book_surveys_require_current_authority_at_their_actual_reach(
     }
 
     let (reader, _) = f.issue("survey-reader", &[]);
+    // The token-bound command owns a temporary MCP session while the owner
+    // reads directly. Compare every book fact, excluding only that live
+    // transport's daemon diagnostic.
+    let book_facts = |event: &Json| {
+        let Json::Obj(fields) = data(event) else {
+            panic!("survey data is not an object: {event:?}");
+        };
+        fields
+            .iter()
+            .filter(|(name, _)| name != "daemon")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
     for verb in ["triage", "next"] {
         assert_eq!(
-            data(&f.ok(&["--token", &reader, verb])),
-            data(&f.ok(&[verb]))
+            book_facts(&f.ok(&["--token", &reader, verb])),
+            book_facts(&f.ok(&[verb]))
         );
     }
     let (writer, _) = f.issue_ops("survey-no-read", &["post"], &[]);

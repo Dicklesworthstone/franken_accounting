@@ -9223,12 +9223,13 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
     let listed = ok(&["procedure", "list"]);
     let listed_doc = doc(&listed);
     let rows = arr(&listed_doc, "procedures");
-    assert_eq!(rows.len(), 59, "{listed}");
+    assert_eq!(rows.len(), 60, "{listed}");
     for id in [
         "jet.round_amounts",
         "solvency.balance_sheet_test",
         "ponzi.net_investment",
         "damages.but_for",
+        "recon.bank_statement_drift",
     ] {
         assert!(
             rows.iter()

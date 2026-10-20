@@ -1799,6 +1799,9 @@ mod bound_tests {
             ("entry", Some("show")),
             ("statement", Some("balance-sheet")),
             ("statement", Some("income-statement")),
+            ("export", Some("csv-gl")),
+            ("event", Some("show")),
+            ("event", Some("list")),
         ] {
             assert_eq!(judged(verb, sub, &[]), Some(true), "{verb} {sub:?}");
         }
@@ -1812,7 +1815,7 @@ mod bound_tests {
                 &["--before-certificate"][..],
             ),
             ("gl", Some("detail"), &[][..]),
-            ("event", Some("list"), &[][..]),
+            ("event", Some("record"), &[][..]),
             ("document", Some("read"), &[][..]),
             ("verify", Some("periods"), &[][..]),
             ("post", None, &[][..]),

@@ -54,20 +54,17 @@ fn locator(payload: &[u8], book: Id128, selected: VId) -> Result<([u8; 32], u32)
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
-    /// Resolve an opaque Finding VId after reopening, without requiring the host
-    /// to remember its certificate. Current whole-book authority precedes lookup;
-    /// complete native replay precedes returning the single selected occurrence.
-    pub async fn finding_by_vid(
+    fn finding_locator(
         &self,
         cx: &PurposeContexts,
         principal: VId,
         capability: &Capability,
         selected: VId,
-    ) -> Outcome<RecordedFinding> {
+    ) -> Outcome<([u8; 32], u32)> {
         if let Err(r) = authorize(self, cx, principal, capability, false)? {
             return Ok(Err(r));
         }
-        let coordinates = self.query(cx, |db, book| {
+        self.query(cx, |db, book| {
             let head = db.frontier().map_err(KernelError::from)?;
             let Some(row) = db.vertex_at(selected, head).map_err(KernelError::from)? else {
                 return Ok(Err(invalid("finding handle does not exist or has been retired")));
@@ -81,8 +78,54 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 return Ok(Err(invalid("finding locator is missing its canonical bytes")));
             };
             Ok(locator(payload.as_slice(), book.book_id, selected))
-        })?;
-        let (digest, ordinal) = match coordinates {
+        })
+    }
+
+    pub(super) async fn prepare_finding_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        selected: VId,
+    ) -> Outcome<()> {
+        let (digest, _) = match self.finding_locator(cx, principal, capability, selected)? {
+            Ok(c) => c,
+            Err(r) => return Ok(Err(r)),
+        };
+        self.prepare_retained_procedure_history(cx, principal, capability, &digest)
+            .await
+    }
+
+    /// Resolve an opaque Finding after reopening. Its admitted locator selects
+    /// the retained procedure before any procedure-specific history is loaded.
+    pub async fn finding_by_vid_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        selected: VId,
+    ) -> Outcome<RecordedFinding> {
+        if let Err(r) = self
+            .prepare_finding_history(cx, principal, capability, selected)
+            .await?
+        {
+            return Ok(Err(r));
+        }
+        self.finding_by_vid(cx, principal, capability, selected)
+            .await
+    }
+
+    /// Resolve an opaque Finding VId without requiring the host to remember its
+    /// certificate. Current whole-book authority precedes lookup; complete native
+    /// replay precedes returning the occurrence. Required history must be resident.
+    pub async fn finding_by_vid(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        selected: VId,
+    ) -> Outcome<RecordedFinding> {
+        let (digest, ordinal) = match self.finding_locator(cx, principal, capability, selected)? {
             Ok(c) => c,
             Err(r) => return Ok(Err(r)),
         };

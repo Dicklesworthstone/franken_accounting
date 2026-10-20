@@ -144,7 +144,11 @@ fn encoded(writer: Writer) -> Result<Vec<u8>, Refusal> {
 
 fn target(cite: &Cite, book: &BookContext) -> VId {
     match cite {
-        Cite::Entry(v) | Cite::Account(v) | Cite::Principal(v) | Cite::Approval(v) => *v,
+        Cite::Entry(v)
+        | Cite::Account(v)
+        | Cite::Principal(v)
+        | Cite::Approval(v)
+        | Cite::Attestation(v) => *v,
         Cite::Leg { entry, ordinal } => leg_vid(*entry, *ordinal),
         Cite::Document(oid) => fa_journal::evidence::document_vid(oid),
         Cite::Period(code) => fa_model::period_vid(&book.calendar.id, code),
@@ -422,6 +426,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(r) = authorize(self, cx, principal, capability, true)? {
             return Ok(Err(r));
         }
+        if let Err(r) = self
+            .prepare_retained_procedure_history(cx, principal, capability, certificate_digest)
+            .await?
+        {
+            return Ok(Err(r));
+        }
         let at = self.head(cx)?;
         let prepared = match self
             .prepared_findings(cx, principal, capability, certificate_digest)
@@ -526,6 +536,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(seq) => Ok(Ok(prepared.result(seq))),
             Err(e) => refused_write(e),
         }
+    }
+
+    /// Read a retained run after reopening, hydrating bank reconciliation history
+    /// only after the retained procedure's current authority has been admitted.
+    /// Ordinary procedures keep their existing read authority.
+    pub async fn read_findings_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate_digest: &[u8; 32],
+    ) -> Outcome<RecordedFindings> {
+        if let Err(r) = self
+            .prepare_retained_procedure_history(cx, principal, capability, certificate_digest)
+            .await?
+        {
+            return Ok(Err(r));
+        }
+        self.read_findings(cx, principal, capability, certificate_digest)
+            .await
     }
 
     /// Read the entire run by full certificate digest, under current authority.

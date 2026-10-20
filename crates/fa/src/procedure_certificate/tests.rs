@@ -312,9 +312,20 @@ fn new_catalog_rows_cannot_silently_omit_their_additional_native_inputs() {
         let req = f.request(&row.id, source);
         let result = f
             .book
-            .certify_procedure(&f.cx(), PRINCIPAL, &cap(&["read", "produce"]), &req)
+            .certify_procedure(
+                &f.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce", "reconcile"]),
+                &req,
+            )
             .unwrap();
-        if extended::supported(&row.id, row.version) {
+        if bank::supported(&row.id, row.version) {
+            let mut certificate = result.unwrap().certificate;
+            assert_eq!(certificate.format(), BANK_PROCEDURE_CERTIFICATE_FORMAT);
+            assert_eq!(certificate.supplemental_inputs().len(), bank::COUNT);
+            certificate.extended_inputs.clear();
+            assert!(certificate.body().is_err(), "bank inputs cannot be erased");
+        } else if extended::supported(&row.id, row.version) {
             let mut certificate = result.unwrap().certificate;
             assert_eq!(certificate.supplemental_inputs().len(), extended::COUNT);
             certificate.extended_inputs.clear();
@@ -629,3 +640,6 @@ fn incomplete_or_misspecified_runs_never_receive_a_certificate() {
 
 #[path = "tests/extended.rs"]
 mod input_cases;
+
+#[path = "tests/bank.rs"]
+mod bank_cases;

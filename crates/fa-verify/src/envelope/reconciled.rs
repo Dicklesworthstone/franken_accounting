@@ -136,7 +136,11 @@ fn manifest(bytes: &[u8]) -> Result<Manifest, DecodeError> {
     })
 }
 
-pub(super) fn read(r: &mut Reader<'_>, book: [u8; 16]) -> Result<Source, DecodeError> {
+pub(super) fn read(
+    r: &mut Reader<'_>,
+    book: [u8; 16],
+    commit_seq: u64,
+) -> Result<Source, DecodeError> {
     let manifest_oid = r.fixed::<32>("reconciled.manifest_oid")?;
     let current = manifest(r.bytes(MAX_RECORD_BYTES, "reconciled.manifest")?)?;
     if current.book != book || current.oid != manifest_oid {
@@ -185,6 +189,12 @@ pub(super) fn read(r: &mut Reader<'_>, book: [u8; 16]) -> Result<Source, DecodeE
     r.fixed::<32>("reconciled.import_receipt_hash")?;
     let imported = r.u64("reconciled.import_recorded_at")?;
     let evaluated = r.u64("reconciled.evaluated_known_at")?;
+    // The native close publishes immediately after the exact reviewed prefix.
+    // This equality is self-contained in the claim and its authenticated leaf
+    // position; it requires neither later state nor a cash refold.
+    if evaluated.checked_add(1) != Some(commit_seq) {
+        return Err(r.error("reconciled.recorded_at", Reason::BadTag(0)));
+    }
     let cash = r.i128("reconciled.cash_balance")?;
     r.fixed::<32>("reconciled.cash_fold_digest")?;
     let count = r.count(MAX_BANK_LINES, 48, "reconciled.matches")?;

@@ -180,6 +180,40 @@ fn reconciled_records_preserve_envelopes_for_unlinked_and_linked_manifests() {
 }
 
 #[test]
+fn reconciled_records_require_publication_immediately_after_the_reviewed_prefix() {
+    let fixture = Fixture::new(false);
+    let (record, split) = fixture.record();
+    // This original body evaluates prefix 8, so only native publication 9
+    // can carry it. A later position cannot silently adopt the old review.
+    for commit_seq in [0, 7, 8, 10, u64::MAX] {
+        assert!(
+            matches!(
+                envelope_of_record(KIND_ATTESTATION, &record, split, commit_seq, 2),
+                Err(RecordError::Decode(DecodeError {
+                    what: "reconciled.recorded_at",
+                    ..
+                }))
+            ),
+            "accepted impossible publication at {commit_seq} for evaluated prefix 8"
+        );
+    }
+    assert!(envelope_of_record(KIND_ATTESTATION, &record, split, 9, 2).is_ok());
+
+    let mut overflow = fixture;
+    overflow.evaluated = u64::MAX;
+    let (record, split) = overflow.record();
+    for commit_seq in [0, u64::MAX] {
+        assert!(matches!(
+            envelope_of_record(KIND_ATTESTATION, &record, split, commit_seq, 2),
+            Err(RecordError::Decode(DecodeError {
+                what: "reconciled.recorded_at",
+                ..
+            }))
+        ));
+    }
+}
+
+#[test]
 fn reconciled_records_refuse_false_sources_subjects_evidence_and_exact_close_shape() {
     let good = Fixture::new(false);
     let mut cases = Vec::new();
