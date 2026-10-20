@@ -9807,16 +9807,27 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         args,
         "fa statement balance-sheet --for FY2026-P03 --as-originally-reported",
     )?;
+    let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
     let mut book = ctx.books.open_admitted(args, |book| {
-        prepare_native_certificate_history(book, &capability, None)
+        prepare_native_certificate_history(book, &capability, None)?;
+        book.read_scope(who, &capability)??;
+        Ok(())
     })?;
     let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
+    // Each column's reach is judged against the scope caveats before the
+    // period's transitions or any column is read (doctrine 8, fa-0x0), and
+    // the pinned coordinate is judged again before the fold.
+    let reach = ReportSelection::from(selection.clone());
     // Plan §7.4: the statement as it stood when its --for period was first
     // reported; a --compare column is read at that same snapshot.
     if originally {
+        book.read_scope(who, &capability)??
+            .admit_report(&reach, known_at)??;
         known_at = Some(book.originally_reported(period)??.known_at);
     }
+    book.read_scope(who, &capability)??
+        .admit_report(&reach, known_at)??;
     prepare_native_certificate_history(&mut book, &capability, known_at)?;
     let (statement, certificate) = if certify {
         let certified = match requested_utc_ns {

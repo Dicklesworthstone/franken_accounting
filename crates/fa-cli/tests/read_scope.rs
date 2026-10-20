@@ -412,8 +412,8 @@ fn a_scoped_issuer_issues_nothing_and_an_unknown_period_is_usage() {
 /// `reach = "judged"` reaches the whole book at its head, so a token carrying
 /// a periods, effective or known-at caveat is refused before the book is
 /// opened (no book, no coordinate), never answered (fa-0x0: `fa event list`
-/// and `fa statement` used to answer one). The commands come from the
-/// registry, so a new rule is covered the day it lands.
+/// used to answer one). The commands come from the registry, so a new rule
+/// is covered the day it lands.
 #[test]
 fn every_command_that_does_not_judge_its_reach_refuses_a_scoped_token() {
     let f = Fixture::new();
@@ -517,8 +517,8 @@ fn every_command_that_does_not_judge_its_reach_refuses_a_scoped_token() {
             exercised += 1;
         }
     }
-    // Statements, events, documents, drafts, scenarios, gl, verify, export,
-    // proofs and the rest: well over the four judged readers.
+    // Statement diffs, events, documents, drafts, scenarios, gl, verify,
+    // export, proofs and the rest: well over the five judged readers.
     assert!(exercised >= 40, "only {exercised} commands exercised");
 
     // The judged readers still answer inside the scope.
@@ -531,4 +531,87 @@ fn every_command_that_does_not_judge_its_reach_refuses_a_scoped_token() {
         "FY2026-P03",
         "--activity",
     ]);
+}
+
+/// A statement's columns are judged by what their basis folds (fa-0x0): an
+/// activity statement reaches exactly its periods, a stock statement every
+/// period through its latest one, both at the selected frontier. Inside the
+/// scope the answer is the owner's; outside it the read is refused.
+#[test]
+fn a_statement_reaches_what_its_basis_folds() {
+    let f = Fixture::new();
+    let pin = number(data(&f.march), "recorded_at").to_string();
+    let (march, _) = f.issue("examiner-march", &["--period", "FY2026-P03"]);
+    let (through, _) = f.issue("examiner-through", &["--effective-through", "2026-03-31"]);
+    let (pinned, _) = f.issue("examiner-pinned", &["--known-at-most", &pin]);
+    let same = |token: &str, args: &[&str]| {
+        let mut scoped = vec!["--token", token];
+        scoped.extend_from_slice(args);
+        assert_eq!(
+            data(&f.ok(&scoped)),
+            data(&f.ok(args)),
+            "{args:?}: the owner's statement"
+        );
+    };
+    let refused = |token: &str, args: &[&str], caveat: &str| {
+        let mut scoped = vec!["--token", token];
+        scoped.extend_from_slice(args);
+        f.out_of_scope(&scoped, caveat);
+    };
+    let income = ["statement", "income-statement", "--for", "FY2026-P03"];
+    let balance = ["statement", "balance-sheet", "--for", "FY2026-P03"];
+
+    same(&march, &income);
+    refused(
+        &march,
+        &[
+            "statement",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--compare",
+            "FY2026-P04",
+        ],
+        "`periods`",
+    );
+    refused(&march, &balance, "`periods`");
+
+    same(&through, &balance);
+    same(&through, &income);
+    refused(
+        &through,
+        &["statement", "balance-sheet", "--for", "FY2026-P04"],
+        "`effective`",
+    );
+
+    let at_pin = [
+        "statement",
+        "balance-sheet",
+        "--for",
+        "FY2026-P04",
+        "--as-known-at",
+        pin.as_str(),
+    ];
+    same(&pinned, &at_pin);
+    refused(
+        &pinned,
+        &["statement", "balance-sheet", "--for", "FY2026-P04"],
+        "`known_at`",
+    );
+    // A diff compares two frontiers and is not judged column by column: it
+    // reaches the whole book, so every scoped token is refused.
+    refused(
+        &through,
+        &[
+            "statement",
+            "diff",
+            "--definition",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--before",
+            "1",
+        ],
+        "reaches the whole book",
+    );
 }
