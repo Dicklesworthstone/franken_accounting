@@ -573,7 +573,7 @@ flags = ["--engagement", "--intent", "--proposal", "--entry", "--reason", "--key
 switches = []
 events = ["adjustment_proposed", "adjustment_decided"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["adjustment propose --engagement <id> --intent <entry.json|-> [--key K]   (the intent is {\"effective_date\": \"YYYY-MM-DD\", \"description\": \"...\", \"legs\": [{\"side\": \"debit|credit\", \"account\": \"<code>\", \"amount\": \"<amount> <UNIT>\"}, ...]}; proposals are numbered from 1 per engagement; the default key is the proposal's content, so the identical proposal retries exactly and different proposals never collide)", "adjustment book --engagement <id> --proposal <n> --entry E:<vid>   (the committed trunk entry whose legs equal the proposal's; FA-REF-182 otherwise)", "adjustment pass --engagement <id> --proposal <n> --reason ClearlyTrivial|BelowPerformanceMateriality|ManagementDeclined|Other   (reason_codes.toml scope adjustment_pass; a decided proposal is FA-REF-181)"]
+usage = ["adjustment propose --engagement <id> --intent <entry.json|-> [--key K]   (the intent is {\"effective_date\": \"YYYY-MM-DD\", \"description\": \"...\", \"legs\": [{\"side\": \"debit|credit\", \"account\": \"<code>\", \"amount\": \"<amount> <UNIT>\"}, ...]}; proposals are numbered from 1 per engagement; the default key is the proposal's content, so the identical proposal retries exactly and different proposals never collide)", "adjustment book --engagement <id> --proposal <n> --entry E:<vid>   (needs read and produce; the standing trunk posting, recorded after the proposal and effective in its period, whose legs equal the proposal's and that books no other proposal; FA-REF-182 otherwise)", "adjustment pass --engagement <id> --proposal <n> --reason ClearlyTrivial|BelowPerformanceMateriality|ManagementDeclined|Other   (reason_codes.toml scope adjustment_pass; a decided proposal is FA-REF-181)"]
 example = "fa adjustment propose --engagement FY2026-audit --intent accrual.json --book ./books/myco --json"
 
 [[verb]]
@@ -2336,7 +2336,7 @@ fields = ["engagement:engagement_summary", "proposals:[proposal_row]"]
 [[event]]
 name = "engagement_sud"
 book = true
-doc = "The summary of uncorrected misstatements of one engagement (plan §11.12 audit.sud): each passed proposal's effect had it been booked, the rollover and iron-curtain totals (no prior-period carry-forward in this build: prior_period_carry_forward is false, and the two totals sum the same items), and mechanical comparisons with the stated parameters. The materiality judgment is the auditor's, not this report's."
+doc = "The summary of uncorrected misstatements of one engagement (plan §11.12 audit.sud): the effect of each passed proposal, and of each booked one whose entry was since reversed or replaced, had it been booked and stood, the rollover and iron-curtain totals (no prior-period carry-forward in this build: prior_period_carry_forward is false, and the two totals sum the same items), and mechanical comparisons with the stated parameters. The materiality judgment is the auditor's, not this report's."
 fields = ["engagement:engagement_summary", "unit:string", "items:[sud_item]", "rollover_income:amount", "iron_curtain:statement_effect", "prior_period_carry_forward:bool", "exceeds_performance:bool", "exceeds_overall:bool"]
 
 [[event]]
@@ -2374,8 +2374,8 @@ fields = ["income:amount", "assets:amount", "liabilities:amount", "equity:amount
 
 [[shape]]
 name = "sud_item"
-doc = "One passed proposal in the summary of uncorrected misstatements: its number and date, the registered reason it was passed, its statement effect in the engagement's unit, whether every line is within the stated clearly trivial threshold, and the other units its legs carry (listed, never converted)."
-fields = ["number:int", "effective_date:date", "reason:string", "effect:statement_effect", "clearly_trivial:bool", "other_units:[string]"]
+doc = "One uncorrected proposal in the summary of uncorrected misstatements: its number and date; why it is uncorrected, either the registered reason it was passed or, for a booking whose entry was since reversed or replaced, the booked entry and the entry that superseded it; its statement effect in the engagement's unit; whether every line is within the stated clearly trivial threshold; and the other units its legs carry (listed, never converted)."
+fields = ["number:int", "effective_date:date", "reason:string?", "booked_entry:hex?", "superseded_by:hex?", "effect:statement_effect", "clearly_trivial:bool", "other_units:[string]"]
 
 [[shape]]
 name = "proposal_leg"
@@ -2384,8 +2384,8 @@ fields = ["side:string", "account:string?", "account_vid:hex", "amount:amount"]
 
 [[shape]]
 name = "proposal_decision"
-doc = "How a proposal was decided: book (the committed entry that made the correction) or pass (the registered reason it was left uncorrected), with the record, its sequence and who decided."
-fields = ["kind:string", "entry:hex?", "reason:string?", "record:hex", "recorded_at:seq", "decided_by:hex"]
+doc = "How a proposal was decided: book (the committed entry that made the correction) or pass (the registered reason it was left uncorrected), with the record, its sequence and who decided. superseded_by names the entry that has since reversed or replaced a booked entry: the decision stays on the record, and the proposal is uncorrected again."
+fields = ["kind:string", "entry:hex?", "reason:string?", "record:hex", "recorded_at:seq", "decided_by:hex", "superseded_by:hex?"]
 
 [[shape]]
 name = "proposal_row"
@@ -3121,7 +3121,7 @@ hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--versio
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth", "--proposal"]
+integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -4497,7 +4497,7 @@ positionals = []
 stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
-flags = ["--engagement", "--proposal", "--entry", "--reason", "--key", "--date"]
+flags = ["--engagement", "--intent", "--proposal", "--entry", "--reason", "--key", "--date"]
 switches = []
 required = ["--engagement"]
 dont = ["Don't expect a proposal to post: it is a draft correcting entry journaled in the engagement; the client books it with its own posting, and booking then names that committed entry.", "Don't decide a proposal twice: booked or passed is final (FA-REF-181); propose a new adjustment if the correction must change.", "Don't present passed adjustments as immaterial by themselves: the reason records the stated basis; the evaluation against materiality is the auditor's."]
@@ -5048,8 +5048,16 @@ verbs = ["engagement"]
 subcommands = ["list", "show", "sud"]
 ops = ["read"]
 
+# Booking reads the entry it names (legs, date, class, supersession), so it
+# needs read as well as produce; propose and pass read nothing they do not own.
 [[bound]]
 verbs = ["adjustment"]
+subcommands = ["book"]
+ops = ["read", "produce"]
+
+[[bound]]
+verbs = ["adjustment"]
+subcommands = ["propose", "pass"]
 ops = ["produce"]
 
 [[bound]]
