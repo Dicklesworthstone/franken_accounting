@@ -123,6 +123,19 @@ pub const STATEMENT_ISSUANCE_EXTENSION: u16 = 15;
 /// Extension tag 16, the complete source and route basis for intrinsic
 /// period-end FX revaluation. New native admissions reproduce this basis.
 pub const FX_REVALUATION_EXTENSION: u16 = 16;
+/// Extension tag 17, `fa:engagement:v1` (plan §11.12, Appendix A
+/// `Engagement`, bead fa-zgn): an engagement's immutable profile on its
+/// `EngagementControl` Open record — `u16 version ‖ book_id[16] ‖ str
+/// engagement ‖ u8 kind ‖ u128 firm_principal ‖ list(str period) ‖ u32 unit
+/// ‖ i128 overall ‖ i128 performance ‖ i128 clearly_trivial ‖ opt i32
+/// report_release_day ‖ [32] capability_commitment`.
+pub const ENGAGEMENT_PROFILE_EXTENSION: u16 = 17;
+/// Extension tag 18, `fa:proposed-adjustment:v1` (bead fa-zgn): the draft
+/// correcting entry one `EngagementControl` Propose record journals — `u16
+/// version ‖ str engagement ‖ u32 ordinal ‖ i32 effective_day ‖ list(u8
+/// side ‖ u128 account ‖ u32 unit ‖ i128 mantissa)`, balanced per unit; its
+/// description rides the record's sealed description. It never posts.
+pub const PROPOSED_ADJUSTMENT_EXTENSION: u16 = 18;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -142,6 +155,8 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     PRODUCTION_BATES_EXTENSION,
     STATEMENT_ISSUANCE_EXTENSION,
     FX_REVALUATION_EXTENSION,
+    ENGAGEMENT_PROFILE_EXTENSION,
+    PROPOSED_ADJUSTMENT_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -196,6 +211,12 @@ impl EntryClass {
     /// is never withdrawn, and the first one per period is what `AS
     /// ORIGINALLY REPORTED` reads.
     pub const ISSUANCE_CONTROL: Self = Self(28);
+    /// An audit engagement's mechanics (plan §11.12, bead fa-zgn): Open (its
+    /// `Engagement` with stated materiality parameters), Propose (a draft
+    /// correcting entry), Book (the committed entry that corrects it), Pass
+    /// (left uncorrected, with its reason). Book-scoped, undated; nothing
+    /// in it alters a committed amount.
+    pub const ENGAGEMENT_CONTROL: Self = Self(29);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -227,6 +248,7 @@ impl EntryClass {
         (26, "ScenarioControl", true),
         (27, "ProductionControl", true),
         (28, "IssuanceControl", true),
+        (29, "EngagementControl", true),
     ];
 
     #[must_use]
@@ -301,6 +323,7 @@ impl ControlKind {
     pub const PERIOD_CREATION: Self = Self(13);
     pub const PRODUCTION_TRANSITION: Self = Self(14);
     pub const STATEMENT_ISSUANCE: Self = Self(15);
+    pub const ENGAGEMENT_TRANSITION: Self = Self(16);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -366,6 +389,11 @@ impl ControlKind {
             Self::STATEMENT_ISSUANCE,
             "statement_issuance",
             EntryClass::ISSUANCE_CONTROL,
+        ),
+        (
+            Self::ENGAGEMENT_TRANSITION,
+            "engagement_transition",
+            EntryClass::ENGAGEMENT_CONTROL,
         ),
     ];
 
@@ -2347,7 +2375,7 @@ mod tests {
             );
         }
         // Keep the negative probes beyond every registered control kind.
-        for id in [0, 16, 17, u16::MAX] {
+        for id in [0, 17, 18, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"

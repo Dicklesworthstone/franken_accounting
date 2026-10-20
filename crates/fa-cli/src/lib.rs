@@ -21,6 +21,7 @@ pub mod cli;
 pub mod client;
 mod closing;
 mod document;
+mod engagement;
 pub mod entry;
 mod export;
 mod finding;

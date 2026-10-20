@@ -1257,6 +1257,132 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    fn engagement_request(
+        &self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        effective_date: DateDay,
+        description: &str,
+        idempotency_key: &[u8],
+    ) -> Result<fa_journal::EngagementRequest, BookError> {
+        Ok(fa_journal::EngagementRequest {
+            capability,
+            effective_date,
+            description: self.seal_text(cx, description)?,
+            idempotency_key: idempotency_key.to_vec(),
+        })
+    }
+
+    /// Open the engagement `profile.engagement` (plan §11.12, bead fa-zgn):
+    /// its kind, scope periods and stated materiality parameters, journaled
+    /// once per engagement id.
+    pub async fn open_engagement(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        profile: fa_journal::EngagementProfile,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::EngagementOpened> {
+        let description = format!("open engagement {}", profile.engagement);
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::open_engagement(&mut self.db, cx, &self.context, profile, req).await?)
+    }
+
+    /// Propose a draft correcting entry in `engagement`; it never posts.
+    /// `description` is sealed like an entry's.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn propose_adjustment(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        effective_date: DateDay,
+        legs: Vec<fa_journal::ProposalLeg>,
+        description: &str,
+        record_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::AdjustmentProposed> {
+        let req =
+            self.engagement_request(cx, capability, record_date, description, idempotency_key)?;
+        Ok(fa_journal::propose_adjustment(
+            &mut self.db,
+            cx,
+            &self.context,
+            engagement,
+            effective_date,
+            legs,
+            req,
+        )
+        .await?)
+    }
+
+    /// Book or pass proposal `ordinal` of `engagement`, once.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn decide_adjustment(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        ordinal: u32,
+        decision: fa_journal::AdjustmentDecision,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::AdjustmentDecided> {
+        let description = match decision {
+            fa_journal::AdjustmentDecision::Book { .. } => {
+                format!("book engagement {engagement} proposal {ordinal}")
+            }
+            fa_journal::AdjustmentDecision::Pass { .. } => {
+                format!("pass engagement {engagement} proposal {ordinal}")
+            }
+        };
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::decide_adjustment(
+            &mut self.db,
+            cx,
+            &self.context,
+            engagement,
+            ordinal,
+            decision,
+            req,
+        )
+        .await?)
+    }
+
+    /// The engagement `engagement` and every proposal it journaled.
+    pub fn engagement(
+        &self,
+        cx: &PurposeContexts,
+        engagement: &str,
+    ) -> Result<Option<fa_journal::EngagementView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_engagement(db, context, engagement)?)
+        })
+    }
+
+    /// Every engagement of the book.
+    pub fn engagements(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<Vec<fa_journal::EngagementView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::list_engagements(db, context)?)
+        })
+    }
+
     fn scenario_request(
         &self,
         cx: &PurposeContexts,
