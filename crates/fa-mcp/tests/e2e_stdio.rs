@@ -2133,6 +2133,266 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
 }
 
 #[test]
+fn batch_plans_rehearse_for_agents_and_commit_atomically_for_bound_preparers() {
+    let dir = tmp("batch-planning");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    let head = || {
+        let (code, stdout) = cli(&["book", "info", "--book", &b, "--json"]);
+        assert_eq!(code, 0, "{stdout}");
+        let envelope: JsonValue = fastmcp_rust::serde_json::from_str(stdout.trim()).unwrap();
+        envelope["coordinate"]["known_at"]
+            .as_u64()
+            .expect("the envelope carries the actual publication sequence")
+    };
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Atomic batch MCP",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    ).unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        &chart.display().to_string(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let batch = json!({
+        "idempotency_key": "mcp-reviewed-batch",
+        "intents": [
+            {
+                "idempotency_key": "mcp-batch-first",
+                "effective_date": "2026-03-15",
+                "description": "First reviewed rent posting",
+                "evidence": [oid],
+                "legs": [
+                    {"side": "debit", "account": "6000", "amount": "10.00 USD"},
+                    {"side": "credit", "account": "1000", "amount": "10.00 USD"},
+                ],
+            },
+            {
+                "idempotency_key": "mcp-batch-second",
+                "effective_date": "2026-03-16",
+                "description": "Second reviewed rent posting",
+                "evidence": [oid],
+                "legs": [
+                    {"side": "debit", "account": "6000", "amount": "5.00 USD"},
+                    {"side": "credit", "account": "1000", "amount": "5.00 USD"},
+                ],
+            },
+        ],
+    });
+    let before = head();
+    let mut agent = Mcp::start(&book);
+    agent.discover();
+
+    // A valid first member cannot hide a later member's failed accounting
+    // law, and a refused rehearsal consumes neither member nor batch key.
+    let mut invalid = batch.clone();
+    invalid["intents"][1]["legs"][0]["amount"] = json!("6.00 USD");
+    let (error, text, _) = call_tool(
+        &mut agent,
+        "fa_post_post",
+        json!({"intent": invalid, "dry_run": true}),
+    );
+    assert!(
+        error,
+        "an unbalanced second batch member must refuse: {text}"
+    );
+    let refused = structured_error(&text);
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("batch member 1")),
+        "{refused}"
+    );
+    assert_eq!(head(), before);
+
+    // The Agent-bound batch route rehearses the complete request even when
+    // dry_run is omitted; it never suggests that the artifact grants authority.
+    let (error, text, result) = call_tool(&mut agent, "fa_post_post", json!({"intent": batch}));
+    assert!(!error, "Agent batch rehearsal: {text}");
+    let agent_plan: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(agent_plan["intent_kind"], "PostBatch");
+    assert_eq!(agent_plan["scope"], "same-snapshot-batch");
+    assert_eq!(agent_plan["members"].as_array().unwrap().len(), 2);
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["events"], json!(["batch_plan"]));
+    assert_eq!(envelope["authority"]["profile"], "agent");
+    assert_eq!(envelope["next_actions"], json!([]));
+    assert_eq!(envelope["certificate"], JsonValue::Null);
+    assert!(
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .is_some_and(|text| text.contains("FA-REF-013"))),
+        "{envelope}"
+    );
+    let (error, text, _) = call_tool(
+        &mut agent,
+        "fa_post_commit_plan",
+        json!({"plan": agent_plan["bytes"]}),
+    );
+    assert!(
+        error,
+        "an Agent batch plan cannot grant trunk authority: {text}"
+    );
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-013");
+    assert_eq!(agent.finish(), 0);
+    assert_eq!(
+        head(),
+        before,
+        "Agent rehearsal and refused commit publish no member, outcome or certificate"
+    );
+
+    let launch = ["--profile", "preparer", "--principal", "batch-operator"];
+    let mut preparer = Mcp::start_with(&book, &launch);
+    preparer.discover();
+    let (error, text, _) = call_tool(
+        &mut preparer,
+        "fa_post_commit_plan",
+        json!({"plan": agent_plan["bytes"]}),
+    );
+    assert!(
+        error,
+        "a different launch cannot adopt the Agent artifact: {text}"
+    );
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-034");
+
+    let (error, text, result) = call_tool(
+        &mut preparer,
+        "fa_post_post",
+        json!({"intent": batch, "dry_run": true}),
+    );
+    assert!(!error, "Preparer batch rehearsal: {text}");
+    let planned: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(planned["intent_kind"], "PostBatch");
+    assert_eq!(planned["scope"], "same-snapshot-batch");
+    assert_eq!(planned["authority"], "mcp-launch-config");
+    assert_eq!(planned["file"], JsonValue::Null);
+    let members = planned["members"].as_array().unwrap();
+    assert_eq!(members.len(), 2);
+    for (index, amount) in ["10.00 USD", "5.00 USD"].into_iter().enumerate() {
+        let member = &members[index];
+        assert_eq!(member["index"], json!(index));
+        assert_eq!(member["class"], "Original");
+        assert_eq!(member["period"], "FY2026-P03");
+        let legs = member["legs"].as_array().unwrap();
+        assert_eq!(legs.len(), 2);
+        assert!(legs.iter().all(|leg| leg["amount"] == amount));
+        assert_eq!(member["evidence"][0]["document_oid"], oid);
+    }
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["events"], json!(["batch_plan"]));
+    assert_eq!(envelope["authority"]["profile"], "preparer");
+    assert_eq!(envelope["authority"]["principal"], "batch-operator");
+    assert_eq!(envelope["next_actions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        envelope["next_actions"][0]["command"],
+        "fa_post_commit_plan"
+    );
+    assert_eq!(head(), before);
+
+    let (error, text, result) = call_tool(
+        &mut preparer,
+        "fa_post_commit_plan",
+        json!({"plan": planned["bytes"]}),
+    );
+    assert!(!error, "commit the complete reviewed batch: {text}");
+    let committed: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(committed["already_recorded"], false);
+    assert_eq!(
+        committed["recorded_at"],
+        planned["snapshot_seq"].as_u64().unwrap() + 1
+    );
+    for field in ["plan_digest", "certificate_digest"] {
+        assert_eq!(committed[field], planned[field]);
+    }
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["events"], json!(["batch_plan_committed"]));
+    let recorded = committed["members"].as_array().unwrap();
+    assert_eq!(recorded.len(), members.len());
+    for (member, preview) in recorded.iter().zip(members) {
+        for field in ["index", "vid", "entry_digest", "class", "period"] {
+            assert_eq!(member[field], preview[field]);
+        }
+        let (error, text, _) = call_tool(
+            &mut preparer,
+            "fa_read_show_entry",
+            json!({"vid": member["vid"]}),
+        );
+        assert!(!error, "read the committed batch member: {text}");
+        let actual: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+        assert_eq!(actual["recorded_at"], committed["recorded_at"]);
+        assert_eq!(actual["proposal_digest"], preview["proposal_digest"]);
+        assert_eq!(actual["entry_digest"], preview["entry_digest"]);
+    }
+    let after = head();
+    assert_eq!(after, before + 1, "the successful batch is one publication");
+    assert_eq!(preparer.finish(), 0);
+
+    // A fresh process with the same launch authority can retry the exact
+    // artifact: it recovers the one original outcome and both original entries.
+    let mut retry = Mcp::start_with(&book, &launch);
+    retry.discover();
+    let (error, text, result) = call_tool(
+        &mut retry,
+        "fa_post_commit_plan",
+        json!({"plan": planned["bytes"]}),
+    );
+    assert!(!error, "cross-process batch retry: {text}");
+    let retried: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(retried["already_recorded"], true);
+    for field in [
+        "outcome",
+        "recorded_at",
+        "plan_digest",
+        "certificate_digest",
+    ] {
+        assert_eq!(retried[field], committed[field]);
+    }
+    let repeated = retried["members"].as_array().unwrap();
+    assert_eq!(repeated.len(), recorded.len());
+    for (member, original) in repeated.iter().zip(recorded) {
+        for field in ["index", "vid", "entry_digest", "class", "period"] {
+            assert_eq!(member[field], original[field]);
+        }
+    }
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["events"], json!(["batch_plan_committed"]));
+    assert_eq!(retry.finish(), 0);
+    assert_eq!(head(), after);
+}
+
+#[test]
 fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
     let dir = tmp("agent-authority");
     let book = dir.join("book");
@@ -3522,16 +3782,6 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
         "--book",
         &b,
         "--json",
-/// fa-kaf7: the on-demand fa.audit cluster draws exactly the CLI's sample
-/// under the launch-bound read surface, and evaluates an MUS sample from
-/// inline audited values at the sample's recorded sequence.
-#[test]
-fn the_audit_cluster_draws_and_evaluates_the_clis_sample() {
-    let dir = tmp("audit-sample");
-    let book = dir.join("book");
-    let b = book.display().to_string();
-    cli_data(&[
-        "book", "create", "--book", &b, "--name", "Audit Co", "--json",
     ]);
     let chart = dir.join("chart.json");
     std::fs::write(
@@ -3981,11 +4231,6 @@ fn an_agent_posts_into_a_scenario_over_mcp_and_trunk_is_untouched() {
         &b,
         "--json",
     ]);
-        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","leaf":true,"unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","leaf":true,"unit":"USD"}]}"#,
-    )
-    .unwrap();
-    let chart = chart.display().to_string();
-    cli_data(&["chart", "import", &chart, "--book", &b, "--json"]);
     cli_data(&[
         "period",
         "create",
@@ -4038,6 +4283,38 @@ fn an_agent_posts_into_a_scenario_over_mcp_and_trunk_is_untouched() {
         scenario.contains("37.00"),
         "the scenario carries it: {scenario}"
     );
+}
+
+/// fa-kaf7: the on-demand fa.audit cluster draws exactly the CLI's sample
+/// under the launch-bound read surface, and evaluates an MUS sample from
+/// inline audited values at the sample's recorded sequence.
+#[test]
+fn the_audit_cluster_draws_and_evaluates_the_clis_sample() {
+    let dir = tmp("audit-sample");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book", "create", "--book", &b, "--name", "Audit Co", "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","leaf":true,"unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","leaf":true,"unit":"USD"}]}"#,
+    )
+    .unwrap();
+    let chart = chart.display().to_string();
+    cli_data(&["chart", "import", &chart, "--book", &b, "--json"]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
     for (key, amount) in [("a", "100.00"), ("b", "250.00"), ("c", "700.00")] {
         let intent = dir.join(format!("{key}.json"));
         std::fs::write(

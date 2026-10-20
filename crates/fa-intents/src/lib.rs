@@ -652,6 +652,16 @@ impl PostBatch {
         Ok(bytes)
     }
 
+    /// Full ordered request, including every member's sealed proposal and
+    /// approval references. Portable plans bind this transcript, not merely
+    /// the identities used by the ordinary batch retry namespace.
+    pub fn digest(&self) -> Result<[u8; 32], IntentError> {
+        Ok(domain_digest(
+            b"fa:intent:post-batch:v1",
+            &[&self.canonical_bytes()?],
+        ))
+    }
+
     pub fn decode(bytes: &[u8]) -> Result<Self, IntentError> {
         bounded(bytes, MAX_BATCH_BYTES)?;
         let mut r = Reader::new(bytes);
@@ -671,6 +681,288 @@ impl PostBatch {
             .map(|m| PostIntent::decode(m))
             .collect::<Result<Vec<_>, _>>()?;
         Self::new(key, members)
+    }
+}
+
+/// A bounded batch request plus its resolved entries, period names and one
+/// fixed certificate. Both large components retain MAX_BATCH_BYTES bounds.
+pub const MAX_BATCH_PLAN_BYTES: usize =
+    2 * MAX_BATCH_BYTES + fa_model::limits::MAX_BATCH_ENTRIES * (MAX_PERIOD_REF_BYTES + 8) + 4096;
+
+/// Kernel-authenticated evidence for one complete atomic batch rehearsal.
+/// The effect digest is the substrate's whole staged transaction, including
+/// the IntentOutcome, before the certificate's own retention is appended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchPlanCertificate {
+    pub book_id: Id128,
+    pub branch_id: Id128,
+    pub principal: VId,
+    pub capability_commitment: [u8; 32],
+    pub intent_digest: [u8; 32],
+    pub prepared_digest: [u8; 32],
+    pub effects_digest: [u8; 32],
+    pub snapshot_seq: CommitSeq,
+    pub security_policy_epoch: u64,
+    pub expires_at: Option<CommitSeq>,
+    pub authentication: [u8; 32],
+}
+
+impl BatchPlanCertificate {
+    pub fn authentication_bytes(&self) -> Result<Vec<u8>, IntentError> {
+        let mut w = Writer::new();
+        w.fixed(b"FA-BATCH-CERT\0")
+            .u16(SCHEMA_MAJOR)
+            .u16(SCHEMA_MINOR)
+            .fixed(&self.book_id.0)
+            .fixed(&self.branch_id.0)
+            .u128(self.principal.0)
+            .fixed(&self.capability_commitment)
+            .fixed(&self.intent_digest)
+            .fixed(&self.prepared_digest)
+            .fixed(&self.effects_digest)
+            .u64(self.snapshot_seq.0)
+            .u64(self.security_policy_epoch)
+            .opt(self.expires_at.as_ref(), |w, seq| {
+                w.u64(seq.0);
+            });
+        Ok(w.finish()?)
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, IntentError> {
+        let mut bytes = self.authentication_bytes()?;
+        bytes.extend_from_slice(&self.authentication);
+        bounded(&bytes, MAX_CERTIFICATE_BYTES)?;
+        Ok(bytes)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, IntentError> {
+        bounded(bytes, MAX_CERTIFICATE_BYTES)?;
+        let mut r = Reader::new(bytes);
+        if r.fixed::<14>("batch_certificate.magic")? != *b"FA-BATCH-CERT\0" {
+            return Err(IntentError::Invalid("wrong batch certificate magic"));
+        }
+        version(&mut r)?;
+        let certificate = Self {
+            book_id: Id128(r.fixed("batch_certificate.book")?),
+            branch_id: Id128(r.fixed("batch_certificate.branch")?),
+            principal: VId(r.u128("batch_certificate.principal")?),
+            capability_commitment: r.fixed("batch_certificate.capability")?,
+            intent_digest: r.fixed("batch_certificate.intent")?,
+            prepared_digest: r.fixed("batch_certificate.prepared")?,
+            effects_digest: r.fixed("batch_certificate.effects")?,
+            snapshot_seq: CommitSeq(r.u64("batch_certificate.snapshot")?),
+            security_policy_epoch: r.u64("batch_certificate.policy")?,
+            expires_at: r.opt("batch_certificate.expires", |r| {
+                Ok(CommitSeq(r.u64("batch_certificate.expires")?))
+            })?,
+            authentication: r.fixed("batch_certificate.authentication")?,
+        };
+        r.finish()?;
+        Ok(certificate)
+    }
+
+    pub fn digest(&self) -> Result<[u8; 32], IntentError> {
+        Ok(domain_digest(
+            b"fa:batch-plan-certificate:v1",
+            &[&self.canonical_bytes()?],
+        ))
+    }
+}
+
+/// One portable, ordered, all-or-none batch. Private fields force the
+/// request, resolved entries, periods and authenticated digests to agree.
+/// Authentication and current authority are enforced by the kernel, never
+/// by these pure format types.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchPlan {
+    batch: PostBatch,
+    prepared: Vec<Entry>,
+    periods: Vec<String>,
+    certificate: BatchPlanCertificate,
+}
+
+impl BatchPlan {
+    pub const MAGIC: &'static [u8; 14] = b"FA-BATCH-PLAN\0";
+
+    pub fn new(
+        batch: PostBatch,
+        prepared: Vec<Entry>,
+        periods: Vec<String>,
+        certificate: BatchPlanCertificate,
+    ) -> Result<Self, IntentError> {
+        let plan = Self {
+            batch,
+            prepared,
+            periods,
+            certificate,
+        };
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    /// Digest the exact resolved entries and period decisions in execution
+    /// order, including all sealed fields and final approval lists.
+    pub fn prepared_digest(entries: &[Entry], periods: &[String]) -> Result<[u8; 32], IntentError> {
+        Ok(domain_digest(
+            b"fa:batch-prepared:v1",
+            &[&Self::prepared_bytes(entries, periods)?],
+        ))
+    }
+
+    fn prepared_bytes(entries: &[Entry], periods: &[String]) -> Result<Vec<u8>, IntentError> {
+        if entries.is_empty()
+            || entries.len() > fa_model::limits::MAX_BATCH_ENTRIES
+            || entries.len() != periods.len()
+            || periods
+                .iter()
+                .any(|period| period.is_empty() || period.len() > MAX_PERIOD_REF_BYTES)
+        {
+            return Err(IntentError::Invalid(
+                "batch previews or periods are out of bounds",
+            ));
+        }
+        let mut total = 0_usize;
+        let encoded = entries
+            .iter()
+            .map(|entry| {
+                let bytes = entry.encode()?;
+                total = total
+                    .checked_add(bytes.len())
+                    .ok_or(IntentError::Invalid("batch preview length overflow"))?;
+                if total > MAX_BATCH_BYTES {
+                    return Err(IntentError::TooLarge {
+                        max: MAX_BATCH_BYTES,
+                        actual: total,
+                    });
+                }
+                Ok(bytes)
+            })
+            .collect::<Result<Vec<_>, IntentError>>()?;
+        let mut w = Writer::new();
+        w.list(&encoded, |w, bytes| {
+            w.bytes(bytes);
+        })
+        .list(periods, |w, period| {
+            w.str(period);
+        });
+        Ok(w.finish()?)
+    }
+
+    pub fn validate(&self) -> Result<(), IntentError> {
+        if self.batch.book_id() != self.certificate.book_id
+            || self.batch.branch_id() != self.certificate.branch_id
+            || self.batch.principal() != self.certificate.principal
+            || self.prepared.len() != self.batch.members().len()
+        {
+            return Err(IntentError::Invalid(
+                "batch plan coordinates or member count differ",
+            ));
+        }
+        for (intent, entry) in self.batch.members().iter().zip(&self.prepared) {
+            let request = intent.proposal();
+            let proposal = &entry.proposal;
+            if request.book_id != proposal.book_id
+                || request.branch_id != proposal.branch_id
+                || request.principal_ref != proposal.principal_ref
+                || request.idempotency_key != proposal.idempotency_key
+                || request.class != proposal.class
+                || entry.approvals != intent.approvals()
+                || entry.plan_certificate.is_some()
+                || Entry::decode(&entry.encode()?)? != *entry
+            {
+                return Err(IntentError::Invalid(
+                    "batch member preview differs from its request",
+                ));
+            }
+        }
+        if self.batch.digest()? != self.certificate.intent_digest
+            || Self::prepared_digest(&self.prepared, &self.periods)?
+                != self.certificate.prepared_digest
+        {
+            return Err(IntentError::Invalid(
+                "batch request or preview digest differs",
+            ));
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn batch(&self) -> &PostBatch {
+        &self.batch
+    }
+
+    #[must_use]
+    pub fn prepared_entries(&self) -> &[Entry] {
+        &self.prepared
+    }
+
+    #[must_use]
+    pub fn periods(&self) -> &[String] {
+        &self.periods
+    }
+
+    #[must_use]
+    pub fn certificate(&self) -> &BatchPlanCertificate {
+        &self.certificate
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, IntentError> {
+        self.validate()?;
+        let mut w = Writer::new();
+        w.fixed(Self::MAGIC)
+            .u16(SCHEMA_MAJOR)
+            .u16(SCHEMA_MINOR)
+            .bytes(&self.batch.canonical_bytes()?)
+            .bytes(&Self::prepared_bytes(&self.prepared, &self.periods)?)
+            .bytes(&self.certificate.canonical_bytes()?);
+        let bytes = w.finish()?;
+        bounded(&bytes, MAX_BATCH_PLAN_BYTES)?;
+        Ok(bytes)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, IntentError> {
+        bounded(bytes, MAX_BATCH_PLAN_BYTES)?;
+        let mut r = Reader::new(bytes);
+        if r.fixed::<14>("batch_plan.magic")? != *Self::MAGIC {
+            return Err(IntentError::Invalid("wrong batch plan magic"));
+        }
+        version(&mut r)?;
+        let batch = PostBatch::decode(r.bytes(MAX_BATCH_BYTES, "batch_plan.request")?)?;
+        let mut preview = Reader::new(r.bytes(MAX_BATCH_PLAN_BYTES, "batch_plan.previews")?);
+        let entries = preview.list(
+            fa_model::limits::MAX_BATCH_ENTRIES,
+            "batch_plan.entries",
+            |r| Ok(r.bytes(MAX_ENTRY_BYTES, "batch_plan.entry")?.to_vec()),
+        )?;
+        let periods = preview.list(
+            fa_model::limits::MAX_BATCH_ENTRIES,
+            "batch_plan.periods",
+            |r| {
+                Ok(r.str(MAX_PERIOD_REF_BYTES, "batch_plan.period")?
+                    .to_string())
+            },
+        )?;
+        preview.finish()?;
+        let entries = entries
+            .iter()
+            .map(|entry| Entry::decode(entry))
+            .collect::<Result<Vec<_>, _>>()?;
+        let certificate = BatchPlanCertificate::decode(
+            r.bytes(MAX_CERTIFICATE_BYTES, "batch_plan.certificate")?,
+        )?;
+        r.finish()?;
+        Self::new(batch, entries, periods, certificate)
+    }
+
+    pub fn certificate_digest(&self) -> Result<[u8; 32], IntentError> {
+        self.certificate.digest()
+    }
+
+    pub fn digest(&self) -> Result<[u8; 32], IntentError> {
+        Ok(domain_digest(
+            b"fa:batch-plan:v1",
+            &[&self.canonical_bytes()?],
+        ))
     }
 }
 
@@ -750,6 +1042,75 @@ mod tests {
         let mut empty = certificate();
         empty.period.clear();
         assert!(empty.canonical_bytes().is_err());
+    }
+
+    #[test]
+    fn batch_certificate_wire_order_is_fixed_and_malformed_transcripts_are_refused() {
+        let certificate = BatchPlanCertificate {
+            book_id: Id128([1; 16]),
+            branch_id: Id128([2; 16]),
+            principal: VId(3),
+            capability_commitment: [4; 32],
+            intent_digest: [5; 32],
+            prepared_digest: [6; 32],
+            effects_digest: [7; 32],
+            snapshot_seq: CommitSeq(8),
+            security_policy_epoch: 9,
+            expires_at: Some(CommitSeq(10)),
+            authentication: [11; 32],
+        };
+        // Independent byte construction pins the durable field order;
+        // changing writer and reader together must not bless a new format.
+        let mut expected = b"FA-BATCH-CERT\0".to_vec();
+        expected.extend_from_slice(&[1, 0, 0, 0]);
+        expected.extend_from_slice(&[1; 16]);
+        expected.extend_from_slice(&[2; 16]);
+        expected.extend_from_slice(&3_u128.to_le_bytes());
+        for value in [4, 5, 6, 7] {
+            expected.extend_from_slice(&[value; 32]);
+        }
+        expected.extend_from_slice(&8_u64.to_le_bytes());
+        expected.extend_from_slice(&9_u64.to_le_bytes());
+        expected.push(1);
+        expected.extend_from_slice(&10_u64.to_le_bytes());
+        assert_eq!(certificate.authentication_bytes().unwrap(), expected);
+        expected.extend_from_slice(&[11; 32]);
+        assert_eq!(expected.len(), 251);
+        assert_eq!(certificate.canonical_bytes().unwrap(), expected);
+        assert_eq!(
+            BatchPlanCertificate::decode(&expected).unwrap(),
+            certificate
+        );
+        for end in 0..expected.len() {
+            assert!(
+                BatchPlanCertificate::decode(&expected[..end]).is_err(),
+                "prefix {end}"
+            );
+        }
+        for offset in [0, 14, 16, 210] {
+            let mut malformed = expected.clone();
+            malformed[offset] = 255;
+            assert!(
+                BatchPlanCertificate::decode(&malformed).is_err(),
+                "offset {offset}"
+            );
+        }
+        let mut trailing = expected;
+        trailing.push(0);
+        assert!(BatchPlanCertificate::decode(&trailing).is_err());
+        let mut unexpiring = certificate;
+        unexpiring.expires_at = None;
+        let bytes = unexpiring.canonical_bytes().unwrap();
+        assert_eq!(bytes.len(), 243);
+        assert_eq!(BatchPlanCertificate::decode(&bytes).unwrap(), unexpiring);
+
+        let mut hostile = BatchPlan::MAGIC.to_vec();
+        hostile.extend_from_slice(&[1, 0, 0, 0]);
+        hostile.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(
+            BatchPlan::decode(&hostile),
+            Err(IntentError::Decode(_))
+        ));
     }
 
     #[test]

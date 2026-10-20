@@ -63,7 +63,10 @@ pub use allocation::AllocationPosting;
 pub use attestation::{
     AttestationClaim, Attested, read_attestation, record_manual_assertion, record_review,
 };
-pub use batch::{BatchPosted, OutcomeBody, outcome_vid, post_batch, read_outcome, request_digest};
+pub use batch::{
+    BatchPosted, OutcomeBody, commit_batch_plan, outcome_vid, plan_batch, plan_batch_with_history,
+    post_batch, read_outcome, request_digest,
+};
 pub use blob::BlobStore;
 pub use chart::{
     AccountEffectivity, AccountLifecycleRecorded, ChartSnapshot, close_account, open_account,
@@ -83,7 +86,7 @@ pub use evidence::{
     ReviewedSummary, Storage, SupplementSummary, add_document, add_document_external,
     document_record, explain_entry_evidence, fetch_document, fetch_document_with, read_document,
 };
-pub use fa_intents::{PostBatch, PostIntent, ReplacementPlan};
+pub use fa_intents::{BatchPlan, BatchPlanCertificate, PostBatch, PostIntent, ReplacementPlan};
 pub use fa_palimpsest::{
     LineageEdgeSummary, LineageEntrySummary, LineageReport, NetPosition, NettingLaw,
 };

@@ -61,6 +61,8 @@ use crate::notary;
 use crate::templates;
 use crate::verbs::{self, Condition, Dangerous, Registry, Verb};
 
+mod batch_plan;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Plan Appendix D FA-REF-007: an operation that cannot be undone in
@@ -5690,6 +5692,7 @@ fn parse_settles(
     what: &str,
     ctx: &BookContext,
     book: &Book,
+    earlier: &batch_plan::PriorEntries,
 ) -> Result<Vec<fa_model::Settlement>, Fail> {
     let Some(list) = leg_doc.get("settles") else {
         return Ok(Vec::new());
@@ -5704,7 +5707,7 @@ fn parse_settles(
     for (j, item) in list.iter().enumerate() {
         let what = format!("{what}.settles[{j}]");
         let vid = parse_vid(req_str(item, "entry", &what)?, &format!("{what}.entry"))?;
-        let Some((target, _)) = book.read_entry(vid)? else {
+        let Some(target) = batch_plan::target_entry(book, earlier, vid)? else {
             return Err(usage(
                 format!("{what}: no entry {:032x} in this book", vid.0),
                 "fa open-items --account <code> lists the open items to apply to",
@@ -5748,6 +5751,7 @@ fn parse_legs(
     doc: &Json,
     ctx: &BookContext,
     book: &Book,
+    earlier: &batch_plan::PriorEntries,
 ) -> Result<Vec<(LegPayload, Option<u16>)>, Fail> {
     let legs_doc = doc.get("legs").and_then(Json::as_arr).ok_or_else(|| {
         usage(
@@ -5813,7 +5817,7 @@ fn parse_legs(
         };
         let mut leg = LegPayload::simple(side, account_vid(ctx.book_id, account), amount);
         leg.memo = memo;
-        leg.settles = parse_settles(l, &what, ctx, book)?;
+        leg.settles = parse_settles(l, &what, ctx, book, earlier)?;
         // A leg names its legal entity (required in a multi-entity book)
         // and its counterparty by code; the kernel checks both exist
         // (plan §4.1, §4.5). Dimension ids ascend: entity 1, party 12.
@@ -6148,25 +6152,13 @@ fn batch_member_fail(index: usize, fail: Fail) -> Fail {
 /// of its IntentOutcome, so an identical retry returns the recorded outcome.
 fn post_batch_document(ctx: &mut Ctx<'_>, args: &Args, doc: &Json) -> Result<(), Fail> {
     const FIX: &str = "a batch intent is {\"idempotency_key\": \"...\", \"intents\": [<entry intent>, ...]}; fa robot-docs examples shows an entry intent";
-    for flag in [
-        "--plan-out",
-        "--balancing",
-        "--timeout-ns",
-        "--reverse-on",
-        "--evidence",
-    ] {
+    for flag in ["--balancing", "--timeout-ns", "--reverse-on", "--evidence"] {
         if !args.flag_all(flag).is_empty() {
             return Err(usage(
                 format!("a batch intent takes no {flag}; nothing was posted"),
                 "put timeout_ns, reverse_on and evidence in each member intent",
             ));
         }
-    }
-    if args.switch("--dry-run") {
-        return Err(usage(
-            "batch plans are not available yet; nothing was posted",
-            "rehearse each member with fa post --intent <member.json> --dry-run, then post the batch",
-        ));
     }
     let Json::Obj(fields) = doc else {
         return Err(usage("a batch intent must be an object", FIX));
@@ -6194,16 +6186,31 @@ fn post_batch_document(ctx: &mut Ctx<'_>, args: &Args, doc: &Json) -> Result<(),
     })?;
     let mut intents = Vec::with_capacity(members.len());
     let mut classes = Vec::with_capacity(members.len());
+    let mut earlier = batch_plan::PriorEntries::new();
     for (i, member) in members.iter().enumerate() {
-        let built = build_post_request(out, &mut book, args, None, member, who, capability.clone())
-            .map_err(|f| batch_member_fail(i, f))?;
+        let built = build_post_request_with_prior(
+            out,
+            &mut book,
+            args,
+            None,
+            member,
+            who,
+            capability.clone(),
+            &earlier,
+        )
+        .map_err(|f| batch_member_fail(i, f))?;
         classes.push(built.class_name);
         let intent = PostIntent::new(built.request.proposal, built.request.approvals)
             .map_err(|e| usage(format!("batch member {i}: {e}"), "check the member intent"))?;
+        batch_plan::remember(&mut earlier, &intent).map_err(|f| batch_member_fail(i, f))?;
         intents.push(intent);
     }
     let batch = fa::PostBatch::new(key.as_bytes().to_vec(), intents)
         .map_err(|e| usage(format!("batch intent: {e}; nothing was posted"), FIX))?;
+    if args.switch("--dry-run") || out.is_bound_agent() {
+        let plan = book.plan_batch(batch, &capability)??;
+        return batch_plan::emit(out, &book, &ctx.files, args, &plan);
+    }
     let posted = book.post_batch(batch, &capability)??;
     out.at_book(&book)?;
     let members_json: Vec<Json> = posted
@@ -6416,6 +6423,32 @@ fn build_post_request(
     who: VId,
     capability: Capability,
 ) -> Result<BuiltPost, Fail> {
+    build_post_request_with_prior(
+        out,
+        book,
+        args,
+        forced,
+        doc,
+        who,
+        capability,
+        &batch_plan::PriorEntries::new(),
+    )
+}
+
+/// A batch may resolve only earlier members' sealed proposals. These are
+/// request construction inputs; the carried native transaction independently
+/// checks their identities, digests, admission and open amounts before commit.
+#[allow(clippy::too_many_arguments)]
+fn build_post_request_with_prior(
+    out: &Out,
+    book: &mut Book,
+    args: &Args,
+    forced: Option<EntryClass>,
+    doc: &Json,
+    who: VId,
+    capability: Capability,
+    earlier: &batch_plan::PriorEntries,
+) -> Result<BuiltPost, Fail> {
     if doc.get("fx").is_some() {
         fa_policy::admit_read(&capability, who, book.context().book_id)
             .and_then(|()| {
@@ -6525,7 +6558,7 @@ fn build_post_request(
             ).into());
         }
         let vid = parse_vid(target_s, "reverses")?;
-        let Some((target, _)) = book.read_entry(vid)? else {
+        let Some(target) = batch_plan::target_entry(book, earlier, vid)? else {
             return Err(usage(
                 format!("reverses: no entry {target_s} in this book"),
                 "fa entry show <vid> to check the identity",
@@ -6582,7 +6615,7 @@ fn build_post_request(
             )
         })?;
         let vid = parse_vid(target_s, "resolves")?;
-        let Some((hold, _)) = book.read_entry(vid)? else {
+        let Some(hold) = batch_plan::target_entry(book, earlier, vid)? else {
             return Err(usage(
                 format!("resolves: no entry {target_s} in this book"),
                 "fa entry show <vid> to check the identity",
@@ -6617,7 +6650,10 @@ fn build_post_request(
             }
             "posts" | "post" => {
                 let mut pairs: Vec<(u16, LegPayload)> = Vec::new();
-                for (i, (leg, explicit)) in parse_legs(doc, &ctx, book)?.into_iter().enumerate() {
+                for (i, (leg, explicit)) in parse_legs(doc, &ctx, book, earlier)?
+                    .into_iter()
+                    .enumerate()
+                {
                     let ordinal = match explicit {
                         Some(o) => o,
                         None => {
@@ -6692,7 +6728,7 @@ fn build_post_request(
                 disposition: None,
             });
         }
-        let parsed = parse_legs(doc, &ctx, book)?;
+        let parsed = parse_legs(doc, &ctx, book, earlier)?;
         if let Some(i) = parsed.iter().position(|(_, o)| o.is_some()) {
             return Err(usage(
                 format!("legs[{i}]: `source_ordinal` belongs to a Resolution(Posts) only"),
@@ -6936,11 +6972,20 @@ pub(crate) fn post_document(
 enum CommitPlan {
     Post(Box<PostPlan>),
     Replacement(Box<ReplacementPlan>),
+    Batch(Box<fa::BatchPlan>),
 }
 
 fn read_post_plan(files: &Files, path: &str) -> Result<CommitPlan, Fail> {
-    let bytes = read_plan_bytes(files, path, b"FA-", "PostEntry or Replace")?;
-    let decoded = if bytes.starts_with(ReplacementPlan::MAGIC) {
+    let bytes = read_bounded_plan_bytes(
+        files,
+        path,
+        b"FA-",
+        "PostEntry, Replace or PostBatch",
+        fa::MAX_BATCH_PLAN_BYTES.max(MAX_PLAN_BYTES),
+    )?;
+    let decoded = if bytes.starts_with(fa::BatchPlan::MAGIC) {
+        fa::BatchPlan::decode(&bytes).map(|plan| CommitPlan::Batch(Box::new(plan)))
+    } else if bytes.starts_with(ReplacementPlan::MAGIC) {
         ReplacementPlan::decode(&bytes).map(|plan| CommitPlan::Replacement(Box::new(plan)))
     } else {
         PostPlan::decode(&bytes).map(|plan| CommitPlan::Post(Box::new(plan)))
@@ -6976,7 +7021,17 @@ pub(crate) fn read_plan_bytes(
     domain: &[u8],
     kind: &str,
 ) -> Result<Vec<u8>, Fail> {
-    let limit = MAX_PLAN_BYTES * 2 + 2; // hex, optionally followed by CRLF
+    read_bounded_plan_bytes(files, path, domain, kind, MAX_PLAN_BYTES)
+}
+
+fn read_bounded_plan_bytes(
+    files: &Files,
+    path: &str,
+    domain: &[u8],
+    kind: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>, Fail> {
+    let limit = max_bytes * 2 + 2; // hex, optionally followed by CRLF
     let read = |reader: &mut dyn Read| -> Result<Vec<u8>, Fail> {
         let mut bytes = Vec::new();
         reader
@@ -7025,7 +7080,7 @@ pub(crate) fn read_plan_bytes(
         ));
     }
     if bytes.starts_with(domain) {
-        if bytes.len() > MAX_PLAN_BYTES {
+        if bytes.len() > max_bytes {
             return Err(usage(
                 "plan exceeds its bounded input size",
                 "pass the complete plan bytes from a successful --dry-run",
@@ -7045,7 +7100,7 @@ pub(crate) fn read_plan_bytes(
             "pass --plan <file> or forward the plan event's bytes string on stdin with --plan -",
         ));
     };
-    if text.len() / 2 > MAX_PLAN_BYTES {
+    if text.len() / 2 > max_bytes {
         return Err(usage(
             "plan exceeds its canonical format limit",
             "pass the complete plan bytes from a successful --dry-run",
@@ -7573,6 +7628,7 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let plan = match read_post_plan(&ctx.files, path)? {
         CommitPlan::Post(plan) => *plan,
         CommitPlan::Replacement(plan) => return commit_replacement_cmd(ctx, args, *plan),
+        CommitPlan::Batch(plan) => return batch_plan::commit(ctx, args, *plan),
     };
     let plan_digest = hex(&plan.digest().map_err(|e| {
         usage(

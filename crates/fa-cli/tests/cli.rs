@@ -327,6 +327,203 @@ fn a_batch_intent_posts_atomically_and_its_retry_is_the_recorded_outcome() -> st
     Ok(())
 }
 
+/// An invoice and its application can be reviewed before either exists.
+/// The complete portable plan survives a refused later-member rehearsal,
+/// commits in one publication, and recognizes the same bytes on retry.
+#[test]
+fn an_atomic_batch_plan_rehearses_in_order_and_commits_its_saved_bytes_once() -> std::io::Result<()>
+{
+    use fa::{Book, BookKeys, Entropy};
+
+    let dir = tmp("batch-plan")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Batch Plan Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let open = || Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+    let actor = "batch-planner";
+    let invoice_vid = fa_model::entry_vid(
+        open().context().book_id,
+        &fa_model::principal_vid(actor).0.to_le_bytes(),
+        b"invoice-in-batch",
+    );
+    let invoice_hex = format!("{:032x}", invoice_vid.0);
+    let invoice = format!(
+        r#"{{"effective_date":"2026-03-15","idempotency_key":"invoice-in-batch","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1200","amount":"50.00 USD"}},{{"side":"credit","account":"4000","amount":"50.00 USD"}}]}}"#
+    );
+    let receipt = format!(
+        r#"{{"effective_date":"2026-03-16","idempotency_key":"receipt-in-batch","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1000","amount":"20.00 USD"}},{{"side":"credit","account":"1200","amount":"20.00 USD","settles":[{{"entry":"{invoice_hex}","ordinal":0,"amount":"20.00 USD"}}]}}]}}"#
+    );
+    let intent = write(
+        &dir,
+        "invoice-and-receipt.json",
+        &format!(r#"{{"idempotency_key":"invoice-and-receipt","intents":[{invoice},{receipt}]}}"#),
+    );
+    let plan_path = dir.join("invoice-and-receipt.plan").display().to_string();
+    let before = open().head().unwrap();
+    let before_balance = doc(&ok(&["tb", "--period", "FY2026-P03", "--json"]));
+    let planned = ok(&[
+        "post",
+        "--intent",
+        &intent,
+        "--as",
+        actor,
+        "--dry-run",
+        "--plan-out",
+        &plan_path,
+        "--json",
+    ]);
+    assert_eq!(planned.lines().count(), 1, "{planned}");
+    assert_eq!(field(&planned, "event"), Some("batch_plan"));
+    let plan_data = doc(&planned);
+    assert_eq!(int(&plan_data, "snapshot_seq"), Some(i128::from(before.0)));
+    assert_eq!(text(&plan_data, "intent_kind"), "PostBatch");
+    assert_eq!(text(&plan_data, "scope"), "same-snapshot-batch");
+    let members = arr(&plan_data, "members");
+    assert_eq!(members.len(), 2, "{planned}");
+    assert_eq!(text(&members[0], "vid"), invoice_hex);
+    let applied = &arr(&arr(&members[1], "legs")[1], "settles")[0];
+    assert_eq!(text(applied, "entry"), invoice_hex);
+    assert_eq!(
+        text(applied, "entry_digest"),
+        text(&members[0], "entry_digest")
+    );
+    assert_eq!(text(applied, "amount"), "20.00 USD");
+    let bytes = std::fs::read(&plan_path)?;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(text(&plan_data, "bytes"), hex);
+    let restored = fa::BatchPlan::decode(&bytes).unwrap();
+    assert_eq!(restored.prepared_entries().len(), 2);
+    assert_eq!(restored.certificate().snapshot_seq, before);
+    assert_eq!(
+        restored.prepared_entries()[1].proposal.legs[1].settles[0]
+            .target
+            .vid,
+        invoice_vid
+    );
+    assert_eq!(open().head().unwrap(), before, "planning never publishes");
+    assert!(open().read_entry(invoice_vid).unwrap().is_none());
+    assert_eq!(
+        doc(&ok(&["tb", "--period", "FY2026-P03", "--json"])).get("rows"),
+        before_balance.get("rows"),
+        "neither preview member contributes to the journal"
+    );
+
+    // Fail only after the invoice has been staged. No successful plan or
+    // output file can escape, and the saved good plan's basis stays valid.
+    let unbalanced = format!(
+        r#"{{"effective_date":"2026-03-16","idempotency_key":"bad-later-member","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1000","amount":"1.00 USD"}},{{"side":"credit","account":"4000","amount":"0.99 USD"}}]}}"#
+    );
+    let refused = write(
+        &dir,
+        "refused-batch.json",
+        &format!(r#"{{"idempotency_key":"refused-batch","intents":[{invoice},{unbalanced}]}}"#),
+    );
+    let refused_plan = dir.join("must-not-exist.plan").display().to_string();
+    let (code, failed, err) = fa(
+        Some(&book),
+        &[
+            "post",
+            "--intent",
+            &refused,
+            "--as",
+            actor,
+            "--dry-run",
+            "--plan-out",
+            &refused_plan,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 3, "{failed}\n{err}");
+    assert_eq!(failed.lines().count(), 1, "{failed}");
+    assert_eq!(field(&failed, "event"), Some("error"));
+    assert!(
+        text(&doc(&failed), "message").contains("batch member 1"),
+        "{failed}"
+    );
+    assert!(!Path::new(&refused_plan).exists());
+    assert_eq!(open().head().unwrap(), before);
+    assert!(open().read_entry(invoice_vid).unwrap().is_none());
+
+    // Commit the stdout hex transport in a fresh process, then retry the
+    // canonical binary artifact. Both must name the same atomic outcome.
+    let hex_path = write(&dir, "invoice-and-receipt.hex", &hex);
+    let committed = ok(&["commit", "--plan", &hex_path, "--as", actor, "--json"]);
+    assert_eq!(field(&committed, "event"), Some("batch_plan_committed"));
+    let committed_data = doc(&committed);
+    assert_eq!(
+        committed_data.get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+    assert_eq!(
+        int(&committed_data, "recorded_at"),
+        Some(i128::from(before.0 + 1))
+    );
+    assert_eq!(
+        text(&committed_data, "plan_digest"),
+        text(&plan_data, "plan_digest")
+    );
+    assert_eq!(
+        text(&committed_data, "certificate_digest"),
+        text(&plan_data, "certificate_digest")
+    );
+    let committed_members = arr(&committed_data, "members");
+    assert_eq!(committed_members.len(), members.len());
+    for (committed, preview) in committed_members.iter().zip(members) {
+        assert_eq!(text(committed, "vid"), text(preview, "vid"));
+        assert_eq!(
+            text(committed, "entry_digest"),
+            text(preview, "entry_digest")
+        );
+        assert_eq!(text(committed, "period"), "FY2026-P03");
+    }
+    let posted_head = open().head().unwrap();
+    assert_eq!(posted_head.0, before.0 + 1, "all effects share one commit");
+    let open_items = doc(&ok(&["open-items", "--account", "1200", "--json"]));
+    let invoice_item = arr(&open_items, "items")
+        .iter()
+        .find(|item| text(item, "entry") == invoice_hex)
+        .expect("the batch invoice remains partly unpaid");
+    assert_eq!(text(invoice_item, "original"), "50.00 USD");
+    assert_eq!(text(invoice_item, "applied"), "20.00 USD");
+    assert_eq!(text(invoice_item, "open"), "30.00 USD");
+    let retry = ok(&["commit", "--plan", &plan_path, "--as", actor, "--json"]);
+    let retry_data = doc(&retry);
+    assert_eq!(retry_data.get("already_recorded"), Some(&Json::Bool(true)));
+    for key in [
+        "outcome",
+        "recorded_at",
+        "members",
+        "plan_digest",
+        "certificate_digest",
+    ] {
+        assert_eq!(
+            retry_data.get(key),
+            committed_data.get(key),
+            "{key}: {retry}"
+        );
+    }
+    assert_eq!(
+        open().head().unwrap(),
+        posted_head,
+        "retry never republishes"
+    );
+    Ok(())
+}
+
 /// fa-ih4: posting ahead of the book's fiscal years is a safety refusal
 /// (FA-REF-021, exit 7) naming the command that creates the year, never a
 /// "corrupt row" foundation failure; following the fix admits the post.
@@ -3597,7 +3794,12 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         first.as_str(),
     ]));
     assert_eq!(text(&planned, "interval"), "446.66 USD");
-    for key in ["population_digest", "sample_digest", "selected", "parameters"] {
+    for key in [
+        "population_digest",
+        "sample_digest",
+        "selected",
+        "parameters",
+    ] {
         assert_eq!(planned.get(key), stated.get(key), "{key}");
     }
     assert_eq!(text(&planned, "tolerable"), "1500.00 USD");
@@ -3648,17 +3850,20 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         text(&planned, "sample_digest")
     );
     assert_eq!(text(&evaluated, "tolerable"), "1500.00 USD");
-    assert_eq!(
-        text(&evaluated, "upper_misstatement_limit"),
-        "1339.98 USD"
-    );
+    assert_eq!(text(&evaluated, "upper_misstatement_limit"), "1339.98 USD");
     // Planning refusals (exit 2): no explicit --expected, no --confidence,
     // both forms at once, a confidence on a stated draw, an expected
     // misstatement that leaves nothing to plan for (1,000.00 x 1.6 =
     // 1,600.00 exceeds 1,500.00), and a confidence on a uniform draw.
     for args in [
         vec!["mus", "--tolerable", "1500.00 USD", "--confidence", "95"],
-        vec!["mus", "--tolerable", "1500.00 USD", "--expected", "1.00 USD"],
+        vec![
+            "mus",
+            "--tolerable",
+            "1500.00 USD",
+            "--expected",
+            "1.00 USD",
+        ],
         vec![
             "mus",
             "--interval",
@@ -5964,7 +6169,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["post", "--intent", &bad, "--evidence", &ev]).0,
         3
     );
-    // A PostBatch intent (fa-nl7) emits `batch_posted`.
+    // Rehearse and commit the complete batch artifact; its ordinary exact
+    // retry also emits batch_posted without adding another posting.
     let batch = write(
         &dir,
         "batch.json",
@@ -5972,6 +6178,23 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
             r#"{{"idempotency_key":"batch","intents":[{{"effective_date":"2026-03-15","idempotency_key":"batch-rent","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6000","amount":"1.00 USD"}},{{"side":"credit","account":"1000","amount":"1.00 USD"}}]}}]}}"#
         ),
     );
+    let batch_plan = dir.join("atomic-batch.plan").display().to_string();
+    let (code, planned) = run(
+        true,
+        &[
+            "post",
+            "--intent",
+            &batch,
+            "--dry-run",
+            "--plan-out",
+            &batch_plan,
+        ],
+    );
+    assert_eq!(code, 0, "{planned}");
+    assert_eq!(field(&planned, "event"), Some("batch_plan"));
+    let (code, committed) = run(true, &["commit", "--plan", &batch_plan]);
+    assert_eq!(code, 0, "{committed}");
+    assert_eq!(field(&committed, "event"), Some("batch_plan_committed"));
     assert_eq!(run(true, &["post", "--intent", &batch]).0, 0);
     // Drafts (fa-s7x): open, plan by --draft and by `draft plan`, inspect,
     // promote as another principal holding approve, and discard another.

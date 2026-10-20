@@ -1,0 +1,110 @@
+# Portable atomic batch plans (plan §5.8-§5.9, §10.4, Appendix B).
+# Additive codec: existing PostBatch, PostIntent and single/correction plan
+# formats retain their original grammar and identity/retry laws.
+schema_version = 1
+owner = "fa-intents::BatchPlan; fa-journal::batch"
+format = "FA-BATCH-PLAN"
+certificate_format = "FA-BATCH-CERT"
+major = 1
+minor = 0
+max_plan_bytes = 67440560
+max_request_bytes = 33554432
+max_prepared_entry_bytes_total = 33554432
+max_member_entry_bytes = 8388608
+max_members = 8190
+max_period_ref_bytes = 32
+max_certificate_bytes = 1024
+certificate_bytes_without_expiry = 243
+certificate_bytes_with_expiry = 251
+request_domain = "fa:intent:post-batch:v1"
+prepared_domain = "fa:batch-prepared:v1"
+certificate_domain = "fa:batch-plan-certificate:v1"
+authentication_key_domain = "fa:batch-plan-authentication-key:v1"
+plan_domain = "fa:batch-plan:v1"
+native_effect_domain = "fgdb:write-txn-staged-effect:v1"
+retention_identity_domain = "fa:vid:post-plan-certificate:v1"
+storage_kind = 3
+supported_classes = ["Original", "Adjusting", "Reversal", "Pending", "Resolution"]
+snapshot_policy = "exact basis before first commit; original atomic outcome on exact retry"
+externally_verifiable = false
+
+# All FA integers here are little-endian. bytes/str prefix their body with a
+# u32 byte length; list prefixes its items with a u32 count. Fixed strings
+# below include exactly one terminal NUL. Unknown major/minor versions,
+# invalid tags, trailing bytes, empty batches and inconsistent members refuse.
+# Plan = fixed("FA-BATCH-PLAN\0") || u16 major || u16 minor
+#     || bytes(PostBatch.canonical_bytes)
+#     || bytes(prepared_transcript)
+#     || bytes(BatchPlanCertificate.canonical_bytes).
+# prepared_transcript = list(bytes(Entry.encode)) || list(str(period_code)),
+# with one resolved Entry and nonempty period per request member, in order.
+# Each Entry retains the exact sealed fields and supplied approval list;
+# Entry.plan_certificate is None because graph evidence is not a native OID.
+# Every member agrees on book, trunk and principal. Request and preview also
+# agree on class, key and approvals; both complete transcripts are authenticated.
+# The request and cumulative prepared Entry bytes each keep their own 32 MiB
+# bound. MAX_BATCH_PLAN_BYTES = 2*MAX_BATCH_BYTES
+#     + MAX_BATCH_ENTRIES*(MAX_PERIOD_REF_BYTES + 8) + 4096;
+# the extra per-member bytes charge both list-item length prefixes.
+# Hex transport needs twice the binary bound; this is not a capacity SLO.
+
+# Certificate authentication preimage, in exact order:
+# fixed("FA-BATCH-CERT\0") || u16 major || u16 minor
+# || book_id[16] || branch_id[16] || principal:u128
+# || capability_commitment[32] || intent_digest[32] || prepared_digest[32]
+# || effects_digest[32] || snapshot_seq:u64 || security_policy_epoch:u64
+# || option(expires_at:u64).
+# option is u8 0 (absent), or u8 1 followed by the u64 (present).
+# Canonical certificate appends authentication[32] to that preimage.
+# Authentication = fgdb_crypto::keyed_hash(
+#     derive_key(authentication_key_domain, book.seal_key), preimage).
+# FA domain_digest(D, parts) = BLAKE3(D || u32len(part1) || part1 || ...).
+# intent_digest = domain_digest(request_domain, [PostBatch.canonical_bytes]);
+# prepared_digest = domain_digest(prepared_domain, [prepared_transcript]);
+# certificate_digest = domain_digest(certificate_domain, [canonical certificate]);
+# plan_digest = domain_digest(plan_domain, [complete canonical plan]).
+# This binds ordering, exact sealed request content and every approval; the
+# ordinary batch retry digest over member identities is not used in its place.
+
+# effects_digest is the pinned substrate's WriteTxn::staged_effect_digest(),
+# consumed directly at b323bd17ceaf81e97ce89e43d8d9f6d5151695cf, after all members
+# and IntentOutcome/IN_BATCH effects, before this certificate's own retention.
+# It hashes the complete canonical LogicalDeltaTemplate, including projection,
+# reservation, application and usage changes; it is not a member-digest list.
+# Unlike FA codec framing, this substrate preimage uses BIG-ENDIAN u64s:
+# native_effect_domain || u64be(snapshot_seq) || u8 1
+#     || u64be(template_bytes.len) || template.canonical_bytes().
+# An absent prepared effect instead uses u8 0 without length/body; a successful
+# nonempty batch always has an outcome and therefore uses the u8 1 branch.
+# The digest describes canonical net effects, not the sequence of API calls.
+# Its basis binding requires the exact head for first commit: even unrelated
+# metadata publication invalidates the plan. Commit re-stages through the
+# production pipeline and compares complete effects, previews, periods and
+# policy epoch; any mismatch or publication conflict refuses with FA-REF-034.
+
+# The kernel stages the complete retention before returning a successful
+# rehearsal, then aborts. Commit retains one Certificate root, all necessary
+# object_storage.toml fragments (kind 3), and N+1 CITES edges from every member
+# and the IntentOutcome, in the same WriteTxn as the N entries and outcome.
+# Certificate VId is low128(domain_digest(retention_identity_domain,
+# [book_id, certificate_digest])), interpreted as little-endian u128.
+# The root has exactly FA_PAYLOAD (inline bytes or kind-3 manifest), FA_DIGEST
+# (full certificate digest) and BOOK_ID; root and fragments use Certificate.
+# Exact retry re-admits current caller authority, independently derives each
+# key/target-based member VId, and verifies original entry/outcome/certificate
+# rows, full retained bytes and links born at snapshot_seq+1. Later ordinary
+# publications are allowed on this retry path; copied/rewritten evidence and
+# an ordinary batch without the original retained plan are refused.
+# A private authenticated-batch token satisfies requires_dry_run only after
+# full MAC and capability matching. It does not grant trunk authority: Agent
+# rehearsals cannot publish and current holder, scope, expiry and revocation
+# checks precede history/outcome observation. New approvals require a new plan.
+
+# Capacity boundary: max_members is a request/decoder ceiling, not an accepted
+# native transaction size. The existing IntentOutcome remains one scalar;
+# its canonical body is 52 + 48*N bytes before native row/scalar framing and
+# must fit the pinned native 16384-byte row limit. Outcome storage has NOT
+# migrated to object fragments. Entry rows, transaction witnesses and all
+# other native resource limits also remain in force. A capacity failure
+# publishes nothing; this slice does not claim acceptance of 8190 members,
+# durable refused outcomes, atomic batch drafts or outsider-verifiable plans.

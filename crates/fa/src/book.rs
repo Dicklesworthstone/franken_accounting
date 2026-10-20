@@ -1397,6 +1397,37 @@ impl Book {
         )))
     }
 
+    /// Rehearse an atomic batch without publishing any member or consuming keys.
+    /// Every member runs the posting laws against the earlier members' staged
+    /// effects, so an invoice and its application can be reviewed together.
+    /// The portable plan binds the complete ordered request, resolved entries,
+    /// caller capability and snapshot. Any required approvals must exist first.
+    pub fn plan_batch(
+        &mut self,
+        batch: fa_intents::PostBatch,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::BatchPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.plan_batch_with_history(&purposes, batch, capability)
+        ))
+    }
+
+    /// Commit an exact reviewed batch and retain its certificate atomically.
+    /// Current authority and every member's accounting laws are rechecked;
+    /// a stale basis or different native effect refuses the complete batch.
+    /// An exact retry verifies and returns the original recorded outcome.
+    pub fn commit_batch_plan(
+        &mut self,
+        plan: fa_intents::BatchPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::BatchPosted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.commit_batch_plan(&purposes, plan, capability)
+        ))
+    }
+
     /// Commit an atomic batch of entries (plan §5.8): all or none, in order,
     /// each member seeing the earlier members' effects, with the batch's
     /// key-derived IntentOutcome. An identical retry returns the recorded
