@@ -96,15 +96,14 @@ pub fn verify_witnessed_bundle_for(
     receipt: Option<&[u8]>,
 ) -> Result<BundleReport, WitnessBundleError> {
     expected.validate()?;
-    if let BundleScope::Entries(leaves) = &expected.scope {
-        if leaves
+    if let BundleScope::Entries(leaves) = &expected.scope
+        && leaves
             .last()
             .is_some_and(|index| *index >= anchor.signed.checkpoint.leaf_count)
-        {
-            return Err(WitnessBundleError::Request(
-                "a requested leaf is outside the pinned prefix",
-            ));
-        }
+    {
+        return Err(WitnessBundleError::Request(
+            "a requested leaf is outside the pinned prefix",
+        ));
     }
     let receipt_length = receipt.map_or(0, <[u8]>::len);
     if receipt_length > MAX_WITNESSED_RECEIPT_BYTES {
