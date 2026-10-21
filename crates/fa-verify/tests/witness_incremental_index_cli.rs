@@ -11,14 +11,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const SECRET: &str = "INCREMENTAL_PRIVATE_PAYLOAD";
 
 fn decode(text: &str) -> Vec<u8> {
-    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap()).collect()
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 fn directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
-        let path = std::env::temp_dir().join(format!("fa-incremental-index-{}-{}",
-            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let path = std::env::temp_dir().join(format!(
+            "fa-incremental-index-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         match std::fs::create_dir(&path) {
             Ok(()) => return path,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -29,24 +35,38 @@ fn directory() -> PathBuf {
 
 fn args() -> (Vec<OsString>, PathBuf) {
     let dir = directory();
-    for (name, value) in [("old", vector::OLD), ("candidate", vector::CANDIDATE),
-        ("baseline", vector::BASELINE), ("consistency", vector::CONSISTENCY),
-        ("delta1", vector::DELTA_1), ("delta2", vector::DELTA_2), ("range", vector::RANGE)]
-    {
+    for (name, value) in [
+        ("old", vector::OLD),
+        ("candidate", vector::CANDIDATE),
+        ("baseline", vector::BASELINE),
+        ("consistency", vector::CONSISTENCY),
+        ("delta1", vector::DELTA_1),
+        ("delta2", vector::DELTA_2),
+        ("range", vector::RANGE),
+    ] {
         std::fs::write(dir.join(name), decode(value)).unwrap();
     }
     let mut args: Vec<OsString> = ["witness", "index"].map(OsString::from).into();
-    for (flag, name) in [("--previous", "old"), ("--checkpoint", "candidate"),
-        ("--consistency", "consistency"), ("--baseline-prefix", "baseline"),
-        ("--delta-record", "delta1"), ("--delta-record", "delta2")]
-    {
+    for (flag, name) in [
+        ("--previous", "old"),
+        ("--checkpoint", "candidate"),
+        ("--consistency", "consistency"),
+        ("--baseline-prefix", "baseline"),
+        ("--delta-record", "delta1"),
+        ("--delta-record", "delta2"),
+    ] {
         args.extend([flag.into(), dir.join(name).into_os_string()]);
     }
-    for (flag, value) in [("--expect-book", "42".repeat(16)), ("--expect-branch", "00".repeat(16)),
-        ("--expect-policy", "55".repeat(32)), ("--expect-previous-body", vector::OLD_BODY.into()),
-        ("--publisher-key", vector::PUBLISHER.into()), ("--witness-key", vector::WITNESS_A.into()),
-        ("--witness-key", vector::WITNESS_B.into()), ("--quorum", "2".into())]
-    {
+    for (flag, value) in [
+        ("--expect-book", "42".repeat(16)),
+        ("--expect-branch", "00".repeat(16)),
+        ("--expect-policy", "55".repeat(32)),
+        ("--expect-previous-body", vector::OLD_BODY.into()),
+        ("--publisher-key", vector::PUBLISHER.into()),
+        ("--witness-key", vector::WITNESS_A.into()),
+        ("--witness-key", vector::WITNESS_B.into()),
+        ("--quorum", "2".into()),
+    ] {
         args.extend([flag.into(), value.into()]);
     }
     args.push("--json".into());
@@ -54,7 +74,10 @@ fn args() -> (Vec<OsString>, PathBuf) {
 }
 
 fn run(args: &[OsString]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_fa-verify")).args(args).output().expect("execute offline verifier")
+    Command::new(env!("CARGO_BIN_EXE_fa-verify"))
+        .args(args)
+        .output()
+        .expect("execute offline verifier")
 }
 
 fn set(args: &mut [OsString], flag: &str, value: impl Into<OsString>) {
@@ -98,17 +121,28 @@ fn nonempty_incremental_index_and_requested_range_verify_without_resending_old_p
     assert!(json.contains("\"appended_records\":\"2\""));
     assert!(json.contains(vector::INDEX_ROOT));
     assert!(json.contains("\"range\":null"));
-    input.extend(["--scope-proof".into(), dir.join("range").into_os_string(),
-        "--expect-account".into(), format!("{:032x}", 10).into(),
-        "--expect-days".into(), "-20:100".into()]);
+    input.extend([
+        "--scope-proof".into(),
+        dir.join("range").into_os_string(),
+        "--expect-account".into(),
+        format!("{:032x}", 10).into(),
+        "--expect-days".into(),
+        "-20:100".into(),
+    ]);
     let json = result(run(&input), 0);
     assert!(json.contains("scope_index_complete"));
-    for i in [0, 2] { assert!(json.contains(&format!("\"leaf_index\":\"{i}\""))); }
+    for i in [0, 2] {
+        assert!(json.contains(&format!("\"leaf_index\":\"{i}\"")));
+    }
     assert!(!json.contains("\"leaf_index\":\"1\""));
     assert_eq!(result(run(&input), 0), json);
-    for (name, value) in [("old", vector::OLD), ("candidate", vector::CANDIDATE),
-        ("baseline", vector::BASELINE), ("delta1", vector::DELTA_1), ("delta2", vector::DELTA_2)]
-    {
+    for (name, value) in [
+        ("old", vector::OLD),
+        ("candidate", vector::CANDIDATE),
+        ("baseline", vector::BASELINE),
+        ("delta1", vector::DELTA_1),
+        ("delta2", vector::DELTA_2),
+    ] {
         assert_eq!(std::fs::read(dir.join(name)).unwrap(), decode(value));
     }
     set(&mut input, "--expect-account", format!("{:032x}", 20));
@@ -128,7 +162,11 @@ fn omitted_reordered_duplicated_and_envelope_only_suffixes_cannot_downgrade() {
     remove(&mut omitted, "--delta-record");
     result(run(&omitted), 8);
     let mut duplicate = input.clone();
-    set(&mut duplicate, "--delta-record", dir.join("delta2").into_os_string());
+    set(
+        &mut duplicate,
+        "--delta-record",
+        dir.join("delta2").into_os_string(),
+    );
     result(run(&duplicate), 8);
     std::fs::write(dir.join("delta1"), decode(vector::DELTA_2)).unwrap();
     std::fs::write(dir.join("delta2"), decode(vector::DELTA_1)).unwrap();
@@ -147,7 +185,11 @@ fn genuine_signatures_do_not_excuse_wrong_index_roots_old_recorded_sequences_or_
         result(run(&input), 8);
     }
     std::fs::write(dir.join("candidate"), decode(vector::BACKFILL)).unwrap();
-    std::fs::write(dir.join("consistency"), decode(vector::BACKFILL_CONSISTENCY)).unwrap();
+    std::fs::write(
+        dir.join("consistency"),
+        decode(vector::BACKFILL_CONSISTENCY),
+    )
+    .unwrap();
     std::fs::write(dir.join("delta2"), decode(vector::BACKFILL_RECORD)).unwrap();
     let mut backfill = input;
     remove(&mut backfill, "--delta-record");
@@ -158,14 +200,22 @@ fn genuine_signatures_do_not_excuse_wrong_index_roots_old_recorded_sequences_or_
 #[test]
 fn pin_binding_and_baseline_integrity_are_checked_before_candidate_file_access() {
     let (mut input, dir) = args();
-    set(&mut input, "--checkpoint", dir.join("missing-candidate").into_os_string());
+    set(
+        &mut input,
+        "--checkpoint",
+        dir.join("missing-candidate").into_os_string(),
+    );
     set(&mut input, "--expect-previous-body", "00".repeat(32));
     assert!(result(run(&input), 8).contains("retained body digest"));
     set(&mut input, "--expect-previous-body", vector::OLD_BODY);
     let baseline = decode(vector::BASELINE);
     let mut corrupt = baseline.clone();
     *corrupt.last_mut().unwrap() ^= 1;
-    for bytes in [decode(vector::LEGACY), baseline[..baseline.len() - 1].to_vec(), corrupt] {
+    for bytes in [
+        decode(vector::LEGACY),
+        baseline[..baseline.len() - 1].to_vec(),
+        corrupt,
+    ] {
         std::fs::write(dir.join("baseline"), bytes).unwrap();
         result(run(&input), 8); // not the missing-candidate I/O error
     }
@@ -176,23 +226,45 @@ fn pin_binding_and_baseline_integrity_are_checked_before_candidate_file_access()
 #[test]
 fn all_scope_and_delta_syntax_is_validated_before_io() {
     let (mut base, dir) = args();
-    set(&mut base, "--previous", dir.join("missing-old").into_os_string());
-    for extra in [vec!["--baseline-prefix", "other"], vec!["--json"], vec!["--delta-record"],
-        vec!["--scope-proof", "range"], vec!["--expect-account", "aa"],
-        vec!["--scope-proof", "range", "--expect-account", "aa", "--expect-days", "0:1"],
-        vec!["--recorded-prefix", "candidate-prefix"]]
-    {
+    set(
+        &mut base,
+        "--previous",
+        dir.join("missing-old").into_os_string(),
+    );
+    for extra in [
+        vec!["--baseline-prefix", "other"],
+        vec!["--json"],
+        vec!["--delta-record"],
+        vec!["--scope-proof", "range"],
+        vec!["--expect-account", "aa"],
+        vec![
+            "--scope-proof",
+            "range",
+            "--expect-account",
+            "aa",
+            "--expect-days",
+            "0:1",
+        ],
+        vec!["--recorded-prefix", "candidate-prefix"],
+    ] {
         let mut bad = base.clone();
         bad.extend(extra.into_iter().map(OsString::from));
         result(run(&bad), 2);
     }
-    for flag in ["--baseline-prefix", "--previous", "--expect-previous-body", "--consistency"] {
+    for flag in [
+        "--baseline-prefix",
+        "--previous",
+        "--expect-previous-body",
+        "--consistency",
+    ] {
         let mut bad = base.clone();
         remove(&mut bad, flag);
         result(run(&bad), 2);
     }
     let mut too_many = base.clone();
-    for _ in 0..4095 { too_many.extend(["--delta-record".into(), "absent".into()]); }
+    for _ in 0..4095 {
+        too_many.extend(["--delta-record".into(), "absent".into()]);
+    }
     result(run(&too_many), 2);
     result(run(&base), 5);
 }
@@ -210,7 +282,10 @@ fn all_files_share_one_budget_and_corrupt_last_proofs_never_emit_partial_success
     std::fs::write(dir.join("delta2"), bad).unwrap();
     result(run(&input), 8);
     for name in ["delta1", "delta2"] {
-        let file = std::fs::OpenOptions::new().write(true).open(dir.join(name)).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join(name))
+            .unwrap();
         file.set_len(32 * 1024 * 1024 + 1).unwrap();
     }
     assert!(result(run(&input), 8).contains("byte bound"));
@@ -235,7 +310,10 @@ fn empty_delta_still_requires_continuity_and_the_candidate_index_root() {
 
 #[test]
 fn help_and_human_output_describe_limits_without_leaking_payloads() {
-    for words in [vec!["witness", "--help"], vec!["witness", "index", "--help"]] {
+    for words in [
+        vec!["witness", "--help"],
+        vec!["witness", "index", "--help"],
+    ] {
         let output = run(&words.into_iter().map(OsString::from).collect::<Vec<_>>());
         assert_eq!(output.status.code(), Some(0));
         assert!(output.stderr.is_empty());
@@ -260,15 +338,25 @@ fn help_and_human_output_describe_limits_without_leaking_payloads() {
 fn non_utf8_paths_work_while_non_ascii_query_scalars_refuse() {
     use std::os::unix::ffi::OsStringExt;
     let (mut input, dir) = args();
-    for (flag, name) in [("--baseline-prefix", "baseline"), ("--delta-record", "delta1")] {
-        let path = dir.join(OsString::from_vec(format!("{name}-").bytes().chain([255]).collect()));
+    for (flag, name) in [
+        ("--baseline-prefix", "baseline"),
+        ("--delta-record", "delta1"),
+    ] {
+        let path = dir.join(OsString::from_vec(
+            format!("{name}-").bytes().chain([255]).collect(),
+        ));
         std::fs::copy(dir.join(name), &path).unwrap();
         set(&mut input, flag, path.into_os_string());
     }
     result(run(&input), 0);
-    input.extend(["--scope-proof".into(), dir.join("range").into_os_string(),
-        "--expect-account".into(), OsString::from_vec(vec![255]),
-        "--expect-days".into(), "-20:100".into()]);
+    input.extend([
+        "--scope-proof".into(),
+        dir.join("range").into_os_string(),
+        "--expect-account".into(),
+        OsString::from_vec(vec![255]),
+        "--expect-days".into(),
+        "-20:100".into(),
+    ]);
     result(run(&input), 2);
 }
 

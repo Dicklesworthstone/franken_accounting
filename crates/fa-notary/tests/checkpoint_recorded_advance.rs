@@ -130,18 +130,21 @@ fn valid_recorded_extension_keeps_late_effective_entries_and_releases_no_payload
     let pin = retained(&old);
     let before = pin.clone();
     let proof = new.consistency_proof(&old.statement()).unwrap().unwrap();
-    let result = verify_recorded_checkpoint_advance(
-        &pin,
-        &signed(&new, true),
-        &proof,
-        &complete(&new),
-    )
-    .unwrap();
+    let result =
+        verify_recorded_checkpoint_advance(&pin, &signed(&new, true), &proof, &complete(&new))
+            .unwrap();
     assert_eq!(pin, before);
     assert_eq!(result.status(), AdvanceStatus::Advanced);
     assert_eq!(result.appended_records(), 2);
     assert_eq!(result.previous(), &pin.signed_checkpoint().checkpoint);
-    assert_eq!(result.checkpoint().signed_checkpoint().checkpoint.through_seq, 20);
+    assert_eq!(
+        result
+            .checkpoint()
+            .signed_checkpoint()
+            .checkpoint
+            .through_seq,
+        20
+    );
     assert_eq!(
         result.clone().into_checkpoint(),
         result.checkpoint().clone()
@@ -182,12 +185,7 @@ fn an_empty_tree_at_a_nonzero_horizon_still_excludes_earlier_insertions() {
         let candidate = signed(&new, true);
         let proof = new.consistency_proof(&old.statement()).unwrap().unwrap();
         assert!(verify_checkpoint_advance(&pin, &candidate, &proof).is_ok());
-        let result = verify_recorded_checkpoint_advance(
-            &pin,
-            &candidate,
-            &proof,
-            &complete(&new),
-        );
+        let result = verify_recorded_checkpoint_advance(&pin, &candidate, &proof, &complete(&new));
         if succeeds {
             assert_eq!(result.unwrap().appended_records(), 1);
         } else {
@@ -207,17 +205,16 @@ fn unchanged_or_later_empty_advancements_still_need_complete_witnesses() {
     for rows in [vec![], vec![(7, 100)]] {
         let old = journal(10, &rows);
         let pin = retained(&old);
-        for (through, status) in [(10, AdvanceStatus::Unchanged), (20, AdvanceStatus::Advanced)] {
+        for (through, status) in [
+            (10, AdvanceStatus::Unchanged),
+            (20, AdvanceStatus::Advanced),
+        ] {
             let new = journal(through, &rows);
             let candidate = signed(&new, true);
             let proof = new.consistency_proof(&old.statement()).unwrap().unwrap();
-            let result = verify_recorded_checkpoint_advance(
-                &pin,
-                &candidate,
-                &proof,
-                &complete(&new),
-            )
-            .unwrap();
+            let result =
+                verify_recorded_checkpoint_advance(&pin, &candidate, &proof, &complete(&new))
+                    .unwrap();
             assert_eq!(result.status(), status);
             assert_eq!(result.appended_records(), 0);
             assert!(matches!(
@@ -235,7 +232,10 @@ fn a_signed_retained_boundary_cannot_hide_its_own_future_record() {
     false_old.through_seq = CommitSeq(10); // deliberate false signed statement
     let pin = retained(&false_old);
     let new = journal(20, &[(11, 100)]);
-    let proof = new.consistency_proof(&false_old.statement()).unwrap().unwrap();
+    let proof = new
+        .consistency_proof(&false_old.statement())
+        .unwrap()
+        .unwrap();
     let candidate = signed(&new, true);
     assert!(verify_checkpoint_advance(&pin, &candidate, &proof).is_ok());
     assert_eq!(
@@ -306,10 +306,11 @@ fn native_balance_witnesses_retain_their_full_fold_obligation() {
     let pin = retained(&old);
     let candidate = signed(&new, true);
     let proof = new.consistency_proof(&old.statement()).unwrap().unwrap();
-    let mut balance = new.balance_proof_complete(VId(10), 1, None, &[]).unwrap().unwrap();
-    assert!(
-        verify_recorded_checkpoint_advance(&pin, &candidate, &proof, &balance).is_ok()
-    );
+    let mut balance = new
+        .balance_proof_complete(VId(10), 1, None, &[])
+        .unwrap()
+        .unwrap();
+    assert!(verify_recorded_checkpoint_advance(&pin, &candidate, &proof, &balance).is_ok());
     let format_length = u32::from_le_bytes(balance[..4].try_into().unwrap()) as usize;
     let debit = 4 + format_length + fa_verify::Checkpoint::ENCODED_LEN + 16 + 4 + 1;
     balance[debit] ^= 1;

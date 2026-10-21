@@ -11,8 +11,8 @@ use fa_journal::refusal::{Outcome, Refusal, exit};
 use fa_model::Writer;
 
 use super::{
-    MAX_ENVELOPE_BYTES, MAX_PREFIX_LEAVES, MAX_PREFIX_PROOF_BYTES, MAX_RECORD_BYTES,
-    MAX_SELECTORS, drift,
+    MAX_ENVELOPE_BYTES, MAX_PREFIX_LEAVES, MAX_PREFIX_PROOF_BYTES, MAX_RECORD_BYTES, MAX_SELECTORS,
+    drift,
 };
 use crate::journal::INCLUSION_FORMAT;
 use crate::tree::{Tree, leaf_hash};
@@ -86,7 +86,9 @@ fn limit(what: &'static str) -> Refusal {
 }
 
 fn charge(total: &mut usize, amount: usize, budget: usize) -> Result<(), Refusal> {
-    *total = total.checked_add(amount).filter(|n| *n <= budget)
+    *total = total
+        .checked_add(amount)
+        .filter(|n| *n <= budget)
         .ok_or_else(|| limit("remaining encoded-byte"))?;
     Ok(())
 }
@@ -125,10 +127,14 @@ impl Journal {
         if self.leaves.len() > MAX_PREFIX_LEAVES {
             return Ok(Err(limit("65,536-leaf")));
         }
-        if previous.book_id != self.book_id || previous.branch_id != self.branch_id
-            || previous.through_seq > self.through_seq || previous.leaf_count > self.len()
+        if previous.book_id != self.book_id
+            || previous.branch_id != self.branch_id
+            || previous.through_seq > self.through_seq
+            || previous.leaf_count > self.len()
         {
-            return Ok(Err(drift("the retained statement is not an earlier coordinate of this journal")));
+            return Ok(Err(drift(
+                "the retained statement is not an earlier coordinate of this journal",
+            )));
         }
         // The previous count is now bounded by this host's actual vector size.
         let first = previous.leaf_count as usize;
@@ -137,7 +143,11 @@ impl Journal {
         }
         let consistency = match self.consistency_proof(previous)? {
             Some(bytes) => bytes,
-            None => return Ok(Err(drift("the retained journal root is not a prefix of this history"))),
+            None => {
+                return Ok(Err(drift(
+                    "the retained journal root is not a prefix of this history",
+                )));
+            }
         };
         let mut size = 0;
         if let Err(refusal) = charge(&mut size, consistency.len(), remaining_bytes) {
@@ -154,20 +164,31 @@ impl Journal {
                 return Ok(Err(limit("envelope-selector")));
             }
             let position = (envelope.commit_seq, envelope.within_commit_ordinal);
-            if envelope.book_id != self.book_id || envelope.branch_id != self.branch_id
+            if envelope.book_id != self.book_id
+                || envelope.branch_id != self.branch_id
                 || envelope.commit_seq > self.through_seq
                 || before.is_some_and(|prior| prior >= position)
                 || ((index < first) != (envelope.commit_seq <= previous.through_seq))
             {
-                return Ok(Err(drift(format!("leaf {index} contradicts journal order or the retained recorded boundary"))));
+                return Ok(Err(drift(format!(
+                    "leaf {index} contradicts journal order or the retained recorded boundary"
+                ))));
             }
             before = Some(position);
-            if envelope.canonical_bytes().map_err(fa_model::EntryError::Encode)? != leaf.envelope_bytes {
-                return Ok(Err(drift(format!("leaf {index} disagrees with its canonical envelope"))));
+            if envelope
+                .canonical_bytes()
+                .map_err(fa_model::EntryError::Encode)?
+                != leaf.envelope_bytes
+            {
+                return Ok(Err(drift(format!(
+                    "leaf {index} disagrees with its canonical envelope"
+                ))));
             }
             let hash = leaf_hash(&leaf.envelope_bytes);
             if hash != leaf.hash {
-                return Ok(Err(drift(format!("leaf {index} has an inconsistent cached hash"))));
+                return Ok(Err(drift(format!(
+                    "leaf {index} has an inconsistent cached hash"
+                ))));
             }
             rebuilt.push(hash);
             if index < first {
@@ -177,7 +198,9 @@ impl Journal {
                 return Ok(Err(limit("8 MiB record-payload or u32 split")));
             }
             if leaf.authenticated_record()?.is_none() {
-                return Ok(Err(drift(format!("appended leaf {index} disagrees with its record payload"))));
+                return Ok(Err(drift(format!(
+                    "appended leaf {index} disagrees with its record payload"
+                ))));
             }
             let Some(path) = self.leaf_path(index) else {
                 return Ok(Err(drift("an appended leaf has no accumulator path")));
@@ -194,11 +217,16 @@ impl Journal {
             }
         }
         if rebuilt.root() != self.root() || rebuilt.root_at(first) != Some(previous.root) {
-            return Ok(Err(drift("the current envelopes do not reproduce the retained and candidate roots")));
+            return Ok(Err(drift(
+                "the current envelopes do not reproduce the retained and candidate roots",
+            )));
         }
         let checkpoint = self.statement();
         let mut records = Vec::new();
-        if records.try_reserve_exact(self.leaves.len() - first).is_err() {
+        if records
+            .try_reserve_exact(self.leaves.len() - first)
+            .is_err()
+        {
             return Ok(Err(limit("record allocation")));
         }
         for index in first..self.leaves.len() {
@@ -210,17 +238,28 @@ impl Journal {
             let mut w = Writer::with_capacity(length);
             w.bytes(INCLUSION_FORMAT);
             checkpoint.encode(&mut w);
-            w.u64(index as u64).bytes(&leaf.envelope_bytes).u8(1)
-                .u32(leaf.proposal_len as u32).bytes(&leaf.payload);
-            w.list(&path, |w, digest| { w.fixed(digest); });
+            w.u64(index as u64)
+                .bytes(&leaf.envelope_bytes)
+                .u8(1)
+                .u32(leaf.proposal_len as u32)
+                .bytes(&leaf.payload);
+            w.list(&path, |w, digest| {
+                w.fixed(digest);
+            });
             let bytes = w.finish().map_err(fa_model::EntryError::Encode)?;
             if bytes.len() != length {
-                return Ok(Err(drift("suffix serialization disagrees with its framed size")));
+                return Ok(Err(drift(
+                    "suffix serialization disagrees with its framed size",
+                )));
             }
             records.push(bytes);
         }
         Ok(Ok(RecordSuffix {
-            previous: *previous, checkpoint, consistency, records, encoded_bytes: size,
+            previous: *previous,
+            checkpoint,
+            consistency,
+            records,
+            encoded_bytes: size,
         }))
     }
 }

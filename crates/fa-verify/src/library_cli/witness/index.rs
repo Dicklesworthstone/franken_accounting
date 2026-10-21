@@ -62,18 +62,26 @@ struct Request {
 }
 
 fn interval(value: &OsString) -> Result<(i32, i32), Failure> {
-    let value = value.to_str().ok_or_else(|| Failure::usage("--expect-days must be ASCII"))?;
-    let (first, last) = value.split_once(':')
+    let value = value
+        .to_str()
+        .ok_or_else(|| Failure::usage("--expect-days must be ASCII"))?;
+    let (first, last) = value
+        .split_once(':')
         .ok_or_else(|| Failure::usage("--expect-days requires FIRST:LAST"))?;
     let day = |text: &str| {
         let digits = text.strip_prefix('-').unwrap_or(text);
         if text.len() > 11 || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(Failure::usage("civil days must be signed decimal i32 values"));
+            return Err(Failure::usage(
+                "civil days must be signed decimal i32 values",
+            ));
         }
-        text.parse::<i32>().map_err(|_| Failure::usage("civil day exceeds i32"))
+        text.parse::<i32>()
+            .map_err(|_| Failure::usage("civil day exceeds i32"))
     };
     let pair = (day(first)?, day(last)?);
-    if pair.0 > pair.1 { return Err(Failure::usage("civil-day interval is reversed")); }
+    if pair.0 > pair.1 {
+        return Err(Failure::usage("civil-day interval is reversed"));
+    }
     Ok(pair)
 }
 
@@ -88,10 +96,16 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             at += 1;
             continue;
         }
-        let name = argument.to_str().ok_or_else(|| Failure::usage("unknown index option"))?;
-        let value = args.get(at + 1).ok_or_else(|| Failure::usage(format!("{name} requires a value")))?;
+        let name = argument
+            .to_str()
+            .ok_or_else(|| Failure::usage("unknown index option"))?;
+        let value = args
+            .get(at + 1)
+            .ok_or_else(|| Failure::usage(format!("{name} requires a value")))?;
         if value.is_empty() || value.to_str().is_some_and(|s| s.starts_with("--")) {
-            return Err(Failure::usage(format!("{name} requires a value; use ./ for paths beginning with --")));
+            return Err(Failure::usage(format!(
+                "{name} requires a value; use ./ for paths beginning with --"
+            )));
         }
         if name == "--delta-record" {
             if records.len() == MAX_PRODUCTION_RECORDS {
@@ -104,10 +118,21 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
                 "--scope-proof" => Some(&mut scope),
                 "--expect-account" => Some(&mut account),
                 "--expect-days" => Some(&mut days),
-                "--checkpoint" | "--previous" | "--expect-previous-body" | "--consistency"
-                    | "--expect-book" | "--expect-branch" | "--expect-policy"
-                    | "--publisher-key" | "--witness-key" | "--quorum" => None,
-                _ => return Err(Failure::usage("unknown option; run fa-verify witness index --help")),
+                "--checkpoint"
+                | "--previous"
+                | "--expect-previous-body"
+                | "--consistency"
+                | "--expect-book"
+                | "--expect-branch"
+                | "--expect-policy"
+                | "--publisher-key"
+                | "--witness-key"
+                | "--quorum" => None,
+                _ => {
+                    return Err(Failure::usage(
+                        "unknown option; run fa-verify witness index --help",
+                    ));
+                }
             };
             if let Some(slot) = slot {
                 if slot.replace(value).is_some() {
@@ -126,14 +151,25 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             let (from, to) = interval(days)?;
             Some((PathBuf::from(path), ScopeClaim { account, from, to }))
         }
-        _ => return Err(Failure::usage("--scope-proof, --expect-account and --expect-days are required together")),
+        _ => {
+            return Err(Failure::usage(
+                "--scope-proof, --expect-account and --expect-days are required together",
+            ));
+        }
     };
     let baseline = PathBuf::from(super::required(baseline, "--baseline-prefix")?);
     let anchor = super::parse(&anchor)?;
     if anchor.advance.is_none() {
-        return Err(Failure::usage("index advancement requires --previous, --expect-previous-body and --consistency"));
+        return Err(Failure::usage(
+            "index advancement requires --previous, --expect-previous-body and --consistency",
+        ));
     }
-    Ok(Request { anchor, baseline, records, range })
+    Ok(Request {
+        anchor,
+        baseline,
+        records,
+        range,
+    })
 }
 
 fn read(path: &Path, bound: usize, remaining: &mut usize) -> Result<Vec<u8>, Failure> {
@@ -147,14 +183,23 @@ fn verify(args: &[OsString], json: bool) -> Result<String, Failure> {
         return Ok(HELP.into());
     }
     let request = parse(args)?;
-    let advance = request.anchor.advance.as_ref()
+    let advance = request
+        .anchor
+        .advance
+        .as_ref()
         .ok_or_else(|| Failure::usage("missing retained checkpoint options"))?;
     let mut remaining = MAX_PRODUCTION_BYTES;
-    let bytes = read(&advance.previous, MAX_WITNESSED_CHECKPOINT_BYTES, &mut remaining)?;
+    let bytes = read(
+        &advance.previous,
+        MAX_WITNESSED_CHECKPOINT_BYTES,
+        &mut remaining,
+    )?;
     let previous = verify_witnessed_checkpoint(&bytes, &request.anchor.policy)
         .map_err(|e| Failure::verification(e.to_string()))?;
     if previous.signed_checkpoint().body_digest != advance.expected_body {
-        return Err(Failure::verification("previous checkpoint does not match the independently retained body digest"));
+        return Err(Failure::verification(
+            "previous checkpoint does not match the independently retained body digest",
+        ));
     }
     drop(bytes);
     // An authentic previous pin and complete baseline are required before any
@@ -163,27 +208,52 @@ fn verify(args: &[OsString], json: bool) -> Result<String, Failure> {
     let baseline = IncrementalPayloadIndex::verify(&bytes, &previous)
         .map_err(|e| Failure::verification(e.to_string()))?;
     drop(bytes);
-    let candidate = read(&request.anchor.path, MAX_WITNESSED_CHECKPOINT_BYTES, &mut remaining)?;
-    let consistency = read(&advance.proof, MAX_WITNESS_CONSISTENCY_BYTES, &mut remaining)?;
+    let candidate = read(
+        &request.anchor.path,
+        MAX_WITNESSED_CHECKPOINT_BYTES,
+        &mut remaining,
+    )?;
+    let consistency = read(
+        &advance.proof,
+        MAX_WITNESS_CONSISTENCY_BYTES,
+        &mut remaining,
+    )?;
     let mut records = Vec::new();
-    records.try_reserve_exact(request.records.len())
+    records
+        .try_reserve_exact(request.records.len())
         .map_err(|_| Failure::verification("delta allocation failed"))?;
     for path in &request.records {
         records.push(read(path, MAX_PRODUCTION_BYTES, &mut remaining)?);
     }
     let slices: Vec<_> = records.iter().map(Vec::as_slice).collect();
-    let current = baseline.advance(&candidate, &consistency, &slices)
+    let current = baseline
+        .advance(&candidate, &consistency, &slices)
         .map_err(|e| Failure::verification(e.to_string()))?;
     drop(slices);
     drop(records);
     drop(candidate);
     drop(consistency);
-    let range = request.range.as_ref().map(|(path, claim)| {
-        let bytes = read(path, MAX_PRODUCTION_BYTES, &mut remaining)?;
-        verify_scope_with_payload_index(&bytes, current.checkpoint().signed_checkpoint(), claim, current.index())
+    let range = request
+        .range
+        .as_ref()
+        .map(|(path, claim)| {
+            let bytes = read(path, MAX_PRODUCTION_BYTES, &mut remaining)?;
+            verify_scope_with_payload_index(
+                &bytes,
+                current.checkpoint().signed_checkpoint(),
+                claim,
+                current.index(),
+            )
             .map_err(|e| Failure::verification(e.to_string()))
-    }).transpose()?;
-    let text = render(&current, &previous, range.as_ref(), MAX_PRODUCTION_BYTES - remaining, json);
+        })
+        .transpose()?;
+    let text = render(
+        &current,
+        &previous,
+        range.as_ref(),
+        MAX_PRODUCTION_BYTES - remaining,
+        json,
+    );
     if text.len() > MAX_PRODUCTION_BYTES {
         return Err(Failure::verification("index report exceeds 64 MiB"));
     }
@@ -193,10 +263,18 @@ fn verify(args: &[OsString], json: bool) -> Result<String, Failure> {
 pub(super) fn run(args: &[OsString]) -> Output {
     let json = args.iter().any(|arg| arg == "--json");
     match verify(args, json) {
-        Ok(report) => Output { exit: 0, stdout: format!("{report}\n"), stderr: String::new() },
+        Ok(report) => Output {
+            exit: 0,
+            stdout: format!("{report}\n"),
+            stderr: String::new(),
+        },
         Err(error) => Output {
             exit: i32::from(error.exit),
-            stdout: if json { format!("{}\n", error.json()) } else { String::new() },
+            stdout: if json {
+                format!("{}\n", error.json())
+            } else {
+                String::new()
+            },
             stderr: format!("fa-verify: {}\n", error.message),
         },
     }
@@ -214,33 +292,61 @@ fn render(
     let cp = &signed.checkpoint;
     let old = previous.signed_checkpoint();
     let appended = cp.leaf_count - old.checkpoint.leaf_count;
-    let continuity = if cp.through_seq == old.checkpoint.through_seq { "unchanged" } else { "advanced" };
+    let continuity = if cp.through_seq == old.checkpoint.through_seq {
+        "unchanged"
+    } else {
+        "advanced"
+    };
     if !json {
-        let query = range.map_or_else(|| "No account-range query was requested.".into(), |r| format!(
-            "Account {:032x}, days {} through {}: {} complete matching leaves (scope: {}).",
-            r.account, r.from, r.to, r.leaves.len(), r.scope,
-        ));
+        let query = range.map_or_else(
+            || "No account-range query was requested.".into(),
+            |r| {
+                format!(
+                    "Account {:032x}, days {} through {}: {} complete matching leaves (scope: {}).",
+                    r.account,
+                    r.from,
+                    r.to,
+                    r.leaves.len(),
+                    r.scope,
+                )
+            },
+        );
         return format!(
             "Verified incremental scope index: {continuity}, {appended} appended records, {} total tuples.\nCheckpoint body {} at sequence {}; index root {}.\nPublisher and {} witnesses verified ({} required). Recorded boundary verified.\n{query}\nWhole-baseline and suffix disclosure grants no authority. Global freshness, economic truth, key rotation and durable pin storage were not checked. No pin or payload bytes were written.",
-            current.index().tuple_count(), hex(&signed.body_digest), cp.through_seq,
-            hex(current.index().root()), pin.witnesses().len(), pin.required_witnesses(),
+            current.index().tuple_count(),
+            hex(&signed.body_digest),
+            cp.through_seq,
+            hex(current.index().root()),
+            pin.witnesses().len(),
+            pin.required_witnesses(),
         );
     }
     object([
         ("event", quote("proof_verified")),
         ("proof_kind", quote("witnessed_index_advance")),
         ("verified", "true".into()),
-        ("checkpoint", object([
-            ("book_id", quote(&hex(&cp.book_id))), ("branch_id", quote(&hex(&cp.branch_id))),
-            ("through_seq", quote(&cp.through_seq.to_string())),
-            ("leaf_count", quote(&cp.leaf_count.to_string())),
-            ("body_digest", quote(&hex(&signed.body_digest))),
-            ("artifact_oid", quote(&hex(&signed.oid))), ("root", quote(&hex(&cp.root))),
-        ])),
-        ("previous_pin", object([
-            ("body_digest", quote(&hex(&old.body_digest))),
-            ("through_seq", quote(&old.checkpoint.through_seq.to_string())),
-        ])),
+        (
+            "checkpoint",
+            object([
+                ("book_id", quote(&hex(&cp.book_id))),
+                ("branch_id", quote(&hex(&cp.branch_id))),
+                ("through_seq", quote(&cp.through_seq.to_string())),
+                ("leaf_count", quote(&cp.leaf_count.to_string())),
+                ("body_digest", quote(&hex(&signed.body_digest))),
+                ("artifact_oid", quote(&hex(&signed.oid))),
+                ("root", quote(&hex(&cp.root))),
+            ]),
+        ),
+        (
+            "previous_pin",
+            object([
+                ("body_digest", quote(&hex(&old.body_digest))),
+                (
+                    "through_seq",
+                    quote(&old.checkpoint.through_seq.to_string()),
+                ),
+            ]),
+        ),
         ("continuity", quote(continuity)),
         ("continuity_scope", quote("consistency")),
         ("recorded_boundary", quote("verified")),
@@ -249,25 +355,64 @@ fn render(
         ("tuple_count", current.index().tuple_count().to_string()),
         ("appended_records", quote(&appended.to_string())),
         ("input_bytes", quote(&input_bytes.to_string())),
-        ("policy_oid", signed.witness_policy_oid.map_or_else(|| "null".into(), |id| quote(&hex(&id)))),
-        ("not_judged_signers", array(signed.not_judged.iter().map(|id| quote(&hex(id))))),
+        (
+            "policy_oid",
+            signed
+                .witness_policy_oid
+                .map_or_else(|| "null".into(), |id| quote(&hex(&id))),
+        ),
+        (
+            "not_judged_signers",
+            array(signed.not_judged.iter().map(|id| quote(&hex(id)))),
+        ),
         ("required_witnesses", pin.required_witnesses().to_string()),
-        ("witnesses", array(pin.witnesses().iter().map(|id| quote(&hex(id))))),
-        ("range", range.map_or_else(|| "null".into(), |r| object([
-            ("scope", quote(r.scope)), ("account", quote(&format!("{:032x}", r.account))),
-            ("from", quote(&r.from.to_string())), ("to", quote(&r.to.to_string())),
-            ("leaves", array(r.leaves.iter().map(|(i, envelope)| object([
-                ("leaf_index", quote(&i.to_string())),
-                ("record_digest", quote(&hex(&envelope.record_digest))),
-                ("recorded_at", quote(&envelope.commit_seq.to_string())),
-            ])))),
-        ]))),
+        (
+            "witnesses",
+            array(pin.witnesses().iter().map(|id| quote(&hex(id)))),
+        ),
+        (
+            "range",
+            range.map_or_else(
+                || "null".into(),
+                |r| {
+                    object([
+                        ("scope", quote(r.scope)),
+                        ("account", quote(&format!("{:032x}", r.account))),
+                        ("from", quote(&r.from.to_string())),
+                        ("to", quote(&r.to.to_string())),
+                        (
+                            "leaves",
+                            array(r.leaves.iter().map(|(i, envelope)| {
+                                object([
+                                    ("leaf_index", quote(&i.to_string())),
+                                    ("record_digest", quote(&hex(&envelope.record_digest))),
+                                    ("recorded_at", quote(&envelope.commit_seq.to_string())),
+                                ])
+                            })),
+                        ),
+                    ])
+                },
+            ),
+        ),
         ("pin_written", "false".into()),
-        ("not_checked", array([
-            "global_freshness", "authorization", "private_disclosure", "accounting_truth",
-            "policy_registration", "key_rotation", "key_validity_intervals",
-            "organizational_independence", "witness_authorization", "durable_pin_storage",
-        ].map(quote))),
+        (
+            "not_checked",
+            array(
+                [
+                    "global_freshness",
+                    "authorization",
+                    "private_disclosure",
+                    "accounting_truth",
+                    "policy_registration",
+                    "key_rotation",
+                    "key_validity_intervals",
+                    "organizational_independence",
+                    "witness_authorization",
+                    "durable_pin_storage",
+                ]
+                .map(quote),
+            ),
+        ),
         ("v", "1".into()),
     ])
 }
@@ -278,8 +423,20 @@ mod tests {
 
     #[test]
     fn intervals_are_exact_signed_i32_values_with_no_inference() {
-        assert_eq!(interval(&"-2147483648:2147483647".into()).ok(), Some((i32::MIN, i32::MAX)));
-        for text in ["all", "0", "1:0", "+1:2", "0:2147483648", "-2147483649:0", "0: 1", "０:1"] {
+        assert_eq!(
+            interval(&"-2147483648:2147483647".into()).ok(),
+            Some((i32::MIN, i32::MAX))
+        );
+        for text in [
+            "all",
+            "0",
+            "1:0",
+            "+1:2",
+            "0:2147483648",
+            "-2147483649:0",
+            "0: 1",
+            "０:1",
+        ] {
             assert!(interval(&text.into()).is_err(), "{text}");
         }
     }

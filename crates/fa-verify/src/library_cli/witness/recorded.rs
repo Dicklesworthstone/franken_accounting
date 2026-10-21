@@ -17,9 +17,13 @@ pub(super) struct Facts {
 }
 
 fn remaining(previous: usize, candidate: usize, proof: usize) -> Result<usize, Failure> {
-    previous.checked_add(candidate).and_then(|n| n.checked_add(proof))
+    previous
+        .checked_add(candidate)
+        .and_then(|n| n.checked_add(proof))
         .and_then(|used| MAX_RECORDED_ADVANCE_BYTES.checked_sub(used))
-        .ok_or_else(|| Failure::verification("recorded-continuity inputs exceed the shared 64 MiB budget"))
+        .ok_or_else(|| {
+            Failure::verification("recorded-continuity inputs exceed the shared 64 MiB budget")
+        })
 }
 
 pub(super) fn authenticate(
@@ -53,9 +57,25 @@ pub(super) fn human(facts: Option<&Facts>) -> String {
 
 pub(super) fn json(facts: Option<&Facts>) -> String {
     object([
-        ("status", quote(if facts.is_some() { "verified" } else { "not_checked" })),
-        ("scope", facts.map_or_else(|| "null".into(), |_| quote("recomputation"))),
-        ("appended_records", facts.map_or_else(|| "null".into(), |facts| quote(&facts.appended_records.to_string()))),
+        (
+            "status",
+            quote(if facts.is_some() {
+                "verified"
+            } else {
+                "not_checked"
+            }),
+        ),
+        (
+            "scope",
+            facts.map_or_else(|| "null".into(), |_| quote("recomputation")),
+        ),
+        (
+            "appended_records",
+            facts.map_or_else(
+                || "null".into(),
+                |facts| quote(&facts.appended_records.to_string()),
+            ),
+        ),
     ])
 }
 
@@ -65,10 +85,20 @@ mod tests {
 
     #[test]
     fn all_checkpoint_and_consistency_bytes_consume_the_same_input_budget() {
-        assert_eq!(remaining(10, 20, 30).ok(), Some(MAX_RECORDED_ADVANCE_BYTES - 60));
-        assert_eq!(remaining(MAX_RECORDED_ADVANCE_BYTES - 30, 20, 10).ok(), Some(0));
-        for sizes in [(MAX_RECORDED_ADVANCE_BYTES, 1, 0), (usize::MAX, 1, 0), (1, usize::MAX, 1)] {
-            let error = remaining(sizes.0, sizes.1, sizes.2).err().expect("budget refusal");
+        assert_eq!(
+            remaining(10, 20, 30).ok(),
+            Some(MAX_RECORDED_ADVANCE_BYTES - 60)
+        );
+        assert_eq!(
+            remaining(MAX_RECORDED_ADVANCE_BYTES - 30, 20, 10).ok(),
+            Some(0)
+        );
+        for sizes in [
+            (MAX_RECORDED_ADVANCE_BYTES, 1, 0),
+            (usize::MAX, 1, 0),
+            (1, usize::MAX, 1),
+        ] {
+            let error = remaining(sizes.0, sizes.1, sizes.2).expect_err("budget refusal");
             assert_eq!(error.exit, 8);
         }
     }
@@ -78,7 +108,10 @@ mod tests {
         assert!(json(None).contains("\"status\":\"not_checked\""));
         assert!(json(None).contains("\"scope\":null"));
         for count in [0, u64::MAX] {
-            let facts = Facts { appended_records: count, input_bytes: 100 };
+            let facts = Facts {
+                appended_records: count,
+                input_bytes: 100,
+            };
             let report = json(Some(&facts));
             assert!(report.contains("\"status\":\"verified\""));
             assert!(report.contains(&format!("\"appended_records\":\"{count}\"")));

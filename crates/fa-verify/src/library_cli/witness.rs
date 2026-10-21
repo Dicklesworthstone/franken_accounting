@@ -272,9 +272,8 @@ fn authenticate(request: &Request) -> Result<(WitnessedCheckpoint, Option<Contin
         let candidate = read_bounded(&request.path, MAX_WITNESSED_CHECKPOINT_BYTES)?;
         let proof = read_bounded(&advance.proof, MAX_WITNESS_CONSISTENCY_BYTES)?;
         if let Some(path) = &advance.recorded_prefix {
-            let (verified, facts) = recorded::authenticate(
-                &previous, &candidate, &proof, path, previous_bytes,
-            )?;
+            let (verified, facts) =
+                recorded::authenticate(&previous, &candidate, &proof, path, previous_bytes)?;
             let continuity = Continuity {
                 status: verified.status(),
                 previous_body: advance.expected_body,
@@ -342,7 +341,9 @@ fn render(
             ),
         );
         history.push(' ');
-        history.push_str(&recorded::human(continuity.and_then(|pin| pin.recorded.as_ref())));
+        history.push_str(&recorded::human(
+            continuity.and_then(|pin| pin.recorded.as_ref()),
+        ));
         return format!(
             "Verified checkpoint signatures: publisher and {} distinct witnesses ({} required of {} configured).\nBook {} branch {} at sequence {}, {} leaves.\nSigned body digest: {}.\nArtifact digest: {}.\n{} unknown signatures were not judged. {history}\nPolicy ID binding does not verify policy registration, witness authority, key validity/rotation, organizational independence, index construction or accounting truth. No pin was written.",
             report.witnesses().len(),
