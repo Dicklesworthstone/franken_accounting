@@ -690,6 +690,30 @@ agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §11.12 (Passed records the reason and the principal; the summary of uncorrected misstatements aggregates them); Appendix B PassAdjustment"
 
+[[rule]]
+name = "engagement-file"
+class = "EngagementControl"
+transition = "File"
+preparer_op = "produce"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §11.12 (an Engagement's workpaper index; additions after documentation completion carry added_after_completion, AS 1215.16)"
+
+[[rule]]
+name = "engagement-complete"
+class = "EngagementControl"
+transition = "Complete"
+preparer_op = "produce"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §11.12, AS 1215.15 (documentation_completion_date: within 45 days after the report release date)"
+
 # A RestatementCase's opening and its determination (plan §8.3; fa-75j4)
 # under `restate`. Dual control applies when the case's effect manifest is
 # approved (a later slice); opening a case and recording the determination
