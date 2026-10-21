@@ -1399,7 +1399,7 @@ impl Book {
         let cap = Capability::embedded(VId(u128::from(PREPARER)), &["hold"]).expect("hold");
         let req = LegalHoldRequest {
             principal: VId(u128::from(PREPARER)),
-            subjects,
+            reach: HoldReach::Subjects(subjects),
             authority,
             effective_date: DateDay::from_ymd(2026, 3, 20).unwrap(),
             idempotency_key: key.to_vec(),

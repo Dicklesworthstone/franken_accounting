@@ -117,8 +117,9 @@ pub use issuance::{
     first_issued_to, issuances, issue_statements, list_issuances, plan_issuance,
 };
 pub use legal_hold::{
-    LegalHold, LegalHoldPlaced, LegalHoldReleased, LegalHoldRequest, Pinned, ReleasePlan,
-    active_legal_holds, place_legal_hold, plan_release, read_legal_hold, release_legal_hold,
+    HoldReach, LegalHold, LegalHoldPlaced, LegalHoldReleased, LegalHoldRequest, Pinned,
+    ReleasePlan, active_legal_holds, place_legal_hold, plan_release, read_legal_hold,
+    release_legal_hold,
 };
 pub use limit::{
     BalanceLimit, Balanced, LimitCell, LimitScope, cell_account, limit_cell_vid, period_cell_vid,
@@ -173,9 +174,9 @@ pub use refusal::{FieldChange, KernelError, Locus, Refusal, RefusalDetail, Why, 
 pub use revaluation::{FxRevaluationRequest, PreparedFxRevaluation, prepare_fx_revaluation};
 pub use rows::{AccountRow, PeriodRow};
 pub use scenario::{
-    ScenarioBody, ScenarioClosure, ScenarioFork, ScenarioRecorded, ScenarioRequest, ScenarioState,
-    ScenarioView, discard_scenario, list_scenarios, open_scenario, plan_into_scenario,
-    read_scenario,
+    RECEIVERSHIP, ReceivershipForked, ScenarioBody, ScenarioClosure, ScenarioFork,
+    ScenarioRecorded, ScenarioRequest, ScenarioState, ScenarioView, discard_scenario,
+    fork_receivership, list_scenarios, open_scenario, plan_into_scenario, read_scenario,
 };
 pub use schedule::{
     DueReversal, ReversalBatch, ReversalStatus, Schedule, ScheduleVerification, due_reversals,

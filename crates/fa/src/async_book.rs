@@ -1590,6 +1590,36 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::open_scenario(&mut self.db, cx, &self.context, name, fork, req).await?)
     }
 
+    /// Fork the receivership (plan §15.6, fa-k07b): a book-scope legal hold
+    /// over the trunk recorded through the appointment sequence (`at`, the
+    /// head when absent) on the order `authority`, then the `receivership`
+    /// scenario forked there with the order as its assumption document.
+    pub async fn fork_receivership(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        authority: fa_model::Oid,
+        at: Option<CommitSeq>,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::ReceivershipForked> {
+        let hold_description = self.seal_text(
+            cx,
+            &format!("{description}: legal hold on the pre-appointment trunk"),
+        )?;
+        let req = self.scenario_request(cx, capability, effective_date, description)?;
+        Ok(fa_journal::fork_receivership(
+            &mut self.db,
+            cx,
+            &self.context,
+            authority,
+            at,
+            hold_description,
+            req,
+        )
+        .await?)
+    }
+
     /// Admit `capability` to change the REA schema before the change reads
     /// anything (doctrine 8).
     pub fn admit_rea_change(
@@ -2366,7 +2396,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         &mut self,
         cx: &PurposeContexts,
         capability: &fa_journal::Capability,
-        subjects: Vec<VId>,
+        reach: fa_journal::HoldReach,
         authority: &fa_model::Oid,
         idempotency_key: &[u8],
         effective_date: DateDay,
@@ -2375,7 +2405,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let description = self.seal_text(cx, description)?;
         let request = fa_journal::LegalHoldRequest {
             principal: capability.holder(),
-            subjects,
+            reach,
             authority: *authority,
             effective_date,
             idempotency_key: idempotency_key.to_vec(),

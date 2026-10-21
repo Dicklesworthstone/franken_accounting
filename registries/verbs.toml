@@ -80,14 +80,14 @@ usage = ["fad serve --book <dir> [--keys <file>] [--files-root <dir>] [--bootstr
 
 [[verb]]
 name = "book"
-summary = "Create a book directory (store + key file), or describe one."
+summary = "Create a book directory (store + key file), describe one, or fork its receivership."
 writes = true
-subcommands = ["create", "info"]
-flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods", "--time-zone", "--opening-date", "--entity"]
+subcommands = ["create", "info", "fork"]
+flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods", "--time-zone", "--opening-date", "--entity", "--authority", "--at", "--date", "--description"]
 switches = []
-events = ["book_created", "book"]
-exits = [0, 2, 3, 4, 5, 7]
-usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]]] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC] [--opening-date YYYY-MM-DD] [--entity <code>[:<name>][:<functional_unit>]]...", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info"]
+events = ["book_created", "book", "receivership_forked"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]]] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC] [--opening-date YYYY-MM-DD] [--entity <code>[:<name>][:<functional_unit>]]...", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info", "book fork receivership --authority <order-oid> [--at HEAD|<seq>] [--date YYYY-MM-DD] [--description <text>]   (plan §15.6, the receiver takes over; needs receivership, hold and post: a book-scope legal hold pins every entry, document and party recorded through the appointment sequence on the order's authority, and the `receivership` scenario forks at that sequence with the order as its assumption document; the estate posts with --scenario receivership and reads with --branch scenario:receivership until substrate branches land. Repeating the fork is its recorded outcome; another appointment is refused)"]
 example = "fa book create --book ./books/myco --name \"My Co\" --json"
 
 [[verb]]
@@ -400,11 +400,11 @@ name = "document"
 summary = "Record a source document, list the documents the book holds, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, record legal holds and attestations, or attach documents that support a committed entry."
 writes = true
 subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "import", "list"]
-flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant"]
+flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--through", "--scope", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant"]
 switches = ["--dry-run"]
 events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "legal_holds", "attestation_recorded", "evidence_attached", "import_recorded", "import_receipt", "documents"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> --subject <vid|oid>... [--effective YYYY-MM-DD] [--description <text>] [--key K]", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document attach <entry-vid|E:vid> --evidence <oid>[:role]...   (AttachEvidence, plan §9.2: documents that support a committed entry, recorded after it; the entry never changes, fa explain evidence lists the supplement, and the same attachment again is the recorded one)", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)"]
+usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> (--subject <vid|oid>... | --through HEAD|<seq>) [--effective YYYY-MM-DD] [--description <text>] [--key K]   (--through holds every entry, document and party recorded at or before that sequence, a book-scope hold (plan §15.6); --scope book is --through HEAD; repeating it is the recorded hold)", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document attach <entry-vid|E:vid> --evidence <oid>[:role]...   (AttachEvidence, plan §9.2: documents that support a committed entry, recorded after it; the entry never changes, fa explain evidence lists the supplement, and the same attachment again is the recorded one)", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)"]
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
 
 [[verb]]
@@ -1500,6 +1500,12 @@ doc = "Every restatement case of the book, by case number."
 fields = ["cases:[restatement_case]"]
 
 [[event]]
+name = "receivership_forked"
+book = true
+doc = "The receiver's fork (plan §15.6, `fa book fork receivership`): `hold_vid` is the book-scope legal hold over everything recorded through `appointment` on the order `authority` (recorded at `hold_recorded_at`), and `scenario` the `receivership` branch forked at `appointment`, its Open record `control_entry` recorded at `recorded_at`. `already_recorded` is true when an earlier fork recorded both. The estate posts with --scenario receivership; reads take --branch scenario:receivership."
+fields = ["appointment:seq", "authority:hex", "hold_vid:hex", "hold_recorded_at:seq", "scenario:hex", "branch:string", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
 name = "scenario_forked"
 book = true
 doc = "A scenario forked (or the recorded fork on an exact retry): its trunk fork sequence, the date its counterfactual starts, and the assumption documents it rests on. Nothing in a scenario is a trunk entry."
@@ -2081,8 +2087,8 @@ fields = ["oid:hex", "events:[custody_event]"]
 [[event]]
 name = "legal_hold_placed"
 book = true
-doc = "A journaled `LegalHold` (`HoldControl(Place)`, plan §8.5/§14.6) pinning its `subjects` against erasure, GC, and retention expiry."
-fields = ["hold_vid:hex", "subjects:[hex]", "authority:hex", "recorded_at:seq", "already_recorded:bool"]
+doc = "A journaled `LegalHold` (`HoldControl(Place)`, plan §8.5/§14.6) pinning its `subjects` against erasure, GC, and retention expiry. A book-scope hold has no subjects and a `through` sequence: it pins every entry, document and party recorded at or before it (null for a subject hold)."
+fields = ["hold_vid:hex", "subjects:[hex]", "through:seq?", "authority:hex", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
 name = "legal_hold_release_planned"
@@ -2099,8 +2105,8 @@ fields = ["release_vid:hex", "hold_vid:hex", "recorded_at:seq", "already_recorde
 [[event]]
 name = "legal_hold"
 book = true
-doc = "The current state and subject closure of one `LegalHold` vertex."
-fields = ["hold_vid:hex", "authority:hex", "subjects:[hex]", "issued_by:hex", "placed_at:seq", "active:bool", "release_vid:hex?", "released_at:seq?"]
+doc = "The current state and subject closure of one `LegalHold` vertex. `through` is a book-scope hold's sequence (it pins everything recorded at or before it), null for a hold that names its subjects."
+fields = ["hold_vid:hex", "authority:hex", "subjects:[hex]", "through:seq?", "issued_by:hex", "placed_at:seq", "active:bool", "release_vid:hex?", "released_at:seq?"]
 
 [[event]]
 name = "legal_holds"
@@ -3122,6 +3128,11 @@ reason = "host-only: an independently authorized Human explicitly releases one e
 verb = "bank"
 subcommand = "reconcile"
 reason = "host-only: an independently authorized Human reviews the exact source prefix and uses --yes with full-source authority to attest a statement close; launch-bound sessions inspect verified closes and drift through fa_bank_reconciliation"
+
+[[mcp.excluded]]
+verb = "book"
+subcommand = "fork"
+reason = "host-only: forking the receivership needs receivership, which plan §14.4 reserves to Human authority and no launch-bound MCP template or issued-token ceiling holds; bound sessions read the receivership branch through fa_scenario_manage and --branch scenario:receivership"
 
 [[mcp.excluded]]
 verb = "case"
@@ -4263,7 +4274,7 @@ verb = "document"
 subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "import", "list"]
 selector = "action"
 positionals = ["target?", "arg?"]
-flags = ["--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--run", "--kind"]
+flags = ["--chunk", "--to", "--authority", "--subject", "--through", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--run", "--kind"]
 switches = ["--dry-run"]
 stdin_property = "plan"
 stdin_kind = "string"
@@ -4710,6 +4721,14 @@ ops = []
 verbs = ["book"]
 subcommands = ["info"]
 ops = ["read"]
+
+# The receiver's fork (fa-k07b) writes a book-scope hold and opens the
+# receivership scenario. Its receivership op is outside every launch ceiling
+# today, so the bound route refuses it in practice; the rule records its ops.
+[[bound]]
+verbs = ["book"]
+subcommands = ["fork"]
+ops = ["receivership", "hold", "post"]
 
 [[bound]]
 verbs = ["chart", "period"]

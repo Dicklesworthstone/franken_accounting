@@ -1458,6 +1458,28 @@ impl Book {
         )))
     }
 
+    /// Fork the receivership (plan §15.6 "The trustee or receiver takes
+    /// over", fa-k07b): admitted on `receivership`, `hold` and `post` before
+    /// anything is read; then a book-scope legal hold over everything
+    /// recorded through the appointment sequence `at` (the head when absent)
+    /// on the order `authority`, and the `receivership` scenario forked at
+    /// that sequence with the order as its assumption document. The estate
+    /// posts in it with `--scenario receivership` until substrate branches
+    /// land (Appendix H R-BR).
+    pub fn fork_receivership(
+        &mut self,
+        capability: fa_journal::Capability,
+        authority: fa_model::Oid,
+        at: Option<CommitSeq>,
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::ReceivershipForked> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.fork_receivership(
+            &purposes, capability, authority, at, effective_date, description,
+        )))
+    }
+
     /// Admit `capability` to change the REA schema (party, instrument, legal
     /// entity, external id, identifiers) before the change reads anything
     /// (doctrine 8).
@@ -2205,15 +2227,15 @@ impl Book {
         with_store!(&self.store, core => core.custody_chain(&self.purposes(), document))
     }
 
-    /// Place a legal hold (plan §8.5) over `subjects` — entries, documents or
-    /// parties of this book — on the authority of the document `authority`,
-    /// as the capability's holder. Each held subject is pinned against
-    /// erasure, garbage collection and retention expiry until the hold is
-    /// released.
+    /// Place a legal hold (plan §8.5) over `reach` — named entries,
+    /// documents or parties of this book, or everything it recorded through
+    /// a sequence — on the authority of the document `authority`, as the
+    /// capability's holder. Each held subject is pinned against erasure,
+    /// garbage collection and retention expiry until the hold is released.
     pub fn place_legal_hold(
         &mut self,
         capability: &fa_journal::Capability,
-        subjects: Vec<VId>,
+        reach: fa_journal::HoldReach,
         authority: &fa_model::Oid,
         idempotency_key: &[u8],
         effective_date: DateDay,
@@ -2221,7 +2243,7 @@ impl Book {
     ) -> Outcome<fa_journal::LegalHoldPlaced> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.place_legal_hold(
-            &purposes, capability, subjects, authority, idempotency_key, effective_date, description,
+            &purposes, capability, reach, authority, idempotency_key, effective_date, description,
         )))
     }
 

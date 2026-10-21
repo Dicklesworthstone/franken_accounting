@@ -339,12 +339,11 @@ id = "WF-TRT-02"
 workflow = "trustee-receiver-takeover"
 ordinal = 2
 vision_row = "VC-25"
-description = "Fork a receivership branch (`fa book fork receivership`)"
-argv = ["book", "fork", "receivership", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-k07b"
+description = "Fork a receivership branch on the appointing order: a book-scope legal hold over the pre-appointment trunk and the `receivership` scenario at the appointment (`fa book fork receivership`)"
+argv = ["book", "fork", "receivership", "--authority", "{doc_oid}", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "receivership_forked"
 
 # ---- Workflow 6: litigation-consultant-damages (§15.6.5) --------------------
 

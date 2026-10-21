@@ -908,16 +908,29 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let authority_text = args.require("--authority", "<authority_document_oid>")?;
             let authority = Oid(hex32(authority_text, "--authority")?);
             let subject_flags = args.flag_all("--subject");
-            if subject_flags.is_empty() {
-                return Err(usage(
-                    "`fa hold place` needs at least one --subject <vid|oid>",
-                    "fa hold place --subject <vid> --authority <document_oid> --book <dir> --json",
-                ));
-            }
-            let mut subjects = Vec::with_capacity(subject_flags.len());
-            for s_flag in subject_flags {
-                subjects.push(parse_subject_vid(s_flag, "--subject")?);
-            }
+            let reach = match (subject_flags.is_empty(), hold_through(args)?) {
+                (true, None) => {
+                    return Err(usage(
+                        "`fa hold place` needs at least one --subject <vid|oid>, or --through HEAD|<seq> to hold everything the book recorded through a sequence",
+                        "fa hold place --subject <vid> --authority <document_oid> --book <dir> --json",
+                    ));
+                }
+                (false, Some(_)) => {
+                    return Err(usage(
+                        "a hold names its subjects (--subject) or the recorded book through a sequence (--through), not both",
+                        "fa hold place --through HEAD --authority <document_oid> --book <dir> --json",
+                    ));
+                }
+                (true, Some(reach)) => reach,
+                (false, None) => {
+                    let mut subjects = Vec::with_capacity(subject_flags.len());
+                    for s_flag in subject_flags {
+                        subjects.push(parse_subject_vid(s_flag, "--subject")?);
+                    }
+                    fa_journal::HoldReach::Subjects(subjects)
+                }
+            };
+            let book_scope = !matches!(reach, fa_journal::HoldReach::Subjects(_));
             let date = match args.flag("--effective").or_else(|| args.flag("--date")) {
                 Some(d) => DateDay::parse(d).map_err(|e| {
                     usage(
@@ -933,12 +946,13 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .map(|k| k.as_bytes().to_vec())
                 .unwrap_or_else(|| {
                     let auth_hex = hex(&authority.0);
-                    format!("hold:place:{}", &auth_hex[..32]).into_bytes()
+                    let kind = if book_scope { "place-book" } else { "place" };
+                    format!("hold:{kind}:{}", &auth_hex[..32]).into_bytes()
                 });
             let capability = ctx.capability(args, &["hold"])?;
             let mut book = ctx.books.open(args)?;
             let placed =
-                book.place_legal_hold(&capability, subjects, &authority, &key, date, description)??;
+                book.place_legal_hold(&capability, reach, &authority, &key, date, description)??;
             ctx.out.at_book(&book)?;
             let hold_hex = format!("{:032x}", placed.hold.0);
             let subj_json: Vec<Json> = placed
@@ -946,18 +960,22 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .iter()
                 .map(|v| s(format!("{:032x}", v.0)))
                 .collect();
+            let scope = match placed.through {
+                Some(through) => format!("everything recorded through sequence {}", through.0),
+                None => format!("{} subject(s)", placed.subjects.len()),
+            };
             ctx.out.event(
                 "legal_hold_placed",
                 vec![
                     ("hold_vid", s(&hold_hex)),
                     ("subjects", Json::Arr(subj_json)),
+                    ("through", seq_or_null(placed.through)),
                     ("authority", s(hex(&authority.0))),
                     ("recorded_at", Json::Int(i128::from(placed.recorded_at.0))),
                     ("already_recorded", Json::Bool(placed.already_recorded)),
                 ],
                 &format!(
-                    "placed legal hold {hold_hex} over {} subject(s) (recorded at {})",
-                    placed.subjects.len(),
+                    "placed legal hold {hold_hex} over {scope} (recorded at {})",
                     placed.recorded_at.0
                 ),
             );
@@ -1108,6 +1126,7 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("hold_vid", s(&hold_hex)),
                     ("authority", s(hex(&hold.authority.0))),
                     ("subjects", Json::Arr(subj_json)),
+                    ("through", seq_or_null(hold.through)),
                     ("issued_by", s(format!("{:032x}", hold.issued_by.0))),
                     ("placed_at", Json::Int(i128::from(hold.placed_at.0))),
                     ("active", Json::Bool(hold.released.is_none())),
@@ -1115,13 +1134,17 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("released_at", released_at),
                 ],
                 &format!(
-                    "legal hold {hold_hex}: {} ({} subject(s), placed at {})",
+                    "legal hold {hold_hex}: {} ({}, placed at {})",
                     if hold.released.is_none() {
                         "active"
                     } else {
                         "released"
                     },
-                    hold.subjects.len(),
+                    match hold.through {
+                        Some(through) =>
+                            format!("everything recorded through sequence {}", through.0),
+                        None => format!("{} subject(s)", hold.subjects.len()),
+                    },
                     hold.placed_at.0
                 ),
             );
@@ -1183,6 +1206,44 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ),
             "fa hold place|release|show|list ...",
         )),
+    }
+}
+
+fn seq_or_null(seq: Option<CommitSeq>) -> Json {
+    seq.map_or(Json::Null, |s| Json::Int(i128::from(s.0)))
+}
+
+/// `--through HEAD|<seq>` (or the plan's spelling `--scope book`, the head):
+/// a book-scope hold over everything recorded through that sequence.
+fn hold_through(args: &Args) -> Result<Option<fa_journal::HoldReach>, Fail> {
+    const FIX: &str =
+        "fa hold place --through HEAD|<seq> --authority <document_oid> --book <dir> --json";
+    match args.flag_all("--scope").as_slice() {
+        [] => {}
+        ["book"] if args.flag("--through").is_none() => {
+            return Ok(Some(fa_journal::HoldReach::ThroughHead));
+        }
+        ["book"] => {}
+        _ => {
+            return Err(usage(
+                "--scope takes `book` once: everything the book recorded through HEAD (or name the sequence with --through)",
+                FIX,
+            ));
+        }
+    }
+    match args.flag_all("--through").as_slice() {
+        [] => Ok(None),
+        ["HEAD"] => Ok(Some(fa_journal::HoldReach::ThroughHead)),
+        [seq] => seq
+            .parse::<u64>()
+            .map(|n| Some(fa_journal::HoldReach::Through(CommitSeq(n))))
+            .map_err(|_| {
+                usage(
+                    format!("--through `{seq}` is neither HEAD nor a commit sequence"),
+                    FIX,
+                )
+            }),
+        _ => Err(usage("a hold takes one --through", FIX)),
     }
 }
 
