@@ -1070,6 +1070,14 @@ cite = "plan §8.3, §8.4 (a case-bound entry is admissible only inside an Appro
 fix = "post a case's entries with fa case post <case> after two Human approvals of its manifest; an entry of a case-bound class is never posted on its own"
 
 [[refusal]]
+code = "FA-REF-185"
+name = "RECLASSIFICATION_SHAPE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.2 (Reclassifies: a positive part of the target's legs moves to another account or dimension in the same unit; net effect is target plus the reclassification delta; bead fa-xvba)"
+fix = "name one live committed target with kind Reclassifies and a registered reason, move out of its legs at most what earlier reclassifications left, to at least one other account or dimension: fa reclass <target> --from <account> --to <account> --amount \"<amount>\" --reason <name>"
+
+[[refusal]]
 code = "FA-REF-179"
 name = "CASE_DISCLOSURE"
 owners = ["fa-journal"]

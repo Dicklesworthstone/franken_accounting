@@ -93,6 +93,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("receipt", crate::typed::receipt_cmd),
     ("payment", crate::typed::payment_cmd),
     ("commit", commit_cmd),
+    ("reclass", reclass_cmd),
     ("reverse", reverse_cmd),
     ("reserve", reserve_cmd),
     ("resolve", resolve_cmd),
@@ -3211,7 +3212,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability, an unconfirmed dangerous operation), 8 verification failure. 1 is never emitted.\n\
 3. Every non-zero exit is exactly one `error` line: data {class, exit, refusal_id, message, cite, fix, detail}. `refusal_id` (FA-REF-nnn) is the refusal catalog code when one applies. Do the `fix`; do not invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: its fix names the safe alternative; add --yes only when the operation is intended (`fa capabilities --json` lists them under `dangerous`).\n\
 4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\
-5. Corrections are new entries that cite the original; nothing is edited in place. Reversal is live. A corrected Replacement posts only as a pair with its Reversal (`fa reverse <vid> --reason <name> --replace-with <file>`); a standalone Replacement is FA-REF-160. Reclassification, Revision and Restatement remain refused with FA-REF-102; a PriorPeriodAdjustment posts only as an approved restatement case's entry (`fa case post <case>`), FA-REF-178 otherwise.\n\
+5. Corrections are new entries that cite the original; nothing is edited in place. Reversal is live. A corrected Replacement posts only as a pair with its Reversal (`fa reverse <vid> --reason <name> --replace-with <file>`); a standalone Replacement is FA-REF-160. A Reclassification moves part of an entry to another account (`fa reclass <vid> --from <account> --to <account> --amount \"<amount>\" --reason <name>`; FA-REF-185 when it moves more than the target's legs have left). Revision and Restatement remain refused with FA-REF-102; a PriorPeriodAdjustment posts only as an approved restatement case's entry (`fa case post <case>`), FA-REF-178 otherwise.\n\
 6. Idempotency: every intent carries idempotency_key; resubmitting returns the recorded outcome (event \"recorded\"), never a duplicate.\n\
 7. Posting into a non-Open period is decided by the admissibility matrix; the refusal cites the (class, state) cell and names the admissible class or capability.\n\
 8. Two-phase: `fa reserve` posts a Pending (amounts in the pending columns, never posted); `fa resolve` names it with `resolves` and either posts a sub-vector (`legs`, each drawn from one hold leg — same account and side, at most the reserved amount; add `source_ordinal` when the hold has several such legs) or voids it (`disposition: \"voids\"`). The rest of the hold is released either way. One resolution per hold: a second is exit 6 (FA-REF-062); resolving a non-hold is FA-REF-060.\n\
@@ -6306,6 +6307,70 @@ fn post_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// Reverse an identified entry without making the operator re-enter its
 /// legs. The original effective date is the default, never today's date or
 /// the next open period; any explicit date still passes the kernel's law.
+/// `fa reclass <vid> --from <account> --to <account> --amount "<amount>"
+/// --reason <name>` (plan §8.2, Appendix B `Reclass`; bead fa-xvba): a
+/// Reclassification citing the target with `Reclassifies`, moving `amount`
+/// of its leg on `from` to `to` with the leg's side and dimensions. The
+/// date, period and evidence default to the target's; the default key is
+/// `reclass:<target>:<from>:<to>:<amount>`.
+fn reclass_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa reclass <vid> --from 6100 --to 6200 --amount \"300.00 USD\" --reason WrongAccount [--effective YYYY-MM-DD] [--description <text>] [--key K] [--dry-run]";
+    if args.positional.len() != 2 {
+        return Err(usage("reclass needs exactly one entry vid", EXAMPLE));
+    }
+    for flag in [
+        "--from",
+        "--to",
+        "--amount",
+        "--reason",
+        "--effective",
+        "--period",
+        "--key",
+        "--description",
+    ] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(format!("reclass takes only one {flag}"), EXAMPLE));
+        }
+    }
+    let target = args.positional[1]
+        .strip_prefix("E:")
+        .unwrap_or(&args.positional[1]);
+    let vid = parse_vid(target, "reclass target")?;
+    let need = |flag: &str| {
+        args.flag(flag)
+            .ok_or_else(|| usage(format!("reclass needs {flag}"), EXAMPLE))
+    };
+    let (from, to, amount) = (need("--from")?, need("--to")?, need("--amount")?);
+    let key = args.flag("--key").map_or_else(
+        || format!("reclass:{:032x}:{from}:{to}:{amount}", vid.0),
+        str::to_string,
+    );
+    let mut fields = vec![
+        ("class", s("Reclassification")),
+        ("reclassifies", s(format!("{:032x}", vid.0))),
+        (
+            "moves",
+            Json::Arr(vec![obj(vec![
+                ("from", s(from)),
+                ("to", s(to)),
+                ("amount", s(amount)),
+            ])]),
+        ),
+        ("idempotency_key", s(key)),
+    ];
+    for (flag, field) in [
+        ("--reason", "reason"),
+        ("--effective", "effective_date"),
+        ("--period", "effective_period"),
+        ("--description", "description"),
+    ] {
+        if let Some(value) = args.flag(flag) {
+            fields.push((field, s(value)));
+        }
+    }
+    post_document(ctx, args, Some(EntryClass::RECLASSIFICATION), obj(fields))
+}
+
 fn reverse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
         return Err(usage(
@@ -6777,6 +6842,8 @@ fn post_timing(
         "evidence",
         "event",
         "reverses",
+        "reclassifies",
+        "moves",
         "reason",
         "resolves",
         "disposition",
@@ -6950,7 +7017,14 @@ fn build_post_request_with_prior(
     }
     let (timeout_ns, reverse_on) = post_timing(args, doc, class)?;
     let typed_reversal = forced == Some(EntryClass::REVERSAL);
-    let supplied_date = if typed_reversal && doc.get("effective_date").is_none() {
+    if doc.get("reclassifies").is_some() && class != EntryClass::RECLASSIFICATION {
+        return Err(usage(
+            "`reclassifies` names the target of a Reclassification only",
+            "set class: \"Reclassification\" (or use fa reclass), or remove `reclassifies`",
+        ));
+    }
+    let dated_by_target = typed_reversal || class == EntryClass::RECLASSIFICATION;
+    let supplied_date = if dated_by_target && doc.get("effective_date").is_none() {
         None
     } else {
         let date_s = req_str(doc, "effective_date", "intent")?;
@@ -6975,7 +7049,126 @@ fn build_post_request_with_prior(
     let mut reversal_detail = None;
     let mut reversal_base_totals = None;
     let mut reversal_rate_evidence = Vec::new();
-    let legs: Vec<LegPayload> = if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
+    let mut target_evidence = Vec::new();
+    let legs: Vec<LegPayload> = if class == EntryClass::RECLASSIFICATION {
+        // A Reclassification names its target and moves part of its legs to
+        // other accounts (plan §8.2, Appendix B Reclass; bead fa-xvba). A move
+        // takes the target's leg side and dimensions on `from`, so the caller
+        // names accounts and an amount, never a side. The date, period and
+        // evidence default to the target's.
+        const FIX: &str = "fa reclass <vid> --from <account> --to <account> --amount \"<amount>\" --reason <name>";
+        if doc.get("reverses").is_some() || doc.get("resolves").is_some() {
+            return Err(usage(
+                "a Reclassification names its target with `reclassifies` only",
+                FIX,
+            ));
+        }
+        let target_s = doc
+            .get("reclassifies")
+            .and_then(Json::as_str)
+            .ok_or_else(|| {
+                usage(
+                    "a Reclassification names its target: `reclassifies` (vid)",
+                    FIX,
+                )
+            })?;
+        let reason = reversal_reason(doc.get("reason"))?;
+        if reason.name == "Other" && description.trim().is_empty() {
+            return Err(Refusal::new(
+                fa_journal::refusal::code::SUPERSESSION_REASON,
+                exit::REFUSAL,
+                "the reclassification reason Other requires a description",
+                "plan §8.2 (Other(text)); registries/reason_codes.toml",
+                "state the reason in the intent's description or use `fa reclass <vid> ... --reason Other --description <explanation>`",
+            )
+            .into());
+        }
+        let vid = parse_vid(target_s, "reclassifies")?;
+        let Some(target) = batch_plan::target_entry(book, earlier, vid)? else {
+            return Err(usage(
+                format!("reclassifies: no entry {target_s} in this book"),
+                "fa entry show <vid> to check the identity",
+            ));
+        };
+        supersession.push(fa_model::Supersession {
+            target: target.entry_ref(vid),
+            kind: fa_model::SupersessionKind::Reclassifies,
+            reason_code: reason.code,
+        });
+        target_date = Some(target.proposal.effective_date);
+        target_period = target.proposal.effective_period.clone();
+        target_evidence.clone_from(&target.proposal.evidence);
+        match (doc.get("moves"), doc.get("legs")) {
+            (Some(Json::Arr(moves)), None) if !moves.is_empty() => {
+                let mut legs = Vec::with_capacity(moves.len() * 2);
+                for (i, m) in moves.iter().enumerate() {
+                    let what = format!("moves[{i}]");
+                    let from = req_str(m, "from", &what)?;
+                    let to = req_str(m, "to", &what)?;
+                    let amount_s = req_str(m, "amount", &what)?;
+                    let amount = Amount::parse(amount_s, &ctx.units).map_err(|e| {
+                        usage(
+                            format!("{what}: amount `{amount_s}`: {e:?}"),
+                            "amount: \"300.00 USD\" (exact, at the unit's scale, positive)",
+                        )
+                    })?;
+                    let from_vid = account_vid(ctx.book_id, from);
+                    let sources: Vec<&LegPayload> = target
+                        .proposal
+                        .legs
+                        .iter()
+                        .filter(|l| l.account_ref == from_vid && l.amount.unit == amount.unit)
+                        .collect();
+                    let Some(source) = sources.first() else {
+                        return Err(usage(
+                            format!("{what}: the target has no leg on account {from} in that unit"),
+                            "fa entry show <vid> lists the target's legs; move out of one of them",
+                        ));
+                    };
+                    if sources
+                        .iter()
+                        .any(|l| l.side != source.side || l.dimension_set != source.dimension_set)
+                    {
+                        return Err(usage(
+                            format!(
+                                "{what}: the target's legs on {from} differ in side or dimensions"
+                            ),
+                            "name each moved leg explicitly in the intent's `legs`",
+                        ));
+                    }
+                    let opposite = if source.side == Side::Debit {
+                        Side::Credit
+                    } else {
+                        Side::Debit
+                    };
+                    let mut out_of = LegPayload::simple(opposite, from_vid, amount);
+                    out_of.dimension_set.clone_from(&source.dimension_set);
+                    let mut into =
+                        LegPayload::simple(source.side, account_vid(ctx.book_id, to), amount);
+                    into.dimension_set.clone_from(&source.dimension_set);
+                    legs.push(out_of);
+                    legs.push(into);
+                }
+                legs
+            }
+            (None, Some(_)) => {
+                let parsed = parse_legs(doc, &ctx, book, earlier)?;
+                if let Some(i) = parsed.iter().position(|(_, o)| o.is_some()) {
+                    return Err(usage(
+                        format!("legs[{i}]: `source_ordinal` belongs to a Resolution(Posts) only"),
+                        "remove it",
+                    ));
+                }
+                parsed.into_iter().map(|(l, _)| l).collect()
+            }
+            _ => {
+                return Err(usage(
+                    "a Reclassification carries either `moves` ([{\"from\", \"to\", \"amount\"}], at least one) or explicit `legs`",
+                    FIX,
+                ));
+            }
+        }
+    } else if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
         if doc.get("fx").is_some() {
             return Err(usage(
                 "a Reversal derives its exact valuation from the target; do not supply fx",
@@ -7193,7 +7386,7 @@ fn build_post_request_with_prior(
         .map_err(BookError::Kernel)?;
     let effective_date = supplied_date.or(target_date).ok_or_else(|| {
         usage(
-            "a reversal needs its target's effective date",
+            "a reversal or reclassification needs its target's effective date",
             "fa entry show <vid> --json",
         )
     })?;
@@ -7271,6 +7464,11 @@ fn build_post_request_with_prior(
         if !proposal.evidence.contains(&evidence) {
             proposal.evidence.push(evidence);
         }
+    }
+    // A Reclassification rests on its target's documents unless the intent
+    // names its own (fa-xvba).
+    if proposal.evidence.is_empty() {
+        proposal.evidence = target_evidence;
     }
     proposal.evidence.sort_unstable();
     if let Some(ev_arg) = event_arg {

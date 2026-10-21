@@ -721,7 +721,7 @@ fn not_implemented(class_name: &str) -> Refusal {
         }
         "leg.base_amount" | "base_totals" => "the FX law slice (fa-p7r)",
         "leg.dimension_set" => "the dimension registry slice (plan §4.3)",
-        "Replacement" | "Reclassification" => "fa-omi (supersession beyond exact reversal)",
+        "Replacement" => "fa-omi (supersession beyond exact reversal)",
         "Revision" | "Restatement" => {
             "the restatement-case posting of superseding delta entries (fa-75j4)"
         }
@@ -928,7 +928,8 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
 /// admitted only by its private, atomic pair context, and
 /// PriorPeriodAdjustment only as a restatement case's entry in its case's
 /// own Post batch (fa-75j4).
-const POSTED_CLASSES: [EntryClass; 10] = [
+const POSTED_CLASSES: [EntryClass; 11] = [
+    EntryClass::RECLASSIFICATION,
     EntryClass::PRIOR_PERIOD_ADJUSTMENT,
     EntryClass::ORIGINAL,
     EntryClass::ADJUSTING,
@@ -1167,6 +1168,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     }
     let is_reversal = proposal.class == EntryClass::REVERSAL;
     let is_replacement = proposal.class == EntryClass::REPLACEMENT;
+    let is_reclass = proposal.class == EntryClass::RECLASSIFICATION;
     if !POSTED_CLASSES.contains(&proposal.class) && !is_replacement {
         return Ok(Err(not_implemented(class_name)));
     }
@@ -1476,9 +1478,21 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             }
         }
     } else {
-        if !is_replacement && !proposal.supersession.is_empty() {
+        if !is_replacement && !is_reclass && !proposal.supersession.is_empty() {
             return Ok(Err(not_implemented("supersession on a non-Reversal class")));
         }
+        None
+    };
+    let reclass_target = if is_reclass {
+        match proposal.supersession.as_slice() {
+            [s] if s.kind == SupersessionKind::Reclassifies => Some(s.target),
+            _ => {
+                return Ok(Err(reclassification_shape(
+                    "a Reclassification names exactly one target with kind Reclassifies in `supersession`",
+                )));
+            }
+        }
+    } else {
         None
     };
     let replacement_target = if is_replacement {
@@ -1680,7 +1694,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             book,
             &req,
             scope.as_ref(),
-            reversal_target.or(replacement_target),
+            reversal_target.or(replacement_target).or(reclass_target),
             resolution.as_ref(),
         )?
     {
@@ -1811,7 +1825,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // A fresh correction names a registered reason. Outcome recognition
     // stays first: an identical retry never rewrites or reinterprets an old
     // immutable entry, including a reversal recorded before this law.
-    if is_reversal || is_replacement {
+    if is_reversal || is_replacement || is_reclass {
         let reasons = fa_registry::reason_codes::ReasonCodes::embedded()
             .map_err(|e| KernelError::Corrupt(e.to_string()))?;
         let reason = proposal.supersession[0].reason_code;
@@ -1874,6 +1888,18 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             refusal.message = error.to_string();
             return Ok(Err(refusal));
         }
+    }
+
+    // 3''. A Reclassification (plan §8.2, `Reclassifies`; fa-xvba): its target
+    //      is a live committed entry of this book read with its digest, its
+    //      earlier reclassifications are read through the target's SUPERSEDES
+    //      in-edges (an adjacency witness, so a concurrent one conflicts at
+    //      commit), and it moves no more out of any target leg than they left.
+    if let Some(target) = reclass_target
+        && let Err(refusal) = reclassification_admissible(&txn, db, book, target, proposal)?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
     }
 
     // 4'. The run (plan §8.6): its state is a point witness, so a Finalize
@@ -3331,7 +3357,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         );
         batches.push(in_run);
     }
-    if let Some(target) = reversal_target.or(replacement_target) {
+    if let Some(target) = reversal_target.or(replacement_target).or(reclass_target) {
         let mut supersedes = WriteBatch::new(relation::SUPERSEDES);
         supersedes.add_edge(
             edge_id(relation::SUPERSEDES, evid, target.vid),
@@ -3906,6 +3932,111 @@ pub async fn post_replacement_pair<V: asupersync::fs::Vfs + Clone>(
                 )),
             }
         }
+    }
+}
+
+fn reclassification_shape(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::RECLASSIFICATION_SHAPE,
+        exit::REFUSAL,
+        message.into(),
+        "plan §8.2 (Reclassifies: a positive part of the target's legs moves to another account or dimension in the same unit; net effect is target plus the delta)",
+        "name one live committed target with supersession = [{ target: <EntryRef>, kind: Reclassifies, reason_code }], move out of its legs at most what earlier reclassifications left, to at least one other account or dimension: `fa reclass <target> --from <account> --to <account> --amount \"<amount>\" --reason <name>`",
+    )
+}
+
+/// Whether committed entry `vid` stands inside `txn`: no Reversal of it that
+/// itself stands supersedes it (a reversed reversal revives its target).
+/// Every read is through `txn`, so the SUPERSEDES in-edges are adjacency
+/// witnesses and a reversal committed concurrently conflicts.
+fn entry_stands<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    vid: VId,
+    path: &mut BTreeSet<VId>,
+) -> Result<bool, KernelError> {
+    if !path.insert(vid) {
+        return Err(KernelError::Corrupt(format!(
+            "the supersession lineage of {:032x} cycles",
+            vid.0
+        )));
+    }
+    let mut stands = true;
+    for evid in txn.in_neighbours(db, vid, relation::SUPERSEDES)? {
+        let Some(row) = txn.vertex(db, evid)? else {
+            continue;
+        };
+        let (entry, _) = checked_entry_staged(txn, db, &row)?;
+        let reverses = entry.proposal.class == EntryClass::REVERSAL
+            && entry
+                .proposal
+                .supersession
+                .iter()
+                .any(|s| s.kind == SupersessionKind::Reverses && s.target.vid == vid);
+        if reverses && entry_stands(txn, db, evid, path)? {
+            stands = false;
+            break;
+        }
+    }
+    path.remove(&vid);
+    Ok(stands)
+}
+
+/// A Reclassification of `target` (plan §8.2) against what its earlier live
+/// reclassifications left, every read through `txn`.
+fn reclassification_admissible<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    target: EntryRef,
+    proposal: &EntryPayload,
+) -> Outcome<()> {
+    let Some(row) = txn.vertex(db, target.vid)? else {
+        return Ok(Err(reclassification_shape(format!(
+            "the Reclassification's target {:032x} is not a committed entry of this book",
+            target.vid.0
+        ))));
+    };
+    let (original, _) = checked_entry_staged(txn, db, &row)?;
+    if original.entry_digest != target.entry_digest
+        || original.proposal.book_id != book.book_id
+        || original.proposal.branch_id != proposal.branch_id
+    {
+        return Ok(Err(reclassification_shape(format!(
+            "the Reclassification's target {:032x} does not carry the cited digest on this book and branch; cite the committed entry's EntryRef",
+            target.vid.0
+        ))));
+    }
+    if !entry_stands(txn, db, target.vid, &mut BTreeSet::new())? {
+        return Ok(Err(reclassification_shape(format!(
+            "the Reclassification's target {:032x} is reversed: a reversed entry leaves nothing to reclassify",
+            target.vid.0
+        ))));
+    }
+    let mut prior = Vec::new();
+    for evid in txn.in_neighbours(db, target.vid, relation::SUPERSEDES)? {
+        let Some(row) = txn.vertex(db, evid)? else {
+            continue;
+        };
+        let (entry, _) = checked_entry_staged(txn, db, &row)?;
+        let reclassifies =
+            entry.proposal.class == EntryClass::RECLASSIFICATION
+                && entry.proposal.supersession.iter().any(|s| {
+                    s.kind == SupersessionKind::Reclassifies && s.target.vid == target.vid
+                });
+        if reclassifies && entry_stands(txn, db, evid, &mut BTreeSet::new())? {
+            prior.push(entry.proposal);
+        }
+    }
+    let prior: Vec<&EntryPayload> = prior.iter().collect();
+    let remaining =
+        match fa_palimpsest::remaining_after_reclassifications(&original.proposal, &prior) {
+            Ok(remaining) => remaining,
+            Err(e) => return Ok(Err(reclassification_shape(e.to_string()))),
+        };
+    match fa_palimpsest::validate_reclassification(&remaining, target, proposal) {
+        Ok(()) => Ok(Ok(())),
+        Err(e) => Ok(Err(reclassification_shape(e.to_string()))),
     }
 }
 

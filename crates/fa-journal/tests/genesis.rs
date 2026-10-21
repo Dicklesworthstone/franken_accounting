@@ -874,7 +874,7 @@ fn closed_period_refuses_originals_and_admits_an_exact_reversal_under_post_close
     // (fa-l93 D8), each with the op its cell requires.
     assert_eq!(
         r.fix,
-        "keep the entry's true effective date; never re-date it to escape the period law: a Closed period admits Adjusting (with `post_closed` and 1 approval), Closing (with `close` and 1 approval), Reversal (with `post_closed`); a reopen of a Closed period is case-bound and refused in this build; `fa period list --json` shows each period's state"
+        "keep the entry's true effective date; never re-date it to escape the period law: a Closed period admits Adjusting (with `post_closed` and 1 approval), Closing (with `close` and 1 approval), Reclassification (with `post_closed` and 1 approval), Reversal (with `post_closed`); a reopen of a Closed period is case-bound and refused in this build; `fa period list --json` shows each period's state"
     );
 
     // Reversal in a Closed period: needs post_closed.
@@ -10896,4 +10896,107 @@ fn year_end_close_refuses_nonzero_retired_accounts_with_or_without_a_route() {
         assert_eq!(year_end_close_net(&h, h.rent, head), 1);
         assert_eq!(h.db.frontier().unwrap(), head);
     }
+}
+
+/// fa-xvba (plan §8.2 `Reclassifies`): a Reclassification moves a positive
+/// part of its target's legs to another account and cites the target; each
+/// move is bounded by what the target's earlier live reclassifications left,
+/// and a reversed reclassification gives its amount back. A move beyond what
+/// remains, a move to no other account, a reversed target and a missing
+/// reason are refused before anything is written.
+#[test]
+fn reclassification_partial_negation_balances() {
+    let mut h = harness();
+    let posted = h
+        .post(h.request(
+            h.proposal(h.rent_legs(1_000), b"rent", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("the original posts");
+    let (target, _) = committed(&posted).expect("committed");
+    let reclass = |h: &Harness, cents: i128, key: &[u8], from: VId, to: VId| {
+        let legs = vec![
+            LegPayload::simple(Side::Credit, from, Amount::new(h.usd, cents)),
+            LegPayload::simple(Side::Debit, to, Amount::new(h.usd, cents)),
+        ];
+        let mut p = h.proposal(legs, key, EntryClass::RECLASSIFICATION);
+        p.supersession = vec![Supersession {
+            target,
+            kind: SupersessionKind::Reclassifies,
+            reason_code: 1,
+        }];
+        p
+    };
+    let (rent, receivable) = (h.rent, h.receivable);
+
+    // 300 of the rent leg's 1000 moves to receivable, citing the rent entry.
+    let first = h
+        .post(h.request(reclass(&h, 300, b"rc-300", rent, receivable), &["post"]))
+        .expect("a partial move is admitted");
+    let (first_ref, _) = committed(&first).expect("committed");
+    let lineage = fa_journal::post::superseded_by(&h.db, &h.book, target.vid).unwrap();
+    assert_eq!(lineage.len(), 1, "{lineage:?}");
+    assert_eq!(lineage[0].kind, SupersessionKind::Reclassifies);
+    assert_eq!(lineage[0].target.vid, first_ref.vid);
+
+    // 800 more exceeds the 700 the first move left; nothing is written.
+    let r = h
+        .post(h.request(reclass(&h, 800, b"rc-800", rent, receivable), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-185", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("exceeds"), "{r}");
+    assert!(r.fix.contains("fa reclass"), "{r}");
+    // Moving rent to rent moves it to no other account.
+    let r = h
+        .post(h.request(reclass(&h, 100, b"rc-self", rent, rent), &["post"]))
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-185", "{r}");
+    // A reclassification names a registered reason.
+    let mut unreasoned = reclass(&h, 100, b"rc-no-reason", rent, receivable);
+    unreasoned.supersession[0].reason_code = 0;
+    let r = h.post(h.request(unreasoned, &["post"])).unwrap_err();
+    assert_eq!(r.code, "FA-REF-054", "{r}");
+
+    // The remaining 700 moves; then nothing is left to move.
+    h.post(h.request(reclass(&h, 700, b"rc-700", rent, receivable), &["post"]))
+        .expect("what remains moves");
+    let r = h
+        .post(h.request(reclass(&h, 1, b"rc-1", rent, receivable), &["post"]))
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-185", "{r}");
+
+    // Reversing the first reclassification gives its 300 back.
+    let mut undo = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, rent, Amount::new(h.usd, 300)),
+            LegPayload::simple(Side::Credit, receivable, Amount::new(h.usd, 300)),
+        ],
+        b"undo-rc-300",
+        EntryClass::REVERSAL,
+    );
+    undo.supersession = vec![Supersession {
+        target: first_ref,
+        kind: SupersessionKind::Reverses,
+        reason_code: 1,
+    }];
+    h.post(h.request(undo, &["post"]))
+        .expect("a reclassification is reversible");
+    h.post(h.request(reclass(&h, 300, b"rc-again", rent, receivable), &["post"]))
+        .expect("the reversed move's amount is available again");
+
+    // A reversed target leaves nothing to reclassify.
+    let other = h
+        .post(h.request(
+            h.proposal(h.rent_legs(50), b"rent-2", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("another original");
+    let (other_ref, _) = committed(&other).expect("committed");
+    h.post(h.request(h.reversal_of(other_ref, 50, b"rev-2"), &["post"]))
+        .expect("reversed");
+    let mut late = reclass(&h, 10, b"rc-reversed", rent, receivable);
+    late.supersession[0].target = other_ref;
+    let r = h.post(h.request(late, &["post"])).unwrap_err();
+    assert_eq!(r.code, "FA-REF-185", "{r}");
+    assert!(r.message.contains("reversed"), "{r}");
 }

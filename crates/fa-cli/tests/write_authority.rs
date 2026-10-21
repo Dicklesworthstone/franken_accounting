@@ -361,6 +361,22 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Succeeds,
         ),
         row(
+            &[
+                "reclass",
+                entry,
+                "--from",
+                "4000",
+                "--to",
+                "3000",
+                "--amount",
+                "1.00 USD",
+                "--reason",
+                "WrongAccount",
+            ],
+            &[Op::Post],
+            Reaches,
+        ),
+        row(
             &["reserve", "--intent", "hold.json", "--evidence", document],
             &[Op::Post],
             Succeeds,

@@ -312,6 +312,18 @@ usage = ["commit --plan <file|-> [--as <principal>] [--grant <op>]...", "The fil
 example = "fa commit --plan entry.plan --book ./books/myco --json"
 
 [[verb]]
+name = "reclass"
+summary = "Post a Reclassification: move part of an entry's leg to another account with a registered reason, citing the entry (plan §8.2 Reclassifies); the original stays."
+writes = true
+subcommands = []
+flags = ["--from", "--to", "--amount", "--reason", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out", "--draft"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan", "draft_planned"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["reclass <vid|E:vid> --from <account> --to <account> --amount <amount> --reason <name|code> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--grant <op>]... [--evidence <oid>]... [--dry-run [--plan-out <new-file>]]", "Moves --amount of the target's leg on --from to --to, with that leg's side and dimensions: the entry credits --from and debits --to when the target debited --from, and the other way round. The target's legs on --from must agree in side and dimensions; otherwise post an intent with class Reclassification, reclassifies and explicit legs.", "The date, period and evidence default to the target's; a Closed period admits a reclassification only with post_closed and one approval (Appendix C). The default key is reclass:<target>:<from>:<to>:<amount>, so the same command records once.", "FA-REF-185 when the move exceeds what the target's leg has left after earlier live reclassifications, when the target is reversed, or when nothing moves to another account. FA-REF-054 without a registered reason."]
+example = "fa reclass <vid> --from 6100 --to 6200 --amount \"300.00 USD\" --reason WrongAccount --book ./books/myco --json"
+
+[[verb]]
 name = "reverse"
 summary = "Post the exact reversal of an entry with a registered reason, preserving the original entry and its lineage."
 writes = true
@@ -914,6 +926,11 @@ safe = "only a lawfully classified adjustment or an authorized reopen (case-boun
 verb = "post"
 condition = "grant:post_closed"
 safe = "leave the intent unposted; keep its true effective date and obtain the authorization or the admissible adjustment class the period-law refusal names (`fa period list --json` shows each period's state)"
+
+[[dangerous]]
+verb = "reclass"
+condition = "grant:post_closed"
+safe = "keep the target's date and obtain the authority and approval the period law requires for a Closed period; `fa period list --json` shows the target period's state"
 
 [[dangerous]]
 verb = "reverse"
@@ -3187,6 +3204,11 @@ on_demand = true
 doc = "Full-text search over entry descriptions and leg memos at a recorded frontier, ranked by exact fixed-point BM25 from an index rebuilt from the journal per query. A pure read. On demand (fa-mcp --cluster fa.search): the default surface is at its 40-tool limit."
 
 [[mcp.cluster]]
+name = "fa.correct"
+on_demand = true
+doc = "Corrections beyond an exact reversal (plan §8.2): a Reclassification moves part of an entry's leg to another account, citing it with Reclassifies and a registered reason. Exact reversals and paired replacements are the reverse tool in fa.post. On demand (fa-mcp --cluster fa.correct): the default surface is at its 40-tool budget."
+
+[[mcp.cluster]]
 name = "fa.case"
 on_demand = true
 doc = "Restatement cases (plan §8.3): read one journaled case, or every case of the book, with its kind, affected periods, state and transitions. Opening and determining a case need restate, a host-side operation. On demand (fa-mcp --cluster fa.case)."
@@ -3468,7 +3490,7 @@ stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
 required = []
-dont = ["Don't balance an entry by inventing a leg: report the imbalance; a residual leg exists only where a law names the rounding account.", "Don't pick an effective date to dodge a closed period: the matrix decides; the refusal names the admissible class and capability.", "Don't \"fix\" a posted entry: post a Reversal (`reverses`) with a registered reason; the original stays. Corrected legs post only as a Replacement paired with its Reversal, through the reverse tool's `replace_with`; Reclassification remains refused with FA-REF-102.", "Don't fabricate evidence: cite a document recorded with `fa_evidence_import_document`, or make an explicit manual assertion.", "Rehearse a complete atomic batch by passing intent with idempotency_key and intents, plus dry_run: true. Review every batch_plan member and its application targets before passing the artifact's complete bytes to fa_post_commit_plan. Agent batch plans cannot commit to trunk, and atomic batch drafts are unsupported."]
+dont = ["Don't balance an entry by inventing a leg: report the imbalance; a residual leg exists only where a law names the rounding account.", "Don't pick an effective date to dodge a closed period: the matrix decides; the refusal names the admissible class and capability.", "Don't \"fix\" a posted entry: post a Reversal (`reverses`) with a registered reason; the original stays. Corrected legs post only as a Replacement paired with its Reversal, through the reverse tool's `replace_with`. Moving part of an entry to another account is a Reclassification: fa_correct_reclass (on demand: fa-mcp --cluster fa.correct).", "Don't fabricate evidence: cite a document recorded with `fa_evidence_import_document`, or make an explicit manual assertion.", "Rehearse a complete atomic batch by passing intent with idempotency_key and intents, plus dry_run: true. Review every batch_plan member and its application targets before passing the artifact's complete bytes to fa_post_commit_plan. Agent batch plans cannot commit to trunk, and atomic batch drafts are unsupported."]
 mistakes = ["A JSON number in `amount` (write \"1500.00 USD\").", "An instant (\"2026-03-15T00:00:00Z\") in `effective_date` (write the civil date \"2026-03-15\").", "A placeholder such as \"<document oid>\" in `evidence`.", "Posting to a summary account (`leaf: false` in `fa_chart_list_accounts`).", "Re-submitting the same intent with a different `effective_date` after a period-law refusal.", "Expecting a second post with the same `idempotency_key` to post again: it returns the recorded outcome (`recorded`)."]
 
 [[mcp.tool]]
@@ -3484,6 +3506,18 @@ stdin_via = "--replace-with"
 required = ["vid", "--reason"]
 dont = ["Don't re-enter the target's amounts: the reversal derives its exact opposite legs and preserves its evidence lineage.", "Don't pick an effective date to dodge the period law. The default is the target's date; a supplied date must be in the same or a later admissible period.", "Don't use Other without a description of the stated reason; a reason code does not attest that the explanation is true."]
 mistakes = ["Omitting reason or using an unregistered name (for example, use WrongAccount, WrongAmount or Duplicate).", "Trying to reverse an already reversed entry with a different reason: cite the existing reversal or explicitly reverse that reversal.", "Posting a corrected entry as a separate Original after the reversal: pass the corrected entry intent as replace_with so the Reversal and its Replacement commit as one pair (a Replacement alone is FA-REF-160)."]
+
+[[mcp.tool]]
+cluster = "fa.correct"
+name = "reclass"
+verb = "reclass"
+subcommands = []
+positionals = ["vid"]
+flags = ["--from", "--to", "--amount", "--reason", "--effective", "--period", "--key", "--description", "--evidence", "--draft"]
+switches = ["--dry-run"]
+required = ["vid", "--from", "--to", "--amount", "--reason"]
+dont = ["Name the target's vid, the account its leg is on (from), the account it belongs on (to) and the amount moved as \"300.00 USD\". The side and dimensions come from the target's leg; never re-enter them.", "Don't move more than the leg has left: earlier reclassifications of the same entry count, and the refusal (FA-REF-185) says how much is left.", "Don't pick an effective date to dodge the period law: the default is the target's date, and a Closed period needs post_closed with one approval."]
+mistakes = ["A JSON number in amount (write \"300.00 USD\").", "Using a reclassification to change an amount: that is a reversal with a replace_with (the reverse tool).", "Omitting reason or using an unregistered name (WrongAccount is the usual one)."]
 
 [[mcp.tool]]
 cluster = "fa.post"
@@ -4697,7 +4731,7 @@ subcommands = ["year-end"]
 ops = ["read", "post", "close"]
 
 [[bound]]
-verbs = ["post", "commit", "reverse", "reserve", "resolve", "invoice", "bill", "receipt", "payment"]
+verbs = ["post", "commit", "reverse", "reclass", "reserve", "resolve", "invoice", "bill", "receipt", "payment"]
 ops = ["post"]
 
 [[bound]]

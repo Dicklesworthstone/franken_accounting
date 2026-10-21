@@ -3893,6 +3893,136 @@ fn verify_book_runs_every_verify_target() -> std::io::Result<()> {
     Ok(())
 }
 
+/// fa-xvba: `fa reclass` moves part of an entry's leg to another account
+/// with the leg's side; the trial balance moves exactly, lineage names the
+/// reclassification, a move beyond what remains is FA-REF-185, and a Closed
+/// period needs post_closed (exit 7 without it).
+#[test]
+fn reclass_closed_period_requires_post_closed() -> std::io::Result<()> {
+    let dir = tmp("reclass")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "Reclass Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"},{"code":"6200","name":"Travel expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let expense = write(
+        &dir,
+        "expense.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"exp","legs":[{"side":"debit","account":"6100","amount":"1000.00 USD"},{"side":"credit","account":"1000","amount":"1000.00 USD"}]}"#,
+    );
+    let out = ok(&[
+        "post",
+        "--intent",
+        &expense,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&out, "vid").unwrap_or_default().to_string();
+    let out = ok(&[
+        "reclass",
+        &target,
+        "--from",
+        "6100",
+        "--to",
+        "6200",
+        "--amount",
+        "300.00 USD",
+        "--reason",
+        "WrongAccount",
+        "--json",
+    ]);
+    assert_eq!(field(&out, "class"), Some("Reclassification"), "{out}");
+    let reclass = field(&out, "vid").unwrap_or_default().to_string();
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(
+        tb.contains("700.00 USD") && tb.contains("300.00 USD"),
+        "{tb}"
+    );
+    let lineage = ok(&["explain", "lineage", &target, "--json"]);
+    assert!(lineage.contains(&reclass), "{lineage}");
+    assert!(lineage.contains("Reclassifies"), "{lineage}");
+    // The same command records once.
+    let out = ok(&[
+        "reclass",
+        &target,
+        "--from",
+        "6100",
+        "--to",
+        "6200",
+        "--amount",
+        "300.00 USD",
+        "--reason",
+        "WrongAccount",
+        "--json",
+    ]);
+    assert!(out.contains("\"event\":\"recorded\""), "{out}");
+    // 800 more exceeds the 700 left.
+    let (code, out) = run(&[
+        "reclass",
+        &target,
+        "--from",
+        "6100",
+        "--to",
+        "6200",
+        "--amount",
+        "800.00 USD",
+        "--reason",
+        "WrongAccount",
+        "--json",
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-185"), "{out}");
+    // No reason, an unregistered one: FA-REF-054.
+    let (code, out) = run(&[
+        "reclass", &target, "--from", "6100", "--to", "6200", "--amount", "1.00 USD", "--reason",
+        "Whim", "--json",
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-054"), "{out}");
+    // Closed: a reclassification dated in the period needs post_closed.
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    let (code, out) = run(&[
+        "reclass",
+        &target,
+        "--from",
+        "6100",
+        "--to",
+        "6200",
+        "--amount",
+        "100.00 USD",
+        "--reason",
+        "WrongAccount",
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("post_closed"), "{out}");
+    Ok(())
+}
+
 /// `fa law list|show` and `fa unit list` (plan §6.2–§6.4, Appendix D): the
 /// registered laws and unit versions, without a book.
 #[test]
@@ -9762,6 +9892,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("fx", Some("revalue"), "always"),
     ("post", None, "grant:post_closed"),
     ("reverse", None, "grant:post_closed"),
+    ("reclass", None, "grant:post_closed"),
     // Every verb that posts to trunk is dangerous under a post_closed grant.
     ("invoice", None, "grant:post_closed"),
     ("bill", None, "grant:post_closed"),

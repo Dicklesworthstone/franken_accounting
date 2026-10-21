@@ -173,6 +173,10 @@ pub mod code {
     pub const REVERSAL_PERIOD: &str = "FA-REF-053";
     /// Corrections require a nonzero reason registered for supersession.
     pub const SUPERSESSION_REASON: &str = "FA-REF-054";
+    /// A Reclassification does not move a positive part of its live target's
+    /// legs to another account or dimension within what earlier ones left
+    /// (plan §8.2 `Reclassifies`; bead fa-xvba).
+    pub const RECLASSIFICATION_SHAPE: &str = "FA-REF-185";
     /// The named pending entry is missing, is not a `Pending`, or its handle digest mismatches.
     pub const RESOLUTION_TARGET: &str = "FA-REF-060";
     /// The posted sub-vector is not drawn leg-by-leg from the pending entry.

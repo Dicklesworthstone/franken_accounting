@@ -149,6 +149,174 @@ fn correction_outcome(
     }
 }
 
+/// One Reclassification of `refs[target]` on both engines (fa-xvba): the
+/// kernel receives the intent with a `Reclassifies` supersession, the oracle
+/// [`Oracle::reclassify`]; both give `expected`, and a refusal writes nothing.
+fn reclass_outcome(
+    kernel: &mut Kernel,
+    oracle: &mut Oracle,
+    refs: &mut Vec<EntryRef>,
+    intent: &Intent,
+    target: usize,
+    expected: Result<&str, &'static str>,
+) -> Option<usize> {
+    let usd = kernel.book.units.lookup("USD").unwrap();
+    let head = kernel.db.frontier().unwrap();
+    let mut req = kernel_request(kernel, intent, usd, refs);
+    req.proposal.supersession = vec![Supersession {
+        target: refs[target],
+        kind: SupersessionKind::Reclassifies,
+        reason_code: intent.supersession_reason,
+    }];
+    let ctx = kernel.ctx();
+    let db = &mut kernel.db;
+    let book = &kernel.book;
+    let actual = kernel
+        .runtime
+        .block_on(async move { post(db, &ctx, book, req).await })
+        .expect("kernel");
+    let reference = oracle.reclassify(intent, target);
+    match expected {
+        Ok(period) => {
+            let index = refs.len();
+            assert_eq!(
+                reference,
+                Verdict::Posted {
+                    index,
+                    period: period.into()
+                },
+                "{intent:?}"
+            );
+            let posted = actual.expect("kernel admits the reclassification");
+            assert_eq!(posted.period(), Some(period));
+            refs.push(posted.entry_ref());
+            Some(index)
+        }
+        Err(code) => {
+            assert_eq!(reference, Verdict::Refused { code }, "{intent:?}");
+            assert_eq!(actual.unwrap_err().code, code, "{intent:?}");
+            assert_eq!(kernel.db.frontier().unwrap(), head, "refusal wrote nothing");
+            None
+        }
+    }
+}
+
+/// fa-xvba (plan §8.2 Reclassifies): the kernel and the independent oracle
+/// agree on every reclassification of one entry: partial moves bounded by
+/// what earlier live ones left, a move back where it came from, an
+/// unregistered reason, a reversed reclassification giving its amount back,
+/// and the Closed period's post_closed and approval; their folds agree.
+#[test]
+fn reclass_agrees_with_reference() {
+    let (mut kernel, mut oracle, _) = setup();
+    open_period(&mut kernel, &mut oracle, "FY2026-P04", 0);
+    let mut refs = Vec::new();
+    let day = DateDay::parse("2026-04-15").unwrap();
+    let original = maintenance_intent("Original", day, 1_000, "rc-original");
+    let target = correction_outcome(
+        &mut kernel,
+        &mut oracle,
+        &mut refs,
+        &original,
+        Ok("FY2026-P04"),
+    )
+    .unwrap();
+    let unit = UnitRegistry::with_defaults().lookup("USD").unwrap().0;
+    let leg = |side, account: &str, mantissa| Leg {
+        side,
+        account: account.into(),
+        unit,
+        entity: None,
+        mantissa,
+    };
+    let mv = |amount: i128, key: &str, to: &str| {
+        let mut intent = maintenance_intent("Reclassification", day, 0, key);
+        intent.legs = vec![
+            leg(fa_reference::Side::Credit, "6000", amount),
+            leg(fa_reference::Side::Debit, to, amount),
+        ];
+        intent
+    };
+    let (k, o, r) = (&mut kernel, &mut oracle, &mut refs);
+    let first = reclass_outcome(
+        k,
+        o,
+        r,
+        &mv(300, "rc-300", "1200"),
+        target,
+        Ok("FY2026-P04"),
+    )
+    .unwrap();
+    reclass_outcome(
+        k,
+        o,
+        r,
+        &mv(800, "rc-800", "1200"),
+        target,
+        Err("FA-REF-185"),
+    );
+    reclass_outcome(
+        k,
+        o,
+        r,
+        &mv(100, "rc-back", "6000"),
+        target,
+        Err("FA-REF-185"),
+    );
+    let mut unreasoned = mv(100, "rc-zero", "1200");
+    unreasoned.supersession_reason = 0;
+    reclass_outcome(k, o, r, &unreasoned, target, Err("FA-REF-054"));
+    // Reversing the first reclassification gives its 300 back.
+    let mut undo = mv(300, "rc-undo", "1200");
+    undo.class = "Reversal".into();
+    undo.reverses = Some(first);
+    for l in &mut undo.legs {
+        l.side = l.side.flipped();
+    }
+    correction_outcome(k, o, r, &undo, Ok("FY2026-P04"));
+    reclass_outcome(
+        k,
+        o,
+        r,
+        &mv(1_000, "rc-all", "1200"),
+        target,
+        Ok("FY2026-P04"),
+    );
+    reclass_outcome(k, o, r, &mv(1, "rc-1", "1200"), target, Err("FA-REF-185"));
+    let maintained = maintain(&mut kernel, "FY2026-P04");
+    maintained_matches_oracle(&maintained, &oracle, kernel.book.book_id);
+
+    // A Closed period admits a reclassification only under post_closed with
+    // one approval, in both engines.
+    let other = maintenance_intent("Original", day, 50, "rc-other");
+    let other = correction_outcome(
+        &mut kernel,
+        &mut oracle,
+        &mut refs,
+        &other,
+        Ok("FY2026-P04"),
+    )
+    .unwrap();
+    let closed = kernel_transition(&mut kernel, "FY2026-P04", PeriodTransition::Close, 1)
+        .expect("close the real period");
+    let expected = oracle
+        .transition("FY2026-P04", PeriodTransition::Close)
+        .expect("close the oracle period");
+    assert_eq!((closed.from, closed.to), expected);
+    let (k, o, r) = (&mut kernel, &mut oracle, &mut refs);
+    reclass_outcome(
+        k,
+        o,
+        r,
+        &mv(10, "rc-closed", "1200"),
+        other,
+        Err("FA-REF-011"),
+    );
+    let mut granted = mv(10, "rc-closed", "1200");
+    granted.ops.push("post_closed".into());
+    reclass_outcome(k, o, r, &granted, other, Err("FA-REF-012"));
+}
+
 #[test]
 fn correction_period_order_and_reasons_match_independent_oracle_across_seeds() {
     for seed in [7, 0x529a_4571, 0x9812_73bb] {

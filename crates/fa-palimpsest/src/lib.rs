@@ -509,6 +509,10 @@ pub fn validate_reclassification(
 
     let mut reduced_buckets: BTreeMap<(VId, UnitId, u8, DimSet), i128> = BTreeMap::new();
     let mut destination_legs = 0usize;
+    // Where amounts move out of and into, by account, unit and dimensions:
+    // a move back to where it came from moves nothing.
+    let mut sources: BTreeSet<(VId, UnitId, DimSet)> = BTreeSet::new();
+    let mut destinations: BTreeSet<(VId, UnitId, DimSet)> = BTreeSet::new();
 
     for leg in &reclass.legs {
         let opposite = match leg.side {
@@ -521,7 +525,9 @@ pub fn validate_reclassification(
             side_tag(opposite),
             leg.dimension_set.clone(),
         );
+        let place = (leg.account_ref, leg.amount.unit, leg.dimension_set.clone());
         if let Some(&avail) = target_buckets.get(&target_key) {
+            sources.insert(place);
             let slot = reduced_buckets.entry(target_key).or_insert(0);
             *slot = slot
                 .checked_add(leg.amount.mantissa)
@@ -533,10 +539,17 @@ pub fn validate_reclassification(
                 )));
             }
         } else {
+            destinations.insert(place);
             destination_legs += 1;
         }
     }
 
+    if let Some((account, unit, _)) = destinations.intersection(&sources).next() {
+        return Err(PalimpsestError::InvalidReclassification(format!(
+            "reclassification moves amount back into account {:032x} ({}) with the dimensions it moves out of",
+            account.0, unit.0
+        )));
+    }
     if reduced_buckets.is_empty() {
         return Err(PalimpsestError::InvalidReclassification(
             "reclassification does not reduce any leg of the target entry".into(),
@@ -549,6 +562,77 @@ pub fn validate_reclassification(
     }
 
     Ok(())
+}
+
+/// `target` as the live reclassifications in `prior` left it (plan §8.2,
+/// `Reclassifies`: the net effect is the target plus every reclassification
+/// delta). Each of a prior reclassification's legs that reduces one of the
+/// target's buckets (account, unit, side, dimensions) is taken out of that
+/// bucket's legs in order; a leg reduced to nothing stays at zero, so a
+/// further move out of it is judged as exceeding it. Judging a new
+/// reclassification against the result bounds every move by what the
+/// earlier ones left.
+pub fn remaining_after_reclassifications(
+    target: &EntryPayload,
+    prior: &[&EntryPayload],
+) -> Result<EntryPayload, PalimpsestError> {
+    let side_tag = |s: Side| match s {
+        Side::Debit => 0u8,
+        Side::Credit => 1u8,
+    };
+    let key_of = |leg: &LegPayload, side: Side| {
+        (
+            leg.account_ref,
+            leg.amount.unit,
+            side_tag(side),
+            leg.dimension_set.clone(),
+        )
+    };
+    let buckets: std::collections::BTreeSet<(VId, UnitId, u8, DimSet)> = target
+        .legs
+        .iter()
+        .map(|leg| key_of(leg, leg.side))
+        .collect();
+    let mut reduced: BTreeMap<(VId, UnitId, u8, DimSet), i128> = BTreeMap::new();
+    for reclass in prior {
+        for leg in &reclass.legs {
+            let opposite = match leg.side {
+                Side::Debit => Side::Credit,
+                Side::Credit => Side::Debit,
+            };
+            let key = key_of(leg, opposite);
+            if buckets.contains(&key) {
+                let slot = reduced.entry(key).or_insert(0);
+                *slot = slot
+                    .checked_add(leg.amount.mantissa)
+                    .ok_or(PalimpsestError::Overflow)?;
+            }
+        }
+    }
+    let mut remaining = target.clone();
+    remaining.legs.clear();
+    for leg in &target.legs {
+        let key = key_of(leg, leg.side);
+        let owed = reduced.get_mut(&key);
+        let take = owed.as_ref().map_or(0, |o| (**o).min(leg.amount.mantissa));
+        if let Some(o) = owed {
+            *o = o.checked_sub(take).ok_or(PalimpsestError::Overflow)?;
+        }
+        let left = leg
+            .amount
+            .mantissa
+            .checked_sub(take)
+            .ok_or(PalimpsestError::Overflow)?;
+        let mut kept = leg.clone();
+        kept.amount.mantissa = left;
+        remaining.legs.push(kept);
+    }
+    if reduced.values().any(|left| *left != 0) {
+        return Err(PalimpsestError::InvalidReclassification(
+            "earlier reclassifications move more out of the target than it posted".into(),
+        ));
+    }
+    Ok(remaining)
 }
 
 // ---------------------------------------------------------------------------
@@ -1285,6 +1369,24 @@ mod tests {
         let err = validate_reclassification(&e1.proposal, e1_ref, &bad_reclass)
             .expect_err("over-reclassification must fail");
         assert!(err.to_string().contains("exceeds target amount"), "{err}");
+
+        // A move back into the account and dimensions it leaves moves
+        // nothing, so it is refused (fa-xvba).
+        let back = sample_payload(
+            EntryClass::RECLASSIFICATION,
+            vec![
+                LegPayload::simple(Side::Credit, VId(6000), Amount::new(usd, 10)),
+                LegPayload::simple(Side::Debit, VId(6000), Amount::new(usd, 10)),
+            ],
+            vec![Supersession {
+                kind: SupersessionKind::Reclassifies,
+                target: e1_ref,
+                reason_code: 3,
+            }],
+        );
+        let err = validate_reclassification(&e1.proposal, e1_ref, &back)
+            .expect_err("a move back is no reclassification");
+        assert!(err.to_string().contains("moves amount back"), "{err}");
     }
 
     #[test]
