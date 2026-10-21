@@ -433,6 +433,80 @@ mod tests {
         assert_eq!(invariant_in("plan §4.3"), None);
     }
 
+    /// Every catalog row, raised with its own cite and fix template, renders
+    /// a complete object: the fields in order, an instance id carrying its
+    /// code, a non-empty `why`, and a `fix.command` and alternatives that
+    /// re-parse. Each object is logged.
+    #[test]
+    fn every_catalog_row_renders_a_complete_appendix_d_object() {
+        let catalog =
+            fa_registry::refusal_catalog::RefusalCatalog::embedded().expect("refusal_catalog.toml");
+        let issued = Issued {
+            book: Some("00"),
+            known_at: Some(1),
+        };
+        let mut with_command = 0;
+        for row in &catalog.rows {
+            let code: &'static str = Box::leak(row.code.clone().into_boxed_str());
+            let r = Refusal::new(
+                code,
+                row.exit,
+                format!("{} refused", row.name),
+                row.cite.clone(),
+                row.fix.clone(),
+            );
+            let object = render(reg(), &r, &issued);
+            println!("{}", object.render());
+            let Json::Obj(fields) = &object else {
+                panic!("{code}: not an object");
+            };
+            let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+            assert_eq!(
+                keys,
+                [
+                    "id",
+                    "code",
+                    "exit",
+                    "what_failed",
+                    "where",
+                    "why",
+                    "fix",
+                    "alternatives",
+                    "docs"
+                ],
+                "{code}"
+            );
+            let id = object.get("id").and_then(Json::as_str).expect("id");
+            assert!(is_instance_id(id) && code_of(id) == code, "{code}: {id}");
+            let Some(Json::Obj(why)) = object.get("why") else {
+                panic!("{code}: why is not an object");
+            };
+            assert_eq!(why.len(), 1, "{code}");
+            assert!(
+                why[0].1.as_str().is_none_or(|v| !v.is_empty()),
+                "{code}: empty why"
+            );
+            let fix = object.get("fix").expect("fix");
+            if let Some(command) = fix.get("command").and_then(Json::as_str) {
+                with_command += 1;
+                assert!(parse(reg(), command).is_some(), "{code}: {command}");
+            }
+            for alternative in object
+                .get("alternatives")
+                .and_then(Json::as_arr)
+                .expect("alternatives")
+            {
+                let alternative = alternative.as_str().expect("string");
+                assert!(parse(reg(), alternative).is_some(), "{code}: {alternative}");
+            }
+        }
+        println!(
+            "{} catalog rows rendered; {with_command} name a parseable command",
+            catalog.rows.len()
+        );
+        assert!(with_command > 0);
+    }
+
     #[test]
     fn the_instance_id_carries_its_code_and_binds_the_coordinate() {
         let r = Refusal::new("FA-REF-002", 3, "leg 0 posts to `1000`", "plan §4.3", "x")
