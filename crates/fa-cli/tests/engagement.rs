@@ -125,14 +125,28 @@ impl Fixture {
         output
     }
 
-    /// Refused with `exit` and `refusal_id`, and nothing journaled.
+    /// Refused with `exit` and `refusal_id`, and nothing journaled but the
+    /// AccessEvent a read-only Human session's command records before it
+    /// observes the book, refused or not (fa-7dw).
     fn refused(&self, args: &[&str], exit: i32, id: &str) -> Json {
         let before = self.head();
         let (status, output) = self.run(args);
         assert_eq!(status, exit, "{args:?}: {}", output.render());
         assert_eq!(text(data(&output), "refusal_id"), id, "{}", output.render());
-        assert_eq!(self.head(), before, "{args:?} journaled nothing");
+        assert_eq!(
+            self.head(),
+            before + self.access_events_since(before),
+            "{args:?} journaled nothing but its AccessEvent"
+        );
         output
+    }
+
+    /// AccessEvents recorded after `since` (fa-7dw).
+    fn access_events_since(&self, since: i128) -> i128 {
+        int(
+            data(&self.ok(&["access", "log", "--since", &since.to_string()])),
+            "count",
+        )
     }
 
     fn head(&self) -> i128 {
