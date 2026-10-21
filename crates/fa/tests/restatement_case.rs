@@ -854,3 +854,265 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         .unwrap_err();
     assert_eq!(reclosed.code, code::CASE_STATE, "{reclosed:?}");
 }
+
+/// fa-75j4 slice 4b: a Revision case revises a Closed period's posting.
+/// - The Revision is planned in the case's scenario and rehearsed in its
+///   scratch replay; planning refuses a revision of an entry that is not
+///   there.
+/// - The posted entry is the case's derivation: class Revision, still
+///   revising the target, in the period the case affects. The period's
+///   trial balance moves by the delta.
+/// - On its own, the same entry is refused (FA-REF-178).
+#[test]
+fn a_revision_case_revises_a_closed_periods_posting_through_its_post() {
+    let (mut book, narrative, authority) = book(0xcd);
+    let book_id = book.context().book_id;
+    let usd = UnitRegistry::embedded().unwrap().lookup("USD").unwrap();
+    let close = Capability::embedded(PRINCIPAL, &["close"]).unwrap();
+    book.transition_period(
+        "FY2025-P12",
+        PeriodTransition::Open,
+        PRINCIPAL,
+        1,
+        b"open-december",
+        &close,
+    )
+    .unwrap()
+    .unwrap();
+    let receipt = Document {
+        book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"Bank advice: December 2025 receipt of 200.00 USD, recorded as 150.00".to_vec(),
+    };
+    book.add_document(&receipt).unwrap().unwrap();
+    let legs = |cents: i128| {
+        vec![
+            LegPayload::simple(
+                Side::Debit,
+                account_vid(book_id, "1000"),
+                Amount::new(usd, cents),
+            ),
+            LegPayload::simple(
+                Side::Credit,
+                account_vid(book_id, "3000"),
+                Amount::new(usd, cents),
+            ),
+        ]
+    };
+    let december = day(2025, 12, 15);
+    let entry = |book: &Book, class, legs: Vec<LegPayload>, key: &[u8], who: VId| EntryPayload {
+        schema_minor: 0,
+        book_id,
+        branch_id: Id128::TRUNK,
+        class,
+        effective_date: december,
+        document_date: None,
+        description: book.seal_text("December receipt").unwrap(),
+        effective_period: None,
+        unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+        legs,
+        control: None,
+        base_totals: None,
+        idempotency_key: key.to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([0xcd; 32]),
+            intent_kind: 1,
+        },
+        principal_ref: who,
+        session_ref: None,
+        evidence: vec![receipt.evidence_ref(1)],
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    };
+    let original = entry(
+        &book,
+        EntryClass::ORIGINAL,
+        legs(15_000),
+        b"receipt",
+        PRINCIPAL,
+    );
+    let posted = book
+        .post(PostRequest {
+            proposal: original,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        })
+        .unwrap()
+        .unwrap();
+    let target = posted.entry_ref();
+    book.transition_period(
+        "FY2025-P12",
+        PeriodTransition::Close,
+        PRINCIPAL,
+        1,
+        b"close-december",
+        &close,
+    )
+    .unwrap()
+    .unwrap();
+
+    let restate = Capability::embedded(PRINCIPAL, &["restate", "read", "produce"]).unwrap();
+    let poster = Capability::embedded(PRINCIPAL, &["restate", "post", "read"]).unwrap();
+    let planner_vid = VId(4);
+    let planner = Capability::embedded(planner_vid, &["post", "read", "restate"]).unwrap();
+    let date = day(2026, 2, 12);
+    book.open_case(
+        restate.clone(),
+        CaseKind::Revision,
+        vec!["FY2025-P12".into()],
+        Some(narrative),
+        Some(Determination {
+            day: day(2026, 2, 10),
+            authority,
+        }),
+        date,
+        b"revision",
+    )
+    .unwrap()
+    .unwrap();
+    book.open_scenario(
+        planner.clone(),
+        "revised",
+        ScenarioFork::default(),
+        december,
+        "The December receipt was 50.00 short",
+    )
+    .unwrap()
+    .unwrap();
+    let revises = |target| fa_model::Supersession {
+        target,
+        kind: fa_model::SupersessionKind::Revises,
+        reason_code: 4,
+    };
+    // A revision of an entry that is not there is refused in the scenario's
+    // replay; the scenario stays without it.
+    let mut missing = entry(
+        &book,
+        EntryClass::REVISION,
+        legs(5_000),
+        b"ghost",
+        planner_vid,
+    );
+    missing.supersession = vec![revises(fa_model::EntryRef {
+        vid: VId(0xdead),
+        entry_digest: [7; 32],
+    })];
+    let ghost = book
+        .run_in_scenario(
+            planner.clone(),
+            "revised",
+            PostIntent::new(missing, Vec::new()).unwrap(),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(ghost.code, code::REVISION_SHAPE, "{ghost:?}");
+    let mut planned = entry(
+        &book,
+        EntryClass::REVISION,
+        legs(5_000),
+        b"short",
+        planner_vid,
+    );
+    planned.supersession = vec![revises(target)];
+    book.run_in_scenario(
+        planner,
+        "revised",
+        PostIntent::new(planned.clone(), Vec::new()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let certificate = book
+        .certify_scenario_diff(
+            PRINCIPAL,
+            &restate,
+            "revised",
+            &["FY2025-P12".to_string()],
+            false,
+        )
+        .unwrap()
+        .unwrap()
+        .certificate;
+    book.rehearse_case(restate.clone(), 1, &certificate, date, b"rehearsal")
+        .unwrap()
+        .unwrap();
+    let manifest = book.case_manifest(1).unwrap().unwrap();
+    let plan = manifest.entries[0].plan;
+    let digest = manifest.digest().unwrap();
+    let approve = |book: &mut Book, who: u128| {
+        book.approve(
+            Capability::embedded(VId(who), &["approve"]).unwrap(),
+            digest,
+        )
+        .unwrap()
+        .unwrap()
+        .approval()
+        .approval_vid
+    };
+    let alice = approve(&mut book, 2);
+    let bob = approve(&mut book, 3);
+    book.approve_case(restate, 1, vec![alice, bob], date, b"dual")
+        .unwrap()
+        .unwrap();
+
+    // The derivation keeps the class and its Revises link. On its own it is
+    // refused; a plain posting is not a Revision case's Plan record.
+    let derived =
+        fa_journal::derive_member(book_id, CaseKind::Revision, 1, plan, &planned, PRINCIPAL)
+            .unwrap()
+            .unwrap();
+    assert_eq!(derived.class, EntryClass::REVISION);
+    assert_eq!(derived.supersession, planned.supersession);
+    let head = book.head().unwrap();
+    let alone = book
+        .post(PostRequest {
+            proposal: derived.clone(),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: poster.clone(),
+        })
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(alone.code, code::CASE_MEMBERSHIP, "{alone:?}");
+    assert_eq!(book.head().unwrap(), head);
+    let plain = entry(
+        &book,
+        EntryClass::ORIGINAL,
+        legs(5_000),
+        b"plain",
+        planner_vid,
+    );
+    let refused =
+        fa_journal::derive_member(book_id, CaseKind::Revision, 1, plan, &plain, PRINCIPAL)
+            .unwrap()
+            .unwrap_err();
+    assert_eq!(refused.code, code::CASE_MEMBERSHIP, "{refused:?}");
+
+    let before = book.trial_balance(&["FY2025-P12".to_string()]).unwrap();
+    let posted = book.post_case(poster, 1, date, b"post").unwrap().unwrap();
+    assert_eq!(posted.case.state, CaseState::Posted);
+    let (revision, _) = book
+        .read_entry(posted.case.posted[0].entry)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        revision.proposal.proposal_digest().unwrap(),
+        derived.proposal_digest().unwrap()
+    );
+    assert_eq!(revision.proposal.class, EntryClass::REVISION);
+    let after = book.trial_balance(&["FY2025-P12".to_string()]).unwrap();
+    let cash = |tb: &fa_registers::TrialBalance| {
+        tb.rows
+            .iter()
+            .find(|row| row.code == "1000")
+            .map(|row| row.debits - row.credits)
+    };
+    assert_eq!(cash(&before), Some(15_000));
+    assert_eq!(cash(&after), Some(20_000), "the target plus the delta");
+}

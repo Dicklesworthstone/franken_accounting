@@ -34,7 +34,6 @@ pub(crate) const BOOK_BLOB_STORE: u16 = 1;
 #[derive(Clone, Copy)]
 pub(crate) enum ScratchReplayMode {
     ProtectedCoordinates,
-    LegacyScenarioV1,
 }
 
 /// The journal prefix and the checkpoint a bundle is assembled over.
@@ -2165,16 +2164,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 )
                 .await?
             }
-            ScratchReplayMode::LegacyScenarioV1 => {
-                fa_journal::scratch::replay_into_legacy_scenario_v1(
-                    &mut self.db,
-                    &mut target,
-                    cx,
-                    &self.context,
-                    prefix,
-                )
-                .await?
-            }
         };
         let map = match replayed {
             Ok(map) => map,
@@ -2228,6 +2217,55 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 signer: keys.checkpoint_signing_key(),
             },
             rehearsal,
+        )))
+    }
+
+    /// Materialize a scenario into an owned, empty memory database (plan
+    /// §15.2): the native factory replays this book at `fork_at` and posts
+    /// `requests` in order, rehearsing a case-bound class under its private
+    /// scratch admission, which cannot authorize a write to this book.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn materialize_scenario_into(
+        &mut self,
+        cx: &PurposeContexts,
+        target: Database<fgdb::MemVfs>,
+        keys: &BookKeys,
+        fork_at: CommitSeq,
+        coordinates: fa_journal::scenario::Coordinates,
+        requests: Vec<fa_journal::PostRequest>,
+        entropy: Entropy,
+    ) -> Result<
+        Result<
+            (AsyncBook<fgdb::MemVfs, B>, fa_journal::SeqMap, Vec<VId>),
+            fa_journal::scenario::MaterializeRefusal,
+        >,
+        BookError,
+    > {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let (target, map, entries) = match fa_journal::scenario::materialize_into(
+            &mut self.db,
+            target,
+            cx,
+            &self.context,
+            fork_at,
+            coordinates,
+            requests,
+        )
+        .await?
+        {
+            Ok(materialized) => materialized,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok((
+            AsyncBook {
+                db: target,
+                blobs: self.blobs.clone(),
+                context: self.context.clone(),
+                entropy,
+                signer: keys.checkpoint_signing_key(),
+            },
+            map,
+            entries,
         )))
     }
 

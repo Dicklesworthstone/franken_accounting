@@ -25,7 +25,9 @@ use fa_registers::TrialBalance;
 use fa_time::DateDay;
 use fgdb_types::{CommitSeq, VId};
 
-use crate::{Book, BookError, BookKeys, Entropy, Outcome};
+use fa_journal::scenario::{Coordinates, MaterializeRefusal};
+
+use crate::{Book, BookError, Outcome};
 
 mod certificate;
 
@@ -176,38 +178,39 @@ impl Book {
         through: usize,
         replay: ScenarioReplay,
     ) -> Outcome<ScenarioBook> {
-        let keys = BookKeys::generate(&Entropy::production())?;
-        let replayed = match replay {
-            ScenarioReplay::Protected => {
-                self.replay_into_scratch(Some(view.body.fork_at), keys, Entropy::production())?
-            }
-            ScenarioReplay::LegacyCertificateV1 => self.replay_into_scratch_legacy_scenario_v1(
-                Some(view.body.fork_at),
-                keys,
-                Entropy::production(),
-            )?,
+        self.materialize_with(view, through, replay, None)
+    }
+
+    /// The materialization, through fa-journal's factory (so a case-bound
+    /// class rehearses in scratch and nowhere else), plus `candidate` as
+    /// the last request when given: its entry is then `entries`' last.
+    fn materialize_with(
+        &mut self,
+        view: ScenarioView,
+        through: usize,
+        replay: ScenarioReplay,
+        candidate: Option<PostRequest>,
+    ) -> Outcome<ScenarioBook> {
+        let mut requests = view
+            .intents
+            .iter()
+            .take(through)
+            .map(|planned| scratch_request(planned.intent.clone(), &planned.capability))
+            .collect::<Result<Vec<_>, _>>()?;
+        requests.extend(candidate);
+        let coordinates = match replay {
+            ScenarioReplay::Protected => Coordinates::Protected,
+            ScenarioReplay::LegacyCertificateV1 => Coordinates::LegacyV1,
         };
-        let (mut book, map) = match replayed {
-            Ok(replayed) => replayed,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        let mut entries = Vec::with_capacity(through);
-        for (i, planned) in view.intents.iter().take(through).enumerate() {
-            match book.post(scratch_request(
-                planned.intent.clone(),
-                &planned.capability,
-            )?)? {
-                Ok(posted) => entries.push(posted.entry_ref().vid),
-                Err(refusal) => {
-                    return Ok(Err(in_scenario(
-                        &view.body.name,
-                        view.body.fork_at,
-                        i + 1,
-                        refusal,
-                    )));
+        let fork_at = view.body.fork_at;
+        let (book, map, entries) =
+            match self.materialize_scenario_scratch(fork_at, coordinates, requests)? {
+                Ok(materialized) => materialized,
+                Err(MaterializeRefusal::Replay(refusal)) => return Ok(Err(refusal)),
+                Err(MaterializeRefusal::Intent(i, refusal)) => {
+                    return Ok(Err(in_scenario(&view.body.name, fork_at, i + 1, refusal)));
                 }
-            }
-        }
+            };
         Ok(Ok(ScenarioBook {
             book,
             map,
@@ -252,19 +255,22 @@ impl Book {
             }));
         }
         let ordinal = view.intents.len() + 1;
-        let fork_at = view.body.fork_at;
         let through = view.intents.len();
-        let mut scenario = match self.materialize(view, through)? {
+        let candidate = scratch_request(intent.clone(), &capability)?;
+        let scenario = match self.materialize_with(
+            view,
+            through,
+            ScenarioReplay::Protected,
+            Some(candidate),
+        )? {
             Ok(scenario) => scenario,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let rehearsed = match scenario
-            .book
-            .post(scratch_request(intent.clone(), &capability)?)?
-        {
-            Ok(posted) => posted.entry_ref().vid,
-            Err(refusal) => return Ok(Err(in_scenario(name, fork_at, ordinal, refusal))),
-        };
+        let rehearsed = *scenario.entries.last().ok_or_else(|| {
+            BookError::Kernel(fa_journal::KernelError::Corrupt(
+                "a scenario rehearsal posted no entry for its intent".into(),
+            ))
+        })?;
         Ok(self
             .record_scenario_intent(capability, name, intent)?
             .map(|recorded| ScenarioRun {
@@ -367,9 +373,10 @@ impl Book {
 
 /// An intent as the scratch book posts it: under an embedded capability of
 /// its planner holding only the posting operations that planner actually
-/// carried: `post`, `post_softclosed`, `post_closed` and `reconcile`. Period
-/// exceptions and protected cash therefore retain their native admission
-/// without granting close, restatement or any unrelated authority. The
+/// carried: `post`, `post_softclosed`, `post_closed`, `reconcile` and, for a
+/// Revision case's Revision entries, `restate`. Period exceptions and
+/// protected cash therefore retain their native admission without granting
+/// close or any unrelated authority. The
 /// planner's own authority (ops, ceilings, scope caveats, currency and
 /// revocation) was admitted on trunk when the
 /// intent was recorded, as a dry run of it is. The scratch book is the
@@ -384,13 +391,15 @@ fn scratch_request(
 ) -> Result<PostRequest, BookError> {
     let principal = intent.proposal().principal_ref;
     // These are the only additional operations used by the batchable
-    // posting classes. A Closing or Restatement intent cannot enter a
-    // scenario, so their more powerful operations are never copied.
+    // posting classes and a Revision case's Revision entries (`restate`).
+    // A Closing or Restatement intent cannot enter a scenario, so their
+    // other operations are never copied.
     let ops: Vec<&str> = [
         fa_policy::Op::Post,
         fa_policy::Op::PostSoftclosed,
         fa_policy::Op::PostClosed,
         fa_policy::Op::Reconcile,
+        fa_policy::Op::Restate,
     ]
     .into_iter()
     .filter(|op| planner.ops().contains(op))

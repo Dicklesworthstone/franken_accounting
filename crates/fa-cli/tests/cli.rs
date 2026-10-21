@@ -3894,6 +3894,166 @@ fn verify_book_runs_every_verify_target() -> std::io::Result<()> {
     Ok(())
 }
 
+/// fa-75j4 slice 4b: a Revision case corrects a Closed period from the CLI.
+/// - The analyst plans the Revision in the case's scenario: `revises` names
+///   the posting and the legs are the delta. Without restate the rehearsal is
+///   refused by the period law (exit 7).
+/// - Two Humans who planned nothing approve the manifest. `fa case post`
+///   posts the Revision into the closed March, whose trial balance moves by
+///   the delta, and lineage names Revises.
+/// - The same intent posted outside the case is refused (FA-REF-178).
+#[test]
+fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()> {
+    let dir = tmp("revision")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "Revision Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let expense = write(
+        &dir,
+        "expense.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"exp","legs":[{"side":"debit","account":"6100","amount":"1000.00 USD"},{"side":"credit","account":"1000","amount":"1000.00 USD"}]}"#,
+    );
+    let out = ok(&[
+        "post",
+        "--intent",
+        &expense,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&out, "vid").unwrap_or_default().to_string();
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    let out = ok(&[
+        "case",
+        "open",
+        "--kind",
+        "Revision",
+        "--periods",
+        "FY2026-P03",
+        "--determined-on",
+        "2026-04-02",
+        "--authority",
+        &evidence,
+        "--json",
+    ]);
+    let opened = doc(&out).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&opened, "state"), "Determined", "{out}");
+    ok(&["scenario", "fork", "revised", "--as", "analyst", "--json"]);
+    let revision = write(
+        &dir,
+        "revision.json",
+        &format!(
+            r#"{{"class":"Revision","revises":"{target}","reason":"WrongAmount","idempotency_key":"rev","legs":[{{"side":"debit","account":"6100","amount":"20.00 USD"}},{{"side":"credit","account":"1000","amount":"20.00 USD"}}]}}"#
+        ),
+    );
+    let (code, out) = run(&[
+        "scenario", "run", "revised", "--intent", &revision, "--as", "analyst", "--json",
+    ]);
+    assert_eq!(
+        code, 7,
+        "a Revision in a Closed period needs restate: {out}"
+    );
+    ok(&[
+        "scenario", "run", "revised", "--intent", &revision, "--as", "analyst", "--grant",
+        "restate", "--json",
+    ]);
+    let rehearsal = dir.join("rehearsal.cert").display().to_string();
+    ok(&[
+        "scenario",
+        "diff",
+        "revised",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        &rehearsal,
+        "--json",
+    ]);
+    ok(&[
+        "case",
+        "rehearse",
+        "1",
+        "--certificate",
+        &rehearsal,
+        "--json",
+    ]);
+    let digest = text(
+        &doc(&ok(&["case", "approve", "1", "--dry-run", "--json"])),
+        "digest",
+    )
+    .to_string();
+    let approve = |who: &str| {
+        text(
+            &doc(&ok(&[
+                "approve",
+                "--proposal",
+                &digest,
+                "--as",
+                who,
+                "--json",
+            ])),
+            "approval_vid",
+        )
+        .to_string()
+    };
+    let (controller, auditor) = (approve("controller"), approve("auditor"));
+    ok(&[
+        "case",
+        "approve",
+        "1",
+        "--approval",
+        &controller,
+        "--approval",
+        &auditor,
+        "--json",
+    ]);
+    let out = ok(&["case", "post", "1", "--json"]);
+    let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&case, "state"), "Posted", "{out}");
+    let entry = text(&arr(&case, "posted")[0], "entry").to_string();
+    let explained = ok(&["explain", "entry", &entry, "--json"]);
+    assert!(explained.contains("Revision"), "{explained}");
+    let lineage = ok(&["explain", "lineage", &target, "--json"]);
+    assert!(lineage.contains(&entry), "{lineage}");
+    assert!(lineage.contains("Revises"), "{lineage}");
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(
+        tb.contains("1020.00 USD"),
+        "the closed March moves by the delta: {tb}"
+    );
+    // Outside its case a Revision is refused, even confirmed and with restate.
+    let (code, out) = run(&[
+        "post", "--intent", &revision, "--grant", "restate", "--yes", "--json",
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-178"), "{out}");
+    Ok(())
+}
+
 /// fa-xvba: `fa reclass` moves part of an entry's leg to another account
 /// with the leg's side; the trial balance moves exactly, lineage names the
 /// reclassification, a move beyond what remains is FA-REF-185, and a Closed
