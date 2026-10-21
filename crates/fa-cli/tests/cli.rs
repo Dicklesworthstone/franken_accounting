@@ -12520,7 +12520,7 @@ fn a_custom_thirteen_period_calendar_posts_and_closes() -> std::io::Result<()> {
     let created = doc(&out);
     let codes: Vec<&str> = arr(&created, "periods")
         .iter()
-        .map(|p| text(p, "code"))
+        .map(|p| p.as_str().expect("a period code"))
         .collect();
     assert_eq!(codes.len(), 16, "{out}");
     assert_eq!(codes[12], "FY2026-P13");
