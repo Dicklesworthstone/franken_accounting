@@ -497,6 +497,14 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
             .unwrap();
     assert_eq!(envelope["events"], json!(["statement"]));
     assert_eq!(envelope["authority"]["profile"], json!("agent"));
+    // A statement without for is still refused, now by the CLI (exit 2).
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        json!({"name": "balance-sheet"}),
+    );
+    assert!(error, "{output}");
+    assert_eq!(structured_error(&output)["exit"], json!(2), "{output}");
     // Statement lint (fa-qh60) answers through the same tool, with no for.
     let (error, output, _) = call_tool(
         &mut mcp,

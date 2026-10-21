@@ -2482,7 +2482,26 @@ mod tests {
             .tool_by_wire("fa_read_statement")
             .expect("statement tool");
         let schema = tool.input_schema(&mcp, reg);
-        assert_eq!(schema["required"], json!(["name", "for"]));
+        // `for` is not schema-required: `name: lint` takes none (fa-qh60), and
+        // the CLI refuses a statement without one (exit 2).
+        assert_eq!(schema["required"], json!(["name"]));
+        let lint = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({"name": "lint", "definition": "balance-sheet"}),
+            )
+            .unwrap();
+        assert_eq!(
+            lint.argv,
+            vec![
+                "statement",
+                "lint",
+                "--definition",
+                "balance-sheet",
+                "--json"
+            ]
+        );
         let args = json!({
             "name": "income-statement",
             "for": "FY2026-P03",
@@ -2516,7 +2535,7 @@ mod tests {
                 "{property}"
             );
         }
-        for incomplete in [json!({"name": "balance-sheet"}), json!({"for": "P"})] {
+        for incomplete in [json!({"for": "P"})] {
             assert!(tool.invocation(&mcp, reg, &incomplete).is_err());
         }
         let suggested = mcp
