@@ -357,6 +357,13 @@ fn incremental_bundle_mode_is_explicit_mutually_exclusive_and_pin_first() {
     ]);
     result(run(&mixed), 2);
 
+    let mut redundant_recorded = input.clone();
+    redundant_recorded.extend([
+        "--recorded-prefix".into(),
+        dir.join("index").into_os_string(),
+    ]);
+    result(run(&redundant_recorded), 2);
+
     let mut missing_baseline = input.clone();
     remove(&mut missing_baseline, "--index-baseline-prefix");
     result(run(&missing_baseline), 2);
