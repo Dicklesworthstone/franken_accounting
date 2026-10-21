@@ -83,11 +83,11 @@ name = "book"
 summary = "Create a book directory (store + key file), describe one, or fork its receivership."
 writes = true
 subcommands = ["create", "info", "fork"]
-flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods", "--time-zone", "--opening-date", "--entity", "--authority", "--at", "--date", "--description"]
+flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods", "--time-zone", "--opening-date", "--entity", "--periods", "--authority", "--at", "--date", "--description"]
 switches = []
 events = ["book_created", "book", "receivership_forked"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]]] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC] [--opening-date YYYY-MM-DD] [--entity <code>[:<name>][:<functional_unit>]]...", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info", "book fork receivership --authority <order-oid> [--at HEAD|<seq>] [--date YYYY-MM-DD] [--description <text>]   (plan §15.6, the receiver takes over; needs receivership, hold and post: a book-scope legal hold pins every entry, document and party recorded through the appointment sequence on the order's authority, and the `receivership` scenario forks at that sequence with the order as its assumption document; the estate posts with --scenario receivership and reads with --branch scenario:receivership until substrate branches land. Repeating the fork is its recorded outcome; another appointment is refused)"]
+usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]]] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC] [--opening-date YYYY-MM-DD] [--entity <code>[:<name>][:<functional_unit>]]...", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book create --name \"My Co\" --calendar custom --periods <periods.json|-> [--adjustment-periods 1] [--opening-date YYYY-MM-DD]   (plan §7.2 Custom: {\"years\":[{\"fiscal_year\":2026,\"periods\":[{\"start\":\"2026-01-04\",\"end\":\"2026-01-31\"},...]}]}, inclusive days; consecutive, contiguous fiscal years of 1..=53 contiguous periods each; only the declared years exist, and fa period create refuses any other)", "book info", "book fork receivership --authority <order-oid> [--at HEAD|<seq>] [--date YYYY-MM-DD] [--description <text>]   (plan §15.6, the receiver takes over; needs receivership, hold and post: a book-scope legal hold pins every entry, document and party recorded through the appointment sequence on the order's authority, and the `receivership` scenario forks at that sequence with the order as its assumption document; the estate posts with --scenario receivership and reads with --branch scenario:receivership until substrate branches land. Repeating the fork is its recorded outcome; another appointment is refused)"]
 example = "fa book create --book ./books/myco --name \"My Co\" --json"
 
 [[verb]]
@@ -1364,8 +1364,8 @@ fields = ["fiscal_year:int", "periods:[string]", "recorded_at:seq"]
 [[event]]
 name = "calendar"
 book = true
-doc = "The book's fiscal calendar: its id, kind (monthly, weeks, thirteen-period), the month a monthly fiscal year starts in (null otherwise), the week pattern and year-end rule of a week-based calendar (null otherwise) and the number of adjustment periods per year."
-fields = ["id:string", "kind:string", "year_start_month:int?", "week_pattern:string?", "year_end_rule:string?", "adjustment_periods:int"]
+doc = "The book's fiscal calendar: its id, kind (monthly, weeks, thirteen-period, custom), the month a monthly fiscal year starts in (null otherwise), the week pattern and year-end rule of a week-based calendar (null otherwise), the number of adjustment periods per year, and a custom calendar's declared fiscal years (null for a generated calendar, which defines every year)."
+fields = ["id:string", "kind:string", "year_start_month:int?", "week_pattern:string?", "year_end_rule:string?", "adjustment_periods:int", "fiscal_years:[int]?"]
 
 [[event]]
 name = "calendar_periods"

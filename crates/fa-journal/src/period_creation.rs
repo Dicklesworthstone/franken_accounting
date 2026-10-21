@@ -465,6 +465,21 @@ fn prepare_creation<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = policy::current_at(db, book, capability)? {
         return Ok(Err(refusal));
     }
+    // A fiscal year the calendar cannot generate (a custom calendar's
+    // undeclared year, or a year outside the representable range) is the
+    // caller's argument, not a corrupt book.
+    if let Err(error) = book.calendar.periods_for_year(fiscal_year) {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!(
+                "calendar `{}` has no fiscal year {fiscal_year}: {error}",
+                book.calendar.id
+            ),
+            "plan §7.2 (a fiscal calendar generates the periods of the years it defines)",
+            "create a fiscal year the calendar defines; `fa calendar show --json` describes it",
+        )));
+    }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(refusal) = policy::capability_witness(&txn, db, book, capability)? {

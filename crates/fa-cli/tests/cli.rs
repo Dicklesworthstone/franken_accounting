@@ -12385,6 +12385,196 @@ fn retail_and_weekly_52_53_calendars_and_book_create_validation() -> std::io::Re
     Ok(())
 }
 
+/// fa-94qd (plan §7.2 `Custom`): a custom calendar's declared years, a short
+/// first year and a thirteen-period year of four-week periods, post and
+/// close on the real binary; an undeclared year is refused, and malformed
+/// period lists never create the book.
+#[test]
+fn a_custom_thirteen_period_calendar_posts_and_closes() -> std::io::Result<()> {
+    use fa_time::DateDay;
+    let dir = tmp("custom-calendar")?;
+    let day = |y, m, d| DateDay::from_ymd(y, m, d).expect("a day");
+    let year_json = |fy: i32, spans: &[(DateDay, DateDay)]| {
+        let periods: Vec<String> = spans
+            .iter()
+            .map(|(s, e)| format!(r#"{{"start":"{}","end":"{}"}}"#, s.render(), e.render()))
+            .collect();
+        format!(
+            r#"{{"fiscal_year":{fy},"periods":[{}]}}"#,
+            periods.join(",")
+        )
+    };
+    let stub = [
+        (day(2025, 11, 1), day(2025, 11, 30)),
+        (day(2025, 12, 1), day(2026, 1, 3)),
+    ];
+    let mut thirteen = Vec::new();
+    let mut start = day(2026, 1, 4);
+    for _ in 0..13 {
+        let end = start.add_days(27).expect("a day");
+        thirteen.push((start, end));
+        start = end.succ().expect("a day");
+    }
+    let periods = |years: &[String]| format!(r#"{{"years":[{}]}}"#, years.join(","));
+
+    // Planted negatives: each fails with exit 2 and never creates the book.
+    let bad_book = dir.join("never-created");
+    let mut overlapping = thirteen.clone();
+    overlapping[5].0 = overlapping[4].1;
+    let mut gapped = thirteen.clone();
+    gapped[5].0 = gapped[4].1.succ().expect("a day").succ().expect("a day");
+    for (what, text) in [
+        (
+            "overlapping periods",
+            periods(&[year_json(2026, &overlapping)]),
+        ),
+        ("a gap", periods(&[year_json(2026, &gapped)])),
+        (
+            "years out of order",
+            periods(&[year_json(2026, &thirteen), year_json(2025, &stub)]),
+        ),
+        ("no years", periods(&[])),
+    ] {
+        let file = write(&dir, "bad-periods.json", &text);
+        let (code, out, err) = fa(
+            Some(&bad_book),
+            &[
+                "book",
+                "create",
+                "--name",
+                "Bad Custom",
+                "--calendar",
+                "custom",
+                "--periods",
+                &file,
+                "--json",
+            ],
+        );
+        assert_eq!(code, 2, "{what}: {out}\n{err}");
+        assert!(!bad_book.exists(), "{what}: nothing created");
+    }
+    for args in [
+        vec![
+            "book",
+            "create",
+            "--name",
+            "No List",
+            "--calendar",
+            "custom",
+            "--json",
+        ],
+        vec![
+            "book",
+            "create",
+            "--name",
+            "Not Custom",
+            "--periods",
+            "periods.json",
+            "--json",
+        ],
+    ] {
+        let (code, out, err) = fa(Some(&bad_book), &args);
+        assert_eq!(code, 2, "args={args:?}\n{out}\n{err}");
+        assert!(!bad_book.exists());
+    }
+
+    let book = dir.join("custom-book");
+    let file = write(
+        &dir,
+        "periods.json",
+        &periods(&[year_json(2025, &stub), year_json(2026, &thirteen)]),
+    );
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "book",
+            "create",
+            "--name",
+            "Custom 13 Co",
+            "--calendar",
+            "custom",
+            "--periods",
+            &file,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let (code, out, err) = fa(Some(&book), &["calendar", "show", "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let shown = doc(&out);
+    assert_eq!(text(&shown, "kind"), "custom");
+    let declared: Vec<Option<i128>> = arr(&shown, "fiscal_years")
+        .iter()
+        .map(|y| match y {
+            Json::Int(n) => Some(*n),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(declared, [Some(2025), Some(2026)], "{out}");
+
+    let (code, out, err) = fa(
+        Some(&book),
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let created = doc(&out);
+    let codes: Vec<&str> = arr(&created, "periods")
+        .iter()
+        .map(|p| text(p, "code"))
+        .collect();
+    assert_eq!(codes.len(), 16, "{out}");
+    assert_eq!(codes[12], "FY2026-P13");
+    assert_eq!(&codes[13..], ["FY2026-OPEN", "FY2026-A1", "FY2026-CLOSE"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["period", "create", "--fiscal-year", "2027", "--json"],
+    );
+    assert_eq!(code, 2, "an undeclared year: {out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-100"), "{out}");
+    assert!(out.contains("2025..=2026"), "{out}");
+
+    // Post into the thirteenth period and close it.
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","leaf":true,"unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart, "--json"]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "open", "FY2026-P13", "--json"]).0,
+        0
+    );
+    let ev = source_doc(&dir, &book);
+    let entry = write(
+        &dir,
+        "entry.json",
+        r#"{"effective_date":"2026-12-20","description":"period 13 sales","idempotency_key":"p13-1","legs":[{"side":"debit","account":"1000","amount":"1300.00 USD"},{"side":"credit","account":"4000","amount":"1300.00 USD"}]}"#,
+    );
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &entry, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(out.contains(r#""period":"FY2026-P13""#), "{out}");
+    let tb = report(&book, &["tb", "--period", "FY2026-P13", "--json"]);
+    assert!(tb.contains(r#""effective_through":"2027-01-02""#), "{tb}");
+    assert!(tb.contains(r#""1300.00 USD""#), "{tb}");
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "period",
+            "close",
+            "FY2026-P13",
+            "--reason",
+            "Scheduled",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    Ok(())
+}
+
 /// fa-w5m6: GL detail, roll-forward, aging (+ reconciliation), direct/indirect
 /// cash-flow, summary trial balance, statement diff/trace, and open-items --as-of
 /// are wired end-to-end on the CLI and conform to the robot schema.
