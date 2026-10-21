@@ -6832,6 +6832,14 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(code, 0, "{out}");
     assert_eq!(run(true, &["statement", "issuances"]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &["statement", "lint", "--definition", "balance-sheet"]
+        )
+        .0,
+        0
+    );
     let (code, out) = run(true, &["registers", "advance", "--period", "FY2026-P03"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(
