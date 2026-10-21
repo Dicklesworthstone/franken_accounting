@@ -400,6 +400,10 @@ fn human_reports_help_and_legacy_witness_mode_keep_their_boundaries() {
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS filesystems refuse non-UTF-8 file names (EILSEQ); exercised on Linux hosts"
+)]
 fn raw_paths_remain_usable_and_non_ascii_selectors_are_refused() {
     use std::os::unix::ffi::OsStringExt;
     let (mut input, dir) = args();
