@@ -645,7 +645,11 @@ An audit's mechanics are journaled; the judgments stay the auditor's.
   was later reversed or replaced, it gives the effect on income, assets,
   liabilities and equity had the correction been booked and stood. It
   totals them under rollover and iron curtain, and compares them with the
-  stated parameters.
+  stated parameters. Per statement line, it attributes the same items to an
+  income statement's lines (rollover) and a balance sheet's (iron curtain):
+  the registered definitions by default, or the classified presets with
+  `--definition us_gaap_small_company_income_statement` and
+  `--definition us_gaap_small_company_balance_sheet`.
 
 ```bash
 fa engagement open FY26-audit --kind audit --period FY2026-P12 --overall "50000.00 USD" --performance "37500.00 USD" --clearly-trivial "2500.00 USD" --book ./books/acme --json
@@ -653,6 +657,7 @@ fa adjustment propose --engagement FY26-audit --intent accrual.json --book ./boo
 fa adjustment book --engagement FY26-audit --proposal 1 --entry E:<vid> --json
 fa adjustment pass --engagement FY26-audit --proposal 2 --reason ClearlyTrivial --json
 fa engagement sud FY26-audit --json
+fa engagement sud FY26-audit --definition us_gaap_small_company_balance_sheet --json
 ```
 
 Writes need `produce`, which the Auditor profile holds, and an

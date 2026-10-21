@@ -27,6 +27,7 @@ use crate::json::{Json, obj, s};
 
 const OPEN_EXAMPLE: &str = "fa engagement open <id> --kind audit|review|examination|investigation|litigation --period <code>... --overall \"<amount> <UNIT>\" --performance \"<amount> <UNIT>\" --clearly-trivial \"<amount> <UNIT>\" [--report-release YYYY-MM-DD] --json";
 const PROPOSE_EXAMPLE: &str = "fa adjustment propose --engagement <id> --intent <entry.json|-> --json, where entry.json is {\"effective_date\": \"YYYY-MM-DD\", \"description\": \"...\", \"legs\": [{\"side\": \"debit\", \"account\": \"6000\", \"amount\": \"10.00 USD\"}, {\"side\": \"credit\", \"account\": \"2100\", \"amount\": \"10.00 USD\"}]}";
+const SUD_EXAMPLE: &str = "fa engagement sud <id> [--definition us_gaap_small_company_income_statement] [--definition us_gaap_small_company_balance_sheet] --json";
 const DECIDE_EXAMPLE: &str = "fa adjustment book --engagement <id> --proposal <n> --entry E:<vid> --json, or fa adjustment pass --engagement <id> --proposal <n> --reason ClearlyTrivial|BelowPerformanceMateriality|ManagementDeclined|Other --json";
 
 pub(crate) fn engagement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -436,6 +437,33 @@ fn effect_json(
     ]))
 }
 
+/// One definition's lines of the summary, each under its own sign.
+fn uncorrected_statement_json(
+    statement: &fa::UncorrectedStatement,
+    unit: fa_money::UnitId,
+    units: &fa_money::UnitRegistry,
+) -> Result<Json, Fail> {
+    let lines = statement
+        .lines
+        .iter()
+        .map(|line| {
+            Ok(obj(vec![
+                ("code", s(&line.code)),
+                ("label", s(&line.label)),
+                (
+                    "amount",
+                    s(render_amount(Amount::new(unit, line.amount), units)?),
+                ),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    Ok(obj(vec![
+        ("definition", s(&statement.definition)),
+        ("title", s(&statement.title)),
+        ("lines", Json::Arr(lines)),
+    ]))
+}
+
 /// `fa engagement sud <id>`: the summary of uncorrected misstatements (plan
 /// §11.12, `audit.sud`), every passed proposal's effect had it been booked,
 /// against the engagement's stated parameters. The comparisons are
@@ -446,7 +474,7 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         _ => {
             return Err(usage(
                 "engagement sud takes exactly one engagement id",
-                "fa engagement sud <id> --json",
+                SUD_EXAMPLE,
             ));
         }
     };
@@ -460,6 +488,39 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .ok_or_else(|| unknown(&engagement))?;
     let summary = book
         .uncorrected_misstatements(&engagement)?
+        .ok_or_else(|| unknown(&engagement))?;
+    // Each --definition names the income statement (rollover) or balance
+    // sheet (iron curtain) whose lines the summary is attributed to; the
+    // registered built-ins are the default.
+    let mut income_statement = None;
+    let mut balance_sheet = None;
+    for name in args.flag_all("--definition") {
+        let slot = match fa::statement_definition_kind(name) {
+            Some(fa::StatementKind::IncomeStatement) => &mut income_statement,
+            Some(fa::StatementKind::BalanceSheet) => &mut balance_sheet,
+            None => {
+                return Err(usage(
+                    format!(
+                        "unknown statement definition `{name}`; one of {}",
+                        fa::statements::LINTABLE_DEFINITIONS.join(", ")
+                    ),
+                    SUD_EXAMPLE,
+                ));
+            }
+        };
+        if slot.replace(name).is_some() {
+            return Err(usage(
+                format!("--definition names a second definition of the kind `{name}` is"),
+                SUD_EXAMPLE,
+            ));
+        }
+    }
+    let (rollover_lines, iron_curtain_lines) = book
+        .uncorrected_by_line(
+            &engagement,
+            income_statement.unwrap_or("income-statement"),
+            balance_sheet.unwrap_or("balance-sheet"),
+        )??
         .ok_or_else(|| unknown(&engagement))?;
     let units = book.context().units.clone();
     let items = summary
@@ -511,6 +572,14 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 Json::Bool(summary.exceeds_performance),
             ),
             ("exceeds_overall", Json::Bool(summary.exceeds_overall)),
+            (
+                "rollover_lines",
+                uncorrected_statement_json(&rollover_lines, summary.unit, &units)?,
+            ),
+            (
+                "iron_curtain_lines",
+                uncorrected_statement_json(&iron_curtain_lines, summary.unit, &units)?,
+            ),
         ],
         &format!(
             "engagement {engagement}: {} uncorrected misstatement(s); rollover income effect {rollover}; {} performance materiality, {} overall (mechanical comparisons; materiality is the auditor's judgment)",
