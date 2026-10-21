@@ -35,6 +35,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("recon.intercompany", 1),
     ("recon.lapping", 1),
     ("recon.book_to_book", 1),
+    ("recon.assertion_drift", 1),
     ("completeness.unrecorded_liabilities", 1),
     ("events.subsequent", 1),
     ("party.master_changes", 1),

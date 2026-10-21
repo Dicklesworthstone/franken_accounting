@@ -1626,7 +1626,7 @@ fn tracing_follows_recorded_same_day_order_and_repays_an_overdraft_first() {
 fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
     let (h, _) = posted_corpus();
     let rows = fa_lantern::catalog::registered().unwrap();
-    assert_eq!(rows.len(), 60, "every registry row is listed");
+    assert_eq!(rows.len(), 61, "every registry row is listed");
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -5139,5 +5139,165 @@ fn fa_y4v_solvency_lookback_ponzi_distribution_and_damages_procedures() {
         scenario_findings
             .iter()
             .all(|f| f.statistic.value == 125_000)
+    );
+}
+
+/// fa-nwgf: `recon.assertion_drift` re-checks every RegisterEquals
+/// attestation at the snapshot. Cash in January was attested at 100.00 USD as
+/// of sequence 10. A January cash entry recorded later (sequence 20) drifts
+/// the cell by 50.00 USD: exactly one finding, citing the Attestation, the
+/// account, the period and that entry, never the entry the attestation
+/// already counted (sequence 10), a February cash entry, or a later January
+/// entry on other accounts. An attestation whose cell still folds to its
+/// amount yields nothing; the run is deterministic.
+#[test]
+fn assertion_drift_cites_the_attestation_and_only_the_later_entries_that_move_its_cell() {
+    use fa_journal::attestation::{
+        Attestation, AttestationClaim, CapabilityBinding, RegisterEqualsClaim, StoredAttestation,
+        Subject,
+    };
+    use fa_lantern::assertion_drift::AssertionDrift;
+
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    let jan = h.period_code(day(2026, 1, 15));
+    let feb = h.period_code(day(2026, 2, 10));
+    let usd = h.usd;
+    let entry = |h: &mut Harness, vid: u128, seq: u64, date: DateDay, period: &str, legs| {
+        make_snapshot_entry(
+            h,
+            VId(vid),
+            CommitSeq(seq),
+            date,
+            period,
+            EntryClass::ORIGINAL,
+            legs,
+            Vec::new(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+    };
+    let counted = entry(
+        &mut h,
+        1_001,
+        10,
+        day(2026, 1, 5),
+        &jan,
+        vec![
+            ("1000", Side::Debit, usd, 10_000),
+            ("4000", Side::Credit, usd, 10_000),
+        ],
+    );
+    let backdated = entry(
+        &mut h,
+        1_002,
+        20,
+        day(2026, 1, 20),
+        &jan,
+        vec![
+            ("1000", Side::Debit, usd, 5_000),
+            ("4000", Side::Credit, usd, 5_000),
+        ],
+    );
+    let february = entry(
+        &mut h,
+        1_003,
+        30,
+        day(2026, 2, 3),
+        &feb,
+        vec![
+            ("1000", Side::Debit, usd, 700),
+            ("4000", Side::Credit, usd, 700),
+        ],
+    );
+    let elsewhere = entry(
+        &mut h,
+        1_004,
+        40,
+        day(2026, 1, 25),
+        &jan,
+        vec![
+            ("6000", Side::Debit, usd, 300),
+            ("2000", Side::Credit, usd, 300),
+        ],
+    );
+    snapshot.entries = vec![counted, backdated, february, elsewhere];
+    let attest = |vid: u128, account: VId, mantissa: i128| {
+        let claim = RegisterEqualsClaim {
+            account,
+            unit_id: usd.0,
+            period: jan.clone(),
+            entity: None,
+            mantissa,
+            as_of_effective: day(2026, 1, 31),
+            evaluated_known_at: CommitSeq(10),
+            fold_digest: [0xAB; 32],
+        };
+        let cell = claim.cell_digest();
+        (
+            VId(vid),
+            StoredAttestation {
+                attestation: Attestation {
+                    book_id: h.book.book_id,
+                    claim: AttestationClaim::RegisterEquals(claim),
+                    subject: Subject::Cell(cell),
+                    principal: REVIEWER,
+                    evidence_refs: Vec::new(),
+                },
+                signed_digest: [0xCD; 32],
+                binding: CapabilityBinding {
+                    profile: Profile::Human,
+                    capability_commitment: [0xEF; 32],
+                },
+            },
+        )
+    };
+    // Cash attested at 100.00 (it now folds to 150.00); revenue at -150.00,
+    // which it still is.
+    let (cash_attestation, stored) = attest(95_001, h.account("1000"), 10_000);
+    snapshot.attestations.insert(cash_attestation, stored);
+    let (revenue_attestation, stored) = attest(95_002, h.account("4000"), -15_000);
+    snapshot.attestations.insert(revenue_attestation, stored);
+
+    let run = run_over(&snapshot, &h.book, &AssertionDrift::new().unwrap()).unwrap();
+    assert_eq!(run.findings.len(), 1, "{:?}", run.findings);
+    let f = &run.findings[0];
+    assert_eq!(f.severity, Severity::Critical);
+    assert_eq!(f.statistic.name, "assertion_drift");
+    assert_eq!(f.statistic.value, 5_000);
+    assert_eq!(f.statistic.population, 2);
+    assert_eq!(
+        f.cites,
+        vec![
+            Cite::Attestation(cash_attestation),
+            Cite::Account(h.account("1000")),
+            Cite::Period(jan.clone()),
+            Cite::Entry(VId(1_002)),
+        ]
+    );
+    assert!(
+        f.narrative.contains("attested 100.00 USD at sequence 10")
+            && f.narrative
+                .contains("fold at this snapshot is 150.00 USD (drift 50.00 USD)")
+            && f.narrative
+                .contains("1 entry recorded after the attestation moves the cell"),
+        "{}",
+        f.narrative
+    );
+    witness::determinism(&snapshot, &h.book, &AssertionDrift::new().unwrap()).unwrap();
+
+    // Once the later entry is gone the cell holds again: no finding.
+    snapshot.entries.retain(|e| e.vid != VId(1_002));
+    let run = run_over(&snapshot, &h.book, &AssertionDrift::new().unwrap()).unwrap();
+    assert_eq!(
+        run.findings.len(),
+        1,
+        "revenue now drifts (attested -150.00, folds -100.00)"
+    );
+    assert_eq!(
+        run.findings[0].cites[0],
+        Cite::Attestation(revenue_attestation)
     );
 }

@@ -1205,6 +1205,16 @@ calibration = "planted"
 summary = "Exact drift of native Reconciled statement closes at one recorded prefix: changed cumulative cash, net-zero cash contribution changes, and changed active confirmation references are separate observations. Every original claim remains fixed at its evaluated prefix. An effective cutoff selects statement closing dates and never changes their cash cutoff. Requires complete native reconciliation states after admitted retained-history verification; the stated complexity covers the pure finding adapter, while native source verification retains its full-history cost. Every observation cites its original attestation, account and retained source documents; cash observations include every changed or durably citing Entry. More than 4096 citations in one observation, 100000 observations, or 16 MiB of finding bytes refuses the complete run."
 
 [[procedure]]
+id = "recon.assertion_drift"
+version = 1
+claim = "invariant"
+evidence = "FA-EVID-L61"
+tie_break = "account_vid"
+complexity = "O(attestations × legs)"
+calibration = "planted"
+summary = "Exact drift of every RegisterEquals attestation at the snapshot coordinate (plan §9.4, BalanceAssertionDrift): the attested cell (account, unit, entity, period, as-of day) refolded over live postings and compared with the attested amount. The attestation stays a fact at its evaluated prefix; a finding cites the Attestation, the account, the period and every entry recorded after that prefix whose legs move the cell, with the drift as the statistic. Entries in other cells never contribute. More than 4096 citations in one finding refuses the complete run."
+
+[[procedure]]
 id = "completeness.unrecorded_liabilities"
 version = 1
 claim = "statistical"

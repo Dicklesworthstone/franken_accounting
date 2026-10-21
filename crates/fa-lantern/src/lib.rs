@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod aging;
+pub mod assertion_drift;
 pub mod bank_reconciliation;
 pub mod catalog;
 pub mod conformal;

@@ -1165,3 +1165,118 @@ fn a_run_review_decides_several_findings_in_one_transaction_or_none() {
     assert_eq!(text(reviewed[1], "action"), "dismiss");
     assert!(f.head() > before);
 }
+
+/// fa-nwgf end to end (plan §9.4 BalanceAssertionDrift): January cash is
+/// attested at 100.00 USD; a January entry recorded afterwards moves the cell
+/// by 25.00 USD while a February entry does not. `recon.assertion_drift`
+/// reports exactly one finding citing the attestation and the later January
+/// entry; a rerun is identical, and the certified run records once.
+#[test]
+fn a_later_entry_into_an_attested_month_is_one_assertion_drift_finding() {
+    let f = Fixture::new();
+    let post = |key: &str, day: &str, amount: &str| -> String {
+        let path = f.root.join(format!("{key}.json"));
+        std::fs::write(&path, format!(r#"{{"idempotency_key":"{key}","effective_date":"{day}","legs":[{{"side":"debit","account":"1000","amount":"{amount}"}},{{"side":"credit","account":"3000","amount":"{amount}"}}]}}"#)).unwrap();
+        let posted = ok(
+            &f.book,
+            &[
+                "post",
+                "--intent",
+                path.to_str().unwrap(),
+                "--evidence",
+                &f.evidence,
+            ],
+        );
+        text(data(&posted), "vid").to_string()
+    };
+    let attested = ok(
+        &f.book,
+        &[
+            "attest",
+            "register-equals",
+            "--account",
+            "1000",
+            "--period",
+            "FY2026-P01",
+            "--grant",
+            "reconcile",
+        ],
+    );
+    let attestation = text(data(&attested), "attestation_vid").to_string();
+    let drift = |f: &Fixture| -> Json {
+        let run = ok(&f.book, &["procedure", "run", "recon.assertion_drift"]);
+        data(&run).clone()
+    };
+    let before = drift(&f);
+    assert_eq!(number(&before, "finding_count"), 0, "{before:?}");
+
+    let late = post("late-january", "2026-01-20", "25.00 USD");
+    ok(&f.book, &["period", "open", "FY2026-P02"]);
+    let february = post("february", "2026-02-02", "7.00 USD");
+    let after = drift(&f);
+    assert_eq!(number(&after, "finding_count"), 1, "{after:?}");
+    assert_eq!(text(&after, "claim"), "invariant");
+    let finding = &after.get("findings").and_then(Json::as_arr).unwrap()[0];
+    assert_eq!(text(finding, "severity"), "Critical");
+    let statistic = finding.get("statistic").unwrap();
+    assert_eq!(text(statistic, "name"), "assertion_drift");
+    assert_eq!(number(statistic, "value"), 2_500);
+    let cites = finding.get("cites").and_then(Json::as_arr).unwrap();
+    let of = |kind: &str, field: &str| -> Vec<String> {
+        cites
+            .iter()
+            .filter(|c| text(c, "kind") == kind)
+            .map(|c| text(c, field).to_string())
+            .collect()
+    };
+    assert_eq!(of("attestation", "attestation"), vec![attestation]);
+    assert_eq!(of("entry", "entry"), [late], "only the later January entry");
+    assert!(!of("entry", "entry").contains(&february));
+    assert_eq!(of("period", "period"), ["FY2026-P01"]);
+    let narrative = text(finding, "narrative");
+    assert!(
+        narrative.contains("attested 100.00 USD") && narrative.contains("drift 25.00 USD"),
+        "{narrative}"
+    );
+
+    // Deterministic: the same findings at the same head.
+    let again = drift(&f);
+    assert_eq!(
+        text(&again, "findings_digest"),
+        text(&after, "findings_digest")
+    );
+
+    // The certified run records its finding; its retry command returns the
+    // same recorded run.
+    let (code, recorded) = call(
+        &f.book,
+        &["finding", "record", "recon.assertion_drift"],
+        None,
+    );
+    assert_eq!(code, 0, "{recorded:?}");
+    let recorded = recorded
+        .into_iter()
+        .find(|e| text(e, "event") == "findings_recorded")
+        .expect("findings_recorded");
+    let recorded = data(&recorded);
+    assert_eq!(number(recorded, "finding_count"), 1);
+    assert_eq!(recorded.get("already_recorded"), Some(&Json::Bool(false)));
+    let retry: Vec<String> = text(recorded, "retry_command")
+        .split_whitespace()
+        .skip(1)
+        .filter(|w| *w != "--json")
+        .map(str::to_string)
+        .collect();
+    let retry: Vec<&str> = retry.iter().map(String::as_str).collect();
+    let (code, again) = call(&f.book, &retry, None);
+    assert_eq!(code, 0, "{retry:?}: {again:?}");
+    let again = again
+        .into_iter()
+        .find(|e| text(e, "event") == "findings_recorded")
+        .expect("findings_recorded");
+    assert_eq!(
+        data(&again).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(text(data(&again), "run_vid"), text(recorded, "run_vid"));
+}
