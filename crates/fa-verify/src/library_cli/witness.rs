@@ -2,6 +2,7 @@
 //! from the signed file, and no fallback to the any-trusted-signer command.
 
 mod bundle;
+mod index;
 mod recorded;
 
 use std::ffi::OsString;
@@ -23,6 +24,7 @@ pub(super) const HELP: &str = "Recipient-owned checkpoint witness quorum:
     --witness-key HEX64 [--witness-key HEX64 ...] --quorum N [--json]
 
 To bind a production to this trust decision: fa-verify witness bundle --help
+To verify an index from a retained baseline and suffix: fa-verify witness index --help
 
 Obtain ALL expected identifiers, keys and the quorum independently. HEX32
 and HEX64 mean exactly 32 and 64 ASCII hex digits, respectively. The input
@@ -298,6 +300,9 @@ fn authenticate(request: &Request) -> Result<(WitnessedCheckpoint, Option<Contin
 }
 
 pub(super) fn run(args: &[OsString]) -> Output {
+    if args.get(1).is_some_and(|arg| arg == "index") {
+        return index::run(&args[1..]);
+    }
     if args.get(1).is_some_and(|arg| arg == "bundle") {
         return bundle::run(&args[1..]);
     }
