@@ -1031,6 +1031,11 @@ impl OperationCosts {
                 ));
             }
             let exceptions = req_str_vec(R, t, "hot_object_exceptions")?;
+            let class_exceptions = classes
+                .iter()
+                .find(|c| c.id == op_class)
+                .map(|c| c.hot_object_exceptions.clone())
+                .unwrap_or_default();
             for exc in &exceptions {
                 let Some(exc_row) = exc_by_name.get(exc) else {
                     return Err(invalid(
@@ -1040,6 +1045,16 @@ impl OperationCosts {
                         ),
                     ));
                 };
+                // A counted operation's hot objects are its class's: a class
+                // row may not omit a cell one of its operations moves.
+                if !class_exceptions.contains(exc) {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "kernel_op_witness `{id}` moves `{exc}`, which its operation_class `{op_class}` does not list (Appendix G Law 3)"
+                        ),
+                    ));
+                }
                 if !exc_row.allowed_kernel_ops.contains(&id) {
                     return Err(invalid(
                         R,
@@ -2753,6 +2768,35 @@ mod tests {
     }
 
     #[test]
+    fn a_class_lists_every_hot_object_its_counted_operations_move() {
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        let post = op_costs
+            .class("single_entry_post")
+            .expect("single-entry post");
+        assert_eq!(post.hot_object_exceptions, ["LimitCell"]);
+        // fa-vz7e planted negative: the class row omits the LimitCell its
+        // `reserve` witness moves.
+        let start = OPERATION_COSTS_TOML
+            .find("id = \"single_entry_post\"")
+            .expect("single_entry_post row");
+        let at = start
+            + OPERATION_COSTS_TOML[start..]
+                .find("hot_object_exceptions = [\"LimitCell\"]")
+                .expect("its exception list");
+        let planted = format!(
+            "{}hot_object_exceptions = []{}",
+            &OPERATION_COSTS_TOML[..at],
+            &OPERATION_COSTS_TOML[at + "hot_object_exceptions = [\"LimitCell\"]".len()..]
+        );
+        let err = OperationCosts::parse(&planted).expect_err("an omitted hot object is refused");
+        assert!(
+            err.to_string()
+                .contains("kernel_op_witness `reserve` moves `LimitCell`"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn operation_cost_classes_require_exact_registered_identities() {
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         let bank = op_costs
@@ -2863,10 +2907,12 @@ mod tests {
             "{err}"
         );
 
-        // Planted negative 4 (Appendix G Law 3): unregistered hot object on single_entry_post fails.
+        // Planted negative 4 (Appendix G Law 3): an unregistered hot object on
+        // period_transition fails. LimitCell is registered on every posting
+        // class (fa-vz7e); a period transition moves none.
         let bad_hot_obj = OPERATION_COSTS_TOML.replacen(
-            "id = \"single_entry_post\"\nname = \"Single-entry post\"\nsubstrate_class = \"Autocommit write, fused arm\"\nsubstrate_transactions = \"1\"\ntoday_posture = \"One publication (capsule-first, marker-last, two ordered syncs), no group commit (Appendix H R-GC)\"\ntoday_transactions = 1\nbarrier_count = 2\ntoday_barrier_count = 2\nderived_objects = \"1 Entry + n Leg + edges + ExternalIds + 1 IntentOutcome\"\nhot_object_exceptions = []",
-            "id = \"single_entry_post\"\nname = \"Single-entry post\"\nsubstrate_class = \"Autocommit write, fused arm\"\nsubstrate_transactions = \"1\"\ntoday_posture = \"One publication (capsule-first, marker-last, two ordered syncs), no group commit (Appendix H R-GC)\"\ntoday_transactions = 1\nbarrier_count = 2\ntoday_barrier_count = 2\nderived_objects = \"1 Entry + n Leg + edges + ExternalIds + 1 IntentOutcome\"\nhot_object_exceptions = [\"LimitCell\"]",
+            "id = \"period_transition\"\nname = \"Period transition\"\nsubstrate_class = \"Autocommit write, fused arm\"\nsubstrate_transactions = \"1\"\ntoday_posture = \"One publication updating Period state mirror and journaling 1 PeriodControl entry\"\ntoday_transactions = 1\nbarrier_count = 2\ntoday_barrier_count = 2\nderived_objects = \"1 PeriodControl entry\"\nhot_object_exceptions = []",
+            "id = \"period_transition\"\nname = \"Period transition\"\nsubstrate_class = \"Autocommit write, fused arm\"\nsubstrate_transactions = \"1\"\ntoday_posture = \"One publication updating Period state mirror and journaling 1 PeriodControl entry\"\ntoday_transactions = 1\nbarrier_count = 2\ntoday_barrier_count = 2\nderived_objects = \"1 PeriodControl entry\"\nhot_object_exceptions = [\"LimitCell\"]",
             1,
         );
         let err = OperationCosts::parse(&bad_hot_obj).expect_err("unscoped hot object");
