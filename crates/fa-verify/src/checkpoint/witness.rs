@@ -9,11 +9,14 @@
 //! or unknown signers. Different keys do not establish organizational independence.
 //! [`verify_checkpoint_advance`] additionally checks continuity from a retained
 //! verified pin while keeping its policy unchanged. It does not persist that pin.
+//! [`recorded::verify_recorded_checkpoint_advance`] additionally checks that
+//! a complete candidate prefix preserves the retained recorded-time boundary.
 //! Key validity intervals, rotation, witness capabilities, external collection,
 //! durable pin storage, freshness and ledger/index correctness are not checked.
 
 mod advance;
 pub mod bundle;
+pub mod recorded;
 
 pub use advance::{
     AdvanceError, AdvanceStatus, CheckpointAdvance, MAX_WITNESS_CONSISTENCY_BYTES,

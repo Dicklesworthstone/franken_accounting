@@ -42,7 +42,12 @@ All ordinary witness options are supported, including the all-or-none
 --previous FILE --expect-previous-body HEX64 --consistency PROOF continuity
 request. The previous body must match an independently retained pin before
 later artifacts are opened. Without those options, continuity is NOT checked.
-See fa-verify witness --help for checkpoint policy and continuity details.
+Optional --recorded-prefix FILE additionally requires complete candidate
+payloads to preserve the retained recorded-time boundary. It requires all
+three continuity options, works with every bundle scope, and never replaces
+--index-prefix: recorded-time continuity and index derivation are independent.
+Both witnesses disclose the whole prefix. No failure downgrades to tree-only
+verification. See fa-verify witness --help for the exact witness formats.
 
 The bundle must name the EXACT selected signed-checkpoint artifact, not just
 a matching tree or body. Stripped or alternate signature sets require their
@@ -67,7 +72,9 @@ Use --expect-no-balances to require zero claims. It cannot be combined with
 Every balance must still satisfy its full recomputation obligations.
 
 Input is canonical raw bytes, never hex text. Index witness, bundle and receipt
-share one 64 MiB budget; a receipt is at most 4096 bytes. Paths may be non-UTF-8.
+share one 64 MiB budget; a receipt is at most 4096 bytes. When requested,
+recorded-continuity inputs (including both checkpoints and consistency) also
+consume this budget. Repeated inputs count each time. Paths may be non-UTF-8.
 Output contains public metadata only. No files or pins are written. Global
 freshness, custody, policy registration, key rotation, authorization, full
 provenance and accounting truth are not established by this operation.
@@ -175,7 +182,8 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             | "--quorum"
             | "--previous"
             | "--expect-previous-body"
-            | "--consistency" => None,
+            | "--consistency"
+            | "--recorded-prefix" => None,
             _ => {
                 return Err(Failure::usage(
                     "unknown option; run fa-verify witness bundle --help",
@@ -268,12 +276,17 @@ fn verify(args: &[OsString], json: bool) -> Result<(String, bool), Failure> {
     }
     let request = parse(args)?;
     let (pin, continuity) = super::authenticate(&request.anchor)?;
+    let recorded_bytes = continuity.as_ref()
+        .and_then(|pin| pin.recorded.as_ref())
+        .map_or(0, |facts| facts.input_bytes);
+    let mut remaining = MAX_WITNESSED_BUNDLE_BYTES.checked_sub(recorded_bytes)
+        .ok_or_else(|| Failure::verification("recorded-continuity inputs exceed the shared bundle budget"))?;
     let receipt = request
         .receipt
         .as_ref()
-        .map(|path| read_bounded(path, MAX_WITNESSED_RECEIPT_BYTES))
+        .map(|path| read_bounded(path, remaining.min(MAX_WITNESSED_RECEIPT_BYTES)))
         .transpose()?;
-    let mut remaining = MAX_WITNESSED_BUNDLE_BYTES - receipt.as_ref().map_or(0, Vec::len);
+    remaining -= receipt.as_ref().map_or(0, Vec::len);
     let derived = if let Some(path) = &request.index_prefix {
         let bytes = read_bounded(path, remaining)?;
         remaining -= bytes.len();
@@ -410,6 +423,10 @@ fn render(
             report.manifest.scope,
             report.manifest.completeness.label(),
         );
+        text.push_str(&super::recorded::human(
+            continuity.and_then(|pin| pin.recorded.as_ref()),
+        ));
+        text.push('\n');
         if let Some(cells) = &request.balances {
             text.push_str(&format!(
                 "Recipient balance request: exactly {} stock cells.\n",
@@ -560,6 +577,10 @@ fn render(
                     ])
                 },
             ),
+        ),
+        (
+            "recorded_boundary",
+            super::recorded::json(continuity.and_then(|pin| pin.recorded.as_ref())),
         ),
         ("pin_written", "false".into()),
         (

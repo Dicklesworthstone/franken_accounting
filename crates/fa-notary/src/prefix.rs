@@ -10,6 +10,8 @@
 //! Wire: bytes("fa:acc-prefix-proof:v2") || Checkpoint || list(bytes(envelope))
 //! || list(leaf_index u64 || proposal_len u32 || bytes(record_payload)).
 
+pub mod suffix;
+
 use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Outcome, Refusal, exit};
 use fa_model::Writer;
