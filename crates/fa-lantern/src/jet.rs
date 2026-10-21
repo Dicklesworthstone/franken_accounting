@@ -13,6 +13,7 @@ use fa_model::limits::{MAX_DESCRIPTION_BYTES, MAX_EXTERNAL_ID_BYTES};
 use fa_time::{PeriodState, Weekday};
 use fgdb_types::VId;
 
+use crate::amount::{amount_share_bps, signed_leg};
 use crate::{
     Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
 };
@@ -112,7 +113,7 @@ impl Procedure for RoundAmounts {
                     .checked_mul(factor)
                     .ok_or(LanternError::Overflow("round base"))?;
                 let m = leg.amount.mantissa;
-                if m != 0 && m % base == 0 {
+                if m != 0 && m.checked_rem(base) == Some(0) {
                     round.push(ordinal(i)?);
                 }
             }
@@ -697,7 +698,8 @@ impl Procedure for ManualVsRule {
                     continue;
                 }
                 let rules = acct_rules.get(&acct).copied().unwrap_or(0);
-                let share_bps = (i128::from(rules) * 10_000) / i128::from(total);
+                let share_bps =
+                    amount_share_bps(i128::from(rules), i128::from(total), "rule share")?;
                 if share_bps >= min_rule_bps {
                     out.push(finding(
                         Self::ID,
@@ -798,7 +800,7 @@ impl Procedure for LargeRoundReversals {
                         .checked_mul(factor)
                         .ok_or(LanternError::Overflow("round base"))?;
                     let m = leg.amount.mantissa;
-                    if m != 0 && m % base == 0 {
+                    if m != 0 && m.checked_rem(base) == Some(0) {
                         has_round = true;
                     }
                 }
@@ -893,10 +895,7 @@ impl Procedure for SuspenseAging {
                 if !suspense_vids.contains(&leg.account_ref) {
                     continue;
                 }
-                let signed = match leg.side {
-                    fa_money::Side::Debit => leg.amount.mantissa,
-                    fa_money::Side::Credit => -leg.amount.mantissa,
-                };
+                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let entry = balances
                     .entry((leg.account_ref, leg.amount.unit))
                     .or_insert((0, eff, Vec::new()));
@@ -1001,10 +1000,7 @@ impl Procedure for IntercompanyUnmatched {
                 if !ic_vids.contains(&leg.account_ref) {
                     continue;
                 }
-                let signed = match leg.side {
-                    fa_money::Side::Debit => leg.amount.mantissa,
-                    fa_money::Side::Credit => -leg.amount.mantissa,
-                };
+                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let bucket = by_period_unit
                     .entry((e.period.clone(), leg.amount.unit))
                     .or_insert((0, Vec::new(), Vec::new()));

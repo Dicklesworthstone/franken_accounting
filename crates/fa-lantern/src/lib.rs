@@ -20,8 +20,11 @@
 //! slices of fa-nlu.
 
 #![forbid(unsafe_code)]
+// 128-bit arithmetic only: clippy.toml exempts the narrower integers.
+#![deny(clippy::arithmetic_side_effects, clippy::disallowed_methods)]
 
 pub mod aging;
+mod amount;
 pub mod assertion_drift;
 pub mod bank_reconciliation;
 pub mod catalog;

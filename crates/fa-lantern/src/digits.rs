@@ -55,11 +55,15 @@ pub fn mad_1e9(counts: &[u64; 9]) -> Result<i128, LanternError> {
         let expected = n
             .checked_mul(BENFORD_1E9[d])
             .ok_or(LanternError::Overflow("benford expected"))?;
-        sum = sum
-            .checked_add((observed - expected).abs())
+        sum = observed
+            .checked_sub(expected)
+            .and_then(i128::checked_abs)
+            .and_then(|deviation| sum.checked_add(deviation))
             .ok_or(LanternError::Overflow("benford deviation"))?;
     }
-    Ok(sum / (9 * n))
+    n.checked_mul(9)
+        .and_then(|cells| sum.checked_div(cells))
+        .ok_or(LanternError::Overflow("benford mad"))
 }
 
 /// Pearson's chi-square at six decimal places: `Σ (O_d − E_d)² / E_d`.
@@ -146,7 +150,11 @@ pub fn ks_table_1e9(counts: &[u64], expected_1e9: &[i128]) -> Result<i128, Lante
         let exp_scaled = n
             .checked_mul(cum_exp)
             .ok_or(LanternError::Overflow("ks expected scale"))?;
-        let diff = (obs_scaled - exp_scaled).abs() / n;
+        let diff = obs_scaled
+            .checked_sub(exp_scaled)
+            .and_then(i128::checked_abs)
+            .and_then(|distance| distance.checked_div(n))
+            .ok_or(LanternError::Overflow("ks distance"))?;
         if diff > max_d {
             max_d = diff;
         }
@@ -177,9 +185,12 @@ pub fn ks_critical_1e9(n: u64, alpha_bps: u32) -> Result<i128, LanternError> {
             });
         }
     };
-    let num_sq = c_1e9 * c_1e9;
-    let crit = (num_sq / u128::from(n)).isqrt();
-    Ok(crit as i128)
+    let crit = c_1e9
+        .checked_mul(c_1e9)
+        .and_then(|num_sq| num_sq.checked_div(u128::from(n)))
+        .ok_or(LanternError::Overflow("ks critical value"))?
+        .isqrt();
+    i128::try_from(crit).map_err(|_| LanternError::Overflow("ks critical value"))
 }
 
 /// `benford.first_digit`.
@@ -205,9 +216,9 @@ impl Procedure for FirstDigit {
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_population = u64::from(self.params.get_u32("min_population")?);
-        let close = i128::from(self.params.get_u32("mad_close")?) * 1_000_000;
-        let acceptable = i128::from(self.params.get_u32("mad_acceptable")?) * 1_000_000;
-        let marginal = i128::from(self.params.get_u32("mad_marginal")?) * 1_000_000;
+        let close = i128::from(u64::from(self.params.get_u32("mad_close")?) * 1_000_000);
+        let acceptable = i128::from(u64::from(self.params.get_u32("mad_acceptable")?) * 1_000_000);
+        let marginal = i128::from(u64::from(self.params.get_u32("mad_marginal")?) * 1_000_000);
         let currency = u16::try_from(self.params.get_u32("currency_iso4217")?).map_err(|_| {
             LanternError::Parameter {
                 procedure: Self::ID.into(),
@@ -372,11 +383,15 @@ pub fn mad_table_1e9(counts: &[u64], expected_1e9: &[i128]) -> Result<i128, Lant
         let expected = n
             .checked_mul(p)
             .ok_or(LanternError::Overflow("benford expected"))?;
-        sum = sum
-            .checked_add((observed - expected).abs())
+        sum = observed
+            .checked_sub(expected)
+            .and_then(i128::checked_abs)
+            .and_then(|deviation| sum.checked_add(deviation))
             .ok_or(LanternError::Overflow("benford deviation"))?;
     }
-    Ok(sum / (k * n))
+    k.checked_mul(n)
+        .and_then(|cells| sum.checked_div(cells))
+        .ok_or(LanternError::Overflow("benford mad"))
 }
 
 /// Pearson's chi-square at six decimal places over `expected_1e9`.
@@ -391,14 +406,19 @@ pub fn chi_square_table_1e6(counts: &[u64], expected_1e9: &[i128]) -> Result<i12
     let n = i128::from(total);
     let mut sum: i128 = 0;
     for (&c, &p) in counts.iter().zip(expected_1e9.iter()) {
-        let diff = i128::from(c) * 1_000_000_000 - n * p;
-        let numerator = diff
-            .checked_mul(diff)
+        let expected = n
+            .checked_mul(p)
+            .ok_or(LanternError::Overflow("chi-square expected"))?;
+        let numerator = i128::from(c)
+            .checked_mul(1_000_000_000)
+            .and_then(|observed| observed.checked_sub(expected))
+            .and_then(|diff| diff.checked_mul(diff))
             .and_then(|sq| sq.checked_mul(1_000_000))
             .ok_or(LanternError::Overflow("chi-square numerator"))?;
-        let denominator = n * p * 1_000_000_000;
-        sum = sum
-            .checked_add(numerator / denominator)
+        sum = expected
+            .checked_mul(1_000_000_000)
+            .and_then(|denominator| numerator.checked_div(denominator))
+            .and_then(|term| sum.checked_add(term))
             .ok_or(LanternError::Overflow("chi-square sum"))?;
     }
     Ok(sum)
@@ -413,15 +433,27 @@ pub fn max_z_milli(counts: &[u64], expected_1e9: &[i128]) -> Result<i128, Lanter
     let n = u128::from(total);
     let mut max_z: i128 = 0;
     for (&c, &p_i128) in counts.iter().zip(expected_1e9.iter()) {
-        let p = p_i128 as u128;
-        let obs_1e9 = u128::from(c) * 1_000_000_000;
-        let exp_1e9 = n * p;
+        let overflow = || LanternError::Overflow("z-score");
+        let p = u128::try_from(p_i128).map_err(|_| overflow())?;
+        let obs_1e9 = u128::from(c)
+            .checked_mul(1_000_000_000)
+            .ok_or_else(overflow)?;
+        let exp_1e9 = n.checked_mul(p).ok_or_else(overflow)?;
         let diff_1e9 = obs_1e9.abs_diff(exp_1e9);
-        let cont_1e9 = 500_000_000u128;
-        let adj_diff_1e9 = diff_1e9.saturating_sub(cont_1e9);
-        let var_num = n.saturating_mul(p).saturating_mul(1_000_000_000 - p);
+        // The continuity correction never takes a deviation below zero: a
+        // deliberate floor on a statistic (128-bit saturating methods are
+        // disallowed in this crate).
+        #[allow(clippy::manual_saturating_arithmetic)]
+        let adj_diff_1e9 = diff_1e9.checked_sub(500_000_000).unwrap_or(0);
+        let var_num = 1_000_000_000u128
+            .checked_sub(p)
+            .and_then(|q| exp_1e9.checked_mul(q))
+            .ok_or_else(overflow)?;
         let denom = var_num.isqrt().max(1);
-        let z_milli = (adj_diff_1e9.saturating_mul(1_000)) / denom;
+        let z_milli = adj_diff_1e9
+            .checked_mul(1_000)
+            .and_then(|scaled| scaled.checked_div(denom))
+            .ok_or_else(overflow)?;
         let z_i128 = i128::try_from(z_milli).map_err(|_| LanternError::Overflow("z-score"))?;
         if z_i128 > max_z {
             max_z = z_i128;
@@ -453,9 +485,9 @@ impl Procedure for SecondDigit {
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_population = u64::from(self.params.get_u32("min_population")?);
-        let close = i128::from(self.params.get_u32("mad_close")?) * 1_000_000;
-        let acceptable = i128::from(self.params.get_u32("mad_acceptable")?) * 1_000_000;
-        let marginal = i128::from(self.params.get_u32("mad_marginal")?) * 1_000_000;
+        let close = i128::from(u64::from(self.params.get_u32("mad_close")?) * 1_000_000);
+        let acceptable = i128::from(u64::from(self.params.get_u32("mad_acceptable")?) * 1_000_000);
+        let marginal = i128::from(u64::from(self.params.get_u32("mad_marginal")?) * 1_000_000);
         let currency = u16::try_from(self.params.get_u32("currency_iso4217")?).map_err(|_| {
             LanternError::Parameter {
                 procedure: Self::ID.into(),
@@ -497,8 +529,11 @@ impl Procedure for SecondDigit {
                     continue;
                 }
                 let magnitude = leg.amount.mantissa.unsigned_abs();
-                let min_mag = unit.one().unsigned_abs().saturating_mul(10).max(10);
-                if magnitude < min_mag {
+                // A unit whose ten whole units exceed u128 admits no amount.
+                let Some(min_mag) = unit.one().unsigned_abs().checked_mul(10) else {
+                    continue;
+                };
+                if magnitude < min_mag.max(10) {
                     continue;
                 }
                 let d2 = second_digit(magnitude);
@@ -580,9 +615,9 @@ impl Procedure for FirstTwoDigits {
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_population = u64::from(self.params.get_u32("min_population")?);
-        let close = i128::from(self.params.get_u32("mad_close")?) * 100_000;
-        let acceptable = i128::from(self.params.get_u32("mad_acceptable")?) * 100_000;
-        let marginal = i128::from(self.params.get_u32("mad_marginal")?) * 100_000;
+        let close = i128::from(u64::from(self.params.get_u32("mad_close")?) * 100_000);
+        let acceptable = i128::from(u64::from(self.params.get_u32("mad_acceptable")?) * 100_000);
+        let marginal = i128::from(u64::from(self.params.get_u32("mad_marginal")?) * 100_000);
         let currency = u16::try_from(self.params.get_u32("currency_iso4217")?).map_err(|_| {
             LanternError::Parameter {
                 procedure: Self::ID.into(),
@@ -624,8 +659,11 @@ impl Procedure for FirstTwoDigits {
                     continue;
                 }
                 let magnitude = leg.amount.mantissa.unsigned_abs();
-                let min_mag = unit.one().unsigned_abs().saturating_mul(10).max(10);
-                if magnitude < min_mag {
+                // A unit whose ten whole units exceed u128 admits no amount.
+                let Some(min_mag) = unit.one().unsigned_abs().checked_mul(10) else {
+                    continue;
+                };
+                if magnitude < min_mag.max(10) {
                     continue;
                 }
                 let d12 = first_two_digits(magnitude);

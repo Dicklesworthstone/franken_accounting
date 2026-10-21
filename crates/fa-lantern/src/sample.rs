@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 
 use asupersync::Cx;
 use fa_model::Oid;
+use fa_money::wide::U256;
 use fa_money::{Amount, ArithmeticBudget, BudgetLimits, Rate, RateError, UnitId};
 use fa_policy::{
     BenefitInterval, DecisionCandidate, DecisionCard, DecisionFeature, DecisionKind,
@@ -26,6 +27,7 @@ use fgdb_crypto::Hasher;
 use fgdb_types::VId;
 
 use crate::LanternError;
+use crate::amount::{amount_sum, ratio_cmp};
 
 const POPULATION_DIGEST_DOMAIN: &[u8] = b"fa:lantern:sample-population:v1";
 const SAMPLE_CERT_DOMAIN: &[u8] = b"fa:lantern:sample-certificate:v1";
@@ -196,6 +198,7 @@ impl Pcg64Dxsm {
 
     /// Apply the standard PCG set-sequence seeding dance.
     #[must_use]
+    #[allow(clippy::disallowed_methods)] // PCG64 state arithmetic is modulo 2^128 by definition, not an amount
     pub fn seed(initial_state: u128, initial_sequence: u128) -> Self {
         let increment = (initial_sequence << 1) | 1;
         let mut generator = Self {
@@ -238,6 +241,7 @@ impl Pcg64Dxsm {
         }
     }
 
+    #[allow(clippy::disallowed_methods)] // PCG64 state arithmetic is modulo 2^128 by definition, not an amount
     fn seed_step(&mut self) {
         self.state = self
             .state
@@ -246,6 +250,7 @@ impl Pcg64Dxsm {
     }
 
     #[inline]
+    #[allow(clippy::disallowed_methods)] // PCG64 state arithmetic is modulo 2^128 by definition, not an amount
     fn step(&mut self) {
         self.state = self
             .state
@@ -279,6 +284,7 @@ impl Pcg64Dxsm {
     }
 
     /// Draw an unbiased integer in `0..bound` via rejection over 128-bit raw draws.
+    #[allow(clippy::arithmetic_side_effects)] // bound > 1 below; raw draws, not amounts
     pub fn next_bounded_u128(&mut self, bound: u128) -> u128 {
         if bound <= 1 {
             return 0;
@@ -299,6 +305,7 @@ impl Pcg64Dxsm {
 /// `mult^delta * state + (mult^delta - 1) / (mult - 1) * inc`, by repeated squaring in
 /// O(log delta) multiplications (Brown, "Random Number Generation with Arbitrary Strides").
 #[must_use]
+#[allow(clippy::disallowed_methods)] // PCG64 state arithmetic is modulo 2^128 by definition, not an amount
 pub fn lcg_advance_128(state: u128, mut delta: u128, mult: u128, inc: u128) -> u128 {
     let mut cur_mult: u128 = mult;
     let mut cur_plus: u128 = inc;
@@ -611,7 +618,10 @@ pub fn sample_mus(
 
     let mut prng = Pcg64Dxsm::new(seed);
     let step = interval.mantissa;
-    let start_dollar_mantissa = (prng.next_bounded_u128(step as u128) as i128) + 1;
+    // The draw lies below the positive interval, so it is a valid amount.
+    let draw = i128::try_from(prng.next_bounded_u128(step.unsigned_abs()))
+        .map_err(|_| LanternError::Overflow("mus start"))?;
+    let start_dollar_mantissa = amount_sum(draw, 1, "mus start")?;
 
     let mut selected = Vec::new();
     let mut top_stratum_count = 0usize;
@@ -850,12 +860,9 @@ pub fn evaluate_stringer_bound(
         }
     }
 
-    // Rank taintings in descending order t_1 >= t_2 >= ... >= t_m; break ties by item_id.
-    raw_taintings.sort_by(|a, b| {
-        let lhs = a.1.saturating_mul(b.2);
-        let rhs = b.1.saturating_mul(a.2);
-        rhs.cmp(&lhs).then_with(|| a.0.cmp(&b.0))
-    });
+    // Rank taintings in descending order t_1 >= t_2 >= ... >= t_m by exact
+    // cross-multiplication; break ties by item_id.
+    raw_taintings.sort_by(|a, b| ratio_cmp(b.1, b.2, a.1, a.2).then_with(|| a.0.cmp(&b.0)));
 
     let mut projected_lower_exact = Rate::zero(&mut budget).map_err(rate_err)?;
     let mut incremental_exact = Rate::zero(&mut budget).map_err(rate_err)?;
@@ -864,7 +871,10 @@ pub fn evaluate_stringer_bound(
         let k = idx + 1;
         let rk_bps = poisson_upper_factor_bps(confidence_level_bps, k)?;
         let rk_prev_bps = poisson_upper_factor_bps(confidence_level_bps, k - 1)?;
-        let delta_r_bps = rk_bps.saturating_sub(rk_prev_bps);
+        // The registered factors increase with k.
+        let delta_r_bps = rk_bps
+            .checked_sub(rk_prev_bps)
+            .ok_or(LanternError::Overflow("stringer factor increment"))?;
 
         let proj_k = interval_rate
             .checked_mul(&mut budget, taint)
@@ -873,7 +883,11 @@ pub fn evaluate_stringer_bound(
             .checked_add(&mut budget, &proj_k)
             .map_err(rate_err)?;
 
-        let inc_bps = delta_r_bps.saturating_sub(10_000);
+        // An increment of at most one factor unit adds no allowance: a
+        // deliberate floor on a factor (128-bit saturating methods are
+        // disallowed in this crate).
+        #[allow(clippy::manual_saturating_arithmetic)]
+        let inc_bps = delta_r_bps.checked_sub(10_000).unwrap_or(0);
         let inc_factor = Rate::new(&mut budget, inc_bps, 10_000).map_err(rate_err)?;
         let inc_k = proj_k
             .checked_mul(&mut budget, &inc_factor)
@@ -1027,33 +1041,58 @@ pub fn sample_stratified_neyman(
         });
     }
 
+    // The truncated mean and population standard deviation of each stratum's
+    // book values, with the squared deviations summed exactly in 256 bits.
     let mut stratum_stats: Vec<(String, usize, i128)> = Vec::with_capacity(h_count);
     for (name, items) in &by_stratum {
         let nh = items.len();
-        let sum: i128 = items.iter().map(|i| i.book_value.mantissa).sum();
-        let mean = sum / (nh as i128);
-        let mut sq_sum: u128 = 0;
+        let count = u128::try_from(nh).map_err(|_| LanternError::Overflow("stratum size"))?;
+        let sum = items.iter().try_fold(0i128, |sum, item| {
+            amount_sum(sum, item.book_value.mantissa, "stratum book value sum")
+        })?;
+        let mean = i128::try_from(count)
+            .ok()
+            .and_then(|count| sum.checked_div(count))
+            .ok_or(LanternError::Overflow("stratum mean"))?;
+        let mut sq_sum = U256::ZERO;
         for item in items {
-            let diff = (item.book_value.mantissa - mean).unsigned_abs();
-            sq_sum = sq_sum.saturating_add(diff.saturating_mul(diff));
+            let diff = item.book_value.mantissa.abs_diff(mean);
+            sq_sum = sq_sum
+                .checked_add(U256::from_product(diff, diff))
+                .ok_or(LanternError::Overflow("stratum squared deviations"))?;
         }
-        let variance = sq_sum / (nh as u128);
-        let sigma = (variance.isqrt() as i128).max(1);
+        let (variance, _) = sq_sum
+            .checked_div_rem(U256::from_u128(count))
+            .ok_or(LanternError::Overflow("stratum variance"))?;
+        let sigma = i128::try_from(variance.isqrt())
+            .map_err(|_| LanternError::Overflow("stratum standard deviation"))?
+            .max(1);
         stratum_stats.push((name.clone(), nh, sigma));
     }
 
-    let allocate_by_weights = |weights: &[i128]| -> Vec<usize> {
+    let allocate_by_weights = |weights: &[U256]| -> Result<Vec<usize>, LanternError> {
+        let overflow = || LanternError::Overflow("stratum allocation");
         let mut alloc = vec![1usize; h_count];
         let remaining = total_sample_size - h_count;
-        let weight_sum: i128 = weights.iter().sum();
-        if remaining > 0 && weight_sum > 0 {
-            let mut quotas: Vec<(usize, i128)> = Vec::with_capacity(h_count);
+        let weight_sum = weights
+            .iter()
+            .try_fold(U256::ZERO, |sum, &w| sum.checked_add(w))
+            .ok_or_else(overflow)?;
+        if remaining > 0 && !weight_sum.is_zero() {
+            let mut quotas: Vec<(usize, U256)> = Vec::with_capacity(h_count);
             for (i, &w) in weights.iter().enumerate() {
                 let cap = stratum_stats[i].1 - alloc[i];
-                let exact_num = (remaining as i128) * w;
-                let add = ((exact_num / weight_sum) as usize).min(cap);
+                let exact_num = u128::try_from(remaining)
+                    .ok()
+                    .and_then(|remaining| w.checked_mul_u128(remaining))
+                    .ok_or_else(overflow)?;
+                let (quotient, rem) = exact_num.checked_div_rem(weight_sum).ok_or_else(overflow)?;
+                let add = quotient
+                    .to_u128()
+                    .and_then(|q| usize::try_from(q).ok())
+                    .ok_or_else(overflow)?
+                    .min(cap);
                 alloc[i] += add;
-                let rem = exact_num % weight_sum;
                 quotas.push((i, rem));
             }
             let used: usize = alloc.iter().sum();
@@ -1075,17 +1114,19 @@ pub fn sample_stratified_neyman(
                 }
             }
         }
-        alloc
+        Ok(alloc)
     };
 
-    let neyman_weights: Vec<i128> = stratum_stats
-        .iter()
-        .map(|(_, nh, sigma)| (*nh as i128) * *sigma)
-        .collect();
-    let prop_weights: Vec<i128> = stratum_stats.iter().map(|(_, nh, _)| *nh as i128).collect();
+    let mut neyman_weights = Vec::with_capacity(h_count);
+    let mut prop_weights = Vec::with_capacity(h_count);
+    for (_, nh, sigma) in &stratum_stats {
+        let nh = u128::try_from(*nh).map_err(|_| LanternError::Overflow("stratum size"))?;
+        neyman_weights.push(U256::from_product(nh, sigma.unsigned_abs()));
+        prop_weights.push(U256::from_u128(nh));
+    }
 
-    let neyman_alloc = allocate_by_weights(&neyman_weights);
-    let prop_alloc = allocate_by_weights(&prop_weights);
+    let neyman_alloc = allocate_by_weights(&neyman_weights)?;
+    let prop_alloc = allocate_by_weights(&prop_weights)?;
 
     let candidates = vec![
         DecisionCandidate {
@@ -1386,6 +1427,7 @@ mod tests {
     /// sum_{j<=k} x^j / j!`, `E_N(x) = sum_{j<=N} x^j / j!` and `D =
     /// 10^(4N) * N!`, so every term `D * x^j / j! = a^j * 10^(4(N-j)) *
     /// N!/j!` is an integer.
+    #[allow(clippy::arithmetic_side_effects)] // arbitrary-precision BigInt
     fn scaled_poisson_sums(a: u128, k: usize, n: usize) -> (BigInt, BigInt) {
         let mut falling = vec![big(1); n + 1];
         for j in (1..=n).rev() {

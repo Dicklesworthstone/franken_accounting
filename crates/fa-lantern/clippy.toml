@@ -1,0 +1,23 @@
+# Lantern folds amount mantissas as i128 (and their magnitudes and products
+# as u128), so the crate's `deny(clippy::arithmetic_side_effects)` exempts
+# every narrower integer (counts, indices, days, bounds) and bites only on
+# 128-bit arithmetic. Saturating and wrapping 128-bit methods are disallowed:
+# an amount that leaves the range is a typed refusal (FA-INV-06; fa-4aym).
+arithmetic-side-effects-allowed = ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"]
+disallowed-methods = [
+    { path = "i128::saturating_add", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "i128::saturating_sub", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "i128::saturating_mul", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "i128::saturating_neg", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "i128::saturating_abs", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "i128::wrapping_add", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "i128::wrapping_sub", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "i128::wrapping_mul", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "i128::wrapping_neg", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "u128::saturating_add", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "u128::saturating_sub", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "u128::saturating_mul", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "u128::wrapping_add", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "u128::wrapping_sub", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "u128::wrapping_mul", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+]

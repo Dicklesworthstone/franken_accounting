@@ -14,6 +14,7 @@ use fa_money::wide::U256;
 use fa_money::{UnitId, UnitKind};
 use fgdb_types::VId;
 
+use crate::amount::{amount_share_bps, amount_sum};
 use crate::projection::{FlowLeg, scoped_flow_legs};
 use crate::{
     Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
@@ -40,28 +41,6 @@ fn finding(
 
 fn days(params: &Params, name: &'static str) -> Result<i32, LanternError> {
     i32::try_from(params.get_u32(name)?).map_err(|_| LanternError::Overflow(name))
-}
-
-fn amount_sum(left: i128, right: i128, accumulator: &'static str) -> Result<i128, LanternError> {
-    left.checked_add(right)
-        .ok_or(LanternError::Overflow(accumulator))
-}
-
-/// Exact, truncated basis points. A valid large flow must not be refused merely
-/// because multiplying its mantissa by 10,000 needs more than 128 bits.
-fn amount_share_bps(
-    numerator: i128,
-    denominator: i128,
-    statistic: &'static str,
-) -> Result<i128, LanternError> {
-    let numerator = u128::try_from(numerator).map_err(|_| LanternError::Overflow(statistic))?;
-    let denominator = u128::try_from(denominator).map_err(|_| LanternError::Overflow(statistic))?;
-    U256::from_u128(numerator)
-        .checked_mul_u128(10_000)
-        .and_then(|scaled| scaled.checked_div_rem(U256::from_u128(denominator)))
-        .and_then(|(quotient, _)| quotient.to_u128())
-        .and_then(|quotient| i128::try_from(quotient).ok())
-        .ok_or(LanternError::Overflow(statistic))
 }
 
 /// Whether `account` is an asset account of the snapshot's chart.

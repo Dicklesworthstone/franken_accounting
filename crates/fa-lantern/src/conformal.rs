@@ -85,24 +85,40 @@ pub fn calibrate_split_conformal(
     sorted.sort_unstable();
     let n = sorted.len();
 
-    let n_plus_1 = (n as u128) + 1;
-    let one_minus_alpha = 10_000u128 - u128::from(target_alpha_bps);
-    let num = n_plus_1 * one_minus_alpha;
-    let k = num.div_ceil(10_000) as usize;
+    let overflow = || LanternError::Overflow("conformal quantile");
+    let n_plus_1 = u128::try_from(n)
+        .ok()
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(overflow)?;
+    let num = 10_000u128
+        .checked_sub(u128::from(target_alpha_bps))
+        .and_then(|one_minus_alpha| n_plus_1.checked_mul(one_minus_alpha))
+        .ok_or_else(overflow)?;
+    let k = usize::try_from(num.div_ceil(10_000)).map_err(|_| overflow())?;
 
     let (quantile_rank_1based, calibrated_threshold, marginal_fpr_bound_bps) = if k == 0 {
         (1, sorted[0], target_alpha_bps)
     } else if k <= n {
         let thresh = sorted[k - 1];
-        let tail = (n + 1 - k) as u128;
-        let bound_bps = ((tail * 10_000) / n_plus_1) as u32;
+        let tail = n_plus_1
+            .checked_sub(u128::try_from(k).map_err(|_| overflow())?)
+            .ok_or_else(overflow)?;
+        let bound_bps = tail
+            .checked_mul(10_000)
+            .and_then(|scaled| scaled.checked_div(n_plus_1))
+            .and_then(|bps| u32::try_from(bps).ok())
+            .ok_or_else(overflow)?;
         (k, thresh, bound_bps)
     } else {
         (n + 1, i128::MAX, 0)
     };
 
     let clean_flagged = sorted.iter().filter(|&&s| s > calibrated_threshold).count() as u128;
-    let empirical_clean_fpr_bps = ((clean_flagged * 10_000) / (n as u128)) as u32;
+    let empirical_clean_fpr_bps = clean_flagged
+        .checked_mul(10_000)
+        .and_then(|scaled| scaled.checked_div(u128::try_from(n).ok()?))
+        .and_then(|bps| u32::try_from(bps).ok())
+        .ok_or_else(overflow)?;
 
     Ok(SplitConformalBound {
         calibration_n: n,
@@ -129,6 +145,9 @@ pub struct WilsonIntervalBps {
 /// Compute the 95% Wilson score confidence interval (`z = 196 / 100`) in basis
 /// points ($0 \dots 10_000$) using exact integer arithmetic and `u128::isqrt`.
 #[must_use]
+// Statistics over labeled-corpus counts, never amounts. The products stay
+// below 2^128 while trials < 3 * 10^11; beyond that overflow-checks panics.
+#[allow(clippy::arithmetic_side_effects, clippy::disallowed_methods)]
 pub fn wilson_interval_95_bps(successes: u64, trials: u64) -> WilsonIntervalBps {
     if trials == 0 {
         return WilsonIntervalBps {
@@ -284,8 +303,10 @@ pub fn calibrate_detector_threshold(
         let satisfies = t >= conformal_bound.calibrated_threshold
             && metrics.clean_fpr.point_estimate_bps <= target_alpha_bps;
         let utility = if satisfies {
-            (i128::from(metrics.recall.point_estimate_bps)
-                - i128::from(metrics.clean_fpr.point_estimate_bps))
+            i128::from(
+                i64::from(metrics.recall.point_estimate_bps)
+                    - i64::from(metrics.clean_fpr.point_estimate_bps),
+            )
             .max(101)
         } else {
             0

@@ -138,6 +138,10 @@ fn add(a: i128, b: i128, label: &'static str) -> Result<i128, Error> {
     a.checked_add(b).ok_or(Error::Overflow(label))
 }
 
+fn sub(a: i128, b: i128, label: &'static str) -> Result<i128, Error> {
+    a.checked_sub(b).ok_or(Error::Overflow(label))
+}
+
 /// Validate even the caller's allocation result. An erroneous allocator can
 /// never silently create money, exceed a destination's capacity or drop a lot.
 fn split<F>(
@@ -200,8 +204,8 @@ impl Account {
                 break;
             };
             let taken = remaining.min(lot.amount);
-            remaining -= taken;
-            lot.amount -= taken;
+            remaining = sub(remaining, taken, "lot draw")?;
+            lot.amount = sub(lot.amount, taken, "lot draw")?;
             meter.step(lot.path.len() as u64)?;
             out.push(Lot {
                 amount: taken,
@@ -253,7 +257,7 @@ impl Account {
                     path: lot.path.clone(),
                 });
             }
-            lot.amount -= repayment;
+            lot.amount = sub(lot.amount, repayment, "overdraft repayment")?;
             if lot.amount > 0 {
                 // Adjacent identical arrivals have identical FIFO/LIFO age.
                 if let Some(last) = self.lots.back_mut()
@@ -429,7 +433,7 @@ where
                         continue;
                     }
                     meter.fragment()?;
-                    *capacity -= share;
+                    *capacity = sub(*capacity, share, "target capacity")?;
                     let hop = Hop {
                         entry,
                         from,
@@ -679,9 +683,12 @@ fn trace_pro_rata(
                             }
                         }
                         if total < bal_before {
-                            let keep_ratio =
-                                Rate::new(&mut budget, (bal_before - total) as u128, denom)
-                                    .map_err(|_| Error::Allocation)?;
+                            let keep_ratio = Rate::new(
+                                &mut budget,
+                                sub(bal_before, total, "kept balance")?.unsigned_abs(),
+                                denom,
+                            )
+                            .map_err(|_| Error::Allocation)?;
                             let kept = lot
                                 .amount
                                 .checked_mul(&mut budget, &keep_ratio)
@@ -748,9 +755,12 @@ fn trace_pro_rata(
                         )?;
                     }
                     if total_deposit > repaid {
-                        let surv_ratio =
-                            Rate::new(&mut budget, (total_deposit - repaid) as u128, total_u)
-                                .map_err(|_| Error::Allocation)?;
+                        let surv_ratio = Rate::new(
+                            &mut budget,
+                            sub(total_deposit, repaid, "surviving deposit")?.unsigned_abs(),
+                            total_u,
+                        )
+                        .map_err(|_| Error::Allocation)?;
                         let surv_share = lot
                             .amount
                             .checked_mul(&mut budget, &surv_ratio)
@@ -938,7 +948,7 @@ fn trace_libr(
             } else {
                 0
             };
-            let survive = inf - repaid;
+            let survive = sub(inf, repaid, "surviving inflow")?;
             *bal = add(*bal, inf, "account deposit")?;
             if repaid > 0 {
                 repaid_caps[b_idx].insert(to, repaid.min(source_amount));
@@ -1186,7 +1196,7 @@ fn trace_libr(
         else {
             break;
         };
-        let push = delta.min(source_amount - held_flow);
+        let push = delta.min(sub(source_amount, held_flow, "libr unheld amount")?);
         for (ei, forward) in path {
             if forward {
                 edges[ei].flow = add(edges[ei].flow, push, "libr flow")?;
@@ -1227,13 +1237,17 @@ fn trace_libr(
             "LIBR phase 1 terminated with augmenting path remaining",
         ));
     }
-    let mut min_cut_cap = 0i128;
+    // Only min(cut capacity, source) is compared, so the sum stops at the
+    // source amount: exact, never a clamp of a reported amount.
+    let mut cut_capacity = 0i128;
     for e in &edges {
         if reachable[e.from] && !reachable[e.to] {
-            min_cut_cap = min_cut_cap.saturating_add(e.cap);
+            cut_capacity = cut_capacity
+                .checked_add(e.cap)
+                .map_or(source_amount, |sum| sum.min(source_amount));
         }
     }
-    if min_cut_cap.min(source_amount) != held_flow {
+    if cut_capacity.min(source_amount) != held_flow {
         return Err(Error::Invalid("LIBR max-flow did not equal min-cut"));
     }
 
@@ -1294,7 +1308,7 @@ fn trace_libr(
                 "source does not equal held plus spent plus overdraft repayment",
             ));
         };
-        let push = delta.min(source_amount - total_flow);
+        let push = delta.min(sub(source_amount, total_flow, "libr unrouted amount")?);
         for (ei, forward) in path {
             if forward {
                 edges[ei].flow = add(edges[ei].flow, push, "libr diss flow")?;
@@ -1344,7 +1358,7 @@ fn trace_libr(
             .min()
             .unwrap_or(0);
         for &ei in &path_edges {
-            edges[ei].flow -= delta;
+            edges[ei].flow = sub(edges[ei].flow, delta, "flow decomposition")?;
         }
         let slot = merged.entry((account, disposition, hops)).or_insert(0);
         *slot = add(*slot, delta, "merged position")?;
@@ -1449,7 +1463,7 @@ fn shortest_augmenting_path(
             return Ok(None);
         };
         let avail = if forward {
-            edges[ei].cap - edges[ei].flow
+            sub(edges[ei].cap, edges[ei].flow, "residual capacity")?
         } else {
             edges[ei].flow
         };
@@ -1467,6 +1481,7 @@ mod tests {
 
     // Literal Hamilton allocation for small oracle fixtures. Large boundary
     // fixtures have one nonzero target and never multiply large integers.
+    #[allow(clippy::arithmetic_side_effects)] // a test oracle over small fixtures
     fn allocate(amount: i128, capacities: &[i128]) -> Result<Vec<i128>, Error> {
         let sum: i128 = capacities.iter().sum();
         if sum < amount || sum == 0 {

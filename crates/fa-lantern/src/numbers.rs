@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use fa_journal::genesis::BookContext;
 use fgdb_types::VId;
 
+use crate::amount::amount_share_bps;
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{Cite, Finding, LanternError, Params, Procedure, Severity, Snapshot, Statistic, Work};
 
@@ -175,10 +176,7 @@ impl Procedure for RelativeSizeFactor {
             if second_mag <= 0 {
                 continue;
             }
-            let rsf_bps = top_mag
-                .checked_mul(10_000)
-                .ok_or(LanternError::Overflow("rsf numerator"))?
-                / second_mag;
+            let rsf_bps = amount_share_bps(top_mag, second_mag, "rsf numerator")?;
             if rsf_bps >= min_rsf_bps {
                 let mut cites = vec![Cite::Entry(top_vid)];
                 if second_vid != top_vid {
@@ -187,7 +185,10 @@ impl Procedure for RelativeSizeFactor {
                 if kind == 0 && snapshot.accounts.contains_key(&VId(id_raw)) {
                     cites.push(Cite::Account(VId(id_raw)));
                 }
-                let severity = if rsf_bps >= min_rsf_bps.saturating_mul(2) {
+                let severity = if min_rsf_bps
+                    .checked_mul(2)
+                    .is_some_and(|high| rsf_bps >= high)
+                {
                     Severity::High
                 } else {
                     Severity::Medium

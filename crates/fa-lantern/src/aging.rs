@@ -127,7 +127,7 @@ impl Procedure for OpenItemsAging {
             let past = c.totals[3];
             let severity = if past == 0 {
                 Severity::Info
-            } else if past.unsigned_abs().saturating_mul(2) >= total.unsigned_abs() {
+            } else if past.unsigned_abs() >= total.unsigned_abs().div_ceil(2) {
                 Severity::High
             } else {
                 Severity::Medium

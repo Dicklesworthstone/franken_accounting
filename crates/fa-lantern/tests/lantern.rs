@@ -50,6 +50,9 @@ mod bank_reconciliation_tests;
 #[path = "lantern/graph_arithmetic.rs"]
 mod graph_arithmetic_tests;
 
+#[path = "lantern/amount_boundaries.rs"]
+mod amount_boundary_tests;
+
 #[path = "lantern/graph_units.rs"]
 mod graph_unit_tests;
 
@@ -5100,6 +5103,60 @@ fn fa_y4v_solvency_lookback_ponzi_distribution_and_damages_procedures() {
             .unwrap()
             .deterministic()
     );
+
+    // 6b. The same forensic schedules at 18-decimal-token scale (fa-4aym).
+    // Scaling every leg and the pool by F scales each result by F; F = 17 *
+    // 10^30 keeps the pro-rata shares exact. The distributions' cross
+    // products exceed i128 here, so they run in exact 256-bit intermediates,
+    // and the running balances are checked rather than raw sums.
+    let factor: i128 = 17 * 10i128.pow(30);
+    let mut wide = snapshot.clone();
+    for e in &mut wide.entries {
+        for leg in &mut e.entry.proposal.legs {
+            leg.amount.mantissa *= factor;
+        }
+    }
+    let value_of = |findings: &[Finding], code: &str| -> i128 {
+        findings
+            .iter()
+            .find(|f| f.narrative.contains(code))
+            .expect(code)
+            .statistic
+            .value
+    };
+    let wide_rt = DistributionRisingTide::with(
+        Params::defaults(DistributionRisingTide::ID)
+            .unwrap()
+            .set("distributable_pool", 70_000 * factor)
+            .unwrap(),
+    );
+    let r_wide = run_over(&wide, &h.book, &wide_rt).unwrap();
+    for (code, small) in [("INV-A", 60_000), ("INV-B", 10_000), ("INV-C", 0)] {
+        assert_eq!(value_of(&r_wide.findings, code), small * factor, "{code}");
+    }
+    let wide_pr = DistributionProRata::with(
+        Params::defaults(DistributionProRata::ID)
+            .unwrap()
+            .set("distributable_pool", 70_000 * factor)
+            .unwrap(),
+    );
+    let r_wide = run_over(&wide, &h.book, &wide_pr).unwrap();
+    for (code, exact) in [("INV-A", 70), ("INV-B", 35), ("INV-C", 14)] {
+        assert_eq!(
+            value_of(&r_wide.findings, code),
+            exact * 10i128.pow(34),
+            "{code}"
+        );
+    }
+    let r_wide = run_over(&wide, &h.book, &ponzi_proc).unwrap();
+    assert_eq!(value_of(&r_wide.findings, "INV-WIN"), 40_000 * factor);
+    assert_eq!(value_of(&r_wide.findings, "INV-A"), 100_000 * factor);
+    let r_wide = run_over(&wide, &h.book, &pref_proc).unwrap();
+    assert_eq!(value_of(&r_wide.findings, "VEND-PREF"), 60_000 * factor);
+    let r_wide = run_over(&wide, &h.book, &ft_proc).unwrap();
+    assert!(r_wide.findings.iter().any(|f| {
+        f.cites.contains(&Cite::Entry(VId(97_013))) && f.statistic.value == 50_000 * factor
+    }));
 
     // 7. But-for damages schedule (both single-snapshot and scenario scratch-book comparison)
     let bf_proc = DamagesButFor::new().unwrap();

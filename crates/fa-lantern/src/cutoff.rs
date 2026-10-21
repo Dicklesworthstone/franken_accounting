@@ -13,6 +13,10 @@ use fa_money::Side;
 use fa_time::{DateDay, Weekday};
 use fgdb_types::VId;
 
+use crate::amount::{
+    amount_difference, amount_magnitude, amount_negated, amount_scaled_bps, amount_share_bps,
+    amount_sum, largest_remainder, ratio_cmp, signed_leg, wide_product,
+};
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{
     Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
@@ -138,10 +142,7 @@ impl Procedure for ReconIntercompany {
                     continue;
                 }
                 population += 1;
-                let signed = match leg.side {
-                    Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
-                    Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
-                };
+                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let b = buckets
                     .entry((e.period.clone(), leg.amount.unit.0))
                     .or_default();
@@ -415,10 +416,7 @@ impl Procedure for ReconBookToBook {
                     {
                         continue;
                     }
-                    let signed = match leg.side {
-                        Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
-                        Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
-                    };
+                    let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                     fold_net = fold_net
                         .checked_add(signed)
                         .ok_or(LanternError::Overflow("book_to_book fold sum"))?;
@@ -1378,10 +1376,7 @@ impl Procedure for ConfirmCoverage {
             if total <= 0 {
                 continue;
             }
-            let cov_bps = corroborated
-                .checked_mul(10_000)
-                .ok_or(LanternError::Overflow("confirm coverage bps"))?
-                / total;
+            let cov_bps = amount_share_bps(corroborated, total, "confirm coverage bps")?;
             if cov_bps < min_coverage_bps {
                 uncorroborated.sort_unstable();
                 uncorroborated.dedup();
@@ -1393,8 +1388,12 @@ impl Procedure for ConfirmCoverage {
                     .accounts
                     .get(&acct_vid)
                     .map_or("?", |a| a.code.as_str());
-                let unconfirmed_bps = 10_000 - cov_bps;
-                let severity = if cov_bps * 2 < min_coverage_bps {
+                let unconfirmed_bps =
+                    amount_difference(10_000, cov_bps, "confirm unconfirmed bps")?;
+                let severity = if cov_bps
+                    .checked_mul(2)
+                    .is_some_and(|twice| twice < min_coverage_bps)
+                {
                     Severity::High
                 } else {
                     Severity::Medium
@@ -1508,10 +1507,7 @@ impl Procedure for SolvencyBalanceSheetTest {
                     continue;
                 }
                 population += 1;
-                let signed = match leg.side {
-                    Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
-                    Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
-                };
+                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let cell = acct_net
                     .entry((leg.account_ref, leg.amount.unit.0))
                     .or_default();
@@ -1542,15 +1538,15 @@ impl Procedure for SolvencyBalanceSheetTest {
             let row = by_unit.entry(unit_id).or_default();
             match at {
                 AccountType::ASSET => {
-                    let adj_asset =
-                        if let Some(&(_, _, att_val)) = attested_values.get(&(acct_vid, unit_id)) {
-                            att_val.max(0)
-                        } else {
-                            let raw = posted_net.max(0);
-                            raw.checked_mul(10_000 - haircut_bps)
-                                .ok_or(LanternError::Overflow("solvency asset haircut"))?
-                                / 10_000
-                        };
+                    let adj_asset = if let Some(&(_, _, att_val)) =
+                        attested_values.get(&(acct_vid, unit_id))
+                    {
+                        att_val.max(0)
+                    } else {
+                        let kept_bps =
+                            amount_difference(10_000, haircut_bps, "solvency asset haircut")?;
+                        amount_scaled_bps(posted_net.max(0), kept_bps, "solvency asset haircut")?
+                    };
                     row.0 = row
                         .0
                         .checked_add(adj_asset)
@@ -1560,9 +1556,11 @@ impl Procedure for SolvencyBalanceSheetTest {
                 AccountType::LIABILITY => {
                     let liab =
                         if let Some(&(_, _, att_val)) = attested_values.get(&(acct_vid, unit_id)) {
-                            att_val.unsigned_abs() as i128
+                            amount_magnitude(att_val, "solvency attested liability")?
+                        } else if posted_net < 0 {
+                            amount_negated(posted_net, "solvency liability")?
                         } else {
-                            (-posted_net).max(0)
+                            0
                         };
                     row.1 = row
                         .1
@@ -1674,10 +1672,7 @@ impl Procedure for SolvencyCashFlowTest {
                     continue;
                 };
                 let at = AccountType(acct.account_type);
-                let signed = match leg.side {
-                    Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
-                    Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
-                };
+                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 if eff <= ref_date && is_liquid_cash_account(&acct.code, &acct.name, at) {
                     population += 1;
                     let c = cash_net
@@ -1734,7 +1729,7 @@ impl Procedure for SolvencyCashFlowTest {
             for (&(_, u), &net) in &liab_net {
                 if u == unit_id && net < 0 {
                     maturing_obligations = maturing_obligations
-                        .checked_add(-net)
+                        .checked_add(amount_negated(net, "cash_flow_test obligation")?)
                         .ok_or(LanternError::Overflow("cash_flow_test obligations sum"))?;
                 }
             }
@@ -1950,24 +1945,25 @@ impl Procedure for LookbackPreferences {
                     continue;
                 };
                 let at = AccountType(acct.account_type);
-                let mag = leg.amount.mantissa.unsigned_abs() as i128;
+                let mag = amount_magnitude(leg.amount.mantissa, "leg magnitude")?;
                 let u = leg.amount.unit.0;
                 accts_by_unit.entry(u).or_default().insert(leg.account_ref);
 
-                match (leg.side, at) {
+                let total = match (leg.side, at) {
                     (Side::Credit, AccountType::ASSET)
                         if is_liquid_cash_account(&acct.code, &acct.name, at) =>
                     {
-                        *cash_credit_by_unit.entry(u).or_default() += mag;
+                        cash_credit_by_unit.entry(u).or_default()
                     }
                     (Side::Debit, AccountType::LIABILITY | AccountType::EXPENSE) => {
-                        *ob_debit_by_unit.entry(u).or_default() += mag;
+                        ob_debit_by_unit.entry(u).or_default()
                     }
                     (Side::Credit, AccountType::LIABILITY) => {
-                        *liab_credit_by_unit.entry(u).or_default() += mag;
+                        liab_credit_by_unit.entry(u).or_default()
                     }
-                    _ => {}
-                }
+                    _ => continue,
+                };
+                *total = amount_sum(*total, mag, "preference entry sum")?;
             }
 
             if parties_in_entry.is_empty() {
@@ -2064,15 +2060,11 @@ impl Procedure for LookbackPreferences {
                         ..
                     } = ev.kind
                 {
-                    base_sum += dtp;
-                    base_cnt += 1;
+                    base_sum = amount_sum(base_sum, dtp, "preference baseline days")?;
+                    base_cnt = amount_sum(base_cnt, 1, "preference baseline count")?;
                 }
             }
-            let baseline_avg = if base_cnt > 0 {
-                Some(base_sum / base_cnt)
-            } else {
-                None
-            };
+            let baseline_avg = base_sum.checked_div(base_cnt);
 
             let mut gross_preference = 0i128;
             let mut c1_contemporaneous = 0i128;
@@ -2104,7 +2096,7 @@ impl Procedure for LookbackPreferences {
                                 .checked_add(amount)
                                 .ok_or(LanternError::Overflow("preference c1 sum"))?;
                         } else if let (Some(d), Some(avg)) = (days_to_pay, baseline_avg)
-                            && (d - avg).abs() <= ordinary_tol
+                            && u128::try_from(ordinary_tol).is_ok_and(|tol| d.abs_diff(avg) <= tol)
                         {
                             c2_ordinary_course = c2_ordinary_course
                                 .checked_add(amount)
@@ -2118,7 +2110,11 @@ impl Procedure for LookbackPreferences {
                     CreditorEventKind::NewValue { amount } if seen_pref_payment => {
                         let offset = amount.min(unprotected_running);
                         if offset > 0 {
-                            unprotected_running -= offset;
+                            unprotected_running = amount_difference(
+                                unprotected_running,
+                                offset,
+                                "preference new value",
+                            )?;
                             c4_new_value = c4_new_value
                                 .checked_add(offset)
                                 .ok_or(LanternError::Overflow("preference c4 sum"))?;
@@ -2253,29 +2249,32 @@ impl Procedure for LookbackFraudulentTransfer {
                     continue;
                 };
                 let at = AccountType(acct.account_type);
-                let mag = leg.amount.mantissa.unsigned_abs() as i128;
+                let mag = amount_magnitude(leg.amount.mantissa, "leg magnitude")?;
                 let u = leg.amount.unit.0;
                 accts_by_unit.entry(u).or_default().insert(leg.account_ref);
 
-                match (leg.side, at) {
-                    (Side::Debit, AccountType::ASSET) => {
-                        *asset_dr.entry(u).or_default() += mag;
-                        *running_assets.entry(u).or_default() += mag;
-                    }
+                // (this entry's side total, the running balance, increases?)
+                let (side_total, running, increases) = match (leg.side, at) {
+                    (Side::Debit, AccountType::ASSET) => (&mut asset_dr, &mut running_assets, true),
                     (Side::Credit, AccountType::ASSET) => {
-                        *asset_cr.entry(u).or_default() += mag;
-                        *running_assets.entry(u).or_default() -= mag;
+                        (&mut asset_cr, &mut running_assets, false)
                     }
                     (Side::Credit, AccountType::LIABILITY) => {
-                        *liab_cr.entry(u).or_default() += mag;
-                        *running_liabs.entry(u).or_default() += mag;
+                        (&mut liab_cr, &mut running_liabs, true)
                     }
                     (Side::Debit, AccountType::LIABILITY) => {
-                        *liab_dr.entry(u).or_default() += mag;
-                        *running_liabs.entry(u).or_default() -= mag;
+                        (&mut liab_dr, &mut running_liabs, false)
                     }
-                    _ => {}
-                }
+                    _ => continue,
+                };
+                let total = side_total.entry(u).or_default();
+                *total = amount_sum(*total, mag, "fraudulent transfer entry sum")?;
+                let balance = running.entry(u).or_default();
+                *balance = if increases {
+                    amount_sum(*balance, mag, "fraudulent transfer running balance")?
+                } else {
+                    amount_difference(*balance, mag, "fraudulent transfer running balance")?
+                };
             }
 
             if eff < uvta_start || eff > petition_date {
@@ -2298,11 +2297,18 @@ impl Procedure for LookbackFraudulentTransfer {
                 work.compare(1);
                 let dr = asset_dr.get(&unit_id).copied().unwrap_or(0);
                 let l_dr = liab_dr.get(&unit_id).copied().unwrap_or(0);
-                // Net value leaving the estate without commensurate asset receipt or debt reduction
-                let uncompensated_outflow = cr.saturating_sub(dr).saturating_sub(l_dr);
-                if uncompensated_outflow <= 0 {
+                // Net value leaving the estate without commensurate asset receipt or
+                // debt reduction. All three are nonnegative, so each step that
+                // remains positive is exact.
+                if cr <= dr {
                     continue;
                 }
+                let after_receipts = amount_difference(cr, dr, "fraudulent transfer outflow")?;
+                if after_receipts <= l_dr {
+                    continue;
+                }
+                let uncompensated_outflow =
+                    amount_difference(after_receipts, l_dr, "fraudulent transfer outflow")?;
                 let cur_assets = running_assets.get(&unit_id).copied().unwrap_or(0);
                 let cur_liabs = running_liabs.get(&unit_id).copied().unwrap_or(0);
                 let insolvent = cur_liabs > cur_assets;
@@ -2445,19 +2451,22 @@ fn collect_investor_positions(
                 continue;
             };
             let at = AccountType(acct.account_type);
-            let mag = leg.amount.mantissa.unsigned_abs() as i128;
+            let mag = amount_magnitude(leg.amount.mantissa, "leg magnitude")?;
             let u = leg.amount.unit.0;
             accts_by_unit.entry(u).or_default().insert(leg.account_ref);
 
             if is_liquid_cash_account(&acct.code, &acct.name, at) {
+                let balance = cash_balance_by_unit.entry(u).or_default();
                 match leg.side {
                     Side::Debit => {
-                        *cash_dr_by_unit.entry(u).or_default() += mag;
-                        *cash_balance_by_unit.entry(u).or_default() += mag;
+                        let total = cash_dr_by_unit.entry(u).or_default();
+                        *total = amount_sum(*total, mag, "investor entry cash in")?;
+                        *balance = amount_sum(*balance, mag, "investor cash balance")?;
                     }
                     Side::Credit => {
-                        *cash_cr_by_unit.entry(u).or_default() += mag;
-                        *cash_balance_by_unit.entry(u).or_default() -= mag;
+                        let total = cash_cr_by_unit.entry(u).or_default();
+                        *total = amount_sum(*total, mag, "investor entry cash out")?;
+                        *balance = amount_difference(*balance, mag, "investor cash balance")?;
                     }
                 }
             } else if is_investor_contra_account(&acct.code, &acct.name, at) || desc_investor {
@@ -2532,35 +2541,18 @@ fn collect_investor_positions(
     Ok((filtered, cash_balance_by_unit, population))
 }
 
-fn allocate_quotas_largest_remainder(
-    pool: i128,
-    numerators: &[i128],
-    denominator: i128,
-    tie_breaks: &[VId],
-) -> Result<Vec<i128>, LanternError> {
-    if numerators.is_empty() || pool <= 0 || denominator <= 0 {
-        return Ok(vec![0; numerators.len()]);
-    }
-    let mut quotas = Vec::with_capacity(numerators.len());
-    let mut remainders = Vec::with_capacity(numerators.len());
-    let mut sum_quotas = 0i128;
-    for (idx, &num) in numerators.iter().enumerate() {
-        let q = num / denominator;
-        let r = num % denominator;
-        sum_quotas = sum_quotas
-            .checked_add(q)
-            .ok_or(LanternError::Overflow("largest remainder quota sum"))?;
-        quotas.push(q);
-        remainders.push((idx, r, tie_breaks[idx]));
-    }
-    let shortfall = pool.saturating_sub(sum_quotas);
-    remainders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
-    for &(idx, _, _) in remainders.iter().take(shortfall as usize) {
-        quotas[idx] = quotas[idx]
-            .checked_add(1)
-            .ok_or(LanternError::Overflow("largest remainder increment"))?;
-    }
-    Ok(quotas)
+/// The net losers' total unrecovered principal, `sum(cash_in - cash_out)`.
+fn unrecovered_total(
+    losers: &[InvestorPosition],
+    accumulator: &'static str,
+) -> Result<i128, LanternError> {
+    losers.iter().try_fold(0i128, |total, p| {
+        amount_sum(
+            total,
+            amount_difference(p.cash_in, p.cash_out, accumulator)?,
+            accumulator,
+        )
+    })
 }
 
 /// `ponzi.net_investment` (plan §11.5, `FA-EVID-L56`):
@@ -2624,7 +2616,7 @@ impl Procedure for PonziNetInvestment {
             }
             let scale = crate::unit_scale(book, pos.unit_id)?;
             if pos.cash_out > pos.cash_in {
-                let clawback = pos.cash_out - pos.cash_in;
+                let clawback = amount_difference(pos.cash_out, pos.cash_in, "ponzi clawback")?;
                 out.push(finding(
                     Self::ID,
                     Severity::High,
@@ -2641,7 +2633,7 @@ impl Procedure for PonziNetInvestment {
                     ),
                 ));
             } else if pos.cash_in > pos.cash_out {
-                let claim = pos.cash_in - pos.cash_out;
+                let claim = amount_difference(pos.cash_in, pos.cash_out, "ponzi net equity")?;
                 out.push(finding(
                     Self::ID,
                     Severity::Medium,
@@ -2713,15 +2705,19 @@ impl Procedure for DistributionRisingTide {
             if losers.is_empty() {
                 continue;
             }
-            // Sort ascending by pre-receivership recovery ratio w_i / p_i via cross-multiplication
+            // Sort ascending by pre-receivership recovery ratio w_i / p_i via exact
+            // cross-multiplication (cash_in > cash_out >= 0 for a net loser).
             losers.sort_by(|a, b| {
-                let lhs = a.cash_out.saturating_mul(b.cash_in);
-                let rhs = b.cash_out.saturating_mul(a.cash_in);
-                lhs.cmp(&rhs)
-                    .then_with(|| a.first_entry_vid.cmp(&b.first_entry_vid))
+                ratio_cmp(
+                    a.cash_out.unsigned_abs(),
+                    a.cash_in.unsigned_abs(),
+                    b.cash_out.unsigned_abs(),
+                    b.cash_in.unsigned_abs(),
+                )
+                .then_with(|| a.first_entry_vid.cmp(&b.first_entry_vid))
             });
 
-            let total_unrecovered: i128 = losers.iter().map(|p| p.cash_in - p.cash_out).sum();
+            let total_unrecovered = unrecovered_total(&losers, "rising_tide unrecovered")?;
             let raw_pool = if explicit_pool > 0 {
                 explicit_pool
             } else {
@@ -2739,20 +2735,12 @@ impl Procedure for DistributionRisingTide {
             for (idx, pos) in losers.iter().enumerate() {
                 if idx > 0 {
                     // Pool needed to raise 0..idx to pos's recovery rate w_idx / p_idx:
-                    // need = (w_idx * p_sum - p_idx * w_sum) / p_idx
-                    let need_num = pos
-                        .cash_out
-                        .checked_mul(p_sum)
-                        .ok_or(LanternError::Overflow("rising_tide need_num"))?
-                        .checked_sub(
-                            pos.cash_in
-                                .checked_mul(w_sum)
-                                .ok_or(LanternError::Overflow("rising_tide need_sub"))?,
-                        )
+                    // need = (w_idx * p_sum - p_idx * w_sum) / p_idx, nonnegative
+                    // because the losers are sorted by that rate.
+                    let need_num = wide_product(pos.cash_out, p_sum, "rising_tide need_num")?
+                        .checked_sub(wide_product(pos.cash_in, w_sum, "rising_tide need_sub")?)
                         .ok_or(LanternError::Overflow("rising_tide need diff"))?;
-                    let cap_num = pool_eff
-                        .checked_mul(pos.cash_in)
-                        .ok_or(LanternError::Overflow("rising_tide cap_num"))?;
+                    let cap_num = wide_product(pool_eff, pos.cash_in, "rising_tide cap_num")?;
                     if need_num >= cap_num {
                         break;
                     }
@@ -2766,27 +2754,24 @@ impl Procedure for DistributionRisingTide {
                 k = idx + 1;
             }
 
+            // Every active investor sits at or below the water level
+            // (pool + w_sum) / p_sum, so each numerator is nonnegative.
+            let level = amount_sum(pool_eff, w_sum, "rising_tide water level")?;
             let mut numerators = Vec::with_capacity(k);
             let mut tie_breaks = Vec::with_capacity(k);
             for pos in losers.iter().take(k) {
-                let num = (pool_eff + w_sum)
-                    .checked_mul(pos.cash_in)
-                    .ok_or(LanternError::Overflow("rising_tide numerator"))?
-                    .checked_sub(
-                        p_sum
-                            .checked_mul(pos.cash_out)
-                            .ok_or(LanternError::Overflow("rising_tide numerator sub"))?,
-                    )
+                let num = wide_product(level, pos.cash_in, "rising_tide numerator")?
+                    .checked_sub(wide_product(
+                        p_sum,
+                        pos.cash_out,
+                        "rising_tide numerator sub",
+                    )?)
                     .ok_or(LanternError::Overflow("rising_tide numerator diff"))?;
                 numerators.push(num);
                 tie_breaks.push(pos.first_entry_vid);
             }
-            let active_allocs =
-                allocate_quotas_largest_remainder(pool_eff, &numerators, p_sum, &tie_breaks)?;
-            let water_bps = (pool_eff + w_sum)
-                .checked_mul(10_000)
-                .ok_or(LanternError::Overflow("rising_tide water_bps"))?
-                / p_sum;
+            let active_allocs = largest_remainder(pool_eff, &numerators, p_sum, &tie_breaks)?;
+            let water_bps = amount_share_bps(level, p_sum, "rising_tide water_bps")?;
             let scale = crate::unit_scale(book, unit_id)?;
 
             for (idx, pos) in losers.into_iter().enumerate() {
@@ -2874,7 +2859,7 @@ impl Procedure for DistributionProRata {
             }
             losers.sort_by_key(|p| (p.first_entry_vid, p.party_vid));
 
-            let total_unrecovered: i128 = losers.iter().map(|p| p.cash_in - p.cash_out).sum();
+            let total_unrecovered = unrecovered_total(&losers, "pro_rata unrecovered")?;
             let raw_pool = if explicit_pool > 0 {
                 explicit_pool
             } else {
@@ -2888,23 +2873,15 @@ impl Procedure for DistributionProRata {
             let mut numerators = Vec::with_capacity(losers.len());
             let mut tie_breaks = Vec::with_capacity(losers.len());
             for pos in &losers {
-                let claim = pos.cash_in - pos.cash_out;
-                let num = pool_eff
-                    .checked_mul(claim)
-                    .ok_or(LanternError::Overflow("pro_rata numerator"))?;
-                numerators.push(num);
+                let claim = amount_difference(pos.cash_in, pos.cash_out, "pro_rata claim")?;
+                numerators.push(wide_product(pool_eff, claim, "pro_rata numerator")?);
                 tie_breaks.push(pos.first_entry_vid);
             }
-            let allocs = allocate_quotas_largest_remainder(
-                pool_eff,
-                &numerators,
-                total_unrecovered,
-                &tie_breaks,
-            )?;
+            let allocs = largest_remainder(pool_eff, &numerators, total_unrecovered, &tie_breaks)?;
             let scale = crate::unit_scale(book, unit_id)?;
 
             for (pos, dist) in losers.into_iter().zip(allocs) {
-                let claim = pos.cash_in - pos.cash_out;
+                let claim = amount_difference(pos.cash_in, pos.cash_out, "pro_rata claim")?;
                 let mut cites: Vec<Cite> = pos.accounts.into_iter().map(Cite::Account).collect();
                 for evid in pos.entries {
                     if cites.len() < MAX_CITES {
@@ -2970,10 +2947,7 @@ impl Procedure for DamagesButFor {
             work.entry();
             for leg in &e.entry.proposal.legs {
                 work.leg();
-                let signed = match leg.side {
-                    Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
-                    Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
-                };
+                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let cell = actual_fold
                     .entry((leg.account_ref, e.period.clone(), leg.amount.unit.0))
                     .or_default();
@@ -3014,10 +2988,7 @@ impl Procedure for DamagesButFor {
             let was_superseded = is_original && !live_vids.contains(&e.vid);
             if is_original {
                 for leg in &e.entry.proposal.legs {
-                    let signed = match leg.side {
-                        Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
-                        Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
-                    };
+                    let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                     let key = (leg.account_ref, e.period.clone(), leg.amount.unit.0);
                     let cell = original_fold.entry(key.clone()).or_default();
                     cell.0 = cell
@@ -3103,10 +3074,7 @@ pub fn compute_scenario_but_for_damages(
             let mut map: BTreeMap<CellKey, (i128, BTreeSet<VId>)> = BTreeMap::new();
             for e in &live {
                 for leg in &e.entry.proposal.legs {
-                    let signed = match leg.side {
-                        Side::Debit => leg.amount.mantissa.unsigned_abs() as i128,
-                        Side::Credit => -(leg.amount.mantissa.unsigned_abs() as i128),
-                    };
+                    let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                     let cell = map
                         .entry((leg.account_ref, e.period.clone(), leg.amount.unit.0))
                         .or_default();

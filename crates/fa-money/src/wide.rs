@@ -27,6 +27,28 @@ impl U256 {
         self.hi == 0 && self.lo == 0
     }
 
+    /// The full product `a * b`, which always fits in 256 bits.
+    pub fn from_product(a: u128, b: u128) -> Self {
+        let (lo, hi) = mul_u128(a, b);
+        Self { hi, lo }
+    }
+
+    /// The integer square root: the largest `r` with `r * r <= self`. Every
+    /// 256-bit value has its root below `2^128`.
+    pub fn isqrt(self) -> u128 {
+        let (mut low, mut high) = (0u128, u128::MAX);
+        while low < high {
+            // The upper midpoint, so the search always advances.
+            let mid = high - (high - low) / 2;
+            if Self::from_product(mid, mid) <= self {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        low
+    }
+
     /// `self * m`, or `None` on overflow past 256 bits.
     pub fn checked_mul_u128(self, m: u128) -> Option<Self> {
         let (lo_lo, lo_hi) = mul_u128(self.lo, m);
@@ -190,6 +212,15 @@ mod tests {
             .checked_mul(&BigInt::from_u128(b.lo), ORACLE_LIMIT)
             .unwrap();
         assert_eq!(a.checked_mul_u128(b.lo), narrow(&product));
+        let full = BigInt::from_u128(a.lo)
+            .checked_mul(&BigInt::from_u128(b.hi), ORACLE_LIMIT)
+            .unwrap();
+        assert_eq!(Some(U256::from_product(a.lo, b.hi)), narrow(&full));
+        let root = a.isqrt();
+        assert!(U256::from_product(root, root) <= a);
+        if let Some(next) = root.checked_add(1) {
+            assert!(U256::from_product(next, next) > a);
+        }
         if b.is_zero() {
             assert_eq!(a.checked_div_rem(b), None);
             assert!(left.checked_div_rem(&right, ORACLE_LIMIT).is_err());
