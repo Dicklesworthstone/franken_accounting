@@ -7885,6 +7885,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         ],
     );
     assert_eq!(code, 0, "{out}");
+    let (code, out) = run(true, &["access", "log"]);
+    assert_eq!(code, 0, "{out}");
     let (code, out) = run(true, &["registers", "advance", "--period", "FY2026-P03"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(

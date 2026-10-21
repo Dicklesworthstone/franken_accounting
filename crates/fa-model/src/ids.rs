@@ -217,6 +217,15 @@ pub fn bates_range_vid(book: Id128, matter: &str, document: &Oid) -> VId {
     )
 }
 
+/// `vid(AccessEvent) = H("fa:vid:access-event:v1" ‖ book ‖ payload digest)`
+/// (plan §9.7, bead fa-7dw): one record per served read. The payload names
+/// the head the read observed, which every recorded event advances, so two
+/// reads never share an identity.
+#[must_use]
+pub fn access_event_vid(book: Id128, digest: &[u8; 32]) -> VId {
+    derive_vid(b"fa:vid:access-event:v1", &[&book.0, digest])
+}
+
 /// `vid(Certificate) = H("fa:vid:report-certificate:v1" ‖ book ‖ digest)`:
 /// where a book retains the report certificate with this public digest.
 /// The complete digest remains mandatory when reading the located vertex.

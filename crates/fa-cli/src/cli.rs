@@ -77,6 +77,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("book", book_cmd),
     ("chart", chart_cmd),
     ("law", crate::laws::law_cmd),
+    ("access", crate::access::access_cmd),
     ("unit", crate::laws::unit_cmd),
     ("period", period_cmd),
     ("calendar", calendar_cmd),
@@ -868,6 +869,10 @@ pub(crate) struct BookSource<'a> {
     /// The launch-bound session's capability: every book it opens admits
     /// it as current authority before anything is read or stamped.
     bound: Option<Capability>,
+    /// The AccessEvent a read-only bound session's command owes (plan §9.7,
+    /// fa-7dw): committed on the first open, after admission and before the
+    /// handler observes anything.
+    access: Option<fa::access_log::AccessRecord>,
 }
 
 impl BookSource<'_> {
@@ -892,13 +897,16 @@ impl BookSource<'_> {
     }
 
     pub(crate) fn open(&mut self, args: &Args) -> Result<BookRef<'_>, Fail> {
-        let book = self.books.open(args, self.cwd.as_deref())?;
+        let mut book = self.books.open(args, self.cwd.as_deref())?;
         // A bound session's token is current (not expired, not revoked, its
         // `books` caveat admits this book) before the book is read, its
         // coordinate stamped, or a scenario materialized (doctrine 8). The
         // command's own ops and scope are judged where it reads or writes.
         if let Some(capability) = &self.bound {
             book.admit_current(capability)??;
+        }
+        if let Some(record) = self.access.take() {
+            book.record_access(&record)??;
         }
         let book = select_branch(args, book, &self.said)?;
         stamp(&self.said, &book)?;
@@ -934,6 +942,9 @@ impl BookSource<'_> {
         // Authority is admitted on trunk, never on a scenario's replay: a
         // fork never resurrects revoked authority.
         admit(&mut book)?;
+        if let Some(record) = self.access.take() {
+            book.record_access(&record)??;
+        }
         let book = select_branch(args, book, &self.said)?;
         stamp(&self.said, &book)?;
         Ok(book)
@@ -1447,11 +1458,17 @@ fn run_scoped(
         out.said.borrow_mut().owner_principal =
             Some(args.flag("--as").unwrap_or("operator").to_string());
     }
+    let access = match authority.map(|authority| access_record(authority, &args)) {
+        Some(Err(fail)) => return finish_into(out, Err(fail)),
+        Some(Ok(record)) => record,
+        None => None,
+    };
     let books = BookSource {
         books,
         said: Rc::clone(&out.said),
         cwd: files.cwd.clone(),
         bound: authority.map(|authority| authority.capability().clone()),
+        access,
     };
     if let Some(daemon) = &daemon_files {
         // The daemon never trusts a client working directory outside --files-root;
@@ -1601,6 +1618,66 @@ fn exit_class(exit: u8) -> String {
                 .map(|row| row.name)
         })
         .unwrap_or_else(|| format!("exit-{exit}"))
+}
+
+/// The AccessEvent a bound session's command owes, when its capability is
+/// read-only: every op within read, produce and verify, as the Auditor,
+/// Regulator, Investigator and Production templates are (plan §9.7, §14.4;
+/// fa-7dw). The request digest covers the command's positional words, flags
+/// and switches, never the host's book or key paths. A session that cannot
+/// state its record is refused, never served unrecorded.
+fn access_record(
+    authority: &LaunchAuthority,
+    args: &Args,
+) -> Result<Option<fa::access_log::AccessRecord>, Fail> {
+    let capability = authority.capability();
+    let read_only = capability.ops().iter().all(|op| {
+        matches!(
+            op,
+            fa_policy::Op::Read | fa_policy::Op::Produce | fa_policy::Op::Verify
+        )
+    });
+    let Some(verb) = args.positional.first() else {
+        return Ok(None);
+    };
+    if !read_only {
+        return Ok(None);
+    }
+    let commitment = capability
+        .commitment()
+        .map_err(|e| Fail::Internal(format!("the session capability has no commitment: {e}")))?;
+    let mut ops: Vec<String> = capability
+        .ops()
+        .iter()
+        .map(|op| op.name().to_string())
+        .collect();
+    ops.sort();
+    ops.dedup();
+    let command = match (registry()?.verb(verb), args.positional.get(1)) {
+        (Some(v), Some(sub)) if v.subcommands.contains(sub) => format!("{verb} {sub}"),
+        _ => verb.clone(),
+    };
+    let mut request: Vec<String> = args.positional.clone();
+    for (flag, values) in &args.flags {
+        if flag == "--book" || flag == "--keys" {
+            continue;
+        }
+        for value in values {
+            request.push(flag.clone());
+            request.push(value.clone());
+        }
+    }
+    let mut switches = args.switches.clone();
+    switches.sort();
+    request.extend(switches);
+    Ok(Some(fa::access_log::AccessRecord {
+        principal: authority.principal_vid(),
+        principal_name: authority.principal().to_string(),
+        capability_commitment: commitment,
+        ops,
+        command,
+        request_digest: fa::access_log::request_digest(&request),
+    }))
 }
 
 /// The verdict of a command: success, or exactly one `error` event (plan

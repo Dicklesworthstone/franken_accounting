@@ -189,6 +189,9 @@ name = "ProductionProfile"
 [[label]]
 id = 51
 name = "BatesRange"
+[[label]]
+id = 52
+name = "AccessEvent"
 
 # ---- property keys --------------------------------------------------------
 [[property]]

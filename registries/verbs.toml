@@ -103,6 +103,18 @@ usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [-
 example = "fa chart import chart.json --book ./books/myco --json"
 
 [[verb]]
+name = "access"
+summary = "Who read what (plan §9.7, §14.5): every command a read-only bound session runs (a capability whose ops stay within read, produce and verify, as the Auditor, Regulator, Investigator and Production templates are) commits an AccessEvent before it observes the book; access log lists them."
+writes = false
+subcommands = ["log"]
+flags = ["--since", "--principal"]
+switches = []
+events = ["access_log"]
+exits = [0, 2, 3, 4, 5, 7]
+usage = ["access log [--since <seq>] [--principal <name>]   (the AccessEvents recorded after --since, in recording order: principal, capability commitment and ops, the command, the digest of its arguments, the head it observed and the sequence it was recorded at)", "A record is committed before the read it describes observes the book, so a delivered answer always has one; a command that then fails leaves a record with nothing delivered. Reading the log under a read-only session records that read too. Embedded-owner and writing sessions are not recorded by this slice."]
+example = "fa access log --since 0 --json"
+
+[[verb]]
 name = "law"
 summary = "The registered laws this build embeds (plan §6.2–§6.4): rounding, allocation, conversion, FX, lot and tracing laws by family, id, name and version, with every field of their registry row. Reads no book."
 writes = false
@@ -1306,6 +1318,12 @@ name = "laws"
 book = false
 doc = "Every registered law of this build (or of one family), in registry order: family, id, name, optional version, and every other field of its registry row as text."
 fields = ["laws:[law_row]"]
+
+[[event]]
+name = "access_log"
+book = true
+doc = "The AccessEvents recorded after `since` (optionally one principal's), in recording order. Each names the bound session's principal, its capability commitment and ops, the command, the digest of its bound arguments (positionals, flags and switches without host paths), the head it observed (`observed_at`) and the sequence it was recorded at, always after it."
+fields = ["since:seq", "principal:string?", "count:int", "events:[access_event]"]
 
 [[event]]
 name = "law"
@@ -3617,6 +3635,18 @@ mistakes = ["Targeting a leg on the same side as the payment leg instead of the 
 
 [[mcp.tool]]
 cluster = "fa.findings"
+name = "access_log"
+verb = "access"
+subcommands = ["log"]
+positionals = []
+flags = ["--since", "--principal"]
+switches = []
+required = []
+dont = ["Read who read what: each event names the principal, its capability commitment and ops, the command and the head it observed. Under a read-only launch this read is itself recorded."]
+mistakes = ["Expecting embedded-owner or writing sessions in the log: this slice records read-only bound sessions only."]
+
+[[mcp.tool]]
+cluster = "fa.findings"
 name = "record"
 verb = "finding"
 subcommands = ["record"]
@@ -4536,6 +4566,11 @@ doc = "One statement issuance: its vertex, period and ordinal, the statement def
 fields = ["issuance:hex", "period:string", "ordinal:int", "definition:string", "definition_version:int", "definition_digest:hex", "certificate:hex", "certified_at:seq", "issued_to:string", "document:hex?", "control_entry:hex?", "recorded_at:seq?", "principal:hex?", "approvals:int?"]
 
 [[shape]]
+name = "access_event"
+doc = "One recorded read: vid and digest of the record, the sequence it was recorded at and the head it observed, the principal (vid and name), capability commitment and ops, the command and the digest of its arguments."
+fields = ["vid:hex", "recorded_at:seq", "observed_at:seq", "principal:hex", "principal_name:string", "capability:hex", "ops:[string]", "command:string", "request_digest:hex", "digest:hex"]
+
+[[shape]]
 name = "presented_unit"
 doc = "One unit of a presented statement: the divisor applied to exact mantissas, the presented statement's digest, and its lines in definition order with residual lines inserted."
 fields = ["unit:string", "divisor:int", "digest:hex", "lines:[presented_line]"]
@@ -4764,6 +4799,12 @@ reach = "judged"
 
 [[bound]]
 verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor"]
+ops = ["read"]
+
+# The access log names every principal's reads: the whole book.
+[[bound]]
+verbs = ["access"]
+subcommands = ["log"]
 ops = ["read"]
 
 # A search reads every entry: the whole book.

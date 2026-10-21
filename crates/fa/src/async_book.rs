@@ -3567,6 +3567,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Record one AccessEvent at the current head (plan §9.7, bead fa-7dw):
+    /// committed before the read it records observes the book. The caller
+    /// decides which sessions are recorded.
+    pub async fn record_access(
+        &mut self,
+        cx: &PurposeContexts,
+        record: &crate::access_log::AccessRecord,
+    ) -> Outcome<crate::access_log::RecordedAccess> {
+        crate::access_log::record(&mut self.db, cx, &self.context, record).await
+    }
+
+    /// Every AccessEvent recorded after `since`, in recording order.
+    pub async fn access_log(
+        &self,
+        cx: &PurposeContexts,
+        since: CommitSeq,
+    ) -> Result<Vec<crate::access_log::RecordedAccess>, BookError> {
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        crate::access_log::log(&self.db, &self.context, since)
+    }
+
     /// Retain verified canonical certificate bytes in this book's substrate.
     /// The public content digest resolves the immutable artifact after reopen.
     /// This lazy write has its own sequence; the report keeps its original
