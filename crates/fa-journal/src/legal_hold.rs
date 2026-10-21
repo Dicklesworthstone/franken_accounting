@@ -22,6 +22,14 @@
 //! (a Human principal other than its preparer), bound to its proposal
 //! through a [`ReleasePlan`].
 //!
+//! A book-scope Place (`fa document hold place --through <seq>`; the
+//! receiver's pre-appointment trunk, plan §15.6) carries `2u8 ‖ u64
+//! through` instead of a subject list: it pins every entry, document and
+//! party recorded at or before `through`, however many there are. Its
+//! active set rides one book-level cell, [`book_hold_cell_vid`], moved by
+//! compare-and-set exactly like a subject's, and [`active_legal_holds`]
+//! reports it on every subject it covers.
+//!
 //! What a hold does not pin (ruling 3251): the two-phase reservation sweep.
 //! A held Pending still expires at its deadline (plan §5.4); the hold
 //! preserves the record, not the reservation.
@@ -51,7 +59,7 @@ use crate::evidence::{document_vid, drift, hex, verify_row};
 use crate::genesis::BookContext;
 use crate::policy::{authorize_approvals, capability_witness, epoch_witness, refusal, steward};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{edge_id, prop, scalar_bytes};
+use crate::rows::{book_root, edge_id, prop, scalar_bytes};
 use crate::sweep::decode_entry;
 
 /// Domain of a hold's `scope_digest`.
@@ -60,6 +68,9 @@ pub const SCOPE_DOMAIN: &[u8] = b"fa:legal-hold-scope:v1";
 pub const PLACE: u8 = 0;
 /// `HoldEvent.kind` of a release.
 pub const RELEASE: u8 = 1;
+/// The scope tag of a book-scope Place (`2u8 ‖ u64 through`). Its
+/// `HoldEvent.kind` is [`PLACE`].
+pub const BOOK_THROUGH: u8 = 2;
 
 /// What a legal hold pins (plan §8.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,10 +97,13 @@ pub enum Scope {
     Place(Vec<VId>),
     /// The Place a Release releases.
     Release(VId),
+    /// A book-scope Place: every entry, document and party recorded at or
+    /// before this sequence (`>= 1`).
+    Book(CommitSeq),
 }
 
 impl Scope {
-    /// `0u8 ‖ list(u128 subject)` or `1u8 ‖ u128 hold`.
+    /// `0u8 ‖ list(u128 subject)`, `1u8 ‖ u128 hold` or `2u8 ‖ u64 through`.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
         let mut w = Writer::new();
         match self {
@@ -101,12 +115,16 @@ impl Scope {
             Self::Release(hold) => {
                 w.u8(RELEASE).u128(hold.0);
             }
+            Self::Book(through) => {
+                w.u8(BOOK_THROUGH).u64(through.0);
+            }
         }
         w.finish().map_err(|e| KernelError::Model(e.into()))
     }
 
     /// Decode a scope; refuses an unknown kind, an empty or unsorted
-    /// subject list, one past `max_legal_hold_subjects`, and trailing bytes.
+    /// subject list, one past `max_legal_hold_subjects`, a book scope
+    /// through sequence 0, and trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
         let scope = match r.u8("legal_hold.kind")? {
@@ -123,6 +141,10 @@ impl Scope {
                 Self::Place(subjects)
             }
             RELEASE => Self::Release(VId(r.u128("legal_hold.hold")?)),
+            BOOK_THROUGH => match r.u64("legal_hold.through")? {
+                0 => return Err(r.invalid("legal_hold.through")),
+                through => Self::Book(CommitSeq(through)),
+            },
             t => return Err(r.bad_tag("legal_hold.kind", t)),
         };
         r.finish()?;
@@ -136,7 +158,7 @@ impl Scope {
 
     fn kind(&self) -> u8 {
         match self {
-            Self::Place(_) => PLACE,
+            Self::Place(_) | Self::Book(_) => PLACE,
             Self::Release(_) => RELEASE,
         }
     }
@@ -153,6 +175,16 @@ fn vid_of(domain: &[u8], book: Id128, of: VId) -> VId {
 #[must_use]
 pub fn legal_hold_cell_vid(book: Id128, subject: VId) -> VId {
     vid_of(b"fa:vid:legal-hold-cell:v1", book, subject)
+}
+
+/// `vid(cell) = H("fa:vid:legal-hold-book-cell:v1" ‖ book)`: the one cell
+/// listing the book's active book-scope holds.
+#[must_use]
+pub fn book_hold_cell_vid(book: Id128) -> VId {
+    let d = domain_digest(b"fa:vid:legal-hold-book-cell:v1", &[&book.0]);
+    let mut lo = [0u8; 16];
+    lo.copy_from_slice(&d[..16]);
+    VId(u128::from_le_bytes(lo))
 }
 
 /// `vid(release) = H("fa:vid:legal-hold-release:v1" ‖ book ‖ hold)`: one
@@ -193,13 +225,27 @@ fn holds_of(row: &VertexRow) -> Result<Vec<VId>, KernelError> {
     Ok(holds)
 }
 
+/// What a placement pins.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HoldReach {
+    /// The named entries, documents and parties, each once, in any order.
+    Subjects(Vec<VId>),
+    /// Every entry, document and party recorded at or before this sequence
+    /// (a book-scope hold; plan §15.6, the receiver's pre-appointment
+    /// trunk). The sequence must be recorded: `1..=` the head.
+    Through(CommitSeq),
+    /// As `Through` at the head when the hold is placed (after authority is
+    /// admitted): the same request again is the recorded hold.
+    ThroughHead,
+}
+
 /// Place a legal hold.
 #[derive(Clone, Debug)]
 pub struct LegalHoldRequest {
     /// Who places it (`issued_by`; the capability's holder).
     pub principal: VId,
-    /// The entries, documents and parties it pins, each once, in any order.
-    pub subjects: Vec<VId>,
+    /// What it pins.
+    pub reach: HoldReach,
     /// The document that authorizes it (an order, a preservation letter):
     /// one this book holds, verified, with a complete custody chain.
     pub authority: Oid,
@@ -215,8 +261,11 @@ pub struct LegalHoldRequest {
 pub struct LegalHoldPlaced {
     /// The Place entry: the hold's identity.
     pub hold: VId,
-    /// Its subjects, ascending.
+    /// Its subjects, ascending (empty for a book-scope hold).
     pub subjects: Vec<VId>,
+    /// A book-scope hold's sequence: it pins everything recorded at or
+    /// before it.
+    pub through: Option<CommitSeq>,
     pub recorded_at: CommitSeq,
     /// The same placement was already recorded; nothing was written.
     pub already_recorded: bool,
@@ -227,7 +276,10 @@ pub struct LegalHoldPlaced {
 pub struct LegalHold {
     pub hold: VId,
     pub authority: Oid,
+    /// The named subjects, ascending (empty for a book-scope hold).
     pub subjects: Vec<VId>,
+    /// A book-scope hold's sequence.
+    pub through: Option<CommitSeq>,
     pub issued_by: VId,
     pub placed_at: CommitSeq,
     /// The release entry and the sequence that recorded it.
@@ -359,17 +411,20 @@ fn placed_of(row: &VertexRow) -> Result<Option<LegalHold>, KernelError> {
         return Ok(None);
     }
     let entry = decode_entry(row)?;
-    Ok(match hold_event(&entry)? {
-        Some((Scope::Place(subjects), authority)) => Some(LegalHold {
-            hold: row.vid,
-            authority,
-            subjects,
-            issued_by: entry.proposal.principal_ref,
-            placed_at: row.created_at,
-            released: None,
-        }),
-        _ => None,
-    })
+    let (subjects, through, authority) = match hold_event(&entry)? {
+        Some((Scope::Place(subjects), authority)) => (subjects, None, authority),
+        Some((Scope::Book(through), authority)) => (Vec::new(), Some(through), authority),
+        _ => return Ok(None),
+    };
+    Ok(Some(LegalHold {
+        hold: row.vid,
+        authority,
+        subjects,
+        through,
+        issued_by: entry.proposal.principal_ref,
+        placed_at: row.created_at,
+        released: None,
+    }))
 }
 
 /// The legal hold placed as `hold`, with its release if one is recorded;
@@ -390,16 +445,70 @@ pub fn read_legal_hold<V: asupersync::fs::Vfs + Clone>(
     Ok(Some(placed))
 }
 
-/// The holds active on `subject`, ascending (empty when none ever was).
+/// The holds active on `subject`, ascending (empty when none ever was):
+/// those that name it and the book-scope holds that cover it (it is an
+/// entry, document or party recorded at or before their sequence).
 pub fn active_legal_holds<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: Id128,
     subject: VId,
 ) -> Result<Vec<VId>, KernelError> {
-    match db.vertex(legal_hold_cell_vid(book, subject))? {
-        Some(row) => holds_of(&row),
-        None => Ok(Vec::new()),
+    let mut holds = match db.vertex(legal_hold_cell_vid(book, subject))? {
+        Some(row) => holds_of(&row)?,
+        None => Vec::new(),
+    };
+    holds.extend(book_holds_covering(db, book, subject)?);
+    holds.sort_by_key(|h| h.0);
+    holds.dedup();
+    Ok(holds)
+}
+
+/// The active book-scope holds whose sequence `subject` was recorded at or
+/// before; none when `subject` is not an entry, document or party.
+fn book_holds_covering<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: Id128,
+    subject: VId,
+) -> Result<Vec<VId>, KernelError> {
+    let Some(cell) = db.vertex(book_hold_cell_vid(book))? else {
+        return Ok(Vec::new());
+    };
+    let active = holds_of(&cell)?;
+    if active.is_empty() {
+        return Ok(Vec::new());
     }
+    let Some(row) = db.vertex(subject)? else {
+        return Ok(Vec::new());
+    };
+    if !holdable(&row) {
+        return Ok(Vec::new());
+    }
+    let mut covering = Vec::new();
+    for hold in active {
+        let through = match db.vertex(hold)?.as_ref().map(placed_of).transpose()? {
+            Some(Some(LegalHold {
+                through: Some(through),
+                ..
+            })) => through,
+            _ => {
+                return Err(KernelError::Corrupt(format!(
+                    "the book hold cell names {:032x}, which is not a book-scope placement",
+                    hold.0
+                )));
+            }
+        };
+        if row.created_at <= through {
+            covering.push(hold);
+        }
+    }
+    Ok(covering)
+}
+
+/// A legal hold pins entries, documents and parties.
+fn holdable(row: &VertexRow) -> bool {
+    [label::ENTRY, label::DOCUMENT, label::PARTY]
+        .iter()
+        .any(|l| row.labels.contains(l))
 }
 
 /// FA-REF-117 when a hold is active on `subject`: the refusal any act that
@@ -471,7 +580,7 @@ fn conflict(what: &str) -> Refusal {
 
 /// Authority before any read (doctrine 8): the HoldControl row's preparer
 /// op for `transition`, the capability the principal's own and current.
-fn admit<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn admit<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     capability: &Capability,
@@ -522,6 +631,14 @@ fn placed_or_conflict(
         (true, Some((Scope::Place(subjects), _))) => Ok(Ok(LegalHoldPlaced {
             hold: row.vid,
             subjects,
+            through: None,
+            recorded_at: row.created_at,
+            already_recorded: true,
+        })),
+        (true, Some((Scope::Book(through), _))) => Ok(Ok(LegalHoldPlaced {
+            hold: row.vid,
+            subjects: Vec::new(),
+            through: Some(through),
             recorded_at: row.created_at,
             already_recorded: true,
         })),
@@ -553,26 +670,86 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     req: LegalHoldRequest,
 ) -> Outcome<LegalHoldPlaced> {
-    let mut subjects = req.subjects.clone();
-    if subjects.is_empty() || subjects.len() > MAX_LEGAL_HOLD_SUBJECTS {
-        return Ok(Err(structure(
-            format!(
-                "a legal hold pins 1..={MAX_LEGAL_HOLD_SUBJECTS} subjects; this one names {}",
-                subjects.len()
-            ),
-            "name each subject the hold preserves; place a larger scope as several holds under the same authority",
-        )));
+    // Structure before authority, and authority before any read: a subject
+    // list's shape and a book scope's sequence are judged without the book.
+    let named = match &req.reach {
+        HoldReach::Subjects(named) => {
+            let mut subjects = named.clone();
+            if subjects.is_empty() || subjects.len() > MAX_LEGAL_HOLD_SUBJECTS {
+                return Ok(Err(structure(
+                    format!(
+                        "a legal hold pins 1..={MAX_LEGAL_HOLD_SUBJECTS} subjects; this one names {}",
+                        subjects.len()
+                    ),
+                    "name each subject the hold preserves; place a larger scope as several holds under the same authority, or hold the whole recorded book with --through",
+                )));
+            }
+            subjects.sort_by_key(|s| s.0);
+            if subjects.windows(2).any(|w| w[0].0 == w[1].0) {
+                return Ok(Err(structure(
+                    "a legal hold names each subject once",
+                    "remove the repeated subject",
+                )));
+            }
+            Some(Scope::Place(subjects))
+        }
+        HoldReach::Through(CommitSeq(0)) => {
+            return Ok(Err(structure(
+                "a book-scope hold pins what is recorded through a sequence of at least 1; sequence 0 records nothing",
+                "hold through HEAD or a recorded sequence: fa document hold place --authority <oid> --through HEAD",
+            )));
+        }
+        HoldReach::Through(through) => Some(Scope::Book(*through)),
+        HoldReach::ThroughHead => None,
+    };
+    if let Err(r) = admit(db, book, capability, req.principal, "Place")? {
+        return Ok(Err(r));
     }
-    subjects.sort_by_key(|s| s.0);
-    if subjects.windows(2).any(|w| w[0].0 == w[1].0) {
-        return Ok(Err(structure(
-            "a legal hold names each subject once",
-            "remove the repeated subject",
-        )));
+    let hold = entry_vid(
+        book.book_id,
+        &req.principal.0.to_le_bytes(),
+        &req.idempotency_key,
+    );
+    let scope = match named {
+        Some(scope) => scope,
+        // The head when the hold was first placed: the same request again is
+        // the recorded hold, however far the head has moved since.
+        None => match db
+            .vertex(hold)?
+            .as_ref()
+            .map(placed_of)
+            .transpose()?
+            .flatten()
+        {
+            Some(LegalHold {
+                through: Some(through),
+                ..
+            }) => Scope::Book(through),
+            _ => Scope::Book(db.frontier()?),
+        },
+    };
+    if let Scope::Book(through) = &scope {
+        // This exclusive handle's head is the transaction's basis below.
+        let head = db.frontier()?;
+        if *through > head {
+            return Ok(Err(Refusal::new(
+                code::LEGAL_HOLD_SUBJECT,
+                exit::REFUSAL,
+                format!(
+                    "sequence {} is not recorded in this book; its head is {}",
+                    through.0, head.0
+                ),
+                "plan §8.5, §15.6 (a book-scope hold pins what the book has recorded through its sequence)",
+                format!(
+                    "hold through HEAD or a sequence at or before {}: fa document hold place --authority <oid> --through HEAD",
+                    head.0
+                ),
+            )));
+        }
     }
     let proposal = control_proposal(
         book,
-        &Scope::Place(subjects.clone()),
+        &scope,
         req.authority,
         req.principal,
         req.effective_date,
@@ -585,16 +762,8 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
             "fix the named field",
         )));
     }
-    if let Err(r) = admit(db, book, capability, req.principal, "Place")? {
-        return Ok(Err(r));
-    }
     let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let digest = proposal.proposal_digest()?;
-    let hold = entry_vid(
-        book.book_id,
-        &req.principal.0.to_le_bytes(),
-        &req.idempotency_key,
-    );
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = capability_witness(&txn, db, book, capability)? {
@@ -639,22 +808,40 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::HOLDS);
     batch.create_vertex(hold, vec![label::ENTRY], entry_mirrors(&entry)?);
-    for subject in &subjects {
-        let Some(row) = txn.vertex(db, *subject)? else {
-            txn.abort();
-            return Ok(Err(unholdable(*subject, "is not in this book")));
-        };
-        if ![label::ENTRY, label::DOCUMENT, label::PARTY]
-            .iter()
-            .any(|l| row.labels.contains(l))
-        {
-            txn.abort();
-            return Ok(Err(unholdable(
-                *subject,
-                "is not an entry, a document or a party",
-            )));
+    // Each target is (the cell whose active set gains the hold, the vertex
+    // its HOLDS edge points at): a named subject's own cell, or the book's
+    // cell with the edge to the book root.
+    let mut targets = Vec::new();
+    let (subjects, through) = match &scope {
+        Scope::Place(subjects) => {
+            for subject in subjects {
+                let Some(row) = txn.vertex(db, *subject)? else {
+                    txn.abort();
+                    return Ok(Err(unholdable(*subject, "is not in this book")));
+                };
+                if !holdable(&row) {
+                    txn.abort();
+                    return Ok(Err(unholdable(
+                        *subject,
+                        "is not an entry, a document or a party",
+                    )));
+                }
+                targets.push((legal_hold_cell_vid(book.book_id, *subject), *subject));
+            }
+            (subjects.clone(), None)
         }
-        let cell = legal_hold_cell_vid(book.book_id, *subject);
+        Scope::Book(through) => {
+            targets.push((book_hold_cell_vid(book.book_id), book_root()));
+            (Vec::new(), Some(*through))
+        }
+        Scope::Release(_) => {
+            txn.abort();
+            return Err(KernelError::Corrupt(
+                "a placement built a release scope".into(),
+            ));
+        }
+    };
+    for &(cell, subject) in &targets {
         match txn.vertex(db, cell)? {
             None => {
                 batch.create_vertex(
@@ -667,10 +854,14 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
                 let mut holds = holds_of(&row)?;
                 if holds.len() >= MAX_ACTIVE_LEGAL_HOLDS {
                     txn.abort();
+                    let carrier = if matches!(scope, Scope::Book(_)) {
+                        "the book".to_string()
+                    } else {
+                        format!("subject {:032x}", subject.0)
+                    };
                     return Ok(Err(structure(
                         format!(
-                            "subject {:032x} already carries max_active_legal_holds ({MAX_ACTIVE_LEGAL_HOLDS}) holds",
-                            subject.0
+                            "{carrier} already carries max_active_legal_holds ({MAX_ACTIVE_LEGAL_HOLDS}) holds"
                         ),
                         "release a hold on it first, or rest the new scope on a hold already active",
                     )));
@@ -693,9 +884,9 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
             }
         }
         batch.add_edge(
-            edge_id(relation::HOLDS, hold, *subject),
+            edge_id(relation::HOLDS, hold, subject),
             hold,
-            *subject,
+            subject,
             vec![],
         );
     }
@@ -707,6 +898,7 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
         Ok(seq) => Ok(Ok(LegalHoldPlaced {
             hold,
             subjects,
+            through,
             recorded_at: seq,
             already_recorded: false,
         })),
@@ -835,12 +1027,21 @@ pub async fn release_legal_hold<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.seal(approvals.to_vec(), None)?;
     let mut batch = WriteBatch::new(relation::HOLDS);
     batch.create_vertex(release, vec![label::ENTRY], entry_mirrors(&entry)?);
-    for subject in &placed.subjects {
-        let cell = legal_hold_cell_vid(book.book_id, *subject);
+    // The cells that list the hold: the book's for a book-scope hold, each
+    // named subject's otherwise.
+    let cells: Vec<VId> = match placed.through {
+        Some(_) => vec![book_hold_cell_vid(book.book_id)],
+        None => placed
+            .subjects
+            .iter()
+            .map(|s| legal_hold_cell_vid(book.book_id, *s))
+            .collect(),
+    };
+    for cell in cells {
         let missing = || {
             KernelError::Corrupt(format!(
-                "legal hold {:032x} pins {:032x}, but its cell does not name the hold",
-                plan.hold.0, subject.0
+                "legal hold {:032x}'s cell {:032x} does not name the hold",
+                plan.hold.0, cell.0
             ))
         };
         let Some(row) = txn.vertex(db, cell)? else {
@@ -918,7 +1119,10 @@ mod tests {
     fn scopes_round_trip_and_bind_every_byte() {
         let place = Scope::Place(vec![VId(3), VId(9), VId(1 << 100)]);
         let release = Scope::Release(VId(77));
-        for s in [&place, &release] {
+        let book = Scope::Book(CommitSeq(42));
+        assert_eq!(book.canonical_bytes().unwrap()[0], BOOK_THROUGH);
+        assert_eq!(book.kind(), PLACE, "a book-scope hold is a Place");
+        for s in [&place, &release, &book] {
             let bytes = s.canonical_bytes().unwrap();
             assert_eq!(&Scope::decode(&bytes).unwrap(), s);
             for i in 0..bytes.len() {
@@ -931,10 +1135,16 @@ mod tests {
             assert!(Scope::decode(&trailing).is_err());
         }
         assert_ne!(place.digest().unwrap(), release.digest().unwrap());
+        assert_ne!(book.digest().unwrap(), place.digest().unwrap());
+        assert_ne!(
+            book.digest().unwrap(),
+            Scope::Book(CommitSeq(43)).digest().unwrap()
+        );
         let refused = [
             Scope::Place(vec![]),
             Scope::Place(vec![VId(9), VId(3)]),
             Scope::Place(vec![VId(3), VId(3)]),
+            Scope::Book(CommitSeq(0)),
         ];
         for s in &refused {
             assert!(
@@ -942,7 +1152,11 @@ mod tests {
                 "{s:?}"
             );
         }
-        assert!(Scope::decode(&[2]).is_err(), "an unknown kind");
+        assert!(Scope::decode(&[3]).is_err(), "an unknown kind");
+        assert!(
+            Scope::decode(&[BOOK_THROUGH]).is_err(),
+            "a truncated book scope"
+        );
         let over: Vec<VId> = (0..=MAX_LEGAL_HOLD_SUBJECTS as u128).map(VId).collect();
         assert!(Scope::decode(&Scope::Place(over).canonical_bytes().unwrap()).is_err());
     }
@@ -959,5 +1173,11 @@ mod tests {
             "cells and releases never collide"
         );
         assert_ne!(release_vid(a, VId(9)), release_vid(b, VId(9)));
+        assert_ne!(book_hold_cell_vid(a), book_hold_cell_vid(b));
+        assert_ne!(
+            book_hold_cell_vid(a),
+            legal_hold_cell_vid(a, book_root()),
+            "the book's cell is not a subject cell of its root"
+        );
     }
 }

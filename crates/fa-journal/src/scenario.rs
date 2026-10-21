@@ -1230,6 +1230,156 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     })
 }
 
+// ---------------------------------------------------------------------------
+// The receivership (plan §15.6 "The trustee or receiver takes over")
+// ---------------------------------------------------------------------------
+
+/// The receivership branch's name (`fa book fork receivership`).
+pub const RECEIVERSHIP: &str = "receivership";
+/// The idempotency key of the receivership's book-scope hold (one per
+/// principal and book: a retry is the recorded hold).
+pub const RECEIVERSHIP_HOLD_KEY: &[u8] = b"fa:receivership-hold";
+
+/// The receiver's fork, as recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceivershipForked {
+    /// The appointment sequence: the trunk prefix the hold pins and the
+    /// branch replays.
+    pub appointment: CommitSeq,
+    /// The book-scope hold over the pre-appointment trunk.
+    pub hold: crate::legal_hold::LegalHoldPlaced,
+    /// The `receivership` scenario's Open record.
+    pub branch: ScenarioRecorded,
+}
+
+/// The appointment an earlier fork recorded: the branch's fork sequence,
+/// else the principal's receivership hold's; `None` before either exists.
+fn recorded_appointment<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    principal: VId,
+) -> Result<Option<CommitSeq>, KernelError> {
+    if let Some(branch) = read_scenario(db, book, RECEIVERSHIP)? {
+        return Ok(Some(branch.body.fork_at));
+    }
+    let hold = entry_vid(
+        book.book_id,
+        &principal.0.to_le_bytes(),
+        RECEIVERSHIP_HOLD_KEY,
+    );
+    if let Some(crate::legal_hold::LegalHold {
+        through: Some(through),
+        ..
+    }) = crate::legal_hold::read_legal_hold(db, book.book_id, hold)?
+    {
+        return Ok(Some(through));
+    }
+    Ok(None)
+}
+
+/// Fork the receivership (plan §15.6; fa-k07b). Refused before anything is
+/// read unless the capability holds `receivership` and the ops of both
+/// records it writes (the HoldControl Place row's `hold`, the
+/// ScenarioControl Open row's `post`). Then, on the appointing order's
+/// authority:
+///
+/// 1. a book-scope legal hold over everything recorded through the
+///    appointment sequence: the pre-appointment trunk is pinned against
+///    erasure, garbage collection and retention expiry;
+/// 2. the `receivership` scenario forked at that same sequence, the order as
+///    its assumption document: the estate posts there (`--scenario
+///    receivership`) and reads it (`--branch scenario:receivership`) until
+///    substrate branches land (Appendix H R-BR).
+///
+/// Two commits, each idempotent under its own identity, so a retry after a
+/// failure between them completes the fork. `at: None` is the head, or the
+/// appointment already recorded by an earlier attempt. A different
+/// appointment than the recorded one is refused: a book has one
+/// receivership.
+pub async fn fork_receivership<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    authority: Oid,
+    at: Option<CommitSeq>,
+    hold_description: Erasable<String>,
+    req: ScenarioRequest,
+) -> Outcome<ReceivershipForked> {
+    let capability = req.capability.clone();
+    let holder = capability.holder();
+    if let Err(d) = fa_policy::admit(
+        &capability,
+        &Intent {
+            principal: holder,
+            trunk: true,
+            op: Op::Receivership,
+            book: book.book_id,
+            legs: &[],
+        },
+    ) {
+        return Ok(Err(denial(&d)));
+    }
+    if let Err(r) = crate::legal_hold::admit(db, book, &capability, holder, "Place")? {
+        return Ok(Err(r));
+    }
+    if let Err(r) = admit(db, book, &capability, Kind::Open)? {
+        return Ok(Err(r));
+    }
+    let appointment = match (at, recorded_appointment(db, book, holder)?) {
+        (Some(at), Some(recorded)) if at != recorded => {
+            return Ok(Err(Refusal::new(
+                code::IDEMPOTENCY_CONFLICT,
+                exit::CONFLICT,
+                format!(
+                    "this book's receivership was forked at sequence {}, not {}; a book has one receivership",
+                    recorded.0, at.0
+                ),
+                "plan §15.6 (the receivership is one branch at the appointment)",
+                format!(
+                    "inspect it with `fa scenario show {RECEIVERSHIP} --json`, or repeat the fork without --at (or with --at {})",
+                    recorded.0
+                ),
+            )));
+        }
+        (Some(at), _) => at,
+        (None, Some(recorded)) => recorded,
+        (None, None) => db.frontier()?,
+    };
+    let hold = match crate::legal_hold::place_legal_hold(
+        db,
+        ctx,
+        book,
+        &capability,
+        crate::legal_hold::LegalHoldRequest {
+            principal: holder,
+            reach: crate::legal_hold::HoldReach::Through(appointment),
+            authority,
+            effective_date: req.effective_date,
+            idempotency_key: RECEIVERSHIP_HOLD_KEY.to_vec(),
+            description: hold_description,
+        },
+    )
+    .await?
+    {
+        Ok(hold) => hold,
+        Err(r) => return Ok(Err(r)),
+    };
+    let fork = ScenarioFork {
+        at: Some(appointment),
+        from: None,
+        assumptions: vec![authority],
+    };
+    let branch = match open_scenario(db, ctx, book, RECEIVERSHIP, fork, req).await? {
+        Ok(branch) => branch,
+        Err(r) => return Ok(Err(r)),
+    };
+    Ok(Ok(ReceivershipForked {
+        appointment,
+        hold,
+        branch,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

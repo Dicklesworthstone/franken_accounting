@@ -115,7 +115,11 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
                 && matches!(
                     e.subcommand.as_deref(),
                     Some("open" | "determine" | "rehearse" | "approve" | "post" | "disclose" | "close")
-                ));
+                ))
+            // fa-k07b: the receiver's fork needs receivership, Human
+            // authority outside both launch templates and issued-token
+            // ceilings (plan §14.4); sessions read the branch as a scenario.
+            || (e.verb == "book" && e.subcommand.as_deref() == Some("fork"));
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"

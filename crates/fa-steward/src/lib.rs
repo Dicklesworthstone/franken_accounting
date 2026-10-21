@@ -4,8 +4,8 @@
 //! governance (plan §14).
 
 pub use fa_docket::{
-    LegalHold, LegalHoldPlaced, LegalHoldReleased, LegalHoldRequest, Pinned, RedactedView,
-    ReleasePlan, ViewChunk, ViewDerived, active_legal_holds, derive_redacted_view,
+    HoldReach, LegalHold, LegalHoldPlaced, LegalHoldReleased, LegalHoldRequest, Pinned,
+    RedactedView, ReleasePlan, ViewChunk, ViewDerived, active_legal_holds, derive_redacted_view,
     place_legal_hold, plan_release, read_legal_hold, redacted_view_vid, release_legal_hold,
 };
 pub use fa_journal::{
