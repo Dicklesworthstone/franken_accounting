@@ -228,14 +228,11 @@ fn fields_match_dedicated_commands() {
     let Json::Obj(cells) = by_severity else {
         panic!("{by_severity:?}");
     };
-    assert_eq!(
-        cells
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect::<Vec<_>>(),
-        ["Critical", "High", "Medium", "Low", "Info"],
-        "every severity, most severe first"
-    );
+    // Every severity is listed, zero included (robot objects are written in
+    // canonical key order).
+    let mut names: Vec<&str> = cells.iter().map(|(name, _)| name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Critical", "High", "Info", "Low", "Medium"]);
     for (severity, count) in cells {
         assert_eq!(
             Some(count),
@@ -428,8 +425,12 @@ fn bare_fa_detects_book_and_daemon() {
 
     // A held lease whose socket nobody answers.
     let registry = fa_cli::verbs::registry().unwrap();
-    let lease = fa_cli::lease::Lease::acquire(&book, &registry.daemon.lease, "a test holder")
-        .expect("lease");
+    let lease = fa_cli::lease::Lease::acquire(
+        &book,
+        &registry.daemon.lease,
+        &format!("fad pid={}", std::process::id()),
+    )
+    .expect("lease");
     let (_, line) = run_in(&elsewhere, &[], &["--book", &book_text]);
     assert_eq!(text(data(&line), "daemon"), "not answering", "{line:?}");
     assert!(text(data(&line), "text").contains("fad status --book"));

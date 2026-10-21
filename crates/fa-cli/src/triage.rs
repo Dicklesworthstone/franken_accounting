@@ -269,7 +269,6 @@ fn own_note() -> String {
     format!("fa pid={}", std::process::id())
 }
 
-/// The derived state still equals the journal's refold.
 /// One materialized period's register cache against the journal: how far
 /// its watermark trails the journal (plan §15.3 `register_watermark_lag`).
 struct RegisterLag {
@@ -294,8 +293,9 @@ impl RegisterLag {
     }
 }
 
-/// The derived-state checks, and the watermark lag of every materialized
-/// period's register cache (read in the same pass).
+/// The derived state still equals the journal's refold: the checks, and the
+/// watermark lag of every materialized period's register cache (read in the
+/// same pass).
 fn derived_state(book: &Book) -> (Vec<Check>, Vec<RegisterLag>) {
     let mut checks = Vec::new();
     let mut lag = Vec::new();
