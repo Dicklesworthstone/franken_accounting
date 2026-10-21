@@ -134,6 +134,11 @@ const HOST_ONLY: &[(&str, Option<&str>, &str)] = &[
         Some("projections"),
         "needs schema_change on trunk and --yes, outside every launch ceiling",
     ),
+    (
+        "recover",
+        Some("outcomes"),
+        "rebuilds the idempotency namespace: schema_change on trunk and --yes after a dry-run preview, outside every launch ceiling",
+    ),
     ("demo", Some("init"), "creates a sandbox book"),
 ];
 

@@ -99,9 +99,11 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             // Human, full-source authority and --yes (8e7ee49); sessions read
             // verified closes through fa_bank_reconciliation.
             || (e.verb == "bank" && e.subcommand.as_deref() == Some("reconcile"))
-            // Leg-projection recovery needs schema_change on trunk, outside
-            // both launch templates and issued-token ceilings, and --yes.
-            || (e.verb == "recover" && e.subcommand.as_deref() == Some("projections"))
+            // Leg-projection and outcome-namespace recovery (fa-nl7) need
+            // schema_change on trunk, outside both launch templates and
+            // issued-token ceilings, and --yes.
+            || (e.verb == "recover"
+                && matches!(e.subcommand.as_deref(), Some("projections" | "outcomes")))
             // fa-6l9: a production writes its volume (load files and
             // natives) into a new host directory, like `fa demo init`; MCP
             // output is inline only. Its profiles stay MCP tools.
