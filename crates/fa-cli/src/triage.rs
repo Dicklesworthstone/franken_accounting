@@ -31,6 +31,8 @@ use fa_time::PeriodState;
 struct NextStep {
     command: String,
     why: String,
+    /// The command writes the book: never offered to an Agent profile.
+    writes: bool,
 }
 
 /// A check's outcome.
@@ -69,6 +71,8 @@ struct Check {
     fix: Option<String>,
     /// The one command to run next, when a single command is the remedy.
     command: Option<String>,
+    /// `command` writes the book (a repair), rather than reading it.
+    repairs: bool,
     class: Class,
 }
 
@@ -80,6 +84,7 @@ impl Check {
             detail: detail.into(),
             fix: None,
             command: None,
+            repairs: false,
             class,
         }
     }
@@ -97,13 +102,21 @@ impl Check {
             detail: detail.into(),
             fix: Some(fix.into()),
             command: None,
+            repairs: false,
             class,
         }
     }
 
+    /// The command that reads further (a verification or a preview).
     fn with_command(mut self, command: impl Into<String>) -> Self {
         self.command = Some(command.into());
         self
+    }
+
+    /// The command that repairs what the check found: it writes the book.
+    fn with_repair(mut self, command: impl Into<String>) -> Self {
+        self.repairs = true;
+        self.with_command(command)
     }
 
     fn skipped(name: &'static str, class: Class, why: &str) -> Self {
@@ -113,6 +126,7 @@ impl Check {
             detail: why.to_string(),
             fix: None,
             command: None,
+            repairs: false,
             class,
         }
     }
@@ -256,8 +270,35 @@ fn own_note() -> String {
 }
 
 /// The derived state still equals the journal's refold.
-fn derived_state(book: &Book) -> Vec<Check> {
+/// One materialized period's register cache against the journal: how far
+/// its watermark trails the journal (plan §15.3 `register_watermark_lag`).
+struct RegisterLag {
+    period: String,
+    cache_status: &'static str,
+    verified_through: Option<u64>,
+    lag_entries: usize,
+}
+
+impl RegisterLag {
+    fn json(&self) -> Json {
+        obj(vec![
+            ("period", s(&self.period)),
+            ("cache_status", s(self.cache_status)),
+            (
+                "verified_through",
+                self.verified_through
+                    .map_or(Json::Null, |seq| Json::Int(i128::from(seq))),
+            ),
+            ("lag_entries", Json::Int(self.lag_entries as i128)),
+        ])
+    }
+}
+
+/// The derived-state checks, and the watermark lag of every materialized
+/// period's register cache (read in the same pass).
+fn derived_state(book: &Book) -> (Vec<Check>, Vec<RegisterLag>) {
     let mut checks = Vec::new();
+    let mut lag = Vec::new();
     // Registers: every period with materialized cells.
     let registers = (|| -> Result<Check, fa::book::BookError> {
         let mut checked = 0usize;
@@ -273,6 +314,16 @@ fn derived_state(book: &Book) -> Vec<Check> {
                     .chain(&v.pending_drift)
                     .any(|d| d.stored.is_some());
             if materialized {
+                lag.push(RegisterLag {
+                    period: p.code.clone(),
+                    cache_status: match v.cache_status {
+                        fa_registers::CacheStatus::Uninitialized => "uninitialized",
+                        fa_registers::CacheStatus::Verified => "verified",
+                        fa_registers::CacheStatus::Corrupt => "corrupt",
+                    },
+                    verified_through: v.verified_through.map(|seq| seq.0),
+                    lag_entries: v.lag_entries,
+                });
                 checked += 1;
                 if !v.is_green() {
                     drifted.push(p.code.clone());
@@ -299,7 +350,7 @@ fn derived_state(book: &Book) -> Vec<Check> {
                     ),
                     format!("fa registers advance --period {first} --json folds the unread entries in"),
                 )
-                .with_command(format!("fa registers advance --period {first} --json"))
+                .with_repair(format!("fa registers advance --period {first} --json"))
             }
             None => Check::ok(
                 "registers",
@@ -318,7 +369,7 @@ fn derived_state(book: &Book) -> Vec<Check> {
                     "fa verify registers --period {first} --json shows the cells; fa registers materialize --period {first} --yes rebuilds them"
                 ),
             )
-            .with_command(format!("fa registers materialize --period {first} --yes --json")),
+            .with_repair(format!("fa registers materialize --period {first} --yes --json")),
         })
     })();
     checks.push(registers.unwrap_or_else(|e| {
@@ -420,7 +471,7 @@ fn derived_state(book: &Book) -> Vec<Check> {
             "fa verify accumulator --json",
         ),
     });
-    checks
+    (checks, lag)
 }
 
 /// `fa doctor`: every check, then the verdict.
@@ -503,7 +554,7 @@ pub(crate) fn doctor_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             book.context().book_id.to_hex()
                         ),
                     ));
-                    checks.extend(derived_state(&book));
+                    checks.extend(derived_state(&book).0);
                 }
             }
         }
@@ -585,8 +636,24 @@ struct Survey {
     due_reversals: usize,
     blocked_reversals: usize,
     derived: Vec<Check>,
+    register_lag: Vec<RegisterLag>,
+    open_drafts: usize,
+    drafts_awaiting_promotion: usize,
+    finding_runs: u32,
+    /// Open findings across every recorded run, by severity name, most
+    /// severe first; every severity is listed, zero included.
+    open_findings: Vec<(&'static str, usize)>,
     steps: Vec<NextStep>,
 }
+
+/// Severity names, most severe first (fa_lantern::Severity).
+const SEVERITIES: [fa_lantern::Severity; 5] = [
+    fa_lantern::Severity::Critical,
+    fa_lantern::Severity::High,
+    fa_lantern::Severity::Medium,
+    fa_lantern::Severity::Low,
+    fa_lantern::Severity::Info,
+];
 
 impl Survey {
     fn healthy(&self) -> bool {
@@ -594,10 +661,20 @@ impl Survey {
     }
 }
 
+/// A step that only reads the book.
 fn step(command: impl Into<String>, why: impl Into<String>) -> NextStep {
     NextStep {
         command: command.into(),
         why: why.into(),
+        writes: false,
+    }
+}
+
+/// A step that writes the book (a setup, a resolution or a repair).
+fn write_step(command: impl Into<String>, why: impl Into<String>) -> NextStep {
+    NextStep {
+        writes: true,
+        ..step(command, why)
     }
 }
 
@@ -607,7 +684,8 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
     let capability = ctx.capability(args, &["read"])?;
     let held = ctx.books.is_held();
     let (dir, _) = ctx.books.locate(args)?;
-    let book = ctx.books.open_admitted(args, |book| {
+    let who = ctx.principal(args);
+    let mut book = ctx.books.open_admitted(args, |book| {
         crate::cli::admit_whole_book_read(book, &capability, &[], "surveying the book")
     })?;
     let daemon = if held {
@@ -652,23 +730,70 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         .iter()
         .filter(|r| matches!(r.status, fa_journal::ReversalStatus::Blocked { .. }))
         .count();
-    let derived = derived_state(&book);
+    let (derived, register_lag) = derived_state(&book);
+    // Drafts: a draft never holds an intent the kernel refused, so an open
+    // draft with planned intents is work awaiting promotion by an approver
+    // who is not its owner (plan §15.2). No other approval is persisted
+    // before its commit: a plan is portable bytes until it is committed.
+    let drafts = book.drafts()?;
+    let open_drafts: Vec<_> = drafts
+        .iter()
+        .filter(|d| d.state == fa_journal::DraftState::Open)
+        .collect();
+    let awaiting: Vec<_> = open_drafts
+        .iter()
+        .filter(|d| !d.intents.is_empty())
+        .collect();
+    // Findings: every recorded run, and each finding's current review
+    // status at the head (Open until acknowledged or dismissed).
+    let mut open_findings: Vec<(&'static str, usize)> =
+        SEVERITIES.iter().map(|sev| (sev.name(), 0)).collect();
+    let mut most_severe: Option<(usize, [u8; 32])> = None;
+    let mut request = fa::findings::lookup::FindingRunPageRequest {
+        limit: fa::findings::lookup::MAX_FINDING_RUN_PAGE,
+        ..Default::default()
+    };
+    let finding_runs = loop {
+        let page = book.finding_runs(who, &capability, &request)??;
+        for run in &page.runs {
+            let history =
+                book.finding_run_review_history(who, &capability, &run.certificate_digest, None)??;
+            for finding in &history.histories {
+                if finding.status() != fa::findings::review::FindingReviewStatus::Open {
+                    continue;
+                }
+                let severity = finding.finding.finding.severity;
+                let rank = SEVERITIES
+                    .iter()
+                    .position(|sev| *sev == severity)
+                    .ok_or_else(|| Fail::Internal("unregistered finding severity".into()))?;
+                open_findings[rank].1 += 1;
+                if most_severe.is_none_or(|(worst, _)| rank < worst) {
+                    most_severe = Some((rank, run.certificate_digest));
+                }
+            }
+        }
+        match page.next_cursor {
+            Some(cursor) => request.after = Some(cursor),
+            None => break page.total_recorded_runs,
+        }
+    };
 
     // The next steps, from the state (the first is the most urgent).
     let mut steps = Vec::new();
     if accounts == 0 {
-        steps.push(step(
+        steps.push(write_step(
             "fa chart import <chart.json> --json",
             "the book has no accounts; install the chart",
         ));
     } else if periods.is_empty() {
-        steps.push(step(
+        steps.push(write_step(
             "fa period create --fiscal-year <N> --json",
             "entries post into periods; create the fiscal year's",
         ));
     } else if open.is_empty() {
         let future = periods.iter().find(|p| p.state == PeriodState::Future);
-        steps.push(step(
+        steps.push(write_step(
             format!(
                 "fa period open {} --json",
                 future.map_or("<code>", |p| p.code.as_str())
@@ -683,14 +808,40 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         .chain(derived.iter().filter(|c| c.status == Status::Warn))
     {
         if let Some(command) = &check.command {
-            steps.push(step(
-                command.clone(),
-                format!("{}: {}", check.name, check.detail),
-            ));
+            let why = format!("{}: {}", check.name, check.detail);
+            steps.push(if check.repairs {
+                write_step(command.clone(), why)
+            } else {
+                step(command.clone(), why)
+            });
         }
     }
-    if pending_cells > 0 {
+    if let Some((rank, certificate)) = most_severe {
+        let open: usize = open_findings.iter().map(|(_, n)| n).sum();
         steps.push(step(
+            format!(
+                "fa finding list --certificate C:{} --json",
+                crate::cli::hex(&certificate)
+            ),
+            format!(
+                "{open} open finding(s) await review; this run holds a {} one (fa finding review F:<vid> --action acknowledge|dismiss)",
+                open_findings[rank].0
+            ),
+        ));
+    }
+    if let Some(draft) = awaiting.first() {
+        steps.push(step(
+            format!("fa draft show {} --json", draft.body.name),
+            format!(
+                "{} draft(s) hold planned intents awaiting promotion by an approver who is not the owner; `{}` holds {}",
+                awaiting.len(),
+                draft.body.name,
+                draft.intents.len()
+            ),
+        ));
+    }
+    if pending_cells > 0 {
+        steps.push(write_step(
             "fa resolve --intent <resolution.json> --json",
             format!(
                 "{pending_cells} register cell(s) carry reserved amounts: resolve the holds that are done"
@@ -715,8 +866,75 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         due_reversals,
         blocked_reversals,
         derived,
-        steps,
+        register_lag,
+        open_drafts: open_drafts.len(),
+        drafts_awaiting_promotion: awaiting.len(),
+        finding_runs,
+        open_findings,
+        steps: rank_for(ctx, &capability, steps),
     })
+}
+
+/// Rank the next steps for the caller (plan §15.3: `fa next` ranks actions
+/// for the caller's capability). The embedded owner grants itself each
+/// command's ops, so its order is the state's. A launch capability (token,
+/// fad session, MCP) runs the steps whose registered bound-route ops it
+/// holds first; the rest follow, naming the ops they need. An Agent profile
+/// never writes the trunk (plan §14.2), so no step that writes the book is
+/// suggested to it.
+fn rank_for(
+    ctx: &Ctx<'_>,
+    capability: &fa_policy::Capability,
+    steps: Vec<NextStep>,
+) -> Vec<NextStep> {
+    if ctx.authority().is_none() {
+        return steps;
+    }
+    let agent = capability.profile() == fa_policy::Profile::Agent;
+    let steps = steps.into_iter().filter(|st| !(agent && st.writes));
+    let Ok(reg) = verbs::registry() else {
+        return steps.collect();
+    };
+    let mut runnable = Vec::new();
+    let mut needing = Vec::new();
+    for st in steps {
+        let words: Vec<String> = st
+            .command
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_string)
+            .collect();
+        let Ok(parsed) = crate::args::parse(&words, &reg.value_flags(), &reg.switches()) else {
+            needing.push(st);
+            continue;
+        };
+        let Some(verb) = parsed.positional.first() else {
+            needing.push(st);
+            continue;
+        };
+        let missing: Vec<&str> = crate::cli::bound_command_rule(verb, &parsed)
+            .map(|(ops, _)| {
+                ops.iter()
+                    .filter(|op| !capability.holds(**op))
+                    .map(|op| op.name())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if missing.is_empty() {
+            runnable.push(st);
+        } else {
+            needing.push(NextStep {
+                why: format!(
+                    "{} (needs {}, which this capability does not hold)",
+                    st.why,
+                    missing.join(", ")
+                ),
+                ..st
+            });
+        }
+    }
+    runnable.extend(needing);
+    runnable
 }
 
 fn no_arguments(args: &Args, example: &str) -> Result<(), Fail> {
@@ -761,6 +979,28 @@ pub(crate) fn triage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         health,
         sv.daemon
     );
+    let open_findings: usize = sv.open_findings.iter().map(|(_, n)| n).sum();
+    text.push_str(&format!(
+        "\ndrafts: {} open, {} awaiting promotion · findings: {} open across {} run(s) ({}) · register lag: {}",
+        sv.open_drafts,
+        sv.drafts_awaiting_promotion,
+        open_findings,
+        sv.finding_runs,
+        sv.open_findings
+            .iter()
+            .map(|(name, n)| format!("{name} {n}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        if sv.register_lag.is_empty() {
+            "no materialized period".to_string()
+        } else {
+            sv.register_lag
+                .iter()
+                .map(|lag| format!("{} {} entr(ies)", lag.period, lag.lag_entries))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    ));
     for st in &sv.steps {
         text.push_str(&format!("\nnext: {}   ({})", st.command, st.why));
     }
@@ -788,6 +1028,25 @@ pub(crate) fn triage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (
                 "derived",
                 Json::Arr(sv.derived.iter().map(Check::json).collect()),
+            ),
+            (
+                "register_watermark_lag",
+                Json::Arr(sv.register_lag.iter().map(RegisterLag::json).collect()),
+            ),
+            ("open_drafts", Json::Int(sv.open_drafts as i128)),
+            (
+                "drafts_awaiting_promotion",
+                Json::Int(sv.drafts_awaiting_promotion as i128),
+            ),
+            ("finding_runs", Json::Int(i128::from(sv.finding_runs))),
+            (
+                "open_findings_by_severity",
+                Json::Obj(
+                    sv.open_findings
+                        .iter()
+                        .map(|(name, n)| ((*name).to_string(), Json::Int(*n as i128)))
+                        .collect(),
+                ),
             ),
         ],
         &text,

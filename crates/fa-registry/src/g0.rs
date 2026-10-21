@@ -2951,4 +2951,80 @@ mod tests {
         let err = Formats::parse(&bad_ads).expect_err("ADS without round_trip_identity");
         assert!(err.to_string().contains("round_trip_identity"), "{err}");
     }
+
+    /// The Reverses target-class table admits or refuses every entry class
+    /// explicitly (plan §8.2: "a catch-all side-swap is prohibited"); the
+    /// kernel's reversal admission reads it (fa-s3wz).
+    #[test]
+    fn reversal_target_table_is_exhaustive() {
+        let classes = crate::EntryClasses::embedded().expect("entry_classes.toml");
+        let table = SupersessionKinds::embedded(&classes).expect("supersession_kinds.toml");
+        for class in &classes.rows {
+            let rows: Vec<_> = table
+                .target_classes
+                .iter()
+                .filter(|row| row.class == class.name)
+                .collect();
+            assert_eq!(rows.len(), 1, "`{}` needs exactly one row", class.name);
+            println!("{:>22}  {}", class.name, rows[0].reversible);
+        }
+        assert_eq!(table.target_classes.len(), classes.rows.len());
+        // Today's admitted set: the posted classes with a registered negation
+        // law, and Resolution only where it posted.
+        let admitted = |verdict: &str| -> Vec<&str> {
+            table
+                .target_classes
+                .iter()
+                .filter(|row| row.reversible == verdict)
+                .map(|row| row.class.as_str())
+                .collect()
+        };
+        assert_eq!(
+            admitted("yes"),
+            [
+                "Original",
+                "Reversal",
+                "Replacement",
+                "Reclassification",
+                "Adjusting",
+                "Allocation",
+                "Revision",
+                "Restatement",
+                "PriorPeriodAdjustment"
+            ]
+        );
+        assert_eq!(admitted("posts_only"), ["Resolution"]);
+
+        // Planted negative: a new entry class without a row is refused.
+        let probe = format!(
+            "{}\n[[class]]\ntag = 250\nname = \"Probe\"\nkind = \"control\"\nsupersession = \"none\"\n",
+            crate::ENTRY_CLASSES
+        );
+        let with_probe = crate::EntryClasses::parse(&probe).expect("probe class parses");
+        let err = SupersessionKinds::parse(SUPERSESSION_KINDS_TOML, &with_probe)
+            .expect_err("a class without a target_class row");
+        assert!(
+            err.to_string()
+                .contains("missing [[target_class]] row for entry class `Probe`"),
+            "{err}"
+        );
+        // Planted negative: a removed row is refused the same way.
+        let without_closing = SUPERSESSION_KINDS_TOML.replacen(
+            "[[target_class]]\nclass = \"Closing\"\n",
+            "[[target_class]]\nclass = \"Closing_gone\"\n",
+            1,
+        );
+        assert_ne!(without_closing, SUPERSESSION_KINDS_TOML);
+        assert!(SupersessionKinds::parse(&without_closing, &classes).is_err());
+        // Planted negative: a control class cannot be admitted.
+        let control_admitted = SUPERSESSION_KINDS_TOML.replacen(
+            "class = \"TimeControl\"\nreversible = \"no\"",
+            "class = \"TimeControl\"\nreversible = \"yes\"",
+            1,
+        );
+        assert_ne!(control_admitted, SUPERSESSION_KINDS_TOML);
+        let err = SupersessionKinds::parse(&control_admitted, &classes)
+            .expect_err("a reversible control class");
+        assert!(err.to_string().contains("cannot be reversible"), "{err}");
+    }
 }

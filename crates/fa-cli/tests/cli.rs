@@ -8350,6 +8350,137 @@ fn policy_refusal_fixes_name_only_registered_verbs_and_flags() {
     assert!(agent.cite().contains("fa-s7x"), "{}", agent.cite());
 }
 
+/// Every refusal-catalog fix template, and every reversal target class's
+/// corrective route (the Reverses refusal's fix), names only registered
+/// verbs or aliases, and a registered subcommand wherever its verb has
+/// subcommands (fa-s3wz; plan §15.3 "errors that teach"): a fix that points
+/// at a surface this build does not have is not a fix.
+#[test]
+fn refusal_catalog_fixes_name_only_registered_commands() {
+    let reg = registry().expect("verbs.toml");
+    let catalog =
+        fa_registry::refusal_catalog::RefusalCatalog::embedded().expect("refusal_catalog.toml");
+    let classes = fa_registry::EntryClasses::embedded().expect("entry_classes.toml");
+    let targets = fa_registry::g0::SupersessionKinds::embedded(&classes)
+        .expect("supersession_kinds.toml")
+        .target_classes;
+    // Prose, not commands: "replay with the fa executable whose registries..."
+    // and "`fa` sends the command to the serving fad".
+    const PROSE: &[&str] = &["fa executable", "fa sends"];
+    let word = |t: &str| {
+        t.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '<'))
+            .to_string()
+    };
+    let unregistered = |fix: &str| -> Vec<String> {
+        let tokens: Vec<String> = fix.split_whitespace().map(word).collect();
+        let mut bad = Vec::new();
+        for (i, t) in tokens.iter().enumerate() {
+            let next = tokens.get(i + 1).map_or("", String::as_str);
+            if t != "fa" || PROSE.contains(&format!("fa {next}").as_str()) {
+                continue;
+            }
+            let after = tokens.get(i + 2).map_or("", String::as_str);
+            // An alias that expands to a verb and its subcommand (`fa hold`
+            // is `fa document hold`) leaves no subcommand to check.
+            let (name, sub) = match reg.alias(next).map(|a| a.expands.as_slice()) {
+                Some([verb]) => (verb.as_str(), after),
+                Some([verb, ..]) => (verb.as_str(), ""),
+                Some([]) | None => (next, after),
+            };
+            let Some(verb) = reg.verb(name) else {
+                bad.push(format!("fa {next}"));
+                continue;
+            };
+            let names_a_sub = sub.starts_with(|c: char| c.is_ascii_lowercase());
+            if !verb.subcommands.is_empty()
+                && names_a_sub
+                && !verb.subcommands.iter().any(|s| s == sub)
+            {
+                bad.push(format!("fa {next} {sub}"));
+            }
+        }
+        bad
+    };
+    let mut commands = 0;
+    let fixes = catalog
+        .rows
+        .iter()
+        .map(|row| (row.code.as_str(), row.fix.as_str()))
+        .chain(
+            targets
+                .iter()
+                .map(|row| (row.class.as_str(), row.corrective_route.as_str())),
+        );
+    for (whose, fix) in fixes {
+        assert!(
+            unregistered(fix).is_empty(),
+            "{whose} fix names {:?}, which verbs.toml does not register: {fix}",
+            unregistered(fix)
+        );
+        commands += fix.matches("fa ").count();
+    }
+    assert!(commands >= 45, "the scan is not vacuous: {commands}");
+    // Planted negatives: an unregistered verb, a subcommand the verb does not
+    // have, and the route this bead replaced. An alias still passes.
+    assert!(
+        !reg.verb("period")
+            .unwrap()
+            .subcommands
+            .iter()
+            .any(|s| s == "freeze")
+    );
+    assert_eq!(
+        unregistered(
+            "consolidate with fa concordat merge, or fa period freeze FY2026-P03, or advance the watermark via `fa sweep`"
+        ),
+        ["fa concordat", "fa period freeze", "fa sweep"]
+    );
+    assert!(unregistered("release it with `fa hold release <hold-vid>`").is_empty());
+}
+
+/// A legal entity in another functional currency is refused at book
+/// creation, and the fix it prints creates that entity's own book (fa-s3wz).
+#[test]
+fn a_functional_unit_refusal_prints_a_book_create_that_runs() -> std::io::Result<()> {
+    let dir = tmp("functional-unit-fix")?;
+    let (code, out, err) = fa(
+        Some(&dir.join("group")),
+        &[
+            "book",
+            "create",
+            "--name",
+            "Group",
+            "--base-unit",
+            "USD",
+            "--entity",
+            "EU:EU Sub:EUR",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 3, "{out}\n{err}");
+    let refusal = doc(&out);
+    assert_eq!(text(&refusal, "refusal_id"), "FA-REF-003");
+    let fix = text(&refusal, "fix");
+    assert!(
+        !fix.contains("Concordat") && fix.contains("not available yet (fa-76hy)"),
+        "{fix}"
+    );
+    let command = fix
+        .split_once("(fa ")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(command, _)| command)
+        .unwrap_or_else(|| panic!("no command in {fix}"));
+    let argv: Vec<String> = command
+        .split_whitespace()
+        .map(|t| t.replace("<name>", "EU-Sub"))
+        .chain(["--json".to_string()])
+        .collect();
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, out, err) = fa(Some(&dir.join("eu")), &argv);
+    assert_eq!(code, 0, "the printed fix {argv:?} must run:\n{out}\n{err}");
+    Ok(())
+}
+
 #[test]
 fn budget_caps_bound_each_period_and_balancing_moves_what_the_limit_admits() -> std::io::Result<()>
 {
@@ -14171,6 +14302,49 @@ fn explain_lineage_cli_reports_supersession_component_and_net_effect() -> std::i
     for cell in arr(&after, "net_effect") {
         assert_eq!(text(cell, "net"), "0.00 USD");
     }
+    // Neither the original nor its reversal reverses a reversal.
+    for step in steps {
+        assert_eq!(step.get("reverses_reversal"), Some(&Json::Bool(false)));
+    }
+
+    // Reversing the reversal revives the original by parity, and the
+    // lineage flags it (plan §8.2; fa-s3wz).
+    let revived = doc(&ok(&[
+        "reverse",
+        &rev_vid,
+        "--reason",
+        "WrongAmount",
+        "--json",
+    ]));
+    let revived_vid = text(&revived, "vid").to_string();
+    let again = doc(&ok(&["explain", "lineage", &revived_vid, "--json"]));
+    assert_eq!(text(&again, "root_entry"), orig_vid);
+    assert_eq!(again.get("fully_reversed"), Some(&Json::Bool(false)));
+    let steps = arr(&again, "steps");
+    assert_eq!(steps.len(), 3);
+    let flags: Vec<_> = steps
+        .iter()
+        .map(|step| {
+            (
+                text(step, "entry").to_string(),
+                step.get("reverses_reversal"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            (orig_vid.clone(), Some(&Json::Bool(false))),
+            (rev_vid, Some(&Json::Bool(false))),
+            (revived_vid, Some(&Json::Bool(true))),
+        ]
+    );
+    assert!(
+        arr(&again, "net_effect")
+            .iter()
+            .all(|cell| text(cell, "net") != "0.00 USD"),
+        "the original's effect is back"
+    );
 
     Ok(())
 }
@@ -15852,7 +16026,8 @@ fn book_create_entity_functional_unit_guard_e2e() -> std::io::Result<()> {
     let bad_book = dir.join("bad-book");
 
     // 1. `fa book create` with an entity whose functional unit differs from base_unit exits 3
-    // with FA-REF-003 naming the Concordat fix and creates no directory or key file.
+    // with FA-REF-003 naming the separate book's `fa book create` and creates no
+    // directory or key file.
     let (code, out, _) = fa(
         Some(&bad_book),
         &[
@@ -15875,8 +16050,10 @@ fn book_create_entity_functional_unit_guard_e2e() -> std::io::Result<()> {
     assert_eq!(text(&err, "class"), "refusal", "{out}");
     let fix = text(&err, "fix");
     assert!(
-        fix.contains("Concordat") && fix.contains("--base-unit EUR"),
-        "expected fix to name Concordat and --base-unit EUR, got: {fix}"
+        fix.contains("fa book create")
+            && fix.contains("--base-unit EUR")
+            && !fix.contains("Concordat"),
+        "expected fix to name `fa book create --base-unit EUR`, got: {fix}"
     );
     assert!(
         !bad_book.exists(),

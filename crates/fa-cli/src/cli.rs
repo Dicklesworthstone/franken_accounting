@@ -1710,10 +1710,22 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
         if args.switch("--help") {
             return emit_help(out, reg, None);
         }
+        let here = here(args, ctx.files.cwd.as_deref(), reg);
+        let text = format!("{}{}", here.text(), triage_text());
         out.event(
             "triage",
-            vec![("version", s(VERSION)), ("text", s(triage_text()))],
-            triage_text().trim_end(),
+            vec![
+                ("version", s(VERSION)),
+                ("text", s(&text)),
+                (
+                    "book",
+                    here.book
+                        .as_ref()
+                        .map_or(Json::Null, |dir| s(dir.display().to_string())),
+                ),
+                ("daemon", here.daemon.map_or(Json::Null, s)),
+            ],
+            text.trim_end(),
         );
         return Ok(());
     };
@@ -1862,7 +1874,10 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
 
 /// The deciding `[[bound]]` rule's ops, and whether the command judges the
 /// session's scope caveats against what it reaches (`reach = "judged"`).
-fn bound_command_rule(verb: &str, args: &Args) -> Option<(&'static [fa_policy::Op], bool)> {
+pub(crate) fn bound_command_rule(
+    verb: &str,
+    args: &Args,
+) -> Option<(&'static [fa_policy::Op], bool)> {
     let reg = crate::verbs::registry().ok()?;
     let present = |flag: &str| args.switch(flag) || !args.flag_all(flag).is_empty();
     let value = |flag: &str| args.flag(flag).map(str::to_string);
@@ -2501,6 +2516,77 @@ pub(crate) fn unhandled(verb: &str, sub: Option<&str>) -> Fail {
 // ---------------------------------------------------------------------------
 // Docs
 // ---------------------------------------------------------------------------
+
+/// Where bare `fa` stands (plan §15.3): the book this invocation would use
+/// (`--book`, else FA_BOOK, else the working directory when it is a book)
+/// and whether a fad serves it. Nothing is opened and no lease is taken: the
+/// book is a directory probe, the daemon its lease file and one status call.
+struct Here {
+    /// The named directory, or the working directory when it is a book.
+    book: Option<PathBuf>,
+    /// serving | absent | not answering; null when `book` is not a book
+    /// directory (genesis created no store there).
+    daemon: Option<&'static str>,
+}
+
+fn here(args: &Args, cwd: Option<&Path>, reg: &Registry) -> Here {
+    use crate::lease::Lease;
+    let book = named_book(args, cwd).or_else(|| {
+        cwd.filter(|dir| Lease::is_book_dir(dir))
+            .map(Path::to_path_buf)
+    });
+    let daemon = book
+        .as_deref()
+        .filter(|dir| Lease::is_book_dir(dir))
+        .map(|dir| {
+            if Lease::holder(dir, &reg.daemon.lease).is_none() {
+                return "absent";
+            }
+            let status = crate::wire::Request {
+                op: crate::wire::Op::Status,
+                argv: vec!["--json".to_string()],
+                cwd: None,
+                stdin: None,
+                token: None,
+            };
+            match crate::client::call(&dir.join(&reg.daemon.socket), &status, &reg.daemon) {
+                Ok(_) => "serving",
+                Err(_) => "not answering",
+            }
+        });
+    Here { book, daemon }
+}
+
+impl Here {
+    fn text(&self) -> String {
+        match (&self.book, self.daemon) {
+            (Some(dir), Some(daemon)) => {
+                let dir = dir.display();
+                let fad = match daemon {
+                    "serving" => "a fad serves it: commands route through it".to_string(),
+                    "absent" => "no fad serves it: commands open it directly".to_string(),
+                    _ => format!(
+                        "its fad lease is held but no fad answers: fad status --book {dir} --json"
+                    ),
+                };
+                format!(
+                    "here\n  book {dir} ({fad})\n  \
+                     fa triage --book {dir} --json   (state and what needs attention)\n  \
+                     fa next --book {dir} --json   (the most urgent step)\n  \
+                     fa doctor --book {dir} --json   (every health check and its fix)\n  \
+                     fa period list --book {dir} --json\n  \
+                     fa capabilities --json\n\n"
+                )
+            }
+            (Some(dir), None) => format!(
+                "here\n  {} is not a book: fa book create --book <dir> --name \"My Co\" makes one\n\n",
+                dir.display()
+            ),
+            (None, _) => "here\n  no book: pass --book <dir> or set FA_BOOK (the working directory is not a book)\n\n"
+                .to_string(),
+        }
+    }
+}
 
 fn triage_text() -> String {
     format!(
@@ -15623,6 +15709,7 @@ fn explain_lineage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("effective_date", s(st.effective_date.render())),
                 ("recorded_at", Json::Int(i128::from(st.recorded_at.0))),
                 ("live", Json::Bool(st.live)),
+                ("reverses_reversal", Json::Bool(st.reverses_reversal)),
                 ("supersedes", Json::Arr(supersedes)),
             ])
         })

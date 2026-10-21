@@ -99,8 +99,8 @@ pub fn check_entity_functional_unit(
             ),
             "plan §0.4 decision 1, §4.1 LegalEntity.functional_unit",
             format!(
-                "create a separate book with `--base-unit {}` for legal entity `{entity_code}` and consolidate via Concordat, or set `{entity_code}`'s functional_unit to `{base_code}`",
-                ent_unit.code
+                "keep legal entity `{entity_code}` in its own book (fa book create --name <name> --base-unit {unit} --entity {entity_code}:<name>:{unit}), or declare its functional unit as `{base_code}`; consolidation across books is not available yet (fa-76hy)",
+                unit = ent_unit.code
             ),
         ));
     }
@@ -301,7 +301,7 @@ impl BookSpec {
             }
             if e.functional_unit != self.base_unit {
                 return Err(format!(
-                    "legal entity `{}` has functional_unit {} != book base_unit {}; one functional currency per book (plan §0.4 decision 1): create a separate book for `{}` and consolidate via Concordat",
+                    "legal entity `{}` has functional_unit {} != book base_unit {}; one functional currency per book (plan §0.4 decision 1): keep `{}` in its own book (fa book create --base-unit <its unit>); consolidation across books is not available yet (fa-76hy)",
                     e.code, e.functional_unit.0, self.base_unit.0, e.code
                 ));
             }
@@ -1335,7 +1335,9 @@ mod tests {
             };
             assert!(twice.validate().unwrap_err().contains("twice"));
             // Planted negative: a LegalEntity whose functional_unit differs from
-            // Book.base_unit is refused with the Concordat fix (plan §0.4 decision 1).
+            // Book.base_unit is refused (plan §0.4 decision 1). The fix names
+            // the command that runs today, never a consolidation surface that
+            // does not exist yet (fa-s3wz; fa-76hy).
             let units = UnitRegistry::with_defaults();
             assert!(multi.validate_functional_units(&units).is_ok());
             let mismatched = BookSpec {
@@ -1347,11 +1349,22 @@ mod tests {
                 ..spec.clone()
             };
             let err_msg = mismatched.validate().unwrap_err();
-            assert!(err_msg.contains("Concordat"), "{err_msg}");
+            assert!(
+                err_msg.contains("fa book create --base-unit") && !err_msg.contains("Concordat"),
+                "{err_msg}"
+            );
             let refusal = mismatched.validate_functional_units(&units).unwrap_err();
             assert_eq!(refusal.code, code::UNIT_POLICY);
             assert_eq!(refusal.exit, exit::REFUSAL);
-            assert!(refusal.fix.contains("Concordat"), "{}", refusal.fix);
+            let eur = &units.get(UnitId(1)).unwrap().code;
+            assert!(
+                refusal.fix.contains(&format!(
+                    "fa book create --name <name> --base-unit {eur} --entity EU:<name>:{eur}"
+                )) && refusal.fix.contains("not available yet (fa-76hy)")
+                    && !refusal.fix.contains("Concordat"),
+                "{}",
+                refusal.fix
+            );
             // A declared policy is one trailing byte; the bytes without it
             // are unchanged, and an unregistered tag is refused.
             let declared = BookSpec {
