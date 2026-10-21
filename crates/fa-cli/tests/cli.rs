@@ -7106,6 +7106,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "--policy",
         &cf_indirect,
     ]);
+    run2(&["statement", "lint", "--definition", "balance-sheet"]);
     run2(&[
         "statement",
         "diff",
