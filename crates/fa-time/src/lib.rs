@@ -33,7 +33,10 @@ pub mod recurrence;
 pub mod selector;
 
 pub use business::{AdjustedOccurrence, BusinessCalendar, BusinessDayConvention, BusinessDayError};
-pub use calendar::{CalendarKind, FiscalCalendar, WeekPattern, YearEndRule};
+pub use calendar::{
+    CalendarKind, CustomYear, FiscalCalendar, MAX_CUSTOM_PERIODS, MAX_CUSTOM_YEARS, WeekPattern,
+    YearEndRule,
+};
 pub use date::{DateDay, DateError, MonthEndPolicy, Weekday};
 pub use instant::{
     InstantParseError, InstantResolution, InstantResolutionError, TimeObservation, UtcInstant,

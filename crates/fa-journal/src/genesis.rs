@@ -8,8 +8,8 @@ use fa_model::{
 };
 use fa_money::{UnitId, UnitRegistry};
 use fa_time::{
-    CalendarKind, DateDay, FiscalCalendar, PeriodDef, PeriodKind, PeriodState, WeekPattern,
-    Weekday, YearEndRule,
+    CalendarKind, CustomYear, DateDay, FiscalCalendar, MAX_CUSTOM_PERIODS, MAX_CUSTOM_YEARS,
+    PeriodDef, PeriodKind, PeriodState, WeekPattern, Weekday, YearEndRule,
 };
 use fgdb::{Database, WriteBatch};
 use fgdb_types::context::PurposeContexts;
@@ -226,6 +226,15 @@ impl BookSpec {
                 w.u8(2);
                 encode_rule(&mut w, end_rule);
             }
+            // `3u8 ‖ list(i32 fiscal_year ‖ list(i32 bound))`: each declared
+            // year with its normal periods' boundaries (plan §7.2 Custom).
+            CalendarKind::Custom { years } => {
+                w.u8(3).list(years, |w, year| {
+                    w.i32(year.fiscal_year).list(&year.bounds, |w, bound| {
+                        w.i32(bound.0);
+                    });
+                });
+            }
         }
         // Trailing, and only when declared: a book without a policy,
         // entities or an opening date keeps the bytes it always had.
@@ -388,6 +397,16 @@ impl BookSpec {
                 }
                 2 => CalendarKind::Week5253 {
                     end_rule: decode_rule(&mut r)?,
+                },
+                3 => CalendarKind::Custom {
+                    years: r.list(MAX_CUSTOM_YEARS, "calendar.years", |r| {
+                        Ok(CustomYear {
+                            fiscal_year: r.i32("calendar.fiscal_year")?,
+                            bounds: r.list(MAX_CUSTOM_PERIODS + 1, "calendar.bounds", |r| {
+                                Ok(DateDay(r.i32("calendar.bound")?))
+                            })?,
+                        })
+                    })?,
                 },
                 t => return Err(r.bad_tag("calendar.kind", t)),
             };
@@ -1277,6 +1296,27 @@ mod tests {
                 },
             },
             CalendarKind::Week5253 { end_rule: rule },
+            // Plan §7.2 Custom (fa-94qd): tag 3, each declared year with its
+            // normal periods' boundaries.
+            CalendarKind::Custom {
+                years: vec![
+                    CustomYear {
+                        fiscal_year: 2025,
+                        bounds: vec![
+                            DateDay::from_ymd(2025, 11, 1).unwrap(),
+                            DateDay::from_ymd(2026, 1, 4).unwrap(),
+                        ],
+                    },
+                    CustomYear {
+                        fiscal_year: 2026,
+                        bounds: vec![
+                            DateDay::from_ymd(2026, 1, 4).unwrap(),
+                            DateDay::from_ymd(2026, 7, 5).unwrap(),
+                            DateDay::from_ymd(2027, 1, 3).unwrap(),
+                        ],
+                    },
+                ],
+            },
         ] {
             let spec = BookSpec {
                 book_id: Id128([4; 16]),

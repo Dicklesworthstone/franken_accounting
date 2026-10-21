@@ -46,6 +46,94 @@ pub enum CalendarKind {
     /// Thirteen four-week periods, 52 or 53 weeks; the 53rd week joins the
     /// last period.
     Week5253 { end_rule: YearEndRule },
+    /// An explicit period list (plan §7.2 `Custom`): consecutive declared
+    /// fiscal years, each with its normal periods' boundaries. Only declared
+    /// years exist.
+    Custom { years: Vec<CustomYear> },
+}
+
+/// The most fiscal years a custom calendar declares.
+pub const MAX_CUSTOM_YEARS: usize = 200;
+/// The most normal periods one custom fiscal year holds.
+pub const MAX_CUSTOM_PERIODS: usize = 53;
+
+/// One declared fiscal year of a custom calendar. Normal period `i`
+/// (1-based) is `[bounds[i - 1], bounds[i])`, so the periods are contiguous
+/// and cannot overlap; the year runs from `bounds[0]` through the day before
+/// its last bound.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CustomYear {
+    pub fiscal_year: i32,
+    pub bounds: Vec<DateDay>,
+}
+
+impl CustomYear {
+    /// The year from inclusive `(start, end)` periods, each starting the day
+    /// after the previous one ends.
+    pub fn from_periods(
+        fiscal_year: i32,
+        periods: &[(DateDay, DateDay)],
+    ) -> Result<Self, DateError> {
+        let mut bounds = Vec::with_capacity(periods.len() + 1);
+        for (i, (start, end)) in periods.iter().enumerate() {
+            if let Some(last) = bounds.last()
+                && last != start
+            {
+                return Err(DateError::InvalidCalendar(format!(
+                    "fiscal year {fiscal_year} period {} starts {}, but the period before it ends {}: periods are contiguous and in order",
+                    i + 1,
+                    start.render(),
+                    last.pred()?.render()
+                )));
+            }
+            if end < start {
+                return Err(DateError::InvalidCalendar(format!(
+                    "fiscal year {fiscal_year} period {} ends {} before it starts {}",
+                    i + 1,
+                    end.render(),
+                    start.render()
+                )));
+            }
+            if bounds.is_empty() {
+                bounds.push(*start);
+            }
+            bounds.push(end.succ()?);
+        }
+        let year = Self {
+            fiscal_year,
+            bounds,
+        };
+        year.validate()?;
+        Ok(year)
+    }
+
+    fn validate(&self) -> Result<(), DateError> {
+        let periods = self.bounds.len().saturating_sub(1);
+        if !(1..=MAX_CUSTOM_PERIODS).contains(&periods) {
+            return Err(DateError::InvalidCalendar(format!(
+                "fiscal year {} declares {periods} periods; a custom year holds 1..={MAX_CUSTOM_PERIODS}",
+                self.fiscal_year
+            )));
+        }
+        if !self.bounds.windows(2).all(|w| w[0] < w[1]) {
+            return Err(DateError::InvalidCalendar(format!(
+                "fiscal year {}'s period boundaries are not strictly ascending: every period is at least one day, in order",
+                self.fiscal_year
+            )));
+        }
+        Ok(())
+    }
+
+    /// First and last civil day (inclusive).
+    fn span(&self) -> Result<(DateDay, DateDay), DateError> {
+        match (self.bounds.first(), self.bounds.last()) {
+            (Some(first), Some(after)) => Ok((*first, after.pred()?)),
+            _ => Err(DateError::InvalidCalendar(format!(
+                "fiscal year {} declares no periods",
+                self.fiscal_year
+            ))),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +168,7 @@ impl FiscalCalendar {
                     | YearEndRule::WeekdayNearestEnd { month, .. } => *month,
                 }
             }
+            CalendarKind::Custom { years } => return validate_custom(years),
         };
         if !(1..=12).contains(&month) {
             return Err(DateError::InvalidYmd {
@@ -134,10 +223,26 @@ impl FiscalCalendar {
         Ok(cal)
     }
 
+    /// A custom calendar over explicitly declared fiscal years (plan §7.2).
+    pub fn custom(
+        id: &str,
+        years: Vec<CustomYear>,
+        adjustment_periods: u8,
+    ) -> Result<Self, DateError> {
+        let cal = Self {
+            id: id.into(),
+            kind: CalendarKind::Custom { years },
+            adjustment_periods,
+        };
+        cal.validate()?;
+        Ok(cal)
+    }
+
     /// First and last civil day (inclusive) of fiscal year `fy`.
     pub fn year_bounds(&self, fy: i32) -> Result<(DateDay, DateDay), DateError> {
         self.validate()?;
         match &self.kind {
+            CalendarKind::Custom { years } => custom_year(years, fy)?.span(),
             CalendarKind::Monthly12 { year_start_month } => {
                 let m = *year_start_month;
                 let start = if m == 1 {
@@ -237,6 +342,20 @@ impl FiscalCalendar {
                 }
                 debug_assert_eq!(cursor, end.succ()?);
             }
+            CalendarKind::Custom { years } => {
+                let year = custom_year(years, fy)?;
+                for (i, w) in year.bounds.windows(2).enumerate() {
+                    let ordinal = u16::try_from(i + 1).map_err(|_| DateError::OutOfRange)?;
+                    out.push(PeriodDef {
+                        code: format!("FY{fy}-P{ordinal:02}"),
+                        fiscal_year: fy,
+                        ordinal,
+                        kind: PeriodKind::Normal,
+                        start: w[0],
+                        end: w[1],
+                    });
+                }
+            }
         }
         let normal_count = out.len() as u16;
         out.push(PeriodDef {
@@ -271,6 +390,16 @@ impl FiscalCalendar {
     /// The fiscal year containing `day`.
     pub fn fiscal_year_of(&self, day: DateDay) -> Result<i32, DateError> {
         self.validate()?;
+        if let CalendarKind::Custom { years } = &self.kind {
+            return years
+                .iter()
+                .find(|y| {
+                    y.bounds.first().is_some_and(|f| *f <= day)
+                        && y.bounds.last().is_some_and(|l| day < *l)
+                })
+                .map(|y| y.fiscal_year)
+                .ok_or(DateError::OutOfRange);
+        }
         let (y, m, _) = day.ymd();
         let guess = match &self.kind {
             CalendarKind::Monthly12 { year_start_month } => {
@@ -296,6 +425,51 @@ impl FiscalCalendar {
         }
         Err(DateError::OutOfRange)
     }
+}
+
+/// A custom calendar's declared years: `1..=MAX_CUSTOM_YEARS`, each valid,
+/// numbered consecutively, and each starting the day after the one before
+/// it ends.
+fn validate_custom(years: &[CustomYear]) -> Result<(), DateError> {
+    if !(1..=MAX_CUSTOM_YEARS).contains(&years.len()) {
+        return Err(DateError::InvalidCalendar(format!(
+            "a custom calendar declares 1..={MAX_CUSTOM_YEARS} fiscal years, not {}",
+            years.len()
+        )));
+    }
+    for year in years {
+        year.validate()?;
+    }
+    for w in years.windows(2) {
+        if w[0].fiscal_year.checked_add(1) != Some(w[1].fiscal_year) {
+            return Err(DateError::InvalidCalendar(format!(
+                "custom fiscal years are consecutive: {} is followed by {}",
+                w[0].fiscal_year, w[1].fiscal_year
+            )));
+        }
+        if w[0].bounds.last() != w[1].bounds.first() {
+            return Err(DateError::InvalidCalendar(format!(
+                "fiscal year {} starts {}, not the day after fiscal year {} ends ({}): custom years are contiguous",
+                w[1].fiscal_year,
+                w[1].bounds.first().map_or_else(String::new, |d| d.render()),
+                w[0].fiscal_year,
+                w[0].span()?.1.render()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The declared custom year `fy`; refused, naming the declared range, when
+/// the calendar does not declare it.
+fn custom_year(years: &[CustomYear], fy: i32) -> Result<&CustomYear, DateError> {
+    years.iter().find(|y| y.fiscal_year == fy).ok_or_else(|| {
+        DateError::InvalidCalendar(format!(
+            "this custom calendar declares fiscal years {}..={}, not {fy}",
+            years.first().map_or(0, |y| y.fiscal_year),
+            years.last().map_or(0, |y| y.fiscal_year)
+        ))
+    })
 }
 
 fn year_end(rule: YearEndRule, fy: i32) -> Result<DateDay, DateError> {
@@ -529,6 +703,107 @@ mod tests {
                 assert_eq!(cal.year_bounds(bad_fy), Err(DateError::OutOfRange));
                 assert_eq!(cal.periods_for_year(bad_fy), Err(DateError::OutOfRange));
             }
+        }
+    }
+
+    /// A short first year, then a thirteen-period year of four-week periods.
+    fn custom_years() -> Vec<CustomYear> {
+        let day = |y, m, d| DateDay::from_ymd(y, m, d).unwrap();
+        let stub = CustomYear::from_periods(
+            2025,
+            &[
+                (day(2025, 11, 1), day(2025, 11, 30)),
+                (day(2025, 12, 1), day(2026, 1, 3)),
+            ],
+        )
+        .unwrap();
+        let mut periods = Vec::new();
+        let mut start = day(2026, 1, 4);
+        for _ in 0..13 {
+            let end = start.add_days(27).unwrap();
+            periods.push((start, end));
+            start = end.succ().unwrap();
+        }
+        let thirteen = CustomYear::from_periods(2026, &periods).unwrap();
+        vec![stub, thirteen]
+    }
+
+    #[test]
+    fn custom_calendar_validates_and_generates() {
+        let day = |y, m, d| DateDay::from_ymd(y, m, d).unwrap();
+        let cal = FiscalCalendar::custom("retail13", custom_years(), 1).unwrap();
+        assert_eq!(
+            cal.year_bounds(2025).unwrap(),
+            (day(2025, 11, 1), day(2026, 1, 3))
+        );
+        let (s, e) = cal.year_bounds(2026).unwrap();
+        assert_eq!((s, e), (day(2026, 1, 4), day(2027, 1, 2)));
+        let ps = cal.periods_for_year(2026).unwrap();
+        check_contiguous(&ps, s, e);
+        let normal: Vec<&PeriodDef> = ps.iter().filter(|p| p.kind == PeriodKind::Normal).collect();
+        assert_eq!(normal.len(), 13);
+        assert_eq!(normal[12].code, "FY2026-P13");
+        assert!(normal.iter().all(|p| p.end.0 - p.start.0 == 28));
+        let codes: Vec<&str> = ps[13..].iter().map(|p| p.code.as_str()).collect();
+        assert_eq!(codes, ["FY2026-OPEN", "FY2026-A1", "FY2026-CLOSE"]);
+        for (d, fy) in [
+            (day(2025, 11, 1), 2025),
+            (day(2026, 1, 3), 2025),
+            (day(2026, 1, 4), 2026),
+            (day(2027, 1, 2), 2026),
+        ] {
+            assert_eq!(cal.fiscal_year_of(d).unwrap(), fy, "{}", d.render());
+        }
+        assert_eq!(
+            cal.fiscal_year_of(day(2027, 1, 3)),
+            Err(DateError::OutOfRange)
+        );
+        assert_eq!(
+            cal.fiscal_year_of(day(2025, 10, 31)),
+            Err(DateError::OutOfRange)
+        );
+        let undeclared = cal.year_bounds(2027).unwrap_err().to_string();
+        assert!(undeclared.contains("2025..=2026"), "{undeclared}");
+        assert!(cal.periods_for_year(2024).is_err());
+
+        // Planted negatives: overlapping, gapped and reversed periods; years
+        // out of order, not consecutive, or not contiguous; too many periods.
+        let a = day(2026, 1, 1);
+        for (what, periods) in [
+            (
+                "overlap",
+                vec![(a, day(2026, 1, 10)), (day(2026, 1, 10), day(2026, 1, 20))],
+            ),
+            (
+                "gap",
+                vec![(a, day(2026, 1, 10)), (day(2026, 1, 12), day(2026, 1, 20))],
+            ),
+            ("reversed", vec![(day(2026, 1, 10), a)]),
+            ("empty", vec![]),
+        ] {
+            assert!(CustomYear::from_periods(2026, &periods).is_err(), "{what}");
+        }
+        let many: Vec<(DateDay, DateDay)> = (0..=MAX_CUSTOM_PERIODS as i32)
+            .map(|i| (a.add_days(i).unwrap(), a.add_days(i).unwrap()))
+            .collect();
+        assert!(CustomYear::from_periods(2026, &many).is_err(), "54 periods");
+        let [stub, thirteen] = <[CustomYear; 2]>::try_from(custom_years()).unwrap();
+        let skipped = CustomYear {
+            fiscal_year: 2027,
+            ..thirteen.clone()
+        };
+        let shifted = CustomYear {
+            bounds: thirteen.bounds.iter().map(|d| d.succ().unwrap()).collect(),
+            ..thirteen.clone()
+        };
+        for (what, years) in [
+            ("out of order", vec![thirteen.clone(), stub.clone()]),
+            ("not consecutive", vec![stub.clone(), skipped]),
+            ("not contiguous", vec![stub.clone(), shifted]),
+            ("no years", vec![]),
+        ] {
+            let refused = FiscalCalendar::custom("bad", years, 1);
+            assert!(refused.is_err(), "{what}");
         }
     }
 }
