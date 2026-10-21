@@ -1443,17 +1443,27 @@ fn run_scoped(
         out.warn(correction);
     }
     if authority.is_none() {
-        if daemon_files.is_some() && (args.flags.contains_key("--as") || args.switch("--as")) {
-            return finish_into(
-                out,
-                Err(Fail::Refusal(Refusal::new(
-                    fa_journal::refusal::code::CAPABILITY,
-                    fa_journal::exit::SAFETY,
-                    "`--as` is not admitted on the daemon path: fad authenticates callers by capability token, never by unverified `--as` flag",
-                    "plan §14.2, §15.3 (daemon caller authentication; fa-r3q)",
-                    "present a token: fa capability issue --holder <principal> --out <file> … then fa --token <file> …",
-                ))),
-            );
+        if daemon_files.is_some() {
+            let override_flag = ["--as", "--grant"].into_iter().find(|flag| {
+                args.flags.contains_key(*flag) || args.switch(flag)
+            });
+            if let Some(flag) = override_flag {
+                let message = match flag {
+                    "--as" => "`--as` is not admitted on the daemon path: fad authenticates callers by capability token, never by unverified `--as` flag",
+                    "--grant" => "`--grant` is not admitted on the daemon path: fad binds caller authority from a capability token, never from unverified per-request grants",
+                    _ => unreachable!("the daemon override list is closed"),
+                };
+                return finish_into(
+                    out,
+                    Err(Fail::Refusal(Refusal::new(
+                        fa_journal::refusal::code::CAPABILITY,
+                        fa_journal::exit::SAFETY,
+                        message,
+                        "plan §14.2, §15.3 (daemon caller authentication; fa-r3q)",
+                        "present a token: fa capability issue --holder <principal> --out <file> … then fa --token <file> …",
+                    ))),
+                );
+            }
         }
         out.said.borrow_mut().owner_principal =
             Some(args.flag("--as").unwrap_or("operator").to_string());
