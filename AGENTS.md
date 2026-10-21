@@ -185,6 +185,8 @@ We are in early development with **no users**. Do things the **RIGHT** way with 
 bash scripts/check.sh                   # the whole chain, including the non-Rust gates (G0 deliverable)
 ```
 
+**Tier 0, before anything lands on main (fa-1qk0):** `bash scripts/tier0.sh` (`cargo fmt --all --check` plus `cargo check --workspace --all-targets`; exits 0 only on `tier0 PASS`). It proves the tree compiles and is formatted, nothing about tests. An agent without a Rust toolchain dispatches `.github/workflows/tier0.yml` (manual dispatch) on its train branch and lands only on success; "UNRUN" means do not land yet, never land anyway.
+
 or, run piecemeal:
 
 ```bash

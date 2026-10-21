@@ -1,15 +1,15 @@
 name: Tier 0 (format and type-check every target)
 
-# Tier 0 (fa-1qk0): every push and pull request, whatever paths it touches,
-# is formatted and type-checks every target of the workspace. It proves the
-# tree compiles and is formatted, nothing about test results. On 2026-10-20
-# main went red four times from pushes no toolchain had compiled; each break
-# (a private field, a spliced test file, a non-exhaustive match, rustfmt
-# drift) is what this job reports within minutes of the push.
+# Tier 0 (fa-1qk0): the tree is formatted and every target of the workspace
+# type-checks; it proves nothing about test results. This is the hosted
+# recipe of scripts/tier0.sh, for manual dispatch only (AGENTS.md: the
+# project does not use GitHub Actions as a gate). An agent without a Rust
+# toolchain dispatches it on its train branch and lands only on success. On
+# 2026-10-20 main went red four times from pushes no toolchain had compiled:
+# a private field, a spliced test file, a non-exhaustive match, rustfmt drift.
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

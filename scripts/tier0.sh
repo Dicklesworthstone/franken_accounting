@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 # scripts/tier0.sh — Tier 0: the tree is formatted and every target type-checks
-# (bead fa-1qk0). The same two steps run hosted on every push and pull request
-# (.github/workflows/tier0.yml). Tier 0 says nothing about test results.
+# (bead fa-1qk0). .github/workflows/tier0.yml is the same two steps as a
+# hosted recipe for manual dispatch. Tier 0 says nothing about test results.
 # =============================================================================
 # Usage: bash scripts/tier0.sh
 # Prints one verdict line, `tier0 PASS tree=<hash>` or `tier0 FAIL step=<step>
