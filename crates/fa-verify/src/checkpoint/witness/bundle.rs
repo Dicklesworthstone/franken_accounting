@@ -6,10 +6,16 @@
 //! be established first with verify_checkpoint_advance; this check never
 //! replaces or advances the retained pin on its own.
 
+pub mod balances;
+
 use std::fmt;
 
 use super::WitnessedCheckpoint;
-use crate::bundle::{BundleCheck, BundleError, BundleReport, BundleScope, Grade, verify_bundle};
+#[cfg(test)]
+use crate::bundle::verify_bundle;
+use crate::bundle::{
+    BundleCheck, BundleError, BundleReport, BundleScope, Grade, verify_bundle_inspecting_balances,
+};
 
 /// Total encoded bundle plus optional detached receipt, checked before decoding.
 pub const MAX_WITNESSED_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
@@ -81,7 +87,8 @@ impl std::error::Error for WitnessBundleError {
 /// A valid quorum cannot turn a failed, unrun or membership-only predicate
 /// into complete accounting assurance. Account index derivation retains its
 /// explicitly signed (not recomputed) premise. This does not require any
-/// particular balance claims; those expectations belong to verify_balance_for.
+/// particular balance claims; use [`balances::verify_witnessed_bundle_balances_for`]
+/// to require an exact recipient-owned set of stock cells and optional amounts.
 ///
 /// The anchor is sealed by actual signature verification, not constructible
 /// from a public report. Exact checkpoint artifact binding intentionally refuses
@@ -94,6 +101,18 @@ pub fn verify_witnessed_bundle_for(
     anchor: &WitnessedCheckpoint,
     expected: &BundleExpectation,
     receipt: Option<&[u8]>,
+) -> Result<BundleReport, WitnessBundleError> {
+    verify_inspecting_balances(bytes, anchor, expected, receipt, |_, _| {})
+}
+
+// Shared anchor and predicate checks for both APIs. Observations are private
+// until the complete report and the exact recipient binding have been checked.
+fn verify_inspecting_balances(
+    bytes: &[u8],
+    anchor: &WitnessedCheckpoint,
+    expected: &BundleExpectation,
+    receipt: Option<&[u8]>,
+    observe: impl FnMut(usize, crate::BalanceClaim),
 ) -> Result<BundleReport, WitnessBundleError> {
     expected.validate()?;
     if let BundleScope::Entries(leaves) = &expected.scope
@@ -121,8 +140,9 @@ pub fn verify_witnessed_bundle_for(
     // RecipientWitnessPolicy's private constructor always stores publisher first.
     // Reuse all existing independent bundle checks; do not duplicate the codec,
     // signature verification, stock fold, document hashing or receipt transcript.
-    let mut report = verify_bundle(bytes, &anchor.policy.trusted_keys[..1], receipt)
-        .map_err(WitnessBundleError::Bundle)?;
+    let mut report =
+        verify_bundle_inspecting_balances(bytes, &anchor.policy.trusted_keys[..1], receipt, observe)
+            .map_err(WitnessBundleError::Bundle)?;
     let manifest_valid = report
         .checks
         .iter()

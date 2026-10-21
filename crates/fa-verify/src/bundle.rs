@@ -122,7 +122,7 @@ pub const COMPLETENESS_FILTER_ATTESTED: u8 = 3;
 pub const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ENTRIES: usize = 1 << 24;
 const MAX_STUBS: usize = 4096;
-const MAX_BALANCES: usize = 4096;
+pub(crate) const MAX_BALANCES: usize = 4096;
 const MAX_CHECKPOINT_BYTES: usize = 1 << 20;
 const MAX_DOMAIN_BYTES: usize = 64;
 const MAX_MANIFEST_MD_BYTES: usize = 1 << 20;
@@ -830,6 +830,19 @@ pub fn verify_bundle(
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
 ) -> Result<BundleReport, BundleError> {
+    verify_bundle_inspecting_balances(bundle, trusted_keys, receipt, |_, _| {})
+}
+
+/// Internal single-pass hook for recipient request binding. A claim is
+/// observed only after its fold and full-derivation obligations pass. Other
+/// bundle predicates may still fail: callers MUST retain their grades and
+/// must not publish observations as a successful bundle before completion.
+pub(crate) fn verify_bundle_inspecting_balances(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    receipt: Option<&[u8]>,
+    mut observe: impl FnMut(usize, crate::BalanceClaim),
+) -> Result<BundleReport, BundleError> {
     for key in trusted_keys {
         ed25519::check_public_key(key).map_err(|reason| BundleError::TrustedKey {
             signer_key_id: signer_key_id(key),
@@ -980,11 +993,15 @@ pub fn verify_bundle(
                 .to_string(),
             ),
             Some(s) => match verify_balance(b.proof, &s.checkpoint) {
-                Ok(balance) if balance.scope == crate::balance::SCOPE_RECOMPUTATION => Grade::Pass,
+                Ok(balance) if balance.scope == crate::balance::SCOPE_RECOMPUTATION => {
+                    observe(k, balance.claim);
+                    Grade::Pass
+                }
                 Ok(balance)
                     if balance.scope == crate::balance::SCOPE_MEMBERSHIP_ONLY
                         && full_prefix_payloads =>
                 {
+                    observe(k, balance.claim);
                     Grade::Pass
                 }
                 Ok(balance) => Grade::Fail(format!(
