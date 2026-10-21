@@ -144,7 +144,8 @@ pub(super) fn source_entry<V: Vfs + Clone>(
     reference: EntryRef,
     at: CommitSeq,
 ) -> Outcome<SourceEntry> {
-    let Some(row) = db.vertex_at(reference.vid, at)? else {
+    // A retirement after `at` is not visible at `at` (fgdb `seen_at`).
+    let Some(row) = db.vertex_at(reference.vid, at)?.map(|row| row.seen_at(at)) else {
         return Ok(Err(invalid(
             "the selected cash Entry did not exist at the proposal's source sequence",
         )));
@@ -706,7 +707,10 @@ fn sources<V: Vfs + Clone>(
             }
         }
     }
-    let Some(row) = db.vertex_at(value.import_run, at)? else {
+    let Some(row) = db
+        .vertex_at(value.import_run, at)?
+        .map(|row| row.seen_at(at))
+    else {
         return Ok(Err(drift(
             "the confirmed match's native ImportRun is absent",
         )));
@@ -787,7 +791,14 @@ fn confirmed_entry<V: Vfs + Clone>(
         Ok(source) => source,
         Err(refusal) => return Ok(Err(drift(refusal.message))),
     };
-    if db.vertex_at(value.entry_ref.vid, at)?.as_ref() != Some(&source.row) {
+    // Both rows are seen at their own sequence, so only a change or a
+    // retirement at or before `at` differs from the source.
+    if db
+        .vertex_at(value.entry_ref.vid, at)?
+        .map(|row| row.seen_at(at))
+        .as_ref()
+        != Some(&source.row)
+    {
         return Ok(Err(drift(
             "the confirmed cash Entry changed or disappeared",
         )));
