@@ -73,8 +73,14 @@ impl fmt::Display for PayloadIndexError {
         match self {
             Self::Proof(error) => write!(f, "scope-index payload witness: {error}"),
             Self::Limit(what) => write!(f, "scope-index reconstruction exceeds the {what} bound"),
-            Self::Root => write!(f, "the signed scope index differs from the complete payload-derived index"),
-            Self::Anchor => write!(f, "the payload-derived index belongs to another checkpoint or index root"),
+            Self::Root => write!(
+                f,
+                "the signed scope index differs from the complete payload-derived index"
+            ),
+            Self::Anchor => write!(
+                f,
+                "the payload-derived index belongs to another checkpoint or index root"
+            ),
         }
     }
 }
@@ -108,32 +114,43 @@ pub fn verify_payload_index(
     signed: &SignedCheckpoint,
 ) -> Result<PayloadIndex, PayloadIndexError> {
     let prefix = verify_prefix_with_records(complete_prefix, &signed.checkpoint)?;
-    let count = prefix.envelopes.iter().try_fold(0usize, |count, envelope| {
-        count.checked_add(if envelope.effective_day.is_some() {
-            envelope.account_vids.len()
-        } else {
-            0
-        })
-        .filter(|count| *count <= MAX_PAYLOAD_INDEX_TUPLES)
-        .ok_or(PayloadIndexError::Limit("expanded tuple count"))
-    })?;
+    let count = prefix
+        .envelopes
+        .iter()
+        .try_fold(0usize, |count, envelope| {
+            count
+                .checked_add(if envelope.effective_day.is_some() {
+                    envelope.account_vids.len()
+                } else {
+                    0
+                })
+                .filter(|count| *count <= MAX_PAYLOAD_INDEX_TUPLES)
+                .ok_or(PayloadIndexError::Limit("expanded tuple count"))
+        })?;
     let mut tuples = Vec::new();
-    tuples.try_reserve_exact(count)
+    tuples
+        .try_reserve_exact(count)
         .map_err(|_| PayloadIndexError::Limit("tuple allocation"))?;
     for (index, envelope) in prefix.envelopes.iter().enumerate() {
         if let Some(day) = envelope.effective_day {
-            tuples.extend(envelope.account_vids.iter().map(|account| {
-                (*account, day, index as u64)
-            }));
+            tuples.extend(
+                envelope
+                    .account_vids
+                    .iter()
+                    .map(|account| (*account, day, index as u64)),
+            );
         }
     }
     tuples.sort_unstable();
     let mut leaves = Vec::new();
-    leaves.try_reserve_exact(count)
+    leaves
+        .try_reserve_exact(count)
         .map_err(|_| PayloadIndexError::Limit("hash allocation"))?;
-    leaves.extend(tuples.iter().map(|(account, day, index)| {
-        tuple_leaf(&signed.checkpoint, *account, *day, *index)
-    }));
+    leaves.extend(
+        tuples
+            .iter()
+            .map(|(account, day, index)| tuple_leaf(&signed.checkpoint, *account, *day, *index)),
+    );
     // Reuse the parent module's exact transcript and tree law; this does not
     // introduce a new index domain, encoding, or alternate producer algorithm.
     let root = scope_root(count as u64, &root_of_with(scope_node, &leaves));

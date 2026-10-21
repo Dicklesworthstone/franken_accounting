@@ -48,28 +48,59 @@ fn index_root(cp: &Checkpoint, envelopes: &[LeafEnvelope]) -> [u8; 32] {
         }
     }
     tuples.sort_unstable();
-    let leaves: Vec<_> = tuples.iter().map(|(account, day, index)| hash_parts(
-        SCOPE_LEAF_DOMAIN,
-        &[&cp.book_id, &cp.branch_id, &account.to_le_bytes(), &day.to_le_bytes(), &index.to_le_bytes()],
-    )).collect();
-    let root = root_of_with(|left, right| hash_parts(SCOPE_NODE_DOMAIN, &[left, right]), &leaves);
-    hash_parts(SCOPE_ROOT_DOMAIN, &[&(tuples.len() as u64).to_le_bytes(), &root])
+    let leaves: Vec<_> = tuples
+        .iter()
+        .map(|(account, day, index)| {
+            hash_parts(
+                SCOPE_LEAF_DOMAIN,
+                &[
+                    &cp.book_id,
+                    &cp.branch_id,
+                    &account.to_le_bytes(),
+                    &day.to_le_bytes(),
+                    &index.to_le_bytes(),
+                ],
+            )
+        })
+        .collect();
+    let root = root_of_with(
+        |left, right| hash_parts(SCOPE_NODE_DOMAIN, &[left, right]),
+        &leaves,
+    );
+    hash_parts(
+        SCOPE_ROOT_DOMAIN,
+        &[&(tuples.len() as u64).to_le_bytes(), &root],
+    )
 }
 
 fn signed(cp: Checkpoint, envelopes: &[LeafEnvelope]) -> SignedCheckpoint {
     SignedCheckpoint {
         checkpoint: cp,
         scope_index_root: index_root(&cp, envelopes),
-        state_oid: [1; 32], substrate_chain_commitment: [2; 32],
-        witness_policy_oid: None, time_evidence_oid: None,
-        body_digest: [3; 32], oid: [4; 32], signed_by: vec![], not_judged: vec![],
+        state_oid: [1; 32],
+        substrate_chain_commitment: [2; 32],
+        witness_policy_oid: None,
+        time_evidence_oid: None,
+        body_digest: [3; 32],
+        oid: [4; 32],
+        signed_by: vec![],
+        not_judged: vec![],
     }
 }
 
-fn encoded_prefix(format: &[u8], cp: &Checkpoint, envelopes: &[LeafEnvelope], tail: &[u8]) -> Vec<u8> {
+fn encoded_prefix(
+    format: &[u8],
+    cp: &Checkpoint,
+    envelopes: &[LeafEnvelope],
+    tail: &[u8],
+) -> Vec<u8> {
     let mut w = fixture::Wire::default();
-    w.bytes(format).fixed(&cp.encode()).u32(envelopes.len() as u32);
-    for envelope in envelopes { w.bytes(&envelope.encode()); }
+    w.bytes(format)
+        .fixed(&cp.encode())
+        .u32(envelopes.len() as u32);
+    for envelope in envelopes {
+        w.bytes(&envelope.encode());
+    }
     w.fixed(tail);
     w.0
 }
@@ -98,9 +129,14 @@ fn an_authentic_prefix_cannot_excuse_an_index_that_omits_an_entire_account() {
     let mut signed = signed(j.checkpoint, &envelopes);
     assert!(verify_payload_index(&j.prefix, &signed).is_ok());
     let mut incomplete = envelopes;
-    for envelope in &mut incomplete { envelope.account_vids.retain(|account| *account != 20); }
+    for envelope in &mut incomplete {
+        envelope.account_vids.retain(|account| *account != 20);
+    }
     signed.scope_index_root = index_root(&j.checkpoint, &incomplete);
-    assert_eq!(verify_payload_index(&j.prefix, &signed), Err(PayloadIndexError::Root));
+    assert_eq!(
+        verify_payload_index(&j.prefix, &signed),
+        Err(PayloadIndexError::Root)
+    );
 }
 
 #[test]
@@ -118,12 +154,18 @@ fn a_self_consistent_envelope_index_does_not_authenticate_forged_payload_selecto
         // Even a checkpoint consistent with the false envelopes cannot make
         // their selectors agree with the original authenticated record bytes.
         let leaves: Vec<_> = envelopes.iter().map(|e| leaf_hash(&e.encode())).collect();
-        let cp = Checkpoint { root: root_of(&leaves), ..j.checkpoint };
+        let cp = Checkpoint {
+            root: root_of(&leaves),
+            ..j.checkpoint
+        };
         let signed = signed(cp, &envelopes);
         let legacy = encoded_prefix(PREFIX_FORMAT, &cp, &envelopes, &[]);
         assert!(fa_verify::scope::recompute_index(&legacy, &signed).is_ok());
         let complete = encoded_prefix(PREFIX_FORMAT_V2, &cp, &envelopes, tail);
-        assert!(matches!(verify_payload_index(&complete, &signed), Err(PayloadIndexError::Proof(_))));
+        assert!(matches!(
+            verify_payload_index(&complete, &signed),
+            Err(PayloadIndexError::Proof(_))
+        ));
     }
 }
 
@@ -135,7 +177,10 @@ fn legacy_envelopes_never_satisfy_payload_derivation_even_for_an_empty_prefix() 
         assert!(verify_payload_index(&j.prefix, &signed).is_ok());
         let legacy = encoded_prefix(PREFIX_FORMAT, &j.checkpoint, &envelopes, &[]);
         assert!(fa_verify::scope::recompute_index(&legacy, &signed).is_ok());
-        assert!(matches!(verify_payload_index(&legacy, &signed), Err(PayloadIndexError::Proof(_))));
+        assert!(matches!(
+            verify_payload_index(&legacy, &signed),
+            Err(PayloadIndexError::Proof(_))
+        ));
     }
 }
 
@@ -151,7 +196,12 @@ fn missing_reordered_tampered_and_late_invalid_record_frames_refuse_atomically()
     reordered[4..12].copy_from_slice(&1u64.to_le_bytes());
     let mut tampered = tail.to_vec();
     *tampered.last_mut().unwrap() ^= 1;
-    for bad in [missing, reordered, tampered, tail[..tail.len() - 1].to_vec()] {
+    for bad in [
+        missing,
+        reordered,
+        tampered,
+        tail[..tail.len() - 1].to_vec(),
+    ] {
         let bytes = encoded_prefix(PREFIX_FORMAT_V2, &j.checkpoint, &envelopes, &bad);
         assert!(verify_payload_index(&bytes, &signed).is_err());
     }
@@ -179,8 +229,19 @@ fn sealed_derivations_bind_coordinate_and_root_without_claiming_signature_freshn
             _ => changed.scope_index_root[0] ^= 1,
         }
         assert!(!index.matches(&changed));
-        assert_eq!(verify_scope_with_payload_index(b"invalid", &changed,
-            &ScopeClaim { account: 1, from: 0, to: 0 }, &index), Err(PayloadIndexError::Anchor));
+        assert_eq!(
+            verify_scope_with_payload_index(
+                b"invalid",
+                &changed,
+                &ScopeClaim {
+                    account: 1,
+                    from: 0,
+                    to: 0
+                },
+                &index
+            ),
+            Err(PayloadIndexError::Anchor)
+        );
     }
     let mut same_content = signed;
     same_content.oid[0] ^= 1;
@@ -192,16 +253,37 @@ fn empty_interval_proofs_still_check_range_claim_and_membership() {
     let j = journal(&[]);
     let signed = signed(j.checkpoint, &[]);
     let index = verify_payload_index(&j.prefix, &signed).unwrap();
-    let claim = ScopeClaim { account: 99, from: i32::MIN, to: i32::MAX };
+    let claim = ScopeClaim {
+        account: 99,
+        from: i32::MIN,
+        to: i32::MAX,
+    };
     let mut w = fixture::Wire::default();
-    w.bytes(SCOPE_FORMAT).fixed(&j.checkpoint.encode()).u64(0).u128(claim.account)
-        .fixed(&claim.from.to_le_bytes()).fixed(&claim.to.to_le_bytes())
-        .u64(0).u32(0).u8(0).u8(0);
+    w.bytes(SCOPE_FORMAT)
+        .fixed(&j.checkpoint.encode())
+        .u64(0)
+        .u128(claim.account)
+        .fixed(&claim.from.to_le_bytes())
+        .fixed(&claim.to.to_le_bytes())
+        .u64(0)
+        .u32(0)
+        .u8(0)
+        .u8(0);
     let report = verify_scope_with_payload_index(&w.0, &signed, &claim, &index).unwrap();
     assert_eq!(report.index_derivation, IndexDerivation::Recomputed);
     assert!(report.leaves.is_empty());
-    assert!(verify_scope_with_payload_index(&w.0, &signed,
-        &ScopeClaim { account: 100, ..claim }, &index).is_err());
+    assert!(
+        verify_scope_with_payload_index(
+            &w.0,
+            &signed,
+            &ScopeClaim {
+                account: 100,
+                ..claim
+            },
+            &index
+        )
+        .is_err()
+    );
     w.0.push(0);
     assert!(verify_scope_with_payload_index(&w.0, &signed, &claim, &index).is_err());
 }
