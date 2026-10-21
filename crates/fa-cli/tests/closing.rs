@@ -77,8 +77,19 @@ struct Fixture {
     evidence: String,
 }
 
+const CHART: &str = r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"3000","name":"Retained earnings","type":"Equity","unit":"USD"},
+            {"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},
+            {"code":"6000","name":"Expense","type":"Expense","unit":"USD"}
+        ]}"#;
+
 impl Fixture {
     fn new(with_routes: bool) -> Self {
+        Self::with_chart(with_routes, CHART)
+    }
+
+    fn with_chart(with_routes: bool, chart: &str) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = loop {
             let next = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -102,16 +113,7 @@ impl Fixture {
                 "2026-01-01",
             ],
         );
-        let chart = write(
-            &dir,
-            "chart.json",
-            r#"{"accounts":[
-            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
-            {"code":"3000","name":"Retained earnings","type":"Equity","unit":"USD"},
-            {"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},
-            {"code":"6000","name":"Expense","type":"Expense","unit":"USD"}
-        ]}"#,
-        );
+        let chart = write(&dir, "chart.json", chart);
         ok(&book, &["chart", "import", &chart]);
         ok(&book, &["period", "create", "--fiscal-year", "2026"]);
         ok(&book, &["period", "open", "FY2026-P12"]);
@@ -464,4 +466,204 @@ fn closing_binary_missing_routes_and_same_net_source_replacement_refuse_without_
     );
     assert_ne!(code, 0, "equal net is not equal contribution provenance");
     assert_eq!(head(&f.book), after_source_change);
+}
+
+/// The statement of changes in equity (plan §12.1) ties through a real
+/// year-end close: before it, net income sits in unclosed earnings; the
+/// Closing entry moves it into retained earnings as a closing transfer that
+/// nets to zero, and every total stays the same. A read at the pre-close
+/// frontier still answers that frontier, and a role the chart cannot carry
+/// is refused before any output.
+#[test]
+fn equity_roll_forward_ties_issuances_distributions_and_net_income_through_a_year_end_close() {
+    let f = Fixture::with_chart(
+        true,
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"3000","name":"Retained earnings","type":"Equity","unit":"USD"},
+            {"code":"3100","name":"Common stock","type":"Equity","unit":"USD"},
+            {"code":"3200","name":"Dividends","type":"Equity","unit":"USD"},
+            {"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},
+            {"code":"6000","name":"Expense","type":"Expense","unit":"USD"}
+        ]}"#,
+    );
+    f.post("issue", "1000", "3100", "500.00");
+    f.post("sale", "1000", "4000", "100.00");
+    f.post("expense", "6000", "1000", "20.00");
+    f.post("dividend", "3200", "1000", "30.00");
+    let base = [
+        "statement",
+        "equity-roll-forward",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-12-31",
+        "--issuance",
+        "3100",
+        "--distribution",
+        "3200",
+    ];
+    let equity = |extra: &[&str]| {
+        let mut args = base.to_vec();
+        args.extend_from_slice(extra);
+        ok(&f.book, &args)
+    };
+    let check = |event: &Json, when: &str, expected: &[(&str, &str)]| {
+        assert_eq!(text(event, "event"), "equity_roll_forward", "{when}");
+        let units = get(event, "units").as_arr().expect("units");
+        assert_eq!(units.len(), 1, "{when}: one unit, USD");
+        for (field, value) in expected {
+            assert_eq!(text(&units[0], field), *value, "{when}: {field}");
+        }
+    };
+    let kinds = |event: &Json| -> Vec<(String, String, String)> {
+        get(event, "movements")
+            .as_arr()
+            .expect("movements")
+            .iter()
+            .map(|m| {
+                (
+                    text(m, "kind").to_string(),
+                    text(m, "account").to_string(),
+                    format!("{} {}", text(m, "side"), text(m, "amount")),
+                )
+            })
+            .collect()
+    };
+    let before_close = head(&f.book);
+    let before = equity(&[]);
+    let totals = [
+        ("opening_total_equity", "0.00 USD"),
+        ("net_income", "80.00 USD"),
+        ("issuances", "500.00 USD"),
+        ("distributions", "-30.00 USD"),
+        ("other_equity_movements", "0.00 USD"),
+        ("closing_transfers_net", "0.00 USD"),
+        ("net_equity_change", "550.00 USD"),
+        ("closing_total_equity", "550.00 USD"),
+        ("tie_out_residual", "0.00 USD"),
+    ];
+    check(&before, "before the close", &totals);
+    check(
+        &before,
+        "before the close",
+        &[
+            ("closing_contributed_equity", "470.00 USD"),
+            ("closing_unclosed_earnings", "80.00 USD"),
+        ],
+    );
+    // The closing stocks are the balance sheet's at --to: posted equity,
+    // unclosed earnings and their total, all credit-normal.
+    let ties_to_balance_sheet = |event: &Json, when: &str| {
+        let sheet = ok(
+            &f.book,
+            &["statement", "balance-sheet", "--for", "FY2026-P12"],
+        );
+        let line = |code: &str| {
+            let lines = get(&sheet, "lines").as_arr().expect("lines");
+            let line = lines
+                .iter()
+                .find(|line| text(line, "code") == code)
+                .unwrap_or_else(|| panic!("{when}: no {code} line in {}", sheet.render()));
+            line.get("amounts").and_then(Json::as_arr).expect("amounts")[0]
+                .as_str()
+                .expect("an amount")
+                .to_string()
+        };
+        let units = get(event, "units").as_arr().expect("units");
+        for (statement, sheet_line) in [
+            ("closing_contributed_equity", "equity"),
+            ("closing_unclosed_earnings", "unclosed_earnings"),
+            ("closing_total_equity", "total_equity"),
+        ] {
+            assert_eq!(
+                text(&units[0], statement),
+                line(sheet_line),
+                "{when}: {statement} is the balance sheet's {sheet_line}"
+            );
+        }
+    };
+    ties_to_balance_sheet(&before, "before the close");
+    let movement = |kind: &str, account: &str, amount: &str| {
+        (kind.to_string(), account.to_string(), amount.to_string())
+    };
+    assert_eq!(
+        kinds(&before),
+        [
+            movement("issuance", "3100", "credit 500.00 USD"),
+            movement("distribution", "3200", "debit 30.00 USD"),
+        ],
+        "revenue and expense legs are net income, not equity movements"
+    );
+    assert_eq!(integer(&before, "movement_count"), 2);
+
+    let closed = f.close_now("equity-close");
+    assert_eq!(text(&closed, "class"), "Closing");
+    let after = equity(&[]);
+    check(&after, "after the close", &totals);
+    check(
+        &after,
+        "after the close",
+        &[
+            ("closing_contributed_equity", "550.00 USD"),
+            ("closing_unclosed_earnings", "0.00 USD"),
+        ],
+    );
+    let mut transfers: Vec<_> = kinds(&after)
+        .into_iter()
+        .filter(|(kind, _, _)| kind == "closing_transfer")
+        .map(|(_, account, amount)| (account, amount))
+        .collect();
+    transfers.sort();
+    // The year-end close posts one leg per route into retained earnings
+    // (revenue's credit and expense's debit), not their net.
+    assert_eq!(
+        transfers,
+        [
+            ("3000".to_string(), "credit 100.00 USD".to_string()),
+            ("3000".to_string(), "debit 20.00 USD".to_string()),
+            ("4000".to_string(), "debit 100.00 USD".to_string()),
+            ("6000".to_string(), "credit 20.00 USD".to_string()),
+        ],
+        "every leg of the Closing entry is the closing transfer"
+    );
+    ties_to_balance_sheet(&after, "after the close");
+
+    let as_known = equity(&["--as-known-at", &before_close.to_string()]);
+    assert_eq!(integer(&as_known, "known_at"), before_close);
+    check(&as_known, "at the pre-close frontier", &totals);
+    assert_eq!(
+        get(&as_known, "units"),
+        get(&before, "units"),
+        "a recorded frontier answers as it did"
+    );
+
+    let after_close = head(&f.book);
+    for (why, args) in [
+        (
+            "an asset is not an equity account",
+            &["--issuance", "1000"][..],
+        ),
+        (
+            "an account the chart does not have",
+            &["--issuance", "3999"][..],
+        ),
+        ("one account in two roles", &["--distribution", "3100"][..]),
+        (
+            "a date window, not a period code",
+            &["--for", "FY2026-P12"][..],
+        ),
+        ("not certifiable yet", &["--certify"][..]),
+    ] {
+        let mut args_ = base.to_vec();
+        args_.extend_from_slice(args);
+        let (code, line) = run(&f.book, &args_);
+        assert_eq!(code, 2, "{why}: {}", line.render());
+        assert_eq!(text(&line, "event"), "error", "{why}");
+    }
+    assert_eq!(
+        head(&f.book),
+        after_close,
+        "reads and refusals write nothing"
+    );
 }
