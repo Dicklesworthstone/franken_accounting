@@ -12,8 +12,7 @@
 use std::fmt;
 
 use super::{
-    AdvanceError, AdvanceStatus, CheckpointAdvance, WitnessedCheckpoint,
-    verify_checkpoint_advance,
+    AdvanceError, AdvanceStatus, CheckpointAdvance, WitnessedCheckpoint, verify_checkpoint_advance,
 };
 use crate::envelope::LeafEnvelope;
 use crate::proof::production::derivation::verify_prefix_with_records;
@@ -233,10 +232,7 @@ mod tests {
     #[test]
     fn records_cannot_be_added_inside_a_retained_sequence_including_its_last_commit() {
         for sequence in [7, 9, 10] {
-            let prefix = [
-                envelope(7, 0, Some(100)),
-                envelope(sequence, 1, Some(200)),
-            ];
+            let prefix = [envelope(7, 0, Some(100)), envelope(sequence, 1, Some(200))];
             assert_eq!(
                 check_recorded_boundary(&prefix, &old(10, 1)),
                 Err(RecordedAdvanceError::RecordedBoundary {
@@ -280,7 +276,10 @@ mod tests {
 
     #[test]
     fn aggregate_input_arithmetic_is_bounded_before_verification_or_allocation() {
-        assert_eq!(check_input_size(100, 200, MAX_RECORDED_ADVANCE_BYTES - 300), Ok(()));
+        assert_eq!(
+            check_input_size(100, 200, MAX_RECORDED_ADVANCE_BYTES - 300),
+            Ok(())
+        );
         assert_eq!(
             check_input_size(100, 200, MAX_RECORDED_ADVANCE_BYTES - 299),
             Err(RecordedAdvanceError::InputLimit)

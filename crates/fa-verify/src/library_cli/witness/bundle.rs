@@ -276,11 +276,15 @@ fn verify(args: &[OsString], json: bool) -> Result<(String, bool), Failure> {
     }
     let request = parse(args)?;
     let (pin, continuity) = super::authenticate(&request.anchor)?;
-    let recorded_bytes = continuity.as_ref()
+    let recorded_bytes = continuity
+        .as_ref()
         .and_then(|pin| pin.recorded.as_ref())
         .map_or(0, |facts| facts.input_bytes);
-    let mut remaining = MAX_WITNESSED_BUNDLE_BYTES.checked_sub(recorded_bytes)
-        .ok_or_else(|| Failure::verification("recorded-continuity inputs exceed the shared bundle budget"))?;
+    let mut remaining = MAX_WITNESSED_BUNDLE_BYTES
+        .checked_sub(recorded_bytes)
+        .ok_or_else(|| {
+            Failure::verification("recorded-continuity inputs exceed the shared bundle budget")
+        })?;
     let receipt = request
         .receipt
         .as_ref()
