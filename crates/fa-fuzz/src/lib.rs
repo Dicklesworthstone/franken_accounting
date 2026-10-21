@@ -103,17 +103,17 @@ pub const LIVE_TARGETS: &[FuzzTarget] = &[
 pub const DORMANT_TARGETS: &[DormantTarget] = &[
     DormantTarget {
         name: "bundle",
-        activating_bead: "fa-795",
+        activating_bead: "fa-yrhb",
         description: "Dedicated .fab bundle container fuzzer (currently covered inside fa_verify_inputs)",
     },
     DormantTarget {
         name: "certificate",
-        activating_bead: "fa-a6h",
+        activating_bead: "fa-yrhb",
         description: "Dedicated report certificate fuzzer (currently covered inside payload_decoders)",
     },
     DormantTarget {
         name: "canon_source",
-        activating_bead: "fa-0t0",
+        activating_bead: "fa-yrhb",
         description: "Canon posting rule DSL parser and compiler fuzzer",
     },
     DormantTarget {

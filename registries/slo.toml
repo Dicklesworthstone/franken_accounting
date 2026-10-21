@@ -285,7 +285,7 @@ target_p99_us = 10000
 requires_watermark_disclosure = false
 activated = false
 provisional_gate = "O(log n) peaks; signing < 10 ms; witness round-trip reported, never gated"
-derivation = "accumulator_checkpoint has barrier_count = 2 + 1 constant-time Ed25519 signature; target_p50_us (2000) >= 2 * 1000"
+derivation = "accumulator_checkpoint has barrier_count = 2 + 1 Ed25519 signature (constant-time by construction, not measured: fa-cs80); target_p50_us (2000) >= 2 * 1000"
 measurement_command = "cargo run -p fa-bench --bin fa-bench -- --bench accumulator_checkpoint"
 manifest = "bench/manifests/accumulator_checkpoint.toml"
 
