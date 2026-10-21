@@ -3347,6 +3347,18 @@ impl Book {
         ))
     }
 
+    /// The Statement of Changes in Equity over the equity, revenue and expense lead schedule at one recorded prefix.
+    pub fn equity_roll_forward(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::EquityRollForwardRequest,
+    ) -> Outcome<crate::EquityRollForwardReport> {
+        with_store!(&self.store, core => core.equity_roll_forward(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
     /// Certify an exact lead schedule against its native chart, journal, migration and registry closure.
     pub fn certify_roll_forward(
         &self,
