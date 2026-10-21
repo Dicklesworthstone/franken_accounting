@@ -71,9 +71,10 @@ pub use batch::{
 };
 pub use blob::BlobStore;
 pub use case::{
-    CaseApproval, CaseBody, CaseKind, CaseManifest, CaseRecorded, CaseRequest, CaseState,
-    CaseTransition, CaseView, Determination, ManifestEntry, Rehearsal, approve_case, case_manifest,
-    determine_case, list_cases, open_case, read_case, rehearse_case,
+    CaseApproval, CaseBody, CaseKind, CaseManifest, CaseMember, CaseRecorded, CaseRequest,
+    CaseState, CaseTransition, CaseView, Determination, ManifestEntry, PostedEntry, Rehearsal,
+    approve_case, case_manifest, derive_member, determine_case, list_cases, open_case, post_case,
+    posting_class, read_case, rehearse_case,
 };
 pub use chart::{
     AccountEffectivity, AccountLifecycleRecorded, ChartSnapshot, close_account, open_account,

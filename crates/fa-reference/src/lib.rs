@@ -538,6 +538,7 @@ pub mod code {
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
     pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
+    pub const CASE_MEMBERSHIP: &str = "FA-REF-178";
     pub const RUN_NOT_OPEN: &str = "FA-REF-130";
     pub const TIE_OUT_MISMATCH: &str = "FA-REF-131";
     pub const MIGRATION_OUTSIDE_RUN: &str = "FA-REF-132";
@@ -2184,6 +2185,14 @@ impl Oracle {
         if intent.class == "Replacement" {
             return Verdict::Refused {
                 code: code::REPLACEMENT_UNPAIRED,
+            };
+        }
+        // 1b''. A PriorPeriodAdjustment posts only as an Approved restatement
+        //       case's entry, in the case's own Post batch (plan §8.3, bead
+        //       fa-75j4); this entry point posts one entry outside any case.
+        if intent.class == "PriorPeriodAdjustment" {
+            return Verdict::Refused {
+                code: code::CASE_MEMBERSHIP,
             };
         }
         // The supported subset, and a Reversal's target presence.

@@ -1381,6 +1381,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )
     }
 
+    /// Post case `ordinal` (Approved → Posted): its manifest's entries in
+    /// one batch with its Post record ([`crate::Book::post_case`] states the
+    /// contract).
+    pub async fn post_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let description = format!("post case {ordinal}");
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::post_case(&mut self.db, cx, &self.context, ordinal, req).await?)
+    }
+
     /// Restatement case `ordinal` as its records state it.
     pub fn case(
         &self,

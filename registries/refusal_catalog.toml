@@ -1061,6 +1061,14 @@ exit = "refusal"
 cite = "plan §8.3 (Rehearsed: on a branch, with the as-reported-vs-as-restated diff certificate attached; bead fa-75j4)"
 fix = "certify the scenario's diff over every period the case affects (fa scenario diff <name> --period <code>... --certify --certificate-out <file>) while the scenario is open, then rehearse with that certificate"
 
+[[refusal]]
+code = "FA-REF-178"
+name = "CASE_MEMBERSHIP"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.3, §8.4 (a case-bound entry is admissible only inside an Approved RestatementCase; bead fa-75j4)"
+fix = "post a case's entries with fa case post <case> after two Human approvals of its manifest; an entry of a case-bound class is never posted on its own"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-145"

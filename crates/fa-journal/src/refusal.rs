@@ -124,6 +124,9 @@ pub mod code {
     /// scenario or retained diff certificate is not what the record names
     /// (plan §8.3).
     pub const CASE_REHEARSAL: &str = "FA-REF-177";
+    /// A case-bound entry is not the derivation of an Approved case's
+    /// manifest entry (plan §8.3, §8.4).
+    pub const CASE_MEMBERSHIP: &str = "FA-REF-178";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

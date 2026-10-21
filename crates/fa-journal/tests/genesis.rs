@@ -1447,6 +1447,38 @@ fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind(
             r.fix
         );
     }
+    // A PriorPeriodAdjustment is a restatement case's entry (fa-75j4): alone,
+    // or claiming a case on any path but the case's own Post, it is refused,
+    // and no other class may claim a case.
+    let claim = CaseMember {
+        ordinal: 1,
+        plan: VId(9),
+    }
+    .canonical_bytes()
+    .unwrap();
+    let mut claimed = h.proposal(
+        h.rent_legs(1),
+        b"ppa-claimed",
+        EntryClass::PRIOR_PERIOD_ADJUSTMENT,
+    );
+    claimed.schema_minor = fa_model::entry::SCHEMA_MINOR;
+    claimed.extensions = vec![(fa_model::entry::CASE_MEMBER_EXTENSION, claim.clone())];
+    let mut stray = h.proposal(h.rent_legs(1), b"stray-claim", EntryClass::ORIGINAL);
+    stray.schema_minor = fa_model::entry::SCHEMA_MINOR;
+    stray.extensions = vec![(fa_model::entry::CASE_MEMBER_EXTENSION, claim)];
+    let alone = h.proposal(h.rent_legs(1), b"ppa", EntryClass::PRIOR_PERIOD_ADJUSTMENT);
+    for (proposal, says) in [
+        (alone, "posted only in its case's batch"),
+        (claimed, "posted only in its case's batch"),
+        (stray, "only a case-bound entry names a case"),
+    ] {
+        let r = h
+            .post(h.request(proposal, &["post", "restate"]))
+            .unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-178", exit::REFUSAL), "{r}");
+        assert!(r.message.contains(says), "{r}");
+        assert!(r.fix.contains("fa case post"), "{r}");
+    }
     // Migration is enforced (fa-xo0): an entry naming no run is outside the
     // run law, refused before any read.
     let r = h

@@ -722,8 +722,8 @@ fn not_implemented(class_name: &str) -> Refusal {
         "leg.base_amount" | "base_totals" => "the FX law slice (fa-p7r)",
         "leg.dimension_set" => "the dimension registry slice (plan §4.3)",
         "Replacement" | "Reclassification" => "fa-omi (supersession beyond exact reversal)",
-        "Revision" | "Restatement" | "PriorPeriodAdjustment" => {
-            "the restatement-case slice (fa-azu children)"
+        "Revision" | "Restatement" => {
+            "the restatement-case posting of superseding delta entries (fa-75j4)"
         }
         "Closing" => "the incremental closing slice (plan §7.5)",
         "Revaluation" | "Elimination" => "Canon rules (plan §10)",
@@ -770,6 +770,12 @@ pub(crate) enum Admission {
     /// is published or promoted. Original planner authority and every other
     /// posting law remain in force at the exact selected source coordinate.
     ScratchDraft(crate::draft::Rehearsing),
+    /// One manifest entry of an Approved restatement case's posting batch
+    /// (plan §8.3). Only [`crate::case`] makes the token, inside its Post;
+    /// the entry publishes under the poster's own capability with every
+    /// check of [`Admission::Commit`], and only a case's entry is admitted
+    /// this way (a case's entry is admitted no other way).
+    Case(crate::case::Posting),
 }
 
 pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
@@ -792,7 +798,9 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     // authority (§15.2). An owned scratch draft publishes only a rehearsal.
     // Every other admission check still runs with the unchanged capability.
     let admit_base = match admission {
-        Admission::Commit | Admission::VerifiedBatch(_) => fa_policy::admit_base,
+        Admission::Commit | Admission::VerifiedBatch(_) | Admission::Case(_) => {
+            fa_policy::admit_base
+        }
         Admission::Plan | Admission::Promote(_) | Admission::ScratchDraft(_) => {
             fa_policy::admit_base_for_plan
         }
@@ -817,7 +825,7 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     if let Err(denial) = policy::payload_reach(&req.capability, book, proposal, scope.as_ref()) {
         return Ok(Err(policy::refusal(&denial)));
     }
-    if matches!(admission, Admission::Commit)
+    if matches!(admission, Admission::Commit | Admission::Case(_))
         && req.capability.has_requires_dry_run_caveat()
         && req.plan_certificate.is_none()
     {
@@ -916,9 +924,12 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
-/// The classes admitted by the single-entry path (step 1b). Replacement
-/// is admitted only by its private, atomic pair context.
-const POSTED_CLASSES: [EntryClass; 9] = [
+/// The classes the posting pipeline admits (step 1b). Replacement is
+/// admitted only by its private, atomic pair context, and
+/// PriorPeriodAdjustment only as a restatement case's entry in its case's
+/// own Post batch (fa-75j4).
+const POSTED_CLASSES: [EntryClass; 10] = [
+    EntryClass::PRIOR_PERIOD_ADJUSTMENT,
     EntryClass::ORIGINAL,
     EntryClass::ADJUSTING,
     EntryClass::REVERSAL,
@@ -1159,6 +1170,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     if !POSTED_CLASSES.contains(&proposal.class) && !is_replacement {
         return Ok(Err(not_implemented(class_name)));
     }
+    // A case-bound class posts only as its case's derivation (plan §8.3),
+    // and no other class claims a case (fa-75j4).
+    let case_member = match crate::case::member_of(proposal, admission)? {
+        Ok(member) => member,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     // Closing is an intrinsic, source-bound computation, not a generic
     // balanced posting class. Current Read/Close and whole-book scope are
     // required before its aggregate or routing map can be observed.
@@ -2199,7 +2216,43 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         .extensions
         .iter()
         .any(|(tag, _)| *tag == fa_model::entry::BALANCING_EXTENSION);
-    if !balancing
+    // A case member's row is decided over its Approved case's approvals of
+    // the manifest that names it, with the manifest's planners as the
+    // case's preparers; it cites none of its own (plan §8.3).
+    if let Some(member) = case_member {
+        if !req.approvals.is_empty() {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::CASE_MEMBERSHIP,
+                exit::REFUSAL,
+                "a case's entry carries its case's approvals, never its own",
+                "plan §8.3 (Approved: the approvals validating the case's manifest)",
+                "post the case with `fa case post <case>`",
+            )));
+        }
+        let gate = match crate::case::admit_member(&txn, db, book, proposal, member)? {
+            Ok(gate) => gate,
+            Err(refusal) => {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+        };
+        if let Err(r) = policy::authorize_approvals_in(
+            &txn,
+            db,
+            book,
+            &gate.approvals,
+            &gate.digest,
+            epoch,
+            &sod_key,
+            matrix_approvals,
+            preparer,
+            Some(&gate.preparers),
+        )? {
+            txn.abort();
+            return Ok(Err(r));
+        }
+    } else if !balancing
         && let Err(r) = policy::authorize_approvals(
             &txn,
             db,

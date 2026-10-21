@@ -30,6 +30,16 @@
 //!   intent's digest and its planner. Two Human approvals of the manifest's
 //!   digest are cited (`case-approve`), and no approver planned any of the
 //!   case's entries (the `case_preparer` exclusion, decided here).
+//! - **Post** (`Approved → Posted`) posts the case's entries in one atomic
+//!   batch, then journals extension 24 `fa:case-posted:v1` naming them.
+//!   Each entry is the kernel's derivation of one manifest entry
+//!   ([`derive_member`]): the planned intent as the case's class, under the
+//!   poster, with extension 23 `fa:case-member:v1`. The posting law admits
+//!   a case-bound class only as such a derivation of an Approved case, and
+//!   decides its row's approvals over the case's approvals ([`admit_member`]).
+//!   This build posts PriorPeriodAdjustment cases; Revision and Restatement
+//!   entries supersede a target with delta legs, which the posting kernel
+//!   does not implement yet.
 //!
 //! The narrative and authority documents are the records' proof refs and
 //! must be verified documents of this book; every affected period must
@@ -38,10 +48,8 @@
 //!
 //! **Authority.** Every record is a trunk record under `restate`
 //! (`sod_policy.toml` `case-open`, `case-determine`, `case-rehearse`,
-//! `case-approve`); an
-//! Agent prepares none. Posting, disclosure and closing are later slices of
-//! fa-75j4: until they land, a case cannot leave `Approved`, and Revision,
-//! Restatement and PriorPeriodAdjustment entries stay refused.
+//! `case-approve`, `case-post`); an
+//! Agent prepares none. Disclosure and closing are later slices of fa-75j4.
 
 use fa_model::limits::{MAX_BATCH_ENTRIES, MAX_PERIOD_REF_BYTES};
 use fa_model::symbols::{label, property, relation};
@@ -83,6 +91,13 @@ const MANIFEST_DOMAIN: &[u8] = b"fa:case-approval:v1";
 const MANIFEST_ENTRY_DOMAIN: &[u8] = b"fa:case-manifest-entry:v1";
 /// Canonical bytes of an approved manifest (extension 22).
 pub const MANIFEST_VERSION: u16 = 1;
+/// Canonical bytes of a case member (extension 23) and of a Post record's
+/// entries (extension 24).
+pub const MEMBER_VERSION: u16 = 1;
+pub const POSTED_VERSION: u16 = 1;
+const MEMBER_KEY_DOMAIN: &[u8] = b"fa:case-member-key:v1";
+const POST_BATCH_KEY_DOMAIN: &[u8] = b"fa:case-post-batch-key:v1";
+const POSTED_DOMAIN: &[u8] = b"fa:case-posted:v1";
 const RECORD_KEY_DOMAIN: &[u8] = b"fa:case-record-key:v1";
 
 /// What a case corrects (plan §8.3 `RestatementCase.kind`).
@@ -575,6 +590,8 @@ pub struct CaseView {
     pub rehearsal: Option<Rehearsal>,
     /// The approved manifest and its approvals, from the Approve record.
     pub approval: Option<CaseApproval>,
+    /// The entries the Post record names, in manifest order.
+    pub posted: Vec<PostedEntry>,
     /// Every transition, in commit order; the first is the Open record.
     pub transitions: Vec<CaseTransition>,
 }
@@ -594,6 +611,7 @@ enum Act {
     Determine,
     Rehearse,
     Approve,
+    Post,
 }
 
 impl Act {
@@ -603,6 +621,7 @@ impl Act {
             Self::Determine => "Determine",
             Self::Rehearse => "Rehearse",
             Self::Approve => "Approve",
+            Self::Post => "Post",
         }
     }
 
@@ -612,6 +631,7 @@ impl Act {
             Self::Determine => 1,
             Self::Rehearse => 2,
             Self::Approve => 3,
+            Self::Post => 4,
         }
     }
 }
@@ -717,7 +737,7 @@ fn record_proposal(
 ) -> EntryPayload {
     let named = match act {
         Act::Open => None,
-        Act::Determine | Act::Rehearse | Act::Approve => Some(case),
+        Act::Determine | Act::Rehearse | Act::Approve | Act::Post => Some(case),
     };
     EntryPayload {
         schema_minor: fa_model::entry::SCHEMA_MINOR,
@@ -1528,6 +1548,497 @@ pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+/// The token [`crate::post::Admission::Case`] carries. Only this module
+/// makes one, in [`post_case`], so a case's entry reaches trunk only in its
+/// case's batch, with its Post record and state change.
+#[derive(Clone, Copy, Debug)]
+pub struct Posting(());
+
+/// A posting entry's claim to belong to a case (extension 23).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaseMember {
+    pub ordinal: u32,
+    /// The scenario's Plan record the entry derives from.
+    pub plan: VId,
+}
+
+impl CaseMember {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
+        let mut w = Writer::with_capacity(24);
+        w.u16(MEMBER_VERSION).u32(self.ordinal).u128(self.plan.0);
+        Ok(w.finish()?)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
+        let mut r = Reader::new(bytes);
+        if r.u16("case.member.version").map_err(decode)? != MEMBER_VERSION {
+            return Err(KernelError::Corrupt(
+                "unsupported case member version".into(),
+            ));
+        }
+        let member = Self {
+            ordinal: r.u32("case.member.ordinal").map_err(decode)?,
+            plan: VId(r.u128("case.member.plan").map_err(decode)?),
+        };
+        r.finish().map_err(decode)?;
+        Ok(member)
+    }
+}
+
+/// One posted entry of a Post record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PostedEntry {
+    pub plan: VId,
+    pub entry: VId,
+    pub entry_digest: [u8; 32],
+}
+
+fn posted_bytes(entries: &[PostedEntry]) -> Result<Vec<u8>, KernelError> {
+    let mut w = Writer::with_capacity(8 + entries.len() * 64);
+    w.u16(POSTED_VERSION).list(entries, |w, e| {
+        w.u128(e.plan.0).u128(e.entry.0).fixed(&e.entry_digest);
+    });
+    Ok(w.finish()?)
+}
+
+fn decode_posted(bytes: &[u8]) -> Result<Vec<PostedEntry>, KernelError> {
+    let mut r = Reader::new(bytes);
+    if r.u16("case.posted.version").map_err(decode)? != POSTED_VERSION {
+        return Err(KernelError::Corrupt(
+            "unsupported case posted version".into(),
+        ));
+    }
+    let entries = r
+        .list(MAX_BATCH_ENTRIES, "case.posted.entries", |r| {
+            Ok(PostedEntry {
+                plan: VId(r.u128("case.posted.plan")?),
+                entry: VId(r.u128("case.posted.entry")?),
+                entry_digest: r.fixed("case.posted.digest")?,
+            })
+        })
+        .map_err(decode)?;
+    r.finish().map_err(decode)?;
+    Ok(entries)
+}
+
+/// The class a case of `kind` posts its entries as in this build. Revision
+/// and Restatement entries supersede a target with delta legs, which the
+/// posting kernel does not implement yet; PolicyChangeRetrospective posts
+/// Restatement entries.
+#[must_use]
+pub fn posting_class(kind: CaseKind) -> Option<EntryClass> {
+    match kind {
+        CaseKind::PriorPeriodAdjustment => Some(EntryClass::PRIOR_PERIOD_ADJUSTMENT),
+        CaseKind::Revision | CaseKind::Restatement | CaseKind::PolicyChangeRetrospective => None,
+    }
+}
+
+/// The trunk entry case `ordinal` (of `kind`) posts for its manifest entry
+/// planned as `planned` in Plan record `plan`, posted by `principal`: the
+/// planned proposal as the case's class, under the poster, keyed by the
+/// case and the Plan record, carrying extension 23. Deterministic: the
+/// posting law recomputes it to admit the entry.
+pub fn derive_member(
+    book_id: Id128,
+    kind: CaseKind,
+    ordinal: u32,
+    plan: VId,
+    planned: &EntryPayload,
+    principal: VId,
+) -> Result<Result<EntryPayload, Refusal>, KernelError> {
+    let Some(class) = posting_class(kind) else {
+        return Ok(Err(membership(format!(
+            "a {} case's entries supersede a target with delta legs, which this build does not post",
+            kind.name()
+        ))));
+    };
+    if !matches!(planned.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
+        || !planned.supersession.is_empty()
+        || planned.pending.is_some()
+    {
+        return Ok(Err(membership(format!(
+            "a case posts plain postings: its Plan records are Original or Adjusting entries without supersession or a hold, and this one is a {}",
+            planned.class.name().unwrap_or("?")
+        ))));
+    }
+    if planned
+        .extensions
+        .iter()
+        .any(|(tag, _)| *tag == fa_model::entry::BALANCING_EXTENSION)
+    {
+        return Ok(Err(membership(
+            "a case posts entries whose legs its approvers saw: a balancing request resolves its legs at commit, so it is not a case's entry",
+        )));
+    }
+    let case = restatement_case_vid(book_id, ordinal);
+    let mut proposal = planned.clone();
+    proposal.class = class;
+    proposal.principal_ref = principal;
+    proposal.idempotency_key = domain_digest(
+        MEMBER_KEY_DOMAIN,
+        &[&case.0.to_le_bytes(), &plan.0.to_le_bytes()],
+    )
+    .to_vec();
+    proposal
+        .extensions
+        .retain(|(tag, _)| *tag != fa_model::entry::CASE_MEMBER_EXTENSION);
+    proposal.extensions.push((
+        fa_model::entry::CASE_MEMBER_EXTENSION,
+        CaseMember { ordinal, plan }.canonical_bytes()?,
+    ));
+    proposal.extensions.sort_by_key(|(tag, _)| *tag);
+    // An extension block needs schema minor 1 (Appendix A); a Plan record
+    // written at minor 0 has none.
+    proposal.schema_minor = proposal.schema_minor.max(fa_model::entry::SCHEMA_MINOR);
+    Ok(Ok(proposal))
+}
+
+fn membership(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::CASE_MEMBERSHIP,
+        exit::REFUSAL,
+        message.into(),
+        "plan §8.3, §8.4 (a case-bound entry is admissible only inside an Approved RestatementCase)",
+        "post a case's entries with `fa case post <case>` after two Human approvals of its manifest",
+    )
+}
+
+/// The case a posting entry claims (extension 23), checked against its
+/// class and `admission`: a case-bound class needs the claim and the case's
+/// own Post (whose admission carries nothing else); any other class may not
+/// carry it.
+pub(crate) fn member_of(
+    proposal: &EntryPayload,
+    admission: crate::post::Admission,
+) -> Result<Result<Option<CaseMember>, Refusal>, KernelError> {
+    let claim = proposal
+        .extensions
+        .iter()
+        .find(|(tag, _)| *tag == fa_model::entry::CASE_MEMBER_EXTENSION);
+    let case_bound = proposal.class == EntryClass::PRIOR_PERIOD_ADJUSTMENT;
+    let posting = matches!(admission, crate::post::Admission::Case(_));
+    match (claim, case_bound, posting) {
+        (Some((_, bytes)), true, true) => Ok(Ok(Some(CaseMember::decode(bytes)?))),
+        (_, true, false) => Ok(Err(membership(format!(
+            "a {} entry belongs to a restatement case: it is posted only in its case's batch, with the case's Post record",
+            proposal.class.name().unwrap_or("?")
+        )))),
+        (Some(_), false, _) => Ok(Err(membership(format!(
+            "only a case-bound entry names a case, and this is a {} entry",
+            proposal.class.name().unwrap_or("?")
+        )))),
+        (None, _, true) => Err(KernelError::Corrupt(
+            "a case's Post admitted an entry that names no case".into(),
+        )),
+        (None, false, false) => Ok(Ok(None)),
+    }
+}
+
+/// What the posting law decides a case member's row over: the case's
+/// approvals, bound to its manifest digest, and the planners of its
+/// entries (the `case_preparer` exclusion).
+pub(crate) struct MemberGate {
+    pub approvals: Vec<fa_model::ApprovalRef>,
+    pub digest: [u8; 32],
+    pub preparers: std::collections::BTreeSet<VId>,
+}
+
+/// Admit `proposal` as `member` of its case inside `txn`: the case is
+/// Approved (a point witness of its state), the claimed Plan record is in
+/// its approved manifest with the same intent digest, and `proposal` is
+/// exactly the kernel's derivation of that entry for its principal.
+pub(crate) fn admit_member<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    member: CaseMember,
+) -> Outcome<MemberGate> {
+    let vid = restatement_case_vid(book.book_id, member.ordinal);
+    let Some(row) = txn.vertex(db, vid)? else {
+        return Ok(Err(unknown(member.ordinal)));
+    };
+    let state = CaseState::from_scalar(prop(&row, property::STATE)).ok_or_else(|| {
+        KernelError::Corrupt(format!("restatement case {} state mirror", member.ordinal))
+    })?;
+    if state != CaseState::Approved {
+        return Ok(Err(wrong_state(member.ordinal, state, "Post", "Approved")));
+    }
+    let Some(view) = read_case(db, book, member.ordinal)? else {
+        return Ok(Err(unknown(member.ordinal)));
+    };
+    let (Some(approval), Some(rehearsal)) = (view.approval.as_ref(), view.rehearsal.as_ref())
+    else {
+        return Err(KernelError::Corrupt(format!(
+            "approved case {} carries no approval or rehearsal record",
+            member.ordinal
+        )));
+    };
+    let Some(entry) = approval
+        .manifest
+        .entries
+        .iter()
+        .find(|e| e.plan == member.plan)
+    else {
+        return Ok(Err(membership(format!(
+            "Plan record {:032x} is not in case {}'s approved manifest",
+            member.plan.0, member.ordinal
+        ))));
+    };
+    let planned = crate::scenario::read_scenario(db, book, &rehearsal.scenario)?
+        .and_then(|s| s.intents.into_iter().find(|p| p.record == member.plan))
+        .ok_or_else(|| {
+            KernelError::Corrupt(format!(
+                "case {}'s Plan record {:032x} is not in scenario `{}`",
+                member.ordinal, member.plan.0, rehearsal.scenario
+            ))
+        })?;
+    let intent = planned
+        .intent
+        .canonical_bytes()
+        .map_err(|e| KernelError::Corrupt(format!("case manifest intent: {e}")))?;
+    if domain_digest(MANIFEST_ENTRY_DOMAIN, &[&intent]) != entry.intent {
+        return Err(KernelError::Corrupt(format!(
+            "case {}'s Plan record {:032x} no longer has its approved intent",
+            member.ordinal, member.plan.0
+        )));
+    }
+    let derived = match derive_member(
+        book.book_id,
+        view.body.kind,
+        member.ordinal,
+        member.plan,
+        planned.intent.proposal(),
+        proposal.principal_ref,
+    )? {
+        Ok(derived) => derived,
+        Err(r) => return Ok(Err(r)),
+    };
+    if derived.proposal_digest()? != proposal.proposal_digest()? {
+        return Ok(Err(membership(format!(
+            "this entry is not case {}'s derivation of Plan record {:032x}; post the case with `fa case post {}`",
+            member.ordinal, member.plan.0, member.ordinal
+        ))));
+    }
+    Ok(Ok(MemberGate {
+        approvals: approval.approvals.clone(),
+        digest: approval.manifest.digest()?,
+        preparers: approval.manifest.preparers(),
+    }))
+}
+
+/// The entries case `ordinal` posts under `principal`, in manifest order.
+fn case_members<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    view: &CaseView,
+    principal: VId,
+) -> Outcome<Vec<(VId, EntryPayload)>> {
+    let ordinal = view.body.ordinal;
+    let (Some(approval), Some(rehearsal)) = (view.approval.as_ref(), view.rehearsal.as_ref())
+    else {
+        return Ok(Err(wrong_state(ordinal, view.state, "Post", "Approved")));
+    };
+    if approval.manifest.entries.is_empty() {
+        return Ok(Err(membership(format!(
+            "case {ordinal}'s approved manifest names no entry: there is nothing to post"
+        ))));
+    }
+    let Some(scenario) = crate::scenario::read_scenario(db, book, &rehearsal.scenario)? else {
+        return Ok(Err(rehearsal_refused(format!(
+            "case {ordinal}'s scenario `{}` is not in this book",
+            rehearsal.scenario
+        ))));
+    };
+    let mut out = Vec::with_capacity(approval.manifest.entries.len());
+    for entry in &approval.manifest.entries {
+        let Some(planned) = scenario.intents.iter().find(|p| p.record == entry.plan) else {
+            return Err(KernelError::Corrupt(format!(
+                "case {ordinal}'s Plan record {:032x} is not in its scenario",
+                entry.plan.0
+            )));
+        };
+        match derive_member(
+            book.book_id,
+            view.body.kind,
+            ordinal,
+            entry.plan,
+            planned.intent.proposal(),
+            principal,
+        )? {
+            Ok(derived) => out.push((entry.plan, derived)),
+            Err(r) => return Ok(Err(r)),
+        }
+    }
+    Ok(Ok(out))
+}
+
+/// Post case `ordinal` (Approved → Posted) in one commit (plan §8.3): its
+/// manifest's entries as one atomic batch, each through every posting law
+/// under `req.capability` (its own matrix row and SoD rule, decided over the
+/// case's approvals), the Post record naming them, and the compare-and-set
+/// of the case's `state`. An identical retry returns the recorded case.
+pub async fn post_case<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    ordinal: u32,
+    req: CaseRequest,
+) -> Outcome<CaseRecorded> {
+    const FIX: &str = "fa case post <case>";
+    if ordinal == 0 {
+        return Ok(Err(unknown(ordinal)));
+    }
+    if let Err(r) = admit(db, book, &req.capability, Act::Post)? {
+        return Ok(Err(r));
+    }
+    let vid = restatement_case_vid(book.book_id, ordinal);
+    let principal = req.capability.holder();
+    let Some(view) = read_case(db, book, ordinal)? else {
+        return Ok(Err(unknown(ordinal)));
+    };
+    let record = |entries: &[PostedEntry]| -> Result<EntryPayload, KernelError> {
+        let bytes = posted_bytes(entries)?;
+        Ok(record_proposal(
+            book,
+            &req,
+            Act::Post,
+            vid,
+            CaseState::Approved.tag(),
+            CaseState::Posted,
+            entries.iter().map(|e| TypedRef::Vertex(e.entry)).collect(),
+            domain_digest(POSTED_DOMAIN, &[&bytes]),
+            (fa_model::entry::CASE_POSTED_EXTENSION, bytes),
+        ))
+    };
+    let evid = entry_vid(
+        book.book_id,
+        &principal.0.to_le_bytes(),
+        &record_key(Act::Post, Some(vid), &req.idempotency_key),
+    );
+    if view.state == CaseState::Posted {
+        let proposal = record(&view.posted)?;
+        return Ok(match db.vertex(evid)? {
+            Some(row) => match recorded_or_conflict(book, &row, &proposal)? {
+                Ok(recorded_at) => Ok(CaseRecorded {
+                    case: view,
+                    control_entry: evid,
+                    recorded_at,
+                    already_recorded: true,
+                }),
+                Err(r) => Err(r),
+            },
+            None => Err(wrong_state(ordinal, view.state, "Post", "Approved")),
+        });
+    }
+    if view.state != CaseState::Approved {
+        return Ok(Err(wrong_state(ordinal, view.state, "Post", "Approved")));
+    }
+    let members = match case_members(db, book, &view, principal)? {
+        Ok(members) => members,
+        Err(r) => return Ok(Err(r)),
+    };
+    let intents = members
+        .iter()
+        .map(|(_, proposal)| fa_intents::PostIntent::new(proposal.clone(), Vec::new()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| KernelError::Corrupt(format!("case post intent: {e}")))?;
+    let batch_key = domain_digest(POST_BATCH_KEY_DOMAIN, &[&vid.0.to_le_bytes()]).to_vec();
+    let batch = fa_intents::PostBatch::new(batch_key, intents)
+        .map_err(|e| KernelError::Corrupt(format!("case post batch: {e}")))?;
+    let admission = crate::post::Admission::Case(Posting(()));
+    if let Err(r) = crate::batch::authorize_members(db, book, &req.capability, &batch, admission)? {
+        return Ok(Err(r));
+    }
+    ctx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
+    let capabilities = vec![req.capability.clone(); batch.members().len()];
+    let mut staged =
+        match crate::batch::stage_batch(db, ctx, book, &capabilities, &batch, admission)? {
+            Err(r) => return Ok(Err(r)),
+            // The identical request committed after this read the case:
+            // retrying returns its recorded case.
+            Ok(crate::batch::BatchStage::Recorded(_)) => {
+                return Ok(Err(fcw("the case's entries committed concurrently")));
+            }
+            Ok(crate::batch::BatchStage::Staged(staged)) => staged,
+        };
+    if let Err(r) = capability_witness(&staged.txn, db, book, &req.capability)? {
+        staged.txn.abort();
+        return Ok(Err(r));
+    }
+    let entries: Vec<PostedEntry> = members
+        .iter()
+        .zip(&staged.entries)
+        .map(|((plan, _), entry)| PostedEntry {
+            plan: *plan,
+            entry: entry.vid,
+            entry_digest: entry.entry_digest,
+        })
+        .collect();
+    let proposal = record(&entries)?;
+    // Every member point-read the case as Approved in this transaction, so
+    // its Post record cannot exist here.
+    if staged.txn.vertex(db, evid)?.is_some() {
+        staged.txn.abort();
+        return Err(KernelError::Corrupt(format!(
+            "case {ordinal} is Approved but its Post record already exists"
+        )));
+    }
+    if proposal.validate().is_err() {
+        staged.txn.abort();
+        return Ok(Err(usage(
+            "the Post record is not a valid CaseControl entry",
+            FIX,
+        )));
+    }
+    let entry = proposal.seal(Vec::new(), None)?;
+    let mut in_case = WriteBatch::new(relation::IN_CASE);
+    in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_case.compare_and_set_vertex_property(
+        vid,
+        property::STATE,
+        Some(CaseState::Approved.scalar()),
+        CaseState::Posted.scalar(),
+        WriteMismatchPolicy::AbortWrite,
+    );
+    in_case.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
+    for e in &entries {
+        in_case.add_edge(
+            edge_id(relation::IN_CASE, e.entry, vid),
+            e.entry,
+            vid,
+            vec![],
+        );
+    }
+    staged.txn.write(db, in_case)?;
+    if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
+        staged.txn.abort();
+        return Ok(Err(denial(&d)));
+    }
+    let posted =
+        match crate::batch::commit_batch(db, ctx, book, &capabilities, &batch, admission, staged)
+            .await?
+        {
+            Err(r) => return Ok(Err(r)),
+            Ok(posted) => posted,
+        };
+    if posted.already_recorded {
+        return Ok(Err(fcw("the case's entries committed concurrently")));
+    }
+    Ok(Ok(CaseRecorded {
+        case: read_case(db, book, ordinal)?
+            .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
+        control_entry: evid,
+        recorded_at: posted.recorded_at,
+        already_recorded: false,
+    }))
+}
+
 /// Case `ordinal` as its records state it, each cross-checked against its
 /// vertex, at the head.
 pub fn read_case<V: asupersync::fs::Vfs + Clone>(
@@ -1583,6 +2094,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let mut determination = body.determination;
     let mut rehearsal = None;
     let mut approval = None;
+    let mut posted = Vec::new();
     for evid in db.in_neighbours(vid, relation::IN_CASE)? {
         let Some(src) = db.vertex(evid)? else {
             continue;
@@ -1654,6 +2166,14 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                 approvals: entry.approvals.clone(),
             });
         }
+        if let Some((_, ext)) = entry
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::CASE_POSTED_EXTENSION)
+        {
+            posted = decode_posted(ext)?;
+        }
         transitions.push(CaseTransition {
             from,
             to,
@@ -1681,6 +2201,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         determination,
         rehearsal,
         approval,
+        posted,
         transitions,
     })
 }

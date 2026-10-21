@@ -145,6 +145,15 @@ pub const CASE_REHEARSAL_EXTENSION: u16 = 21;
 /// ‖ u128 case ‖ [32] body digest ‖ [32] rehearsal digest ‖ list(u128 plan ‖
 /// [32] intent digest ‖ u128 planner)`.
 pub const CASE_APPROVAL_EXTENSION: u16 = 22;
+/// Extension tag 23, `fa:case-member:v1` (bead fa-75j4): on a posting entry
+/// a restatement case posts, the case and the Plan record it derives from —
+/// `u16 version ‖ u32 case ordinal ‖ u128 plan record`. Only the kernel's
+/// derivation of an Approved case's manifest entry carries it.
+pub const CASE_MEMBER_EXTENSION: u16 = 23;
+/// Extension tag 24, `fa:case-posted:v1` (bead fa-75j4): the entries a
+/// `CaseControl` Post record names — `u16 version ‖ list(u128 plan ‖ u128
+/// entry ‖ [32] entry digest)`, in manifest order.
+pub const CASE_POSTED_EXTENSION: u16 = 24;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -168,6 +177,8 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     CASE_DETERMINATION_EXTENSION,
     CASE_REHEARSAL_EXTENSION,
     CASE_APPROVAL_EXTENSION,
+    CASE_MEMBER_EXTENSION,
+    CASE_POSTED_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------

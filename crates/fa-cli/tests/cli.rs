@@ -7496,6 +7496,110 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["case", "approve", "1"]).0, 2);
     assert_eq!(run(true, &["case", "show", "1"]).0, 0);
     assert_eq!(run(true, &["case", "list"]).0, 0);
+    // A PriorPeriodAdjustment case posts its approved entry (fa-75j4 slice
+    // 4a): planned by the analyst on a scenario, approved by two Humans who
+    // planned nothing, posted in one batch with its Post record, once.
+    let (code, out) = run(
+        true,
+        &[
+            "case",
+            "open",
+            "--kind",
+            "PriorPeriodAdjustment",
+            "--periods",
+            "FY2026-P03",
+            "--determined-on",
+            "2026-04-02",
+            "--authority",
+            &ev,
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let opened = doc(&out).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(int(&opened, "case"), Some(2), "{out}");
+    assert_eq!(text(&opened, "state"), "Determined", "{out}");
+    assert_eq!(
+        run(true, &["scenario", "fork", "adjusted", "--as", "analyst"]).0,
+        0
+    );
+    let adjusted = write(&dir, "adjusted.json", &draft_intent("adjusted-rent"));
+    assert_eq!(
+        run(
+            true,
+            &[
+                "scenario", "run", "adjusted", "--intent", &adjusted, "--as", "analyst"
+            ]
+        )
+        .0,
+        0
+    );
+    let adjusting = dir.join("adjusting.cert").display().to_string();
+    assert_eq!(
+        run(
+            true,
+            &[
+                "scenario",
+                "diff",
+                "adjusted",
+                "--period",
+                "FY2026-P03",
+                "--certificate-out",
+                &adjusting
+            ]
+        )
+        .0,
+        0
+    );
+    let (code, out) = run(
+        true,
+        &["case", "rehearse", "2", "--certificate", &adjusting],
+    );
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(true, &["case", "approve", "2", "--dry-run"]);
+    assert_eq!(code, 0, "{out}");
+    let adjustment_digest = text(&doc(&out), "digest").to_string();
+    let mut approve_adjustment = |who: &str| {
+        let (code, out) = run(
+            true,
+            &["approve", "--proposal", &adjustment_digest, "--as", who],
+        );
+        assert_eq!(code, 0, "{out}");
+        text(&doc(&out), "approval_vid").to_string()
+    };
+    let by_controller = approve_adjustment("controller");
+    let by_auditor = approve_adjustment("auditor");
+    let (code, out) = run(
+        true,
+        &[
+            "case",
+            "approve",
+            "2",
+            "--approval",
+            &by_controller,
+            "--approval",
+            &by_auditor,
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    // An approver may not post what they approved: the entry's own
+    // PriorPeriodAdjustment row excludes its preparer.
+    let (code, out) = run(true, &["case", "post", "2", "--as", "controller"]);
+    assert_eq!(code, 7, "{out}");
+    let (code, out) = run(true, &["case", "post", "2"]);
+    assert_eq!(code, 0, "{out}");
+    let posted = doc(&out);
+    assert_eq!(posted.get("already_recorded"), Some(&Json::Bool(false)));
+    let case = posted.get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&case, "state"), "Posted", "{out}");
+    let entries = arr(&case, "posted");
+    assert_eq!(entries.len(), 1, "{out}");
+    let entry = text(&entries[0], "entry").to_string();
+    let (code, out) = run(true, &["explain", "entry", &entry]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("PriorPeriodAdjustment"), "{out}");
+    let (code, out) = run(true, &["case", "post", "2"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
     // A statement issuance (fa-wrrw): planned, approved in another hand,
     // committed from the exact plan, then listed.
     let (code, out) = run(

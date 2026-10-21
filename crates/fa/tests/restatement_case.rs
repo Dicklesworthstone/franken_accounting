@@ -3,15 +3,18 @@
 //! refusals, over a real memory book.
 
 use fa::{Book, BookKeys, Entropy};
+use fa_intents::PostIntent;
 use fa_journal::refusal::code;
 use fa_journal::{
-    AccountSpec, BookSpec, Capability, CaseKind, CaseState, Determination, Document, ScenarioFork,
-    UnitPolicy,
+    AccountSpec, BookSpec, Capability, CaseKind, CaseState, Determination, Document, PostRequest,
+    ScenarioFork, UnitPolicy,
 };
-use fa_model::{AccountType, Id128, Oid};
-use fa_money::UnitRegistry;
+use fa_model::{
+    AccountType, EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid, account_vid,
+};
+use fa_money::{Amount, Side, UnitRegistry};
 use fa_policy::{Op, Profile};
-use fa_time::{DateDay, FiscalCalendar};
+use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
 use fgdb_types::VId;
 
 const PRINCIPAL: VId = VId(1);
@@ -40,16 +43,28 @@ fn book(seed: u8) -> (Book, Oid, Oid) {
     .unwrap();
     let schema = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
     book.install_chart(
-        &[AccountSpec {
-            code: "1000".into(),
-            name: "Cash".into(),
-            account_type: AccountType::ASSET.0,
-            normal_balance: 0,
-            is_leaf: true,
-            unit_policy: UnitPolicy::AnyCurrency,
-            parent_code: None,
-            limit: None,
-        }],
+        &[
+            AccountSpec {
+                code: "1000".into(),
+                name: "Cash".into(),
+                account_type: AccountType::ASSET.0,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: UnitPolicy::AnyCurrency,
+                parent_code: None,
+                limit: None,
+            },
+            AccountSpec {
+                code: "3000".into(),
+                name: "Retained earnings".into(),
+                account_type: AccountType::EQUITY.0,
+                normal_balance: 1,
+                is_leaf: true,
+                unit_policy: UnitPolicy::AnyCurrency,
+                parent_code: None,
+                limit: None,
+            },
+        ],
         PRINCIPAL,
         day(2025, 1, 1),
         b"case-chart",
@@ -527,6 +542,236 @@ fn a_rehearsed_case_is_approved_under_dual_control() {
     assert_eq!(book.head().unwrap(), head);
     let twice = book
         .approve_case(restate, 1, vec![alice, bob], date, b"again")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(twice.code, code::CASE_STATE, "{twice:?}");
+}
+
+/// fa-75j4 slice 4a (plan §8.3 Posted: "the case's entries commit in one
+/// batch"): an Approved PriorPeriodAdjustment case posts its manifest's
+/// entry — the planned intent as a PriorPeriodAdjustment under the poster —
+/// with its Post record in one commit, once. The entry reaches trunk no
+/// other way, its row's approvals are the case's, and an approver may not
+/// post it.
+#[test]
+fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
+    let (mut book, narrative, authority) = book(0xcb);
+    let book_id = book.context().book_id;
+    let usd = UnitRegistry::embedded().unwrap().lookup("USD").unwrap();
+    let schema = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    book.create_periods(2026, PRINCIPAL, &schema)
+        .unwrap()
+        .unwrap();
+    book.transition_period(
+        "FY2026-P02",
+        PeriodTransition::Open,
+        PRINCIPAL,
+        1,
+        b"open-february",
+        &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let receipt = Document {
+        book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"Bank advice: a December 2025 receipt never recorded".to_vec(),
+    };
+    book.add_document(&receipt).unwrap().unwrap();
+    let restate = Capability::embedded(PRINCIPAL, &["restate", "read", "produce"]).unwrap();
+    let poster = Capability::embedded(PRINCIPAL, &["restate", "post", "read"]).unwrap();
+    let planner_vid = VId(4);
+    let planner = Capability::embedded(planner_vid, &["post", "read"]).unwrap();
+    let date = day(2026, 2, 12);
+    book.open_case(
+        restate.clone(),
+        CaseKind::PriorPeriodAdjustment,
+        vec!["FY2025-P12".into()],
+        Some(narrative),
+        Some(Determination {
+            day: day(2026, 2, 10),
+            authority,
+        }),
+        date,
+        b"adjustment",
+    )
+    .unwrap()
+    .unwrap();
+    book.open_scenario(
+        planner.clone(),
+        "adjusted",
+        ScenarioFork::default(),
+        date,
+        "The unrecorded December receipt",
+    )
+    .unwrap()
+    .unwrap();
+    let legs = vec![
+        LegPayload::simple(
+            Side::Debit,
+            account_vid(book_id, "1000"),
+            Amount::new(usd, 50_000),
+        ),
+        LegPayload::simple(
+            Side::Credit,
+            account_vid(book_id, "3000"),
+            Amount::new(usd, 50_000),
+        ),
+    ];
+    let planned = EntryPayload {
+        schema_minor: 0,
+        book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::ORIGINAL,
+        effective_date: date,
+        document_date: None,
+        description: book.seal_text("Prior-period receipt").unwrap(),
+        effective_period: None,
+        unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+        legs,
+        control: None,
+        base_totals: None,
+        idempotency_key: b"december-receipt".to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([0xcb; 32]),
+            intent_kind: 1,
+        },
+        principal_ref: planner_vid,
+        session_ref: None,
+        evidence: vec![receipt.evidence_ref(1)],
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    };
+    book.run_in_scenario(
+        planner,
+        "adjusted",
+        PostIntent::new(planned.clone(), Vec::new()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let certificate = book
+        .certify_scenario_diff(
+            PRINCIPAL,
+            &restate,
+            "adjusted",
+            &["FY2025-P12".to_string(), "FY2026-P02".to_string()],
+            false,
+        )
+        .unwrap()
+        .unwrap()
+        .certificate;
+    book.rehearse_case(restate.clone(), 1, &certificate, date, b"rehearsal")
+        .unwrap()
+        .unwrap();
+    // Not yet Approved: nothing posts.
+    let early = book
+        .post_case(poster.clone(), 1, date, b"post")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(early.code, code::CASE_STATE, "{early:?}");
+    let manifest = book.case_manifest(1).unwrap().unwrap();
+    let plan = manifest.entries[0].plan;
+    let digest = manifest.digest().unwrap();
+    let approve = |book: &mut Book, who: u128| {
+        book.approve(
+            Capability::embedded(VId(who), &["approve"]).unwrap(),
+            digest,
+        )
+        .unwrap()
+        .unwrap()
+        .approval()
+        .approval_vid
+    };
+    let alice = approve(&mut book, 2);
+    let bob = approve(&mut book, 3);
+    book.approve_case(restate.clone(), 1, vec![alice, bob], date, b"dual")
+        .unwrap()
+        .unwrap();
+
+    // The case's exact entry, posted on its own, is refused, as is any
+    // other entry claiming the case; nothing is written.
+    let derived = fa_journal::derive_member(
+        book_id,
+        CaseKind::PriorPeriodAdjustment,
+        1,
+        plan,
+        &planned,
+        PRINCIPAL,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(derived.class, EntryClass::PRIOR_PERIOD_ADJUSTMENT);
+    let head = book.head().unwrap();
+    let alone = book
+        .post(PostRequest {
+            proposal: derived.clone(),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: poster.clone(),
+        })
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(alone.code, code::CASE_MEMBERSHIP, "{alone:?}");
+    assert_eq!(book.head().unwrap(), head);
+    // A superseding case kind's entries are not posted in this build.
+    let delta =
+        fa_journal::derive_member(book_id, CaseKind::Restatement, 1, plan, &planned, PRINCIPAL)
+            .unwrap()
+            .unwrap_err();
+    assert_eq!(delta.code, code::CASE_MEMBERSHIP, "{delta:?}");
+
+    // An approver may not post: the entry's row excludes its preparer.
+    let approver = Capability::embedded(VId(2), &["restate", "post", "read"]).unwrap();
+    let own = book
+        .post_case(approver, 1, date, b"post")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(own.exit, 7, "{own:?}");
+    assert_eq!(book.head().unwrap(), head);
+    assert_eq!(book.case(1).unwrap().unwrap().state, CaseState::Approved);
+
+    let posted = book
+        .post_case(poster.clone(), 1, date, b"post")
+        .unwrap()
+        .unwrap();
+    assert!(!posted.already_recorded);
+    let case = &posted.case;
+    assert_eq!(case.state, CaseState::Posted);
+    assert_eq!(case.posted.len(), 1);
+    assert_eq!(case.posted[0].plan, plan);
+    assert_eq!(
+        case.transitions.last().map(|t| (t.from, t.to)),
+        Some((Some(CaseState::Approved), CaseState::Posted))
+    );
+    let (entry, recorded_at) = book.read_entry(case.posted[0].entry).unwrap().unwrap();
+    assert_eq!(recorded_at, posted.recorded_at, "one commit");
+    assert_eq!(
+        entry.proposal.proposal_digest().unwrap(),
+        derived.proposal_digest().unwrap()
+    );
+    assert_eq!(entry.entry_digest, case.posted[0].entry_digest);
+    assert_eq!(entry.proposal.principal_ref, PRINCIPAL);
+    assert!(
+        entry.approvals.is_empty(),
+        "the case's approvals are its own"
+    );
+    // The identical request is the recorded case; another is refused.
+    let head = book.head().unwrap();
+    let again = book
+        .post_case(poster.clone(), 1, date, b"post")
+        .unwrap()
+        .unwrap();
+    assert!(again.already_recorded);
+    assert_eq!(again.case, posted.case);
+    assert_eq!(book.head().unwrap(), head);
+    let twice = book
+        .post_case(poster, 1, date, b"again")
         .unwrap()
         .unwrap_err();
     assert_eq!(twice.code, code::CASE_STATE, "{twice:?}");

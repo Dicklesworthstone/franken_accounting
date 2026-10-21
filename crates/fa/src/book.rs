@@ -1322,6 +1322,29 @@ impl Book {
         )))
     }
 
+    /// Post case `ordinal` (plan §8.3: Approved → Posted, "the case's
+    /// entries commit in one batch"). Each manifest entry is the planned
+    /// intent as the case's class under `capability`'s holder, carrying
+    /// extension 23 `fa:case-member:v1`, through every posting law: its
+    /// matrix row and SoD rule are decided over the case's approvals, with
+    /// the poster as preparer and the planners as the case's preparers. The
+    /// entries, the Post record and the case's state change are one commit,
+    /// and a case's entry reaches trunk no other way. This build posts
+    /// PriorPeriodAdjustment cases; a Revision or Restatement case's entries
+    /// supersede a target with delta legs and are refused (FA-REF-178).
+    pub fn post_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.post_case(
+            &purposes, capability, ordinal, effective_date, idempotency_key,
+        )))
+    }
+
     /// Restatement case `ordinal` as its records state it.
     pub fn case(&self, ordinal: u32) -> Result<Option<fa_journal::CaseView>, BookError> {
         with_store!(&self.store, core => core.case(&self.purposes(), ordinal))
