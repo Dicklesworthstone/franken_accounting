@@ -1444,9 +1444,19 @@ fn run_scoped(
     }
     if authority.is_none() {
         if daemon_files.is_some() {
-            let override_flag = ["--as", "--grant"]
-                .into_iter()
-                .find(|flag| args.flags.contains_key(*flag) || args.switch(flag));
+            // The owner can still revoke through the serving daemon
+            // (fa-b295): revocation only removes authority, and while fad
+            // holds the writer lease no other route can perform it, since
+            // a launch token never carries issue_capability.
+            let grants = args.flag_all("--grant");
+            let revocation = args.positional.first().map(String::as_str) == Some("capability")
+                && args.positional.get(1).map(String::as_str) == Some("revoke")
+                && !grants.is_empty()
+                && grants.iter().all(|op| *op == "issue_capability");
+            let override_flag = ["--as", "--grant"].into_iter().find(|flag| {
+                (args.flags.contains_key(*flag) || args.switch(flag))
+                    && !(*flag == "--grant" && revocation)
+            });
             if let Some(flag) = override_flag {
                 let message = match flag {
                     "--as" => {

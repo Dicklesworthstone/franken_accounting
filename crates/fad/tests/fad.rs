@@ -1738,6 +1738,44 @@ fn untokened_fad_requests_cannot_self_grant_authority() {
     );
     assert!(out.contains("capability token"), "{out}");
 
+    // Only revocation may add a grant here, and only issue_capability
+    // (fa-b295): issuing a capability, or revoking with any other op, is
+    // still a self-grant.
+    let token = dir.join("escalated.token").display().to_string();
+    for argv in [
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "intruder",
+            "--profile",
+            "preparer",
+            "--out",
+            &token,
+            "--grant",
+            "issue_capability",
+        ][..],
+        &[
+            "capability",
+            "revoke",
+            "--commitment",
+            &"00".repeat(32),
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "privileged",
+            "--yes",
+        ][..],
+    ] {
+        let mut argv = argv.to_vec();
+        argv.extend(["--via", "fad", "--book", &b, "--json"]);
+        let (code, out, err) = fa(&argv);
+        assert_eq!(code, 7, "{argv:?}\n{out}\n{err}");
+        assert_eq!(field(&out, "refusal_id"), Some("FA-REF-011"), "{out}");
+        assert!(out.contains("`--grant` is not admitted"), "{out}");
+    }
+    assert!(!dir.join("escalated.token").exists());
+
     // The refusal is about caller-selected authority, not about disabling the
     // compatibility route wholesale: the same read without a grant still runs.
     let (code, allowed, err) = fa(&["book", "info", "--via", "fad", "--book", &b, "--json"]);
