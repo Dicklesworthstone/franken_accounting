@@ -252,6 +252,23 @@ fn bound(f: &Fixture, grants: &[&str], args: &[&str]) -> (u8, Vec<Json>) {
     (code, lines(&output.stdout))
 }
 
+/// Every write since `before` is an AccessEvent of a read-only bound session
+/// (fa-7dw): refusals and plain reviews publish nothing else.
+fn only_access_events(f: &Fixture, before: i128) {
+    let accessed = integer(
+        get(
+            &ok(&f.book, &["access", "log", "--since", &before.to_string()]),
+            "data",
+        ),
+        "count",
+    );
+    assert_eq!(
+        head(&f.book),
+        before + accessed,
+        "only the session's AccessEvents were written"
+    );
+}
+
 #[test]
 fn draft_review_requires_current_read_and_certification_requires_produce() {
     let f = Fixture::new(false);
@@ -278,7 +295,7 @@ fn draft_review_requires_current_read_and_certification_requires_produce() {
     assert_eq!(code, 7, "{output:?}");
     assert_eq!(output.len(), 1, "{output:?}");
     assert_eq!(text(&output[0], "event"), "error");
-    assert_eq!(head(&f.book), before);
+    only_access_events(&f, before);
     let (code, output) = bound(
         &f,
         &["produce"],
@@ -292,7 +309,7 @@ fn draft_review_requires_current_read_and_certification_requires_produce() {
         ],
     );
     assert_eq!(code, 7, "authority before draft existence: {output:?}");
-    assert_eq!(head(&f.book), before);
+    only_access_events(&f, before);
 
     let (code, output) = bound(&f, &["read", "produce"], &certify);
     assert_eq!(code, 0, "{output:?}");

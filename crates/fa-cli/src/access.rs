@@ -11,7 +11,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, usage};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa access log [--since <seq>] [--principal <name>] --json";
+const EXAMPLE: &str = "fa access log [--since <seq>] [--reader <principal name>] --json";
 
 pub(crate) fn access_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
@@ -37,7 +37,7 @@ fn log(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         })?),
     };
-    let principal = args.flag("--principal");
+    let principal = args.flag("--reader");
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
     let book = ctx.books.open_admitted(args, |book| {
@@ -79,7 +79,7 @@ fn log(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "access_log",
         vec![
             ("since", Json::Int(i128::from(since.0))),
-            ("principal", principal.map_or(Json::Null, s)),
+            ("reader", principal.map_or(Json::Null, s)),
             (
                 "count",
                 Json::Int(i128::try_from(rows.len()).unwrap_or(i128::MAX)),

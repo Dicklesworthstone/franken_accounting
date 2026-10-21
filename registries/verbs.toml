@@ -107,11 +107,11 @@ name = "access"
 summary = "Who read what (plan §9.7, §14.5): every command a read-only bound session runs (a capability whose ops stay within read, produce and verify, as the Auditor, Regulator, Investigator and Production templates are) commits an AccessEvent before it observes the book; access log lists them."
 writes = false
 subcommands = ["log"]
-flags = ["--since", "--principal"]
+flags = ["--since", "--reader"]
 switches = []
 events = ["access_log"]
 exits = [0, 2, 3, 4, 5, 7]
-usage = ["access log [--since <seq>] [--principal <name>]   (the AccessEvents recorded after --since, in recording order: principal, capability commitment and ops, the command, the digest of its arguments, the head it observed and the sequence it was recorded at)", "A record is committed before the read it describes observes the book, so a delivered answer always has one; a command that then fails leaves a record with nothing delivered. Reading the log under a read-only session records that read too. Embedded-owner and writing sessions are not recorded by this slice."]
+usage = ["access log [--since <seq>] [--reader <principal name>]   (the AccessEvents recorded after --since, in recording order: principal, capability commitment and ops, the command, the digest of its arguments, the head it observed and the sequence it was recorded at)", "A record is committed before the read it describes observes the book, so a delivered answer always has one; a command that then fails leaves a record with nothing delivered. Reading the log under a read-only session records that read too. Embedded-owner and writing sessions are not recorded by this slice."]
 example = "fa access log --since 0 --json"
 
 [[verb]]
@@ -1322,8 +1322,8 @@ fields = ["laws:[law_row]"]
 [[event]]
 name = "access_log"
 book = true
-doc = "The AccessEvents recorded after `since` (optionally one principal's), in recording order. Each names the bound session's principal, its capability commitment and ops, the command, the digest of its bound arguments (positionals, flags and switches without host paths), the head it observed (`observed_at`) and the sequence it was recorded at, always after it."
-fields = ["since:seq", "principal:string?", "count:int", "events:[access_event]"]
+doc = "The AccessEvents recorded after `since` (optionally only those of the principal named `reader`), in recording order. Each names the bound session's principal, its capability commitment and ops, the command, the digest of its bound arguments (positionals, flags and switches without host paths), the head it observed (`observed_at`) and the sequence it was recorded at, always after it."
+fields = ["since:seq", "reader:string?", "count:int", "events:[access_event]"]
 
 [[event]]
 name = "law"
@@ -3262,7 +3262,7 @@ doc = "The registered laws (rounding, allocation, conversion, FX, lot, tracing) 
 [[mcp.cluster]]
 name = "fa.audit"
 on_demand = true
-doc = "Audit sampling (plan §11.7): reproducible uniform and monetary-unit samples of an account's open items from a declared seed, and the Stringer evaluation of an MUS sample's audited values. Pure reads. On demand (fa-mcp --cluster fa.audit)."
+doc = "Audit sampling (plan §11.7): reproducible uniform and monetary-unit samples of an account's open items from a declared seed, and the Stringer evaluation of an MUS sample's audited values; and the access log (plan §9.7): who read what. Pure reads. On demand (fa-mcp --cluster fa.audit)."
 
 [[mcp.tool]]
 cluster = "fa.orient"
@@ -3634,12 +3634,12 @@ mistakes = ["Targeting a leg on the same side as the payment leg instead of the 
 # ---- fa.read ----------------------------------------------------------------
 
 [[mcp.tool]]
-cluster = "fa.findings"
+cluster = "fa.audit"
 name = "access_log"
 verb = "access"
 subcommands = ["log"]
 positionals = []
-flags = ["--since", "--principal"]
+flags = ["--since", "--reader"]
 switches = []
 required = []
 dont = ["Read who read what: each event names the principal, its capability commitment and ops, the command and the head it observed. Under a read-only launch this read is itself recorded."]

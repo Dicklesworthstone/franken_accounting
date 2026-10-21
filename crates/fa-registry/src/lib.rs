@@ -1832,7 +1832,8 @@ mod tests {
         assert!(
             String::from_utf8(a)
                 .unwrap()
-                .starts_with("label:Account=3\n")
+                .starts_with("label:AccessEvent=52\nlabel:Account=3\n"),
+            "labels sort by name"
         );
     }
 
