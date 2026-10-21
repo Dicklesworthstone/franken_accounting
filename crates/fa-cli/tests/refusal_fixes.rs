@@ -9,7 +9,7 @@
 //! - **command**: `fix.argv` runs against the book, then the refused request
 //!   is resubmitted;
 //! - **rerun**: the refused command runs again with `fix.rerun_with` added;
-//! - **inform**: `fix.argv` is a read (verbs.toml `writes = false`) that must
+//! - **inform**: `fix.argv` is a read (its `[[bound]]` rule needs only `read`) that must
 //!   succeed; the refusal stands by design (the period law is never escaped
 //!   by re-dating), so nothing is resubmitted;
 //! - **judgment**: the refusal carries no mechanical fix (no command, field
@@ -326,9 +326,16 @@ fn execute(case: &Case) -> Vec<&'static str> {
                 let verb = fix_verb(reg, &fix_argv)
                     .unwrap_or_else(|| panic!("{}: fix names no verb: {fix_argv:?}", case.name));
                 if matches!(apply, Apply::Inform) {
+                    // A read is a command whose `[[bound]]` rule needs only
+                    // `read` (verbs.toml `writes` is per verb: `chart`
+                    // writes through `chart import`, `chart list` reads).
+                    let parsed =
+                        fa_cli::args::parse(&fix_argv, &reg.value_flags(), &reg.switches())
+                            .expect("fix argv parses");
+                    let ops = fa_cli::cli::bound_command_ops(&verb.name, &parsed);
                     assert!(
-                        !verb.writes,
-                        "{}: an informational fix must be a read: {fix_argv:?}",
+                        ops.is_some_and(|ops| ops.iter().all(|op| *op == fa_policy::Op::Read)),
+                        "{}: an informational fix must be a read: {fix_argv:?} needs {ops:?}",
                         case.name
                     );
                 }
