@@ -24,6 +24,15 @@
 //!   one proof ref, the committed trunk entry whose legs equal the proposal's.
 //! - **Pass** (`Proposed → Passed` on the ProposedAdjustment) carries an
 //!   `adjustment_pass` reason code (`reason_codes.toml`).
+//! - **File** (`s → s` on the Engagement, no extension) puts one document
+//!   the book holds, its one proof ref, in the engagement's workpaper index.
+//! - **Complete** (`Open → DocumentationComplete` on the Engagement)
+//!   journals the documentation completion once (extension 26
+//!   `fa:documentation-completion:v1`): the report release date and a
+//!   completion date at most 45 days after it (AS 1215.15). Every later
+//!   Propose or File record is journaled in DocumentationComplete, so the
+//!   record itself says it is an addition after completion (AS 1215.16);
+//!   a later Book or Pass is one by journal order. Nothing is withdrawn.
 //!
 //! A decided proposal is never decided again (FA-REF-181): its state mirror
 //! moves by compare-and-set, so two concurrent decisions cannot both commit.
@@ -35,8 +44,8 @@ use std::collections::BTreeMap;
 
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, Reader,
-    TypedRef, Writer, domain_digest, engagement_vid, entry_mirrors, entry_vid, period_vid,
+    ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, Oid,
+    Reader, TypedRef, Writer, domain_digest, engagement_vid, entry_mirrors, entry_vid, period_vid,
     proposed_adjustment_vid,
 };
 use fa_money::{Amount, Side, UnitId};
@@ -69,8 +78,16 @@ pub const MAX_SCOPE_PERIODS: usize = 64;
 pub const MAX_PERIOD_CODE_BYTES: usize = 64;
 /// The legs one proposed adjustment may carry.
 pub const MAX_PROPOSAL_LEGS: usize = 256;
+/// Canonical bytes of a documentation completion (extension 26): `u16
+/// version ‖ i32 report_release_day ‖ i32 completion_day`.
+pub const COMPLETION_VERSION: u16 = 1;
+/// AS 1215.15: documentation is complete within 45 days after the report
+/// release date.
+pub const DOCUMENTATION_WINDOW_DAYS: i32 = 45;
 const PROFILE_DOMAIN: &[u8] = b"fa:engagement:v1";
 const PROPOSAL_DOMAIN: &[u8] = b"fa:proposed-adjustment:v1";
+const COMPLETION_DOMAIN: &[u8] = b"fa:documentation-completion:v1";
+const WORKPAPER_DOMAIN: &[u8] = b"fa:engagement-workpaper:v1";
 const RECORD_KEY_DOMAIN: &[u8] = b"fa:engagement-record-key:v1";
 
 /// The kind of engagement (Appendix A `Engagement.kind`).
@@ -395,6 +412,68 @@ impl ProposedAdjustment {
     }
 }
 
+/// An engagement's documentation completion (plan §11.12, AS 1215.15): the
+/// report release date and the documentation completion date, which must lie
+/// within [`DOCUMENTATION_WINDOW_DAYS`] days after it. Journaled once, by
+/// the Complete record (extension 26).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DocumentationCompletion {
+    pub report_release_day: DateDay,
+    pub completion_day: DateDay,
+}
+
+impl DocumentationCompletion {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
+        let mut w = Writer::with_capacity(10);
+        w.u16(COMPLETION_VERSION)
+            .i32(self.report_release_day.0)
+            .i32(self.completion_day.0);
+        Ok(w.finish()?)
+    }
+
+    pub fn decode(raw: &[u8]) -> Result<Self, KernelError> {
+        let mut r = Reader::new(raw);
+        if r.u16("completion.version").map_err(decode)? != COMPLETION_VERSION {
+            return Err(KernelError::Corrupt(
+                "unsupported documentation completion version".into(),
+            ));
+        }
+        let completion = Self {
+            report_release_day: DateDay(r.i32("completion.report_release").map_err(decode)?),
+            completion_day: DateDay(r.i32("completion.day").map_err(decode)?),
+        };
+        r.finish().map_err(decode)?;
+        completion
+            .check()
+            .map_err(|why| KernelError::Corrupt(format!("documentation completion: {why}")))?;
+        Ok(completion)
+    }
+
+    /// The completion date is on or after the report release date and at
+    /// most [`DOCUMENTATION_WINDOW_DAYS`] days after it.
+    pub fn check(&self) -> Result<(), String> {
+        let after = self
+            .completion_day
+            .0
+            .checked_sub(self.report_release_day.0)
+            .ok_or_else(|| "the documentation completion dates overflow".to_string())?;
+        if !(0..=DOCUMENTATION_WINDOW_DAYS).contains(&after) {
+            return Err(format!(
+                "the documentation completion date {} must lie within {DOCUMENTATION_WINDOW_DAYS} days after the report release date {} (AS 1215.15)",
+                self.completion_day, self.report_release_day
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn digest(&self) -> Result<[u8; 32], KernelError> {
+        Ok(domain_digest(
+            COMPLETION_DOMAIN,
+            &[&self.canonical_bytes()?],
+        ))
+    }
+}
+
 /// Two or more legs with positive amounts whose debits equal their credits
 /// in every unit, in exact checked arithmetic.
 fn check_legs(legs: &[ProposalLeg]) -> Result<(), String> {
@@ -427,11 +506,14 @@ fn decode(e: fa_model::DecodeError) -> KernelError {
     KernelError::Model(e.into())
 }
 
-/// An `Engagement`'s `state` projection. One state in this build; completing
-/// documentation is added as a new transition, never by reusing this tag.
+/// An `Engagement`'s `state` projection: Open until its documentation
+/// completion is journaled, then DocumentationComplete (AS 1215.15). A
+/// record journaled in DocumentationComplete is an addition after
+/// completion, and says so in its own `from`/`to` states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngagementState {
     Open,
+    DocumentationComplete,
 }
 
 impl EngagementState {
@@ -439,6 +521,7 @@ impl EngagementState {
     pub fn tag(self) -> u8 {
         match self {
             Self::Open => 1,
+            Self::DocumentationComplete => 2,
         }
     }
 
@@ -446,6 +529,7 @@ impl EngagementState {
     pub fn name(self) -> &'static str {
         match self {
             Self::Open => "open",
+            Self::DocumentationComplete => "documentation_complete",
         }
     }
 
@@ -456,6 +540,15 @@ impl EngagementState {
     fn from_scalar(v: Option<&CanonicalScalar>) -> Option<Self> {
         match v {
             Some(CanonicalScalar::Int(1)) => Some(Self::Open),
+            Some(CanonicalScalar::Int(2)) => Some(Self::DocumentationComplete),
+            _ => None,
+        }
+    }
+
+    fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            1 => Some(Self::Open),
+            2 => Some(Self::DocumentationComplete),
             _ => None,
         }
     }
@@ -580,6 +673,8 @@ pub struct RecordedDecision {
     /// stands, so the proposal is uncorrected again (the decision itself
     /// stays on the record).
     pub superseded_by: Option<VId>,
+    /// Decided after the documentation completion (by journal order).
+    pub added_after_completion: bool,
 }
 
 /// A proposal as the journal states it.
@@ -592,6 +687,8 @@ pub struct ProposalView {
     pub proposed_by: VId,
     pub state: AdjustmentState,
     pub decision: Option<RecordedDecision>,
+    /// Proposed after the documentation completion (its record says so).
+    pub added_after_completion: bool,
 }
 
 /// An engagement's profile and every proposal its records journaled.
@@ -605,6 +702,54 @@ pub struct EngagementView {
     pub next_proposal: u32,
     /// By ordinal.
     pub proposals: Vec<ProposalView>,
+    /// The workpaper index: every document filed in the engagement, in
+    /// filing order.
+    pub workpapers: Vec<WorkpaperView>,
+    /// The journaled documentation completion, once there is one.
+    pub documentation: Option<CompletionView>,
+}
+
+/// A recorded File: a document of the book in the engagement's workpaper
+/// index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkpaperFiled {
+    pub engagement: VId,
+    pub document: Oid,
+    pub control_entry: VId,
+    pub recorded_at: CommitSeq,
+    /// Filed after the documentation completion (AS 1215.16).
+    pub added_after_completion: bool,
+    /// The same filing was already journaled (FA-INV-09): nothing written.
+    pub already_recorded: bool,
+}
+
+/// A recorded Complete.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentationCompleted {
+    pub engagement: VId,
+    pub completion: DocumentationCompletion,
+    pub control_entry: VId,
+    pub recorded_at: CommitSeq,
+    pub already_recorded: bool,
+}
+
+/// One workpaper as the journal states it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkpaperView {
+    pub document: Oid,
+    pub record: VId,
+    pub filed_at: CommitSeq,
+    pub filed_by: VId,
+    pub added_after_completion: bool,
+}
+
+/// The documentation completion as the journal states it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletionView {
+    pub completion: DocumentationCompletion,
+    pub record: VId,
+    pub recorded_at: CommitSeq,
+    pub completed_by: VId,
 }
 
 #[derive(Clone, Copy)]
@@ -613,6 +758,8 @@ enum Kind {
     Propose,
     Book,
     Pass,
+    File,
+    Complete,
 }
 
 impl Kind {
@@ -622,6 +769,8 @@ impl Kind {
             Self::Propose => "Propose",
             Self::Book => "Book",
             Self::Pass => "Pass",
+            Self::File => "File",
+            Self::Complete => "Complete",
         }
     }
 
@@ -631,17 +780,23 @@ impl Kind {
             Self::Propose => 1,
             Self::Book => 2,
             Self::Pass => 3,
+            Self::File => 4,
+            Self::Complete => 5,
         }
     }
 
-    /// `(from, to)` on the record's object: the Engagement for Open and
-    /// Propose, the ProposedAdjustment for Book and Pass.
-    fn states(self) -> (u8, u8) {
+    /// `(from, to)` on the record's object: the Engagement for Open,
+    /// Propose, File and Complete, the ProposedAdjustment for Book and Pass.
+    /// Propose and File keep the engagement's state (`state`), so a record
+    /// journaled after documentation completion says so; Complete moves it
+    /// from Open to DocumentationComplete, once.
+    fn states(self, state: EngagementState) -> (u8, u8) {
         let open = EngagementState::Open.tag();
         let proposed = AdjustmentState::Proposed.tag();
         match self {
             Self::Open => (0, open),
-            Self::Propose => (open, open),
+            Self::Propose | Self::File => (state.tag(), state.tag()),
+            Self::Complete => (open, EngagementState::DocumentationComplete.tag()),
             Self::Book => (proposed, AdjustmentState::Booked.tag()),
             Self::Pass => (proposed, AdjustmentState::Passed.tag()),
         }
@@ -658,10 +813,13 @@ fn record_key(kind: Kind, object: VId, key: &[u8]) -> Vec<u8> {
     .to_vec()
 }
 
+/// `state` is the engagement's state the record is journaled in (it decides
+/// Propose's and File's `from`/`to`; the other kinds ignore it).
 #[allow(clippy::too_many_arguments)]
 fn record_proposal(
     book: &BookContext,
     kind: Kind,
+    state: EngagementState,
     object: VId,
     spec_digest: [u8; 32],
     req: &EngagementRequest,
@@ -669,7 +827,7 @@ fn record_proposal(
     reason_code: u16,
     extension: Option<(u16, Vec<u8>)>,
 ) -> EntryPayload {
-    let (from, to) = kind.states();
+    let (from, to) = kind.states(state);
     EntryPayload {
         schema_minor: fa_model::entry::SCHEMA_MINOR,
         book_id: book.book_id,
@@ -926,6 +1084,7 @@ pub async fn open_engagement<V: asupersync::fs::Vfs + Clone>(
     let proposal = record_proposal(
         book,
         Kind::Open,
+        EngagementState::Open,
         vid,
         profile.digest()?,
         &req,
@@ -1186,15 +1345,18 @@ pub async fn propose_adjustment<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return recorded_proposal(db, book, &stored, effective_date, &legs, &req);
     }
-    if EngagementState::from_scalar(txn.vertex_property(db, vid, property::STATE)?.as_ref())
-        != Some(EngagementState::Open)
-    {
+    // A point read of the state: a documentation completion that commits
+    // first makes this a first-committer conflict, so the record's states
+    // always say whether it was added after completion.
+    let Some(state) =
+        EngagementState::from_scalar(txn.vertex_property(db, vid, property::STATE)?.as_ref())
+    else {
         txn.abort();
         return Err(KernelError::Corrupt(format!(
             "engagement {:032x} state mirror",
             vid.0
         )));
-    }
+    };
     let Some(_) = scope_period_of(&txn, db, book, &profile, effective_date)? else {
         txn.abort();
         return Ok(Err(Refusal::new(
@@ -1236,6 +1398,7 @@ pub async fn propose_adjustment<V: asupersync::fs::Vfs + Clone>(
     let record = record_proposal(
         book,
         Kind::Propose,
+        state,
         vid,
         proposal.digest()?,
         &req,
@@ -1337,9 +1500,19 @@ fn recorded_proposal<V: asupersync::fs::Vfs + Clone>(
     };
     let vid = engagement_vid(book.book_id, &proposal.engagement);
     let pvid = proposed_adjustment_vid(book.book_id, &proposal.engagement, proposal.ordinal);
+    // The state the stored record was journaled in, which a retry after
+    // documentation completion does not change.
+    let state = match &entry.proposal.control {
+        Some(ControlPayload::LifecycleTransition { from, .. }) => EngagementState::from_tag(*from),
+        _ => None,
+    };
+    let Some(state) = state else {
+        return Ok(Err(conflict_with(stored)));
+    };
     let candidate = record_proposal(
         book,
         Kind::Propose,
+        state,
         vid,
         proposal.digest()?,
         req,
@@ -1487,9 +1660,12 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
         AdjustmentDecision::Book { entry } => (vec![TypedRef::Vertex(entry)], 0),
         AdjustmentDecision::Pass { reason_code } => (Vec::new(), reason_code),
     };
+    // A decision's states are the proposal's; whether it came after the
+    // engagement's documentation completion is its journal order.
     let record = record_proposal(
         book,
         kind,
+        EngagementState::Open,
         pvid,
         proposal.digest()?,
         &req,
@@ -1718,6 +1894,370 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+/// A document this book holds, verified, for the engagement's workpaper
+/// index.
+fn witness_workpaper<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    document: &Oid,
+) -> Outcome<()> {
+    let policy = fa_registry::evidence_policy::EvidencePolicy::embedded()
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let Some(row) = txn.vertex(db, crate::evidence::document_vid(document))? else {
+        return Ok(Err(Refusal::new(
+            code::EVIDENCE_UNKNOWN,
+            exit::REFUSAL,
+            format!(
+                "workpaper document {} is not in this book",
+                crate::evidence::hex(&document.0)
+            ),
+            "plan §11.12 (an engagement's workpaper index lists documents the book holds)",
+            "record it first with `fa document add <file> --kind Workpaper --json` and file the oid it prints",
+        )));
+    };
+    match crate::evidence::verify_row(&row, &policy) {
+        Ok(_) => Ok(Ok(())),
+        Err(why) => Ok(Err(crate::evidence::drift(document, &why))),
+    }
+}
+
+fn completion_refused(why: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::DOCUMENTATION_COMPLETION,
+        exit::REFUSAL,
+        why.into(),
+        "plan §11.12, AS 1215.15 (documentation is complete within 45 days after the report release date, once)",
+        "fa engagement complete <id> --completion-date YYYY-MM-DD [--report-release YYYY-MM-DD], with the completion date within 45 days after the report release date; `fa engagement show <id> --json` shows the engagement's state",
+    )
+}
+
+/// File `document` in `engagement`'s workpaper index (plan §11.12): one
+/// commit journaling the File record, whose one proof ref is the document,
+/// and its `IN_CASE` edge to the engagement. The document must be one this
+/// book holds, verified, and not already in the index. The record's
+/// identity derives from the document, so the same filing retried is the
+/// same record. Filed after the documentation completion, the record is
+/// journaled in DocumentationComplete: an addition after completion, which
+/// the index marks (AS 1215.16); nothing filed is ever withdrawn.
+pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    engagement: &str,
+    document: Oid,
+    req: EngagementRequest,
+) -> Outcome<WorkpaperFiled> {
+    const FIX: &str = "fa engagement file <id> --document <oid>";
+    if let Err(why) = check_engagement(engagement) {
+        return Ok(Err(usage(why, FIX)));
+    }
+    if let Err(r) = admit(db, book, &req.capability, Kind::File)? {
+        return Ok(Err(r));
+    }
+    let vid = engagement_vid(book.book_id, engagement);
+    let key = record_key(Kind::File, vid, &document.0);
+    let evid = entry_vid(book.book_id, &req.capability.holder().0.to_le_bytes(), &key);
+    let spec_digest = domain_digest(WORKPAPER_DOMAIN, &[&vid.0.to_le_bytes(), &document.0]);
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if engagement_row(&txn, db, vid)?.is_none() {
+        txn.abort();
+        return Ok(Err(unknown(engagement)));
+    }
+    // A point read of the state: a completion that commits first makes this
+    // a first-committer conflict, so the record says which side it is on.
+    let read_state = txn.vertex_property(db, vid, property::STATE)?;
+    let Some(state) = EngagementState::from_scalar(read_state.as_ref()) else {
+        txn.abort();
+        return Err(KernelError::Corrupt(format!(
+            "engagement {:032x} state mirror",
+            vid.0
+        )));
+    };
+    if let Some(stored) = txn.vertex(db, evid)? {
+        txn.abort();
+        let (entry, _) = crate::post::entry_of(&stored)?;
+        let stored_state = match &entry.proposal.control {
+            Some(ControlPayload::LifecycleTransition { from, .. }) => {
+                EngagementState::from_tag(*from)
+            }
+            _ => None,
+        };
+        let Some(stored_state) = stored_state else {
+            return Ok(Err(conflict_with(&stored)));
+        };
+        let record = record_proposal(
+            book,
+            Kind::File,
+            stored_state,
+            vid,
+            spec_digest,
+            &req,
+            vec![TypedRef::Object(document)],
+            0,
+            None,
+        );
+        return Ok(
+            recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| WorkpaperFiled {
+                engagement: vid,
+                document,
+                control_entry: evid,
+                recorded_at,
+                added_after_completion: stored_state == EngagementState::DocumentationComplete,
+                already_recorded: true,
+            }),
+        );
+    }
+    if let Err(r) = witness_workpaper(&txn, db, &document)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let seq = db.frontier()?;
+    for (record, entry, recorded_at, _, _) in records_into(db, vid, seq)? {
+        if let Some(ControlPayload::LifecycleTransition { proof_refs, .. }) =
+            &entry.proposal.control
+            && entry.proposal.extensions.is_empty()
+            && proof_refs.as_slice() == [TypedRef::Object(document)]
+        {
+            txn.abort();
+            return Ok(Err(usage(
+                format!(
+                    "document {} is already in engagement `{engagement}`'s workpaper index (record {:032x}, at {})",
+                    crate::evidence::hex(&document.0),
+                    record.0,
+                    recorded_at.0
+                ),
+                "file each document once; `fa engagement show <id> --json` lists the index",
+            )));
+        }
+    }
+    let record = record_proposal(
+        book,
+        Kind::File,
+        state,
+        vid,
+        spec_digest,
+        &req,
+        vec![TypedRef::Object(document)],
+        0,
+        None,
+    );
+    if record.validate().is_err() {
+        txn.abort();
+        return Ok(Err(usage(
+            "the File record is not a valid EngagementControl entry",
+            FIX,
+        )));
+    }
+    let entry = record.clone().seal(Vec::new(), None)?;
+    let mut batch = WriteBatch::new(relation::IN_CASE);
+    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
+    if let Err(e) = txn.write(db, batch) {
+        txn.abort();
+        return Err(e.into());
+    }
+    let added_after_completion = state == EngagementState::DocumentationComplete;
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(WorkpaperFiled {
+            engagement: vid,
+            document,
+            control_entry: evid,
+            recorded_at: seq,
+            added_after_completion,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(fcw(&detail)))
+        }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => match db.vertex(evid)? {
+            Some(stored) => Ok(
+                recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| WorkpaperFiled {
+                    engagement: vid,
+                    document,
+                    control_entry: evid,
+                    recorded_at,
+                    added_after_completion,
+                    already_recorded: true,
+                }),
+            ),
+            None => Ok(Err(fcw("the workpaper was filed concurrently"))),
+        },
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Journal `engagement`'s documentation completion (plan §11.12, AS
+/// 1215.15): one commit journaling the Complete record (extension 26: the
+/// report release date and the completion date, at most 45 days after it)
+/// and moving the engagement from Open to DocumentationComplete by
+/// compare-and-set, once. The report release date is the profile's when it
+/// states one (`report_release` must then match or be absent), else
+/// `report_release`. Every later record of the engagement is an addition
+/// after completion.
+pub async fn complete_documentation<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    engagement: &str,
+    report_release: Option<DateDay>,
+    completion_day: DateDay,
+    req: EngagementRequest,
+) -> Outcome<DocumentationCompleted> {
+    const FIX: &str =
+        "fa engagement complete <id> --completion-date YYYY-MM-DD [--report-release YYYY-MM-DD]";
+    if let Err(why) = check_engagement(engagement) {
+        return Ok(Err(usage(why, FIX)));
+    }
+    if let Err(r) = admit(db, book, &req.capability, Kind::Complete)? {
+        return Ok(Err(r));
+    }
+    let vid = engagement_vid(book.book_id, engagement);
+    let key = record_key(Kind::Complete, vid, &req.idempotency_key);
+    let evid = entry_vid(book.book_id, &req.capability.holder().0.to_le_bytes(), &key);
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
+        txn.abort();
+        return Ok(Err(unknown(engagement)));
+    };
+    let report_release_day = match (profile.report_release_day, report_release) {
+        (Some(stated), Some(given)) if stated != given => {
+            txn.abort();
+            return Ok(Err(completion_refused(format!(
+                "engagement `{engagement}` states its report release date as {stated}; {given} differs"
+            ))));
+        }
+        (Some(stated), _) => stated,
+        (None, Some(given)) => given,
+        (None, None) => {
+            txn.abort();
+            return Ok(Err(completion_refused(format!(
+                "engagement `{engagement}` states no report release date; name it with --report-release"
+            ))));
+        }
+    };
+    let completion = DocumentationCompletion {
+        report_release_day,
+        completion_day,
+    };
+    if let Err(why) = completion.check() {
+        txn.abort();
+        return Ok(Err(completion_refused(why)));
+    }
+    let record = record_proposal(
+        book,
+        Kind::Complete,
+        EngagementState::Open,
+        vid,
+        completion.digest()?,
+        &req,
+        Vec::new(),
+        0,
+        Some((
+            fa_model::entry::DOCUMENTATION_COMPLETION_EXTENSION,
+            completion.canonical_bytes()?,
+        )),
+    );
+    if let Some(stored) = txn.vertex(db, evid)? {
+        txn.abort();
+        return Ok(
+            recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| {
+                DocumentationCompleted {
+                    engagement: vid,
+                    completion,
+                    control_entry: evid,
+                    recorded_at,
+                    already_recorded: true,
+                }
+            }),
+        );
+    }
+    let read_state = txn.vertex_property(db, vid, property::STATE)?;
+    match EngagementState::from_scalar(read_state.as_ref()) {
+        Some(EngagementState::Open) => {}
+        Some(EngagementState::DocumentationComplete) => {
+            txn.abort();
+            return Ok(Err(completion_refused(format!(
+                "engagement `{engagement}`'s documentation completion is already journaled; it is recorded once"
+            ))));
+        }
+        None => {
+            txn.abort();
+            return Err(KernelError::Corrupt(format!(
+                "engagement {:032x} state mirror",
+                vid.0
+            )));
+        }
+    }
+    if record.validate().is_err() {
+        txn.abort();
+        return Ok(Err(usage(
+            "the Complete record is not a valid EngagementControl entry",
+            FIX,
+        )));
+    }
+    let entry = record.clone().seal(Vec::new(), None)?;
+    let mut batch = WriteBatch::new(relation::IN_CASE);
+    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
+    batch.compare_and_set_vertex_property(
+        vid,
+        property::STATE,
+        read_state,
+        EngagementState::DocumentationComplete.scalar(),
+        WriteMismatchPolicy::AbortWrite,
+    );
+    if let Err(e) = txn.write(db, batch) {
+        txn.abort();
+        return Err(e.into());
+    }
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(DocumentationCompleted {
+            engagement: vid,
+            completion,
+            control_entry: evid,
+            recorded_at: seq,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(fcw(&detail)))
+        }
+        Err(WriteTxnError::Write(fgdb::WriteError::CompareAndSetMismatch(_))) => Ok(Err(
+            completion_refused("the documentation completion was journaled concurrently"),
+        )),
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => {
+            match db.vertex(evid)? {
+                Some(stored) => Ok(recorded_or_conflict(book, &stored, &record)?.map(
+                    |recorded_at| DocumentationCompleted {
+                        engagement: vid,
+                        completion,
+                        control_entry: evid,
+                        recorded_at,
+                        already_recorded: true,
+                    },
+                )),
+                None => Ok(Err(fcw(
+                    "the documentation completion was journaled concurrently",
+                ))),
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn differs(engagement: &str, ordinal: u32, why: &str) -> Refusal {
     Refusal::new(
         code::BOOKED_ENTRY_DIFFERS,
@@ -1825,10 +2365,17 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let next_proposal = next_of(prop(row, property::ORDINAL), vid)?;
     let seq = db.frontier()?;
     let open = EngagementState::Open.tag();
+    let complete = EngagementState::DocumentationComplete.tag();
     let mut opened = None;
     let mut proposals = Vec::new();
+    let mut workpapers = Vec::new();
+    let mut documentation: Option<CompletionView> = None;
     for (record, entry, recorded_at, from, to) in records_into(db, vid, seq)? {
-        let Some(ControlPayload::LifecycleTransition { object_ref, .. }) = &entry.proposal.control
+        let Some(ControlPayload::LifecycleTransition {
+            object_ref,
+            proof_refs,
+            ..
+        }) = &entry.proposal.control
         else {
             continue;
         };
@@ -1837,7 +2384,50 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         }
         match (from, to) {
             (0, t) if t == open => opened = Some((recorded_at, entry.proposal.principal_ref)),
-            (f, t) if f == open && t == open => {
+            (f, t) if f == open && t == complete => {
+                let Some((_, body)) =
+                    entry.proposal.extensions.iter().find(|(tag, _)| {
+                        *tag == fa_model::entry::DOCUMENTATION_COMPLETION_EXTENSION
+                    })
+                else {
+                    return Err(KernelError::Corrupt(format!(
+                        "Complete record {:032x} carries no documentation completion",
+                        record.0
+                    )));
+                };
+                if documentation.is_some() {
+                    return Err(KernelError::Corrupt(format!(
+                        "engagement `{}` completes its documentation twice",
+                        profile.engagement
+                    )));
+                }
+                documentation = Some(CompletionView {
+                    completion: DocumentationCompletion::decode(body)?,
+                    record,
+                    recorded_at,
+                    completed_by: entry.proposal.principal_ref,
+                });
+            }
+            (f, t)
+                if f == t
+                    && (f == open || f == complete)
+                    && entry.proposal.extensions.is_empty() =>
+            {
+                let [TypedRef::Object(document)] = proof_refs.as_slice() else {
+                    return Err(KernelError::Corrupt(format!(
+                        "File record {:032x} does not name one document",
+                        record.0
+                    )));
+                };
+                workpapers.push(WorkpaperView {
+                    document: *document,
+                    record,
+                    filed_at: recorded_at,
+                    filed_by: entry.proposal.principal_ref,
+                    added_after_completion: f == complete,
+                });
+            }
+            (f, t) if f == t && (f == open || f == complete) => {
                 let Some(proposal) = proposal_record(&entry)? else {
                     return Err(KernelError::Corrupt(format!(
                         "Propose record {:032x} carries no proposed adjustment",
@@ -1881,6 +2471,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                     proposed_by: entry.proposal.principal_ref,
                     state,
                     decision,
+                    added_after_completion: f == complete,
                 });
             }
             _ => {
@@ -1894,6 +2485,30 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let (opened_at, opened_by) = opened.ok_or_else(|| {
         KernelError::Corrupt(format!("engagement {:032x} has no Open record", vid.0))
     })?;
+    // The state mirror, each record's own states and the journal order agree:
+    // a record journaled after the completion says so, and none before it.
+    let completed_at = documentation.as_ref().map(|c| c.recorded_at);
+    if (state == EngagementState::DocumentationComplete) != completed_at.is_some()
+        || proposals
+            .iter()
+            .map(|p| (p.proposed_at, p.added_after_completion))
+            .chain(
+                workpapers
+                    .iter()
+                    .map(|w| (w.filed_at, w.added_after_completion)),
+            )
+            .any(|(at, after)| completed_at.is_some_and(|c| at > c) != after)
+    {
+        return Err(KernelError::Corrupt(format!(
+            "engagement `{}`: its documentation completion disagrees with its records",
+            profile.engagement
+        )));
+    }
+    for proposal in &mut proposals {
+        if let (Some(decision), Some(c)) = (proposal.decision.as_mut(), completed_at) {
+            decision.added_after_completion = decision.recorded_at > c;
+        }
+    }
     proposals.sort_by_key(|p| p.proposal.ordinal);
     if proposals
         .iter()
@@ -1914,6 +2529,8 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         opened_by,
         next_proposal,
         proposals,
+        workpapers,
+        documentation,
     })
 }
 
@@ -1972,6 +2589,8 @@ fn decision_of<V: asupersync::fs::Vfs + Clone>(
             recorded_at,
             decided_by: entry.proposal.principal_ref,
             superseded_by,
+            // Set by the engagement's view, which knows its completion.
+            added_after_completion: false,
         });
     }
     Ok(decided)
@@ -2324,10 +2943,59 @@ mod tests {
             assert_eq!(EngagementKind::from_name(kind.name()), Some(kind));
         }
         assert_eq!(EngagementKind::from_tag(0), None);
-        assert_eq!(Kind::Open.states(), (0, 1));
-        assert_eq!(Kind::Propose.states(), (1, 1));
-        assert_eq!(Kind::Book.states(), (1, 2));
-        assert_eq!(Kind::Pass.states(), (1, 3));
+        let open = EngagementState::Open;
+        let complete = EngagementState::DocumentationComplete;
+        assert_eq!(Kind::Open.states(open), (0, 1));
+        assert_eq!(Kind::Propose.states(open), (1, 1));
+        assert_eq!(Kind::Book.states(open), (1, 2));
+        assert_eq!(Kind::Pass.states(open), (1, 3));
+        assert_eq!(Kind::File.states(open), (1, 1));
+        assert_eq!(Kind::Complete.states(open), (1, 2));
+        // After completion, Propose and File keep the completed state, so
+        // their records say they are additions after completion.
+        assert_eq!(Kind::Propose.states(complete), (2, 2));
+        assert_eq!(Kind::File.states(complete), (2, 2));
+        assert_eq!(Kind::Complete.states(complete), (1, 2));
+        for state in [open, complete] {
+            assert_eq!(EngagementState::from_tag(state.tag()), Some(state));
+            assert_eq!(
+                EngagementState::from_scalar(Some(&state.scalar())),
+                Some(state)
+            );
+        }
+        assert_eq!(EngagementState::from_tag(0), None);
+        assert_eq!(EngagementState::from_tag(3), None);
+    }
+
+    /// AS 1215.15: the completion date lies within 45 days after the report
+    /// release date, inclusive; before it or one day late is refused. The
+    /// encoding round-trips and a decoded body is checked again.
+    #[test]
+    fn documentation_completes_within_45_days_after_the_report_release() {
+        let release = DateDay(20_600);
+        let on = |days: i32| DocumentationCompletion {
+            report_release_day: release,
+            completion_day: DateDay(release.0 + days),
+        };
+        for days in [0, 1, 44, 45] {
+            assert!(on(days).check().is_ok(), "{days}");
+            let bytes = on(days).canonical_bytes().unwrap();
+            assert_eq!(DocumentationCompletion::decode(&bytes).unwrap(), on(days));
+        }
+        for days in [-1, 46, 365] {
+            assert!(on(days).check().is_err(), "{days}");
+            let bytes = on(days).canonical_bytes().unwrap();
+            assert!(DocumentationCompletion::decode(&bytes).is_err(), "{days}");
+        }
+        let extreme = DocumentationCompletion {
+            report_release_day: DateDay(i32::MIN),
+            completion_day: DateDay(i32::MAX),
+        };
+        assert!(
+            extreme.check().is_err(),
+            "overflow is refused, never wrapped"
+        );
+        assert_ne!(on(1).digest().unwrap(), on(2).digest().unwrap());
     }
 
     fn proposal_view(ordinal: u32, legs: Vec<ProposalLeg>) -> ProposalView {
@@ -2344,6 +3012,7 @@ mod tests {
             proposed_by: VId(9),
             state: AdjustmentState::Proposed,
             decision: None,
+            added_after_completion: false,
         }
     }
 
@@ -2355,6 +3024,7 @@ mod tests {
             recorded_at: CommitSeq(4),
             decided_by: VId(9),
             superseded_by: None,
+            added_after_completion: false,
         });
         p
     }
@@ -2377,6 +3047,8 @@ mod tests {
             opened_by: VId(9),
             next_proposal: u32::try_from(proposals.len()).unwrap() + 1,
             proposals,
+            workpapers: Vec::new(),
+            documentation: None,
         }
     }
 
