@@ -990,8 +990,8 @@ impl PresentedStatement {
 fn round_by_power_of_ten(exact: i128, divisor: u128, law: RoundingLaw) -> Option<(i128, i128)> {
     let negative = exact < 0;
     let mag = exact.unsigned_abs();
-    let q = mag / divisor;
-    let r = mag % divisor;
+    let q = mag.checked_div(divisor)?;
+    let r = mag.checked_rem(divisor)?;
     let rounded_mag = law.apply_magnitude(q, r, divisor, negative)?;
     let presented = if negative {
         if rounded_mag == 0 {

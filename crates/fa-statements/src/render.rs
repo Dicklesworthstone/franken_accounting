@@ -1311,6 +1311,7 @@ pub fn render_flow_of_funds_diagram(
 }
 
 #[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)] // fixtures with small literal amounts
 mod tests {
     use super::*;
     use crate::markdown::{

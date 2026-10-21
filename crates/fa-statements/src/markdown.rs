@@ -243,8 +243,10 @@ pub fn format_scaled_i128(mantissa: i128, scale: u8) -> Result<String, Statement
         return Ok(format!("{sign}{abs}"));
     }
     let divisor = 10u128.pow(u32::from(scale));
-    let whole = abs / divisor;
-    let frac = abs % divisor;
+    let (whole, frac) = abs
+        .checked_div(divisor)
+        .zip(abs.checked_rem(divisor))
+        .ok_or_else(|| StatementError::Input(format!("unit scale {scale} has no divisor")))?;
     let width = usize::from(scale);
     Ok(format!("{sign}{whole}.{frac:0width$}"))
 }
@@ -1133,6 +1135,7 @@ pub fn render_open_items_ir(
 }
 
 #[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)] // fixtures with small literal amounts
 mod tests {
     use super::*;
     use crate::{Account, AccountBalance, ColumnInput, StatementInput, evaluate};

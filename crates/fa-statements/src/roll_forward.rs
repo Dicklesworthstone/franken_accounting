@@ -374,8 +374,11 @@ fn read_balances(
                 "roll-forward stock has a negative debit or credit magnitude",
             ));
         }
-        // Both magnitudes are nonnegative i128: their difference fits i128.
-        let net = balance.debits - balance.credits;
+        // Both magnitudes are nonnegative i128, so their difference fits.
+        let net = balance
+            .debits
+            .checked_sub(balance.credits)
+            .ok_or_else(|| input("roll-forward stock net overflows"))?;
         if result
             .insert((balance.account_id, balance.unit_id), net)
             .is_some()
@@ -387,6 +390,7 @@ fn read_balances(
 }
 
 #[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)] // fixtures with small literal amounts
 mod tests {
     use super::*;
 

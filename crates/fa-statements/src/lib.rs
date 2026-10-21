@@ -17,6 +17,8 @@
 //! snapshot, not custom-definition activation or a GAAP-conformity claim.
 
 #![forbid(unsafe_code)]
+// 128-bit (amount) arithmetic only: clippy.toml exempts the narrower integers.
+#![deny(clippy::arithmetic_side_effects, clippy::disallowed_methods)]
 
 mod definition;
 
