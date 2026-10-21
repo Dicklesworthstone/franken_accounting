@@ -1162,3 +1162,116 @@ fn generic_aging_artifacts_replay_by_digest_and_export_through_the_held_dispatch
     assert!(!escaped.exists());
     assert_eq!(book.head().unwrap(), original_head);
 }
+
+/// `fa statement lint` (plan §12.1, FA-INV-04): a definition partitions the
+/// chart a statement folds, or names the leaves it does not. The built-in
+/// balance sheet maps whole account types; the small-company preset maps code
+/// prefixes, so a liability numbered in the cash range is mapped twice.
+#[test]
+fn statement_lint_reports_the_mapping_partition_of_the_chart() {
+    let f = Fixture::new();
+    let lint = |book: &Path, args: &[&str]| -> Json {
+        let mut argv = vec!["statement", "lint"];
+        argv.extend_from_slice(args);
+        let events = ok(book, &argv);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(text(&events[0], "event"), "statement_lint");
+        data(&events[0]).clone()
+    };
+    let strings = |value: &Json, key: &str| -> Vec<String> {
+        array(value, key)
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    };
+    let int = |value: &Json, key: &str| match value.get(key) {
+        Some(Json::Int(n)) => *n,
+        other => panic!("{key}: {other:?}"),
+    };
+
+    let builtin = lint(&f.book, &["--definition", "balance-sheet"]);
+    assert_eq!(builtin.get("clean"), Some(&Json::Bool(true)));
+    assert_eq!(
+        (
+            int(&builtin, "covered_leaves"),
+            int(&builtin, "mapped_leaves")
+        ),
+        (7, 7)
+    );
+    assert!(
+        array(&builtin, "mappings")
+            .iter()
+            .any(|m| text(m, "account") == "1000" && text(m, "line") == "assets")
+    );
+
+    let preset = lint(
+        &f.book,
+        &["--definition", "us_gaap_small_company_balance_sheet"],
+    );
+    assert_eq!(preset.get("clean"), Some(&Json::Bool(true)));
+    assert_eq!(int(&preset, "mapped_leaves"), 7);
+    assert_eq!(
+        strings(&preset, "empty_lines"),
+        [
+            "inventory",
+            "ppe_net",
+            "accounts_payable",
+            "accrued_liabilities",
+            "long_term_debt"
+        ]
+    );
+
+    // A book whose chart numbers a liability in the cash range.
+    let dir = temporary();
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Lint fixture"]);
+    let created = ok(&book, &["book", "info"]);
+    let before_chart = int(created[0].get("coordinate").unwrap(), "known_at").to_string();
+    let chart = dir.join("chart.json");
+    std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1050","name":"Customer deposits","type":"Liability","unit":"USD"},{"code":"3000","name":"Capital","type":"Equity","unit":"USD"}]}"#).unwrap();
+    ok(&book, &["chart", "import", chart.to_str().unwrap()]);
+    let found = lint(
+        &book,
+        &["--definition", "us_gaap_small_company_balance_sheet"],
+    );
+    assert_eq!(found.get("clean"), Some(&Json::Bool(false)));
+    let overlaps = array(&found, "multiply_mapped_leaves");
+    assert_eq!(overlaps.len(), 1, "{found:?}");
+    assert_eq!(text(&overlaps[0], "account"), "1050");
+    assert_eq!(strings(&overlaps[0], "lines"), ["cash", "long_term_debt"]);
+    assert_eq!(int(&found, "mapped_leaves"), 2);
+    // The built-in definition still partitions this chart by type.
+    let typed = lint(&book, &["--definition", "balance-sheet"]);
+    assert_eq!(typed.get("clean"), Some(&Json::Bool(true)));
+    // Before the chart existed, nothing was covered.
+    let empty = lint(
+        &book,
+        &[
+            "--definition",
+            "us_gaap_small_company_balance_sheet",
+            "--as-known-at",
+            &before_chart,
+        ],
+    );
+    assert_eq!(int(&empty, "covered_leaves"), 0);
+    assert_eq!(empty.get("clean"), Some(&Json::Bool(true)));
+
+    // An unknown definition is refused; report flags are usage errors.
+    let (exit, events, _) = run(&book, &["statement", "lint", "--definition", "cash-flow"]);
+    assert_eq!(exit, 3, "{events:?}");
+    assert!(text(data(&events[0]), "message").contains("us_gaap_small_company_balance_sheet"));
+    let (exit, _, _) = run(
+        &book,
+        &[
+            "statement",
+            "lint",
+            "--definition",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+        ],
+    );
+    assert_eq!(exit, 2);
+    let (exit, _, _) = run(&book, &["statement", "lint"]);
+    assert_eq!(exit, 2);
+}

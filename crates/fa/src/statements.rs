@@ -112,6 +112,57 @@ pub(crate) fn invalid(why: impl Into<String>) -> Refusal {
     )
 }
 
+/// The definitions `fa statement lint` names: the two registered built-ins
+/// and the code-range presets a book can adopt (plan §12.1).
+pub const LINTABLE_DEFINITIONS: &[&str] = &[
+    "balance-sheet",
+    "income-statement",
+    "us_gaap_small_company_balance_sheet",
+    "us_gaap_small_company_income_statement",
+];
+
+/// Lint the named definition against a chart (plan §12.1, FA-INV-04 mapping
+/// partition): covered leaves no line maps or several lines map, and codes a
+/// line names that are unknown, summary or outside the definition's types.
+pub(crate) fn lint(
+    name: &str,
+    chart: &[AccountRow],
+) -> Result<fa_statements::custom::StatementLintReport, Refusal> {
+    use fa_statements::custom::{
+        CustomStatementDefinition, lint_custom_statement_definition, lint_statement_definition,
+    };
+    let accounts: Vec<Account> = chart
+        .iter()
+        .map(|row| Account {
+            id: row.vid.0,
+            code: row.code.clone(),
+            name: row.name.clone(),
+            account_type: row.account_type,
+            is_leaf: row.is_leaf,
+        })
+        .collect();
+    let linted = match name {
+        "us_gaap_small_company_balance_sheet" => lint_custom_statement_definition(
+            &CustomStatementDefinition::us_gaap_small_company_balance_sheet(),
+            &accounts,
+        ),
+        "us_gaap_small_company_income_statement" => lint_custom_statement_definition(
+            &CustomStatementDefinition::us_gaap_small_company_income_statement(),
+            &accounts,
+        ),
+        _ => match StatementDefinition::embedded(name) {
+            Ok(definition) => lint_statement_definition(&definition, &accounts),
+            Err(_) => {
+                return Err(invalid(format!(
+                    "unknown statement definition `{name}`; lint names {}",
+                    LINTABLE_DEFINITIONS.join(", ")
+                )));
+            }
+        },
+    };
+    linted.map_err(|error| invalid(error.to_string()))
+}
+
 pub(crate) fn read<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,

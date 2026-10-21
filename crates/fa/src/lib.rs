@@ -173,6 +173,7 @@ pub use fa_registers::{
     Advance, EntityCell, EntityCellKey, EntityFold, EntityVerification, LotDisposalPlan,
     LotDisposalRequest, LotDisposalSlice, LotItem, LotReliefEdge, LotsReport, RegisterEquals,
 };
+pub use fa_statements::custom::StatementLintReport;
 pub use fa_statements::markdown::{
     StatementMarkdownIr, TrialBalanceIrInput, TrialBalanceIrRow, UnitFormatSpec,
     render_statement_ir, render_trial_balance_ir,

@@ -2355,6 +2355,22 @@ impl Book {
         )
     }
 
+    /// Lint a statement definition against the chart at `known_at` under
+    /// current whole-book read authority (`fa statement lint`; plan §12.1,
+    /// FA-INV-04): the chart a statement folds at that frontier.
+    pub fn lint_statement(
+        &self,
+        definition: &str,
+        known_at: CommitSeq,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::StatementLintReport> {
+        let chart = match self.accounts_at(known_at, capability)? {
+            Ok(chart) => chart,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(crate::statements::lint(definition, &chart))
+    }
+
     /// The register fold of one period (plan §5.3).
     pub fn fold_period(&self, period_code: &str) -> Result<Fold, BookError> {
         with_store!(&self.store, core => core.fold_period(&self.purposes(), period_code))

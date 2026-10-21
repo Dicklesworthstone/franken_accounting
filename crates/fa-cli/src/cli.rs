@@ -9983,6 +9983,148 @@ pub(crate) fn render_summary_trial_balance(
     Ok(())
 }
 
+/// `fa statement lint --definition <name> [--as-known-at HEAD|<seq>]`: does
+/// the definition partition the chart a statement folds at that frontier
+/// (plan §12.1, FA-INV-04)? Findings are data (`clean`), never a refusal.
+fn statement_lint(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa statement lint --definition us_gaap_small_company_balance_sheet [--as-known-at <seq>] --json";
+    for flag in [
+        "--for",
+        "--compare",
+        "--before",
+        "--after",
+        "--max-publications",
+        "--certificate-out",
+        "--branch",
+        "--before-certificate",
+        "--after-certificate",
+        "--from-diff",
+        "--certificate",
+        "--issued-to",
+        "--document",
+        "--key",
+        "--date",
+        "--plan",
+        "--approval",
+        "--render",
+        "--out",
+    ] {
+        if args.flag(flag).is_some() {
+            return Err(usage(
+                format!("{flag} does not apply to `fa statement lint`, which reads the chart"),
+                EXAMPLE,
+            ));
+        }
+    }
+    for switch in ["--certify", "--as-originally-reported", "--dry-run"] {
+        if args.switch(switch) {
+            return Err(usage(
+                format!("{switch} does not apply to `fa statement lint`"),
+                EXAMPLE,
+            ));
+        }
+    }
+    if args.flag_all("--definition").len() != 1 {
+        return Err(usage(
+            format!(
+                "statement lint takes exactly one --definition: {}",
+                fa::statements::LINTABLE_DEFINITIONS.join(", ")
+            ),
+            EXAMPLE,
+        ));
+    }
+    let definition = args.require("--definition", "the definition to lint")?;
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+    let (requested, _) = known_at_flag(args, &book, &ctx.out)?;
+    let at = match requested {
+        Some(seq) => seq,
+        None => book.head()?,
+    };
+    let report = book.lint_statement(definition, at, &cap)??;
+    ctx.out.at_book(&book)?;
+    let strings = |items: &[String]| Json::Arr(items.iter().map(s).collect());
+    let clean = report.is_clean();
+    let human = if clean {
+        format!(
+            "{definition} partitions the chart at {}: {} covered leaves, each mapped once",
+            at.0, report.covered_leaf_count
+        )
+    } else {
+        format!(
+            "{definition} does not partition the chart at {}: {} unmapped, {} multiply mapped, {} unknown, {} summary, {} outside coverage",
+            at.0,
+            report.unmapped_leaves.len(),
+            report.multiply_mapped_leaves.len(),
+            report.unknown_referenced_codes.len(),
+            report.summary_referenced_codes.len(),
+            report.outside_coverage_codes.len()
+        )
+    };
+    ctx.out.event(
+        "statement_lint",
+        vec![
+            ("definition", s(&report.definition_name)),
+            ("version", Json::Int(i128::from(report.definition_version))),
+            ("definition_digest", s(hex(&report.definition_digest.0))),
+            ("known_at", Json::Int(i128::from(at.0))),
+            ("clean", Json::Bool(clean)),
+            (
+                "covered_leaves",
+                Json::Int(i128::from(report.covered_leaf_count)),
+            ),
+            (
+                "mapped_leaves",
+                Json::Int(i128::from(report.mapped_leaf_count)),
+            ),
+            ("unmapped_leaves", strings(&report.unmapped_leaves)),
+            (
+                "multiply_mapped_leaves",
+                Json::Arr(
+                    report
+                        .multiply_mapped_leaves
+                        .iter()
+                        .map(|(account, lines)| {
+                            obj(vec![("account", s(account)), ("lines", strings(lines))])
+                        })
+                        .collect(),
+                ),
+            ),
+            ("unknown_codes", strings(&report.unknown_referenced_codes)),
+            ("summary_codes", strings(&report.summary_referenced_codes)),
+            (
+                "outside_coverage_codes",
+                strings(&report.outside_coverage_codes),
+            ),
+            ("empty_lines", strings(&report.empty_account_lines)),
+            (
+                "mappings",
+                Json::Arr(
+                    report
+                        .mappings
+                        .iter()
+                        .map(|(account, line)| {
+                            obj(vec![("account", s(account)), ("line", s(line))])
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "report_digest",
+                s(hex(&report
+                    .digest()
+                    .map_err(|e| Fail::Internal(format!("statement lint digest: {e}")))?
+                    .0)),
+            ),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
 fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
         return Err(usage(
@@ -9994,6 +10136,7 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional[1].as_str() {
         "issue" => return crate::issuance::issue(ctx, args),
         "issuances" => return crate::issuance::issuances(ctx, args),
+        "lint" => return statement_lint(ctx, args),
         _ => {}
     }
     if let Some(flag) = crate::issuance::ISSUE_ONLY
