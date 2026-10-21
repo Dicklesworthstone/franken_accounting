@@ -127,6 +127,9 @@ pub mod code {
     /// A case-bound entry is not the derivation of an Approved case's
     /// manifest entry (plan §8.3, §8.4).
     pub const CASE_MEMBERSHIP: &str = "FA-REF-178";
+    /// A case's disclosure is not a reviewed Disclosure document of this
+    /// book (plan §8.3, §9.3).
+    pub const CASE_DISCLOSURE: &str = "FA-REF-179";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

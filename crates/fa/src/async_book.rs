@@ -1404,6 +1404,53 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::post_case(&mut self.db, cx, &self.context, ordinal, req).await?)
     }
 
+    /// Disclose case `ordinal` (Posted → Disclosed) in `document`
+    /// ([`crate::Book::disclose_case`] states the contract).
+    pub async fn disclose_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        document: fa_model::Oid,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let description = format!("disclose case {ordinal}");
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::disclose_case(&mut self.db, cx, &self.context, ordinal, document, req)
+                .await?,
+        )
+    }
+
+    /// Close case `ordinal` (Disclosed → Closed).
+    pub async fn close_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let description = format!("close case {ordinal}");
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::close_case(&mut self.db, cx, &self.context, ordinal, req).await?)
+    }
+
     /// Restatement case `ordinal` as its records state it.
     pub fn case(
         &self,

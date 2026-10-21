@@ -505,6 +505,12 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(
+            &["case", "disclose", "1", "--document", ZERO_DIGEST],
+            &[Op::Read, Op::Restate],
+            Reaches,
+        ),
+        row(&["case", "close", "1"], &[Op::Read, Op::Restate], Reaches),
+        row(
             &[
                 "statement",
                 "issue",

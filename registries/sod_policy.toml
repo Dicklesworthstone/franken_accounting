@@ -677,3 +677,27 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §8.3 (Posted: the case's entries commit in one batch; each entry's own row is decided over the case's approvals)"
+
+[[rule]]
+name = "case-disclose"
+class = "CaseControl"
+transition = "Disclose"
+preparer_op = "restate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.3 (Disclosed: the disclosure document is attested, by a reviewer other than its uploader, plan §9.3)"
+
+[[rule]]
+name = "case-close"
+class = "CaseControl"
+transition = "Close"
+preparer_op = "restate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.3 (Closed: the case's last transition)"

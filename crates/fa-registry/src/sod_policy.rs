@@ -53,7 +53,15 @@ const PRODUCTION_TRANSITIONS: &[&str] = &["Open", "Produce"];
 const ISSUANCE_TRANSITIONS: &[&str] = &["Issue"];
 /// A RestatementCase's life cycle (plan §8.3; fa-75j4). Slice 1 registers
 /// the transitions it journals.
-const CASE_TRANSITIONS: &[&str] = &["Open", "Determine", "Rehearse", "Approve", "Post"];
+const CASE_TRANSITIONS: &[&str] = &[
+    "Open",
+    "Determine",
+    "Rehearse",
+    "Approve",
+    "Post",
+    "Disclose",
+    "Close",
+];
 const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "SchemaControl",
     "PolicyControl",

@@ -244,10 +244,11 @@ supersession = "none"
 # fork and the periods the diff covers), Approve (extension 22
 # `fa:case-approval:v1`: the effect manifest two Human approvers bind), Post
 # (extension 24 `fa:case-posted:v1`: the entries the case posted, each
-# carrying extension 23 `fa:case-member:v1`); Disclose and Close are later
-# fa-75j4 slices. The narrative and authority documents, and the
-# rehearsal's certificate and scenario vertices, are the records' proof
-# refs.
+# carrying extension 23 `fa:case-member:v1`), Disclose (extension 25
+# `fa:case-disclosure:v1`: the reviewed Disclosure document) and Close. The
+# narrative, authority and disclosure documents, the disclosure's
+# attestation, and the rehearsal's certificate and scenario vertices are
+# the records' proof refs.
 [[class]]
 tag = 30
 name = "CaseControl"

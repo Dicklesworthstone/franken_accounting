@@ -1345,6 +1345,40 @@ impl Book {
         )))
     }
 
+    /// Disclose case `ordinal` (plan §8.3: Posted → Disclosed, "the
+    /// disclosure document is attested") in `document`: a Disclosure
+    /// document of this book over which a principal other than its uploader
+    /// has recorded a Reviewed attestation ([`Book::record_review`]). Both
+    /// are read as point witnesses in the record's transaction; anything
+    /// else is FA-REF-179.
+    pub fn disclose_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        document: fa_model::Oid,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.disclose_case(
+            &purposes, capability, ordinal, document, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Close case `ordinal` (plan §8.3: Disclosed → Closed), its last record.
+    pub fn close_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.close_case(
+            &purposes, capability, ordinal, effective_date, idempotency_key,
+        )))
+    }
+
     /// Restatement case `ordinal` as its records state it.
     pub fn case(&self, ordinal: u32) -> Result<Option<fa_journal::CaseView>, BookError> {
         with_store!(&self.store, core => core.case(&self.purposes(), ordinal))

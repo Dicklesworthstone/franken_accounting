@@ -154,6 +154,11 @@ pub const CASE_MEMBER_EXTENSION: u16 = 23;
 /// `CaseControl` Post record names — `u16 version ‖ list(u128 plan ‖ u128
 /// entry ‖ [32] entry digest)`, in manifest order.
 pub const CASE_POSTED_EXTENSION: u16 = 24;
+/// Extension tag 25, `fa:case-disclosure:v1` (bead fa-75j4): on a
+/// `CaseControl` Disclose record, the Disclosure document the case is
+/// disclosed in and the Reviewed attestation over it — `u16 version ‖
+/// [32] document oid ‖ u128 attestation`.
+pub const CASE_DISCLOSURE_EXTENSION: u16 = 25;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -179,6 +184,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     CASE_APPROVAL_EXTENSION,
     CASE_MEMBER_EXTENSION,
     CASE_POSTED_EXTENSION,
+    CASE_DISCLOSURE_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------

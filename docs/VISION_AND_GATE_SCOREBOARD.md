@@ -28,7 +28,7 @@
 | `WF-RQ-06` | `VC-06` | `readme-quick` | `works` | `0` | `trial_balance` | `—` | Trial balance at a historical known-at sequence (`fa tb --period --as-known-at`) |
 | `WF-RQ-07` | `VC-07` | `readme-quick` | `works` | `0` | `trial_balance` | `—` | Trial balance as originally reported (`fa tb --as-originally-reported`) |
 | `WF-RQ-08` | `VC-08` | `readme-quick` | `works` | `0` | `reversed` | `—` | Reverse a committed entry with SupersessionKind::Reverses lineage (`fa reverse`) |
-| `WF-RQ-09` | `VC-09` | `readme-quick` | `works` | `0` | `case_opened` | `—` | Open a restatement case from the CLI (`fa case open`: journaled Proposed; rehearsal, approval and posting are later fa-75j4 slices) |
+| `WF-RQ-09` | `VC-09` | `readme-quick` | `works` | `0` | `case_opened` | `—` | Open a restatement case from the CLI (`fa case open`: journaled Proposed; `fa case` determine, rehearse, approve, post, disclose and close carry it on, and this build posts only PriorPeriodAdjustment cases) |
 | `WF-RQ-10` | `VC-10` | `readme-quick` | `works` | `0` | `procedure_run` | `—` | Run Lantern journal-entry test (`fa procedure run jet.round_amounts`) |
 | `WF-RQ-11` | `VC-11` | `readme-quick` | `works` | `0` | `procedure_run` | `—` | Run LIBR fund tracing (`fa procedure run trace.libr`) |
 | `WF-RQ-12` | `VC-12` | `readme-quick` | `works` | `0` | `bundle_produced` | `—` | Produce a signed offline evidence bundle (`fa bundle produce`) |

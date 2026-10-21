@@ -30,8 +30,9 @@
 //!   intent's digest and its planner. Two Human approvals of the manifest's
 //!   digest are cited (`case-approve`), and no approver planned any of the
 //!   case's entries (the `case_preparer` exclusion, decided here).
-//! - **Post** (`Approved → Posted`) posts the case's entries in one atomic
-//!   batch, then journals extension 24 `fa:case-posted:v1` naming them.
+//! - **Post** (`Approved → Posted`) posts the case's entries as one atomic
+//!   batch and journals extension 24 `fa:case-posted:v1` naming them, in
+//!   one commit.
 //!   Each entry is the kernel's derivation of one manifest entry
 //!   ([`derive_member`]): the planned intent as the case's class, under the
 //!   poster, with extension 23 `fa:case-member:v1`. The posting law admits
@@ -40,6 +41,11 @@
 //!   This build posts PriorPeriodAdjustment cases; Revision and Restatement
 //!   entries supersede a target with delta legs, which the posting kernel
 //!   does not implement yet.
+//! - **Disclose** (`Posted → Disclosed`) journals extension 25
+//!   `fa:case-disclosure:v1`: the Disclosure document the case is disclosed
+//!   in and the Reviewed attestation over it, which a principal other than
+//!   the document's uploader recorded (plan §9.3); both are point witnesses.
+//! - **Close** (`Disclosed → Closed`) is the case's last record.
 //!
 //! The narrative and authority documents are the records' proof refs and
 //! must be verified documents of this book; every affected period must
@@ -48,8 +54,8 @@
 //!
 //! **Authority.** Every record is a trunk record under `restate`
 //! (`sod_policy.toml` `case-open`, `case-determine`, `case-rehearse`,
-//! `case-approve`, `case-post`); an
-//! Agent prepares none. Disclosure and closing are later slices of fa-75j4.
+//! `case-approve`, `case-post`, `case-disclose`, `case-close`); an Agent
+//! prepares none.
 
 use fa_model::limits::{MAX_BATCH_ENTRIES, MAX_PERIOD_REF_BYTES};
 use fa_model::symbols::{label, property, relation};
@@ -98,6 +104,10 @@ pub const POSTED_VERSION: u16 = 1;
 const MEMBER_KEY_DOMAIN: &[u8] = b"fa:case-member-key:v1";
 const POST_BATCH_KEY_DOMAIN: &[u8] = b"fa:case-post-batch-key:v1";
 const POSTED_DOMAIN: &[u8] = b"fa:case-posted:v1";
+/// Canonical bytes of a disclosure (extension 25).
+pub const DISCLOSURE_VERSION: u16 = 1;
+const DISCLOSURE_DOMAIN: &[u8] = b"fa:case-disclosure:v1";
+const CLOSE_DOMAIN: &[u8] = b"fa:case-close:v1";
 const RECORD_KEY_DOMAIN: &[u8] = b"fa:case-record-key:v1";
 
 /// What a case corrects (plan §8.3 `RestatementCase.kind`).
@@ -592,6 +602,8 @@ pub struct CaseView {
     pub approval: Option<CaseApproval>,
     /// The entries the Post record names, in manifest order.
     pub posted: Vec<PostedEntry>,
+    /// The disclosure, from the Disclose record.
+    pub disclosure: Option<Disclosure>,
     /// Every transition, in commit order; the first is the Open record.
     pub transitions: Vec<CaseTransition>,
 }
@@ -612,6 +624,8 @@ enum Act {
     Rehearse,
     Approve,
     Post,
+    Disclose,
+    Close,
 }
 
 impl Act {
@@ -622,6 +636,8 @@ impl Act {
             Self::Rehearse => "Rehearse",
             Self::Approve => "Approve",
             Self::Post => "Post",
+            Self::Disclose => "Disclose",
+            Self::Close => "Close",
         }
     }
 
@@ -632,6 +648,8 @@ impl Act {
             Self::Rehearse => 2,
             Self::Approve => 3,
             Self::Post => 4,
+            Self::Disclose => 5,
+            Self::Close => 6,
         }
     }
 }
@@ -733,11 +751,13 @@ fn record_proposal(
     to: CaseState,
     proof_refs: Vec<TypedRef>,
     spec_body_digest: [u8; 32],
-    extension: (u16, Vec<u8>),
+    extension: Option<(u16, Vec<u8>)>,
 ) -> EntryPayload {
     let named = match act {
         Act::Open => None,
-        Act::Determine | Act::Rehearse | Act::Approve | Act::Post => Some(case),
+        Act::Determine | Act::Rehearse | Act::Approve | Act::Post | Act::Disclose | Act::Close => {
+            Some(case)
+        }
     };
     EntryPayload {
         schema_minor: fa_model::entry::SCHEMA_MINOR,
@@ -769,7 +789,7 @@ fn record_proposal(
         supersession: Vec::new(),
         pending: None,
         external_ids: Vec::new(),
-        extensions: vec![extension],
+        extensions: extension.into_iter().collect(),
         tags: Vec::new(),
     }
 }
@@ -780,7 +800,7 @@ fn witness_document<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     oid: &Oid,
     role: &str,
-) -> Outcome<()> {
+) -> Outcome<crate::evidence::DocumentRecord> {
     let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let Some(row) = txn.vertex(db, document_vid(oid))? else {
         return Ok(Err(Refusal::new(
@@ -790,12 +810,12 @@ fn witness_document<V: asupersync::fs::Vfs + Clone>(
                 "the case's {role} document {} is not in this book",
                 hex(&oid.0)
             ),
-            "plan §8.3 (a case's narrative and determination authority are documents the book holds)",
+            "plan §8.3 (a case's narrative, authority and disclosure are documents the book holds)",
             "record it first with `fa document add <file> --kind <Kind> --json` and name the oid it prints",
         )));
     };
     match verify_row(&row, &policy) {
-        Ok(_) => Ok(Ok(())),
+        Ok(record) => Ok(Ok(record)),
         Err(why) => Ok(Err(drift(oid, &why))),
     }
 }
@@ -1034,10 +1054,10 @@ fn open_proposal(
         opened_state(body),
         proof_refs,
         body.digest()?,
-        (
+        Some((
             fa_model::entry::RESTATEMENT_CASE_EXTENSION,
             body.canonical_bytes()?,
-        ),
+        )),
     ))
 }
 
@@ -1069,10 +1089,10 @@ pub async fn determine_case<V: asupersync::fs::Vfs + Clone>(
         CaseState::Determined,
         vec![TypedRef::Object(determination.authority)],
         domain_digest(DETERMINATION_DOMAIN, &[&determination.canonical_bytes()?]),
-        (
+        Some((
             fa_model::entry::CASE_DETERMINATION_EXTENSION,
             determination.canonical_bytes()?,
-        ),
+        )),
     );
     let evid = entry_vid(
         book.book_id,
@@ -1192,10 +1212,10 @@ pub async fn rehearse_case<V: asupersync::fs::Vfs + Clone>(
         CaseState::Rehearsed,
         vec![TypedRef::Vertex(certificate), TypedRef::Vertex(scenario)],
         domain_digest(REHEARSAL_DOMAIN, &[&rehearsal.canonical_bytes()?]),
-        (
+        Some((
             fa_model::entry::CASE_REHEARSAL_EXTENSION,
             rehearsal.canonical_bytes()?,
-        ),
+        )),
     );
     let evid = entry_vid(
         book.book_id,
@@ -1450,10 +1470,10 @@ pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
             .map(|e| TypedRef::Vertex(e.plan))
             .collect(),
         digest,
-        (
+        Some((
             fa_model::entry::CASE_APPROVAL_EXTENSION,
             manifest.canonical_bytes()?,
-        ),
+        )),
     );
     let evid = entry_vid(
         book.book_id,
@@ -1908,7 +1928,7 @@ pub async fn post_case<V: asupersync::fs::Vfs + Clone>(
             CaseState::Posted,
             entries.iter().map(|e| TypedRef::Vertex(e.entry)).collect(),
             domain_digest(POSTED_DOMAIN, &[&bytes]),
-            (fa_model::entry::CASE_POSTED_EXTENSION, bytes),
+            Some((fa_model::entry::CASE_POSTED_EXTENSION, bytes)),
         ))
     };
     let evid = entry_vid(
@@ -2039,6 +2059,280 @@ pub async fn post_case<V: asupersync::fs::Vfs + Clone>(
     }))
 }
 
+/// A case's disclosure (extension 25): the Disclosure document it is
+/// disclosed in and the Reviewed attestation over that document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Disclosure {
+    pub document: Oid,
+    pub attestation: VId,
+}
+
+impl Disclosure {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
+        let mut w = Writer::with_capacity(52);
+        w.u16(DISCLOSURE_VERSION)
+            .fixed(&self.document.0)
+            .u128(self.attestation.0);
+        Ok(w.finish()?)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
+        let mut r = Reader::new(bytes);
+        if r.u16("case.disclosure.version").map_err(decode)? != DISCLOSURE_VERSION {
+            return Err(KernelError::Corrupt(
+                "unsupported case disclosure version".into(),
+            ));
+        }
+        let disclosure = Self {
+            document: Oid(r.fixed("case.disclosure.document").map_err(decode)?),
+            attestation: VId(r.u128("case.disclosure.attestation").map_err(decode)?),
+        };
+        r.finish().map_err(decode)?;
+        Ok(disclosure)
+    }
+}
+
+fn disclosure_refused(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::CASE_DISCLOSURE,
+        exit::REFUSAL,
+        message.into(),
+        "plan §8.3 (Disclosed: the disclosure document is attested), §9.3",
+        "record the disclosure with `fa document add <file> --kind Disclosure`, have a principal other than its uploader attest it with `fa attest review <oid>`, then `fa case disclose <case> --document <oid>`",
+    )
+}
+
+/// Inside `txn`: `disclosure` names a verified Disclosure document of this
+/// book and the Reviewed attestation over it (its identity is derived from
+/// the document, plan §9.3), both read as point witnesses.
+fn witness_disclosure<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    disclosure: &Disclosure,
+) -> Outcome<()> {
+    let oid = &disclosure.document;
+    let record = match witness_document(txn, db, oid, "disclosure")? {
+        Ok(record) => record,
+        Err(r) => return Ok(Err(r)),
+    };
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let kind = policy.kind_by_name("Disclosure").ok_or_else(|| {
+        KernelError::Corrupt("evidence_policy.toml registers no Disclosure kind".into())
+    })?;
+    if record.kind != kind.tag {
+        return Ok(Err(disclosure_refused(format!(
+            "document {} is a {}, not a Disclosure",
+            hex(&oid.0),
+            policy
+                .kind_by_tag(record.kind)
+                .map_or("unregistered kind", |k| k.name.as_str())
+        ))));
+    }
+    match crate::attestation::witness_review(txn, db, book.book_id, oid)? {
+        Ok(Some(review)) if review.attestation == disclosure.attestation => Ok(Ok(())),
+        Ok(Some(_)) => Err(KernelError::Corrupt(format!(
+            "the review of document {} is not at its derived identity",
+            hex(&oid.0)
+        ))),
+        Ok(None) => Ok(Err(disclosure_refused(format!(
+            "disclosure document {} carries no Reviewed attestation",
+            hex(&oid.0)
+        )))),
+        Err(r) => Ok(Err(r)),
+    }
+}
+
+/// Journal `proposal`, case `ordinal`'s `act` record moving it `from` →
+/// `to`, in one commit after `witness` has read what the record rests on
+/// inside the transaction. The identical record is its recorded outcome.
+#[allow(clippy::too_many_arguments)]
+async fn transition<V, W>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: &CaseRequest,
+    ordinal: u32,
+    act: Act,
+    (from, to): (CaseState, CaseState),
+    proposal: EntryPayload,
+    witness: W,
+) -> Outcome<CaseRecorded>
+where
+    V: asupersync::fs::Vfs + Clone,
+    W: FnOnce(&WriteTxn, &Database<V>) -> Outcome<()>,
+{
+    let vid = restatement_case_vid(book.book_id, ordinal);
+    let evid = entry_vid(
+        book.book_id,
+        &req.capability.holder().0.to_le_bytes(),
+        &proposal.idempotency_key,
+    );
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if let Some(row) = txn.vertex(db, evid)? {
+        txn.abort();
+        return Ok(match recorded_or_conflict(book, &row, &proposal)? {
+            Ok(recorded_at) => Ok(CaseRecorded {
+                case: read_case(db, book, ordinal)?
+                    .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
+                control_entry: evid,
+                recorded_at,
+                already_recorded: true,
+            }),
+            Err(r) => Err(r),
+        });
+    }
+    let Some(row) = txn.vertex(db, vid)? else {
+        txn.abort();
+        return Ok(Err(unknown(ordinal)));
+    };
+    let state = CaseState::from_scalar(prop(&row, property::STATE))
+        .ok_or_else(|| KernelError::Corrupt(format!("restatement case {ordinal} state mirror")))?;
+    if state != from {
+        txn.abort();
+        return Ok(Err(wrong_state(
+            ordinal,
+            state,
+            act.transition(),
+            from.name(),
+        )));
+    }
+    if let Err(r) = witness(&txn, &*db)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if proposal.validate().is_err() {
+        txn.abort();
+        return Ok(Err(usage(
+            format!(
+                "the {} record is not a valid CaseControl entry",
+                act.transition()
+            ),
+            "fa case show <case> --json",
+        )));
+    }
+    let entry = proposal.seal(Vec::new(), None)?;
+    let mut batch = WriteBatch::new(relation::IN_CASE);
+    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.compare_and_set_vertex_property(
+        vid,
+        property::STATE,
+        Some(from.scalar()),
+        to.scalar(),
+        WriteMismatchPolicy::AbortWrite,
+    );
+    batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
+    txn.write(db, batch)?;
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(recorded_at) => Ok(Ok(CaseRecorded {
+            case: read_case(db, book, ordinal)?
+                .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
+            control_entry: evid,
+            recorded_at,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(fcw(&detail)))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Disclose case `ordinal` (Posted → Disclosed) in `document`: a Disclosure
+/// document of this book that a principal other than its uploader has
+/// reviewed (plan §8.3 "the disclosure document is attested").
+pub async fn disclose_case<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    ordinal: u32,
+    document: Oid,
+    req: CaseRequest,
+) -> Outcome<CaseRecorded> {
+    if ordinal == 0 {
+        return Ok(Err(unknown(ordinal)));
+    }
+    if let Err(r) = admit(db, book, &req.capability, Act::Disclose)? {
+        return Ok(Err(r));
+    }
+    let disclosure = Disclosure {
+        document,
+        attestation: crate::attestation::review_vid(book.book_id, &document),
+    };
+    let bytes = disclosure.canonical_bytes()?;
+    let proposal = record_proposal(
+        book,
+        &req,
+        Act::Disclose,
+        restatement_case_vid(book.book_id, ordinal),
+        CaseState::Posted.tag(),
+        CaseState::Disclosed,
+        vec![
+            TypedRef::Object(disclosure.document),
+            TypedRef::Vertex(disclosure.attestation),
+        ],
+        domain_digest(DISCLOSURE_DOMAIN, &[&bytes]),
+        Some((fa_model::entry::CASE_DISCLOSURE_EXTENSION, bytes)),
+    );
+    transition(
+        db,
+        ctx,
+        book,
+        &req,
+        ordinal,
+        Act::Disclose,
+        (CaseState::Posted, CaseState::Disclosed),
+        proposal,
+        |txn, db| witness_disclosure(txn, db, book, &disclosure),
+    )
+    .await
+}
+
+/// Close case `ordinal` (Disclosed → Closed): its last record.
+pub async fn close_case<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    ordinal: u32,
+    req: CaseRequest,
+) -> Outcome<CaseRecorded> {
+    if ordinal == 0 {
+        return Ok(Err(unknown(ordinal)));
+    }
+    if let Err(r) = admit(db, book, &req.capability, Act::Close)? {
+        return Ok(Err(r));
+    }
+    let vid = restatement_case_vid(book.book_id, ordinal);
+    let proposal = record_proposal(
+        book,
+        &req,
+        Act::Close,
+        vid,
+        CaseState::Disclosed.tag(),
+        CaseState::Closed,
+        Vec::new(),
+        domain_digest(CLOSE_DOMAIN, &[&vid.0.to_le_bytes()]),
+        None,
+    );
+    transition(
+        db,
+        ctx,
+        book,
+        &req,
+        ordinal,
+        Act::Close,
+        (CaseState::Disclosed, CaseState::Closed),
+        proposal,
+        |_, _| Ok(Ok(())),
+    )
+    .await
+}
+
 /// Case `ordinal` as its records state it, each cross-checked against its
 /// vertex, at the head.
 pub fn read_case<V: asupersync::fs::Vfs + Clone>(
@@ -2095,6 +2389,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let mut rehearsal = None;
     let mut approval = None;
     let mut posted = Vec::new();
+    let mut disclosure = None;
     for evid in db.in_neighbours(vid, relation::IN_CASE)? {
         let Some(src) = db.vertex(evid)? else {
             continue;
@@ -2174,6 +2469,14 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         {
             posted = decode_posted(ext)?;
         }
+        if let Some((_, ext)) = entry
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::CASE_DISCLOSURE_EXTENSION)
+        {
+            disclosure = Some(Disclosure::decode(ext)?);
+        }
         transitions.push(CaseTransition {
             from,
             to,
@@ -2202,6 +2505,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         rehearsal,
         approval,
         posted,
+        disclosure,
         transitions,
     })
 }

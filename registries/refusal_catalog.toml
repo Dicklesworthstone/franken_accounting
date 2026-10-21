@@ -1069,6 +1069,14 @@ exit = "refusal"
 cite = "plan §8.3, §8.4 (a case-bound entry is admissible only inside an Approved RestatementCase; bead fa-75j4)"
 fix = "post a case's entries with fa case post <case> after two Human approvals of its manifest; an entry of a case-bound class is never posted on its own"
 
+[[refusal]]
+code = "FA-REF-179"
+name = "CASE_DISCLOSURE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.3 (Disclosed: the disclosure document is attested), §9.3 (a Reviewed attestation by a principal other than the uploader; bead fa-75j4)"
+fix = "record the disclosure with fa document add <file> --kind Disclosure, have a principal other than its uploader attest it with fa attest review <oid>, then fa case disclose <case> --document <oid>"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-145"

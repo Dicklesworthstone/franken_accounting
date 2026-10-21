@@ -775,4 +775,82 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         .unwrap()
         .unwrap_err();
     assert_eq!(twice.code, code::CASE_STATE, "{twice:?}");
+
+    // fa-75j4 slice 5: disclosed in a Disclosure document a principal other
+    // than its uploader reviewed, then closed, each once.
+    let closer = Capability::embedded(PRINCIPAL, &["restate", "read"]).unwrap();
+    assert_eq!(
+        book.close_case(closer.clone(), 1, date, b"early")
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::CASE_STATE,
+        "a Posted case is not closed"
+    );
+    let invoice = book
+        .disclose_case(closer.clone(), 1, receipt.oid(), date, b"invoice")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(invoice.code, code::CASE_DISCLOSURE, "{invoice:?}");
+    assert!(invoice.message.contains("not a Disclosure"), "{invoice:?}");
+    let note = Document {
+        book_id,
+        kind: 20,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"Note 2: correction of an error in the 2025 statements".to_vec(),
+    };
+    book.add_document(&note).unwrap().unwrap();
+    let head = book.head().unwrap();
+    let unreviewed = book
+        .disclose_case(closer.clone(), 1, note.oid(), date, b"note")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(unreviewed.code, code::CASE_DISCLOSURE, "{unreviewed:?}");
+    assert!(
+        unreviewed.message.contains("no Reviewed attestation"),
+        "{unreviewed:?}"
+    );
+    assert_eq!(book.head().unwrap(), head);
+    book.record_review(
+        &Capability::embedded(VId(5), &["approve"]).unwrap(),
+        &note.oid(),
+        Vec::new(),
+    )
+    .unwrap()
+    .unwrap();
+    let disclosed = book
+        .disclose_case(closer.clone(), 1, note.oid(), date, b"note")
+        .unwrap()
+        .unwrap();
+    assert_eq!(disclosed.case.state, CaseState::Disclosed);
+    let disclosure = disclosed.case.disclosure.unwrap();
+    assert_eq!(disclosure.document, note.oid());
+    let again = book
+        .disclose_case(closer.clone(), 1, note.oid(), date, b"note")
+        .unwrap()
+        .unwrap();
+    assert!(again.already_recorded);
+    let closed = book
+        .close_case(closer.clone(), 1, date, b"close")
+        .unwrap()
+        .unwrap();
+    assert_eq!(closed.case.state, CaseState::Closed);
+    assert_eq!(closed.case.disclosure, Some(disclosure));
+    assert_eq!(
+        closed
+            .case
+            .transitions
+            .iter()
+            .map(|t| t.to)
+            .collect::<Vec<_>>(),
+        CaseState::ALL[1..].to_vec(),
+        "every transition journaled once, in order"
+    );
+    let reclosed = book
+        .close_case(closer, 1, date, b"reclose")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(reclosed.code, code::CASE_STATE, "{reclosed:?}");
 }

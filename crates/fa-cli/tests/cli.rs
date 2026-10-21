@@ -7600,6 +7600,42 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let (code, out) = run(true, &["case", "post", "2"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    // Disclosed in a Disclosure document once another principal reviewed
+    // it (fa-75j4 slice 5), then closed.
+    let note = write(
+        &dir,
+        "disclosure.txt",
+        "Note 2: correction of an error in the prior period",
+    );
+    let (code, out) = run(
+        true,
+        &[
+            "document",
+            "add",
+            &note,
+            "--kind",
+            "Disclosure",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let note_oid = field(&out, "oid").unwrap_or_default().to_string();
+    let (code, out) = run(true, &["case", "disclose", "2", "--document", &note_oid]);
+    assert_eq!(code, 3, "an unreviewed disclosure is refused: {out}");
+    assert!(out.contains("FA-REF-179"), "{out}");
+    assert_eq!(
+        run(true, &["attest", "review", &note_oid, "--as", "reviewer"]).0,
+        0
+    );
+    let (code, out) = run(true, &["case", "disclose", "2", "--document", &note_oid]);
+    assert_eq!(code, 0, "{out}");
+    let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&case, "state"), "Disclosed", "{out}");
+    let (code, out) = run(true, &["case", "close", "2"]);
+    assert_eq!(code, 0, "{out}");
+    let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&case, "state"), "Closed", "{out}");
     // A statement issuance (fa-wrrw): planned, approved in another hand,
     // committed from the exact plan, then listed.
     let (code, out) = run(

@@ -24,6 +24,8 @@ const OPEN_EXAMPLE: &str = "fa case open --kind Restatement|Revision|PriorPeriod
 const DETERMINE_EXAMPLE: &str =
     "fa case determine <case> --on YYYY-MM-DD --authority <oid> [--key K] --json";
 const APPROVE_EXAMPLE: &str = "fa case approve <case> --dry-run --json (prints the manifest digest); fa approve --proposal <digest> --as <approver> (twice); fa case approve <case> --approval <vid> --approval <vid> --json";
+const DISCLOSE_EXAMPLE: &str = "fa case disclose <case> --document <oid> [--key K] [--date YYYY-MM-DD] --json  (a Disclosure document another principal reviewed: fa attest review <oid>)";
+const CLOSE_EXAMPLE: &str = "fa case close <case> [--key K] [--date YYYY-MM-DD] --json";
 const POST_EXAMPLE: &str = "fa case post <case> [--key K] [--date YYYY-MM-DD] --json  (after fa case approve; needs restate and post)";
 const REHEARSE_EXAMPLE: &str = "fa case rehearse <case> --certificate <scenario-diff-certificate> [--key K] --json  (fa scenario diff <name> --period <code> --certificate-out <file> writes one)";
 
@@ -34,10 +36,12 @@ pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("rehearse") => rehearse(ctx, args),
         Some("approve") => approve(ctx, args),
         Some("post") => post(ctx, args),
+        Some("disclose") => disclose(ctx, args),
+        Some("close") => close(ctx, args),
         Some("show") => show(ctx, args),
         Some("list") => list(ctx, args),
         _ => Err(usage(
-            "case needs open, determine, rehearse, approve, post, show or list",
+            "case needs open, determine, rehearse, approve, post, disclose, close, show or list",
             OPEN_EXAMPLE,
         )),
     }
@@ -143,6 +147,15 @@ fn case_json(view: &CaseView) -> Json {
             ),
         ),
         (
+            "disclosure",
+            view.disclosure.map_or(Json::Null, |d| {
+                obj(vec![
+                    ("document", s(hex(&d.document.0))),
+                    ("attestation", vid(d.attestation)),
+                ])
+            }),
+        ),
+        (
             "transitions",
             Json::Arr(
                 view.transitions
@@ -200,7 +213,7 @@ fn recorded(ctx: &mut Ctx<'_>, event: &str, done: &CaseRecorded, verb: &str) {
             ("already_recorded", Json::Bool(done.already_recorded)),
         ],
         &format!(
-            "{}{} (record {}); disclosure and closing are later fa-75j4 slices",
+            "{}{} (record {})",
             if done.already_recorded {
                 format!("already {verb}: ")
             } else {
@@ -464,6 +477,55 @@ fn post(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let done = book.post_case(capability, ordinal, date, key.as_bytes())??;
     ctx.out.at_book(&book)?;
     recorded(ctx, "case_posted", &done, "posted");
+    Ok(())
+}
+
+fn disclose(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "disclose", DISCLOSE_EXAMPLE)?;
+    for flag in ["--document", "--key", "--date"] {
+        one_flag(args, flag, DISCLOSE_EXAMPLE)?;
+    }
+    let text = args.flag("--document").ok_or_else(|| {
+        usage(
+            "case disclose needs --document <oid>: the reviewed Disclosure document",
+            DISCLOSE_EXAMPLE,
+        )
+    })?;
+    let disclosure = document(text, "--document")?;
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => hex(&fa_model::domain_digest(
+            b"fa-cli:case-disclose-key:v1",
+            &[&ordinal.to_le_bytes(), &disclosure.0],
+        )),
+    };
+    let capability = ctx.capability(args, &["restate", "read"])?;
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let done = book.disclose_case(capability, ordinal, disclosure, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    recorded(ctx, "case_disclosed", &done, "disclosed");
+    Ok(())
+}
+
+fn close(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "close", CLOSE_EXAMPLE)?;
+    for flag in ["--key", "--date"] {
+        one_flag(args, flag, CLOSE_EXAMPLE)?;
+    }
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => hex(&fa_model::domain_digest(
+            b"fa-cli:case-close-key:v1",
+            &[&ordinal.to_le_bytes()],
+        )),
+    };
+    let capability = ctx.capability(args, &["restate", "read"])?;
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let done = book.close_case(capability, ordinal, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    recorded(ctx, "case_closed", &done, "closed");
     Ok(())
 }
 
