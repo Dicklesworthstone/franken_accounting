@@ -1664,6 +1664,63 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// File `document` in `engagement`'s workpaper index, once; after the
+    /// documentation completion the filing is an addition after completion.
+    pub async fn file_workpaper(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        document: fa_model::Oid,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::WorkpaperFiled> {
+        let description = format!("file a workpaper in engagement {engagement}");
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::file_workpaper(&mut self.db, cx, &self.context, engagement, document, req)
+                .await?,
+        )
+    }
+
+    /// Journal `engagement`'s documentation completion, once (AS 1215.15).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn complete_documentation(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        report_release: Option<DateDay>,
+        completion_day: DateDay,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::DocumentationCompleted> {
+        let description = format!("complete the documentation of engagement {engagement}");
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::complete_documentation(
+            &mut self.db,
+            cx,
+            &self.context,
+            engagement,
+            report_release,
+            completion_day,
+            req,
+        )
+        .await?)
+    }
+
     /// The engagement `engagement` and every proposal it journaled.
     pub fn engagement(
         &self,
