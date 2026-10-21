@@ -10987,6 +10987,7 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "issue" => return crate::issuance::issue(ctx, args),
         "issuances" => return crate::issuance::issuances(ctx, args),
         "lint" => return statement_lint(ctx, args),
+        "equity-roll-forward" => return statement_equity_roll_forward(ctx, args),
         _ => {}
     }
     if let Some(flag) = crate::issuance::ISSUE_ONLY
@@ -13668,6 +13669,35 @@ pub(crate) fn parse_gl_scope(
     if accounts.is_empty() {
         return Err(usage("--account is required", example));
     }
+    let window = parse_gl_window(args, book, capability, out, known_at, default_label)?;
+    Ok(RollForwardRequest {
+        accounts,
+        units: window.units,
+        label: window.label,
+        effective_from: window.from,
+        effective_through: window.to,
+        known_at,
+    })
+}
+
+/// The selection every gl view shares after its accounts: native units
+/// (the book's base unit when none is named), inclusive civil dates and the
+/// label. `known_at` is the view's already-resolved frontier.
+struct GlWindow {
+    units: Vec<u32>,
+    from: DateDay,
+    to: DateDay,
+    label: String,
+}
+
+fn parse_gl_window(
+    args: &Args,
+    book: &Book,
+    capability: &Capability,
+    out: &Out,
+    known_at: Option<CommitSeq>,
+    default_label: &str,
+) -> Result<GlWindow, Fail> {
     let unit_codes: Vec<&str> = args
         .flag_all("--unit")
         .into_iter()
@@ -13714,13 +13744,11 @@ pub(crate) fn parse_gl_scope(
     })?;
     let label = args.flag("--label").unwrap_or(default_label).to_string();
     out.effective(format!("between:{from}..{to}"));
-    Ok(RollForwardRequest {
-        accounts,
+    Ok(GlWindow {
         units,
+        from,
+        to,
         label,
-        effective_from: from,
-        effective_through: to,
-        known_at,
     })
 }
 
@@ -16672,6 +16700,223 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         other => Err(unhandled("gl", other)),
     }
+}
+
+const EQUITY_ROLL_FORWARD_EXAMPLE: &str = "fa statement equity-roll-forward --from 2026-01-01 --to 2026-12-31 --issuance 3100 --distribution 3200 --book <dir>";
+
+/// `fa statement equity-roll-forward` (plan §12.1, bead fa-nzix): the
+/// statement of changes in equity over an inclusive effective window at one
+/// recorded prefix. It reads like the lead schedule it is built from: the
+/// whole recorded prefix is judged before the window projects it.
+fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if let Some(flag) = [
+        "--for",
+        "--compare",
+        "--definition",
+        "--before",
+        "--after",
+        "--max-publications",
+        "--certificate-out",
+        "--branch",
+        "--before-certificate",
+        "--after-certificate",
+        "--from-diff",
+        "--certificate",
+        "--issued-to",
+        "--document",
+        "--key",
+        "--date",
+        "--plan",
+        "--approval",
+        "--as-issued-to",
+        "--as-reported-in",
+        "--render",
+        "--out",
+        "--present-in",
+        "--rounding",
+    ]
+    .into_iter()
+    .find(|flag| args.flag(flag).is_some())
+    .or_else(|| {
+        ["--certify", "--as-originally-reported", "--dry-run"]
+            .into_iter()
+            .find(|switch| args.switch(switch))
+    }) {
+        return Err(usage(
+            format!(
+                "{flag} does not apply to statement equity-roll-forward: it selects inclusive --from/--to dates over every equity, revenue and expense leaf, and it is not certifiable yet"
+            ),
+            EQUITY_ROLL_FORWARD_EXAMPLE,
+        ));
+    }
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["read"])?;
+    let out = &ctx.out;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book: &mut Book| -> Result<(), Fail> {
+            book.read_scope(who, &capability)??;
+            let (known_at, _) = known_at_read_flag(args, book, out, &capability)?;
+            book.prepare_report_history(who, &capability, known_at)??;
+            Ok(())
+        })?;
+    let (known_at, _) = known_at_flag(args, &book, out)?;
+    if let Some(seq) = known_at {
+        out.known_at(seq);
+    }
+    let window = parse_gl_window(
+        args,
+        &book,
+        &capability,
+        out,
+        known_at,
+        "equity-roll-forward",
+    )?;
+    let named = |flag: &str| -> Vec<VId> {
+        args.flag_all(flag)
+            .into_iter()
+            .flat_map(|s| s.split(','))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|code| account_vid(book.context().book_id, code))
+            .collect()
+    };
+    let request = fa::EquityRollForwardRequest {
+        units: window.units,
+        label: window.label,
+        effective_from: window.from,
+        effective_through: window.to,
+        known_at,
+        issuance_accounts: named("--issuance"),
+        distribution_accounts: named("--distribution"),
+    };
+    book.prepare_report_history(who, &capability, request.known_at)??;
+    let report = book.equity_roll_forward(who, &capability, &request)??;
+    render_equity_roll_forward(out, &book, &report)
+}
+
+/// The Statement of Changes in Equity as `equity_roll_forward`: every unit's
+/// reconciliation and every classified equity leg it folded.
+fn render_equity_roll_forward(
+    out: &Out,
+    book: &Book,
+    report: &fa::EquityRollForwardReport,
+) -> Result<(), Fail> {
+    let statement = &report.statement;
+    out.known_at(CommitSeq(statement.known_at));
+    let units = &book.context().units;
+    let codes: std::collections::BTreeMap<u128, &str> = report
+        .accounts
+        .iter()
+        .map(|a| (a.id, a.code.as_str()))
+        .collect();
+    let code = |id: u128| {
+        codes
+            .get(&id)
+            .copied()
+            .ok_or_else(|| Fail::Internal("equity roll-forward account missing".into()))
+    };
+    let mut human = format!(
+        "equity roll-forward `{}` ({}..={})",
+        statement.label,
+        statement.effective_from.render(),
+        statement.effective_through.render()
+    );
+    let mut unit_rows = Vec::with_capacity(statement.units.len());
+    for u in &statement.units {
+        let fmt = |m: i128| render_amount(Amount::new(fa_money::UnitId(u.unit_id), m), units);
+        human.push_str(&format!(
+            "\n  {}: opening {} + net income {} + issuances {} + distributions {} + other {} = closing {}",
+            registered_unit_code(fa_money::UnitId(u.unit_id), units)?,
+            fmt(u.opening_total_equity)?,
+            fmt(u.net_income)?,
+            fmt(u.issuances)?,
+            fmt(u.distributions)?,
+            fmt(u.other_equity_movements)?,
+            fmt(u.closing_total_equity)?,
+        ));
+        unit_rows.push(obj(vec![
+            (
+                "unit",
+                s(registered_unit_code(fa_money::UnitId(u.unit_id), units)?),
+            ),
+            (
+                "opening_contributed_equity",
+                s(fmt(u.opening_contributed_equity)?),
+            ),
+            (
+                "opening_unclosed_earnings",
+                s(fmt(u.opening_unclosed_earnings)?),
+            ),
+            ("opening_total_equity", s(fmt(u.opening_total_equity)?)),
+            ("net_income", s(fmt(u.net_income)?)),
+            ("issuances", s(fmt(u.issuances)?)),
+            ("distributions", s(fmt(u.distributions)?)),
+            ("other_equity_movements", s(fmt(u.other_equity_movements)?)),
+            ("closing_transfers_net", s(fmt(u.closing_transfers_net)?)),
+            ("net_equity_change", s(fmt(u.net_equity_change)?)),
+            (
+                "closing_contributed_equity",
+                s(fmt(u.closing_contributed_equity)?),
+            ),
+            (
+                "closing_unclosed_earnings",
+                s(fmt(u.closing_unclosed_earnings)?),
+            ),
+            ("closing_total_equity", s(fmt(u.closing_total_equity)?)),
+            ("tie_out_residual", s(fmt(u.equity_tie_out_residual)?)),
+        ]));
+    }
+    let movements = report
+        .movements
+        .iter()
+        .map(|m| {
+            let (side, mantissa) = if m.debits > 0 {
+                ("debit", m.debits)
+            } else {
+                ("credit", m.credits)
+            };
+            Ok(obj(vec![
+                ("entry_digest", s(hex(&m.entry_digest))),
+                ("leg_index", Json::Int(i128::from(m.leg_index))),
+                ("recorded_at", Json::Int(i128::from(m.recorded_seq))),
+                ("effective_date", s(m.effective_day.render())),
+                ("class", s(m.class.name().unwrap_or("unknown"))),
+                (
+                    "kind",
+                    s(match m.kind {
+                        fa::EquityActivityKind::Issuance => "issuance",
+                        fa::EquityActivityKind::Distribution => "distribution",
+                        fa::EquityActivityKind::ClosingTransfer => "closing_transfer",
+                        fa::EquityActivityKind::OtherEquity => "other_equity",
+                    }),
+                ),
+                ("account", s(code(m.account_id)?)),
+                ("side", s(side)),
+                (
+                    "amount",
+                    s(render_amount(
+                        Amount::new(fa_money::UnitId(m.unit_id), mantissa),
+                        units,
+                    )?),
+                ),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    out.event(
+        "equity_roll_forward",
+        vec![
+            ("label", s(&statement.label)),
+            ("known_at", Json::Int(i128::from(statement.known_at))),
+            ("effective_from", s(statement.effective_from.render())),
+            ("effective_through", s(statement.effective_through.render())),
+            ("units", Json::Arr(unit_rows)),
+            ("movement_count", Json::Int(report.movements.len() as i128)),
+            ("movements", Json::Arr(movements)),
+        ],
+        &human,
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

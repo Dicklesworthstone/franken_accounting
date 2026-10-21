@@ -88,6 +88,8 @@ fa registers materialize --book ./books/acme --period FY2026-P03 --json
 # General-ledger lines, lead schedules, open-item aging and cash flow at one recorded snapshot.
 fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book ./books/acme --json
 fa gl roll-forward --account 1000,1200 --from 2026-03-01 --to 2026-03-31 --book ./books/acme --json
+# The statement of changes in equity: opening + net income + issuances + distributions + other = closing.
+fa statement equity-roll-forward --from 2026-01-01 --to 2026-12-31 --issuance 3100 --distribution 3200 --book ./books/acme --json
 # Tie open items to the control balance: one leaf, a list, or every posting leaf.
 fa gl aging --account 1200 --as-of 2026-03-31 --reconcile --book ./books/acme --json
 fa gl aging --all-posting --as-of 2026-03-31 --reconcile --book ./books/acme --json

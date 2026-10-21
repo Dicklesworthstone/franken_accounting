@@ -1910,6 +1910,7 @@ mod bound_tests {
             // Plain detail and roll-forward judge a complete recorded prefix.
             ("gl", Some("detail")),
             ("gl", Some("roll-forward")),
+            ("statement", Some("equity-roll-forward")),
             ("sample", Some("mus")),
             ("sample", Some("evaluate")),
         ] {

@@ -174,6 +174,9 @@ pub use fa_registers::{
     Advance, EntityCell, EntityCellKey, EntityFold, EntityVerification, LotDisposalPlan,
     LotDisposalRequest, LotDisposalSlice, LotItem, LotReliefEdge, LotsReport, RegisterEquals,
 };
+pub use fa_statements::cash_flow::{
+    EquityActivityKind, EquityMovement, EquityRollForward, EquityRollForwardUnit,
+};
 pub use fa_statements::custom::{
     CustomStatementDefinition, PresentationRoundingSpec, PresentedStatement,
     PresentedStatementLine, StatementLintReport, apply_presentation_rounding,
@@ -227,7 +230,8 @@ pub use report_artifact::{
     ReportArtifactFamily,
 };
 pub use roll_forward::{
-    CertifiedRollForward, MAX_ROLL_FORWARD_CERTIFICATE_BYTES, MAX_ROLL_FORWARD_WORKPAPER_BYTES,
+    CertifiedRollForward, EquityRollForwardReport, EquityRollForwardRequest,
+    MAX_ROLL_FORWARD_CERTIFICATE_BYTES, MAX_ROLL_FORWARD_WORKPAPER_BYTES,
     ROLL_FORWARD_CERTIFICATE_FORMAT, RollForward, RollForwardCertificate, RollForwardRequest,
 };
 pub use scenario::{

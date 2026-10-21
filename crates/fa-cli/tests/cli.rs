@@ -8552,6 +8552,16 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "--to",
         "2026-03-31",
     ]);
+    run2(&[
+        "statement",
+        "equity-roll-forward",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-03-31",
+        "--issuance",
+        "3000",
+    ]);
     run2(&["gl", "aging", "--as-of", "2026-03-25", "--account", "1000"]);
     run2(&[
         "aging",
