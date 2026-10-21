@@ -1663,7 +1663,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 ),
                 "plan §7.3 (effective_period discriminator)",
                 "name the period with effective_period when the date is shared with an adjustment, opening, or closing period",
-            )));
+            )
+            .at("effective_date", proposal.effective_date.render())));
         }
     };
 
@@ -2056,7 +2057,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 "fa period create --fiscal-year {}, then open `{}`",
                 period.fiscal_year, period.code
             ),
-        )));
+        )
+        .at("period", period.code.clone())
+        .at("effective_date", proposal.effective_date.render())));
     }
     let born = crate::rows::kind_from_scalar(kind_scalar.as_ref())
         .ok_or_else(|| KernelError::Corrupt(format!("period `{}` kind mirror", period.code)))?;
@@ -2496,7 +2499,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 format!("leg {i} names an account this book does not have"),
                 "plan §4.3",
                 "fa chart list --json to find the account, or fa chart import to add it",
-            )));
+            )
+            .at("leg", i)));
         };
         // A caller-supplied vid that names some other vertex (an entry, a
         // period, a document) is the same lawful mistake as a missing one,
@@ -2509,7 +2513,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 format!("leg {i} names a vertex that is not an account of this book"),
                 "plan §4.3",
                 "fa chart list --json to find the account, or fa chart import to add it",
-            )));
+            )
+            .at("leg", i)));
         }
         let account = AccountRow::decode(&row)?;
         if !account.is_leaf {
@@ -2565,7 +2570,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 ),
                 "plan §4.4 (amounts are mantissas at a registered unit version's scale)",
                 "post in a unit registered in registries/units.toml (fa book info --json reports units_registered)",
-            )));
+            )
+            .at("leg", i)));
         }
         let unit_ok = match account.unit_policy {
             UnitPolicy::Single(u) => u == leg.amount.unit,
@@ -2577,22 +2583,38 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         };
         if !unit_ok {
             txn.abort();
-            return Ok(Err(Refusal::new(
+            let unit_code = |u: fa_money::UnitId| {
+                book.units
+                    .get(u)
+                    .map_or_else(|| u.0.to_string(), |unit| unit.code.clone())
+            };
+            let (admits, admitted) = match account.unit_policy {
+                UnitPolicy::Single(u) => (unit_code(u), vec![unit_code(u)]),
+                UnitPolicy::AnyCurrency => ("any currency".to_string(), Vec::new()),
+                UnitPolicy::AnyUnit => ("any unit".to_string(), Vec::new()),
+            };
+            let refusal = Refusal::new(
                 code::UNIT_POLICY,
                 exit::REFUSAL,
                 format!(
                     "leg {i}: account `{}` does not accept unit {}",
                     account.code,
-                    book.units
-                        .get(leg.amount.unit)
-                        .map_or_else(|| leg.amount.unit.0.to_string(), |u| u.code.clone())
+                    unit_code(leg.amount.unit)
                 ),
                 "plan §4.3 unit_policy",
                 format!(
-                    "post in the account's unit ({:?}) or choose an account whose policy admits it",
-                    account.unit_policy
+                    "post in the account's unit ({admits}) or choose an account whose policy admits it"
                 ),
-            )));
+            )
+            .at("leg", i)
+            .at("account", account.code.clone())
+            .at("unit", unit_code(leg.amount.unit))
+            .because(Why::Law("FA-INV-01.unit-policy".to_string()));
+            return Ok(Err(if admitted.is_empty() {
+                refusal
+            } else {
+                refusal.or_field_change(format!("legs[{i}].amount.unit"), admitted)
+            }));
         }
         for (dim_id, dim_val_vid) in &leg.dimension_set {
             if *dim_id == fa_model::PARTY_DIMENSION {

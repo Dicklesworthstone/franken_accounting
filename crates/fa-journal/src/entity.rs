@@ -85,6 +85,11 @@ pub(crate) fn leg_entities(
                         },
                         "plan §4.1 (Book.entities: a leg posts for a declared legal entity)",
                         "name one of the book's declared entities (fa book info --json lists them); a new entity is declared at genesis",
+                    )
+                    .at("leg", i)
+                    .or_field_change(
+                        format!("legs[{i}].entity"),
+                        codes.iter().map(|c| (*c).to_string()).collect(),
                     )));
                 }
             },
@@ -102,6 +107,12 @@ pub(crate) fn leg_entities(
                         "add the legal-entity dimension to leg {i}: one of {}",
                         codes.join(", ")
                     ),
+                )
+                .at("leg", i)
+                .because(Why::Law("FA-INV-01.dimensions".to_string()))
+                .or_field_change(
+                    format!("legs[{i}].entity"),
+                    codes.iter().map(|c| (*c).to_string()).collect(),
                 )));
             }
             None => codes.first().map(|c| (*c).to_string()),

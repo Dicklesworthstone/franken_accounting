@@ -320,6 +320,44 @@ fn closed_period_cites_the_matrix_cell() {
     );
 }
 
+#[test]
+fn a_unit_the_account_refuses_names_the_admitted_unit() {
+    let (dir, book, ev) = book("unit-policy");
+    let (code, data) = refused_post(
+        &dir,
+        &book,
+        &ev,
+        "in-euros",
+        "2026-03-10",
+        r#"[{"side":"debit","account":"6000","amount":"5.00 EUR"},{"side":"credit","account":"1000","amount":"5.00 EUR"}]"#,
+    );
+    assert_eq!(code, 3);
+    let refusal = data.get("refusal").expect("refusal");
+    assert_instance(refusal, "FA-REF-003");
+    assert_eq!(
+        refusal.get("where").and_then(|w| w.get("leg")),
+        Some(&Json::Int(0)),
+        "{}",
+        refusal.render()
+    );
+    assert_eq!(text(refusal, &["where", "account"]), "6000");
+    assert_eq!(text(refusal, &["where", "unit"]), "EUR");
+    assert_eq!(text(refusal, &["why", "law"]), "FA-INV-01.unit-policy");
+    assert_eq!(
+        text(refusal, &["fix", "or_field_change", "field"]),
+        "legs[0].amount.unit"
+    );
+    assert_eq!(
+        strings(refusal, &["fix", "or_field_change", "one_of"]),
+        ["USD"]
+    );
+    assert!(
+        text(refusal, &["fix", "text"]).contains("post in the account's unit (USD)"),
+        "the policy is named, not debug-printed: {}",
+        refusal.render()
+    );
+}
+
 /// A failure that is not a catalog refusal carries `refusal: null`.
 #[test]
 fn a_usage_error_has_no_refusal_object() {
