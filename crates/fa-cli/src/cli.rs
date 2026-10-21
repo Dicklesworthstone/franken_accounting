@@ -1444,13 +1444,17 @@ fn run_scoped(
     }
     if authority.is_none() {
         if daemon_files.is_some() {
-            let override_flag = ["--as", "--grant"].into_iter().find(|flag| {
-                args.flags.contains_key(*flag) || args.switch(flag)
-            });
+            let override_flag = ["--as", "--grant"]
+                .into_iter()
+                .find(|flag| args.flags.contains_key(*flag) || args.switch(flag));
             if let Some(flag) = override_flag {
                 let message = match flag {
-                    "--as" => "`--as` is not admitted on the daemon path: fad authenticates callers by capability token, never by unverified `--as` flag",
-                    "--grant" => "`--grant` is not admitted on the daemon path: fad binds caller authority from a capability token, never from unverified per-request grants",
+                    "--as" => {
+                        "`--as` is not admitted on the daemon path: fad authenticates callers by capability token, never by unverified `--as` flag"
+                    }
+                    "--grant" => {
+                        "`--grant` is not admitted on the daemon path: fad binds caller authority from a capability token, never from unverified per-request grants"
+                    }
                     _ => unreachable!("the daemon override list is closed"),
                 };
                 return finish_into(

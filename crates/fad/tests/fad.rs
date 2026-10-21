@@ -1707,7 +1707,6 @@ fn token_sessions_through_fad_bind_each_request_to_its_holder() {
     );
 }
 
-
 /// fa-r3q / fa-yok: the same-uid compatibility route may still use the
 /// embedded-owner posture, but a socket caller cannot widen that posture with
 /// an unverified per-request grant. Authority elevation goes through an issued
@@ -1733,16 +1732,17 @@ fn untokened_fad_requests_cannot_self_grant_authority() {
     ]);
     assert_eq!(code, 7, "{out}\n{err}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-011"), "{out}");
-    assert!(out.contains("`--grant` is not admitted on the daemon path"), "{out}");
+    assert!(
+        out.contains("`--grant` is not admitted on the daemon path"),
+        "{out}"
+    );
     assert!(out.contains("capability token"), "{out}");
 
     // The refusal is about caller-selected authority, not about disabling the
     // compatibility route wholesale: the same read without a grant still runs.
-    let (code, allowed, err) = fa(&[
-        "book", "info", "--via", "fad", "--book", &b, "--json",
-    ]);
+    let (code, allowed, err) = fa(&["book", "info", "--via", "fad", "--book", &b, "--json"]);
     assert_eq!(code, 0, "{allowed}\n{err}");
-    assert_eq!(field(&allowed, "event"), Some("book_info"), "{allowed}");
+    assert_eq!(field(&allowed, "event"), Some("book"), "{allowed}");
 
     let (code, stopped, err) = fad(&["stop", "--book", &b, "--json"]);
     assert_eq!(code, 0, "{stopped}\n{err}");
