@@ -138,6 +138,17 @@ fn instance_id(r: &Refusal, issued: &Issued<'_>) -> String {
     format!("{}:{hex}", r.code)
 }
 
+/// Whether `id` has an instance id's form: a code, `:`, 16 lowercase hex.
+pub(crate) fn is_instance_id(id: &str) -> bool {
+    id.split_once(':').is_some_and(|(code, hex)| {
+        code.starts_with("FA-REF-")
+            && hex.len() == 16
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
 /// The catalog code an instance id (or a bare code) names.
 pub(crate) fn code_of(refusal_id: &str) -> &str {
     refusal_id
@@ -431,5 +442,8 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(code_of(&a), "FA-REF-002");
         assert_eq!(code_of("FA-REF-002"), "FA-REF-002");
+        assert!(is_instance_id(&a));
+        assert!(!is_instance_id("FA-REF-002:zz"));
+        assert!(!is_instance_id("FA-REF-002"));
     }
 }
