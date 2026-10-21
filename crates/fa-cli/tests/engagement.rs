@@ -534,6 +534,100 @@ fn an_engagement_proposes_books_and_passes_adjustments_and_posts_nothing_itself(
         sud.get("prior_period_carry_forward"),
         Some(&Json::Bool(false))
     );
+    // Per statement line: the passed accrual (Dr 6000 fees, Cr 2100 accrued
+    // liabilities, 10.00) under each line's own sign, formula lines as the
+    // statement computes them.
+    let lines = |statement: &Json| -> Vec<(String, String)> {
+        rows(statement, "lines")
+            .iter()
+            .map(|line| {
+                (
+                    text(line, "code").to_string(),
+                    text(line, "amount").to_string(),
+                )
+            })
+            .collect()
+    };
+    let pairs = |expected: &[(&str, &str)]| -> Vec<(String, String)> {
+        expected
+            .iter()
+            .map(|(code, amount)| (code.to_string(), amount.to_string()))
+            .collect()
+    };
+    let rollover = sud.get("rollover_lines").unwrap();
+    assert_eq!(text(rollover, "definition"), "income-statement");
+    assert_eq!(
+        lines(rollover),
+        pairs(&[
+            ("revenue", "0.00 USD"),
+            ("expense", "10.00 USD"),
+            ("net_income", "-10.00 USD"),
+        ])
+    );
+    let iron_curtain = sud.get("iron_curtain_lines").unwrap();
+    assert_eq!(text(iron_curtain, "definition"), "balance-sheet");
+    assert_eq!(
+        lines(iron_curtain),
+        pairs(&[
+            ("assets", "0.00 USD"),
+            ("liabilities", "10.00 USD"),
+            ("equity", "0.00 USD"),
+            ("unclosed_revenue", "0.00 USD"),
+            ("unclosed_expense", "10.00 USD"),
+            ("unclosed_earnings", "-10.00 USD"),
+            ("total_equity", "-10.00 USD"),
+            ("liabilities_and_equity", "0.00 USD"),
+            ("balance_check", "0.00 USD"),
+        ]),
+        "a balanced correction leaves the balance check at zero"
+    );
+    // The classified presets name finer lines: 2100 is an accrued liability.
+    let classified = f.ok(&[
+        "engagement",
+        "sud",
+        "FY26-audit",
+        "--definition",
+        "us_gaap_small_company_balance_sheet",
+        "--definition",
+        "us_gaap_small_company_income_statement",
+    ]);
+    let classified = data(&classified);
+    let by_code = |statement: &Json, code: &str| -> String {
+        rows(statement, "lines")
+            .iter()
+            .find(|line| text(line, "code") == code)
+            .map(|line| text(line, "amount").to_string())
+            .unwrap_or_else(|| panic!("no line {code} in {}", statement.render()))
+    };
+    let classified_balance = classified.get("iron_curtain_lines").unwrap();
+    assert_eq!(
+        text(classified_balance, "definition"),
+        "us_gaap_small_company_balance_sheet"
+    );
+    assert_eq!(
+        by_code(classified_balance, "accrued_liabilities"),
+        "10.00 USD"
+    );
+    assert_eq!(by_code(classified_balance, "accounts_payable"), "0.00 USD");
+    let classified_income = classified.get("rollover_lines").unwrap();
+    assert_eq!(by_code(classified_income, "net_income"), "-10.00 USD");
+    assert_eq!(
+        sud.get("items"),
+        classified.get("items"),
+        "the definitions only attribute the same items"
+    );
+    // Two balance sheets, or a name lint does not take, are refused.
+    for definitions in [
+        &["balance-sheet", "us_gaap_small_company_balance_sheet"][..],
+        &["no-such-definition"][..],
+    ] {
+        let mut args = vec!["engagement", "sud", "FY26-audit"];
+        for name in definitions {
+            args.extend(["--definition", *name]);
+        }
+        let (status, output) = f.run(&args);
+        assert_eq!(status, 2, "{definitions:?}: {}", output.render());
+    }
 
     // Show and list: the journal states both decisions and the open third.
     let shown = f.ok(&["engagement", "show", "FY26-audit"]);

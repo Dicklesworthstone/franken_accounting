@@ -1530,6 +1530,79 @@ impl Book {
         })?))
     }
 
+    /// The summary of uncorrected misstatements per statement line (plan
+    /// §11.12, SAB 108): the uncorrected proposals' legs in the engagement's
+    /// unit attributed to the lines of `income_statement` (the rollover
+    /// method) and of `balance_sheet` (the iron curtain method), each a
+    /// definition name `fa statement lint` takes. A covered account that
+    /// maps to no line, or to several, is refused with the lint to run.
+    pub fn uncorrected_by_line(
+        &self,
+        engagement: &str,
+        income_statement: &str,
+        balance_sheet: &str,
+    ) -> Outcome<Option<(crate::UncorrectedStatement, crate::UncorrectedStatement)>> {
+        use fa_statements::StatementKind;
+        let (Some(view), Some(summary)) = (
+            self.engagement(engagement)?,
+            self.uncorrected_misstatements(engagement)?,
+        ) else {
+            return Ok(Ok(None));
+        };
+        let resolve = |name: &str, kind: StatementKind| {
+            let definition = crate::statements::mapping_definition(name)?;
+            if definition.kind == kind {
+                Ok(definition)
+            } else {
+                Err(crate::statements::invalid(format!(
+                    "`{name}` is a {} definition, not a {}",
+                    definition.kind.name(),
+                    kind.name()
+                )))
+            }
+        };
+        let income_definition = match resolve(income_statement, StatementKind::IncomeStatement) {
+            Ok(definition) => definition,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let balance_definition = match resolve(balance_sheet, StatementKind::BalanceSheet) {
+            Ok(definition) => definition,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let accounts: std::collections::BTreeMap<u128, fa_statements::Account> = self
+            .accounts()?
+            .into_iter()
+            .map(|row| {
+                (
+                    row.vid.0,
+                    fa_statements::Account {
+                        id: row.vid.0,
+                        code: row.code,
+                        name: row.name,
+                        account_type: row.account_type,
+                        is_leaf: row.is_leaf,
+                    },
+                )
+            })
+            .collect();
+        let uncorrected: std::collections::BTreeSet<u32> =
+            summary.items.iter().map(|item| item.ordinal).collect();
+        let legs: Vec<(u128, fa_money::Side, i128)> = view
+            .proposals
+            .iter()
+            .filter(|p| uncorrected.contains(&p.proposal.ordinal))
+            .flat_map(|p| p.proposal.legs.iter())
+            .filter(|leg| leg.amount.unit == view.profile.unit)
+            .map(|leg| (leg.account.0, leg.side, leg.amount.mantissa))
+            .collect();
+        let attribute = |definition: &fa_statements::custom::CustomStatementDefinition| {
+            crate::statements::uncorrected_statement(definition, &accounts, &legs)
+        };
+        Ok(attribute(&income_definition).and_then(|income| {
+            attribute(&balance_definition).map(|balance| Some((income, balance)))
+        }))
+    }
+
     /// Fork the scenario `name` over the trunk prefix at `fork.at` (the head
     /// when absent): plan §15.2, Appendix B `ForkScenario`, fa-k07b.
     pub fn open_scenario(

@@ -557,11 +557,11 @@ name = "engagement"
 summary = "Audit engagements (plan §11.12, §0.4 decision 3): open an engagement (its kind, scope periods and the materiality parameters the auditor states, journaled once by an EngagementControl record under produce authority), list the book's engagements, or show one with every proposed adjustment and its decision."
 writes = true
 subcommands = ["open", "list", "show", "sud"]
-flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date", "--grant"]
+flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date", "--grant", "--definition"]
 switches = []
 events = ["engagement_opened", "engagements", "engagement_detail", "engagement_sud"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["engagement open <id> --kind audit|review|examination|investigation|litigation --period <code>... --overall \"<amount> <UNIT>\" --performance \"<amount> <UNIT>\" --clearly-trivial \"<amount> <UNIT>\" [--report-release YYYY-MM-DD] [--key K] [--date YYYY-MM-DD]   (journals the engagement once, under produce authority; the parameters are in the book's base unit with 0 <= clearly trivial <= performance <= overall, and are stated, never judged; every scope period must exist)", "engagement list   (every engagement of the book, under read authority)", "engagement show <id>   (the engagement and each proposed adjustment: its legs, its state proposed|booked|passed, and its decision)", "engagement sud <id>   (plan §11.12 audit.sud, the summary of uncorrected misstatements: every passed proposal's effect had it been booked, on income, assets, liabilities and equity in the engagement's unit, legs in other units listed and never converted; the rollover (period income) and iron-curtain (period-end balance sheet) totals, which sum the same items while no prior-period engagement is carried forward; and mechanical comparisons with the stated clearly trivial, performance and overall parameters. Materiality is the auditor's judgment, not this report's)"]
+usage = ["engagement open <id> --kind audit|review|examination|investigation|litigation --period <code>... --overall \"<amount> <UNIT>\" --performance \"<amount> <UNIT>\" --clearly-trivial \"<amount> <UNIT>\" [--report-release YYYY-MM-DD] [--key K] [--date YYYY-MM-DD]   (journals the engagement once, under produce authority; the parameters are in the book's base unit with 0 <= clearly trivial <= performance <= overall, and are stated, never judged; every scope period must exist)", "engagement list   (every engagement of the book, under read authority)", "engagement show <id>   (the engagement and each proposed adjustment: its legs, its state proposed|booked|passed, and its decision)", "engagement sud <id> [--definition <income statement>] [--definition <balance sheet>]   (plan §11.12 audit.sud, the summary of uncorrected misstatements: every passed proposal's effect had it been booked, on income, assets, liabilities and equity in the engagement's unit, legs in other units listed and never converted; the rollover (period income) and iron-curtain (period-end balance sheet) totals, which sum the same items while no prior-period engagement is carried forward; per statement line, rollover_lines over an income statement definition and iron_curtain_lines over a balance sheet definition, each one a name fa statement lint takes (income-statement and balance-sheet by default, us_gaap_small_company_* for the classified presets), refused when an account maps to no line or to several; and mechanical comparisons with the stated clearly trivial, performance and overall parameters. Materiality is the auditor's judgment, not this report's)"]
 example = "fa engagement open FY2026-audit --kind audit --period FY2026-P01 --period FY2026-P02 --overall \"50000.00 USD\" --performance \"37500.00 USD\" --clearly-trivial \"2500.00 USD\" --book ./books/myco --json"
 
 [[verb]]
@@ -2347,8 +2347,8 @@ fields = ["engagement:engagement_summary", "proposals:[proposal_row]"]
 [[event]]
 name = "engagement_sud"
 book = true
-doc = "The summary of uncorrected misstatements of one engagement (plan §11.12 audit.sud): the effect of each passed proposal, and of each booked one whose entry was since reversed or replaced, had it been booked and stood, the rollover and iron-curtain totals (no prior-period carry-forward in this build: prior_period_carry_forward is false, and the two totals sum the same items), and mechanical comparisons with the stated parameters. The materiality judgment is the auditor's, not this report's."
-fields = ["engagement:engagement_summary", "unit:string", "items:[sud_item]", "rollover_income:amount", "iron_curtain:statement_effect", "prior_period_carry_forward:bool", "exceeds_performance:bool", "exceeds_overall:bool"]
+doc = "The summary of uncorrected misstatements of one engagement (plan §11.12 audit.sud): the effect of each passed proposal, and of each booked one whose entry was since reversed or replaced, had it been booked and stood, the rollover and iron-curtain totals (no prior-period carry-forward in this build: prior_period_carry_forward is false, and the two totals sum the same items), and mechanical comparisons with the stated parameters. The materiality judgment is the auditor's, not this report's. rollover_lines attributes the same items to the lines of an income statement definition and iron_curtain_lines to those of a balance sheet definition (--definition; the registered income-statement and balance-sheet by default), each line under its own sign and every formula line computed as the statement computes it."
+fields = ["engagement:engagement_summary", "unit:string", "items:[sud_item]", "rollover_income:amount", "iron_curtain:statement_effect", "prior_period_carry_forward:bool", "exceeds_performance:bool", "exceeds_overall:bool", "rollover_lines:sud_statement", "iron_curtain_lines:sud_statement"]
 
 [[event]]
 name = "adjustment_proposed"
@@ -2387,6 +2387,16 @@ fields = ["income:amount", "assets:amount", "liabilities:amount", "equity:amount
 name = "sud_item"
 doc = "One uncorrected proposal in the summary of uncorrected misstatements: its number and date; why it is uncorrected, either the registered reason it was passed or, for a booking whose entry was since reversed or replaced, the booked entry and the entry that superseded it; its statement effect in the engagement's unit; whether every line is within the stated clearly trivial threshold; and the other units its legs carry (listed, never converted)."
 fields = ["number:int", "effective_date:date", "reason:string?", "booked_entry:hex?", "superseded_by:hex?", "effect:statement_effect", "clearly_trivial:bool", "other_units:[string]"]
+
+[[shape]]
+name = "sud_statement"
+doc = "The summary of uncorrected misstatements over one statement definition's lines (plan §11.12, per statement line): the definition and its title, and every line in order with the amount it would change by had every uncorrected proposal been booked, in the engagement's unit."
+fields = ["definition:string", "title:string", "lines:[sud_line]"]
+
+[[shape]]
+name = "sud_line"
+doc = "One statement line's share of the uncorrected misstatements, under the line's own sign (a debit line rises with debits, a credit line with credits); a formula line adds and subtracts the lines it names."
+fields = ["code:string", "label:string", "amount:amount"]
 
 [[shape]]
 name = "proposal_leg"
@@ -3140,7 +3150,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book", "--token"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution", "--definition"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth"]
 
@@ -4502,7 +4512,7 @@ verb = "engagement"
 subcommands = ["open", "list", "show", "sud"]
 selector = "action"
 positionals = ["engagement?"]
-flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date"]
+flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date", "--definition"]
 switches = []
 required = []
 dont = ["Opening an engagement needs produce and a Human launch profile: an Agent-profile session journals no trunk record (FA-REF-013). Reads need read.", "Don't treat the materiality parameters as conclusions: overall, performance and clearly trivial are the auditor's stated parameters; the system compares against them mechanically and never judges materiality.", "Don't reopen an engagement to change its parameters: its profile is immutable; open a new engagement under another id."]
