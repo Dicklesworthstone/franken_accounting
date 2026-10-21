@@ -7497,6 +7497,30 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["engagement", "list"]).0, 0);
     assert_eq!(run(true, &["engagement", "show", "events-engagement"]).0, 0);
     assert_eq!(run(true, &["engagement", "sud", "events-engagement"]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &["engagement", "file", "events-engagement", "--document", &ev]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "engagement",
+                "complete",
+                "events-engagement",
+                "--report-release",
+                "2026-04-15",
+                "--completion-date",
+                "2026-04-30"
+            ]
+        )
+        .0,
+        0
+    );
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(
         run(true, &["tb", "--period", "FY2026-P03", "--render", "md"]).0,
