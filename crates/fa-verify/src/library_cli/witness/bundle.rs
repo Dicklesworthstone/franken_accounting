@@ -1,5 +1,7 @@
 //! One recipient request binds quorum/continuity, bundle scope, disclosure and receipt.
 
+mod balances;
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -8,6 +10,7 @@ use fa_verify::checkpoint::witness::bundle::{
     BundleExpectation, MAX_REQUESTED_BUNDLE_LEAVES, MAX_WITNESSED_BUNDLE_BYTES,
     MAX_WITNESSED_RECEIPT_BYTES, verify_witnessed_bundle_for,
 };
+use fa_verify::checkpoint::witness::bundle::balances::verify_witnessed_bundle_balances_for;
 use fa_verify::cli::Output;
 use fa_verify::{BundleReport, BundleScope, Grade, ScopeClaim};
 
@@ -44,8 +47,16 @@ a matching tree or body. Stripped or alternate signature sets require their
 own independently verified anchor. Every bundle predicate retains its own
 pass/fail/unrun grade; a matching quorum never repairs an incomplete balance.
 Account completeness retains the signed-index (not recomputed) premise.
-This mode does not demand a particular set of balance claims: check separate
-recipient-bound balance expectations when specific stock cells are required.
+To demand exact stock cells, repeat --expect-balance ACCOUNT32:UNIT:DAY|none
+or ACCOUNT32:UNIT:DAY|none:DEBITS:CREDITS for optional exact gross mantissas.
+ACCOUNT32 is 32 hex digits; UNIT is decimal u32; DAY is signed decimal i32.
+Amounts are nonnegative integer i128 mantissas, never decimal money or nets.
+Cells are an EXACT set independent of proof order, with no duplicates or extras.
+At most 4096 cells may be requested. The literal none means no stock cutoff,
+not a wildcard; stock cutoffs are independent of the entry-scope day interval.
+Use --expect-no-balances to require zero claims. It cannot be combined with
+--expect-balance. With neither flag no specific balance set is requested.
+Every balance must still satisfy its full recomputation obligations.
 
 Input is canonical raw bytes, never hex text. Bundle plus receipt share a
 64 MiB budget; a receipt is at most 4096 bytes. Paths may be non-UTF-8.
@@ -59,6 +70,7 @@ struct Request {
     bundle: PathBuf,
     receipt: Option<PathBuf>,
     expected: BundleExpectation,
+    balances: Option<Vec<fa_verify::BalanceExpectation>>,
 }
 
 fn text<'a>(value: Option<&'a OsString>, name: &str) -> Result<&'a str, Failure> {
@@ -111,8 +123,13 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     let (mut bundle, mut receipt, mut scope, mut documents, mut receipt_mode) =
         (None, None, None, None, None);
     let (mut account, mut days, mut indexes) = (None, None, None);
+    let mut balance_args = balances::BalanceArgs::default();
     let mut index = 1;
     while let Some(argument) = args.get(index) {
+        if let Some(consumed) = balance_args.consume(args, index)? {
+            index += consumed;
+            continue;
+        }
         if argument == "--json" {
             anchor.push(argument.clone());
             index += 1;
@@ -163,6 +180,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         }
         index += 2;
     }
+    let balances = balance_args.finish()?;
     let scope = match text(scope, "--expect-scope")? {
         "prefix" if account.is_none() && days.is_none() && indexes.is_none() => BundleScope::Prefix,
         "account" if indexes.is_none() => {
@@ -223,6 +241,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         bundle,
         receipt: receipt.map(PathBuf::from),
         expected,
+        balances,
     })
 }
 
@@ -239,8 +258,13 @@ fn verify(args: &[OsString], json: bool) -> Result<(String, bool), Failure> {
         .transpose()?;
     let remaining = MAX_WITNESSED_BUNDLE_BYTES - receipt.as_ref().map_or(0, Vec::len);
     let bytes = read_bounded(&request.bundle, remaining)?;
-    let report = verify_witnessed_bundle_for(&bytes, &pin, &request.expected, receipt.as_deref())
-        .map_err(|error| Failure::verification(error.to_string()))?;
+    let report = match &request.balances {
+        Some(expected) => verify_witnessed_bundle_balances_for(
+            &bytes, &pin, &request.expected, expected, receipt.as_deref(),
+        ),
+        None => verify_witnessed_bundle_for(&bytes, &pin, &request.expected, receipt.as_deref()),
+    }
+    .map_err(|error| Failure::verification(error.to_string()))?;
     let passed = report.verified();
     let output = render(&report, &pin, &request, continuity.as_ref(), json);
     if output.len() > MAX_WITNESSED_BUNDLE_BYTES {
@@ -329,6 +353,11 @@ fn render(
             report.manifest.scope,
             report.manifest.completeness.label(),
         );
+        if let Some(cells) = &request.balances {
+            text.push_str(&format!("Recipient balance request: exactly {} stock cells.\n", cells.len()));
+        } else {
+            text.push_str("No specific recipient balance set was requested.\n");
+        }
         for check in &report.checks {
             let (status, why) = grade(&check.grade);
             text.push_str(&format!(
@@ -388,6 +417,7 @@ fn render(
         ("bundle_digest", quote(&hex(&report.digest))),
         ("requested_scope", scope_json(&request.expected.scope)),
         ("actual_scope", scope_json(&report.manifest.scope)),
+        ("balance_request", balances::json(request.balances.as_deref())),
         ("completeness", quote(report.manifest.completeness.label())),
         (
             "requirements",
@@ -471,6 +501,8 @@ fn render(
                     "durable_pin_storage",
                     "recipient_balance_claim_set",
                 ]
+                .into_iter()
+                .filter(|name| *name != "recipient_balance_claim_set" || request.balances.is_none())
                 .map(quote),
             ),
         ),
