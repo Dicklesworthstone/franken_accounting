@@ -211,12 +211,18 @@ fn individually_valid_plans_share_one_limit_and_cannot_publish_a_partial_batch()
         assert!(read_entry(&scratch, member.vid).unwrap().is_none());
         assert!(read_entry(&h.db, member.vid).unwrap().is_none());
     }
-    assert!(
-        scratch
-            .vertices()
-            .unwrap()
-            .iter()
-            .all(|row| !row.labels.contains(&label::INTENT_OUTCOME))
+    let outcome_rows = |rows: Vec<fgdb::VertexRow>| {
+        let mut rows: Vec<_> = rows
+            .into_iter()
+            .filter(|row| row.labels.contains(&label::INTENT_OUTCOME))
+            .collect();
+        rows.sort_by_key(|row| row.vid);
+        rows
+    };
+    assert_eq!(
+        outcome_rows(scratch.vertices().unwrap()),
+        outcome_rows(before),
+        "only source outcomes were copied; no member or batch claim survived the refusal"
     );
 }
 

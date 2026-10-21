@@ -633,14 +633,14 @@ example = "fa registers materialize --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
 name = "recover"
-summary = "Explicitly rebuild derived state from the journal: leg mirrors and projection edges, each derived from immutable entry payloads after every source entry is checked against its native creation history. Preview with --dry-run; publishing needs --yes."
+summary = "Explicitly rebuild leg projections or common idempotency outcomes from verified native journal history. Preview with --dry-run; publishing needs --yes and can bind the reviewed head with --basis."
 writes = true
-subcommands = ["projections"]
+subcommands = ["projections", "outcomes"]
 flags = ["--basis"]
 switches = ["--dry-run"]
-events = ["projections_rebuilt"]
+events = ["projections_rebuilt", "outcomes_rebuilt"]
 exits = [0, 2, 4, 5, 6, 7, 8]
-usage = ["recover projections --dry-run   (the exact mirror and edge changes a repair would publish at this head; writes nothing)", "recover projections --yes [--basis <seq>]   (one commit, then projections and open items are rechecked; with the dry run's --basis it publishes exactly that previewed repair and exits 6 if the head moved; a clean book publishes nothing; needs read, verify and schema_change, never on trunk from an Agent profile; host-only over MCP)"]
+usage = ["recover projections --dry-run   (the exact mirror and edge changes a repair would publish at this head; writes nothing)", "recover projections --yes [--basis <seq>]   (one commit, then projections and open items are rechecked; with the dry run's --basis it publishes exactly that previewed repair and exits 6 if the head moved; a clean book publishes nothing; needs read, verify and schema_change, never on trunk from an Agent profile; host-only over MCP)", "recover outcomes --dry-run   (verify retained native history and preview missing common-idempotency outcomes and coverage at this exact head; writes nothing, including after checkpoint reopen)", "recover outcomes --yes [--basis <seq>]   (atomically publish every verified legacy outcome and establish coverage; a moved --basis exits 6, rewritten history or conflicting legacy keys refuse without publishing, and an already-covered book publishes nothing; requires current whole-book read and schema_change, never on trunk from an Agent profile; host-only over MCP; migration run keys remain separate)"]
 example = "fa recover projections --dry-run --book ./books/myco --json"
 
 [[verb]]
@@ -910,6 +910,12 @@ verb = "recover"
 subcommand = "projections"
 condition = "always"
 safe = "`fa verify projections --json` reports the drift without writing, and `fa recover projections --dry-run --json` previews every mirror and edge the repair would publish; retain both, then publish exactly that repair with `--yes --basis <its basis>`"
+
+[[dangerous]]
+verb = "recover"
+subcommand = "outcomes"
+condition = "always"
+safe = "`fa recover outcomes --dry-run --json` verifies native history and previews the missing outcomes without writing; retain that preview, then establish exactly its common-idempotency coverage with `--yes --basis <its basis>`"
 
 [[dangerous]]
 verb = "draft"
@@ -1693,6 +1699,12 @@ name = "projections_rebuilt"
 book = true
 doc = "A leg-projection recovery derived from the journal at basis. dry_run=true previews the changes and writes nothing. Otherwise every change publishes in one commit at recorded_at, and projections and open items are then rechecked; wrote=false means the projections already equalled the journal, no sequence was consumed and recorded_at is null. Entries, payloads and settlement edges are never rewritten. This is a repair of derived state, not a certificate."
 fields = ["dry_run:bool", "basis:seq", "recorded_at:seq?", "wrote:bool", "entries_checked:int", "legs_checked:int", "legs_created:int", "legs_repaired:int", "edges_created:int", "edges_repaired:int", "edges_retired:int"]
+
+[[event]]
+name = "outcomes_rebuilt"
+book = true
+doc = "Explicit common-idempotency recovery from verified native history at basis. dry_run=true previews and aborts without publishing. outcomes_created counts missing outcome records derived from immutable native entries; already_covered describes the prepared basis. Publication atomically retains those outcomes and coverage at recorded_at. An already-covered book consumes no sequence; wrote=false has recorded_at=null. Conflicting legacy keys or rewritten history refuse the complete recovery. Migration run keys are separate."
+fields = ["dry_run:bool", "basis:seq", "recorded_at:seq?", "wrote:bool", "entries_checked:int", "outcomes_created:int", "already_covered:bool"]
 
 [[event]]
 name = "open_items_verified"
@@ -2861,6 +2873,11 @@ reason = "host-only: an independently authorized Human reviews the exact source 
 verb = "recover"
 subcommand = "projections"
 reason = "host-only: rebuilding leg projections requires schema_change on trunk, which neither launch-bound MCP templates nor their issued tokens may hold, and publishing needs --yes; a bound session verifies projections through fa_book_verify (plan §4.2/§15.4 registered exclusion)"
+
+[[mcp.excluded]]
+verb = "recover"
+subcommand = "outcomes"
+reason = "host-only: rebuilding the common idempotency namespace requires current whole-book read and schema_change on trunk, which launch-bound MCP templates and their issued tokens cannot hold; publication requires the host's --yes after an explicit dry-run preview (plan §5.9/§15.4 registered exclusion)"
 
 [[mcp.excluded]]
 verb = "fad"

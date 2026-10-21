@@ -6,7 +6,7 @@
 
 mod cycles;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::genesis::BookContext;
 use fa_model::{AccountType, EntryClass};
@@ -87,6 +87,46 @@ fn entity_text(entity: Option<VId>) -> String {
         || "implicit book entity".into(),
         |v| format!("entity {:032x}", v.0),
     )
+}
+
+/// No amount, path, or population baseline may cross this coordinate.
+type MonetaryScope = (Option<VId>, u32);
+
+fn monetary_scope_text(
+    book: &BookContext,
+    (entity, unit_id): MonetaryScope,
+) -> Result<String, LanternError> {
+    let unit = book.units.get(UnitId(unit_id)).ok_or_else(|| {
+        fa_journal::KernelError::Corrupt("a leg names an unregistered unit".into())
+    })?;
+    Ok(format!(
+        "{} (unit {unit_id}, version {}, scale {}), {}",
+        unit.code,
+        unit.version,
+        unit.scale,
+        entity_text(entity)
+    ))
+}
+
+/// Count each live posting once in every unit/entity partition it touches.
+fn monetary_populations(
+    entries: &[&crate::SnapshotEntry],
+    entities: &crate::projection::entity::Scope,
+) -> Result<BTreeMap<MonetaryScope, u64>, LanternError> {
+    let mut populations = BTreeMap::new();
+    for entry in entries {
+        let mut seen = BTreeSet::new();
+        for leg in &entry.entry.proposal.legs {
+            seen.insert((
+                crate::projection::scoped_entity(entities, leg)?,
+                leg.amount.unit.0,
+            ));
+        }
+        for coordinate in seen {
+            *populations.entry(coordinate).or_insert(0) += 1;
+        }
+    }
+    Ok(populations)
 }
 
 /// `graph.round_trips`: same-amount asset-account round trips. Two-hop mode
@@ -944,6 +984,7 @@ impl Procedure for Layering {
 
 /// `graph.communities`: community detection over the money-flow projection via
 /// `fnx_algorithms::louvain_communities` and `connected_components` with CGSE witness.
+/// Topology and exact transfer volumes stay inside one native unit and entity.
 pub struct Communities {
     params: Params,
 }
@@ -954,7 +995,7 @@ impl Procedure for Communities {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -962,114 +1003,125 @@ impl Procedure for Communities {
     fn run(
         &self,
         snapshot: &Snapshot,
-        _book: &BookContext,
+        book: &BookContext,
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_size = self.params.get_u32("min_community_size")? as usize;
         let min_share_bps = i128::from(self.params.get_u32("min_internal_share_bps")?);
-        let flow = crate::projection::money_flow(snapshot)?;
-        if flow.edges.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut g = fnx_classes::Graph::strict();
-        let mut nodes = std::collections::BTreeSet::new();
-        let mut edge_weights: BTreeMap<(VId, VId), i128> = BTreeMap::new();
-        for e in &flow.edges {
+        // Preserve the entity label before building topology: money_flow()
+        // deliberately collapses entities and cannot serve a path analysis.
+        let mut partitions: BTreeMap<MonetaryScope, BTreeMap<(VId, VId), i128>> = BTreeMap::new();
+        for scoped in scoped_flow_legs(snapshot)? {
+            work.leg();
+            let e = &scoped.leg;
             if e.from == e.to || e.mantissa <= 0 {
                 continue;
             }
-            nodes.insert(e.from);
-            nodes.insert(e.to);
             let pair = if e.from <= e.to {
                 (e.from, e.to)
             } else {
                 (e.to, e.from)
             };
+            let edge_weights = partitions
+                .entry((scoped.legal_entity, e.unit_id))
+                .or_default();
             let weight = edge_weights.entry(pair).or_insert(0);
             *weight = amount_sum(*weight, e.mantissa, "graph.communities edge volume")?;
         }
-        for &n in &nodes {
-            g.add_node(vid_node(n));
-        }
-        for &(u, v) in edge_weights.keys() {
-            let _ = g.add_edge(vid_node(u), vid_node(v));
-        }
-        let (mut comms, _) = fnx_cgse::collect_witnesses(|| {
-            let mut out_comms =
-                fnx_algorithms::louvain_communities(&g, 1.0, "weight", 1e-7, None, Some(0));
-            out_comms.extend(fnx_algorithms::connected_components(&g).components);
-            out_comms
-        });
-        for c in &mut comms {
-            c.sort();
-        }
-        comms.sort();
-        comms.dedup();
         let mut out = Vec::new();
-        for comm in comms {
-            work.compare(comm.len() as u64);
-            let member_vids: std::collections::BTreeSet<VId> = comm
-                .iter()
-                .filter_map(|s| parse_vid_node(s))
-                .filter(|v| snapshot.accounts.contains_key(v))
-                .collect();
-            if member_vids.len() < min_size {
-                continue;
+        for (coordinate, edge_weights) in partitions {
+            let scope_text = monetary_scope_text(book, coordinate)?;
+            let mut g = fnx_classes::Graph::strict();
+            let mut nodes = BTreeSet::new();
+            for &(u, v) in edge_weights.keys() {
+                nodes.insert(u);
+                nodes.insert(v);
             }
-            let mut internal_vol: i128 = 0;
-            let mut total_incident_vol: i128 = 0;
-            for (&(u, v), &w) in &edge_weights {
-                let u_in = member_vids.contains(&u);
-                let v_in = member_vids.contains(&v);
-                if u_in && v_in {
-                    internal_vol =
-                        amount_sum(internal_vol, w, "graph.communities internal volume")?;
-                    total_incident_vol =
-                        amount_sum(total_incident_vol, w, "graph.communities incident volume")?;
-                } else if u_in || v_in {
-                    total_incident_vol =
-                        amount_sum(total_incident_vol, w, "graph.communities incident volume")?;
+            for &n in &nodes {
+                g.add_node(vid_node(n));
+            }
+            for &(u, v) in edge_weights.keys() {
+                let _ = g.add_edge(vid_node(u), vid_node(v));
+            }
+            let (mut comms, _) = fnx_cgse::collect_witnesses(|| {
+                let mut out_comms =
+                    fnx_algorithms::louvain_communities(&g, 1.0, "weight", 1e-7, None, Some(0));
+                out_comms.extend(fnx_algorithms::connected_components(&g).components);
+                out_comms
+            });
+            for c in &mut comms {
+                c.sort();
+            }
+            comms.sort();
+            comms.dedup();
+            for comm in comms {
+                work.compare(comm.len() as u64);
+                let member_vids: BTreeSet<VId> = comm
+                    .iter()
+                    .filter_map(|s| parse_vid_node(s))
+                    .filter(|v| snapshot.accounts.contains_key(v))
+                    .collect();
+                if member_vids.len() < min_size {
+                    continue;
                 }
-            }
-            if total_incident_vol <= 0 {
-                continue;
-            }
-            let share_bps = amount_share_bps(
-                internal_vol,
-                total_incident_vol,
-                "graph.communities internal share",
-            )?;
-            if share_bps >= min_share_bps {
-                let decisions: Vec<(String, String)> = member_vids
-                    .iter()
-                    .map(|v| (vid_node(*v), "community".to_string()))
-                    .collect();
-                let dec_refs: Vec<(&str, &str)> = decisions
-                    .iter()
-                    .map(|(a, b)| (a.as_str(), b.as_str()))
-                    .collect();
-                let cgse = cgse_digest_hex(&dec_refs, g.node_count(), g.edge_count(), "louvain");
-                let cites: Vec<Cite> = member_vids
-                    .iter()
-                    .take(MAX_CITES)
-                    .copied()
-                    .map(Cite::Account)
-                    .collect();
-                out.push(finding(
-                    (Self::ID, self.version()),
-                    Severity::Medium,
-                    Statistic {
-                        name: "internal_share_bps".into(),
-                        value: share_bps,
-                        scale: 0,
-                        population: nodes.len() as u64,
-                    },
-                    cites,
-                    format!(
-                        "{}-account community retains {share_bps} bps of incident volume internally (cgse_witness={cgse})",
-                        member_vids.len()
-                    ),
-                ));
+                let mut internal_vol: i128 = 0;
+                let mut total_incident_vol: i128 = 0;
+                for (&(u, v), &w) in &edge_weights {
+                    let u_in = member_vids.contains(&u);
+                    let v_in = member_vids.contains(&v);
+                    if u_in && v_in {
+                        internal_vol =
+                            amount_sum(internal_vol, w, "graph.communities internal volume")?;
+                        total_incident_vol =
+                            amount_sum(total_incident_vol, w, "graph.communities incident volume")?;
+                    } else if u_in || v_in {
+                        total_incident_vol =
+                            amount_sum(total_incident_vol, w, "graph.communities incident volume")?;
+                    }
+                }
+                if total_incident_vol <= 0 {
+                    continue;
+                }
+                let share_bps = amount_share_bps(
+                    internal_vol,
+                    total_incident_vol,
+                    "graph.communities internal share",
+                )?;
+                if share_bps >= min_share_bps {
+                    let mut decisions = vec![(scope_text.clone(), "amount_scope".to_string())];
+                    decisions.extend(
+                        member_vids
+                            .iter()
+                            .map(|v| (vid_node(*v), "community".to_string())),
+                    );
+                    let dec_refs: Vec<(&str, &str)> = decisions
+                        .iter()
+                        .map(|(a, b)| (a.as_str(), b.as_str()))
+                        .collect();
+                    let cgse =
+                        cgse_digest_hex(&dec_refs, g.node_count(), g.edge_count(), "louvain");
+                    let cites: Vec<Cite> = member_vids
+                        .iter()
+                        .take(MAX_CITES)
+                        .copied()
+                        .map(Cite::Account)
+                        .collect();
+                    out.push(finding(
+                        (Self::ID, self.version()),
+                        Severity::Medium,
+                        Statistic {
+                            name: "internal_share_bps".into(),
+                            value: share_bps,
+                            scale: 0,
+                            population: nodes.len() as u64,
+                        },
+                        cites,
+                        format!(
+                            "{}-account community in {scope_text} retains {share_bps} bps of incident volume internally (cgse_witness={cgse})",
+                            member_vids.len()
+                        ),
+                    ));
+                }
             }
         }
         Ok(out)
@@ -1080,6 +1132,7 @@ impl Procedure for Communities {
 /// and `RELATED_TO` edges in `snapshot.rea` via `ReaSnapshot::related_as_of`
 /// and `fnx_algorithms::bfs_layers_directed` with CGSE witness, intersected
 /// with live postings carrying the reached party or legal-entity dimension.
+/// Each finding retains the affected entry's native unit and legal entity.
 pub struct RelatedPartyExposure {
     params: Params,
 }
@@ -1090,7 +1143,7 @@ impl Procedure for RelatedPartyExposure {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1107,7 +1160,10 @@ impl Procedure for RelatedPartyExposure {
         }
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
-        let population = live.len() as u64;
+        let entities = crate::projection::entity_scope(
+            live.iter().flat_map(|entry| &entry.entry.proposal.legs),
+        )?;
+        let populations = monetary_populations(&live, &entities)?;
         let mut dg = fnx_classes::digraph::DiGraph::strict();
         for r in &snapshot.rea.relationships {
             let u = vid_node(r.spec.from);
@@ -1130,13 +1186,24 @@ impl Procedure for RelatedPartyExposure {
         for e in &live {
             work.entry();
             let eff = e.entry.proposal.effective_date;
-            let mut related_hits = Vec::new();
-            let mut total_exposure: i128 = 0;
-            let mut scale = 2u8;
+            let mut exposures: BTreeMap<MonetaryScope, i128> = BTreeMap::new();
+            let mut hits_by_scope: BTreeMap<
+                MonetaryScope,
+                Vec<(VId, fa_journal::rea::RelatedPartyHit)>,
+            > = BTreeMap::new();
             for leg in &e.entry.proposal.legs {
                 work.leg();
-                if let Some(u) = book.units.get(leg.amount.unit) {
-                    scale = u.scale;
+                let coordinate = (
+                    crate::projection::scoped_entity(&entities, leg)?,
+                    leg.amount.unit.0,
+                );
+                if leg.side == fa_money::Side::Debit {
+                    let exposure = exposures.entry(coordinate).or_insert(0);
+                    *exposure = amount_sum(
+                        *exposure,
+                        leg.amount.mantissa,
+                        "graph.related_party_exposure debit exposure",
+                    )?;
                 }
                 for (dim, val) in &leg.dimension_set {
                     if *dim != fa_model::PARTY_DIMENSION && *dim != fa_model::LEGAL_ENTITY_DIMENSION
@@ -1146,6 +1213,7 @@ impl Procedure for RelatedPartyExposure {
                     let Some(&rea_vid) = dim_to_rea.get(val) else {
                         continue;
                     };
+                    let related_hits = hits_by_scope.entry(coordinate).or_default();
                     for &root_vid in snapshot.rea.legal_entities.keys() {
                         let hits = snapshot.rea.related_as_of(root_vid, eff, max_depth);
                         if let Some(hit) = hits.into_iter().find(|h| h.vid == rea_vid) {
@@ -1159,15 +1227,18 @@ impl Procedure for RelatedPartyExposure {
                         }
                     }
                 }
-                if leg.side == fa_money::Side::Debit {
-                    total_exposure = amount_sum(
-                        total_exposure,
-                        leg.amount.mantissa,
-                        "graph.related_party_exposure debit exposure",
-                    )?;
-                }
             }
-            if !related_hits.is_empty() {
+            for (coordinate, mut related_hits) in hits_by_scope {
+                if related_hits.is_empty() {
+                    continue;
+                }
+                // A related counterparty may be named on either side. Its
+                // exposure is the balanced posting's debit volume in this
+                // entity/unit only, never the other partitions of the entry.
+                let total_exposure = exposures.get(&coordinate).copied().unwrap_or(0);
+                let scope_text = monetary_scope_text(book, coordinate)?;
+                let scale = crate::unit_scale(book, coordinate.1)?;
+                let population = populations.get(&coordinate).copied().unwrap_or(0);
                 work.compare(related_hits.len() as u64);
                 related_hits.sort_by_key(|(r, h)| (h.depth, h.vid, *r));
                 let (root_vid, best) = &related_hits[0];
@@ -1176,7 +1247,10 @@ impl Procedure for RelatedPartyExposure {
                     fnx_algorithms::bfs_layers_directed(&dg, &root_node)
                 });
                 let cgse = cgse_digest_hex(
-                    &[(&root_node, &vid_node(best.vid))],
+                    &[
+                        (&scope_text, "amount_scope"),
+                        (&root_node, &vid_node(best.vid)),
+                    ],
                     dg.node_count(),
                     dg.edge_count(),
                     "related_party_bfs",
@@ -1196,7 +1270,7 @@ impl Procedure for RelatedPartyExposure {
                     },
                     cites,
                     format!(
-                        "posting of {total_exposure} involves related party `{}` at depth {} via `{}` (cgse_witness={cgse})",
+                        "posting of {total_exposure} in {scope_text} involves related party `{}` at depth {} via `{}` (cgse_witness={cgse})",
                         best.code, best.depth, best.basis
                     ),
                 ));
@@ -1206,19 +1280,27 @@ impl Procedure for RelatedPartyExposure {
     }
 }
 
-/// `graph.shell_signature`: shell-entity and pass-through conduit detector over
-/// the REA party graph and money-flow projection with CGSE witness.
+/// `graph.shell_signature`: undocumented asset-account pass-through conduits,
+/// with flows and evidence isolated by native unit and legal entity.
 pub struct ShellSignature {
     params: Params,
 }
 crate::jet::procedure_boilerplate!(ShellSignature, "graph.shell_signature");
+
+#[derive(Default)]
+struct ConduitFlows {
+    inflow: i128,
+    outflow: i128,
+    documented: bool,
+    entries: BTreeSet<VId>,
+}
 
 impl Procedure for ShellSignature {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1232,34 +1314,40 @@ impl Procedure for ShellSignature {
         let min_pass_bps = i128::from(self.params.get_u32("min_passthrough_bps")?);
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
-        let population = live.len() as u64;
-        let mut acct_in: BTreeMap<VId, i128> = BTreeMap::new();
-        let mut acct_out: BTreeMap<VId, i128> = BTreeMap::new();
-        let mut acct_docs: BTreeMap<VId, usize> = BTreeMap::new();
-        let mut acct_entries: BTreeMap<VId, Vec<VId>> = BTreeMap::new();
+        let entities = crate::projection::entity_scope(
+            live.iter().flat_map(|entry| &entry.entry.proposal.legs),
+        )?;
+        let populations = monetary_populations(&live, &entities)?;
+        let mut partitions: BTreeMap<MonetaryScope, BTreeMap<VId, ConduitFlows>> = BTreeMap::new();
         for e in &live {
             work.entry();
-            let doc_count = e.entry.proposal.evidence.len();
             for leg in &e.entry.proposal.legs {
                 work.leg();
                 if !is_asset(snapshot, leg.account_ref) {
                     continue;
                 }
-                *acct_docs.entry(leg.account_ref).or_insert(0) += doc_count;
-                acct_entries.entry(leg.account_ref).or_default().push(e.vid);
+                let coordinate = (
+                    crate::projection::scoped_entity(&entities, leg)?,
+                    leg.amount.unit.0,
+                );
+                let flows = partitions
+                    .entry(coordinate)
+                    .or_default()
+                    .entry(leg.account_ref)
+                    .or_default();
+                flows.documented |= !e.entry.proposal.evidence.is_empty();
+                flows.entries.insert(e.vid);
                 match leg.side {
                     fa_money::Side::Debit => {
-                        let inflow = acct_in.entry(leg.account_ref).or_insert(0);
-                        *inflow = amount_sum(
-                            *inflow,
+                        flows.inflow = amount_sum(
+                            flows.inflow,
                             leg.amount.mantissa,
                             "graph.shell_signature account inflow",
                         )?;
                     }
                     fa_money::Side::Credit => {
-                        let outflow = acct_out.entry(leg.account_ref).or_insert(0);
-                        *outflow = amount_sum(
-                            *outflow,
+                        flows.outflow = amount_sum(
+                            flows.outflow,
                             leg.amount.mantissa,
                             "graph.shell_signature account outflow",
                         )?;
@@ -1268,51 +1356,57 @@ impl Procedure for ShellSignature {
             }
         }
         let mut out = Vec::new();
-        for (&acct_vid, &inflow) in &acct_in {
-            work.compare(1);
-            let outflow = acct_out.get(&acct_vid).copied().unwrap_or(0);
-            let docs = acct_docs.get(&acct_vid).copied().unwrap_or(0);
-            let entries = acct_entries.get(&acct_vid).cloned().unwrap_or_default();
-            if inflow <= 0 || outflow <= 0 || docs > 0 || entries.len() < 2 {
-                continue;
-            }
-            let hi = inflow.max(outflow);
-            let lo = inflow.min(outflow);
-            let pass_bps = amount_share_bps(lo, hi, "graph.shell_signature passthrough")?;
-            if pass_bps >= min_pass_bps {
-                let cgse = cgse_digest_hex(
-                    &[(&vid_node(acct_vid), "shell_conduit")],
-                    acct_in.len(),
-                    entries.len(),
-                    "shell_conduit",
-                );
-                let mut dedup_entries = entries;
-                dedup_entries.sort_unstable();
-                dedup_entries.dedup();
-                let mut cites = vec![Cite::Account(acct_vid)];
-                cites.extend(
-                    dedup_entries
-                        .into_iter()
-                        .take(MAX_CITES - 1)
-                        .map(Cite::Entry),
-                );
-                out.push(finding(
-                    (Self::ID, self.version()),
-                    Severity::High,
-                    Statistic {
-                        name: "passthrough_bps".into(),
-                        value: pass_bps,
-                        scale: 0,
-                        population,
-                    },
-                    cites,
-                    format!(
-                        "conduit account passes through {lo} of {hi} ({pass_bps} bps) with 0 supporting documents (cgse_witness={cgse})"
-                    ),
-                ));
+        for (coordinate, accounts) in partitions {
+            let scope_text = monetary_scope_text(book, coordinate)?;
+            let population = populations.get(&coordinate).copied().unwrap_or(0);
+            for (&acct_vid, flows) in &accounts {
+                work.compare(1);
+                if flows.inflow <= 0
+                    || flows.outflow <= 0
+                    || flows.documented
+                    || flows.entries.len() < 2
+                {
+                    continue;
+                }
+                let hi = flows.inflow.max(flows.outflow);
+                let lo = flows.inflow.min(flows.outflow);
+                let pass_bps = amount_share_bps(lo, hi, "graph.shell_signature passthrough")?;
+                if pass_bps >= min_pass_bps {
+                    let cgse = cgse_digest_hex(
+                        &[
+                            (&scope_text, "amount_scope"),
+                            (&vid_node(acct_vid), "shell_conduit"),
+                        ],
+                        accounts.len(),
+                        flows.entries.len(),
+                        "shell_conduit",
+                    );
+                    let mut cites = vec![Cite::Account(acct_vid)];
+                    cites.extend(
+                        flows
+                            .entries
+                            .iter()
+                            .take(MAX_CITES - 1)
+                            .copied()
+                            .map(Cite::Entry),
+                    );
+                    out.push(finding(
+                        (Self::ID, self.version()),
+                        Severity::High,
+                        Statistic {
+                            name: "passthrough_bps".into(),
+                            value: pass_bps,
+                            scale: 0,
+                            population,
+                        },
+                        cites,
+                        format!(
+                            "conduit account in {scope_text} passes through {lo} of {hi} ({pass_bps} bps) with 0 supporting documents (cgse_witness={cgse})"
+                        ),
+                    ));
+                }
             }
         }
-        let _ = book;
         Ok(out)
     }
 }

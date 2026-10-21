@@ -1,0 +1,112 @@
+# Successful posting-key claims and authenticated legacy coverage (fa-nl7).
+schema_version = 1
+owner = "fa-journal::outcome"
+major = 1
+minor = 0
+claim_format = "FA-ENTRY-OUTCOME"
+claim_bytes = 134
+recovered_claim_bytes = 142
+coverage_format = "FA-OUTCOME-COVERAGE"
+coverage_bytes = 208
+key_node_format = "FA-OUTCOME-KEY"
+key_node_bytes = 99
+replay_format = "FA-OUTCOME-REPLAY"
+replay_bytes = 174
+max_key_search_depth = 128
+identity_domain = "fa:vid:intent-outcome:v1"
+request_domain = "fa:posting-request:v1"
+claim_domain = "fa:entry-outcome:v1"
+coverage_identity_domain = "fa:vid:intent-outcome-coverage:v1"
+coverage_domain = "fa:outcome-coverage:v1"
+claims_domain = "fa:outcome-claims:v1"
+coverage_authentication_domain = "fa:outcome-coverage-authentication:v1"
+empty_keys_domain = "fa:outcome-key-empty:v1"
+key_node_domain = "fa:outcome-key-node:v1"
+key_node_identity_domain = "fa:vid:intent-outcome-key-node:v1"
+replay_identity_domain = "fa:vid:intent-outcome-replay:v1"
+replay_authentication_domain = "fa:outcome-replay-authentication:v1"
+externally_verifiable = false
+
+# Every format begins with its fixed format string plus one NUL, u16le major,
+# u16le minor. Remaining integers are little endian; every decoder rejects
+# unknown versions, invalid option tags, truncation and trailing bytes.
+# These are bounded inline FA_PAYLOAD scalars, not object-storage kind 4.
+# All roots/nodes use IntentOutcome; their magic and derived identities
+# distinguish them from a Batch OutcomeBody, its fragments, and one another.
+
+# EntryClaim suffix:
+# book[16] || principal:u128 || request_digest[32] || EntryRef(vid:u128,digest[32])
+# || option(recovered_from:u64). Option is u8 0 or u8 1 followed by its value.
+# Exactly two properties: FA_PAYLOAD and TARGET_REF (only Entry VID, 16 bytes).
+# The mirror permits metadata scope checks before observing request bytes.
+# request_digest = domain_digest(request_domain, [Entry.encode(request_form,
+# ordered_approvals, plan_certificate=None)]). Balancing entries reconstruct
+# their original requested amount; no plaintext-derived digest is persisted.
+# Freshly sealed equivalent proposals retain the existing private semantic
+# retry law, and exact sealed retries survive erasure; approval order is fixed.
+# Ordinary claims are born with their Entry. Recovered claims bind the reviewed
+# prefix and are born with coverage, and their key must belong to its signed tree.
+# Claim rows must remain their original native versions. Every successful
+# ordinary/target-derived post, correction pair, atomic batch member, scheduled
+# Reversal and expiry Resolution reserves this common key in its own publication.
+# Migration retains declared run-scoped keys; dedicated control writers remain
+# outside this protocol. Their preexisting normal-key Entry identity still
+# prevents a later covered posting/batch from claiming that key. Durable refusal
+# outcomes and full control-writer migration are not implemented by this codec.
+
+# Coverage suffix:
+# book[16] || basis:u64 || source_marker[32] || operator:u128 || epoch:u64
+# || entries:u64 || claims_digest[32] || keys_digest[32] || authentication[32].
+# One FA_PAYLOAD property. Identity = low128(domain_digest(coverage identity,
+# [book])); low128 is interpreted as a little-endian u128.
+# Genesis has basis/operator/epoch/entries/source_marker/authentication zero,
+# claims_digest over one empty transcript, and the empty key root. It is born
+# with the original Book, whose birth ordinal is zero; the indexed native
+# genesis frame permits only the registered Book/Unit/entity/dimension creates,
+# this exact coverage root and IN_BOOK/REPRESENTS edges. It contains no Entry or
+# mutation. Later Book metadata changes do not alter this original birth proof.
+# Recovered coverage is born at basis+1. Its authentication is keyed_hash(
+# derive_key(coverage_authentication_domain, book.seal_key), preceding bytes).
+# source_marker is the native basis commit's marker OID, which anchors its full
+# preceding chain. Verification uses delta_index.get(basis), not a journal scan.
+# Async admission hydrates the native window only after current authorization;
+# direct synchronous callers retain the native retired-window precondition.
+# claims_digest = domain_digest(claims_domain, [ordered transcript]), where
+# transcript is ascending common VId: u128 VId || bytes(canonical EntryClaim).
+# The aggregate digest is audit metadata; the signed key tree is the live
+# completeness/nonmembership proof that prevents an omitted claim looking free.
+
+# KeyNode suffix: common_key_vid:u128 || left_digest[32] || right_digest[32].
+# One FA_PAYLOAD property. Node digest = domain_digest(key_node_domain,[bytes]);
+# node VID = low128(domain_digest(key_node_identity_domain,[book,node_digest])).
+# Empty digest = domain_digest(empty_keys_domain,[]). Recovery recursively uses
+# the median of ascending unique common VIDs, producing a balanced search tree.
+# Membership/nonmembership follows authenticated child hashes and ordered bounds
+# through native point rows, each born with the original coverage publication.
+# A missing/changed node fails closed, including an absent-key search. Nodes
+# contain no EntryRef, sealed field, request digest or plaintext-derived value.
+
+# Recovery is explicit: whole-book Read AND SchemaChange, current actor/expiry/
+# revocation, full native Entry-history verification, and all legacy collisions
+# checked before staging every missing claim, every key node and coverage in one
+# bounded WriteTxn. Review has zero publications; commit requires the same head,
+# source partition root, original prepared authority and native handle binding.
+# A verified no-op rechecks original coverage. No hidden upgrade occurs on post.
+# A collision or native capacity refusal creates no partial claims/coverage;
+# there is no paginated/partial-recovery acceptance or arbitrary-size promise.
+
+# Private scratch witness suffix:
+# book[16] || coverage_digest[32] || source_marker[32] || basis:u64
+# || scratch_marker[32] || authentication[32]. Exactly FA_PAYLOAD and BOOK_ID.
+# Coverage digest hashes complete original canonical Coverage under its domain.
+# The witness MAC uses replay_authentication_domain with book.seal_key and the
+# preceding bytes. Its VID is low128(domain_digest(replay_identity_domain,[book])).
+# Only verified native source replay constructs it: source coverage/marker are
+# authenticated first, every source sequence is preserved, and the witness binds
+# the actual scratch basis marker in the same publication as byte-identical
+# copied coverage. All source claims/key nodes remain byte-identical. A nested
+# replay omits the old local witness and mints one for its actual new prefix.
+# Normal coverage accepts it only with original co-birth, matching book/digest/
+# source marker/basis and the actual local native marker. It grants no authority
+# and is not a public caller-authored proof. Low-level replay without a verified
+# BookContext and legacy scenario-v1 replay refuse recovered coverage.

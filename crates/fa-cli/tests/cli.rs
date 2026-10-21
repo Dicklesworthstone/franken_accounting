@@ -6116,6 +6116,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["verify", "accumulator"]).0, 0);
     assert_eq!(run(true, &["recover", "projections", "--dry-run"]).0, 0);
+    assert_eq!(run(true, &["recover", "outcomes", "--dry-run"]).0, 0);
     assert_eq!(run(true, &["proof", "signed-checkpoint"]).0, 0);
     assert_eq!(run(true, &["bundle", "produce"]).0, 0);
     let chart = write(
@@ -8768,6 +8769,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("registers", Some("materialize"), "existing-cells"),
     // Recovery rewrites projection rows at HEAD; its dry run writes nothing.
     ("recover", Some("projections"), "always"),
+    ("recover", Some("outcomes"), "always"),
     ("capability", Some("revoke"), "always"),
     ("draft", Some("promote"), "always"),
 ];
@@ -10047,6 +10049,373 @@ fn projection_verification_case(plant: &str) -> std::io::Result<()> {
     );
     assert_eq!(head(), issued, "a bound session recovers nothing");
     Ok(())
+}
+
+#[test]
+fn outcome_recovery_is_explicit_basis_bound_and_a_noop_for_covered_books() -> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::Id128;
+
+    let dir = tmp("recover-outcomes")?;
+    let book = dir.join("book");
+    let keys = BookKeys::for_development(197);
+    let handle = Book::create_dir(
+        &book,
+        keys.clone(),
+        BookSpec {
+            book_id: Id128([197; 16]),
+            name: "Outcome recovery".into(),
+            base_unit: fa_money::UnitRegistry::embedded()
+                .unwrap()
+                .lookup("USD")
+                .unwrap(),
+            calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(197),
+    )
+    .unwrap();
+    keys.save(&book.join("book.keys")).unwrap();
+    let original = handle.head().unwrap();
+    drop(handle);
+    let head = || {
+        Book::open_dir(&book, keys.clone(), Entropy::deterministic(197))
+            .unwrap()
+            .head()
+            .unwrap()
+    };
+    let ok = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "{err}");
+        out
+    };
+
+    let (code, out, err) = fa(Some(&book), &["recover", "outcomes", "--json"]);
+    assert_eq!(code, 7, "{out}\n{err}");
+    assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-007");
+    assert!(
+        text(&doc(&out), "fix").contains("fa recover outcomes --dry-run --json"),
+        "{out}"
+    );
+    assert_eq!(head(), original, "unconfirmed recovery published nothing");
+
+    let dry_run = ["recover", "outcomes", "--dry-run", "--json"];
+    let preview = ok(&dry_run);
+    assert_eq!(field(&preview, "event"), Some("outcomes_rebuilt"));
+    assert_eq!(preview.lines().count(), 1, "{preview}");
+    let planned = doc(&preview);
+    assert_eq!(planned.get("dry_run"), Some(&Json::Bool(true)));
+    assert_eq!(planned.get("wrote"), Some(&Json::Bool(false)));
+    assert_eq!(planned.get("recorded_at"), Some(&Json::Null));
+    assert_eq!(planned.get("already_covered"), Some(&Json::Bool(true)));
+    assert_eq!(int(&planned, "outcomes_created"), Some(0));
+    assert_eq!(int(&planned, "basis"), Some(i128::from(original.0)));
+    assert_eq!(
+        ok(&dry_run),
+        preview,
+        "the same prefix has the same preview"
+    );
+    assert_eq!(head(), original, "preview and abort publish no sequence");
+
+    let basis = original.0.to_string();
+    let published = ok(&["recover", "outcomes", "--yes", "--basis", &basis, "--json"]);
+    let data = doc(&published);
+    assert_eq!(data.get("dry_run"), Some(&Json::Bool(false)));
+    assert_eq!(data.get("already_covered"), Some(&Json::Bool(true)));
+    assert_eq!(data.get("wrote"), Some(&Json::Bool(false)));
+    assert_eq!(data.get("recorded_at"), Some(&Json::Null));
+    assert_eq!(int(&data, "basis"), Some(i128::from(original.0)));
+    assert_eq!(head(), original, "covered recovery is an actual no-op");
+
+    // Even a no-op is bound to the reviewed head. A later native control
+    // invalidates the old CLI preview instead of silently accepting it.
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let later = head();
+    assert!(later > original);
+    let (code, out, err) = fa(
+        Some(&book),
+        &["recover", "outcomes", "--yes", "--basis", &basis, "--json"],
+    );
+    assert_eq!(code, 6, "{out}\n{err}");
+    assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-034");
+    assert_eq!(head(), later, "a stale recovery publishes nothing");
+    let current = doc(&ok(&dry_run));
+    assert_eq!(int(&current, "basis"), Some(i128::from(later.0)));
+    assert_eq!(current.get("already_covered"), Some(&Json::Bool(true)));
+    assert_eq!(head(), later);
+
+    // A launch-bound reader cannot gain schema_change through this host
+    // maintenance surface or confirm it with a request's --yes.
+    let token = dir.join("reader.token").display().to_string();
+    ok(&[
+        "capability",
+        "issue",
+        "--holder",
+        "outcome-reader",
+        "--profile",
+        "human",
+        "--op",
+        "read",
+        "--out",
+        &token,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--json",
+    ]);
+    let issued = head();
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "--token",
+            &token,
+            "recover",
+            "outcomes",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 7, "{out}\n{err}");
+    assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-011");
+    assert!(
+        text(&doc(&out), "message").contains("not admitted by the launch-bound"),
+        "{out}"
+    );
+    let (code, out, err) = fa(
+        Some(&book),
+        &["--token", &token, "recover", "outcomes", "--yes", "--json"],
+    );
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(
+        text(&doc(&out), "message").contains("--yes cannot be supplied by a launch-bound request"),
+        "{out}"
+    );
+    assert_eq!(head(), issued, "bound recovery attempts publish nothing");
+    Ok(())
+}
+
+#[test]
+fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -> std::io::Result<()>
+{
+    use asupersync::fs::UnixVfs;
+    use asupersync::runtime::RuntimeBuilder;
+    use asupersync::types::Budget;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::Id128;
+    use fa_model::symbols::{label, relation};
+    use fgdb::{Database, DatabaseKeys, WriteBatch};
+    use fgdb_types::context::PurposeContexts;
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+    let dir = tmp("legacy-recover-outcomes")?;
+    let source = dir.join("modern-genesis");
+    let book = dir.join("legacy-book");
+    let book_id = Id128([196; 16]);
+    let keys = BookKeys::for_development(196);
+    let native_keys =
+        || DatabaseKeys::new([196; 32], DatabaseSecurityNamespaceId([197; 32]), [198; 32]);
+    let modern = Book::create_dir(
+        &source,
+        keys.clone(),
+        BookSpec {
+            book_id,
+            name: "Legacy outcome recovery".into(),
+            base_unit: fa_money::UnitRegistry::embedded()
+                .unwrap()
+                .lookup("USD")
+                .unwrap(),
+            calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(196),
+    )
+    .unwrap();
+    drop(modern);
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let cx = PurposeContexts::narrow_runtime_root(&root);
+    let modern = runtime
+        .block_on(Database::open(
+            &cx.commit(),
+            &source.join("store"),
+            native_keys(),
+        ))
+        .unwrap();
+    let prefix = modern.frontier().unwrap();
+    let coverage_vid = fa_journal::outcome::coverage_vid(book_id);
+    let (coverage, rows): (Vec<_>, Vec<_>) = modern
+        .vertices_at(prefix)
+        .unwrap()
+        .into_iter()
+        .partition(|row| row.vid == coverage_vid);
+    assert_eq!(coverage.len(), 1);
+    assert_eq!(coverage[0].labels.as_slice(), [label::INTENT_OUTCOME]);
+    assert!(rows.iter().all(|row| {
+        row.labels.as_slice() == [label::BOOK] || row.labels.as_slice() == [label::UNIT]
+    }));
+    // Construct a separate original Book/Unit genesis from the prior schema.
+    // No immutable marker is removed from an existing native history.
+    let mut genesis = WriteBatch::new(relation::IN_BOOK);
+    for row in rows {
+        genesis.create_vertex(row.vid, row.labels, row.props);
+    }
+    for edge in modern.edges_at(prefix).unwrap() {
+        assert_eq!(edge.entry.relation, relation::IN_BOOK);
+        assert_ne!(edge.entry.src, coverage_vid);
+        assert_ne!(edge.entry.dst, coverage_vid);
+        genesis.add_edge(edge.entry.eid, edge.entry.src, edge.entry.dst, edge.props);
+    }
+    drop(modern);
+    std::fs::create_dir(&book)?;
+    let mut legacy = runtime
+        .block_on(Database::create_with_vfs(
+            &cx.commit(),
+            UnixVfs::new(),
+            book.join("store"),
+            native_keys(),
+        ))
+        .unwrap();
+    runtime
+        .block_on(legacy.write(&cx.commit(), genesis))
+        .unwrap();
+    assert!(legacy.vertex(coverage_vid).unwrap().is_none());
+    drop(legacy);
+    keys.save(&book.join("book.keys")).unwrap();
+    let head = || {
+        Book::open_dir(&book, keys.clone(), Entropy::deterministic(196))
+            .unwrap()
+            .head()
+            .unwrap()
+    };
+    let ok = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "{err}");
+        out
+    };
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let intent = write(
+        &dir,
+        "entry.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"first-covered-legacy-post","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    let post = [
+        "post",
+        "--intent",
+        &intent,
+        "--evidence",
+        &evidence,
+        "--json",
+    ];
+    let before = head();
+    let (code, out, err) = fa(Some(&book), &post);
+    assert_eq!(code, 6, "{out}\n{err}");
+    assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-034");
+    assert!(text(&doc(&out), "fix").contains("fa recover outcomes"));
+    assert_eq!(head(), before, "posting must not silently rebuild coverage");
+
+    let dry_run = ["recover", "outcomes", "--dry-run", "--json"];
+    let preview = ok(&dry_run);
+    let planned = doc(&preview);
+    assert_eq!(planned.get("already_covered"), Some(&Json::Bool(false)));
+    assert_eq!(planned.get("wrote"), Some(&Json::Bool(false)));
+    assert_eq!(planned.get("recorded_at"), Some(&Json::Null));
+    assert_eq!(int(&planned, "outcomes_created"), Some(0));
+    assert!(int(&planned, "entries_checked").unwrap() > 0);
+    assert_eq!(int(&planned, "basis"), Some(i128::from(before.0)));
+    assert_eq!(ok(&dry_run), preview, "legacy preview is deterministic");
+    assert_eq!(head(), before, "legacy preview publishes nothing");
+    assert_eq!(fa(Some(&book), &post).0, 6, "preview grants no coverage");
+    assert_eq!(head(), before);
+
+    let basis = before.0.to_string();
+    let published = doc(&ok(&[
+        "recover", "outcomes", "--yes", "--basis", &basis, "--json",
+    ]));
+    assert_eq!(published.get("already_covered"), Some(&Json::Bool(false)));
+    assert_eq!(published.get("wrote"), Some(&Json::Bool(true)));
+    assert_eq!(
+        int(&published, "recorded_at"),
+        Some(i128::from(before.0) + 1)
+    );
+    let recovered = head();
+    assert_eq!(recovered.0, before.0 + 1);
+    let covered = doc(&ok(&dry_run));
+    assert_eq!(covered.get("already_covered"), Some(&Json::Bool(true)));
+    assert_eq!(head(), recovered);
+
+    let posted = ok(&post);
+    assert_eq!(field(&posted, "event"), Some("posted"));
+    let entry_vid = field(&posted, "vid").unwrap();
+    assert_eq!(entry_vid.len(), 32);
+    let posted_at = head();
+    assert_eq!(posted_at.0, recovered.0 + 1);
+    let retry = ok(&post);
+    assert_eq!(field(&retry, "event"), Some("recorded"));
+    assert_eq!(field(&retry, "vid"), Some(entry_vid));
+    assert_eq!(
+        field(&retry, "entry_digest"),
+        field(&posted, "entry_digest")
+    );
+    assert_eq!(field(&retry, "recorded_at"), field(&posted, "recorded_at"));
+    assert_eq!(head(), posted_at, "an exact retry consumes no sequence");
+    Ok(())
+}
+
+#[test]
+fn outcome_recovery_refuses_ambiguous_arguments_and_filters_before_opening() {
+    let cases: &[&[&str]] = &[
+        &["recover", "outcomes", "extra", "--dry-run", "--json"],
+        &["recover", "outcomes", "--dry-run", "--yes", "--json"],
+        &["recover", "outcomes", "--dry-run", "--basis", "1", "--json"],
+        &["recover", "outcomes", "--yes", "--basis", "HEAD", "--json"],
+        &[
+            "recover", "outcomes", "--yes", "--basis", "1", "--basis", "2", "--json",
+        ],
+        &[
+            "recover",
+            "outcomes",
+            "--dry-run",
+            "--period",
+            "FY2026-P03",
+            "--json",
+        ],
+        &[
+            "recover",
+            "outcomes",
+            "--dry-run",
+            "--as-known-at",
+            "1",
+            "--json",
+        ],
+    ];
+    for args in cases {
+        let (code, out, err) = fa(None, args);
+        assert_eq!(code, 2, "args={args:?}\n{out}\n{err}");
+        assert_eq!(text(&doc(&out), "class"), "usage");
+        let envelope = robot_line(&out);
+        assert_eq!(envelope.get("book"), Some(&Json::Null));
+        assert_eq!(envelope.get("coordinate"), Some(&Json::Null));
+    }
+    let (code, help, err) = fa(None, &["recover", "--help", "--json"]);
+    assert_eq!(code, 0, "{help}\n{err}");
+    assert!(text(&doc(&help), "text").contains("recover outcomes"));
 }
 
 #[test]

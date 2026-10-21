@@ -129,7 +129,19 @@ impl Harness {
     /// ever created or deleted to manufacture this legacy history.
     fn legacy_year(&mut self, year: i32) -> (CommitSeq, Vec<PeriodDef>) {
         let cx = self.cx();
-        let rows = self.book.db.vertices_at(self.head()).unwrap();
+        let coverage_vid = fa_journal::outcome::coverage_vid(spec().book_id);
+        let (coverage, rows): (Vec<_>, Vec<_>) = self
+            .book
+            .db
+            .vertices_at(self.head())
+            .unwrap()
+            .into_iter()
+            .partition(|row| row.vid == coverage_vid);
+        // A modern genesis includes its common-idempotency coverage. This
+        // separate v1 fixture reconstructs the original Book/Unit genesis;
+        // no committed coverage root is retired or rewritten to do so.
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(coverage[0].labels.as_slice(), [label::INTENT_OUTCOME]);
         let edges = self.book.db.edges_at(self.head()).unwrap();
         assert!(rows.iter().all(|row| {
             row.labels.as_slice() == [label::BOOK] || row.labels.as_slice() == [label::UNIT]

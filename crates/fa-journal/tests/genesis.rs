@@ -31,6 +31,14 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CanonicalScalar, VId};
 
+#[path = "genesis/outcome_batch_integrity.rs"]
+mod outcome_batch_integrity_tests;
+#[path = "genesis/outcome_keys.rs"]
+mod outcome_key_tests;
+
+#[path = "genesis/outcome_recovery.rs"]
+mod outcome_recovery_tests;
+
 const PRINCIPAL: VId = VId(7);
 
 /// Registry tags (`evidence_policy.toml`) the evidence tests name.
@@ -44,6 +52,7 @@ struct Harness {
     runtime: Runtime,
     root: Cx,
     db: Database<MemVfs>,
+    legacy_storage: Option<(MemVfs, DatabaseKeys)>,
     book: BookContext,
     usd: UnitId,
     cash: VId,
@@ -415,6 +424,19 @@ fn harness_configured(
     time_zone_policy: Option<TimeZonePolicy>,
     cash_limit: Option<BalanceLimit>,
 ) -> Harness {
+    harness_configured_coverage(entities, time_zone_policy, cash_limit, true)
+}
+
+fn harness_legacy() -> Harness {
+    harness_configured_coverage(Vec::new(), None, None, false)
+}
+
+fn harness_configured_coverage(
+    entities: Vec<LegalEntitySpec>,
+    time_zone_policy: Option<TimeZonePolicy>,
+    cash_limit: Option<BalanceLimit>,
+    coverage: bool,
+) -> Harness {
     let runtime = RuntimeBuilder::new().build().expect("runtime");
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -424,8 +446,9 @@ fn harness_configured(
         [0x5c; 32],
     );
     let mut db = runtime
-        .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
+        .block_on(async { Database::open_memory(&ctx.commit(), keys.clone()).await })
         .expect("open");
+    let mut legacy_storage = None;
 
     let units = UnitRegistry::with_defaults();
     let usd = units.lookup("USD").unwrap();
@@ -444,6 +467,49 @@ fn harness_configured(
     runtime
         .block_on(async { create_book(&mut db, &ctx, &spec, &units, &symbols).await })
         .expect("create_book");
+    if !coverage {
+        // Reconstruct a separate original pre-protocol genesis. Never
+        // delete or relabel the modern immutable marker to fake old history.
+        let coverage_vid = fa_journal::outcome::coverage_vid(book_id);
+        let mut rows = db.vertices().unwrap();
+        assert_eq!(rows.iter().filter(|row| row.vid == coverage_vid).count(), 1);
+        rows.retain(|row| row.vid != coverage_vid);
+        rows.sort_by_key(|row| row.birth_ordinal);
+        let mut vertices = fgdb::WriteBatch::new(relation::IN_BOOK);
+        for row in rows {
+            assert!(
+                row.labels
+                    .iter()
+                    .all(|label| *label != fa_model::symbols::label::ENTRY)
+            );
+            vertices.create_vertex(row.vid, row.labels, row.props);
+        }
+        let mut edges = std::collections::BTreeMap::new();
+        for edge in db.edges_at(db.frontier().unwrap()).unwrap() {
+            edges
+                .entry(edge.entry.relation)
+                .or_insert_with(|| fgdb::WriteBatch::new(edge.entry.relation))
+                .add_edge(edge.entry.eid, edge.entry.src, edge.entry.dst, edge.props);
+        }
+        let vfs = ctx.commit().with_restriction(MemVfs::new).unwrap();
+        let mut legacy = runtime
+            .block_on(Database::create_with_vfs(
+                &ctx.commit(),
+                vfs.clone(),
+                vfs.database_dir(),
+                keys.clone(),
+            ))
+            .unwrap();
+        let mut txn = legacy.begin(&ctx.txn()).unwrap();
+        let mut stages = vec![vertices];
+        stages.extend(edges.into_values());
+        txn.write_ordered(&mut legacy, stages).unwrap();
+        runtime
+            .block_on(txn.commit(&mut legacy, &ctx.commit()))
+            .unwrap();
+        legacy_storage = Some((vfs, keys));
+        db = legacy;
+    }
     let book = BookContext {
         book_id,
         calendar,
@@ -574,6 +640,7 @@ fn harness_configured(
         runtime,
         root,
         db,
+        legacy_storage,
         cash: account_vid(book_id, "1000"),
         rent: account_vid(book_id, "6000"),
         assets: account_vid(book_id, "1"),
@@ -5116,6 +5183,23 @@ fn a_held_pending_still_expires_at_its_deadline() {
     assert_eq!(expired[0].0, pending);
     assert_eq!(expired[0].1.vid, resolution_vid(pending.vid));
     assert!(h.db.vertex(resolution_vid(pending.vid)).unwrap().is_some());
+    let (resolution, born) = read_entry(&h.db, expired[0].1.vid).unwrap().unwrap();
+    let claim =
+        h.db.vertex(fa_model::intent_outcome_vid(
+            h.book.book_id,
+            &resolution.proposal.principal_ref.0.to_le_bytes(),
+            &resolution.proposal.idempotency_key,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        claim.created_at, born,
+        "automatic expiry reserves its key atomically"
+    );
+    assert_eq!(
+        fa_journal::rows::prop(&claim, property::TARGET_REF),
+        Some(&CanonicalScalar::bytes(expired[0].1.vid.0.to_le_bytes().to_vec()).unwrap())
+    );
     // The record is still preserved: the hold stands, erasure is refused.
     assert_eq!(h.holds_on(pending.vid), vec![placed.hold]);
     let eraser = Capability::embedded(PRINCIPAL, &["erase"]).expect("erase");
@@ -8144,18 +8228,13 @@ fn legacy_replacement_pair_retry_preserves_the_recorded_identity_without_new_wri
     // Immutable history produced by the earlier pair writer used a
     // principal/key-derived Replacement VID. Seed that representation in
     // one native commit; every subsequent action uses the public kernel.
-    let mut h = harness();
-    let target = h
-        .post(h.request(
-            h.proposal(
-                h.rent_legs(100),
-                b"legacy-pair-original",
-                EntryClass::ORIGINAL,
-            ),
-            &["post"],
-        ))
-        .unwrap()
-        .entry_ref();
+    let mut h = harness_legacy();
+    let original = h.proposal(
+        h.rent_legs(100),
+        b"legacy-pair-original",
+        EntryClass::ORIGINAL,
+    );
+    let target = outcome_recovery_tests::write_legacy(&mut h, original);
     let reversal = h.request(
         h.reversal_of_entry(target, b"legacy-pair-reversal"),
         &["post"],
@@ -9037,7 +9116,7 @@ fn large_batch_records_a_chunked_outcome_and_retries_without_another_commit() {
     assert!(body.canonical_bytes().unwrap().len() > 16_384);
     assert_eq!(body.entries, posted.entries);
     assert_eq!(seq, posted.recorded_at);
-    let outcome_rows: Vec<_> =
+    let (coverage_rows, outcome_rows): (Vec<_>, Vec<_>) =
         h.db.vertices()
             .unwrap()
             .into_iter()
@@ -9045,11 +9124,24 @@ fn large_batch_records_a_chunked_outcome_and_retries_without_another_commit() {
                 row.labels
                     .contains(&fa_model::symbols::label::INTENT_OUTCOME)
             })
-            .collect();
+            .partition(|row| row.vid == fa_journal::outcome::coverage_vid(h.book.book_id));
+    assert_eq!(coverage_rows.len(), 1);
+    assert!(coverage_rows[0].created_at <= basis);
     assert_eq!(
         outcome_rows.len(),
-        1 + body.canonical_bytes().unwrap().len().div_ceil(4096)
+        posted.entries.len() + 1 + body.canonical_bytes().unwrap().len().div_ceil(4096)
     );
+    for entry in &posted.entries {
+        let claims: Vec<_> = outcome_rows
+            .iter()
+            .filter(|row| {
+                matches!(fa_journal::rows::prop(row, property::TARGET_REF),
+                    Some(CanonicalScalar::Bytes(target))
+                        if target.as_slice() == entry.vid.0.to_le_bytes())
+            })
+            .collect();
+        assert_eq!(claims.len(), 1, "every batch member owns its atomic key");
+    }
     assert!(
         outcome_rows
             .iter()

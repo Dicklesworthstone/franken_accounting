@@ -20,6 +20,11 @@ request_domain = "fa:batch-request:v1"
 # oversized counts/bodies and trailing bytes are rejected before allocation.
 # request_digest = domain_digest(request_domain, [batch_key, ordered_vid_bytes]);
 # exact retry also judges each proposal by the kernel's sealed semantic law.
+# Ordered approvals must also match. Every member has its own successful-key
+# claim, registered in posting_outcomes.toml, in the same common identity domain.
+# The outer batch key is distinct from every member key. Retry first admits all
+# members and checks complete IN_BATCH membership using metadata; it then
+# verifies original outcome birth, member co-birth and original IN_BATCH edges.
 # No plaintext-derived digest is stored.
 
 # New roots through 4096 body bytes retain the historical single FA_PAYLOAD
@@ -33,4 +38,5 @@ request_domain = "fa:batch-request:v1"
 # A malformed/missing/changed fragment is corruption, never a partial outcome.
 # BatchPlan's native effect digest includes the complete outcome object.
 # These are format bounds: no claim of full 8190-member native transaction
-# acceptance, durable refusal recording, or universal per-entry key coverage.
+# acceptance or durable refusal recording. posting_outcomes.toml registers
+# successful posting coverage and its explicit control/migration exclusions.

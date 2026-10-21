@@ -20,7 +20,8 @@
 //!   are moves of a maintenance property wherever it sits (the notary's
 //!   checkpoint head on the book root). Ordinarily a source commit that is
 //!   only maintenance yields no scratch commit;
-//! - a prefix containing a native `Reconciled` attestation preserves every
+//! - a prefix containing a native `Reconciled` attestation or recovered
+//!   posting-key coverage preserves every
 //!   source sequence through a real scratch publication. Its immutable claim,
 //!   source receipts and cash-fold digest bind original commit sequences.
 //!   Maintenance-only publications become normalized no-op writes against an
@@ -522,6 +523,36 @@ fn contains_reconciled_claim(batches: &[LogicalDeltaBatch]) -> bool {
     })
 }
 
+fn contains_recovered_coverage(book: Id128, batches: &[LogicalDeltaBatch]) -> bool {
+    let coverage = crate::outcome::coverage_vid(book);
+    batches.iter().any(|batch| {
+        batch.coordinate_entries().iter().any(|coordinate| {
+            coordinate.rows.iter().any(|row| match row {
+                DeltaRow::CreateVertex { vid, props, .. } if *vid == coverage => {
+                    props.iter().any(|(key, value)| {
+                        *key == property::FA_PAYLOAD
+                            && crate::outcome::recovered_coverage_bytes(value)
+                    })
+                }
+                DeltaRow::Property {
+                    elem: ElementId::Vertex(vid),
+                    property: key,
+                    before,
+                    after,
+                } if *vid == coverage && *key == property::FA_PAYLOAD => {
+                    before
+                        .as_ref()
+                        .is_some_and(crate::outcome::recovered_coverage_bytes)
+                        || after
+                            .as_ref()
+                            .is_some_and(crate::outcome::recovered_coverage_bytes)
+                }
+                _ => false,
+            })
+        })
+    })
+}
+
 #[derive(Clone, Copy)]
 enum ReplayPolicy {
     ProtectedCoordinates,
@@ -554,6 +585,7 @@ pub async fn replay_batches<W: asupersync::fs::Vfs + Clone>(
         prefix,
         batches,
         ReplayPolicy::ProtectedCoordinates,
+        None,
     )
     .await
 }
@@ -565,6 +597,7 @@ async fn replay_batches_with_policy<W: asupersync::fs::Vfs + Clone>(
     prefix: CommitSeq,
     batches: &[LogicalDeltaBatch],
     policy: ReplayPolicy,
+    coverage: Option<&crate::outcome::VerifiedCoverageReplay>,
 ) -> Outcome<SeqMap> {
     let at = target.frontier()?;
     if !target.vertices_at(at)?.is_empty() {
@@ -576,10 +609,26 @@ async fn replay_batches_with_policy<W: asupersync::fs::Vfs + Clone>(
             "replay into a newly opened, empty database",
         )));
     }
+    let recovered_coverage = contains_recovered_coverage(source_book, batches);
+    if recovered_coverage
+        && (coverage.is_none() || matches!(policy, ReplayPolicy::LegacyScenarioV1))
+    {
+        return Ok(Err(unsupported(
+            prefix,
+            "recovered posting-key coverage requiring authenticated source replay; use replay_into with the book context",
+        )));
+    }
     let preserve_sequences = matches!(policy, ReplayPolicy::PreserveAllPublications)
         || (matches!(policy, ReplayPolicy::ProtectedCoordinates)
-            && contains_reconciled_claim(batches));
+            && (contains_reconciled_claim(batches) || recovered_coverage));
     let mut maintenance = Maintenance::default();
+    if coverage.is_some() {
+        // A nested scratch replay mints its own authenticated local marker
+        // binding; the source's local witness is not an accounting fact.
+        maintenance
+            .vertices
+            .insert(crate::outcome::replay_vid(source_book));
+    }
     let mut pairs = Vec::new();
     for batch in batches {
         let mut writes = match replayable(batch, &mut maintenance) {
@@ -587,6 +636,11 @@ async fn replay_batches_with_policy<W: asupersync::fs::Vfs + Clone>(
             Err(r) => return Ok(Err(r)),
         };
         let accounting = !writes.is_empty();
+        if let Some(coverage) = coverage
+            && batch.commit_seq() == coverage.publication()
+        {
+            writes.insert(0, coverage.stage(target)?);
+        }
         if !accounting {
             if !preserve_sequences {
                 continue;
@@ -648,7 +702,7 @@ async fn replay_batches_with_policy<W: asupersync::fs::Vfs + Clone>(
         if preserve_sequences && seq != batch.commit_seq() {
             return Ok(Err(unsupported(
                 batch.commit_seq(),
-                "a native publication that changed a reconciliation coordinate",
+                "a native publication that changed a protected source coordinate",
             )));
         }
         if accounting {
@@ -662,7 +716,7 @@ async fn replay_batches_with_policy<W: asupersync::fs::Vfs + Clone>(
     if preserve_sequences && target.frontier()? != prefix {
         return Ok(Err(unsupported(
             prefix,
-            "an incomplete native prefix required by reconciliation evidence",
+            "an incomplete native prefix required by protected source evidence",
         )));
     }
     Ok(Ok(SeqMap {
@@ -783,7 +837,17 @@ where
     {
         return Ok(Err(refusal));
     }
-    replay_batches_with_policy(target, ctx, book.book_id, prefix, &batches, policy).await
+    let coverage = crate::outcome::prepare_replay(source, book, prefix)?;
+    replay_batches_with_policy(
+        target,
+        ctx,
+        book.book_id,
+        prefix,
+        &batches,
+        policy,
+        coverage.as_ref(),
+    )
+    .await
 }
 
 #[cfg(test)]

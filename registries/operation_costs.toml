@@ -76,8 +76,8 @@ today_barrier_count = 2
 derived_objects = "1 Entry + n Leg + edges + ExternalIds + 1 IntentOutcome"
 hot_object_exceptions = []
 external_authorities = "none; a rate lookup is a document already in the book, never a synchronous call"
-complexity_witness = "O(legs) point reads + 1 period witness + 1 Entry vertex + O(legs) Leg vertices and projection edges"
-notes = "group-commit amortized"
+complexity_witness = "O(legs) point reads + 1 period witness + 1 Entry vertex + O(legs) Leg vertices and projection edges + 1 common-key IntentOutcome claim; key admission uses metadata point probes and authentic coverage, checking the bounded original genesis publication or O(log K) immutable key-tree nodes for K recovered keys"
+notes = "One native publication includes the successful common-key claim. Reversal, resolution and replacement identities retain their target-derived Entry VIds while reserving the same (book, principal, key) namespace as ordinary posts and batches. Dedicated control writers and Migration run keys are outside this successful-posting claim protocol; durable refusals remain unimplemented. No additional shared mutable cell is introduced."
 
 [[operation_class]]
 id = "portable_single_entry_plan_and_commit"
@@ -88,11 +88,11 @@ today_posture = "0 publications for dry-run planning (aborted WriteTxn); 1 publi
 today_transactions = 1
 barrier_count = 2
 today_barrier_count = 2
-derived_objects = "admitted posting census + 1 immutable graph Certificate + 1 CITES edge; above 4096 plan bytes, ceil(bytes/4096) immutable Certificate fragments in the same transaction"
+derived_objects = "admitted posting census including its common-key IntentOutcome claim + 1 immutable graph Certificate + 1 CITES edge; above 4096 plan bytes, ceil(bytes/4096) immutable Certificate fragments in the same transaction"
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "O(legs) rehearsed and aborted on plan; O(legs + plan_bytes) with 1 root and ceil(plan_bytes/4096) fragment vertices above the inline bound; exact retry verifies every fragment"
-notes = "same-basis native effects comparison; certificate retention extends the same transaction; correction plans use the same chunk representation with two CITES edges; no shared mutable object or additional publication; durable IntentOutcome remains a separate unimplemented contract"
+complexity_witness = "O(legs) rehearsed and aborted on plan, with the single-entry common-key coverage costs; O(legs + plan_bytes) retention with 1 root and ceil(plan_bytes/4096) fragment vertices above the inline bound; recovered coverage adds O(log K) key-node reads per fresh member; exact retry verifies the original member claim and every retained fragment"
+notes = "Same-basis native effects comparison includes the successful IntentOutcome claim; certificate retention extends the same transaction. Correction plans retain both member claims and use the same chunk representation with two CITES edges. No shared mutable object or additional publication; durable refusal outcomes remain unimplemented, and dedicated control writers and Migration run keys retain their separate protocols."
 
 [[operation_class]]
 id = "portable_batch_plan_and_commit"
@@ -103,26 +103,41 @@ today_posture = "0 publications during full-batch rehearsal, including retention
 today_transactions = 1
 barrier_count = 2
 today_barrier_count = 2
-derived_objects = "N admitted Entry/Leg censuses with all native member effects + 1 IntentOutcome root + N IN_BATCH edges + 1 immutable Certificate root + N+1 CITES edges; above 4096 bytes per object, ceil(object_bytes/4096) immutable fragments with the corresponding root label in the same transaction"
+derived_objects = "N admitted Entry/Leg censuses with all native member effects + N common-key IntentOutcome member claims + 1 batch IntentOutcome root + N IN_BATCH edges + 1 immutable Certificate root + N+1 CITES edges; above 4096 bytes per object, ceil(object_bytes/4096) immutable fragments with the corresponding root label in the same transaction"
 hot_object_exceptions = []
 external_authorities = "none; all evidence, approvals and rates are already in the book"
-complexity_witness = "Sum of N production member preparations over the carried overlay, plus O(native_delta_bytes + plan_bytes + outcome_bytes + N) hashing and retention per rehearsal/first commit; repeated prefix staging and member history/usage checks retain their native costs. Exact retry checks O(N + fragment_count) original rows/edges plus O(plan_bytes + outcome_bytes) reconstruction."
+complexity_witness = "Sum of N production member preparations over the carried overlay, plus O(native_delta_bytes + plan_bytes + outcome_bytes + N) hashing and retention per rehearsal/first commit; repeated prefix staging and member history/usage checks retain their native costs. Fresh outer and member keys each authenticate coverage: a bounded original genesis frame or O(log K) recovered-key proof, hence O((N+1)*log K) recovered-key reads. Exact retry checks O(N + fragment_count) original claims, rows and edges plus O(plan_bytes + outcome_bytes) reconstruction."
 notes = "Complete native LogicalDeltaTemplate digest binds the exact snapshot; any intervening publication before first commit requires re-planning. No per-member publication, additional shared cell or approval publication is introduced. Existing member reservation/usage cells retain their existing admission and costs. The 8190-member and 67440560-byte format ceilings are not capacity acceptance claims: IntentOutcome uses 52+48*N canonical bytes and at most 96 kind-4 fragments, while Entry rows and all native transaction limits still apply. Rehearsal stages retention before aborting; refusal writes nothing. Durable refusal outcomes and atomic batch drafts are not implemented by this operation."
 
 [[operation_class]]
 id = "batch_post"
 name = "Batch post (N entries)"
-substrate_class = "Autocommit write, fused arm (one WriteBatch)"
+substrate_class = "Ordered member preparation and effects in one bounded WriteTxn"
 substrate_transactions = "1"
 today_posture = "One WriteTxn committing N entries in one publication (two ordered syncs)"
 today_transactions = 1
 barrier_count = 2
 today_barrier_count = 2
-derived_objects = "N Entry/Leg censuses + one outcome per keyed intent + any separately keyed batch outcome + one retained EffectManifest per approved effect set"
+derived_objects = "N Entry/Leg censuses + N common-key IntentOutcome member claims + 1 separately keyed batch IntentOutcome root + N IN_BATCH edges; above 4096 outcome bytes, ceil(outcome_bytes/4096) immutable kind-4 fragments in the same publication"
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "O(N * legs) point reads, witnesses, and projection writes in one WriteTxn bounded by max_batch_entries"
-notes = "bounded by max_batch_entries"
+complexity_witness = "Sum of N production member preparations, point witnesses and projection writes over one carried overlay; repeated prefix staging and history/usage checks retain their native costs. Key admission adds a bounded genesis-frame check per key or O((N+1)*log K) point reads for K recovered keys. Exact retry admits all requested members and compares the complete IN_BATCH metadata footprint before decoding the outcome, then verifies original co-birth and every member claim."
+notes = "The batch key must differ from every member key; cross-family collisions and repeated member keys refuse without publication. The 8190-member format ceiling does not guarantee native capacity acceptance: entries, claims, outcome fragments, witnesses and transaction limits all apply. Retained approved effects use the separate portable-plan operation; this direct-post row does not claim a persisted EffectManifest or durable refusal outcome."
+
+[[operation_class]]
+id = "intent_outcome_coverage_rebuild"
+name = "Explicit successful-key coverage recovery for a legacy book"
+substrate_class = "Authorized source-history validation and a fully staged bounded WriteTxn"
+substrate_transactions = "0 for preparation/abort or already-covered no-op; 1 for an actual upgrade"
+today_posture = "Read and SchemaChange authority precede history hydration and source observation; complete coverage is published atomically with all missing claims and proof nodes"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "M missing immutable EntryClaim roots + K immutable opaque key-tree nodes + 1 authenticated coverage root, where K is the number of covered legacy entry keys and M <= K"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "Explicit full native entry-history and row verification, O(history + K*log K) key census/ordering and O(K) balanced-tree construction; all native effects are staged before preparation succeeds. Normal posting never repeats this scan: it uses original native point provenance, the signed source marker and O(log K) authenticated membership/nonmembership proofs."
+notes = "Prepared recovery binds the exact source basis, native partition root, original capability and native transaction handle; publication rechecks current authority and basis. Ambiguous keys, rewritten sources, collisions or native capacity failures publish nothing. There is no paginated or partial recovery. Already-covered recovery authenticates retained coverage without publication. Scratch replay preserves original coverage/claim bytes and coordinates and adds one private authenticated local-prefix witness in the existing coverage publication; nested replay replaces only that scratch-local witness."
 
 [[operation_class]]
 id = "admitted_durable_refusal"

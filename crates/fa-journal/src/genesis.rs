@@ -550,6 +550,7 @@ pub async fn create_book<V: asupersync::fs::Vfs + Clone>(
     ];
     props.sort_by_key(|(k, _)| k.0);
     batch.create_vertex(bvid, vec![label::BOOK], props);
+    crate::outcome::stage_genesis(&mut batch, spec.book_id)?;
     for (id, unit) in units.iter() {
         let definition = fa_model::UnitDefinition {
             id,

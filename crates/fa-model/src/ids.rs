@@ -163,10 +163,10 @@ pub fn entry_vid(book: Id128, principal_scope: &[u8], idempotency_key: &[u8]) ->
 }
 
 /// `vid(IntentOutcome) = H("fa:vid:intent-outcome:v1" ‖ book ‖
-/// principal_scope ‖ key)` (plan §5.9): one outcome per batch key under a
-/// principal, so an identical retry finds it with one point read. The
-/// domain differs from `entry_vid`'s, so a batch key never collides with
-/// a member entry's key.
+/// principal_scope ‖ key)` (plan §5.9): a common successful-intent namespace
+/// for ordinary posts, target-derived corrections/resolutions, and atomic
+/// batches. Entry identity separately enforces its target uniqueness law;
+/// every covered writer reserves this point atomically with its entries.
 #[must_use]
 pub fn intent_outcome_vid(book: Id128, principal_scope: &[u8], idempotency_key: &[u8]) -> VId {
     derive_vid(

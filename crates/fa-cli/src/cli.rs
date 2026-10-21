@@ -62,6 +62,7 @@ use crate::templates;
 use crate::verbs::{self, Condition, Dangerous, Registry, Verb};
 
 mod batch_plan;
+mod outcome_recovery;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1843,8 +1844,8 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             || args.flag("--review-out").is_some())
 }
 
-/// `fa recover projections --dry-run` derives the repair and returns before any
-/// write; only publishing it needs confirmation.
+/// `fa recover <target> --dry-run` derives and releases its prepared changes
+/// without publishing; only publication needs confirmation.
 fn recovery_preview_only(verb: &str, args: &Args) -> bool {
     verb == "recover" && args.switch("--dry-run")
 }
@@ -16892,16 +16893,14 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
-/// `fa recover projections`: explicit leg-projection recovery (plan §4.2,
-/// FA-INV-16, fa-avx). Every mirror and edge is derived from the immutable
-/// entry payloads after each source Entry is checked against its native
-/// creation history; no caller value enters the repair. A dry run previews
-/// the exact changes; publishing needs --yes (gated from argv by verbs.toml
-/// [[dangerous]] before this handler runs) and rechecks everything.
+/// Explicit recovery from verified native history. A dry run previews the
+/// exact changes; publishing needs --yes (gated from argv by verbs.toml
+/// [[dangerous]] before this handler runs) and rechecks the reviewed basis.
 fn recover_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
+        Some("outcomes") => outcome_recovery::recover(ctx, args),
         Some("projections") => {
+            let out = &ctx.out;
             if args.positional.len() != 2 {
                 return Err(usage(
                     "unexpected recover projections argument",

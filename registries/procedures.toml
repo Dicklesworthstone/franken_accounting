@@ -1078,13 +1078,13 @@ meaning = "Minimum basis points of incoming transfer forwarded at each intermedi
 
 [[procedure]]
 id = "graph.communities"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L36"
 tie_break = "account_vid"
 complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
 calibration = "planted"
-summary = "Community detection over the money-flow projection via fnx louvain_communities and connected_components with a CGSE witness: flags multi-account communities whose internal transfer share reaches min_internal_share_bps."
+summary = "Community detection via fnx louvain_communities and connected_components independently within each native unit and legal entity, with the partition bound into the CGSE witness: flags multi-account communities whose exact internal transfer share reaches min_internal_share_bps. No cross-currency or cross-entity topology or amount pooling."
 
 [[parameter]]
 procedure = "graph.communities"
@@ -1100,13 +1100,13 @@ meaning = "Minimum share of community total volume that stays inside the communi
 
 [[procedure]]
 id = "graph.related_party_exposure"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L37"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Valid-time traversal of OWNS, CONTROLS, and RELATED_TO edges in the REA graph (ReaSnapshot::related_as_of and fnx bfs_layers_directed with a CGSE witness) intersected with live postings carrying the party or legal_entity dimension of a reached related party."
+summary = "Valid-time traversal of OWNS, CONTROLS, and RELATED_TO edges in the REA graph (ReaSnapshot::related_as_of and fnx bfs_layers_directed with a CGSE witness) intersected with live postings carrying a reached party or legal_entity dimension. Reports debit exposure separately for each affected posting, native unit and legal entity, at the unit's registered scale; unrelated partitions never contribute."
 
 [[parameter]]
 procedure = "graph.related_party_exposure"
@@ -1116,13 +1116,13 @@ meaning = "Maximum relationship hops from each declared legal entity or party ro
 
 [[procedure]]
 id = "graph.shell_signature"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L38"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Shell-entity and pass-through conduit signatures over the REA party graph and money-flow projection (with fnx CGSE witness): parties sharing opened identifiers (tax_id, bank_account, address, phone) or accounts with high pass-through ratio (>= min_passthrough_bps) and zero third-party document citations."
+summary = "Asset-account pass-through conduit signatures separately in each native unit and legal entity, with the partition bound into the CGSE witness: at least two distinct live postings, a high exact pass-through ratio (>= min_passthrough_bps), and no supporting document citations on that account's activity in the partition. Activity and documents in another unit or entity cannot create or suppress the signature."
 
 [[parameter]]
 procedure = "graph.shell_signature"

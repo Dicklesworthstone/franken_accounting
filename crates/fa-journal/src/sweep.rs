@@ -1194,9 +1194,14 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
             txn.abort();
             return Ok(Err(r));
         }
+        if let Err(refusal) = crate::outcome::require_fresh_key(&txn, db, book, &proposal, rvid)? {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
         release_hold(&txn, db, &mut accounts, &mut cells, &hold.proposal, &period)?;
         let entry = proposal.seal(Vec::new(), None)?;
         entries.create_vertex(rvid, vec![label::ENTRY], entry_mirrors(&entry)?);
+        crate::outcome::stage_entry(&mut entries, &entry, rvid)?;
         entries.add_edge(edge_id(relation::IN_PERIOD, rvid, pvid), rvid, pvid, vec![]);
         resolves.add_edge(
             edge_id(relation::RESOLVES, rvid, hold_vid),

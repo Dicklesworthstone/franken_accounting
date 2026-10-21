@@ -300,6 +300,56 @@ fn every_supported_procedure_has_a_native_replayable_certificate_and_does_not_wr
 }
 
 #[test]
+fn partitioned_graph_procedures_certify_and_replay_only_their_scoped_version() {
+    let mut f = Fixture::new(93);
+    let (source, _) = f.post(1, "3000", "1000", 100, false);
+    f.post(2, "1000", "1010", 90, false);
+    let before = f.head();
+    for id in [
+        "graph.communities",
+        "graph.related_party_exposure",
+        "graph.shell_signature",
+    ] {
+        assert_eq!(fa_lantern::bind(id).unwrap().version, 2);
+        assert!(extended::supported(id, 2));
+        assert!(!extended::supported(id, 1));
+        let certified = f.certify(&f.request(id, source));
+        assert_eq!(certified.report.version, 2);
+        assert_eq!(certified.report.coordinate.known_at, before);
+        assert!(certified.report.findings.iter().all(|finding| {
+            finding.version == 2 && finding.narrative.contains("implicit book entity")
+        }));
+        if id == "graph.communities" {
+            assert!(!certified.report.findings.is_empty());
+            assert!(
+                certified
+                    .report
+                    .findings
+                    .iter()
+                    .all(|finding| { finding.narrative.contains(&format!("unit {},", f.unit.0)) })
+            );
+        }
+        let certificate =
+            ProcedureCertificate::decode(&certified.certificate.canonical_bytes().unwrap())
+                .unwrap();
+        assert_eq!(certificate.supplemental_inputs().len(), extended::COUNT);
+        let replayed = f
+            .book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &certificate)
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed, certified.report);
+        let mut wrong_version = certificate;
+        wrong_version.report.version = 1;
+        assert!(
+            wrong_version.request().is_err(),
+            "unscoped v1 must not replay as v2"
+        );
+        assert_eq!(f.head(), before, "certification and replay never publish");
+    }
+}
+
+#[test]
 fn new_catalog_rows_cannot_silently_omit_their_additional_native_inputs() {
     let mut f = Fixture::new(89);
     let (source, _) = f.post(1, "3000", "1000", 100, false);
