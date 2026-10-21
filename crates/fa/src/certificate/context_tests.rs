@@ -86,11 +86,15 @@ fn born_with<V: Vfs + Clone>(
         ))
         .unwrap();
     let at = template.head(cx).unwrap();
+    // The real genesis rows: Book, Units and the outcome-coverage root
+    // (fa-nl7), so the older-symbol book still admits new postings.
     let mut rows = template.db.vertices_at(at).unwrap();
     rows.sort_by_key(|row| row.birth_ordinal);
     let edges = template.db.edges_at(at).unwrap();
     assert!(rows.iter().all(|row| {
-        row.labels.as_slice() == [label::BOOK] || row.labels.as_slice() == [label::UNIT]
+        row.labels.as_slice() == [label::BOOK]
+            || row.labels.as_slice() == [label::UNIT]
+            || row.labels.as_slice() == [label::INTENT_OUTCOME]
     }));
     let mut genesis = WriteBatch::new(relation::IN_BOOK);
     for mut row in rows {

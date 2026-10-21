@@ -141,12 +141,16 @@ fn create_historical_book(parent: &Path, book: &Path) -> [u8; 32] {
             db_keys(),
         ))
         .unwrap();
+    // The real genesis rows: Book, Units and the outcome-coverage root
+    // (fa-nl7), so the older-symbol book still admits new postings.
     let mut rows = template.vertices_at(CommitSeq(1)).unwrap();
     rows.sort_by_key(|row| row.birth_ordinal);
     let edges = template.edges_at(CommitSeq(1)).unwrap();
-    assert!(rows.iter().all(
-        |row| row.labels.as_slice() == [label::BOOK] || row.labels.as_slice() == [label::UNIT]
-    ));
+    assert!(rows.iter().all(|row| {
+        row.labels.as_slice() == [label::BOOK]
+            || row.labels.as_slice() == [label::UNIT]
+            || row.labels.as_slice() == [label::INTENT_OUTCOME]
+    }));
     let mut genesis = WriteBatch::new(relation::IN_BOOK);
     for mut row in rows {
         if row.vid == book_root() {
