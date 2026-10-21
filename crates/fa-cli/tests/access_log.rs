@@ -191,8 +191,8 @@ fn a_read_only_token_read_is_recorded_before_it_observes_the_book() {
     );
 
     // Filters: by principal, and after a sequence.
-    assert_eq!(number(&f.log(&["--principal", "preparer-1"]), "count"), 0);
-    assert_eq!(number(&f.log(&["--principal", "auditor-1"]), "count"), 3);
+    assert_eq!(number(&f.log(&["--reader", "preparer-1"]), "count"), 0);
+    assert_eq!(number(&f.log(&["--reader", "auditor-1"]), "count"), 3);
     let after = number(&events[1], "recorded_at").to_string();
     assert_eq!(number(&f.log(&["--since", &after]), "count"), 1);
 
