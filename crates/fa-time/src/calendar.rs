@@ -74,7 +74,7 @@ impl CustomYear {
         fiscal_year: i32,
         periods: &[(DateDay, DateDay)],
     ) -> Result<Self, DateError> {
-        let mut bounds = Vec::with_capacity(periods.len() + 1);
+        let mut bounds: Vec<DateDay> = Vec::with_capacity(periods.len() + 1);
         for (i, (start, end)) in periods.iter().enumerate() {
             if let Some(last) = bounds.last()
                 && last != start
