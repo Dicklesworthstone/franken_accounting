@@ -68,7 +68,7 @@ mod tests {
         assert_eq!(remaining(10, 20, 30).ok(), Some(MAX_RECORDED_ADVANCE_BYTES - 60));
         assert_eq!(remaining(MAX_RECORDED_ADVANCE_BYTES - 30, 20, 10).ok(), Some(0));
         for sizes in [(MAX_RECORDED_ADVANCE_BYTES, 1, 0), (usize::MAX, 1, 0), (1, usize::MAX, 1)] {
-            let error = remaining(sizes.0, sizes.1, sizes.2).err().expect("budget refusal");
+            let error = remaining(sizes.0, sizes.1, sizes.2).expect_err("budget refusal");
             assert_eq!(error.exit, 8);
         }
     }
