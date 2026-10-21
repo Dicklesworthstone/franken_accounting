@@ -91,6 +91,8 @@ struct Continuity {
     status: AdvanceStatus,
     previous_body: [u8; 32],
     previous_seq: u64,
+    /// Every continuity input already read for this trust decision.
+    pub(super) input_bytes: usize,
     recorded: Option<recorded::Facts>,
 }
 
@@ -278,16 +280,25 @@ fn authenticate(request: &Request) -> Result<(WitnessedCheckpoint, Option<Contin
                 status: verified.status(),
                 previous_body: advance.expected_body,
                 previous_seq: previous.signed_checkpoint().checkpoint.through_seq,
+                input_bytes: facts.input_bytes,
                 recorded: Some(facts),
             };
             return Ok((verified.into_checkpoint(), Some(continuity)));
         }
         let verified = verify_checkpoint_advance(&previous, &candidate, &proof)
             .map_err(|error| Failure::verification(error.to_string()))?;
+        let input_bytes = previous_bytes
+            .checked_add(candidate.len())
+            .and_then(|total| total.checked_add(proof.len()))
+            .filter(|total| *total <= fa_verify::proof::production::MAX_PRODUCTION_BYTES)
+            .ok_or_else(|| Failure::verification(
+                "continuity inputs exceed the shared 64 MiB budget",
+            ))?;
         let continuity = Continuity {
             status: verified.status(),
             previous_body: advance.expected_body,
             previous_seq: previous.signed_checkpoint().checkpoint.through_seq,
+            input_bytes,
             recorded: None,
         };
         return Ok((verified.into_checkpoint(), Some(continuity)));
