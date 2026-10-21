@@ -16,6 +16,13 @@ pub(super) struct Facts {
     pub(super) input_bytes: usize,
 }
 
+pub(super) fn from_incremental(appended_records: u64, input_bytes: usize) -> Facts {
+    Facts {
+        appended_records,
+        input_bytes,
+    }
+}
+
 fn remaining(previous: usize, candidate: usize, proof: usize) -> Result<usize, Failure> {
     previous
         .checked_add(candidate)
