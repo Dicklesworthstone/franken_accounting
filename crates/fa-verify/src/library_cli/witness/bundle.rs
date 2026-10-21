@@ -6,11 +6,11 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use fa_verify::checkpoint::witness::WitnessedCheckpoint;
+use fa_verify::checkpoint::witness::bundle::balances::verify_witnessed_bundle_balances_for;
 use fa_verify::checkpoint::witness::bundle::{
     BundleExpectation, MAX_REQUESTED_BUNDLE_LEAVES, MAX_WITNESSED_BUNDLE_BYTES,
     MAX_WITNESSED_RECEIPT_BYTES, verify_witnessed_bundle_for,
 };
-use fa_verify::checkpoint::witness::bundle::balances::verify_witnessed_bundle_balances_for;
 use fa_verify::cli::Output;
 use fa_verify::{BundleReport, BundleScope, Grade, ScopeClaim};
 
@@ -260,7 +260,11 @@ fn verify(args: &[OsString], json: bool) -> Result<(String, bool), Failure> {
     let bytes = read_bounded(&request.bundle, remaining)?;
     let report = match &request.balances {
         Some(expected) => verify_witnessed_bundle_balances_for(
-            &bytes, &pin, &request.expected, expected, receipt.as_deref(),
+            &bytes,
+            &pin,
+            &request.expected,
+            expected,
+            receipt.as_deref(),
         ),
         None => verify_witnessed_bundle_for(&bytes, &pin, &request.expected, receipt.as_deref()),
     }
@@ -354,7 +358,10 @@ fn render(
             report.manifest.completeness.label(),
         );
         if let Some(cells) = &request.balances {
-            text.push_str(&format!("Recipient balance request: exactly {} stock cells.\n", cells.len()));
+            text.push_str(&format!(
+                "Recipient balance request: exactly {} stock cells.\n",
+                cells.len()
+            ));
         } else {
             text.push_str("No specific recipient balance set was requested.\n");
         }
@@ -417,7 +424,10 @@ fn render(
         ("bundle_digest", quote(&hex(&report.digest))),
         ("requested_scope", scope_json(&request.expected.scope)),
         ("actual_scope", scope_json(&report.manifest.scope)),
-        ("balance_request", balances::json(request.balances.as_deref())),
+        (
+            "balance_request",
+            balances::json(request.balances.as_deref()),
+        ),
         ("completeness", quote(report.manifest.completeness.label())),
         (
             "requirements",

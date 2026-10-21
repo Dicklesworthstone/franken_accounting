@@ -8,10 +8,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{BundleExpectation, WitnessBundleError, WitnessedCheckpoint, verify_inspecting_balances};
+use super::{
+    BundleExpectation, WitnessBundleError, WitnessedCheckpoint, verify_inspecting_balances,
+};
+use crate::BalanceClaim;
 use crate::balance_request::{BalanceAmounts, BalanceExpectation, BalanceScope};
 use crate::bundle::{BundleCheck, BundleReport, Grade};
-use crate::BalanceClaim;
 
 /// Share the actual bundle decoder limit rather than admitting unencodable requests.
 pub const MAX_REQUESTED_BUNDLE_BALANCES: usize = crate::bundle::MAX_BALANCES;
@@ -26,15 +28,24 @@ fn requests(
     expected: &[BalanceExpectation],
 ) -> Result<BTreeMap<Cell, &BalanceExpectation>, WitnessBundleError> {
     if expected.len() > MAX_REQUESTED_BUNDLE_BALANCES {
-        return Err(WitnessBundleError::Request("too many requested balance cells"));
+        return Err(WitnessBundleError::Request(
+            "too many requested balance cells",
+        ));
     }
     let mut result = BTreeMap::new();
     for request in expected {
-        if request.amounts.is_some_and(|amounts| amounts.debits < 0 || amounts.credits < 0) {
-            return Err(WitnessBundleError::Request("expected gross balance amounts must be nonnegative"));
+        if request
+            .amounts
+            .is_some_and(|amounts| amounts.debits < 0 || amounts.credits < 0)
+        {
+            return Err(WitnessBundleError::Request(
+                "expected gross balance amounts must be nonnegative",
+            ));
         }
         if result.insert(cell(request.scope), request).is_some() {
-            return Err(WitnessBundleError::Request("a balance cell is requested more than once"));
+            return Err(WitnessBundleError::Request(
+                "a balance cell is requested more than once",
+            ));
         }
     }
     Ok(result)
@@ -74,18 +85,28 @@ pub fn verify_witnessed_bundle_balances_for(
     let mut set_error = None;
     let mut amounts_error = None;
     let mut report = verify_inspecting_balances(
-        bytes, anchor, expected_bundle, receipt, |ordinal, claim: BalanceClaim| {
+        bytes,
+        anchor,
+        expected_bundle,
+        receipt,
+        |ordinal, claim: BalanceClaim| {
             verified_count += 1; // bounded by the decoder's balance count
             let key = cell(BalanceScope::from(&claim));
             if !seen.insert(key) {
-                set_error.get_or_insert_with(|| format!("balance {ordinal} repeats a supplied cell"));
+                set_error
+                    .get_or_insert_with(|| format!("balance {ordinal} repeats a supplied cell"));
             }
             match wanted.get(&key) {
                 None => {
-                    set_error.get_or_insert_with(|| format!("balance {ordinal} is not a requested cell"));
+                    set_error.get_or_insert_with(|| {
+                        format!("balance {ordinal} is not a requested cell")
+                    });
                 }
                 Some(request) => {
-                    if request.amounts.is_some_and(|amounts| amounts != BalanceAmounts::from(&claim)) {
+                    if request
+                        .amounts
+                        .is_some_and(|amounts| amounts != BalanceAmounts::from(&claim))
+                    {
                         amounts_error.get_or_insert_with(|| format!(
                             "balance {ordinal} gross debit or credit mantissa differs from the request"
                         ));
@@ -100,7 +121,8 @@ pub fn verify_witnessed_bundle_balances_for(
         Grade::Unrun("the witnessed bundle and all balance proofs must first verify".into())
     } else if verified_count != wanted.len() {
         Grade::Fail(format!(
-            "requested {} distinct balance cells; supplied {verified_count}", wanted.len()
+            "requested {} distinct balance cells; supplied {verified_count}",
+            wanted.len()
         ))
     } else if let Some(why) = set_error {
         Grade::Fail(why)
@@ -118,13 +140,17 @@ pub fn verify_witnessed_bundle_balances_for(
         BundleCheck {
             check: "requested_balance_set",
             scope: "request",
-            subject: format!("exactly {} distinct recipient-selected stock cells", wanted.len()),
+            subject: format!(
+                "exactly {} distinct recipient-selected stock cells",
+                wanted.len()
+            ),
             grade: set_grade,
         },
         BundleCheck {
             check: "requested_balance_amounts",
             scope: "request",
-            subject: "exact requested gross columns; unspecified amounts remain unconstrained".into(),
+            subject: "exact requested gross columns; unspecified amounts remain unconstrained"
+                .into(),
             grade: amounts_grade,
         },
     ]);

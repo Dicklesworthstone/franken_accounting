@@ -140,9 +140,13 @@ fn verify_inspecting_balances(
     // RecipientWitnessPolicy's private constructor always stores publisher first.
     // Reuse all existing independent bundle checks; do not duplicate the codec,
     // signature verification, stock fold, document hashing or receipt transcript.
-    let mut report =
-        verify_bundle_inspecting_balances(bytes, &anchor.policy.trusted_keys[..1], receipt, observe)
-            .map_err(WitnessBundleError::Bundle)?;
+    let mut report = verify_bundle_inspecting_balances(
+        bytes,
+        &anchor.policy.trusted_keys[..1],
+        receipt,
+        observe,
+    )
+    .map_err(WitnessBundleError::Bundle)?;
     let manifest_valid = report
         .checks
         .iter()

@@ -9,18 +9,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use fa_verify::BalanceScope;
 use fa_verify::blake3::hex;
 use fa_verify::bundle::{
-    BUNDLE_FORMAT, BundleScope, Completeness, FOLD_DOMAIN, FOLD_VERSION,
-    Manifest, Summary, manifest_md,
+    BUNDLE_FORMAT, BundleScope, Completeness, FOLD_DOMAIN, FOLD_VERSION, Manifest, Summary,
+    manifest_md,
 };
 use fa_verify::checkpoint::verify_checkpoint;
 
 fn fixture(name: &str) -> Vec<u8> {
     let keys = include_str!("fixtures/checkpoint_witness_v1.txt");
     let advance = include_str!("fixtures/checkpoint_witness_advance_v1.txt");
-    let text = keys.lines().chain(advance.lines())
-        .find_map(|line| line.strip_prefix(name)?.strip_prefix(' ')).unwrap();
-    (0..text.len()).step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap()).collect()
+    let text = keys
+        .lines()
+        .chain(advance.lines())
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(' '))
+        .unwrap();
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 fn key(name: &str) -> [u8; 32] {
@@ -33,12 +38,21 @@ fn bytes(out: &mut Vec<u8>, value: &[u8]) {
 }
 
 fn cell(account: u128, unit: u32, through: Option<i32>) -> BalanceScope {
-    BalanceScope { account, unit, effective_through: through }
+    BalanceScope {
+        account,
+        unit,
+        effective_through: through,
+    }
 }
 
 fn request(cell: BalanceScope) -> String {
-    format!("{:032x}:{}:{}", cell.account, cell.unit,
-        cell.effective_through.map_or_else(|| "none".into(), |day| day.to_string()))
+    format!(
+        "{:032x}:{}:{}",
+        cell.account,
+        cell.unit,
+        cell.effective_through
+            .map_or_else(|| "none".into(), |day| day.to_string())
+    )
 }
 
 fn bundle(cells: &[BalanceScope]) -> Vec<u8> {
@@ -47,12 +61,19 @@ fn bundle(cells: &[BalanceScope]) -> Vec<u8> {
     let cp = signed.checkpoint;
     assert_eq!(cp.leaf_count, 0);
     let m = Manifest {
-        book_id: cp.book_id, branch_id: cp.branch_id, through_seq: cp.through_seq,
-        leaf_count: 0, checkpoint_oid: signed.oid, scope: BundleScope::Prefix,
+        book_id: cp.book_id,
+        branch_id: cp.branch_id,
+        through_seq: cp.through_seq,
+        leaf_count: 0,
+        checkpoint_oid: signed.oid,
+        scope: BundleScope::Prefix,
         completeness: Completeness::SeqRangeComplete { from: 0, to: 0 },
     };
     let summary = Summary {
-        format: (1, 0), entries: 0, documents: 0, inline: 0,
+        format: (1, 0),
+        entries: 0,
+        documents: 0,
+        inline: 0,
         balances: vec![(FOLD_DOMAIN.to_vec(), FOLD_VERSION); cells.len()],
     };
     let mut prefix = Vec::new();
@@ -89,7 +110,9 @@ fn bundle(cells: &[BalanceScope]) -> Vec<u8> {
         }
         proof.extend_from_slice(&0i128.to_le_bytes());
         proof.extend_from_slice(&0i128.to_le_bytes());
-        for _ in 0..3 { proof.extend_from_slice(&0u32.to_le_bytes()); }
+        for _ in 0..3 {
+            proof.extend_from_slice(&0u32.to_le_bytes());
+        }
         bytes(&mut out, FOLD_DOMAIN);
         out.extend_from_slice(&FOLD_VERSION.to_le_bytes());
         bytes(&mut out, &proof);
@@ -101,8 +124,11 @@ fn bundle(cells: &[BalanceScope]) -> Vec<u8> {
 fn directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
-        let dir = std::env::temp_dir().join(format!("fa-witness-balance-cli-{}-{}",
-            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let dir = std::env::temp_dir().join(format!(
+            "fa-witness-balance-cli-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         match std::fs::create_dir(&dir) {
             Ok(()) => return dir,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -117,16 +143,26 @@ fn args(cells: &[BalanceScope]) -> (Vec<OsString>, PathBuf) {
     std::fs::write(dir.join("bundle"), bundle(cells)).unwrap();
     let mut result: Vec<OsString> = ["witness", "bundle"].map(OsString::from).into();
     for (flag, value) in [
-        ("--expect-book", "11".repeat(16)), ("--expect-branch", "00".repeat(16)),
-        ("--expect-policy", "55".repeat(32)), ("--publisher-key", hex(&key("publisher"))),
-        ("--witness-key", hex(&key("witness_a"))), ("--witness-key", hex(&key("witness_b"))),
-        ("--quorum", "2".into()), ("--expect-scope", "prefix".into()),
-        ("--expect-documents", "inline".into()), ("--expect-receipt", "optional".into()),
+        ("--expect-book", "11".repeat(16)),
+        ("--expect-branch", "00".repeat(16)),
+        ("--expect-policy", "55".repeat(32)),
+        ("--publisher-key", hex(&key("publisher"))),
+        ("--witness-key", hex(&key("witness_a"))),
+        ("--witness-key", hex(&key("witness_b"))),
+        ("--quorum", "2".into()),
+        ("--expect-scope", "prefix".into()),
+        ("--expect-documents", "inline".into()),
+        ("--expect-receipt", "optional".into()),
     ] {
         result.extend([flag.into(), value.into()]);
     }
-    result.extend(["--checkpoint".into(), dir.join("checkpoint").into_os_string(),
-        "--bundle".into(), dir.join("bundle").into_os_string(), "--json".into()]);
+    result.extend([
+        "--checkpoint".into(),
+        dir.join("checkpoint").into_os_string(),
+        "--bundle".into(),
+        dir.join("bundle").into_os_string(),
+        "--json".into(),
+    ]);
     (result, dir)
 }
 
@@ -136,7 +172,10 @@ fn set(args: &mut [OsString], flag: &str, value: impl Into<OsString>) {
 }
 
 fn run(args: &[OsString]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_fa-verify")).args(args).output().unwrap()
+    Command::new(env!("CARGO_BIN_EXE_fa-verify"))
+        .args(args)
+        .output()
+        .unwrap()
 }
 
 fn result(out: Output, exit: i32) -> String {
@@ -169,26 +208,36 @@ fn executable_accepts_exact_reordered_cells_and_does_not_write_inputs() {
     let input = exact(input, &[cells[1], cells[0]]);
     let before = std::fs::read(dir.join("bundle")).unwrap();
     let json = result(run(&input), 0);
-    for field in ["\"mode\":\"exact\"", "requested_balance_set", "requested_balance_amounts",
-        "\"effective_through_day\":\"-2147483648\"", "\"unit\":\"4294967295\""]
-    {
+    for field in [
+        "\"mode\":\"exact\"",
+        "requested_balance_set",
+        "requested_balance_amounts",
+        "\"effective_through_day\":\"-2147483648\"",
+        "\"unit\":\"4294967295\"",
+    ] {
         assert!(json.contains(field), "{json}");
     }
     assert!(!json.contains("recipient_balance_claim_set"));
     assert_eq!(std::fs::read(dir.join("bundle")).unwrap(), before);
-    assert_eq!(std::fs::read(dir.join("checkpoint")).unwrap(), fixture("empty"));
+    assert_eq!(
+        std::fs::read(dir.join("checkpoint")).unwrap(),
+        fixture("empty")
+    );
     assert_eq!(result(run(&input), 0), json);
 }
 
 #[test]
 fn valid_missing_extra_duplicate_and_wrong_cell_productions_refuse_exact_requests() {
     let wanted = [cell(10, 1, None), cell(20, 1, Some(10))];
-    for supplied in [vec![], vec![wanted[0]], vec![wanted[0], wanted[0]],
+    for supplied in [
+        vec![],
+        vec![wanted[0]],
+        vec![wanted[0], wanted[0]],
         vec![wanted[0], cell(21, 1, Some(10))],
         vec![wanted[0], cell(20, 2, Some(10))],
         vec![wanted[0], cell(20, 1, None)],
-        vec![wanted[0], wanted[1], cell(30, 1, None)]]
-    {
+        vec![wanted[0], wanted[1], cell(30, 1, None)],
+    ] {
         let (input, _) = args(&supplied);
         result(run(&input), 0); // genuine proof, but not the recipient's question
         let json = result(run(&exact(input, &wanted)), 8);
@@ -202,11 +251,17 @@ fn requested_gross_columns_are_exact_and_large_mantissas_remain_strings() {
     let c = cell(10, 1, None);
     let (base, _) = args(&[c]);
     let mut good = base.clone();
-    good.extend(["--expect-balance".into(), format!("{}:0:0", request(c)).into()]);
+    good.extend([
+        "--expect-balance".into(),
+        format!("{}:0:0", request(c)).into(),
+    ]);
     result(run(&good), 0);
     for value in [1, i128::MAX] {
         let mut wrong = base.clone();
-        wrong.extend(["--expect-balance".into(), format!("{}:{value}:{value}", request(c)).into()]);
+        wrong.extend([
+            "--expect-balance".into(),
+            format!("{}:{value}:{value}", request(c)).into(),
+        ]);
         let json = result(run(&wrong), 8); // zero net is not zero gross
         assert!(json.contains(&format!("\"debits_mantissa\":\"{value}\"")));
         assert!(json.contains("requested_balance_amounts"));
@@ -238,10 +293,18 @@ fn invalid_or_conflicting_requests_refuse_before_missing_checkpoint_io() {
         vec!["--expect-balance".into(), format!("{valid}:0").into()],
         vec!["--expect-balance".into(), format!("{valid}:1.0:0").into()],
         vec!["--expect-balance".into(), format!("{valid}:-1:0").into()],
-        vec!["--expect-balance".into(), valid.clone().into(),
-            "--expect-balance".into(), format!("{valid}:0:0").into()],
+        vec![
+            "--expect-balance".into(),
+            valid.clone().into(),
+            "--expect-balance".into(),
+            format!("{valid}:0:0").into(),
+        ],
         vec!["--expect-no-balances".into(), "--expect-no-balances".into()],
-        vec!["--expect-no-balances".into(), "--expect-balance".into(), valid.into()],
+        vec![
+            "--expect-no-balances".into(),
+            "--expect-balance".into(),
+            valid.into(),
+        ],
     ];
     for extra in cases {
         let mut input = base.clone();
@@ -278,11 +341,17 @@ fn non_utf8_paths_work_but_non_utf8_balance_scalars_are_not_lossy() {
     let (input, dir) = args(&[c]);
     let mut input = exact(input, &[c]);
     for name in ["bundle", "checkpoint"] {
-        let path = dir.join(OsString::from_vec(format!("{name}-").bytes().chain([255]).collect()));
+        let path = dir.join(OsString::from_vec(
+            format!("{name}-").bytes().chain([255]).collect(),
+        ));
         std::fs::copy(dir.join(name), &path).unwrap();
         set(&mut input, &format!("--{name}"), path.into_os_string());
     }
     result(run(&input), 0);
-    set(&mut input, "--expect-balance", OsString::from_vec(vec![255]));
+    set(
+        &mut input,
+        "--expect-balance",
+        OsString::from_vec(vec![255]),
+    );
     result(run(&input), 2);
 }
