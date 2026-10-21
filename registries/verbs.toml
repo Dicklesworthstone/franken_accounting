@@ -221,14 +221,14 @@ example = "fa branch list --book ./books/myco --json"
 
 [[verb]]
 name = "case"
-summary = "Restatement cases (plan §8.3): open a case over the periods a material correction affects, journal its determination (day and authority), rehearse it on a scenario whose diff certificate is replayed, retained and attached, and read it. Dual-control approval, posting, disclosure and closing are later fa-75j4 slices."
+summary = "Restatement cases (plan §8.3): open a case over the periods a material correction affects, journal its determination (day and authority), rehearse it on a scenario whose diff certificate is replayed, retained and attached, approve its effect manifest under dual control, and read it. Posting, disclosure and closing are later fa-75j4 slices."
 writes = true
-subcommands = ["open", "determine", "rehearse", "show", "list"]
-flags = ["--kind", "--periods", "--narrative", "--determined-on", "--authority", "--on", "--key", "--date", "--certificate"]
-switches = []
-events = ["case_opened", "case_determined", "case_rehearsed", "case", "cases"]
+subcommands = ["open", "determine", "rehearse", "approve", "show", "list"]
+flags = ["--kind", "--periods", "--narrative", "--determined-on", "--authority", "--on", "--key", "--date", "--certificate", "--approval"]
+switches = ["--dry-run"]
+events = ["case_opened", "case_determined", "case_rehearsed", "case_manifest", "case_approved", "case", "cases"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["case rehearse <case> --certificate <scenario-diff-certificate> [--key K] [--date YYYY-MM-DD]   (Determined → Rehearsed: replays the scenario's diff certificate (fa scenario diff <name> --period <code>... --certificate-out <file>), retains it and journals the rehearsal; the diff must cover every period the case affects and the scenario must be open; needs restate, read and produce)", "case open --kind Restatement|Revision|PriorPeriodAdjustment|PolicyChangeRetrospective --periods <code>[,<code>]... [--narrative <document-oid>] [--determined-on YYYY-MM-DD --authority <document-oid>] [--key K] [--date YYYY-MM-DD]   (journals a RestatementCase under restate, numbered next among the book's cases: Proposed, or Determined when the determination is already made. Every period must exist; the narrative and authority must be verified documents of this book. The default key is the request itself, so the same command opens the case once.)", "case determine <case> --on YYYY-MM-DD --authority <document-oid> [--key K]   (Proposed → Determined: the day the non-reliance or immateriality determination was made, and the document recording its authority. For a Restatement the Item 4.02 clock starts that day. FA-REF-176 from any other state.)", "case show <case>", "case list", "A case cannot yet leave Determined: rehearsal (a scenario with its diff certificate), dual-control approval of the effect manifest, posting the case's entries in one batch, disclosure and closing are later fa-75j4 slices, and Revision, Restatement and PriorPeriodAdjustment entries stay refused until posting lands."]
+usage = ["case approve <case> --dry-run   (prints the effect manifest: each entry the case will post, its intent digest and planner, and the digest approvers approve with fa approve --proposal <digest>)", "case approve <case> --approval <vid> --approval <vid> [--key K] [--date YYYY-MM-DD]   (Rehearsed → Approved: two Human approvals of the manifest digest, none by a principal who planned any of its entries; needs restate)", "case rehearse <case> --certificate <scenario-diff-certificate> [--key K] [--date YYYY-MM-DD]   (Determined → Rehearsed: replays the scenario's diff certificate (fa scenario diff <name> --period <code>... --certificate-out <file>), retains it and journals the rehearsal; the diff must cover every period the case affects and the scenario must be open; needs restate, read and produce)", "case open --kind Restatement|Revision|PriorPeriodAdjustment|PolicyChangeRetrospective --periods <code>[,<code>]... [--narrative <document-oid>] [--determined-on YYYY-MM-DD --authority <document-oid>] [--key K] [--date YYYY-MM-DD]   (journals a RestatementCase under restate, numbered next among the book's cases: Proposed, or Determined when the determination is already made. Every period must exist; the narrative and authority must be verified documents of this book. The default key is the request itself, so the same command opens the case once.)", "case determine <case> --on YYYY-MM-DD --authority <document-oid> [--key K]   (Proposed → Determined: the day the non-reliance or immateriality determination was made, and the document recording its authority. For a Restatement the Item 4.02 clock starts that day. FA-REF-176 from any other state.)", "case show <case>", "case list", "A case cannot yet leave Determined: rehearsal (a scenario with its diff certificate), dual-control approval of the effect manifest, posting the case's entries in one batch, disclosure and closing are later fa-75j4 slices, and Revision, Restatement and PriorPeriodAdjustment entries stay refused until posting lands."]
 example = "fa case open --kind Restatement --periods FY2025-P12 --narrative <oid> --book ./books/myco --json"
 
 [[verb]]
@@ -1403,6 +1403,18 @@ fields = ["draft:hex", "name:string", "control_entry:hex", "recorded_at:seq", "a
 name = "case_opened"
 book = true
 doc = "A restatement case was journaled by a CaseControl Open record (or the identical request was already recorded: then nothing was written). It is Proposed, or Determined when the determination was given at open."
+fields = ["case:restatement_case", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "case_manifest"
+book = true
+doc = "A Rehearsed case's effect manifest, which its approvers approve: each entry the case will post (the scenario's Plan record, its intent's digest and its planner), the planners (who may not approve), and the digest fa approve --proposal binds."
+fields = ["case:int", "digest:hex", "entries:[case_manifest_entry]", "preparers:[hex]"]
+
+[[event]]
+name = "case_approved"
+book = true
+doc = "A restatement case's effect manifest was approved by a CaseControl Approve record citing two Human approvals of its digest, moving it Rehearsed → Approved (or the identical request was already recorded)."
 fields = ["case:restatement_case", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
@@ -3037,6 +3049,11 @@ reason = "host-only: opening a restatement case needs restate, which no launch-b
 
 [[mcp.excluded]]
 verb = "case"
+subcommand = "approve"
+reason = "host-only: approving a restatement case's manifest needs restate, which no launch-bound MCP template or issued token may hold (plan §14.4); approvers record approvals with fa approve, and bound sessions read cases through fa_case_read"
+
+[[mcp.excluded]]
+verb = "case"
 subcommand = "rehearse"
 reason = "host-only: rehearsing a restatement case needs restate, which no launch-bound MCP template or issued token may hold (plan §14.4); bound sessions read cases through fa_case_read"
 
@@ -4369,7 +4386,17 @@ fields = ["id:int", "code:string", "version:int", "scale:int", "kind:string", "i
 [[shape]]
 name = "restatement_case"
 doc = "A restatement case (plan §8.3): its number and vertex, kind, state, the periods it affects, its optional narrative document, its determination (day and authority document) and every journaled transition in commit order."
-fields = ["case:int", "vid:hex", "kind:string", "state:string", "periods:[string]", "narrative:hex?", "determination:case_determination?", "rehearsal:case_rehearsal?", "transitions:[case_transition]"]
+fields = ["case:int", "vid:hex", "kind:string", "state:string", "periods:[string]", "narrative:hex?", "determination:case_determination?", "rehearsal:case_rehearsal?", "approval:case_approval?", "transitions:[case_transition]"]
+
+[[shape]]
+name = "case_manifest_entry"
+doc = "One entry a case will post: the scenario's Plan record, the digest of its intent and the principal who planned it."
+fields = ["plan:hex", "intent:hex", "planner:hex"]
+
+[[shape]]
+name = "case_approval"
+doc = "A case's approved effect manifest: its digest, its entries and the Approval vertices the Approve record cites."
+fields = ["digest:hex?", "entries:[case_manifest_entry]", "approvals:[hex]"]
 
 [[shape]]
 name = "case_rehearsal"
@@ -4556,6 +4583,11 @@ ops = ["read", "restate"]
 verbs = ["case"]
 subcommands = ["rehearse"]
 ops = ["read", "restate", "produce"]
+
+[[bound]]
+verbs = ["case"]
+subcommands = ["approve"]
+ops = ["read", "restate"]
 
 [[bound]]
 verbs = ["case"]

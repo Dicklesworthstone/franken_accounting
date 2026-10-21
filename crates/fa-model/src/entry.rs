@@ -140,6 +140,11 @@ pub const CASE_DETERMINATION_EXTENSION: u16 = 20;
 /// diff certificate, the trunk sequence it forked at, the periods the diff
 /// covers and the scenario's Plan records it covers, in planning order.
 pub const CASE_REHEARSAL_EXTENSION: u16 = 21;
+/// Extension tag 22, `fa:case-approval:v1` (bead fa-75j4): the effect
+/// manifest a `CaseControl` Approve record's approvals bind — `u16 version
+/// ‖ u128 case ‖ [32] body digest ‖ [32] rehearsal digest ‖ list(u128 plan ‖
+/// [32] intent digest ‖ u128 planner)`.
+pub const CASE_APPROVAL_EXTENSION: u16 = 22;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -162,6 +167,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     RESTATEMENT_CASE_EXTENSION,
     CASE_DETERMINATION_EXTENSION,
     CASE_REHEARSAL_EXTENSION,
+    CASE_APPROVAL_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------

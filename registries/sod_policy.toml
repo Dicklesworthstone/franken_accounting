@@ -653,3 +653,15 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §8.3 (Rehearsed: on a branch, with the as-reported-vs-as-restated diff certificate attached)"
+
+[[rule]]
+name = "case-approve"
+class = "CaseControl"
+transition = "Approve"
+preparer_op = "restate"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate", "case_preparer"]
+cite = "plan §8.3 (Approved: dual control, by principals neither of whom prepared any entry in the case)"

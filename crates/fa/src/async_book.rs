@@ -1345,6 +1345,42 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )
     }
 
+    /// The effect manifest case `ordinal`'s approvers approve.
+    pub fn case_manifest(
+        &self,
+        cx: &PurposeContexts,
+        ordinal: u32,
+    ) -> Outcome<fa_journal::CaseManifest> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::case_manifest(db, context, ordinal)?)
+        })
+    }
+
+    /// Approve case `ordinal` (Rehearsed → Approved) citing `approvals` of
+    /// its manifest ([`crate::Book::approve_case`] states the contract).
+    pub async fn approve_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        approvals: Vec<VId>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let description = format!("approve case {ordinal}");
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::approve_case(&mut self.db, cx, &self.context, ordinal, approvals, req)
+                .await?,
+        )
+    }
+
     /// Restatement case `ordinal` as its records state it.
     pub fn case(
         &self,

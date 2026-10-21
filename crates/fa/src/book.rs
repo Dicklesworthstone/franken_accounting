@@ -1295,6 +1295,33 @@ impl Book {
         )))
     }
 
+    /// The effect manifest a Rehearsed case's approvers approve (plan §8.3):
+    /// each entry the case will post (its Plan record, intent digest and
+    /// planner) under the case's body and rehearsal. `fa approve --proposal`
+    /// over its digest records an approval.
+    pub fn case_manifest(&self, ordinal: u32) -> Outcome<fa_journal::CaseManifest> {
+        with_store!(&self.store, core => core.case_manifest(&self.purposes(), ordinal))
+    }
+
+    /// Approve case `ordinal` (plan §8.3: Rehearsed → Approved, "dual control,
+    /// by principals … neither of whom prepared any entry in the case").
+    /// `approvals` are Approval vertices of the manifest's digest; the
+    /// `case-approve` rule (restate preparer, two Human approvers) decides
+    /// them at commit with the manifest's planners as the case's preparers.
+    pub fn approve_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        approvals: Vec<VId>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_case(
+            &purposes, capability, ordinal, approvals, effective_date, idempotency_key,
+        )))
+    }
+
     /// Restatement case `ordinal` as its records state it.
     pub fn case(&self, ordinal: u32) -> Result<Option<fa_journal::CaseView>, BookError> {
         with_store!(&self.store, core => core.case(&self.purposes(), ordinal))

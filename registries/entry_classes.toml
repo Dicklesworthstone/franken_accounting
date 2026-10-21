@@ -241,8 +241,9 @@ supersession = "none"
 # determination), Determine (extension 20 `fa:case-determination:v1`: the
 # day and the authority document), Rehearse (extension 21
 # `fa:case-rehearsal:v1`: the scenario, its retained diff certificate, the
-# fork and the periods the diff covers); Approve, Post, Disclose and Close
-# are later fa-75j4 slices. The narrative and authority documents, and the
+# fork and the periods the diff covers), Approve (extension 22
+# `fa:case-approval:v1`: the effect manifest two Human approvers bind);
+# Post, Disclose and Close are later fa-75j4 slices. The narrative and authority documents, and the
 # rehearsal's certificate and scenario vertices, are the records' proof
 # refs.
 [[class]]

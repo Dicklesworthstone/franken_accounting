@@ -7403,12 +7403,17 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     // Rehearsed on a scenario whose diff certificate covers the period.
-    assert_eq!(run(true, &["scenario", "fork", "restated"]).0, 0);
+    assert_eq!(
+        run(true, &["scenario", "fork", "restated", "--as", "analyst"]).0,
+        0
+    );
     let restated = write(&dir, "restated.json", &draft_intent("restated-rent"));
     assert_eq!(
         run(
             true,
-            &["scenario", "run", "restated", "--intent", &restated]
+            &[
+                "scenario", "run", "restated", "--intent", &restated, "--as", "analyst"
+            ]
         )
         .0,
         0
@@ -7441,6 +7446,52 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let attached = case.get("rehearsal").cloned().unwrap_or(Json::Null);
     assert_eq!(text(&attached, "scenario"), "restated", "{out}");
     assert_eq!(arr(&attached, "intents").len(), 1, "{out}");
+    // Approved under dual control (fa-75j4 slice 3): the analyst planned
+    // the case's entry, so the analyst's approval is refused.
+    let (code, out) = run(true, &["case", "approve", "1", "--dry-run"]);
+    assert_eq!(code, 0, "{out}");
+    let manifest = doc(&out);
+    assert_eq!(arr(&manifest, "entries").len(), 1, "{out}");
+    let digest = text(&manifest, "digest").to_string();
+    let mut approval = |who: &str| {
+        let (code, out) = run(true, &["approve", "--proposal", &digest, "--as", who]);
+        assert_eq!(code, 0, "{out}");
+        text(&doc(&out), "approval_vid").to_string()
+    };
+    let by_analyst = approval("analyst");
+    let by_controller = approval("controller");
+    let by_auditor = approval("auditor");
+    let (code, out) = run(
+        true,
+        &[
+            "case",
+            "approve",
+            "1",
+            "--approval",
+            &by_analyst,
+            "--approval",
+            &by_controller,
+        ],
+    );
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("prepared an entry in this case"), "{out}");
+    let (code, out) = run(
+        true,
+        &[
+            "case",
+            "approve",
+            "1",
+            "--approval",
+            &by_controller,
+            "--approval",
+            &by_auditor,
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let approved = doc(&out);
+    let case = approved.get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&case, "state"), "Approved", "{out}");
+    assert_eq!(run(true, &["case", "approve", "1"]).0, 2);
     assert_eq!(run(true, &["case", "show", "1"]).0, 0);
     assert_eq!(run(true, &["case", "list"]).0, 0);
     // A statement issuance (fa-wrrw): planned, approved in another hand,

@@ -24,6 +24,12 @@
 //!   book, replayed by the facade before this record), the trunk sequence it
 //!   forked at and the periods the diff covers, which must include every
 //!   period the case affects. The scenario must still be open.
+//! - **Approve** (`Rehearsed → Approved`) journals the case's effect
+//!   manifest in extension 22 `fa:case-approval:v1`: the case, its body and
+//!   rehearsal digests, and for each Plan record the rehearsal names, its
+//!   intent's digest and its planner. Two Human approvals of the manifest's
+//!   digest are cited (`case-approve`), and no approver planned any of the
+//!   case's entries (the `case_preparer` exclusion, decided here).
 //!
 //! The narrative and authority documents are the records' proof refs and
 //! must be verified documents of this book; every affected period must
@@ -31,11 +37,11 @@
 //! transitions of one case race and the first committer wins.
 //!
 //! **Authority.** Every record is a trunk record under `restate`
-//! (`sod_policy.toml` `case-open`, `case-determine`, `case-rehearse`); an
-//! Agent prepares none. Dual-control approval of the case's effect manifest,
-//! posting, disclosure and closing are later slices of fa-75j4: until they
-//! land, a case cannot leave `Rehearsed`, and Revision, Restatement and
-//! PriorPeriodAdjustment entries stay refused.
+//! (`sod_policy.toml` `case-open`, `case-determine`, `case-rehearse`,
+//! `case-approve`); an
+//! Agent prepares none. Posting, disclosure and closing are later slices of
+//! fa-75j4: until they land, a case cannot leave `Approved`, and Revision,
+//! Restatement and PriorPeriodAdjustment entries stay refused.
 
 use fa_model::limits::{MAX_BATCH_ENTRIES, MAX_PERIOD_REF_BYTES};
 use fa_model::symbols::{label, property, relation};
@@ -73,6 +79,10 @@ pub const MAX_CASE_PERIODS: usize = 64;
 const BODY_DOMAIN: &[u8] = b"fa:restatement-case:v1";
 const DETERMINATION_DOMAIN: &[u8] = b"fa:case-determination:v1";
 const REHEARSAL_DOMAIN: &[u8] = b"fa:case-rehearsal:v1";
+const MANIFEST_DOMAIN: &[u8] = b"fa:case-approval:v1";
+const MANIFEST_ENTRY_DOMAIN: &[u8] = b"fa:case-manifest-entry:v1";
+/// Canonical bytes of an approved manifest (extension 22).
+pub const MANIFEST_VERSION: u16 = 1;
 const RECORD_KEY_DOMAIN: &[u8] = b"fa:case-record-key:v1";
 
 /// What a case corrects (plan §8.3 `RestatementCase.kind`).
@@ -342,6 +352,86 @@ impl Rehearsal {
     }
 }
 
+/// One entry the case will post: the scenario's Plan record, the digest of
+/// its intent, and the principal who planned it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ManifestEntry {
+    pub plan: VId,
+    pub intent: [u8; 32],
+    pub planner: VId,
+}
+
+/// A case's effect manifest (plan §8.3): the exact ordered entries its
+/// approvals bind, with the body and rehearsal they belong to. Its digest is
+/// what each approver approves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaseManifest {
+    pub case: VId,
+    pub body_digest: [u8; 32],
+    pub rehearsal_digest: [u8; 32],
+    pub entries: Vec<ManifestEntry>,
+}
+
+impl CaseManifest {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
+        let mut w = Writer::with_capacity(96 + self.entries.len() * 64);
+        w.u16(MANIFEST_VERSION)
+            .u128(self.case.0)
+            .fixed(&self.body_digest)
+            .fixed(&self.rehearsal_digest)
+            .list(&self.entries, |w, e| {
+                w.u128(e.plan.0).fixed(&e.intent).u128(e.planner.0);
+            });
+        Ok(w.finish()?)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
+        let mut r = Reader::new(bytes);
+        if r.u16("case.manifest.version").map_err(decode)? != MANIFEST_VERSION {
+            return Err(KernelError::Corrupt(
+                "unsupported case manifest version".into(),
+            ));
+        }
+        let case = VId(r.u128("case.manifest.case").map_err(decode)?);
+        let body_digest = r.fixed("case.manifest.body").map_err(decode)?;
+        let rehearsal_digest = r.fixed("case.manifest.rehearsal").map_err(decode)?;
+        let entries = r
+            .list(MAX_BATCH_ENTRIES, "case.manifest.entries", |r| {
+                Ok(ManifestEntry {
+                    plan: VId(r.u128("case.manifest.plan")?),
+                    intent: r.fixed("case.manifest.intent")?,
+                    planner: VId(r.u128("case.manifest.planner")?),
+                })
+            })
+            .map_err(decode)?;
+        r.finish().map_err(decode)?;
+        Ok(Self {
+            case,
+            body_digest,
+            rehearsal_digest,
+            entries,
+        })
+    }
+
+    /// The digest the case's approvals bind.
+    pub fn digest(&self) -> Result<[u8; 32], KernelError> {
+        Ok(domain_digest(MANIFEST_DOMAIN, &[&self.canonical_bytes()?]))
+    }
+
+    /// The principals who prepared any of the case's entries.
+    #[must_use]
+    pub fn preparers(&self) -> std::collections::BTreeSet<VId> {
+        self.entries.iter().map(|e| e.planner).collect()
+    }
+}
+
+/// The Approve record: the manifest and the approvals it cites.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaseApproval {
+    pub manifest: CaseManifest,
+    pub approvals: Vec<fa_model::ApprovalRef>,
+}
+
 /// A case's immutable body, fixed when it is opened (Appendix A
 /// `RestatementCase` body). Approvals bind the effect manifest an `Approved`
 /// record names, never fields of this body.
@@ -483,6 +573,8 @@ pub struct CaseView {
     pub determination: Option<Determination>,
     /// The rehearsal, from the Rehearse record.
     pub rehearsal: Option<Rehearsal>,
+    /// The approved manifest and its approvals, from the Approve record.
+    pub approval: Option<CaseApproval>,
     /// Every transition, in commit order; the first is the Open record.
     pub transitions: Vec<CaseTransition>,
 }
@@ -501,6 +593,7 @@ enum Act {
     Open,
     Determine,
     Rehearse,
+    Approve,
 }
 
 impl Act {
@@ -509,6 +602,7 @@ impl Act {
             Self::Open => "Open",
             Self::Determine => "Determine",
             Self::Rehearse => "Rehearse",
+            Self::Approve => "Approve",
         }
     }
 
@@ -517,6 +611,7 @@ impl Act {
             Self::Open => 0,
             Self::Determine => 1,
             Self::Rehearse => 2,
+            Self::Approve => 3,
         }
     }
 }
@@ -622,7 +717,7 @@ fn record_proposal(
 ) -> EntryPayload {
     let named = match act {
         Act::Open => None,
-        Act::Determine | Act::Rehearse => Some(case),
+        Act::Determine | Act::Rehearse | Act::Approve => Some(case),
     };
     EntryPayload {
         schema_minor: fa_model::entry::SCHEMA_MINOR,
@@ -1208,6 +1303,231 @@ pub async fn rehearse_case<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+/// The effect manifest of a Rehearsed case: for each Plan record its
+/// rehearsal names, in order, the intent's digest and its planner, under the
+/// case's body and rehearsal digests.
+fn manifest_of<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    view: &CaseView,
+) -> Outcome<CaseManifest> {
+    let ordinal = view.body.ordinal;
+    let (CaseState::Rehearsed, Some(rehearsal)) = (view.state, view.rehearsal.as_ref()) else {
+        return Ok(Err(wrong_state(
+            ordinal,
+            view.state,
+            "Approve",
+            "Rehearsed",
+        )));
+    };
+    let Some(scenario) = crate::scenario::read_scenario(db, book, &rehearsal.scenario)? else {
+        return Ok(Err(rehearsal_refused(format!(
+            "case {ordinal}'s scenario `{}` is not in this book",
+            rehearsal.scenario
+        ))));
+    };
+    let mut entries = Vec::with_capacity(rehearsal.intents.len());
+    for plan in &rehearsal.intents {
+        let Some(planned) = scenario.intents.iter().find(|p| p.record == *plan) else {
+            return Ok(Err(rehearsal_refused(format!(
+                "case {ordinal}'s Plan record {:032x} is not in scenario `{}`",
+                plan.0, rehearsal.scenario
+            ))));
+        };
+        let intent = planned
+            .intent
+            .canonical_bytes()
+            .map_err(|e| KernelError::Corrupt(format!("case manifest intent: {e}")))?;
+        entries.push(ManifestEntry {
+            plan: *plan,
+            intent: domain_digest(MANIFEST_ENTRY_DOMAIN, &[&intent]),
+            planner: planned.capability.holder(),
+        });
+    }
+    Ok(Ok(CaseManifest {
+        case: view.vid,
+        body_digest: view.body.digest()?,
+        rehearsal_digest: domain_digest(REHEARSAL_DOMAIN, &[&rehearsal.canonical_bytes()?]),
+        entries,
+    }))
+}
+
+/// The manifest case `ordinal`'s approvers approve (plan §8.3): its digest is
+/// what `fa approve --proposal` binds. The case must be Rehearsed.
+pub fn case_manifest<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    ordinal: u32,
+) -> Outcome<CaseManifest> {
+    match read_case(db, book, ordinal)? {
+        Some(view) => manifest_of(db, book, &view),
+        None => Ok(Err(unknown(ordinal))),
+    }
+}
+
+/// Approve case `ordinal` (Rehearsed → Approved): one commit journaling the
+/// Approve record, which carries the effect manifest and cites `approvals`
+/// (Approval vertices, each bound here to the manifest's digest), and the
+/// compare-and-set of the case's `state`.
+/// The `case-approve` rule decides the approvals inside the transaction,
+/// with the manifest's planners as the case's preparers.
+pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    ordinal: u32,
+    approvals: Vec<VId>,
+    req: CaseRequest,
+) -> Outcome<CaseRecorded> {
+    const FIX: &str = "fa case approve <case> --approval <vid> --approval <vid>";
+    if ordinal == 0 {
+        return Ok(Err(unknown(ordinal)));
+    }
+    if let Err(r) = admit(db, book, &req.capability, Act::Approve)? {
+        return Ok(Err(r));
+    }
+    let vid = restatement_case_vid(book.book_id, ordinal);
+    let principal = req.capability.holder();
+    // The manifest derives from immutable records (the body, the one
+    // Rehearse record, the Plan records), so it is fixed once the case is
+    // Rehearsed; the state is witnessed and compare-and-set below.
+    let Some(view) = read_case(db, book, ordinal)? else {
+        return Ok(Err(unknown(ordinal)));
+    };
+    let manifest = if view.state == CaseState::Approved {
+        match &view.approval {
+            Some(a) => a.manifest.clone(),
+            None => {
+                return Err(KernelError::Corrupt(format!(
+                    "approved case {ordinal} carries no approval record"
+                )));
+            }
+        }
+    } else {
+        match manifest_of(db, book, &view)? {
+            Ok(manifest) => manifest,
+            Err(r) => return Ok(Err(r)),
+        }
+    };
+    let digest = manifest.digest()?;
+    let approvals: Vec<fa_model::ApprovalRef> = approvals
+        .into_iter()
+        .map(|approval_vid| fa_model::ApprovalRef {
+            approval_vid,
+            approved_digest: digest,
+        })
+        .collect();
+    let proposal = record_proposal(
+        book,
+        &req,
+        Act::Approve,
+        vid,
+        CaseState::Rehearsed.tag(),
+        CaseState::Approved,
+        manifest
+            .entries
+            .iter()
+            .map(|e| TypedRef::Vertex(e.plan))
+            .collect(),
+        digest,
+        (
+            fa_model::entry::CASE_APPROVAL_EXTENSION,
+            manifest.canonical_bytes()?,
+        ),
+    );
+    let evid = entry_vid(
+        book.book_id,
+        &principal.0.to_le_bytes(),
+        &proposal.idempotency_key,
+    );
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if let Some(row) = txn.vertex(db, evid)? {
+        txn.abort();
+        return Ok(match recorded_or_conflict(book, &row, &proposal)? {
+            Ok(recorded_at) => Ok(CaseRecorded {
+                case: read_case(db, book, ordinal)?
+                    .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
+                control_entry: evid,
+                recorded_at,
+                already_recorded: true,
+            }),
+            Err(r) => Err(r),
+        });
+    }
+    let Some(row) = txn.vertex(db, vid)? else {
+        txn.abort();
+        return Ok(Err(unknown(ordinal)));
+    };
+    let state = CaseState::from_scalar(prop(&row, property::STATE))
+        .ok_or_else(|| KernelError::Corrupt(format!("restatement case {ordinal} state mirror")))?;
+    if state != CaseState::Rehearsed {
+        txn.abort();
+        return Ok(Err(wrong_state(ordinal, state, "Approve", "Rehearsed")));
+    }
+    // Segregation of duties (plan §8.3, §14.3): two Human approvals of
+    // exactly this manifest under the current epoch, none by a principal
+    // who planned any of the case's entries.
+    let epoch = crate::policy::epoch_witness(&txn, db)?;
+    let key = fa_policy::sod::control_key("CaseControl", None, "Approve");
+    let preparer = fa_policy::Party {
+        principal,
+        profile: req.capability.profile(),
+    };
+    let preparers = manifest.preparers();
+    if let Err(r) = crate::policy::authorize_approvals_in(
+        &txn,
+        db,
+        book,
+        &approvals,
+        &digest,
+        epoch,
+        &key,
+        0,
+        preparer,
+        Some(&preparers),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if proposal.validate().is_err() {
+        txn.abort();
+        return Ok(Err(usage(
+            "the Approve record is not a valid CaseControl entry",
+            FIX,
+        )));
+    }
+    let entry = proposal.clone().seal(approvals, None)?;
+    let mut batch = WriteBatch::new(relation::IN_CASE);
+    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.compare_and_set_vertex_property(
+        vid,
+        property::STATE,
+        Some(CaseState::Rehearsed.scalar()),
+        CaseState::Approved.scalar(),
+        WriteMismatchPolicy::AbortWrite,
+    );
+    batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
+    txn.write(db, batch)?;
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(recorded_at) => Ok(Ok(CaseRecorded {
+            case: read_case(db, book, ordinal)?
+                .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
+            control_entry: evid,
+            recorded_at,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(fcw(&detail)))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Case `ordinal` as its records state it, each cross-checked against its
 /// vertex, at the head.
 pub fn read_case<V: asupersync::fs::Vfs + Clone>(
@@ -1262,6 +1582,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let mut transitions = Vec::new();
     let mut determination = body.determination;
     let mut rehearsal = None;
+    let mut approval = None;
     for evid in db.in_neighbours(vid, relation::IN_CASE)? {
         let Some(src) = db.vertex(evid)? else {
             continue;
@@ -1322,6 +1643,17 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         {
             rehearsal = Some(Rehearsal::decode(ext)?);
         }
+        if let Some((_, ext)) = entry
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::CASE_APPROVAL_EXTENSION)
+        {
+            approval = Some(CaseApproval {
+                manifest: CaseManifest::decode(ext)?,
+                approvals: entry.approvals.clone(),
+            });
+        }
         transitions.push(CaseTransition {
             from,
             to,
@@ -1348,6 +1680,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         state,
         determination,
         rehearsal,
+        approval,
         transitions,
     })
 }
@@ -1449,6 +1782,43 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_manifest_round_trips_and_names_its_planners() {
+        let manifest = CaseManifest {
+            case: VId(7),
+            body_digest: [1; 32],
+            rehearsal_digest: [2; 32],
+            entries: vec![
+                ManifestEntry {
+                    plan: VId(10),
+                    intent: [3; 32],
+                    planner: VId(4),
+                },
+                ManifestEntry {
+                    plan: VId(11),
+                    intent: [5; 32],
+                    planner: VId(4),
+                },
+            ],
+        };
+        let bytes = manifest.canonical_bytes().unwrap();
+        assert_eq!(CaseManifest::decode(&bytes).unwrap(), manifest);
+        assert_eq!(
+            manifest.preparers().into_iter().collect::<Vec<_>>(),
+            [VId(4)]
+        );
+        let mut reordered = manifest.clone();
+        reordered.entries.reverse();
+        assert_ne!(
+            reordered.digest().unwrap(),
+            manifest.digest().unwrap(),
+            "order is bound"
+        );
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(CaseManifest::decode(&trailing).is_err());
     }
 
     #[test]

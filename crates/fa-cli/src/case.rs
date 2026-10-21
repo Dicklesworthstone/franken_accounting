@@ -1,4 +1,4 @@
-//! `fa case open|determine|rehearse|show|list` (plan §8.3, Appendix B
+//! `fa case open|determine|rehearse|approve|show|list` (plan §8.3, Appendix B
 //! `OpenRestatementCase`; bead fa-75j4): restatement cases, the control
 //! objects that make a material correction legal in a `Closed` or `Locked`
 //! period.
@@ -7,9 +7,10 @@
 //! determination (for a `Restatement`, the non-reliance determination that
 //! starts the Item 4.02 clock) is journaled with its day and authority
 //! document (`Determined`). It is rehearsed on a scenario whose diff
-//! certificate is replayed, retained and attached (`Rehearsed`). Approval,
-//! posting, disclosure and closing are later slices: a case cannot yet leave
-//! `Rehearsed`.
+//! certificate is replayed, retained and attached (`Rehearsed`). Two Human
+//! approvers who planned none of its entries approve its effect manifest
+//! (`Approved`). Posting, disclosure and closing are later slices: a case
+//! cannot yet leave `Approved`.
 
 use fa_journal::{CaseKind, CaseRecorded, CaseView, Determination};
 use fa_model::Oid;
@@ -22,6 +23,7 @@ use crate::json::{Json, obj, s};
 const OPEN_EXAMPLE: &str = "fa case open --kind Restatement|Revision|PriorPeriodAdjustment|PolicyChangeRetrospective --periods <code>[,<code>]... [--narrative <oid>] [--determined-on YYYY-MM-DD --authority <oid>] [--key K] --json";
 const DETERMINE_EXAMPLE: &str =
     "fa case determine <case> --on YYYY-MM-DD --authority <oid> [--key K] --json";
+const APPROVE_EXAMPLE: &str = "fa case approve <case> --dry-run --json (prints the manifest digest); fa approve --proposal <digest> --as <approver> (twice); fa case approve <case> --approval <vid> --approval <vid> --json";
 const REHEARSE_EXAMPLE: &str = "fa case rehearse <case> --certificate <scenario-diff-certificate> [--key K] --json  (fa scenario diff <name> --period <code> --certificate-out <file> writes one)";
 
 pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -29,10 +31,11 @@ pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("open") => open(ctx, args),
         Some("determine") => determine(ctx, args),
         Some("rehearse") => rehearse(ctx, args),
+        Some("approve") => approve(ctx, args),
         Some("show") => show(ctx, args),
         Some("list") => list(ctx, args),
         _ => Err(usage(
-            "case needs open, determine, rehearse, show or list",
+            "case needs open, determine, rehearse, approve, show or list",
             OPEN_EXAMPLE,
         )),
     }
@@ -107,6 +110,22 @@ fn case_json(view: &CaseView) -> Json {
             }),
         ),
         (
+            "approval",
+            view.approval.as_ref().map_or(Json::Null, |a| {
+                obj(vec![
+                    (
+                        "digest",
+                        a.manifest.digest().map_or(Json::Null, |d| s(hex(&d))),
+                    ),
+                    ("entries", manifest_entries(&a.manifest)),
+                    (
+                        "approvals",
+                        Json::Arr(a.approvals.iter().map(|r| vid(r.approval_vid)).collect()),
+                    ),
+                ])
+            }),
+        ),
+        (
             "transitions",
             Json::Arr(
                 view.transitions
@@ -124,6 +143,22 @@ fn case_json(view: &CaseView) -> Json {
             ),
         ),
     ])
+}
+
+fn manifest_entries(manifest: &fa_journal::CaseManifest) -> Json {
+    Json::Arr(
+        manifest
+            .entries
+            .iter()
+            .map(|e| {
+                obj(vec![
+                    ("plan", s(format!("{:032x}", e.plan.0))),
+                    ("intent", s(hex(&e.intent))),
+                    ("planner", s(format!("{:032x}", e.planner.0))),
+                ])
+            })
+            .collect(),
+    )
 }
 
 fn line(view: &CaseView) -> String {
@@ -148,7 +183,7 @@ fn recorded(ctx: &mut Ctx<'_>, event: &str, done: &CaseRecorded, verb: &str) {
             ("already_recorded", Json::Bool(done.already_recorded)),
         ],
         &format!(
-            "{}{} (record {}); approval, posting and disclosure are later fa-75j4 slices",
+            "{}{} (record {}); posting and disclosure are later fa-75j4 slices",
             if done.already_recorded {
                 format!("already {verb}: ")
             } else {
@@ -321,6 +356,76 @@ fn rehearse(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let done = book.rehearse_case(capability, ordinal, &certificate, date, key.as_bytes())??;
     ctx.out.at_book(&book)?;
     recorded(ctx, "case_rehearsed", &done, "rehearsed");
+    Ok(())
+}
+
+fn approve(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "approve", APPROVE_EXAMPLE)?;
+    for flag in ["--key", "--date"] {
+        one_flag(args, flag, APPROVE_EXAMPLE)?;
+    }
+    let approvals = args.flag_all("--approval");
+    let dry_run = args.switch("--dry-run");
+    if dry_run == !approvals.is_empty() {
+        return Err(usage(
+            "case approve takes --dry-run (to print the manifest) or --approval <vid> (to commit), not both",
+            APPROVE_EXAMPLE,
+        ));
+    }
+    let capability = ctx.capability(args, &["restate", "read"])?;
+    if dry_run {
+        let book = ctx.books.open(args)?;
+        let manifest = book.case_manifest(ordinal)??;
+        let digest = manifest
+            .digest()
+            .map_err(|e| Fail::Internal(e.to_string()))?;
+        ctx.out.at_book(&book)?;
+        let preparers: Vec<Json> = manifest
+            .preparers()
+            .iter()
+            .map(|p| s(format!("{:032x}", p.0)))
+            .collect();
+        ctx.out.event(
+            "case_manifest",
+            vec![
+                ("case", Json::Int(i128::from(ordinal))),
+                ("digest", s(hex(&digest))),
+                ("entries", manifest_entries(&manifest)),
+                ("preparers", Json::Arr(preparers)),
+            ],
+            &format!(
+                "case {ordinal}'s manifest: {} entr{}; digest {}\nTwo Human approvers who planned none of them approve it with `fa approve --proposal {}`; then `fa case approve {ordinal} --approval <vid> --approval <vid>`",
+                manifest.entries.len(),
+                if manifest.entries.len() == 1 { "y" } else { "ies" },
+                hex(&digest),
+                hex(&digest)
+            ),
+        );
+        return Ok(());
+    }
+    let approvals = approvals
+        .iter()
+        .map(|v| crate::cli::parse_vid(v, "--approval"))
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => {
+            let mut sorted = approvals.clone();
+            sorted.sort_unstable();
+            let mut parts: Vec<Vec<u8>> = vec![ordinal.to_le_bytes().to_vec()];
+            parts.extend(sorted.iter().map(|v| v.0.to_le_bytes().to_vec()));
+            let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
+            hex(&fa_model::domain_digest(
+                b"fa-cli:case-approve-key:v1",
+                &refs,
+            ))
+        }
+    };
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let done = book.approve_case(capability, ordinal, approvals, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    recorded(ctx, "case_approved", &done, "approved");
     Ok(())
 }
 

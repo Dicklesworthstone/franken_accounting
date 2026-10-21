@@ -433,3 +433,101 @@ fn a_determined_case_is_rehearsed_with_its_retained_diff_certificate() {
     assert_eq!(denied.exit, 7, "{denied:?}");
     assert_eq!(book.head().unwrap(), head);
 }
+
+/// fa-75j4 slice 3 (plan §8.3: Approved "dual control, by principals with
+/// restate capability, neither of whom prepared any entry in the case"):
+/// the manifest's digest is what approvers approve; one approval, or one by
+/// the case record's preparer, is refused; two distinct Human approvers
+/// approve it, once.
+#[test]
+fn a_rehearsed_case_is_approved_under_dual_control() {
+    let (mut book, narrative, authority) = book(0xc9);
+    let restate = Capability::embedded(PRINCIPAL, &["restate", "read", "produce"]).unwrap();
+    let post = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let date = day(2026, 2, 1);
+    book.open_case(
+        restate.clone(),
+        CaseKind::Restatement,
+        vec!["FY2025-P12".into()],
+        Some(narrative),
+        Some(Determination {
+            day: day(2026, 1, 28),
+            authority,
+        }),
+        date,
+        b"determined",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        book.case_manifest(1).unwrap().unwrap_err().code,
+        code::CASE_STATE,
+        "only a Rehearsed case has a manifest"
+    );
+    book.open_scenario(post, "restated", ScenarioFork::default(), date, "corrected")
+        .unwrap()
+        .unwrap();
+    let certificate = book
+        .certify_scenario_diff(
+            PRINCIPAL,
+            &restate,
+            "restated",
+            &["FY2025-P12".to_string()],
+            false,
+        )
+        .unwrap()
+        .unwrap()
+        .certificate;
+    book.rehearse_case(restate.clone(), 1, &certificate, date, b"rehearsal")
+        .unwrap()
+        .unwrap();
+    let manifest = book.case_manifest(1).unwrap().unwrap();
+    let digest = manifest.digest().unwrap();
+    let approve = |book: &mut Book, who: u128| {
+        book.approve(
+            Capability::embedded(VId(who), &["approve"]).unwrap(),
+            digest,
+        )
+        .unwrap()
+        .unwrap()
+        .approval()
+        .approval_vid
+    };
+    let alice = approve(&mut book, 2);
+    let bob = approve(&mut book, 3);
+    let own = approve(&mut book, PRINCIPAL.0);
+
+    let one = book
+        .approve_case(restate.clone(), 1, vec![alice], date, b"one")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(one.code, "FA-REF-012", "{one:?}");
+    let selfish = book
+        .approve_case(restate.clone(), 1, vec![alice, own], date, b"self")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(selfish.code, "FA-REF-008", "{selfish:?}");
+    assert_eq!(book.case(1).unwrap().unwrap().state, CaseState::Rehearsed);
+
+    let approved = book
+        .approve_case(restate.clone(), 1, vec![alice, bob], date, b"dual")
+        .unwrap()
+        .unwrap();
+    assert!(!approved.already_recorded);
+    assert_eq!(approved.case.state, CaseState::Approved);
+    let record = approved.case.approval.as_ref().unwrap();
+    assert_eq!(record.manifest, manifest);
+    assert_eq!(record.approvals.len(), 2);
+    let head = book.head().unwrap();
+    let again = book
+        .approve_case(restate.clone(), 1, vec![alice, bob], date, b"dual")
+        .unwrap()
+        .unwrap();
+    assert!(again.already_recorded);
+    assert_eq!(book.head().unwrap(), head);
+    let twice = book
+        .approve_case(restate, 1, vec![alice, bob], date, b"again")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(twice.code, code::CASE_STATE, "{twice:?}");
+}
