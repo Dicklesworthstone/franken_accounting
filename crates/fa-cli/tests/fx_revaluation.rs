@@ -102,6 +102,13 @@ fn head(book: &Path) -> i128 {
     integer(info.get("coordinate").unwrap(), "known_at")
 }
 
+/// AccessEvents recorded after `since` (fa-7dw): a read-only token's command
+/// records one before it observes the book, refused or not.
+fn access_events_since(book: &Path, since: i128) -> i128 {
+    let log = ok(book, &["access", "log", "--since", &since.to_string()]);
+    integer(log.get("data").unwrap(), "count")
+}
+
 fn leg_nets(review: &Json) -> BTreeMap<String, i128> {
     let units = UnitRegistry::embedded().unwrap();
     let mut nets = BTreeMap::<String, i128>::new();
@@ -774,7 +781,11 @@ fn current_read_authority_precedes_rate_and_review_file_access_even_for_historic
     );
     assert_eq!(status, 7, "{}", denied.render());
     assert!(text(data(&denied), "message").contains("known_at"));
-    assert_eq!(head(&f.book), before);
+    assert_eq!(
+        head(&f.book),
+        before + access_events_since(&f.book, before),
+        "only the token session's AccessEvents were written"
+    );
 }
 
 #[test]
