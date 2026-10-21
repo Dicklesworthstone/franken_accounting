@@ -32,6 +32,8 @@
 //! without it the report names the signers it rests on
 //! ([`IndexDerivation::Signed`]).
 
+pub mod payloads;
+
 use crate::blake3::hash_parts;
 use crate::checkpoint::SignedCheckpoint;
 use crate::codec::DecodeError;
