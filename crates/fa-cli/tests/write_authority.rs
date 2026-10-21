@@ -589,6 +589,30 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         ),
         row(
             &[
+                "engagement",
+                "file",
+                "no-such-engagement",
+                "--document",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ],
+            &[Op::Produce],
+            Reaches,
+        ),
+        row(
+            &[
+                "engagement",
+                "complete",
+                "no-such-engagement",
+                "--completion-date",
+                "2026-04-30",
+                "--report-release",
+                "2026-04-15",
+            ],
+            &[Op::Produce],
+            Reaches,
+        ),
+        row(
+            &[
                 "adjustment",
                 "propose",
                 "--engagement",

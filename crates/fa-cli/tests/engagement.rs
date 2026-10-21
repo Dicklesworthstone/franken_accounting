@@ -869,3 +869,169 @@ fn engagement_records_need_produce_and_never_come_from_an_agent() {
     let booker = issue("engagement-booker", "human", &["read", "produce"]);
     f.ok(&book(&booker, &entry));
 }
+
+/// AS 1215.15/.16: documentation completes once, within 45 days after the
+/// report release date; the workpaper index and the proposals stay
+/// append-only, and every addition after the completion is marked.
+#[test]
+fn documentation_completes_once_within_45_days_and_marks_every_later_addition() {
+    let f = Fixture::new();
+    f.ok(OPEN);
+    let workpaper = |name: &str| {
+        f.write(name, &format!("Workpaper {name}"));
+        let added = f.ok(&[
+            "document",
+            "add",
+            name,
+            "--kind",
+            "Workpaper",
+            "--grade",
+            "HumanUpload",
+        ]);
+        text(data(&added), "oid").to_string()
+    };
+    let file = |oid: &str| f.ok(&["engagement", "file", "FY26-audit", "--document", oid]);
+    let before = workpaper("planning.txt");
+    let filed = file(&before);
+    assert_eq!(text(&filed, "event"), "engagement_workpaper_filed");
+    assert_eq!(
+        data(&filed).get("added_after_completion"),
+        Some(&Json::Bool(false))
+    );
+    assert_eq!(
+        data(&file(&before)).get("already_recorded"),
+        Some(&Json::Bool(true)),
+        "a document is filed once"
+    );
+    f.refused(
+        &[
+            "engagement",
+            "file",
+            "FY26-audit",
+            "--document",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        ],
+        3,
+        "FA-REF-081",
+    );
+    f.intent(
+        "fees.json",
+        "2026-03-31",
+        &[("debit", "6000", "40.00"), ("credit", "2100", "40.00")],
+    );
+    let propose = |key: &str| {
+        f.ok(&[
+            "adjustment",
+            "propose",
+            "--engagement",
+            "FY26-audit",
+            "--intent",
+            "fees.json",
+            "--key",
+            key,
+        ])
+    };
+    propose("before");
+
+    // The engagement was opened without a report release date, so the
+    // completion names it; the completion date lies within 45 days after it.
+    let complete = |extra: &[&'static str]| -> Vec<&'static str> {
+        let mut args = vec!["engagement", "complete", "FY26-audit"];
+        args.extend_from_slice(extra);
+        args
+    };
+    f.refused(
+        &complete(&["--completion-date", "2026-05-01"]),
+        3,
+        "FA-REF-190",
+    );
+    for late in ["2026-05-31", "2026-04-14"] {
+        f.refused(
+            &complete(&["--report-release", "2026-04-15", "--completion-date", late]),
+            3,
+            "FA-REF-190",
+        );
+    }
+    let on_time = complete(&[
+        "--report-release",
+        "2026-04-15",
+        "--completion-date",
+        "2026-05-30",
+    ]);
+    let completed = f.ok(&on_time);
+    assert_eq!(
+        text(&completed, "event"),
+        "engagement_documentation_completed"
+    );
+    let documentation = data(&completed).get("documentation").unwrap();
+    assert_eq!(text(documentation, "report_release"), "2026-04-15");
+    assert_eq!(text(documentation, "completion_date"), "2026-05-30");
+    assert_eq!(
+        data(&f.ok(&on_time)).get("already_recorded"),
+        Some(&Json::Bool(true)),
+        "the identical completion retried is the recorded one"
+    );
+    let mut again = on_time.clone();
+    again.extend(["--key", "second"]);
+    f.refused(&again, 3, "FA-REF-190");
+
+    // After completion: a new workpaper, a new proposal and a decision are
+    // additions, each marked; the earlier filing stays as it was.
+    let after = workpaper("subsequent.txt");
+    assert_eq!(
+        data(&file(&after)).get("added_after_completion"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        data(&file(&before)).get("added_after_completion"),
+        Some(&Json::Bool(false)),
+        "retrying the earlier filing returns it as it was recorded"
+    );
+    propose("after");
+    f.ok(&[
+        "adjustment",
+        "pass",
+        "--engagement",
+        "FY26-audit",
+        "--proposal",
+        "1",
+        "--reason",
+        "ClearlyTrivial",
+    ]);
+
+    let shown = f.ok(&["engagement", "show", "FY26-audit"]);
+    let shown = data(&shown);
+    assert_eq!(
+        text(shown.get("engagement").unwrap(), "state"),
+        "documentation_complete"
+    );
+    let documentation = shown.get("documentation").unwrap();
+    assert_eq!(text(documentation, "completion_date"), "2026-05-30");
+    let workpapers: Vec<(String, bool)> = rows(shown, "workpapers")
+        .iter()
+        .map(|w| {
+            (
+                text(w, "document").to_string(),
+                w.get("added_after_completion") == Some(&Json::Bool(true)),
+            )
+        })
+        .collect();
+    assert_eq!(workpapers, [(before, false), (after, true)]);
+    let proposals = rows(shown, "proposals");
+    assert_eq!(proposals.len(), 2);
+    assert_eq!(
+        proposals[0].get("added_after_completion"),
+        Some(&Json::Bool(false))
+    );
+    assert_eq!(
+        proposals[0]
+            .get("decision")
+            .and_then(|d| d.get("added_after_completion")),
+        Some(&Json::Bool(true)),
+        "a decision recorded after the completion is an addition"
+    );
+    assert_eq!(
+        proposals[1].get("added_after_completion"),
+        Some(&Json::Bool(true))
+    );
+}

@@ -89,11 +89,13 @@ pub use draft::{
     promote_draft, read_draft, rehearse_draft_into,
 };
 pub use engagement::{
-    AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, EngagementKind,
-    EngagementOpened, EngagementProfile, EngagementRequest, EngagementState, EngagementView,
-    Materiality, ProposalLeg, ProposalView, ProposedAdjustment, RecordedDecision, StatementEffect,
-    Uncorrected, UncorrectedItem, UncorrectedSummary, decide_adjustment, list_engagements,
-    open_engagement, propose_adjustment, read_engagement, uncorrected_misstatements,
+    AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, CompletionView,
+    DocumentationCompleted, DocumentationCompletion, EngagementKind, EngagementOpened,
+    EngagementProfile, EngagementRequest, EngagementState, EngagementView, Materiality,
+    ProposalLeg, ProposalView, ProposedAdjustment, RecordedDecision, StatementEffect, Uncorrected,
+    UncorrectedItem, UncorrectedSummary, WorkpaperFiled, WorkpaperView, complete_documentation,
+    decide_adjustment, file_workpaper, list_engagements, open_engagement, propose_adjustment,
+    read_engagement, uncorrected_misstatements,
 };
 pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{

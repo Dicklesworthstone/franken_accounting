@@ -1101,7 +1101,7 @@ exit = "refusal"
 cite = "plan §8.3 (Disclosed: the disclosure document is attested), §9.3 (a Reviewed attestation by a principal other than the uploader; bead fa-75j4)"
 fix = "record the disclosure with fa document add <file> --kind Disclosure, have a principal other than its uploader attest it with fa attest review <oid>, then fa case disclose <case> --document <oid>"
 
-# ---- Engagements (180–184; fa-zgn) ---
+# ---- Engagements (180–184, 190; fa-zgn; 185–189 are other beads') ---
 [[refusal]]
 code = "FA-REF-180"
 name = "ENGAGEMENT_UNKNOWN"
@@ -1141,6 +1141,14 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §11.12, Appendix A ProposedAdjustment (numbered from 1 per engagement)"
 fix = "list the engagement's proposals with fa engagement show <id> --json"
+
+[[refusal]]
+code = "FA-REF-190"
+name = "DOCUMENTATION_COMPLETION"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12, AS 1215.15 (documentation is complete within 45 days after the report release date, journaled once; later additions are marked added_after_completion)"
+fix = "complete it once with fa engagement complete <id> --completion-date YYYY-MM-DD [--report-release YYYY-MM-DD], the completion date within 45 days after the report release date; fa engagement show <id> --json shows its state"
 
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
