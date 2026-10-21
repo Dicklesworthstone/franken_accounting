@@ -2535,9 +2535,7 @@ mod tests {
                 "{property}"
             );
         }
-        for incomplete in [json!({"for": "P"})] {
-            assert!(tool.invocation(&mcp, reg, &incomplete).is_err());
-        }
+        assert!(tool.invocation(&mcp, reg, &json!({"for": "P"})).is_err());
         let suggested = mcp
             .command_to_call(
                 reg,
