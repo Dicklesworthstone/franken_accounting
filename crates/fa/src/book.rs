@@ -2732,6 +2732,24 @@ impl Book {
         ))
     }
 
+    /// Record one AccessEvent at the current head (plan §9.7, bead fa-7dw).
+    pub fn record_access(
+        &mut self,
+        record: &crate::access_log::AccessRecord,
+    ) -> Outcome<crate::access_log::RecordedAccess> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_access(&purposes, record)))
+    }
+
+    /// Every AccessEvent recorded after `since`, in recording order.
+    pub fn access_log(
+        &self,
+        since: CommitSeq,
+    ) -> Result<Vec<crate::access_log::RecordedAccess>, BookError> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.access_log(&purposes, since)))
+    }
+
     /// Persist a certificate lazily as an immutable object in this book.
     /// Exact retries return the original storage sequence without a write.
     /// The report's known-at coordinate does not change when it is retained.

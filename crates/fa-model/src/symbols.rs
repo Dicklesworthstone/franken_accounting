@@ -77,6 +77,7 @@ symbols!(
         (BANK_UNMATCH, "BankUnmatch", 49),
         (PRODUCTION_PROFILE, "ProductionProfile", 50),
         (BATES_RANGE, "BatesRange", 51),
+        (ACCESS_EVENT, "AccessEvent", 52),
     ]
 );
 

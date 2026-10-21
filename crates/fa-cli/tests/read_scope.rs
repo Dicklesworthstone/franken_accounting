@@ -468,9 +468,20 @@ fn exports_enforce_the_same_scope_as_stock_reads_before_disclosing_or_writing() 
         "--period",
         "FY2026-P03",
     ]);
+    // The token's export pins the frontier it observed; its AccessEvent
+    // (fa-7dw) then advances the head, so the owner's export of the same
+    // selection names that frontier.
+    let observed = number(bounded.get("coordinate").unwrap(), "known_at").to_string();
     assert_eq!(
         data(&bounded),
-        data(&f.ok(&["export", "csv-gl", "--as-of", "2026-03-31"]))
+        data(&f.ok(&[
+            "export",
+            "csv-gl",
+            "--as-of",
+            "2026-03-31",
+            "--as-known-at",
+            &observed
+        ]))
     );
     f.out_of_scope(
         &[
@@ -938,7 +949,22 @@ fn pinned_auditors_read_plain_ledger_detail_and_roll_forward_at_their_prefix() {
             data(&f.ok(&selected[..8])),
             "the later April posting must not enter the historical report"
         );
-        assert_eq!(head(&f), before, "plain reads never retain a certificate");
+        // A read-only token's read writes exactly one thing, its AccessEvent
+        // (fa-7dw): every head advance since `before` is one, so no
+        // certificate was retained.
+        let recorded = number(
+            data(&f.ok(&["access", "log", "--since", &before.to_string()])),
+            "count",
+        );
+        assert!(recorded >= 1, "the token read is recorded");
+        assert_eq!(
+            head(&f),
+            before + recorded,
+            "plain reads write only their AccessEvents; they never retain a certificate"
+        );
+        // Every refusal below precedes the book: nothing, not even an
+        // AccessEvent, is written.
+        let settled = head(&f);
 
         for suffix in [
             vec![],
@@ -963,7 +989,7 @@ fn pinned_auditors_read_plain_ledger_detail_and_roll_forward_at_their_prefix() {
         retaining.extend(["--certificate-out", &output]);
         f.out_of_scope(&retaining, "known_at");
         assert!(!f.dir.join(output).exists());
-        assert_eq!(head(&f), before);
+        assert_eq!(head(&f), settled);
     }
 
     for (holder, scope, caveat) in [
