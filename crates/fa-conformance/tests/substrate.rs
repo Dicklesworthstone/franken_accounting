@@ -1046,10 +1046,12 @@ fn post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period() {
                 .runtime
                 .block_on(async { prepared_post.commit(&mut h.db, &ctx).await })
                 .expect("post commit kernel");
+            // The close moved March under the post: the post's loss is
+            // the typed PeriodStateChanged (plan §7.3).
             let ok = close_res.is_ok()
                 && post_res
                     .as_ref()
-                    .is_err_and(|r| (r.code, r.exit) == ("FA-REF-030", 6));
+                    .is_err_and(|r| (r.code, r.exit) == ("FA-REF-186", 6));
             if !ok {
                 both_orders_conflict = false;
             }
@@ -1059,7 +1061,7 @@ fn post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period() {
     relied_upon(
         T,
         both_orders_conflict,
-        "post-vs-close on an empty period conflicts with FA-REF-030 in both commit orders via the Period vertex witness",
+        "post-vs-close on an empty period conflicts in both commit orders via the Period vertex witness: a losing close gets FA-REF-030, a losing post the typed PeriodStateChanged FA-REF-186",
     );
 
     // Control: a post in April prepared at the same basis as a March close does not conflict on March's Period vertex.

@@ -154,12 +154,11 @@ id = "WF-RQ-09"
 workflow = "readme-quick"
 ordinal = 9
 vision_row = "VC-09"
-description = "Open a restatement case from the CLI (`fa case open`)"
+description = "Open a restatement case from the CLI (`fa case open`: journaled Proposed; `fa case` determine, rehearse, approve, post, disclose and close carry it on, and this build posts only PriorPeriodAdjustment cases)"
 argv = ["case", "open", "--kind", "Restatement", "--periods", "FY2025-P12", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-75j4"
+expected = "works"
+expected_exit = 0
+expected_event = "case_opened"
 
 [[workflow_step]]
 id = "WF-RQ-10"

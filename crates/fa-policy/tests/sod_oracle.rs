@@ -5,7 +5,9 @@
 //! three principals × three profiles × two ops. Agreement is on the refusal
 //! code *and* the finer kind, so a reordered precedence fails here.
 
-use fa_policy::sod::{Approver, Party, evaluate};
+use std::collections::BTreeSet;
+
+use fa_policy::sod::{Approver, Party, evaluate, evaluate_in};
 use fa_policy::{Op, Profile, Steward};
 use fa_reference::sod as oracle;
 use fa_registry::sod_policy::SodRequirement;
@@ -140,6 +142,61 @@ fn engine_and_oracle_agree_on_every_transcript() {
             "no case reached {kind}"
         );
     }
+}
+
+/// The case-bound rules with their case's preparers known: every
+/// transcript under no preparers, one preparer (principal 2) and two (2 and
+/// 3) agrees with the oracle, and the `case_preparer` refusal is reached.
+#[test]
+fn engine_and_oracle_agree_on_case_bound_rules_with_known_preparers() {
+    let transcripts = transcripts();
+    let reqs: Vec<(String, SodRequirement)> = requirements()
+        .into_iter()
+        .filter(|(_, r)| r.exclusions.iter().any(|e| e == "case_preparer"))
+        .map(|(name, mut r)| {
+            // session_lineage stays undecidable; drop it so the case
+            // exclusion itself is exercised.
+            r.exclusions.retain(|e| e != "session_lineage");
+            (name, r)
+        })
+        .collect();
+    assert!(!reqs.is_empty(), "the registry has case-bound rules");
+    let scopes: [&[u128]; 3] = [&[], &[2], &[2, 3]];
+    let mut reached = 0usize;
+    for (name, req) in &reqs {
+        for scope in scopes {
+            let preparers: BTreeSet<VId> = scope.iter().map(|p| VId(*p)).collect();
+            for preparer_profile in Profile::ALL {
+                let preparer = Party {
+                    principal: VId(1),
+                    profile: preparer_profile,
+                };
+                for t in &transcripts {
+                    let lit: Vec<oracle::Approval> = t
+                        .iter()
+                        .map(|a| oracle::Approval {
+                            principal: a.principal.0,
+                            profile: a.profile.name().to_string(),
+                            op: a.op.name().to_string(),
+                        })
+                        .collect();
+                    let got = evaluate_in(name, req, 0, preparer, t, Some(&preparers))
+                        .err()
+                        .map(|d| (d.code(), d.kind()));
+                    let expected =
+                        oracle::verdict_in(req, 0, 1, preparer_profile.name(), &lit, Some(scope));
+                    assert_eq!(
+                        got, expected,
+                        "rule {name}, preparers {scope:?}, preparer {preparer_profile}, transcript {t:?}"
+                    );
+                    if got.map(|(_, kind)| kind) == Some("case_preparer") {
+                        reached += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(reached > 0, "no transcript reached case_preparer");
 }
 
 /// A planted mutation in the oracle's input (an approver count one lower)

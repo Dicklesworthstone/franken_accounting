@@ -244,3 +244,9 @@ class = "IssuanceControl"
 reversible = "no"
 why = "an IssuanceControl record is the fact that a statement package left the entity, with no legs; what was issued is never withdrawn, and the period's first issuance stays what AS ORIGINALLY REPORTED reads"
 corrective_route = "correct the books with a lawfully classified adjustment or a restatement case, certify the restated statements and issue them with `fa statement issue`: the later issuance is recorded beside the first"
+
+[[target_class]]
+class = "CaseControl"
+reversible = "no"
+why = "CaseControl records are a restatement case's journaled life cycle, with no legs; a transition is never withdrawn"
+corrective_route = "move the case on along its life cycle, or open a new case for a different correction with `fa case open`; the earlier records stay on record"

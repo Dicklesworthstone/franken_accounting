@@ -76,18 +76,24 @@ type Handler = fn(&mut Ctx<'_>, &Args) -> Result<(), Fail>;
 const HANDLERS: &[(&str, Handler)] = &[
     ("book", book_cmd),
     ("chart", chart_cmd),
+    ("law", crate::laws::law_cmd),
+    ("unit", crate::laws::unit_cmd),
     ("period", period_cmd),
+    ("calendar", calendar_cmd),
     ("close", crate::closing::close_cmd),
     ("approve", approve_cmd),
     ("capability", capability_cmd),
     ("draft", draft_cmd),
     ("scenario", crate::scenario::scenario_cmd),
+    ("branch", crate::scenario::branch_cmd),
+    ("case", crate::case::case_cmd),
     ("post", post_cmd),
     ("invoice", crate::typed::invoice_cmd),
     ("bill", crate::typed::bill_cmd),
     ("receipt", crate::typed::receipt_cmd),
     ("payment", crate::typed::payment_cmd),
     ("commit", commit_cmd),
+    ("reclass", reclass_cmd),
     ("reverse", reverse_cmd),
     ("reserve", reserve_cmd),
     ("resolve", resolve_cmd),
@@ -842,11 +848,11 @@ fn select_branch<'b>(
     if trunk_selector
         || args.switch("--certify")
         || args.flag("--certificate-out").is_some()
-        || args.switch("--as-originally-reported")
+        || crate::issuance::view_flag(args).is_some()
     {
         return Err(usage(
             "a scenario read is not certified yet, and trunk known-at selectors do not apply to its replay",
-            "drop --certify, --certificate-out, --as-originally-reported and any known-at, --before or --after selector, or read trunk without --branch",
+            "drop --certify, --certificate-out, --as-originally-reported, --as-issued-to, --as-reported-in and any known-at, --before or --after selector, or read trunk without --branch",
         ));
     }
     let scenario = book.materialize_scenario(name)??;
@@ -1245,6 +1251,103 @@ fn resolve_output_format(args: &Args) -> Result<OutputFormat, Fail> {
     }
 }
 
+/// The command line with each registered flag alias (`--robot`,
+/// `--for-period`, …) spelled as its flag, before anything parses it.
+fn apply_flag_aliases(argv: &[String], reg: &Registry) -> Vec<String> {
+    let mut out = Vec::with_capacity(argv.len());
+    let mut rest = argv.iter();
+    for a in rest.by_ref() {
+        if a == "--" {
+            out.push(a.clone());
+            break;
+        }
+        let (name, inline) = match a.split_once('=') {
+            Some((n, v)) if a.starts_with("--") => (n, Some(v)),
+            _ => (a.as_str(), None),
+        };
+        match reg.flag_alias(name) {
+            Some(flag) => {
+                out.push(inline.map_or_else(|| flag.to_string(), |v| format!("{flag}={v}")))
+            }
+            None => out.push(a.clone()),
+        }
+    }
+    out.extend(rest.cloned());
+    out
+}
+
+/// Plan §15.3 intent inference: a flag within the correction distance of a
+/// registered one is corrected when the command only reads (its bound route
+/// needs nothing but read or verify), and the run carries a warning naming
+/// the correction. A writing command is never corrected: it fails as usage,
+/// naming the fix.
+fn correct_read_flags(argv: &[String], reg: &Registry) -> (Vec<String>, Vec<String>) {
+    let known: Vec<&str> = reg
+        .value_flags()
+        .into_iter()
+        .chain(reg.switches())
+        .collect();
+    let mut corrected = Vec::with_capacity(argv.len());
+    let mut warnings = Vec::new();
+    let mut rest = argv.iter();
+    for a in rest.by_ref() {
+        if a == "--" {
+            corrected.push(a.clone());
+            break;
+        }
+        let Some(body) = a.strip_prefix("--") else {
+            corrected.push(a.clone());
+            continue;
+        };
+        let (name, inline) = match body.split_once('=') {
+            Some((n, v)) => (format!("--{n}"), Some(v)),
+            None => (a.clone(), None),
+        };
+        match (known.contains(&name.as_str()), nearest(&name, &known)) {
+            (false, Some(fix)) => {
+                warnings.push(format!("`{name}` is not a flag; ran as `{fix}`"));
+                corrected.push(inline.map_or_else(|| fix.to_string(), |v| format!("{fix}={v}")));
+            }
+            _ => corrected.push(a.clone()),
+        }
+    }
+    corrected.extend(rest.cloned());
+    if warnings.is_empty() {
+        return (corrected, warnings);
+    }
+    // Read-class is what the command's bound route requires: nothing but
+    // read or verify (a certifying `tb --certificate-out` needs produce).
+    let reads = args::parse(&corrected, &reg.value_flags(), &reg.switches())
+        .ok()
+        .and_then(|mut parsed| {
+            if let Some(alias) = parsed.positional.first().and_then(|w| reg.alias(w)) {
+                parsed.positional = alias
+                    .expands
+                    .iter()
+                    .chain(parsed.positional.iter().skip(1))
+                    .cloned()
+                    .collect();
+            }
+            let verb = reg.verb(parsed.positional.first()?)?;
+            if let Some(default) = &verb.default_subcommand
+                && parsed.positional.len() == 1
+            {
+                parsed.positional.push(default.clone());
+            }
+            let (ops, _) = bound_command_rule(&verb.name, &parsed)?;
+            Some(
+                ops.iter()
+                    .all(|op| matches!(op, fa_policy::Op::Read | fa_policy::Op::Verify)),
+            )
+        })
+        .unwrap_or(false);
+    if reads {
+        (corrected, warnings)
+    } else {
+        (argv.to_vec(), Vec::new())
+    }
+}
+
 fn run_scoped(
     argv: &[String],
     books: Books<'_>,
@@ -1253,16 +1356,20 @@ fn run_scoped(
     daemon_files: Option<DaemonFiles>,
     capture: bool,
 ) -> (u8, Captured) {
-    let raw_format = output_format_from_raw_argv(argv);
     let reg = match registry() {
         Ok(r) => r,
         Err(fail) => {
             return finish_into(
-                Out::new_format(raw_format, capture).with_authority(authority),
+                Out::new_format(output_format_from_raw_argv(argv), capture)
+                    .with_authority(authority),
                 Err(fail),
             );
         }
     };
+    let aliased = apply_flag_aliases(argv, reg);
+    let (argv, corrections) = correct_read_flags(&aliased, reg);
+    let argv = argv.as_slice();
+    let raw_format = output_format_from_raw_argv(argv);
     let mut args = match args::parse(argv, &reg.value_flags(), &reg.switches()) {
         Ok(a) => a,
         Err(e) => {
@@ -1321,6 +1428,9 @@ fn run_scoped(
         |name| std::env::var(name).ok(),
     );
     let out = Out::styled_format(format, capture, style).with_authority(authority);
+    for correction in corrections {
+        out.warn(correction);
+    }
     if authority.is_none() {
         if daemon_files.is_some() && (args.flags.contains_key("--as") || args.switch("--as")) {
             return finish_into(
@@ -1739,6 +1849,18 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
                 None => "run `fa --help`".to_string(),
             },
         ));
+    };
+    // A bare verb with a registered default subcommand runs it (plan §15.3:
+    // `fa gl` is `fa gl detail`).
+    let defaulted;
+    let args = match &verb.default_subcommand {
+        Some(default) if args.positional.len() == 1 && !args.switch("--help") => {
+            let mut a = args.clone();
+            a.positional.push(default.clone());
+            defaulted = a;
+            &defaulted
+        }
+        _ => args,
     };
     check_flags(reg, Some(verb), args)?;
     if args.flag("--issuer-token").is_some()
@@ -3090,7 +3212,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability, an unconfirmed dangerous operation), 8 verification failure. 1 is never emitted.\n\
 3. Every non-zero exit is exactly one `error` line: data {class, exit, refusal_id, message, cite, fix, detail}. `refusal_id` (FA-REF-nnn) is the refusal catalog code when one applies. Do the `fix`; do not invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: its fix names the safe alternative; add --yes only when the operation is intended (`fa capabilities --json` lists them under `dangerous`).\n\
 4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\
-5. Corrections are new entries that cite the original; nothing is edited in place. Reversal is live. A corrected Replacement posts only as a pair with its Reversal (`fa reverse <vid> --reason <name> --replace-with <file>`); a standalone Replacement is FA-REF-160. Reclassification, Revision, Restatement and PriorPeriodAdjustment remain refused with FA-REF-102.\n\
+5. Corrections are new entries that cite the original; nothing is edited in place. Reversal is live. A corrected Replacement posts only as a pair with its Reversal (`fa reverse <vid> --reason <name> --replace-with <file>`); a standalone Replacement is FA-REF-160. A Reclassification moves part of an entry to another account (`fa reclass <vid> --from <account> --to <account> --amount \"<amount>\" --reason <name>`; FA-REF-185 when it moves more than the target's legs have left). Revision and Restatement remain refused with FA-REF-102; a PriorPeriodAdjustment posts only as an approved restatement case's entry (`fa case post <case>`), FA-REF-178 otherwise.\n\
 6. Idempotency: every intent carries idempotency_key; resubmitting returns the recorded outcome (event \"recorded\"), never a duplicate.\n\
 7. Posting into a non-Open period is decided by the admissibility matrix; the refusal cites the (class, state) cell and names the admissible class or capability.\n\
 8. Two-phase: `fa reserve` posts a Pending (amounts in the pending columns, never posted); `fa resolve` names it with `resolves` and either posts a sub-vector (`legs`, each drawn from one hold leg — same account and side, at most the reserved amount; add `source_ordinal` when the hold has several such legs) or voids it (`disposition: \"voids\"`). The rest of the hold is released either way. One resolution per hold: a second is exit 6 (FA-REF-062); resolving a non-hold is FA-REF-060.\n\
@@ -3104,7 +3226,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 16. Correct an entry in one step: `fa reverse <vid> --reason WrongAmount --replace-with corrected.json --json` posts the exact reversal and the corrected entry together, both or neither, citing the target under one reason (event corrected). corrected.json is an ordinary entry intent (legs, optional effective_date and description); its date and period default to the target's.\n\
 17. Export for an auditor or another ledger: `fa export ads|saft|csv-gl|beancount|hledger|ndjson --period FY2026-P03 [--out <new path>] --json` writes what the trial balance folds (pending holds excluded) with its export coordinate certificate; ads writes four tables into a new directory. It needs read and produce. Over MCP the fa.io cluster is on demand.\n\
 18. Maintain the chart and the REA graph: `fa chart open <account.json> --opened <day>`, `fa chart close <code> --on <day>`, `fa chart promote <code> --on <day>`; `fa party add <party.json>`, `fa party relate <from> <to> --kind owns --basis equity_voting --valid-from <day> --pct 51/100`, `fa instrument add <instrument.json>`, `fa entity add <entity.json>` (a legal entity's jurisdiction, functional unit and life span; a code declared at book creation is lifted), `fa party bind <code> --external-id qbo:55`, `fa party identifiers <code> --identifier bank_account=<value>... --key <change-id>` (replaces the party's identifier set under a named change; values sealed, never echoed; host-only over MCP). Each is a journaled schema change (schema_change authority) and no date defaults to today. Events then name parties with --participant and instruments with --resource <label>:<amount>:<instrument>.\n\
-19. Read a period as it was first reported: `fa tb --period FY2026-P03 --as-originally-reported --json` pins known-at to the period's first Lock (never its first Close, never HEAD); a period never locked is refused with FA-REF-161.\n\
+19. Read a period as it was first reported: `fa tb --period FY2026-P03 --as-originally-reported --json` pins known-at to the certificate its first StatementIssuance issued, else to its first Lock (never its first Close, never HEAD); a period neither issued nor locked is refused with FA-REF-161. `--as-issued-to <audience>` reads it as issued to that audience (FA-REF-173 when it never was) and `--as-reported-in C:<oid>` as reported in that retained statement certificate (FA-REF-174 when the certificate does not report the period). Record an issuance with `fa statement issue`.\n\
 20. Typed documents: `fa invoice --party C-17 --number 10442 --date 2026-03-14 --receivable 1200 --revenue 4000 --line 'qty=10 unit_price=\"125.00 USD\" item=SKU-9' --evidence <oid> --dry-run --json` (and `fa bill ... --payable 2000 --expense 6000`) builds the entry from its lines and posts through fa post's path (--dry-run, --plan-out, --draft, --scenario); `fa receipt --party C-17 --number WIRE-IN-1 --date 2026-03-20 --cash 1000 --receivable 1200 --amount \"1290.00 USD\" --applies <invoice vid>` (and `fa payment`) settles it, its number becoming the cash leg's memo that fa bank match compares with a statement line's reference. You name every account; there is no tax or posting rule yet. An intent leg may name `entity` and `party` codes; in a multi-entity book every leg names its entity. `fa document list [--kind BankStatement]` lists held documents as metadata.\n\
 21. Ask what-if or but-for (plan §15.2, §15.6.5): `fa scenario fork but-for-breach --from 2025-07-01 [--at HEAD|<seq>] --evidence <assumption oid>` forks a counterfactual over the trunk prefix at that sequence; `fa scenario run but-for-breach --intent receipt.json` (or fa post, invoice, bill, receipt or payment with --scenario but-for-breach) rehearses each intent on the scenario and journals it there, never on trunk; `fa scenario diff but-for-breach --period FY2025-P12 --json` is the exact change per account and unit against trunk as known at the fork (the damages schedule). Each run and diff replays the trunk prefix into a scratch book and posts every intent again under every posting law. `fa tb|statement|explain|open-items|gl ... --branch scenario:but-for-breach` runs the same read on the scenario's replay (uncertified; the coordinate names the branch). `fa scenario diff ... --certify` retains the diff as a certificate bound to trunk at the fork and the intents it covers: `fa replay C:<oid>` reproduces it byte for byte, and `fa certificate status C:<oid>` names the intents run since.\n";
 
@@ -3680,7 +3802,8 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
         message: format!("the embedded verb registry: {e}"),
         fix: "run `fa --help`".to_string(),
     })?;
-    let mut args = args::parse(argv, &reg.value_flags(), &reg.switches())?;
+    let aliased = apply_flag_aliases(argv, reg);
+    let mut args = args::parse(&aliased, &reg.value_flags(), &reg.switches())?;
     if args.switch("--version") {
         return Ok(args);
     }
@@ -3720,6 +3843,12 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
             },
         });
     };
+    if let Some(default) = &verb.default_subcommand
+        && args.positional.len() == 1
+        && !args.switch("--help")
+    {
+        args.positional.push(default.clone());
+    }
     check_flags(reg, Some(verb), &args).map_err(to_usage)?;
     if args.switch("--help") {
         return Ok(args);
@@ -4178,43 +4307,9 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let book = ctx.books.open(args)?;
             let rows = book.accounts()?;
             let units = &book.context().units;
-            let bound = |a: &fa_journal::AccountRow, m: Option<i128>| -> Result<Json, Fail> {
-                match (a.unit_policy, m) {
-                    (UnitPolicy::Single(u), Some(m)) => {
-                        Ok(s(render_amount(Amount::new(u, m), units)?))
-                    }
-                    _ => Ok(Json::Null),
-                }
-            };
             let items: Vec<Json> = rows
                 .iter()
-                .map(|a| {
-                    Ok(obj(vec![
-                        ("lower_bound", bound(a, a.limit.and_then(|l| l.lower))?),
-                        ("upper_bound", bound(a, a.limit.and_then(|l| l.upper))?),
-                        (
-                            "limit_scope",
-                            a.limit.map_or(Json::Null, |l| {
-                                s(match l.scope {
-                                    fa_journal::LimitScope::Lifetime => "lifetime",
-                                    fa_journal::LimitScope::Period => "period",
-                                })
-                            }),
-                        ),
-                        ("code", s(&a.code)),
-                        ("name", s(&a.name)),
-                        ("type", s(AccountType(a.account_type).name().unwrap_or("?"))),
-                        ("leaf", Json::Bool(a.is_leaf)),
-                        (
-                            "unit",
-                            s(match a.unit_policy {
-                                UnitPolicy::Single(u) => registered_unit_code(u, units)?,
-                                UnitPolicy::AnyCurrency => "any-currency".into(),
-                                UnitPolicy::AnyUnit => "any".into(),
-                            }),
-                        ),
-                    ]))
-                })
+                .map(|a| Ok(obj(account_fields(a, units)?)))
                 .collect::<Result<_, Fail>>()?;
             if out.json {
                 out.event("accounts", vec![("accounts", Json::Arr(items))], "");
@@ -4231,8 +4326,112 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             Ok(())
         }
+        Some("show") => {
+            const EXAMPLE: &str = "fa chart show 1000 --book <dir> --json";
+            let code = match args.positional.get(2) {
+                Some(code) if args.positional.len() == 3 => code,
+                _ => return Err(usage("chart show needs exactly one account code", EXAMPLE)),
+            };
+            let capability = ctx.capability(args, &["read"])?;
+            let book = ctx.books.open(args)?;
+            let chart = book.chart_at(book.head()?, &capability)??;
+            let units = &book.context().units;
+            let accounts = chart.accounts();
+            let Some(account) = accounts.values().find(|a| &a.code == code) else {
+                let codes: Vec<&str> = accounts.values().map(|a| a.code.as_str()).collect();
+                return Err(usage(
+                    format!("no account `{code}` in the chart"),
+                    nearest(code, &codes).map_or_else(
+                        || "fa chart list --json lists every code".to_string(),
+                        |n| format!("did you mean `fa chart show {n}`? (fa chart list --json lists every code)"),
+                    ),
+                ));
+            };
+            let code_of = |vid: &VId| accounts.get(vid).map(|a| a.code.clone());
+            let parent = chart.parents().get(&account.vid).and_then(code_of);
+            let mut children: Vec<String> = chart
+                .children()
+                .get(&account.vid)
+                .map(|c| c.iter().filter_map(code_of).collect())
+                .unwrap_or_default();
+            children.sort();
+            let effectivity = chart.account_effectivity(account.vid).unwrap_or_default();
+            let day = |d: Option<DateDay>| d.map_or(Json::Null, |d| s(d.render()));
+            let side = if account.normal_balance == 0 {
+                "debit"
+            } else {
+                "credit"
+            };
+            let mut fields = account_fields(account, units)?;
+            fields.extend([
+                ("normal_side", s(side)),
+                ("parent", parent.as_ref().map_or(Json::Null, s)),
+                ("children", Json::Arr(children.iter().map(s).collect())),
+                ("opened", day(effectivity.opened)),
+                ("closed", day(effectivity.closed)),
+                ("promoted_on", day(effectivity.promoted_on)),
+                ("created_at", Json::Int(i128::from(account.created_at.0))),
+            ]);
+            let human = format!(
+                "{} {} ({}, {}, {}-normal){}{}{}",
+                account.code,
+                account.name,
+                AccountType(account.account_type).name().unwrap_or("?"),
+                if account.is_leaf { "leaf" } else { "summary" },
+                side,
+                parent.map_or_else(String::new, |p| format!("\n  parent: {p}")),
+                if children.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n  children: {}", children.join(", "))
+                },
+                effectivity
+                    .closed
+                    .map_or_else(String::new, |d| format!("\n  closed on {}", d.render())),
+            );
+            out.event("chart_account", vec![("account", obj(fields))], &human);
+            Ok(())
+        }
         other => Err(unhandled("chart", other)),
     }
+}
+
+/// One chart row as `chart list` and `chart show` print it (shape `account`).
+fn account_fields(
+    a: &fa_journal::AccountRow,
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<(&'static str, Json)>, Fail> {
+    let bound = |a: &fa_journal::AccountRow, m: Option<i128>| -> Result<Json, Fail> {
+        match (a.unit_policy, m) {
+            (UnitPolicy::Single(u), Some(m)) => Ok(s(render_amount(Amount::new(u, m), units)?)),
+            _ => Ok(Json::Null),
+        }
+    };
+    Ok(vec![
+        ("lower_bound", bound(a, a.limit.and_then(|l| l.lower))?),
+        ("upper_bound", bound(a, a.limit.and_then(|l| l.upper))?),
+        (
+            "limit_scope",
+            a.limit.map_or(Json::Null, |l| {
+                s(match l.scope {
+                    fa_journal::LimitScope::Lifetime => "lifetime",
+                    fa_journal::LimitScope::Period => "period",
+                })
+            }),
+        ),
+        ("code", s(&a.code)),
+        ("name", s(&a.name)),
+        ("type", s(AccountType(a.account_type).name().unwrap_or("?"))),
+        ("leaf", Json::Bool(a.is_leaf)),
+        (
+            "unit",
+            s(match a.unit_policy {
+                UnitPolicy::Single(u) => registered_unit_code(u, units)?,
+                UnitPolicy::AnyCurrency => "any-currency".into(),
+                UnitPolicy::AnyUnit => "any".into(),
+            }),
+        ),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -5313,7 +5512,7 @@ fn draft_name<'a>(args: &'a Args, sub: &str) -> Result<&'a str, Fail> {
 }
 
 /// One draft as robot data (plan §15.2, bead fa-s7x).
-fn draft_json(view: &fa_journal::DraftView) -> Json {
+pub(crate) fn draft_json(view: &fa_journal::DraftView) -> Json {
     let closed = view.closed.as_ref();
     obj(vec![
         ("draft", s(format!("{:032x}", view.vid.0))),
@@ -5758,6 +5957,160 @@ pub(crate) fn parse_digest(text: &str, what: &str) -> Result<[u8; 32], Fail> {
     Ok(digest)
 }
 
+// ---------------------------------------------------------------------------
+// calendar
+// ---------------------------------------------------------------------------
+
+/// `fa calendar show|periods` (plan §7.2, §15.3 Chart and registries;
+/// fa-waow): the fiscal calendar the book journaled at genesis, and the
+/// periods it generates for a fiscal year (whether or not `fa period create`
+/// has recorded them yet). Reads only.
+fn calendar_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa calendar show --json; fa calendar periods --fiscal-year 2026 --json";
+    let sub = args.positional.get(1).map(String::as_str);
+    if args.positional.len() != 2 || !matches!(sub, Some("show" | "periods")) {
+        return Err(usage("calendar needs show or periods", EXAMPLE));
+    }
+    if sub == Some("show") && args.flag("--fiscal-year").is_some() {
+        return Err(usage(
+            "calendar show takes no --fiscal-year; calendar periods does",
+            EXAMPLE,
+        ));
+    }
+    let fiscal_year = if sub == Some("periods") {
+        if args.flag_all("--fiscal-year").len() != 1 {
+            return Err(usage(
+                "calendar periods needs exactly one --fiscal-year",
+                EXAMPLE,
+            ));
+        }
+        let text = args.flag("--fiscal-year").unwrap_or_default();
+        Some(
+            text.parse::<i32>()
+                .map_err(|_| usage(format!("--fiscal-year `{text}` is not a year"), EXAMPLE))?,
+        )
+    } else {
+        None
+    };
+    let book = ctx.books.open(args)?;
+    let calendar = book.context().calendar.clone();
+    let Some(fy) = fiscal_year else {
+        let (kind, year_start_month, pattern, end_rule) = match &calendar.kind {
+            fa_time::CalendarKind::Monthly12 { year_start_month } => {
+                ("monthly", Some(*year_start_month), None, None)
+            }
+            fa_time::CalendarKind::Weeks { pattern, end_rule } => (
+                "weeks",
+                None,
+                Some(match pattern {
+                    fa_time::WeekPattern::W445 => "4-4-5",
+                    fa_time::WeekPattern::W454 => "4-5-4",
+                    fa_time::WeekPattern::W544 => "5-4-4",
+                }),
+                Some(year_end_rule(end_rule)),
+            ),
+            fa_time::CalendarKind::Week5253 { end_rule } => {
+                ("thirteen-period", None, None, Some(year_end_rule(end_rule)))
+            }
+        };
+        ctx.out.event(
+            "calendar",
+            vec![
+                ("id", s(&calendar.id)),
+                ("kind", s(kind)),
+                (
+                    "year_start_month",
+                    year_start_month.map_or(Json::Null, |m| Json::Int(i128::from(m))),
+                ),
+                ("week_pattern", pattern.map_or(Json::Null, s)),
+                ("year_end_rule", end_rule.as_ref().map_or(Json::Null, s)),
+                (
+                    "adjustment_periods",
+                    Json::Int(i128::from(calendar.adjustment_periods)),
+                ),
+            ],
+            &format!(
+                "calendar {} ({kind}{}{}), {} adjustment period(s)",
+                calendar.id,
+                year_start_month.map_or_else(String::new, |m| format!(
+                    ", fiscal year starts in month {m}"
+                )),
+                end_rule.map_or_else(String::new, |r| format!(", year ends on the {r}")),
+                calendar.adjustment_periods
+            ),
+        );
+        return Ok(());
+    };
+    let refused = |e: fa_time::DateError| {
+        usage(
+            format!("the book's calendar has no fiscal year {fy}: {e:?}"),
+            EXAMPLE,
+        )
+    };
+    let (start, end) = calendar.year_bounds(fy).map_err(refused)?;
+    let periods = calendar.periods_for_year(fy).map_err(refused)?;
+    let recorded: std::collections::BTreeSet<String> =
+        book.periods()?.into_iter().map(|p| p.code).collect();
+    let human = periods
+        .iter()
+        .map(|p| {
+            format!(
+                "{:<14} {:<11} {} .. {}{}",
+                p.code,
+                kind_name(p.kind),
+                p.start.render(),
+                p.end.render(),
+                if recorded.contains(&p.code) {
+                    ""
+                } else {
+                    "  (not created)"
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ctx.out.event(
+        "calendar_periods",
+        vec![
+            ("fiscal_year", Json::Int(i128::from(fy))),
+            ("start", s(start.render())),
+            ("end", s(end.render())),
+            (
+                "periods",
+                Json::Arr(
+                    periods
+                        .iter()
+                        .map(|p| {
+                            obj(vec![
+                                ("code", s(&p.code)),
+                                ("ordinal", Json::Int(i128::from(p.ordinal))),
+                                ("kind", s(kind_name(p.kind))),
+                                ("start", s(p.start.render())),
+                                ("end", s(p.end.render())),
+                                ("created", Json::Bool(recorded.contains(&p.code))),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+/// A week-based year-end rule as one phrase.
+fn year_end_rule(rule: &fa_time::YearEndRule) -> String {
+    match rule {
+        fa_time::YearEndRule::LastWeekdayOfMonth { weekday, month } => {
+            format!("last {weekday:?} of month {month}")
+        }
+        fa_time::YearEndRule::WeekdayNearestEnd { weekday, month } => {
+            format!("{weekday:?} nearest the end of month {month}")
+        }
+    }
+}
+
 fn kind_name(k: PeriodKind) -> &'static str {
     match k {
         PeriodKind::Normal => "Normal",
@@ -5954,6 +6307,70 @@ fn post_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// Reverse an identified entry without making the operator re-enter its
 /// legs. The original effective date is the default, never today's date or
 /// the next open period; any explicit date still passes the kernel's law.
+/// `fa reclass <vid> --from <account> --to <account> --amount "<amount>"
+/// --reason <name>` (plan §8.2, Appendix B `Reclass`; bead fa-xvba): a
+/// Reclassification citing the target with `Reclassifies`, moving `amount`
+/// of its leg on `from` to `to` with the leg's side and dimensions. The
+/// date, period and evidence default to the target's; the default key is
+/// `reclass:<target>:<from>:<to>:<amount>`.
+fn reclass_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa reclass <vid> --from 6100 --to 6200 --amount \"300.00 USD\" --reason WrongAccount [--effective YYYY-MM-DD] [--description <text>] [--key K] [--dry-run]";
+    if args.positional.len() != 2 {
+        return Err(usage("reclass needs exactly one entry vid", EXAMPLE));
+    }
+    for flag in [
+        "--from",
+        "--to",
+        "--amount",
+        "--reason",
+        "--effective",
+        "--period",
+        "--key",
+        "--description",
+    ] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(format!("reclass takes only one {flag}"), EXAMPLE));
+        }
+    }
+    let target = args.positional[1]
+        .strip_prefix("E:")
+        .unwrap_or(&args.positional[1]);
+    let vid = parse_vid(target, "reclass target")?;
+    let need = |flag: &str| {
+        args.flag(flag)
+            .ok_or_else(|| usage(format!("reclass needs {flag}"), EXAMPLE))
+    };
+    let (from, to, amount) = (need("--from")?, need("--to")?, need("--amount")?);
+    let key = args.flag("--key").map_or_else(
+        || format!("reclass:{:032x}:{from}:{to}:{amount}", vid.0),
+        str::to_string,
+    );
+    let mut fields = vec![
+        ("class", s("Reclassification")),
+        ("reclassifies", s(format!("{:032x}", vid.0))),
+        (
+            "moves",
+            Json::Arr(vec![obj(vec![
+                ("from", s(from)),
+                ("to", s(to)),
+                ("amount", s(amount)),
+            ])]),
+        ),
+        ("idempotency_key", s(key)),
+    ];
+    for (flag, field) in [
+        ("--reason", "reason"),
+        ("--effective", "effective_date"),
+        ("--period", "effective_period"),
+        ("--description", "description"),
+    ] {
+        if let Some(value) = args.flag(flag) {
+            fields.push((field, s(value)));
+        }
+    }
+    post_document(ctx, args, Some(EntryClass::RECLASSIFICATION), obj(fields))
+}
+
 fn reverse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
         return Err(usage(
@@ -6425,6 +6842,8 @@ fn post_timing(
         "evidence",
         "event",
         "reverses",
+        "reclassifies",
+        "moves",
         "reason",
         "resolves",
         "disposition",
@@ -6598,7 +7017,14 @@ fn build_post_request_with_prior(
     }
     let (timeout_ns, reverse_on) = post_timing(args, doc, class)?;
     let typed_reversal = forced == Some(EntryClass::REVERSAL);
-    let supplied_date = if typed_reversal && doc.get("effective_date").is_none() {
+    if doc.get("reclassifies").is_some() && class != EntryClass::RECLASSIFICATION {
+        return Err(usage(
+            "`reclassifies` names the target of a Reclassification only",
+            "set class: \"Reclassification\" (or use fa reclass), or remove `reclassifies`",
+        ));
+    }
+    let dated_by_target = typed_reversal || class == EntryClass::RECLASSIFICATION;
+    let supplied_date = if dated_by_target && doc.get("effective_date").is_none() {
         None
     } else {
         let date_s = req_str(doc, "effective_date", "intent")?;
@@ -6623,7 +7049,126 @@ fn build_post_request_with_prior(
     let mut reversal_detail = None;
     let mut reversal_base_totals = None;
     let mut reversal_rate_evidence = Vec::new();
-    let legs: Vec<LegPayload> = if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
+    let mut target_evidence = Vec::new();
+    let legs: Vec<LegPayload> = if class == EntryClass::RECLASSIFICATION {
+        // A Reclassification names its target and moves part of its legs to
+        // other accounts (plan §8.2, Appendix B Reclass; bead fa-xvba). A move
+        // takes the target's leg side and dimensions on `from`, so the caller
+        // names accounts and an amount, never a side. The date, period and
+        // evidence default to the target's.
+        const FIX: &str = "fa reclass <vid> --from <account> --to <account> --amount \"<amount>\" --reason <name>";
+        if doc.get("reverses").is_some() || doc.get("resolves").is_some() {
+            return Err(usage(
+                "a Reclassification names its target with `reclassifies` only",
+                FIX,
+            ));
+        }
+        let target_s = doc
+            .get("reclassifies")
+            .and_then(Json::as_str)
+            .ok_or_else(|| {
+                usage(
+                    "a Reclassification names its target: `reclassifies` (vid)",
+                    FIX,
+                )
+            })?;
+        let reason = reversal_reason(doc.get("reason"))?;
+        if reason.name == "Other" && description.trim().is_empty() {
+            return Err(Refusal::new(
+                fa_journal::refusal::code::SUPERSESSION_REASON,
+                exit::REFUSAL,
+                "the reclassification reason Other requires a description",
+                "plan §8.2 (Other(text)); registries/reason_codes.toml",
+                "state the reason in the intent's description or use `fa reclass <vid> ... --reason Other --description <explanation>`",
+            )
+            .into());
+        }
+        let vid = parse_vid(target_s, "reclassifies")?;
+        let Some(target) = batch_plan::target_entry(book, earlier, vid)? else {
+            return Err(usage(
+                format!("reclassifies: no entry {target_s} in this book"),
+                "fa entry show <vid> to check the identity",
+            ));
+        };
+        supersession.push(fa_model::Supersession {
+            target: target.entry_ref(vid),
+            kind: fa_model::SupersessionKind::Reclassifies,
+            reason_code: reason.code,
+        });
+        target_date = Some(target.proposal.effective_date);
+        target_period = target.proposal.effective_period.clone();
+        target_evidence.clone_from(&target.proposal.evidence);
+        match (doc.get("moves"), doc.get("legs")) {
+            (Some(Json::Arr(moves)), None) if !moves.is_empty() => {
+                let mut legs = Vec::with_capacity(moves.len() * 2);
+                for (i, m) in moves.iter().enumerate() {
+                    let what = format!("moves[{i}]");
+                    let from = req_str(m, "from", &what)?;
+                    let to = req_str(m, "to", &what)?;
+                    let amount_s = req_str(m, "amount", &what)?;
+                    let amount = Amount::parse(amount_s, &ctx.units).map_err(|e| {
+                        usage(
+                            format!("{what}: amount `{amount_s}`: {e:?}"),
+                            "amount: \"300.00 USD\" (exact, at the unit's scale, positive)",
+                        )
+                    })?;
+                    let from_vid = account_vid(ctx.book_id, from);
+                    let sources: Vec<&LegPayload> = target
+                        .proposal
+                        .legs
+                        .iter()
+                        .filter(|l| l.account_ref == from_vid && l.amount.unit == amount.unit)
+                        .collect();
+                    let Some(source) = sources.first() else {
+                        return Err(usage(
+                            format!("{what}: the target has no leg on account {from} in that unit"),
+                            "fa entry show <vid> lists the target's legs; move out of one of them",
+                        ));
+                    };
+                    if sources
+                        .iter()
+                        .any(|l| l.side != source.side || l.dimension_set != source.dimension_set)
+                    {
+                        return Err(usage(
+                            format!(
+                                "{what}: the target's legs on {from} differ in side or dimensions"
+                            ),
+                            "name each moved leg explicitly in the intent's `legs`",
+                        ));
+                    }
+                    let opposite = if source.side == Side::Debit {
+                        Side::Credit
+                    } else {
+                        Side::Debit
+                    };
+                    let mut out_of = LegPayload::simple(opposite, from_vid, amount);
+                    out_of.dimension_set.clone_from(&source.dimension_set);
+                    let mut into =
+                        LegPayload::simple(source.side, account_vid(ctx.book_id, to), amount);
+                    into.dimension_set.clone_from(&source.dimension_set);
+                    legs.push(out_of);
+                    legs.push(into);
+                }
+                legs
+            }
+            (None, Some(_)) => {
+                let parsed = parse_legs(doc, &ctx, book, earlier)?;
+                if let Some(i) = parsed.iter().position(|(_, o)| o.is_some()) {
+                    return Err(usage(
+                        format!("legs[{i}]: `source_ordinal` belongs to a Resolution(Posts) only"),
+                        "remove it",
+                    ));
+                }
+                parsed.into_iter().map(|(l, _)| l).collect()
+            }
+            _ => {
+                return Err(usage(
+                    "a Reclassification carries either `moves` ([{\"from\", \"to\", \"amount\"}], at least one) or explicit `legs`",
+                    FIX,
+                ));
+            }
+        }
+    } else if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
         if doc.get("fx").is_some() {
             return Err(usage(
                 "a Reversal derives its exact valuation from the target; do not supply fx",
@@ -6841,7 +7386,7 @@ fn build_post_request_with_prior(
         .map_err(BookError::Kernel)?;
     let effective_date = supplied_date.or(target_date).ok_or_else(|| {
         usage(
-            "a reversal needs its target's effective date",
+            "a reversal or reclassification needs its target's effective date",
             "fa entry show <vid> --json",
         )
     })?;
@@ -6919,6 +7464,11 @@ fn build_post_request_with_prior(
         if !proposal.evidence.contains(&evidence) {
             proposal.evidence.push(evidence);
         }
+    }
+    // A Reclassification rests on its target's documents unless the intent
+    // names its own (fa-xvba).
+    if proposal.evidence.is_empty() {
+        proposal.evidence = target_evidence;
     }
     proposal.evidence.sort_unstable();
     if let Some(ev_arg) = event_arg {
@@ -7257,6 +7807,79 @@ pub(crate) fn write_post_plan(files: &Files, path: &str, bytes: &[u8]) -> Result
     write_new_output_file(files, path, bytes, "plan", "--plan-out")
 }
 
+/// A Reclassification's net effect for its plan: the target plus this
+/// entry's delta per (account, unit), the `Reclassifies` netting law
+/// (supersession_kinds.toml; bead fa-xvba), sorted by account code. Earlier
+/// reclassifications of the same target are not netted here: they may move
+/// amounts into accounts this caller does not reach, and `fa explain
+/// lineage` shows the whole component under read authority. `None` for
+/// every other class.
+fn reclass_net_effect(
+    book: &Book,
+    proposal: &EntryPayload,
+    accounts: &std::collections::BTreeMap<VId, fa_journal::AccountRow>,
+) -> Result<Option<(Json, Vec<String>)>, Fail> {
+    let target = match proposal.supersession.first() {
+        Some(link) if proposal.class == EntryClass::RECLASSIFICATION => link.target.vid,
+        _ => return Ok(None),
+    };
+    let Some((entry, _)) = book.read_entry(target)? else {
+        return Ok(None);
+    };
+    let overflow = || Fail::Internal("a reclassification's net effect overflows i128".into());
+    let mut cells: std::collections::BTreeMap<(VId, fa_money::UnitId), (i128, i128)> =
+        std::collections::BTreeMap::new();
+    for leg in entry.proposal.legs.iter().chain(&proposal.legs) {
+        let cell = cells
+            .entry((leg.account_ref, leg.amount.unit))
+            .or_insert((0, 0));
+        let total = if leg.side == Side::Debit {
+            &mut cell.0
+        } else {
+            &mut cell.1
+        };
+        *total = total
+            .checked_add(leg.amount.mantissa)
+            .ok_or_else(overflow)?;
+    }
+    let units = &book.context().units;
+    let mut rows = Vec::with_capacity(cells.len());
+    for ((account, unit), (debits, credits)) in cells {
+        let (code, name) = accounts
+            .get(&account)
+            .map_or(("?", "?"), |row| (row.code.as_str(), row.name.as_str()));
+        let net = render_amount(
+            Amount::new(unit, debits.checked_sub(credits).ok_or_else(overflow)?),
+            units,
+        )?;
+        rows.push((
+            (code.to_string(), unit),
+            obj(vec![
+                ("account", s(code)),
+                ("account_vid", s(format!("{:032x}", account.0))),
+                ("account_name", s(name)),
+                ("unit", s(registered_unit_code(unit, units)?)),
+                (
+                    "debits",
+                    s(render_amount(Amount::new(unit, debits), units)?),
+                ),
+                (
+                    "credits",
+                    s(render_amount(Amount::new(unit, credits), units)?),
+                ),
+                ("net", s(&net)),
+            ]),
+            format!("  {code} ({name}) net {net}"),
+        ));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let (json, human): (Vec<Json>, Vec<String>) = rows
+        .into_iter()
+        .map(|(_, json, human)| (json, human))
+        .unzip();
+    Ok(Some((Json::Arr(json), human)))
+}
+
 pub(crate) fn emit_post_plan(
     out: &Out,
     book: &Book,
@@ -7299,6 +7922,7 @@ pub(crate) fn emit_post_plan(
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
+    let net_effect = reclass_net_effect(book, proposal, &accounts)?;
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
     let resolves = proposal
@@ -7390,6 +8014,10 @@ pub(crate) fn emit_post_plan(
     );
     if let Some(disposition) = disposition {
         human.push_str(&format!("\nResolution disposition: {disposition}"));
+    }
+    if let Some((_, lines)) = &net_effect {
+        human.push_str("\nNet effect (the target plus this entry):\n");
+        human.push_str(&lines.join("\n"));
     }
     if let Some(target) = resolves {
         human.push_str(&format!("\nResolves hold {:032x}", target.vid.0));
@@ -7484,6 +8112,10 @@ pub(crate) fn emit_post_plan(
                         })
                         .collect(),
                 ),
+            ),
+            (
+                "net_effect",
+                net_effect.map_or(Json::Null, |(json, _)| json),
             ),
             ("approvals", Json::Int(plan.approvals().len() as i128)),
             ("bytes", s(encoded)),
@@ -9402,22 +10034,7 @@ pub(crate) fn known_at_read_flag(
     known_at_flag(args, book, out)
 }
 
-/// Whether `--as-originally-reported` (plan §7.4) selects this read. It
-/// fixes the known-at coordinate itself (the period's first StatementIssuance,
-/// else its first Lock; never HEAD, never a Close), so a known-at selector
-/// beside it is refused before either is resolved.
-fn as_originally_reported(args: &Args, example: &str) -> Result<bool, Fail> {
-    let originally = args.switch("--as-originally-reported");
-    if originally
-        && (!args.flag_all("--as-known-at").is_empty() || !args.flag_all("--known-at").is_empty())
-    {
-        return Err(usage(
-            "--as-originally-reported fixes the known-at coordinate itself; it cannot be combined with --as-known-at or --known-at",
-            example,
-        ));
-    }
-    Ok(originally)
-}
+const TB_VIEW_EXAMPLE: &str = "fa tb --period FY2026-P03 --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>";
 
 fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
     if args.flag_all("--fiscal-year").len() > 1
@@ -9599,8 +10216,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa tb --period <code> --summary --root <code> --json",
         ));
     }
-    let originally =
-        as_originally_reported(args, "fa tb --period FY2026-P03 --as-originally-reported")?;
+    let view = crate::issuance::reported_view(args, TB_VIEW_EXAMPLE)?;
     let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
     let selection = if let Some(date) = args.flag("--as-of") {
         if args.flag("--period").is_some()
@@ -9627,9 +10243,11 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             TrialBalanceSelection::Periods(periods)
         }
     };
-    // Plan §7.4: the period as it was first reported, pinned to its first
-    // StatementIssuance or else its first Lock (never HEAD, never a Close).
-    if originally {
+    // Plan §7.4: a restatement view pins the period's known-at: as
+    // originally reported (its first StatementIssuance, else its first Lock;
+    // never HEAD, never a Close), as issued to an audience, or as reported in
+    // a retained statement certificate.
+    if let Some(view) = &view {
         let period = match &selection {
             TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods)
                 if periods.len() == 1 =>
@@ -9638,16 +10256,19 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             _ => {
                 return Err(usage(
-                    "--as-originally-reported reads one period as it was first reported; select exactly one --period",
-                    "fa tb --period FY2026-P03 --as-originally-reported",
+                    "a restatement view reads one period as it was reported; select exactly one --period",
+                    TB_VIEW_EXAMPLE,
                 ));
             }
         };
-        // The period's scope is judged before its transitions are read; the
-        // pinned coordinate is judged again before the fold.
+        // The period's scope is judged before its issuances, transitions or
+        // certificate are read; the pinned coordinate is judged again before
+        // the fold.
         book.read_scope(who, &read_cap)??
             .admit_report(&selection.clone().into(), known_at)??;
-        known_at = Some(book.originally_reported(&period)??.known_at);
+        known_at = Some(crate::issuance::reported_known_at(
+            &book, &read_cap, view, &period,
+        )?);
     }
     if let Some(capability) = summary_cap {
         book.prepare_report_history(who, &capability, known_at)??;
@@ -10196,10 +10817,10 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if matches!(mode, "diff" | "trace") {
         if args.flag("--known-at").is_some()
             || args.flag("--as-known-at").is_some()
-            || args.switch("--as-originally-reported")
+            || crate::issuance::view_flag(args).is_some()
         {
             return Err(usage(
-                "statement diff and trace select two frontiers with --before and --after; --known-at, --as-known-at and --as-originally-reported do not select this workflow",
+                "statement diff and trace select two frontiers with --before and --after; --known-at, --as-known-at and the restatement views (--as-originally-reported, --as-issued-to, --as-reported-in) do not select this workflow",
                 "fa statement diff --definition balance-sheet --for <period> --before <seq> --after <seq> --json",
             ));
         }
@@ -10318,9 +10939,9 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let render_definition = render.as_ref().map(|_| selection.definition.clone());
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
-    let originally = as_originally_reported(
+    let view = crate::issuance::reported_view(
         args,
-        "fa statement balance-sheet --for FY2026-P03 --as-originally-reported",
+        "fa statement balance-sheet --for FY2026-P03 --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>",
     )?;
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
@@ -10334,12 +10955,18 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // period's transitions or any column is read (doctrine 8, fa-0x0), and
     // the pinned coordinate is judged again before the fold.
     let reach = ReportSelection::from(selection.clone());
-    // Plan §7.4: the statement as it stood when its --for period was first
-    // reported; a --compare column is read at that same snapshot.
-    if originally {
+    // Plan §7.4: the statement as its --for period was reported (first, to
+    // an audience, or in a retained certificate); a --compare column is read
+    // at that same snapshot.
+    if let Some(view) = &view {
         book.read_scope(who, &capability)??
             .admit_report(&reach, known_at)??;
-        known_at = Some(book.originally_reported(period)??.known_at);
+        known_at = Some(crate::issuance::reported_known_at(
+            &book,
+            &capability,
+            view,
+            period,
+        )?);
     }
     book.read_scope(who, &capability)??
         .admit_report(&reach, known_at)??;
@@ -10518,9 +11145,11 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
             ));
         }
     }
-    if args.switch("--as-originally-reported") {
+    if let Some(flag) = crate::issuance::view_flag(args) {
         return Err(usage(
-            "--as-originally-reported selects a frontier; certificate inputs already fix both frontiers on trunk",
+            format!(
+                "{flag} selects a frontier; certificate inputs already fix both frontiers on trunk"
+            ),
             STATEMENT_CERTIFICATES_EXAMPLE,
         ));
     }
@@ -11643,6 +12272,113 @@ fn verify_usage_at(
     Ok(verified)
 }
 
+/// The targets `fa verify book` runs, cheapest first (plan §15.3 Proofs;
+/// fa-waow). `verify close` is not one: it asks whether a fiscal year needs a
+/// close, which is not a question about the book's integrity.
+const BOOK_VERIFY_TARGETS: [&str; 10] = [
+    "projections",
+    "periods",
+    "schedules",
+    "accumulator",
+    "open-items",
+    "availability",
+    "usage",
+    "entities",
+    "registers",
+    "replay",
+];
+
+/// `fa verify book`: every book-level verify target in one call, entities
+/// and registers over every period. Each target emits its own event; then
+/// `book_verification` names each target's verdict. Any target's
+/// verification failure is exit 8; otherwise the first other failure (a
+/// refusal, an I/O error) is returned as itself, after the remaining
+/// targets ran.
+fn verify_book(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2
+        || args.flag("--period").is_some()
+        || args.flag("--fiscal-year").is_some()
+    {
+        return Err(usage(
+            "verify book runs every target over the whole book and takes no positional argument or period filter",
+            "fa verify book --book <dir> --json",
+        ));
+    }
+    let periods: Vec<String> = {
+        let principal = ctx.principal(args);
+        let capability = ctx.capability(args, &["read", "verify"])?;
+        let book = ctx.books.open_admitted(args, |book| {
+            admit_registers(book, principal, &capability, "verifying the book")
+        })?;
+        book.periods()?.into_iter().map(|p| p.code).collect()
+    };
+    let mut targets = Vec::new();
+    let mut human = Vec::new();
+    let mut failed = Vec::new();
+    let mut first_error = None;
+    for target in BOOK_VERIFY_TARGETS {
+        let by_period = matches!(target, "entities" | "registers");
+        let (verdict, detail) = if by_period && periods.is_empty() {
+            ("skipped", "the book has no periods".to_string())
+        } else {
+            let mut sub = args.clone();
+            sub.positional = vec!["verify".to_string(), target.to_string()];
+            if by_period {
+                sub.flags.insert("--period".to_string(), periods.clone());
+            }
+            match verify_cmd(ctx, &sub) {
+                Ok(()) => ("pass", String::new()),
+                Err(fail @ Fail::Verification { .. }) => {
+                    failed.push(target);
+                    ("fail", crate::triage::describe(&fail))
+                }
+                Err(fail) => {
+                    let detail = crate::triage::describe(&fail);
+                    first_error.get_or_insert(fail);
+                    ("error", detail)
+                }
+            }
+        };
+        human.push(if detail.is_empty() {
+            format!("{target:<13} {verdict}")
+        } else {
+            format!("{target:<13} {verdict}: {detail}")
+        });
+        targets.push(obj(vec![
+            ("target", s(target)),
+            ("verdict", s(verdict)),
+            ("detail", s(&detail)),
+        ]));
+    }
+    let green = failed.is_empty() && first_error.is_none();
+    ctx.out.event(
+        "book_verification",
+        vec![
+            ("green", Json::Bool(green)),
+            ("targets", Json::Arr(targets.clone())),
+        ],
+        &human.join("\n"),
+    );
+    if !failed.is_empty() {
+        return Err(Fail::Verification {
+            message: format!("book verification failed: {}", failed.join(", ")),
+            detail: Json::Arr(targets),
+            cite: Some(
+                "plan §16: the journal is the truth; every derived structure refolds to it".into(),
+            ),
+            fix: Some(format!(
+                "run each failing target alone for its finding: {}",
+                failed
+                    .iter()
+                    .map(|t| format!("fa verify {t} --json"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )),
+        });
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
 fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let target = args.positional.get(1).map(String::as_str);
@@ -11655,6 +12391,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     match target {
+        Some("book") => verify_book(ctx, args),
         Some("accumulator") => notary::verify_accumulator(ctx, args),
         Some("close") => crate::closing::verify_close(ctx, args),
         Some("usage") => {
@@ -15555,9 +16292,10 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // verbs.toml registers flags per verb, so the other subcommands would
     // otherwise accept these and silently answer without them.
     if sub.is_some_and(|sub| sub != "balance") {
-        let balance_only = ["--certify", "--as-originally-reported"]
+        let balance_only = ["--certify"]
             .into_iter()
             .find(|switch| args.switch(switch))
+            .or_else(|| crate::issuance::view_flag(args))
             .or_else(|| {
                 args.flag("--certificate-out")
                     .is_some()
@@ -15566,7 +16304,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         if let Some(flag) = balance_only {
             return Err(usage(
                 format!("{flag} applies only to `fa explain balance`"),
-                "fa explain balance <account> --period <code> [--as-originally-reported] [--certify]",
+                "fa explain balance <account> --period <code> [--as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>] [--certify]",
             ));
         }
     }
@@ -16050,13 +16788,47 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ])
         })
         .collect();
+    // Every supplement with all its documents: an attachment usually
+    // cites a document the entry itself does not (plan §9.2).
+    let supplements: Vec<Json> = ex
+        .supplements
+        .iter()
+        .map(|sup| {
+            let documents = sup
+                .documents
+                .iter()
+                .map(|d| {
+                    obj(vec![
+                        ("document_oid", s(hex(&d.document_oid.0))),
+                        ("doc_commit", s(hex(&d.doc_commit))),
+                        (
+                            "role",
+                            s(policy
+                                .roles
+                                .iter()
+                                .find(|r| r.tag == d.role)
+                                .map_or_else(|| d.role.to_string(), |r| r.name.clone())),
+                        ),
+                    ])
+                })
+                .collect();
+            obj(vec![
+                ("supplement_vid", s(format!("{:032x}", sup.vid.0))),
+                ("attached_by", s(format!("{:032x}", sup.attached_by.0))),
+                ("body_digest", s(hex(&sup.body_digest))),
+                ("recorded_at", Json::Int(i128::from(sup.recorded_at.0))),
+                ("documents", Json::Arr(documents)),
+            ])
+        })
+        .collect();
     let human = format!(
-        "evidence of entry {:032x} ({}) · minimum {} document(s) · satisfied={} · {} cited document(s)",
+        "evidence of entry {:032x} ({}) · minimum {} document(s) · satisfied={} · {} cited document(s) · {} supplement(s)",
         ex.entry_vid.0,
         ex.class,
         ex.min_documents,
         ex.minimum_satisfied,
-        ex.documents.len()
+        ex.documents.len(),
+        ex.supplements.len()
     );
     out.event(
         "evidence_explained",
@@ -16075,6 +16847,7 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ),
             ("satisfied", Json::Bool(ex.minimum_satisfied)),
             ("documents", Json::Arr(docs_json)),
+            ("supplements", Json::Arr(supplements)),
             ("manual_assertions", Json::Arr(manual_assertions)),
         ],
         &human,
@@ -16552,9 +17325,9 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let period = args.require("--period", "FY2026-P03")?;
-    let originally = as_originally_reported(
+    let view = crate::issuance::reported_view(
         args,
-        "fa explain balance 1000 --period FY2026-P03 --as-originally-reported",
+        "fa explain balance 1000 --period FY2026-P03 --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>",
     )?;
     let who = ctx.principal(args);
     let read_cap = ctx.capability(args, &["read"])?;
@@ -16575,9 +17348,9 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let (mut known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
     let account = account_vid(book.context().book_id, code);
-    if originally {
-        // The period's scope is judged before its transitions are read; the
-        // pinned coordinate is judged again below.
+    if let Some(view) = &view {
+        // The period's scope is judged before its issuances, transitions or
+        // certificate are read; the pinned coordinate is judged again below.
         book.read_scope(who, &read_cap)??.admit_report(
             &ReportSelection::ExplainBalance {
                 account,
@@ -16585,7 +17358,9 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             },
             known_at,
         )??;
-        known_at = Some(book.originally_reported(period)??.known_at);
+        known_at = Some(crate::issuance::reported_known_at(
+            &book, &read_cap, view, period,
+        )?);
     }
     if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;

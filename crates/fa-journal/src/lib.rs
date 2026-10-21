@@ -22,6 +22,7 @@ pub mod attestation;
 pub mod bank;
 pub mod batch;
 pub mod blob;
+pub mod case;
 pub mod chart;
 pub mod closing;
 pub mod custody;
@@ -69,6 +70,12 @@ pub use batch::{
     post_batch, read_outcome, request_digest,
 };
 pub use blob::BlobStore;
+pub use case::{
+    CaseApproval, CaseBody, CaseKind, CaseManifest, CaseMember, CaseRecorded, CaseRequest,
+    CaseState, CaseTransition, CaseView, Determination, Disclosure, ManifestEntry, PostedEntry,
+    Rehearsal, approve_case, case_manifest, close_case, derive_member, determine_case,
+    disclose_case, list_cases, open_case, post_case, posting_class, read_case, rehearse_case,
+};
 pub use chart::{
     AccountEffectivity, AccountLifecycleRecorded, ChartSnapshot, close_account, open_account,
     promote_to_summary,
@@ -107,7 +114,7 @@ pub use import::{
 };
 pub use issuance::{
     IssuancePlan, IssuanceRecord, IssuedTo, StatementIssuance, StatementsIssued, first_issuance,
-    issuances, issue_statements, list_issuances, plan_issuance,
+    first_issued_to, issuances, issue_statements, list_issuances, plan_issuance,
 };
 pub use legal_hold::{
     LegalHold, LegalHoldPlaced, LegalHoldReleased, LegalHoldRequest, Pinned, ReleasePlan,

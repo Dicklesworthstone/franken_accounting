@@ -1,0 +1,576 @@
+//! `fa case open|determine|rehearse|approve|show|list` (plan §8.3, Appendix B
+//! `OpenRestatementCase`; bead fa-75j4): restatement cases, the control
+//! objects that make a material correction legal in a `Closed` or `Locked`
+//! period.
+//!
+//! A case is opened over the periods it affects (`Proposed`), and its
+//! determination (for a `Restatement`, the non-reliance determination that
+//! starts the Item 4.02 clock) is journaled with its day and authority
+//! document (`Determined`). It is rehearsed on a scenario whose diff
+//! certificate is replayed, retained and attached (`Rehearsed`). Two Human
+//! approvers who planned none of its entries approve its effect manifest
+//! (`Approved`). Posting, disclosure and closing are later slices: a case
+//! cannot yet leave `Approved`.
+
+use fa_journal::{CaseKind, CaseRecorded, CaseView, Determination};
+use fa_model::Oid;
+use fa_time::DateDay;
+
+use crate::args::Args;
+use crate::cli::{Ctx, Fail, control_date, hex, usage};
+use crate::json::{Json, obj, s};
+
+const OPEN_EXAMPLE: &str = "fa case open --kind Restatement|Revision|PriorPeriodAdjustment|PolicyChangeRetrospective --periods <code>[,<code>]... [--narrative <oid>] [--determined-on YYYY-MM-DD --authority <oid>] [--key K] --json";
+const DETERMINE_EXAMPLE: &str =
+    "fa case determine <case> --on YYYY-MM-DD --authority <oid> [--key K] --json";
+const APPROVE_EXAMPLE: &str = "fa case approve <case> --dry-run --json (prints the manifest digest); fa approve --proposal <digest> --as <approver> (twice); fa case approve <case> --approval <vid> --approval <vid> --json";
+const DISCLOSE_EXAMPLE: &str = "fa case disclose <case> --document <oid> [--key K] [--date YYYY-MM-DD] --json  (a Disclosure document another principal reviewed: fa attest review <oid>)";
+const CLOSE_EXAMPLE: &str = "fa case close <case> [--key K] [--date YYYY-MM-DD] --json";
+const POST_EXAMPLE: &str = "fa case post <case> [--key K] [--date YYYY-MM-DD] --json  (after fa case approve; needs restate and post)";
+const REHEARSE_EXAMPLE: &str = "fa case rehearse <case> --certificate <scenario-diff-certificate> [--key K] --json  (fa scenario diff <name> --period <code> --certificate-out <file> writes one)";
+
+pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(1).map(String::as_str) {
+        Some("open") => open(ctx, args),
+        Some("determine") => determine(ctx, args),
+        Some("rehearse") => rehearse(ctx, args),
+        Some("approve") => approve(ctx, args),
+        Some("post") => post(ctx, args),
+        Some("disclose") => disclose(ctx, args),
+        Some("close") => close(ctx, args),
+        Some("show") => show(ctx, args),
+        Some("list") => list(ctx, args),
+        _ => Err(usage(
+            "case needs open, determine, rehearse, approve, post, disclose, close, show or list",
+            OPEN_EXAMPLE,
+        )),
+    }
+}
+
+fn one_flag<'a>(args: &'a Args, flag: &str, example: &str) -> Result<Option<&'a str>, Fail> {
+    if args.flag_all(flag).len() > 1 {
+        return Err(usage(format!("{flag} is given once"), example));
+    }
+    Ok(args.flag(flag))
+}
+
+fn document(text: &str, flag: &str) -> Result<Oid, Fail> {
+    crate::document::hex32(text, flag).map(Oid)
+}
+
+fn day(text: &str, flag: &str, example: &str) -> Result<DateDay, Fail> {
+    DateDay::parse(text).map_err(|e| usage(format!("{flag} `{text}`: {e:?}"), example))
+}
+
+fn ordinal(args: &Args, sub: &str, example: &str) -> Result<u32, Fail> {
+    match (args.positional.get(2), args.positional.len()) {
+        (Some(text), 3) => text.parse::<u32>().ok().filter(|n| *n > 0).ok_or_else(|| {
+            usage(
+                format!("case {sub}: `{text}` is not a case number"),
+                example,
+            )
+        }),
+        _ => Err(usage(
+            format!("case {sub} takes exactly one case number"),
+            example,
+        )),
+    }
+}
+
+/// One case as robot data.
+fn case_json(view: &CaseView) -> Json {
+    let body = &view.body;
+    let vid = |v: fgdb_types::VId| s(format!("{:032x}", v.0));
+    obj(vec![
+        ("case", Json::Int(i128::from(body.ordinal))),
+        ("vid", vid(view.vid)),
+        ("kind", s(body.kind.name())),
+        ("state", s(view.state.name())),
+        ("periods", Json::Arr(body.periods.iter().map(s).collect())),
+        (
+            "narrative",
+            body.narrative.map_or(Json::Null, |d| s(hex(&d.0))),
+        ),
+        (
+            "determination",
+            view.determination.map_or(Json::Null, |d| {
+                obj(vec![
+                    ("day", s(d.day.render())),
+                    ("authority", s(hex(&d.authority.0))),
+                ])
+            }),
+        ),
+        (
+            "rehearsal",
+            view.rehearsal.as_ref().map_or(Json::Null, |r| {
+                obj(vec![
+                    ("scenario", s(&r.scenario)),
+                    ("certificate", s(hex(&r.certificate))),
+                    ("fork_at", Json::Int(i128::from(r.fork_at.0))),
+                    ("periods", Json::Arr(r.periods.iter().map(s).collect())),
+                    (
+                        "intents",
+                        Json::Arr(r.intents.iter().map(|v| vid(*v)).collect()),
+                    ),
+                ])
+            }),
+        ),
+        (
+            "approval",
+            view.approval.as_ref().map_or(Json::Null, |a| {
+                obj(vec![
+                    (
+                        "digest",
+                        a.manifest.digest().map_or(Json::Null, |d| s(hex(&d))),
+                    ),
+                    ("entries", manifest_entries(&a.manifest)),
+                    (
+                        "approvals",
+                        Json::Arr(a.approvals.iter().map(|r| vid(r.approval_vid)).collect()),
+                    ),
+                ])
+            }),
+        ),
+        (
+            "posted",
+            Json::Arr(
+                view.posted
+                    .iter()
+                    .map(|p| {
+                        obj(vec![
+                            ("plan", vid(p.plan)),
+                            ("entry", vid(p.entry)),
+                            ("entry_digest", s(hex(&p.entry_digest))),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "disclosure",
+            view.disclosure.map_or(Json::Null, |d| {
+                obj(vec![
+                    ("document", s(hex(&d.document.0))),
+                    ("attestation", vid(d.attestation)),
+                ])
+            }),
+        ),
+        (
+            "transitions",
+            Json::Arr(
+                view.transitions
+                    .iter()
+                    .map(|t| {
+                        obj(vec![
+                            ("from", t.from.map_or(Json::Null, |f| s(f.name()))),
+                            ("to", s(t.to.name())),
+                            ("control_entry", vid(t.control_entry)),
+                            ("recorded_at", Json::Int(i128::from(t.recorded_at.0))),
+                            ("principal", vid(t.principal)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ])
+}
+
+fn manifest_entries(manifest: &fa_journal::CaseManifest) -> Json {
+    Json::Arr(
+        manifest
+            .entries
+            .iter()
+            .map(|e| {
+                obj(vec![
+                    ("plan", s(format!("{:032x}", e.plan.0))),
+                    ("intent", s(hex(&e.intent))),
+                    ("planner", s(format!("{:032x}", e.planner.0))),
+                ])
+            })
+            .collect(),
+    )
+}
+
+fn line(view: &CaseView) -> String {
+    format!(
+        "case {} {} {} over {}{}",
+        view.body.ordinal,
+        view.body.kind.name(),
+        view.state.name(),
+        view.body.periods.join(", "),
+        view.determination
+            .map_or_else(String::new, |d| format!(" (determined {})", d.day.render()))
+    )
+}
+
+fn recorded(ctx: &mut Ctx<'_>, event: &str, done: &CaseRecorded, verb: &str) {
+    ctx.out.event(
+        event,
+        vec![
+            ("case", case_json(&done.case)),
+            ("control_entry", s(format!("{:032x}", done.control_entry.0))),
+            ("recorded_at", Json::Int(i128::from(done.recorded_at.0))),
+            ("already_recorded", Json::Bool(done.already_recorded)),
+        ],
+        &format!(
+            "{}{} (record {})",
+            if done.already_recorded {
+                format!("already {verb}: ")
+            } else {
+                format!("{verb}: ")
+            },
+            line(&done.case),
+            done.recorded_at.0
+        ),
+    );
+}
+
+fn open(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "case open takes no positional argument",
+            OPEN_EXAMPLE,
+        ));
+    }
+    for flag in [
+        "--kind",
+        "--narrative",
+        "--determined-on",
+        "--authority",
+        "--key",
+        "--date",
+    ] {
+        one_flag(args, flag, OPEN_EXAMPLE)?;
+    }
+    let names = CaseKind::ALL.map(CaseKind::name).join("|");
+    let kind_text = args
+        .flag("--kind")
+        .ok_or_else(|| usage("case open needs --kind", OPEN_EXAMPLE))?;
+    let kind = CaseKind::parse(kind_text).ok_or_else(|| {
+        usage(
+            format!("--kind `{kind_text}` is not a registered case kind"),
+            format!("--kind {names}"),
+        )
+    })?;
+    let periods: Vec<String> = args
+        .flag_all("--periods")
+        .iter()
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    if periods.is_empty() {
+        return Err(usage(
+            "case open needs --periods naming the periods the case affects",
+            OPEN_EXAMPLE,
+        ));
+    }
+    let narrative = args
+        .flag("--narrative")
+        .map(|t| document(t, "--narrative"))
+        .transpose()?;
+    let determination = match (args.flag("--determined-on"), args.flag("--authority")) {
+        (None, None) => None,
+        (Some(on), Some(authority)) => Some(Determination {
+            day: day(on, "--determined-on", OPEN_EXAMPLE)?,
+            authority: document(authority, "--authority")?,
+        }),
+        _ => {
+            return Err(usage(
+                "a determination at open names both --determined-on and --authority",
+                OPEN_EXAMPLE,
+            ));
+        }
+    };
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        // The request itself: the same command opens the same case once.
+        None => {
+            let mut sorted = periods.clone();
+            sorted.sort();
+            sorted.dedup();
+            hex(&fa_model::domain_digest(
+                b"fa-cli:case-open-key:v1",
+                &[
+                    &[kind.tag()],
+                    sorted.join(",").as_bytes(),
+                    narrative.as_ref().map_or(&[][..], |d| &d.0[..]),
+                    &determination.map_or_else(Vec::new, |d| {
+                        let mut b = d.day.0.to_le_bytes().to_vec();
+                        b.extend_from_slice(&d.authority.0);
+                        b
+                    }),
+                ],
+            ))
+        }
+    };
+    let capability = ctx.capability(args, &["restate"])?;
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let done = book.open_case(
+        capability,
+        kind,
+        periods,
+        narrative,
+        determination,
+        date,
+        key.as_bytes(),
+    )??;
+    ctx.out.at_book(&book)?;
+    recorded(ctx, "case_opened", &done, "opened");
+    Ok(())
+}
+
+fn determine(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "determine", DETERMINE_EXAMPLE)?;
+    for flag in ["--on", "--authority", "--key", "--date"] {
+        one_flag(args, flag, DETERMINE_EXAMPLE)?;
+    }
+    let on = args
+        .flag("--on")
+        .ok_or_else(|| usage("case determine needs --on <day>", DETERMINE_EXAMPLE))?;
+    let authority = args.flag("--authority").ok_or_else(|| {
+        usage(
+            "case determine needs --authority <oid>: the document that records who determined it",
+            DETERMINE_EXAMPLE,
+        )
+    })?;
+    let determination = Determination {
+        day: day(on, "--on", DETERMINE_EXAMPLE)?,
+        authority: document(authority, "--authority")?,
+    };
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => hex(&fa_model::domain_digest(
+            b"fa-cli:case-determine-key:v1",
+            &[
+                &ordinal.to_le_bytes(),
+                &determination.day.0.to_le_bytes(),
+                &determination.authority.0,
+            ],
+        )),
+    };
+    let capability = ctx.capability(args, &["restate"])?;
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let done = book.determine_case(capability, ordinal, determination, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    recorded(ctx, "case_determined", &done, "determined");
+    Ok(())
+}
+
+fn rehearse(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "rehearse", REHEARSE_EXAMPLE)?;
+    for flag in ["--certificate", "--key", "--date"] {
+        one_flag(args, flag, REHEARSE_EXAMPLE)?;
+    }
+    let path = args.flag("--certificate").ok_or_else(|| {
+        usage(
+            "case rehearse needs --certificate <file>: the scenario's diff certificate",
+            REHEARSE_EXAMPLE,
+        )
+    })?;
+    // Authority before any read of the certificate file or the book.
+    let capability = ctx.capability(args, &["restate", "read", "produce"])?;
+    let certificate = fa::ScenarioDiffCertificate::decode(&ctx.files.read_bytes(path)?)?;
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => hex(&fa_model::domain_digest(
+            b"fa-cli:case-rehearse-key:v1",
+            &[&ordinal.to_le_bytes(), certificate.digest()],
+        )),
+    };
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let done = book.rehearse_case(capability, ordinal, &certificate, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    recorded(ctx, "case_rehearsed", &done, "rehearsed");
+    Ok(())
+}
+
+fn approve(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "approve", APPROVE_EXAMPLE)?;
+    for flag in ["--key", "--date"] {
+        one_flag(args, flag, APPROVE_EXAMPLE)?;
+    }
+    let approvals = args.flag_all("--approval");
+    let dry_run = args.switch("--dry-run");
+    if dry_run == !approvals.is_empty() {
+        return Err(usage(
+            "case approve takes --dry-run (to print the manifest) or --approval <vid> (to commit), not both",
+            APPROVE_EXAMPLE,
+        ));
+    }
+    let capability = ctx.capability(args, &["restate", "read"])?;
+    if dry_run {
+        let book = ctx.books.open(args)?;
+        let manifest = book.case_manifest(ordinal)??;
+        let digest = manifest
+            .digest()
+            .map_err(|e| Fail::Internal(e.to_string()))?;
+        ctx.out.at_book(&book)?;
+        let preparers: Vec<Json> = manifest
+            .preparers()
+            .iter()
+            .map(|p| s(format!("{:032x}", p.0)))
+            .collect();
+        ctx.out.event(
+            "case_manifest",
+            vec![
+                ("case", Json::Int(i128::from(ordinal))),
+                ("digest", s(hex(&digest))),
+                ("entries", manifest_entries(&manifest)),
+                ("preparers", Json::Arr(preparers)),
+            ],
+            &format!(
+                "case {ordinal}'s manifest: {} entr{}; digest {}\nTwo Human approvers who planned none of them approve it with `fa approve --proposal {}`; then `fa case approve {ordinal} --approval <vid> --approval <vid>`",
+                manifest.entries.len(),
+                if manifest.entries.len() == 1 { "y" } else { "ies" },
+                hex(&digest),
+                hex(&digest)
+            ),
+        );
+        return Ok(());
+    }
+    let approvals = approvals
+        .iter()
+        .map(|v| crate::cli::parse_vid(v, "--approval"))
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => {
+            let mut sorted = approvals.clone();
+            sorted.sort_unstable();
+            let mut parts: Vec<Vec<u8>> = vec![ordinal.to_le_bytes().to_vec()];
+            parts.extend(sorted.iter().map(|v| v.0.to_le_bytes().to_vec()));
+            let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
+            hex(&fa_model::domain_digest(
+                b"fa-cli:case-approve-key:v1",
+                &refs,
+            ))
+        }
+    };
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let done = book.approve_case(capability, ordinal, approvals, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    recorded(ctx, "case_approved", &done, "approved");
+    Ok(())
+}
+
+fn post(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "post", POST_EXAMPLE)?;
+    for flag in ["--key", "--date"] {
+        one_flag(args, flag, POST_EXAMPLE)?;
+    }
+    let capability = ctx.capability(args, &["restate", "post", "read"])?;
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => hex(&fa_model::domain_digest(
+            b"fa-cli:case-post-key:v1",
+            &[&ordinal.to_le_bytes()],
+        )),
+    };
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let done = book.post_case(capability, ordinal, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    recorded(ctx, "case_posted", &done, "posted");
+    Ok(())
+}
+
+fn disclose(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "disclose", DISCLOSE_EXAMPLE)?;
+    for flag in ["--document", "--key", "--date"] {
+        one_flag(args, flag, DISCLOSE_EXAMPLE)?;
+    }
+    let text = args.flag("--document").ok_or_else(|| {
+        usage(
+            "case disclose needs --document <oid>: the reviewed Disclosure document",
+            DISCLOSE_EXAMPLE,
+        )
+    })?;
+    let disclosure = document(text, "--document")?;
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => hex(&fa_model::domain_digest(
+            b"fa-cli:case-disclose-key:v1",
+            &[&ordinal.to_le_bytes(), &disclosure.0],
+        )),
+    };
+    let capability = ctx.capability(args, &["restate", "read"])?;
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let done = book.disclose_case(capability, ordinal, disclosure, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    recorded(ctx, "case_disclosed", &done, "disclosed");
+    Ok(())
+}
+
+fn close(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "close", CLOSE_EXAMPLE)?;
+    for flag in ["--key", "--date"] {
+        one_flag(args, flag, CLOSE_EXAMPLE)?;
+    }
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => hex(&fa_model::domain_digest(
+            b"fa-cli:case-close-key:v1",
+            &[&ordinal.to_le_bytes()],
+        )),
+    };
+    let capability = ctx.capability(args, &["restate", "read"])?;
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let done = book.close_case(capability, ordinal, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    recorded(ctx, "case_closed", &done, "closed");
+    Ok(())
+}
+
+fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "show", "fa case show <case> --json")?;
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+    let Some(view) = book.case(ordinal)? else {
+        return Err(Fail::Refusal(fa_journal::refusal::Refusal::new(
+            fa_journal::refusal::code::CASE_UNKNOWN,
+            fa_journal::refusal::exit::REFUSAL,
+            format!("this book has no restatement case {ordinal}"),
+            "plan §8.3 (a RestatementCase is opened with OpenRestatementCase)",
+            "list the book's cases with `fa case list --json`",
+        )));
+    };
+    ctx.out.at_book(&book)?;
+    ctx.out
+        .event("case", vec![("case", case_json(&view))], &line(&view));
+    Ok(())
+}
+
+fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage("case list takes no argument", "fa case list --json"));
+    }
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+    let views = book.cases()?;
+    ctx.out.at_book(&book)?;
+    let human = if views.is_empty() {
+        "no restatement cases in this book".to_string()
+    } else {
+        views.iter().map(line).collect::<Vec<_>>().join("\n")
+    };
+    ctx.out.event(
+        "cases",
+        vec![("cases", Json::Arr(views.iter().map(case_json).collect()))],
+        &human,
+    );
+    Ok(())
+}

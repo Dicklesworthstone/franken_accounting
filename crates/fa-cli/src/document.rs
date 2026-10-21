@@ -134,6 +134,7 @@ pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("erase") => erase_doc(ctx, args),
         Some("hold") => hold_doc(ctx, args),
         Some("attest") => attest_doc(ctx, args),
+        Some("attach") => attach_doc(ctx, args),
         Some("import") => import_doc(ctx, args),
         Some("list") => list_docs(ctx, args),
         None => Err(usage("`fa document` needs a subcommand", ADD_EXAMPLE)),
@@ -433,6 +434,111 @@ pub(crate) fn parse_evidence(
         ));
     }
     Ok(refs)
+}
+
+/// `fa document attach <entry> --evidence <oid>[:role]...` (plan §9.2
+/// AttachEvidence; bead fa-81lu): documents that support a committed entry,
+/// recorded after it as one SupplementalEvidence with SUPPLEMENTS and
+/// EVIDENCED_BY edges. The entry and its own evidence list never change;
+/// `fa explain evidence` lists the supplement. The same attachment again is
+/// the recorded one.
+fn attach_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str =
+        "fa document attach <entry-vid> --evidence <oid>[:role]... --book <dir> --json";
+    let raw = args
+        .positional
+        .get(2)
+        .ok_or_else(|| usage("`fa document attach` needs the entry's vid", EXAMPLE))?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(format!("unexpected argument `{extra}`"), EXAMPLE));
+    }
+    if args.flag_all("--evidence").is_empty() {
+        return Err(usage(
+            "name each supporting document with --evidence <oid>[:role]",
+            EXAMPLE,
+        ));
+    }
+    let vid = parse_vid_arg(raw, "entry")?;
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "post"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        // Authorization precedes observation (doctrine 8): post on trunk,
+        // then a read of the whole entry the supplement names.
+        fa_policy::admit(
+            &capability,
+            &fa_policy::Intent {
+                principal: who,
+                trunk: true,
+                op: fa_policy::Op::Post,
+                book: book.context().book_id,
+                legs: &[],
+            },
+        )
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        book.read_scope(who, &capability)??
+            .admit_whole_book(None)??;
+        Ok(())
+    })?;
+    let documents = parse_evidence(&obj(Vec::new()), args, &mut book)?;
+    let Some((entry, _)) = book.read_entry(vid)? else {
+        return Err(usage(
+            format!("no entry {:032x} in this book", vid.0),
+            "pass a committed entry vid from `fa post` or `fa explain balance`",
+        ));
+    };
+    let supplement = fa_journal::evidence::SupplementalEvidence {
+        book_id: book.context().book_id,
+        entry_ref: fa_model::EntryRef {
+            vid,
+            entry_digest: entry.entry_digest,
+        },
+        documents,
+        attached_by: who,
+    };
+    let attached = book.attach_evidence(&capability, &supplement)??;
+    ctx.out.at_book(&book)?;
+    let policy = policy()?;
+    let cited: Vec<Json> = supplement
+        .documents
+        .iter()
+        .map(|d| {
+            obj(vec![
+                ("document_oid", s(hex(&d.document_oid.0))),
+                ("doc_commit", s(hex(&d.doc_commit))),
+                (
+                    "role",
+                    s(policy
+                        .role_by_tag(d.role)
+                        .map_or_else(|| d.role.to_string(), |r| r.name.clone())),
+                ),
+            ])
+        })
+        .collect();
+    let supplement_hex = format!("{:032x}", attached.vid.0);
+    ctx.out.event(
+        "evidence_attached",
+        vec![
+            ("supplement_vid", s(&supplement_hex)),
+            ("entry", s(format!("{:032x}", vid.0))),
+            ("entry_digest", s(hex(&entry.entry_digest))),
+            ("documents", Json::Arr(cited)),
+            ("body_digest", s(hex(&attached.body_digest))),
+            ("recorded_at", Json::Int(i128::from(attached.recorded_at.0))),
+            ("already_recorded", Json::Bool(attached.already_recorded)),
+        ],
+        &format!(
+            "{} supplement {supplement_hex}: {} document(s) supporting entry {:032x} at {}",
+            if attached.already_recorded {
+                "already recorded"
+            } else {
+                "recorded"
+            },
+            supplement.documents.len(),
+            vid.0,
+            attached.recorded_at.0
+        ),
+    );
+    Ok(())
 }
 
 fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

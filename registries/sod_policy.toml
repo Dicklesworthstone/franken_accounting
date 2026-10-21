@@ -613,3 +613,91 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 1
 exclusions = ["preparer", "duplicate"]
 cite = "plan §12.5 (StatementIssuance is what 'previously issued' means), §7.4 (AS ORIGINALLY REPORTED pins the first issuance); Appendix C PeriodControl Closed Lock W(close, 1)"
+
+# A RestatementCase's opening and its determination (plan §8.3; fa-75j4)
+# under `restate`. Dual control applies when the case's effect manifest is
+# approved (a later slice); opening a case and recording the determination
+# change no balance and need no approver.
+[[rule]]
+name = "case-open"
+class = "CaseControl"
+transition = "Open"
+preparer_op = "restate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.3 (OpenRestatementCase); Appendix B"
+
+[[rule]]
+name = "case-determine"
+class = "CaseControl"
+transition = "Determine"
+preparer_op = "restate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.3 (Determined: the non-reliance determination, its date and authority, journaled when made)"
+
+[[rule]]
+name = "case-rehearse"
+class = "CaseControl"
+transition = "Rehearse"
+preparer_op = "restate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.3 (Rehearsed: on a branch, with the as-reported-vs-as-restated diff certificate attached)"
+
+[[rule]]
+name = "case-approve"
+class = "CaseControl"
+transition = "Approve"
+preparer_op = "restate"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate", "case_preparer"]
+cite = "plan §8.3 (Approved: dual control, by principals neither of whom prepared any entry in the case)"
+
+[[rule]]
+name = "case-post"
+class = "CaseControl"
+transition = "Post"
+preparer_op = "restate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.3 (Posted: the case's entries commit in one batch; each entry's own row is decided over the case's approvals)"
+
+[[rule]]
+name = "case-disclose"
+class = "CaseControl"
+transition = "Disclose"
+preparer_op = "restate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.3 (Disclosed: the disclosure document is attested, by a reviewer other than its uploader, plan §9.3)"
+
+[[rule]]
+name = "case-close"
+class = "CaseControl"
+transition = "Close"
+preparer_op = "restate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.3 (Closed: the case's last transition)"

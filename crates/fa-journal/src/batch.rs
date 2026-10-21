@@ -397,6 +397,28 @@ pub(crate) fn batchable(class: fa_model::EntryClass) -> bool {
     .contains(&class)
 }
 
+/// Authorize every member's request under `admission` before any
+/// observation (doctrine 8).
+pub(crate) fn authorize_members<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    batch: &PostBatch,
+    admission: Admission,
+) -> Outcome<()> {
+    for (index, intent) in batch.members().iter().enumerate() {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &member_request(intent, capability),
+            admission,
+        )? {
+            return Ok(Err(member_refusal(index, refusal)));
+        }
+    }
+    Ok(Ok(()))
+}
+
 /// Commit `batch` atomically under `capability` (plan §5.8): every member
 /// through the production pipeline in one transaction, then the batch's
 /// IntentOutcome, in one commit.
@@ -407,15 +429,8 @@ pub async fn post_batch<V: Vfs + Clone>(
     capability: Capability,
     batch: PostBatch,
 ) -> Outcome<BatchPosted> {
-    for (index, intent) in batch.members().iter().enumerate() {
-        if let Err(refusal) = crate::post::authorize_request(
-            db,
-            book,
-            &member_request(intent, &capability),
-            Admission::Commit,
-        )? {
-            return Ok(Err(member_refusal(index, refusal)));
-        }
+    if let Err(refusal) = authorize_members(db, book, &capability, &batch, Admission::Commit)? {
+        return Ok(Err(refusal));
     }
     ctx.query()
         .checkpoint()
@@ -479,12 +494,13 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
             "a batch is staged with one capability per member".into(),
         ));
     }
-    if let Some((i, member)) = batch
-        .members()
-        .iter()
-        .enumerate()
-        .find(|(_, m)| !batchable(m.proposal().class))
-    {
+    if let Some((i, member)) = batch.members().iter().enumerate().find(|(_, m)| {
+        // A restatement case's own Post batches its case-bound entries
+        // (plan §8.3); the posting law checks each is the case's.
+        !batchable(m.proposal().class)
+            && !(matches!(admission, Admission::Case(_))
+                && m.proposal().class == fa_model::EntryClass::PRIOR_PERIOD_ADJUSTMENT)
+    }) {
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
             exit::USAGE,

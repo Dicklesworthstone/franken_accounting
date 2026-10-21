@@ -4,11 +4,11 @@
 
 ## 1. Vision Workflow Summary (README Quick Example + Plan §15.6)
 
-- **Total workflow steps:** 33 (`works`: **30** [90%], `refused`: **0**, `absent`: **3**)
+- **Total workflow steps:** 33 (`works`: **31** [93%], `refused`: **0**, `absent`: **2**)
 
 | Workflow | Plan Ref | Reader | Works | Refused | Absent | Total | Delivery % |
 |---|---|---|---:|---:|---:|---:|---:|
-| `readme-quick` (README Quick Example) | README.md §Quick example | Agent / Operator | 11 | 0 | 1 | 12 | 91% |
+| `readme-quick` (README Quick Example) | README.md §Quick example | Agent / Operator | 12 | 0 | 0 | 12 | 100% |
 | `agent-closes-month` (The agent closes a month) | §15.6.1 | AI Agent + Controller | 4 | 0 | 0 | 4 | 100% |
 | `cpa-audits-fy2025` (The CPA audits FY2025) | §15.6.2 | External CPA / Auditor | 4 | 0 | 0 | 4 | 100% |
 | `fdic-examiner-positions` (The FDIC examiner needs close-of-business positions) | §15.6.3 | FDIC Examiner / Receiver | 2 | 0 | 1 | 3 | 66% |
@@ -28,7 +28,7 @@
 | `WF-RQ-06` | `VC-06` | `readme-quick` | `works` | `0` | `trial_balance` | `—` | Trial balance at a historical known-at sequence (`fa tb --period --as-known-at`) |
 | `WF-RQ-07` | `VC-07` | `readme-quick` | `works` | `0` | `trial_balance` | `—` | Trial balance as originally reported (`fa tb --as-originally-reported`) |
 | `WF-RQ-08` | `VC-08` | `readme-quick` | `works` | `0` | `reversed` | `—` | Reverse a committed entry with SupersessionKind::Reverses lineage (`fa reverse`) |
-| `WF-RQ-09` | `VC-09` | `readme-quick` | `absent` | `2` | `error` | `fa-75j4` | Open a restatement case from the CLI (`fa case open`) |
+| `WF-RQ-09` | `VC-09` | `readme-quick` | `works` | `0` | `case_opened` | `—` | Open a restatement case from the CLI (`fa case open`: journaled Proposed; `fa case` determine, rehearse, approve, post, disclose and close carry it on, and this build posts only PriorPeriodAdjustment cases) |
 | `WF-RQ-10` | `VC-10` | `readme-quick` | `works` | `0` | `procedure_run` | `—` | Run Lantern journal-entry test (`fa procedure run jet.round_amounts`) |
 | `WF-RQ-11` | `VC-11` | `readme-quick` | `works` | `0` | `procedure_run` | `—` | Run LIBR fund tracing (`fa procedure run trace.libr`) |
 | `WF-RQ-12` | `VC-12` | `readme-quick` | `works` | `0` | `bundle_produced` | `—` | Produce a signed offline evidence bundle (`fa bundle produce`) |

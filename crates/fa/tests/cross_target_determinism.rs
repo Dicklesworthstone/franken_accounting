@@ -602,6 +602,12 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // the bundle's checkpoint commits to. No bound registry and no
     // fa-notary source changed; the fold and every report-byte pin are
     // unchanged.
+    // fa-75j4 then moved `tb_cert`, `bs_cert` and `is_cert`, measured
+    // together after its slice 5: the CaseControl class (30), its control
+    // kind (17) and the kind reserved for fa-zgn (16) are `entry_classes`
+    // rows, and slices 2 to 5 extend those rows' comments; every report
+    // certificate binds that registry's bytes. The fold, every report-byte
+    // pin and the evidence bundle are unchanged.
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -628,7 +634,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "79e47182a7046c064595e9e9d9f157470e9d5f712f6473a19bb5f254e737bd0f",
+        "71ba1a4be60360d2bf4b1c07eb77954278550abdd93691769fc133463b9f449a",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -640,7 +646,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "5a9e6540a6b7b6fc1f585986993558847ca51600d7820102b71b2a4e71fe3511",
+        "1eccb78623f6be126507b00a2cd7a8b4814eb2931bdc23d8b2ee97ec0de3987e",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -652,7 +658,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "8d454a068fb8d0429282574d2b5a6d5911c0fb7319fa0a8100e33dac9e557137",
+        "ea2c1a348071deab50c2749f836b53e718498538b78f5fc78d5f4834e014cfb6",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );

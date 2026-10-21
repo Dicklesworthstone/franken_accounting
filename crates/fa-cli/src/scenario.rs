@@ -231,6 +231,63 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// `fa branch list` (plan §15.3 Drafts and scenarios; fa-waow): every
+/// branch of the book in one listing, the drafts by opening sequence and the
+/// scenarios by forking sequence, as `fa draft list` and `fa scenario list`
+/// show them.
+pub(crate) fn branch_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa branch list --book <dir> --json";
+    if args.positional.get(1).map(String::as_str) != Some("list") || args.positional.len() != 2 {
+        return Err(usage("branch needs list", EXAMPLE));
+    }
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+    let drafts = book.drafts()?;
+    let scenarios = book.scenarios()?;
+    ctx.out.at_book(&book)?;
+    let mut human: Vec<String> = drafts
+        .iter()
+        .map(|d| {
+            format!(
+                "draft    {} {} {} intent(s)",
+                d.body.name,
+                d.state.name(),
+                d.intents.len()
+            )
+        })
+        .chain(scenarios.iter().map(|v| {
+            format!(
+                "scenario {} {} fork_at={} {} intent(s)",
+                v.body.name,
+                v.state.name(),
+                v.body.fork_at.0,
+                v.intents.len()
+            )
+        }))
+        .collect();
+    if human.is_empty() {
+        human.push("no drafts or scenarios in this book (trunk only)".to_string());
+    }
+    ctx.out.event(
+        "branches",
+        vec![
+            (
+                "drafts",
+                Json::Arr(drafts.iter().map(crate::cli::draft_json).collect()),
+            ),
+            (
+                "scenarios",
+                Json::Arr(scenarios.iter().map(scenario_json).collect()),
+            ),
+        ],
+        &human.join("\n"),
+    );
+    Ok(())
+}
+
 fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let name = scenario_name(args, "show")?.to_string();
     let who = ctx.principal(args);

@@ -1654,11 +1654,15 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert!(findings_res["procedures"]["procedures"].is_array());
     assert_eq!(findings_res["findings"]["evidence"], json!("FA-EVID-L01"));
     assert_eq!(findings_res["findings"]["claim"], json!("statistical"));
-    let cases = mcp.request(
+    let read = mcp.result(
         "resources/read",
         json!({"uri": "resource://fa/cases/default"}),
     );
-    assert!(cases.get("error").is_some(), "unimplemented cases: {cases}");
+    assert_eq!(
+        read["contents"][0]["text"].as_str().unwrap(),
+        cli_data(&["case", "list", "--book", &b, "--json"]),
+        "case resource must read the journaled cases",
+    );
     let read = mcp.result(
         "resources/read",
         json!({"uri": "resource://fa/drafts/default"}),
@@ -4334,6 +4338,222 @@ fn an_agent_posts_into_a_scenario_over_mcp_and_trunk_is_untouched() {
     assert!(
         scenario.contains("37.00"),
         "the scenario carries it: {scenario}"
+    );
+}
+
+/// fa-xvba: the on-demand fa.correct cluster's reclass tool posts the same
+/// Reclassification as `fa reclass` (the target leg's side, a registered
+/// reason), refuses a move beyond what remains with FA-REF-185, and the
+/// CLI's lineage names what it posted.
+#[test]
+fn the_correct_cluster_reclassifies_like_the_cli() {
+    let dir = tmp("reclass");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Reclass Co",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","leaf":true,"unit":"USD"},{"code":"6200","name":"Travel expense","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    )
+    .unwrap();
+    let chart = chart.display().to_string();
+    cli_data(&["chart", "import", &chart, "--book", &b, "--json"]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let intent = dir.join("expense.json");
+    std::fs::write(
+        &intent,
+        r#"{"idempotency_key":"expense","effective_date":"2026-03-15","legs":[{"side":"debit","account":"6100","amount":"1000.00 USD"},{"side":"credit","account":"1000","amount":"1000.00 USD"}]}"#,
+    )
+    .unwrap();
+    let intent = intent.display().to_string();
+    let parse = |text: &str| -> JsonValue { fastmcp_rust::serde_json::from_str(text).unwrap() };
+    let posted = parse(&cli_data(&[
+        "post",
+        "--intent",
+        &intent,
+        "--evidence",
+        &oid,
+        "--book",
+        &b,
+        "--json",
+    ]));
+    let target = posted["vid"].as_str().unwrap().to_string();
+
+    let mut mcp = Mcp::start_with(
+        &book,
+        &[
+            "--profile",
+            "preparer",
+            "--principal",
+            "operator",
+            "--cluster",
+            "fa.correct",
+        ],
+    );
+    mcp.discover();
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_correct_reclass",
+        json!({"vid": target, "from": "6100", "to": "6200", "amount": "300.00 USD", "reason": "WrongAccount"}),
+    );
+    assert!(!is_error, "{text}");
+    let reclass = parse(&text);
+    assert_eq!(reclass["class"], json!("Reclassification"), "{text}");
+    let reclass_vid = reclass["vid"].as_str().unwrap().to_string();
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_correct_reclass",
+        json!({"vid": target, "from": "6100", "to": "6200", "amount": "800.00 USD", "reason": "WrongAccount"}),
+    );
+    assert!(is_error, "a move beyond what remains: {text}");
+    assert_eq!(
+        structured_error(&text)["refusal_id"],
+        json!("FA-REF-185"),
+        "{text}"
+    );
+    let lineage = cli_data(&["explain", "lineage", &target, "--book", &b, "--json"]);
+    assert!(lineage.contains(&reclass_vid), "{lineage}");
+    assert!(lineage.contains("Reclassifies"), "{lineage}");
+    log("fa_correct_reclass: a partial move posts, an exceeding one is FA-REF-185, lineage agrees");
+}
+
+/// fa-81lu: the steward tool's attach action records the same
+/// SupplementalEvidence as `fa document attach`; the CLI's explain evidence
+/// lists it; an Agent session, which never writes trunk, is refused.
+#[test]
+fn the_steward_attaches_supporting_evidence_like_the_cli() {
+    let dir = tmp("attach");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Attach Co",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    )
+    .unwrap();
+    let chart = chart.display().to_string();
+    cli_data(&["chart", "import", &chart, "--book", &b, "--json"]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let invoice = source_document(&dir, &b);
+    let intent = dir.join("rent.json");
+    std::fs::write(
+        &intent,
+        r#"{"idempotency_key":"rent","effective_date":"2026-03-15","legs":[{"side":"debit","account":"6000","amount":"1500.00 USD"},{"side":"credit","account":"1000","amount":"1500.00 USD"}]}"#,
+    )
+    .unwrap();
+    let intent = intent.display().to_string();
+    let parse = |text: &str| -> JsonValue { fastmcp_rust::serde_json::from_str(text).unwrap() };
+    let posted = parse(&cli_data(&[
+        "post",
+        "--intent",
+        &intent,
+        "--evidence",
+        &invoice,
+        "--book",
+        &b,
+        "--json",
+    ]));
+    let entry = posted["vid"].as_str().unwrap().to_string();
+    let lease = dir.join("lease.txt");
+    std::fs::write(&lease, "LEASE: twelve months at 1,500.00 USD").unwrap();
+    let added = parse(&cli_data(&[
+        "document",
+        "add",
+        &lease.display().to_string(),
+        "--kind",
+        "Contract",
+        "--grade",
+        "HumanUpload",
+        "--book",
+        &b,
+        "--json",
+    ]));
+    let contract = added["oid"].as_str().unwrap().to_string();
+
+    let mut mcp = Mcp::start_with(
+        &book,
+        &[
+            "--profile",
+            "preparer",
+            "--principal",
+            "operator",
+            "--cluster",
+            "fa.evidence",
+        ],
+    );
+    mcp.discover();
+    let arguments =
+        json!({"action": "attach", "target": entry, "evidence": [format!("{contract}:Contract")]});
+    let (is_error, text, _) = call_tool(&mut mcp, "fa_evidence_steward", arguments.clone());
+    assert!(!is_error, "{text}");
+    let attached = parse(&text);
+    assert_eq!(attached["entry"], json!(entry), "{text}");
+    assert_eq!(attached["already_recorded"], json!(false), "{text}");
+    assert_eq!(
+        attached["documents"][0]["role"],
+        json!("Contract"),
+        "{text}"
+    );
+    let (is_error, again, _) = call_tool(&mut mcp, "fa_evidence_steward", arguments.clone());
+    assert!(!is_error, "{again}");
+    assert_eq!(parse(&again)["already_recorded"], json!(true), "{again}");
+    assert_eq!(mcp.finish(), 0);
+    let explained = parse(&cli_data(&[
+        "explain", "evidence", &entry, "--book", &b, "--json",
+    ]));
+    assert_eq!(
+        explained["supplements"][0]["supplement_vid"], attached["supplement_vid"],
+        "{explained}"
+    );
+
+    let mut agent = Mcp::start_with(
+        &book,
+        &["--principal", "operator", "--cluster", "fa.evidence"],
+    );
+    agent.discover();
+    let (is_error, text, _) = call_tool(&mut agent, "fa_evidence_steward", arguments);
+    assert!(is_error, "an Agent session never writes trunk: {text}");
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-013");
+    assert_eq!(agent.finish(), 0);
+    log(
+        "fa_evidence_steward attach: recorded once, listed by explain evidence, refused for an Agent",
     );
 }
 

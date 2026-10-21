@@ -324,3 +324,137 @@ fn documents_are_recorded_once_and_entries_must_cite_them() -> std::io::Result<(
     );
     Ok(())
 }
+
+/// fa-81lu (plan §9.2 AttachEvidence): `fa document attach` records the
+/// documents that support a committed entry as one SupplementalEvidence. The
+/// entry keeps its own evidence; `fa explain evidence` lists the supplement
+/// with its documents; the same attachment again is the recorded one; an
+/// unknown entry, an unknown document and a missing --evidence are refused.
+#[test]
+fn attach_creates_supplemental_evidence() -> std::io::Result<()> {
+    let dir = tmp("attach")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Attach Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&book, &["chart", "import", &chart, "--json"]);
+    ok(
+        &book,
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    ok(&book, &["period", "open", "FY2026-P03", "--json"]);
+    let add = |name: &str, bytes: &[u8], kind: &str| -> String {
+        let path = write(&dir, name, bytes);
+        let out = ok(
+            &book,
+            &[
+                "document",
+                "add",
+                &path,
+                "--kind",
+                kind,
+                "--grade",
+                "HumanUpload",
+                "--json",
+            ],
+        );
+        field(&out, "oid").unwrap().to_string()
+    };
+    let invoice = add(
+        "invoice.txt",
+        b"INVOICE 1001 Landlord LLC: March rent",
+        "Invoice",
+    );
+    let lease = add("lease.txt", b"LEASE: 12 months at 1,500.00 USD", "Contract");
+    let intent = write(
+        &dir,
+        "rent.json",
+        format!(r#"{{"idempotency_key":"rent","evidence":["{invoice}"],{RENT}}}"#).as_bytes(),
+    );
+    let posted = ok(&book, &["post", "--intent", &intent, "--json"]);
+    let entry = field(&posted, "vid").unwrap().to_string();
+
+    let lease_cited = format!("{lease}:Contract");
+    let attach = [
+        "document",
+        "attach",
+        entry.as_str(),
+        "--evidence",
+        lease_cited.as_str(),
+        "--json",
+    ];
+    let out = ok(&book, &attach);
+    assert_eq!(field(&out, "event"), Some("evidence_attached"), "{out}");
+    assert_eq!(field(&out, "entry"), Some(entry.as_str()), "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("false"), "{out}");
+    assert!(
+        out.contains(&format!("\"document_oid\":\"{lease}\"")),
+        "{out}"
+    );
+    assert!(out.contains("\"role\":\"Contract\""), "{out}");
+    let supplement = field(&out, "supplement_vid").unwrap().to_string();
+    let recorded_at = field(&out, "recorded_at").unwrap().to_string();
+
+    // The same attachment again is the recorded one; nothing new is written.
+    let again = ok(&book, &attach);
+    assert_eq!(field(&again, "already_recorded"), Some("true"), "{again}");
+    assert_eq!(field(&again, "supplement_vid"), Some(supplement.as_str()));
+    assert_eq!(field(&again, "recorded_at"), Some(recorded_at.as_str()));
+
+    // explain evidence: the entry still cites only the invoice, and the
+    // supplement is listed with the lease.
+    let explained = ok(&book, &["explain", "evidence", &entry, "--json"]);
+    assert_eq!(field(&explained, "event"), Some("evidence_explained"));
+    let cited = explained.matches("\"counts_toward_minimum\"").count();
+    assert_eq!(
+        cited, 1,
+        "the entry's own evidence is unchanged: {explained}"
+    );
+    let listed = explained
+        .split("\"supplements\":[{")
+        .last()
+        .unwrap_or_default();
+    assert!(
+        listed.contains(&format!("\"supplement_vid\":\"{supplement}\""))
+            && listed.contains(&format!("\"document_oid\":\"{lease}\"")),
+        "{explained}"
+    );
+
+    // An unknown document is the kernel's refusal; nothing is written.
+    let unknown = "ab".repeat(32);
+    refused(
+        &book,
+        &[
+            "document",
+            "attach",
+            &entry,
+            "--evidence",
+            &unknown,
+            "--json",
+        ],
+        "FA-REF-081",
+        3,
+    );
+    // An entry the book does not hold, and an attachment naming nothing,
+    // are usage errors.
+    let (code, out, _) = fa(
+        &book,
+        &[
+            "document",
+            "attach",
+            &"cd".repeat(16),
+            "--evidence",
+            &lease,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("no entry"), "{out}");
+    let (code, out, _) = fa(&book, &["document", "attach", &entry, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("--evidence"), "{out}");
+    Ok(())
+}

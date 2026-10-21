@@ -200,7 +200,7 @@ ubs $(git diff --name-only)
 
 If any check fails, fix root causes before handing off.
 
-**The piecemeal list does not cover a change that is not Rust.** Every `cargo` step is a no-op on anything but `.rs`, and `ubs` prints `no supported languages detected … nothing was checked (this is NOT a pass)` and **exits 0** on a `.toml`, `.sh`, `.jsonl`, or `.md` file. `scripts/check.sh` (a G0 deliverable, modeled on FrankenGraphDB's) closes this with a file-coverage closure (every tracked file claimed by a gate or declared exempt with a reason), shell lint, registry validation (`tools/registry-check`), the claims lint, the parity gate (`verbs.toml` vs CLI vs MCP), the robot-schema fixture pin, and the forbidden-deps check. So: if you touched anything that is not `.rs`, run `scripts/check.sh`.
+**The piecemeal list does not cover a change that is not Rust.** Every `cargo` step is a no-op on anything but `.rs`, and `ubs` prints `no supported languages detected … nothing was checked (this is NOT a pass)` and **exits 0** on a `.toml`, `.sh`, `.jsonl`, or `.md` file. `scripts/check.sh` (a G0 deliverable, modeled on FrankenGraphDB's) covers it with shell lint, registry validation (`tools/registry-check`), the claims lint, the parity gate (`verbs.toml` vs CLI vs MCP), the robot-schema fixture pin, and the forbidden-deps check. It does **not** yet run a file-coverage closure (every tracked file claimed by a gate or declared exempt with a reason), a README/AGENTS sync check, `br dep cycles` or a tree-integrity step; check.sh's STEPS header lists these as never implemented (fa-vz7e), so a green run says nothing about them. So: if you touched anything that is not `.rs`, run `scripts/check.sh`.
 
 ### Reading a gate — use the exit code, never a grep
 

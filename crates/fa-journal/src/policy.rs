@@ -152,6 +152,36 @@ pub fn authorize_approvals<V: asupersync::fs::Vfs + Clone>(
     matrix_approvals: u8,
     preparer: Party,
 ) -> Outcome<()> {
+    authorize_approvals_in(
+        txn,
+        db,
+        book,
+        approvals,
+        proposal_digest,
+        epoch,
+        key,
+        matrix_approvals,
+        preparer,
+        None,
+    )
+}
+
+/// [`authorize_approvals`] for work in a case: `case_preparers` are the
+/// principals who prepared any entry in it, so a rule's `case_preparer`
+/// exclusion is decided (`None` keeps it undecidable: fail closed).
+#[allow(clippy::too_many_arguments)]
+pub fn authorize_approvals_in<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    approvals: &[ApprovalRef],
+    proposal_digest: &[u8; 32],
+    epoch: u64,
+    key: &SodKey,
+    matrix_approvals: u8,
+    preparer: Party,
+    case_preparers: Option<&std::collections::BTreeSet<VId>>,
+) -> Outcome<()> {
     let steward = steward()?;
     let mut witnessed: Vec<Approver> = Vec::with_capacity(approvals.len());
     for (index, cited) in approvals.iter().enumerate() {
@@ -202,7 +232,7 @@ pub fn authorize_approvals<V: asupersync::fs::Vfs + Clone>(
         witnessed.push(Approver::from(&approval));
     }
     Ok(steward
-        .segregate(key, matrix_approvals, preparer, &witnessed)
+        .segregate_in(key, matrix_approvals, preparer, &witnessed, case_preparers)
         .map_err(|d| refusal(&d)))
 }
 

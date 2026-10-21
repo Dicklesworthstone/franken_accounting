@@ -90,6 +90,12 @@ pub enum Denial {
         rule: String,
         approver: VId,
     },
+    /// The approver prepared an entry in the case the approved work belongs
+    /// to (the `case_preparer` exclusion).
+    CasePreparer {
+        rule: String,
+        approver: VId,
+    },
     ApproverProfile {
         rule: String,
         approver: VId,
@@ -158,6 +164,7 @@ impl Denial {
             Self::CeilingExceeded { .. } | Self::UnboundedUnit { .. } => code::CEILING,
             Self::SelfApproval { .. }
             | Self::DuplicateApprover { .. }
+            | Self::CasePreparer { .. }
             | Self::ApproverProfile { .. }
             | Self::ApproverOp { .. }
             | Self::HumanApproversRequired { .. }
@@ -184,6 +191,7 @@ impl Denial {
             Self::UnboundedUnit { .. } => "unbounded_unit",
             Self::SelfApproval { .. } => "self_approval",
             Self::DuplicateApprover { .. } => "duplicate_approver",
+            Self::CasePreparer { .. } => "case_preparer",
             Self::ApproverProfile { .. } => "approver_profile",
             Self::ApproverOp { .. } => "approver_op",
             Self::HumanApproversRequired { .. } => "human_approvers",
@@ -240,6 +248,10 @@ impl Denial {
             ),
             Self::DuplicateApprover { approver, .. } => format!(
                 "principal {:032x} approves more than once; approvers are distinct principals",
+                approver.0
+            ),
+            Self::CasePreparer { approver, .. } => format!(
+                "principal {:032x} prepared an entry in this case and cannot approve its work",
                 approver.0
             ),
             Self::ApproverProfile {
@@ -313,6 +325,7 @@ impl Denial {
             }
             Self::SelfApproval { rule, .. }
             | Self::DuplicateApprover { rule, .. }
+            | Self::CasePreparer { rule, .. }
             | Self::ApproverProfile { rule, .. }
             | Self::ApproverOp { rule, .. }
             | Self::HumanApproversRequired { rule, .. }
@@ -359,6 +372,9 @@ impl Denial {
             Self::SelfApproval { .. } | Self::DuplicateApprover { .. } => {
                 "collect the approval from a different principal, acting as the approver: `fa approve --proposal <digest> --as <approver> --json` over this proposal digest".into()
             }
+            Self::CasePreparer { .. } => {
+                "collect the approval from a principal who planned none of the case's entries (`fa case approve <case> --dry-run` lists them as preparers)".into()
+            }
             Self::ApproverProfile { allowed, .. } => format!(
                 "collect the approval from a principal acting under one of: {}",
                 allowed.join(", ")
@@ -370,7 +386,7 @@ impl Denial {
                 "add approvals from Human principals over the same proposal digest".into()
             }
             Self::UnsupportedExclusion { exclusion, .. } if exclusion == "case_preparer" => {
-                "a restatement case decides this exclusion and none can exist yet: restatement cases land with fa-oz3 (Palimpsest slice 2); nothing was written".into()
+                "only a restatement case's own records decide this exclusion, and only fa case approve and fa case post carry them; outside a case this is refused; nothing was written".into()
             }
             Self::UnsupportedExclusion { .. } => {
                 "this class lands with the case slice that can decide the exclusion; nothing was written".into()

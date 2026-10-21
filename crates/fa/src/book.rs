@@ -1170,12 +1170,223 @@ impl Book {
         )))
     }
 
+    /// Where `AS ISSUED TO <audience>` pins `period`'s reads (plan §7.4): the
+    /// period's first issuance to `audience` (FA-REF-173 when there is none).
+    pub fn issued_to(
+        &self,
+        period: &str,
+        audience: fa_journal::IssuedTo,
+    ) -> Outcome<fa_journal::IssuanceRecord> {
+        with_store!(&self.store, core => core.issued_to(&self.purposes(), period, audience))
+    }
+
+    /// Where `AS REPORTED IN <certificate>` pins `period`'s reads (plan
+    /// §7.4): the known-at of a retained trunk statement certificate that
+    /// reports `period` (FA-REF-174 otherwise), read under `capability`.
+    pub fn reported_in(
+        &self,
+        capability: &fa_journal::Capability,
+        certificate: &[u8; 32],
+        period: &str,
+    ) -> Outcome<fgdb_types::CommitSeq> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.reported_in(
+            &purposes, capability, certificate, period,
+        )))
+    }
+
     /// Every statement issuance of `period`, by ordinal, or of the book.
     pub fn statement_issuances(
         &self,
         period: Option<&str>,
     ) -> Result<Vec<fa_journal::IssuanceRecord>, BookError> {
         with_store!(&self.store, core => core.statement_issuances(&self.purposes(), period))
+    }
+
+    /// Open a restatement case over `periods` (plan §8.3, Appendix B
+    /// `OpenRestatementCase`, bead fa-75j4): numbered next among the book's
+    /// cases, `Proposed` (or `Determined` when the determination is given).
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        kind: fa_journal::CaseKind,
+        periods: Vec<String>,
+        narrative: Option<fa_model::Oid>,
+        determination: Option<fa_journal::Determination>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.open_case(
+            &purposes, capability, kind, periods, narrative, determination, effective_date,
+            idempotency_key,
+        )))
+    }
+
+    /// Record case `ordinal`'s determination (plan §8.3, bead fa-75j4).
+    pub fn determine_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        determination: fa_journal::Determination,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.determine_case(
+            &purposes, capability, ordinal, determination, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Rehearse case `ordinal` on a scenario (plan §8.3: Determined →
+    /// Rehearsed, "with the as-reported-vs-as-restated diff certificate
+    /// attached"). `certificate` is the scenario's diff certificate (`fa
+    /// scenario diff --certify`): it is replayed in full and retained in the
+    /// book under its digest (read and produce), then the Rehearse record
+    /// (restate) journals the scenario, the retained certificate, the fork
+    /// and the periods the diff covers, which must include every period the
+    /// case affects. `restate` is judged before the replay writes anything.
+    pub fn rehearse_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        certificate: &crate::ScenarioDiffCertificate,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        if let Err(denial) = fa_policy::require(
+            &capability,
+            fa_policy::Op::Restate,
+            "rehearsing a restatement case",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let periods = match &certificate.trunk().selection {
+            crate::ReportSelection::TrialBalance(
+                crate::TrialBalanceSelection::Periods(periods)
+                | crate::TrialBalanceSelection::Activity(periods),
+            ) => periods.clone(),
+            _ => {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_journal::refusal::code::CASE_REHEARSAL,
+                    fa_journal::exit::REFUSAL,
+                    "a rehearsal's diff certificate compares named periods; this one does not",
+                    "plan §8.3 (Rehearsed: with the as-reported-vs-as-restated diff certificate attached)",
+                    "certify the scenario's diff with --period <code> for every period the case affects",
+                )));
+            }
+        };
+        let principal = capability.holder();
+        let retained = match self.retain_scenario_diff(principal, &capability, certificate)? {
+            Ok(retained) => retained,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let rehearsal = fa_journal::Rehearsal {
+            scenario: certificate.name().to_string(),
+            certificate: retained.digest,
+            fork_at: certificate.trunk().known_at,
+            periods,
+            intents: certificate.intents().to_vec(),
+        };
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.rehearse_case(
+            &purposes, capability, ordinal, rehearsal, effective_date, idempotency_key,
+        )))
+    }
+
+    /// The effect manifest a Rehearsed case's approvers approve (plan §8.3):
+    /// each entry the case will post (its Plan record, intent digest and
+    /// planner) under the case's body and rehearsal. `fa approve --proposal`
+    /// over its digest records an approval.
+    pub fn case_manifest(&self, ordinal: u32) -> Outcome<fa_journal::CaseManifest> {
+        with_store!(&self.store, core => core.case_manifest(&self.purposes(), ordinal))
+    }
+
+    /// Approve case `ordinal` (plan §8.3: Rehearsed → Approved, "dual control,
+    /// by principals … neither of whom prepared any entry in the case").
+    /// `approvals` are Approval vertices of the manifest's digest; the
+    /// `case-approve` rule (restate preparer, two Human approvers) decides
+    /// them at commit with the manifest's planners as the case's preparers.
+    pub fn approve_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        approvals: Vec<VId>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_case(
+            &purposes, capability, ordinal, approvals, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Post case `ordinal` (plan §8.3: Approved → Posted, "the case's
+    /// entries commit in one batch"). Each manifest entry is the planned
+    /// intent as the case's class under `capability`'s holder, carrying
+    /// extension 23 `fa:case-member:v1`, through every posting law: its
+    /// matrix row and SoD rule are decided over the case's approvals, with
+    /// the poster as preparer and the planners as the case's preparers. The
+    /// entries, the Post record and the case's state change are one commit,
+    /// and a case's entry reaches trunk no other way. This build posts
+    /// PriorPeriodAdjustment cases; a Revision or Restatement case's entries
+    /// supersede a target with delta legs and are refused (FA-REF-178).
+    pub fn post_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.post_case(
+            &purposes, capability, ordinal, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Disclose case `ordinal` (plan §8.3: Posted → Disclosed, "the
+    /// disclosure document is attested") in `document`: a Disclosure
+    /// document of this book over which a principal other than its uploader
+    /// has recorded a Reviewed attestation ([`Book::record_review`]). Both
+    /// are read as point witnesses in the record's transaction; anything
+    /// else is FA-REF-179.
+    pub fn disclose_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        document: fa_model::Oid,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.disclose_case(
+            &purposes, capability, ordinal, document, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Close case `ordinal` (plan §8.3: Disclosed → Closed), its last record.
+    pub fn close_case(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.close_case(
+            &purposes, capability, ordinal, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Restatement case `ordinal` as its records state it.
+    pub fn case(&self, ordinal: u32) -> Result<Option<fa_journal::CaseView>, BookError> {
+        with_store!(&self.store, core => core.case(&self.purposes(), ordinal))
+    }
+
+    /// Every restatement case of the book, by ordinal.
+    pub fn cases(&self) -> Result<Vec<fa_journal::CaseView>, BookError> {
+        with_store!(&self.store, core => core.cases(&self.purposes()))
     }
 
     /// Open the production profile of `profile.matter` (plan §13.2, bead
@@ -2160,6 +2371,20 @@ impl Book {
         )))
     }
 
+    /// `AttachEvidence` (plan §9.2; bead fa-81lu): record `supplement`
+    /// against its committed entry, which never changes. The kernel admits
+    /// `post` before any read and witnesses the entry's digest.
+    pub fn attach_evidence(
+        &mut self,
+        capability: &fa_journal::Capability,
+        supplement: &fa_journal::evidence::SupplementalEvidence,
+    ) -> Outcome<fa_journal::evidence::EvidenceAttached> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.attach_evidence(
+            &purposes, capability, supplement,
+        )))
+    }
+
     /// Evaluate a lawful erasure request for `subject` (plan §8.5): admits
     /// `erase` before any read, checks capability currency and revocation,
     /// refuses active legal holds (`FA-REF-117`), and otherwise returns the
@@ -2342,6 +2567,18 @@ impl Book {
     /// Every account of the chart, sorted by code.
     pub fn accounts(&self) -> Result<Vec<AccountRow>, BookError> {
         with_store!(&self.store, core => core.accounts(&self.purposes()))
+    }
+
+    /// The journaled chart at a recorded prefix under current read
+    /// authority: accounts, effectivity, parents and children (plan §4.3).
+    pub fn chart_at(
+        &self,
+        known_at: CommitSeq,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::chart::ChartSnapshot> {
+        with_store!(&self.store, core =>
+            core.chart_at(&self.purposes(), known_at, capability)
+        )
     }
 
     /// Accounts from a recorded chart prefix under current read authority.
@@ -2706,6 +2943,15 @@ impl Book {
     /// witnesses or document-receipt claims.
     pub fn verify_accumulator(&self) -> Result<fa_notary::AccumulatorVerification, BookError> {
         with_store!(&self.store, core => core.verify_accumulator(&self.purposes()))
+    }
+
+    /// Every journaled accumulator state, newest first, following each
+    /// state's `prev_state_oid` (plan §13.2; `fa checkpoint list`). This
+    /// reads the chain as recorded and recomputes nothing: a link it cannot
+    /// follow is an error here, and [`Book::verify_accumulator`] is the
+    /// check that recomputes each state from the journal.
+    pub fn checkpoints(&self) -> Result<Vec<fa_notary::StoredState>, BookError> {
+        with_store!(&self.store, core => core.checkpoints(&self.purposes()))
     }
 
     /// Export a raw Notary proof or 80-byte checkpoint for the independent

@@ -361,6 +361,22 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Succeeds,
         ),
         row(
+            &[
+                "reclass",
+                entry,
+                "--from",
+                "4000",
+                "--to",
+                "3000",
+                "--amount",
+                "1.00 USD",
+                "--reason",
+                "WrongAccount",
+            ],
+            &[Op::Post],
+            Reaches,
+        ),
+        row(
             &["reserve", "--intent", "hold.json", "--evidence", document],
             &[Op::Post],
             Succeeds,
@@ -464,6 +480,52 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(&["checkpoint", "create"], &[Op::Witness], Reaches),
+        row(
+            &[
+                "case",
+                "open",
+                "--kind",
+                "Restatement",
+                "--periods",
+                "FY2026-P03",
+            ],
+            &[Op::Read, Op::Restate],
+            Reaches,
+        ),
+        row(
+            &[
+                "case",
+                "determine",
+                "1",
+                "--on",
+                DAY,
+                "--authority",
+                document,
+            ],
+            &[Op::Read, Op::Restate],
+            Reaches,
+        ),
+        row(
+            &["case", "rehearse", "1", "--certificate", "rehearsal.cert"],
+            &[Op::Read, Op::Restate, Op::Produce],
+            Reaches,
+        ),
+        row(
+            &["case", "approve", "1", "--approval", ZERO_DIGEST],
+            &[Op::Read, Op::Restate],
+            Reaches,
+        ),
+        row(
+            &["case", "post", "1"],
+            &[Op::Read, Op::Restate, Op::Post],
+            Reaches,
+        ),
+        row(
+            &["case", "disclose", "1", "--document", ZERO_DIGEST],
+            &[Op::Read, Op::Restate],
+            Reaches,
+        ),
+        row(&["case", "close", "1"], &[Op::Read, Op::Restate], Reaches),
         row(
             &[
                 "statement",
@@ -572,6 +634,11 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &["document", "attest", "review", document],
             &[Op::Approve],
             Reaches,
+        ),
+        row(
+            &["document", "attach", entry, "--evidence", document],
+            &[Op::Read, Op::Post],
+            Succeeds,
         ),
         row(
             &["document", "import", "run", "junk.json"],

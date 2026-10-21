@@ -6,6 +6,8 @@
 //! - Xero Journal / Account Transactions CSV (`xero_csv_v1`)
 //! - NetSuite General Ledger Detail CSV (`netsuite_csv_v1`)
 //! - Generic GL CSV with a declared column map (`csv_gl_v1` + `LegacyColumnMap`)
+//! - Beancount v3 ledgers (`beancount_v3`: single-unit transactions; see
+//!   [`parse_beancount_ledger`] for the subset)
 //!
 //! Every reader maps legacy rows to balanced `LegacyChunkEntry` items carrying
 //! `MigratedProvenance { source_system, source_id, source_recorded_at_ns, source_entered_by, source_approved_by }`,
@@ -39,6 +41,7 @@ pub enum LegacyFormat {
     XeroCsv,
     NetSuiteCsv,
     GenericCsv,
+    Beancount,
 }
 
 impl LegacyFormat {
@@ -50,6 +53,7 @@ impl LegacyFormat {
             Self::XeroCsv => "xero_csv_v1",
             Self::NetSuiteCsv => "netsuite_csv_v1",
             Self::GenericCsv => "csv_gl_v1",
+            Self::Beancount => "beancount_v3",
         }
     }
 
@@ -61,6 +65,7 @@ impl LegacyFormat {
             Self::XeroCsv => "xero-csv",
             Self::NetSuiteCsv => "netsuite-csv",
             Self::GenericCsv => "legacy-csv",
+            Self::Beancount => "beancount",
         }
     }
 }
@@ -1327,6 +1332,358 @@ fn parse_tabular_csv_with_format(
     )
 }
 
+// ---------------------------------------------------------------------------
+// 6. Beancount v3 ledger (`beancount_v3`)
+// ---------------------------------------------------------------------------
+
+/// Transaction flags Beancount accepts besides `txn`.
+const BEANCOUNT_FLAGS: &str = "*!PSTCURM#?%&";
+
+/// Dated directives that carry no postings; skipped with their metadata.
+const BEANCOUNT_INERT: &[&str] = &[
+    "open",
+    "close",
+    "commodity",
+    "price",
+    "note",
+    "document",
+    "event",
+    "query",
+    "custom",
+    "balance",
+];
+
+/// A transaction while its postings are read.
+struct BeancountTxn {
+    line: usize,
+    date: DateDay,
+    description: String,
+    legs: Vec<FormatLeg>,
+    /// The mapped account of the one posting without an amount.
+    elided: Option<String>,
+}
+
+/// Parse a Beancount v3 ledger into a `LegacyImportBatch` (plan §8.6, bead
+/// `fa-waow`). Each transaction is one entry whose source id is `L<line>`,
+/// its header's line number in the retained source; each posting is a leg on
+/// its full account name, resolved through `account_map`. A positive amount
+/// is a debit.
+///
+/// The subset maps a ledger without inference beyond Beancount's own:
+/// - one posting per transaction may omit its amount; it takes the negated
+///   remainder of each unit, one leg per unit that has one (Beancount's rule);
+/// - a posting at cost (`{…}`) or price (`@`, `@@`) converts between units,
+///   which a legacy leg cannot carry, so it is refused, as are arithmetic
+///   amounts, `pad` (Beancount synthesizes its posting), `include` and
+///   `plugin` (it may rewrite transactions): import the ledger as Beancount
+///   prints it after processing instead;
+/// - `option`, the tag and metadata stacks, tag and metadata lines, and the
+///   directives that carry no postings are skipped; `balance` assertions are
+///   not re-checked here (bean-check is the source's own checker);
+/// - a zero posting moves nothing and is dropped.
+pub fn parse_beancount_ledger(
+    src: &str,
+    units: &UnitCatalog,
+    account_map: &AccountMap,
+) -> Result<LegacyImportBatch, FormatError> {
+    const FMT: &str = "beancount_v3";
+    let refuse = |line: usize, detail: String| FormatError::Parse {
+        format: FMT,
+        detail: format!("line {line}: {detail}"),
+    };
+    let reprint = "import the ledger as Beancount prints it after processing";
+    let mut chunks = Vec::new();
+    let mut row_count = 0usize;
+    let mut current: Option<BeancountTxn> = None;
+    for (idx, raw) in src.lines().enumerate() {
+        let line_no = idx + 1;
+        let line = strip_beancount_comment(raw.trim_end_matches('\r'));
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with([' ', '\t']) {
+            let body = line.trim();
+            // Metadata of a directive without postings, or a transaction's
+            // metadata, tags and links.
+            let Some(txn) = current.as_mut() else {
+                continue;
+            };
+            if is_beancount_metadata(body) || body.starts_with(['#', '^']) {
+                continue;
+            }
+            row_count += 1;
+            beancount_posting(txn, body, line_no, units, account_map)?;
+            continue;
+        }
+        if let Some(txn) = current.take() {
+            chunks.push(finish_beancount_txn(txn)?);
+        }
+        if line.starts_with('*') {
+            // An org-mode heading.
+            continue;
+        }
+        let line = line.trim_start();
+        let mut words = line.split_whitespace();
+        let first = words.next().unwrap_or_default();
+        match first {
+            "option" | "pushtag" | "poptag" | "pushmeta" | "popmeta" => continue,
+            "include" => {
+                return Err(refuse(
+                    line_no,
+                    format!("include names another file; {reprint}"),
+                ));
+            }
+            "plugin" => {
+                return Err(refuse(
+                    line_no,
+                    format!("a plugin may rewrite transactions; {reprint}"),
+                ));
+            }
+            _ => {}
+        }
+        let date = parse_date_iso(FMT, &first.replace('/', "-")).map_err(|_| {
+            refuse(
+                line_no,
+                format!("`{first}` is neither a dated directive nor a known keyword"),
+            )
+        })?;
+        let keyword = words.next().unwrap_or_default();
+        if BEANCOUNT_INERT.contains(&keyword) {
+            continue;
+        }
+        if keyword == "pad" {
+            return Err(refuse(
+                line_no,
+                format!(
+                    "pad asks Beancount to synthesize a posting; {reprint}, where it is explicit"
+                ),
+            ));
+        }
+        let flag =
+            keyword == "txn" || (keyword.chars().count() == 1 && BEANCOUNT_FLAGS.contains(keyword));
+        if !flag {
+            return Err(refuse(
+                line_no,
+                format!("unsupported directive `{keyword}`"),
+            ));
+        }
+        let after_date = line[first.len()..].trim_start();
+        let header = after_date[keyword.len()..].trim();
+        let description =
+            beancount_description(header).map_err(|detail| refuse(line_no, detail))?;
+        current = Some(BeancountTxn {
+            line: line_no,
+            date,
+            description,
+            legs: Vec::new(),
+            elided: None,
+        });
+    }
+    if let Some(txn) = current.take() {
+        chunks.push(finish_beancount_txn(txn)?);
+    }
+    finalize_legacy_batch(
+        LegacyFormat::Beancount,
+        LegacyFormat::Beancount.default_source_system().to_owned(),
+        src,
+        row_count,
+        chunks,
+    )
+}
+
+/// The line up to a `;` outside a string.
+fn strip_beancount_comment(line: &str) -> &str {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (i, c) in line.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            ';' if !quoted => return &line[..i],
+            _ => {}
+        }
+    }
+    line
+}
+
+/// `key: value`, a key starting with a lowercase letter (an account starts
+/// with a capital, a flagged posting with its flag).
+fn is_beancount_metadata(body: &str) -> bool {
+    body.split_once(':').is_some_and(|(key, _)| {
+        key.starts_with(|c: char| c.is_ascii_lowercase())
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    })
+}
+
+/// A transaction header after its flag: `"payee" "narration"` or
+/// `"narration"`, then only tags and links.
+fn beancount_description(header: &str) -> Result<String, String> {
+    let mut strings = Vec::new();
+    let mut rest = header.trim_start();
+    while let Some(body) = rest.strip_prefix('"') {
+        let mut text = String::new();
+        let mut escaped = false;
+        let mut end = None;
+        for (i, c) in body.char_indices() {
+            if escaped {
+                text.push(c);
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                end = Some(i);
+                break;
+            } else {
+                text.push(c);
+            }
+        }
+        let end = end.ok_or_else(|| {
+            "an unterminated string (a string spanning lines is not supported)".to_string()
+        })?;
+        strings.push(text);
+        rest = body[end + 1..].trim_start();
+    }
+    if let Some(word) = rest.split_whitespace().find(|w| !w.starts_with(['#', '^'])) {
+        return Err(format!("unexpected `{word}` in a transaction header"));
+    }
+    match strings.as_slice() {
+        [] => Ok(String::new()),
+        [narration] => Ok(narration.clone()),
+        [payee, narration] => Ok(format!("{payee}: {narration}")),
+        _ => Err("a transaction header takes at most a payee and a narration".into()),
+    }
+}
+
+/// One posting of `txn`: `[flag] Account [amount unit]`.
+fn beancount_posting(
+    txn: &mut BeancountTxn,
+    body: &str,
+    line: usize,
+    units: &UnitCatalog,
+    account_map: &AccountMap,
+) -> Result<(), FormatError> {
+    const FMT: &str = "beancount_v3";
+    let refuse = |detail: String| FormatError::Parse {
+        format: FMT,
+        detail: format!("line {line}: {detail}"),
+    };
+    let mut words: Vec<&str> = body.split_whitespace().collect();
+    if words.len() > 1 && words[0].chars().count() == 1 && BEANCOUNT_FLAGS.contains(words[0]) {
+        words.remove(0);
+    }
+    let account = words[0];
+    if body.contains(['{', '@']) {
+        return Err(refuse(format!(
+            "the posting on {account} is at cost or price, which converts between units; a legacy leg carries one unit"
+        )));
+    }
+    let account_code = account_map.resolve(FMT, account)?;
+    match words[1..] {
+        [] => {
+            if txn.elided.is_some() {
+                return Err(refuse(
+                    "a second posting without an amount; Beancount infers at most one".into(),
+                ));
+            }
+            txn.elided = Some(account_code);
+            Ok(())
+        }
+        [number, unit] => {
+            let (uid, scale) = units
+                .lookup_code(unit)
+                .ok_or_else(|| FormatError::UnknownUnit {
+                    format: FMT,
+                    unit: unit.to_owned(),
+                })?;
+            if !number
+                .bytes()
+                .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b',' | b'-' | b'+'))
+            {
+                return Err(refuse(format!(
+                    "`{number}` is an arithmetic amount; write it as one decimal"
+                )));
+            }
+            let signed = parse_exact_decimal(FMT, &number.replace(',', ""), scale)?;
+            let (side, mantissa) = match signed.cmp(&0) {
+                std::cmp::Ordering::Equal => return Ok(()),
+                std::cmp::Ordering::Greater => (Side::Debit, signed),
+                std::cmp::Ordering::Less => (
+                    Side::Credit,
+                    signed.checked_neg().ok_or_else(|| FormatError::Overflow {
+                        format: FMT,
+                        detail: format!("line {line}: the amount overflows"),
+                    })?,
+                ),
+            };
+            txn.legs.push(FormatLeg {
+                account_code,
+                side,
+                amount: Amount::new(uid, mantissa),
+                unit_code: unit.to_owned(),
+                unit_scale: scale,
+                memo: None,
+            });
+            Ok(())
+        }
+        _ => Err(refuse(format!(
+            "the posting on {account} is not `account amount unit`"
+        ))),
+    }
+}
+
+/// The transaction as an entry; its posting without an amount takes each
+/// unit's remainder, negated.
+fn finish_beancount_txn(txn: BeancountTxn) -> Result<LegacyChunkEntry, FormatError> {
+    let overflow = || FormatError::Overflow {
+        format: "beancount_v3",
+        detail: format!("line {}: the remainder overflows", txn.line),
+    };
+    let mut legs = txn.legs;
+    if let Some(account_code) = txn.elided {
+        let mut net: BTreeMap<(String, UnitId, u8), i128> = BTreeMap::new();
+        for leg in &legs {
+            let cell = net
+                .entry((leg.unit_code.clone(), leg.amount.unit, leg.unit_scale))
+                .or_insert(0);
+            *cell = match leg.side {
+                Side::Debit => cell.checked_add(leg.amount.mantissa),
+                Side::Credit => cell.checked_sub(leg.amount.mantissa),
+            }
+            .ok_or_else(overflow)?;
+        }
+        for ((unit_code, unit, unit_scale), net) in net {
+            let (side, mantissa) = match net.cmp(&0) {
+                std::cmp::Ordering::Equal => continue,
+                std::cmp::Ordering::Greater => (Side::Credit, net),
+                std::cmp::Ordering::Less => (Side::Debit, net.checked_neg().ok_or_else(overflow)?),
+            };
+            legs.push(FormatLeg {
+                account_code: account_code.clone(),
+                side,
+                amount: Amount::new(unit, mantissa),
+                unit_code,
+                unit_scale,
+                memo: None,
+            });
+        }
+    }
+    Ok(LegacyChunkEntry {
+        provenance: MigratedProvenance {
+            source_system: LegacyFormat::Beancount.default_source_system().to_owned(),
+            source_id: format!("L{}", txn.line),
+            source_recorded_at_ns: None,
+            source_entered_by: None,
+            source_approved_by: None,
+        },
+        effective_date: txn.date,
+        description: txn.description,
+        legs,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1553,6 +1910,119 @@ ENDTRNS
             compact.chunks[0].provenance.source_recorded_at_ns,
             batch.chunks[0].provenance.source_recorded_at_ns
         );
+    }
+
+    #[test]
+    fn beancount_ledger_maps_full_account_names_and_the_elided_remainder() {
+        let units = UnitCatalog::embedded().expect("units");
+        let mut map = AccountMap::new(["1000", "3000", "4000", "5000"]);
+        map.insert("Assets:Bank:Checking", "1000");
+        map.insert("Equity:Opening-Balances", "3000");
+        map.insert("Income:Sales", "4000");
+        map.insert("Expenses:Auto:Fuel", "5000");
+        let ledger = "\
+option \"operating_currency\" \"USD\"
+* Accounts
+2025-01-01 open Assets:Bank:Checking USD
+  name: \"Operating account\"
+2025-01-01 open Equity:Opening-Balances
+2025-01-01 commodity USD
+pushtag #migration
+2025-12-01 * \"Opening\" \"Capital; contributed\" #seed ^capital-1
+  source: \"minutes\"
+  Assets:Bank:Checking      1,000.00 USD ; deposit slip
+    slip: \"A-17\"
+  Equity:Opening-Balances
+poptag #migration
+2025-12-15 txn \"Fuel and a sale\"
+  ! Expenses:Auto:Fuel         40.25 USD
+  Assets:Bank:Checking        -40.25 USD
+  Income:Sales                 0.00 USD
+2025-12-20 balance Assets:Bank:Checking 959.75 USD
+2025-12-28 price USD 1.00 USD
+";
+        let batch = parse_beancount_ledger(ledger, &units, &map).expect("valid ledger");
+        assert_eq!(batch.source_system, "beancount");
+        assert_eq!(batch.row_count, 5);
+        assert_eq!(batch.chunks.len(), 2);
+        let opening = &batch.chunks[0];
+        assert_eq!(opening.provenance.source_id, "L8");
+        assert_eq!(opening.description, "Opening: Capital; contributed");
+        let legs: Vec<(&str, Side, i128)> = opening
+            .legs
+            .iter()
+            .map(|l| (l.account_code.as_str(), l.side, l.amount.mantissa))
+            .collect();
+        assert_eq!(
+            legs,
+            [
+                ("1000", Side::Debit, 100_000),
+                ("3000", Side::Credit, 100_000)
+            ]
+        );
+        // The zero posting moved nothing and is dropped; the flag is not an
+        // account.
+        let fuel = &batch.chunks[1];
+        assert_eq!(fuel.provenance.source_id, "L14");
+        assert_eq!(fuel.description, "Fuel and a sale");
+        assert_eq!(fuel.legs.len(), 2);
+        assert_eq!(fuel.legs[0].account_code, "5000");
+        let cash = batch
+            .trial_balance
+            .iter()
+            .find(|l| l.account_code == "1000")
+            .expect("cash line");
+        assert_eq!(cash.mantissa, 95_975);
+        // A line led by whitespace other than a space or a tab is read
+        // from its first word.
+        let led = format!("\u{a0}2025-01-02 open Income:Sales\n{ledger}");
+        let read = parse_beancount_ledger(&led, &units, &map).expect("led line");
+        assert_eq!(read.chunks.len(), 2);
+
+        // Planted negatives: each names its line and what to do instead.
+        for (planted, expected) in [
+            (
+                ledger.replace("1,000.00 USD", "10 AAPL {100.00 USD}"),
+                "at cost or price",
+            ),
+            (
+                ledger.replace("-40.25 USD", "-40.25 USD @ 1.00 USD"),
+                "at cost or price",
+            ),
+            (
+                ledger.replace("2025-12-28 price", "2025-12-28 pad Assets:Bank:Checking Equity:Opening-Balances\n2025-12-29 price"),
+                "pad asks Beancount",
+            ),
+            (format!("include \"other.beancount\"\n{ledger}"), "include names another file"),
+            (format!("plugin \"beancount.plugins.auto\"\n{ledger}"), "a plugin may rewrite"),
+            (
+                ledger.replace(
+                    "  Assets:Bank:Checking        -40.25 USD\n  Income:Sales                 0.00 USD",
+                    "  Assets:Bank:Checking\n  Income:Sales",
+                ),
+                "a second posting without an amount",
+            ),
+            (ledger.replace("40.25 USD\n  Assets", "(40 + 0.25) USD\n  Assets"), "not `account amount unit`"),
+            (ledger.replace("-40.25 USD", "-40*1 USD"), "arithmetic amount"),
+            (ledger.replace("2025-12-20 balance", "2025-12-20 frobnicate"), "unsupported directive"),
+            (ledger.replace("\"Fuel and a sale\"", "\"Fuel and a sale"), "unterminated string"),
+            (ledger.replace("-40.25 USD", "-40.20 USD"), "unbalanced"),
+        ] {
+            let err = parse_beancount_ledger(&planted, &units, &map)
+                .expect_err(expected)
+                .to_string();
+            assert!(err.to_lowercase().contains(&expected.to_lowercase()), "{expected}: {err}");
+        }
+        let unmapped = ledger.replace("Expenses:Auto:Fuel", "Expenses:Auto:Tolls");
+        assert!(matches!(
+            parse_beancount_ledger(&unmapped, &units, &map),
+            Err(FormatError::UnmappedAccount { legacy_account, .. }) if legacy_account == "Expenses:Auto:Tolls"
+        ));
+        let unknown = ledger.replace("40.25 USD\n  Assets", "40.25 ZZZ\n  Assets");
+        assert!(matches!(
+            parse_beancount_ledger(&unknown, &units, &map),
+            Err(FormatError::UnknownUnit { unit, .. }) if unit == "ZZZ"
+        ));
     }
 
     #[test]

@@ -107,7 +107,15 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             // fa-6l9: a production writes its volume (load files and
             // natives) into a new host directory, like `fa demo init`; MCP
             // output is inline only. Its profiles stay MCP tools.
-            || (e.verb == "produce" && e.subcommand.is_none());
+            || (e.verb == "produce" && e.subcommand.is_none())
+            // fa-75j4: a restatement case's writes need restate, outside
+            // both launch templates and issued-token ceilings; sessions
+            // read cases through fa_case_read.
+            || (e.verb == "case"
+                && matches!(
+                    e.subcommand.as_deref(),
+                    Some("open" | "determine" | "rehearse" | "approve" | "post" | "disclose" | "close")
+                ));
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"

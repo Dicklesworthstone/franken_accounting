@@ -6,6 +6,8 @@
 //! premise, including for an empty account interval. This is an opt-in API;
 //! existing signed-index and envelope-index APIs retain their behavior.
 
+pub mod bundle;
+
 use core::fmt;
 
 use super::{IndexDerivation, ScopeClaim, ScopeReport, scope_node, scope_root, tuple_leaf};

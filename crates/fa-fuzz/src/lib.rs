@@ -103,17 +103,17 @@ pub const LIVE_TARGETS: &[FuzzTarget] = &[
 pub const DORMANT_TARGETS: &[DormantTarget] = &[
     DormantTarget {
         name: "bundle",
-        activating_bead: "fa-795",
+        activating_bead: "fa-yrhb",
         description: "Dedicated .fab bundle container fuzzer (currently covered inside fa_verify_inputs)",
     },
     DormantTarget {
         name: "certificate",
-        activating_bead: "fa-a6h",
+        activating_bead: "fa-yrhb",
         description: "Dedicated report certificate fuzzer (currently covered inside payload_decoders)",
     },
     DormantTarget {
         name: "canon_source",
-        activating_bead: "fa-0t0",
+        activating_bead: "fa-yrhb",
         description: "Canon posting rule DSL parser and compiler fuzzer",
     },
     DormantTarget {
@@ -535,8 +535,8 @@ pub fn fuzz_chart_import_json(bytes: &[u8]) {
     }
 }
 
-/// Target 8 (`fa-qm4t`, `fa-2ek`): Legacy GL export readers (QuickBooks IIF/CSV, Xero CSV,
-/// NetSuite CSV, Generic GL CSV), `LegacyColumnMap` parser, and bank statement parsers
+/// Target 8 (`fa-qm4t`, `fa-2ek`, `fa-waow`): Legacy GL export readers (QuickBooks IIF/CSV,
+/// Xero CSV, NetSuite CSV, Generic GL CSV, Beancount ledger), `LegacyColumnMap` parser, and bank statement parsers
 /// (ISO 20022 `camt.053`/`camt.052`, BAI2, OFX/QBO, CSV, SWIFT MT940) on arbitrary bytes.
 pub fn fuzz_legacy_gl_formats(bytes: &[u8]) {
     let text = String::from_utf8_lossy(bytes);
@@ -549,6 +549,7 @@ pub fn fuzz_legacy_gl_formats(bytes: &[u8]) {
         let _ = fa_formats::legacy::parse_quickbooks_csv(&text, &units, &map, "USD");
         let _ = fa_formats::legacy::parse_xero_csv(&text, &units, &map, "USD");
         let _ = fa_formats::legacy::parse_netsuite_csv(&text, &units, &map, "USD");
+        let _ = fa_formats::legacy::parse_beancount_ledger(&text, &units, &map);
         let _ = fa_formats::bank::parse_camt053(&text, &units);
         let _ = fa_formats::bank::parse_camt052(&text, &units);
         let _ = fa_formats::bank::parse_bai2(&text, &units);

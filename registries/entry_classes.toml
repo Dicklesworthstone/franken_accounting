@@ -234,6 +234,27 @@ name = "IssuanceControl"
 kind = "control"
 supersession = "none"
 
+# A RestatementCase's life cycle (plan §8.3, Appendix A `RestatementCase`;
+# fa-75j4): book-scoped and undated; ControlPayload::LifecycleTransition on
+# the case's RestatementCase vertex — Open (the body in extension 19
+# `fa:restatement-case:v1`: kind, affected periods, optional narrative and
+# determination), Determine (extension 20 `fa:case-determination:v1`: the
+# day and the authority document), Rehearse (extension 21
+# `fa:case-rehearsal:v1`: the scenario, its retained diff certificate, the
+# fork and the periods the diff covers), Approve (extension 22
+# `fa:case-approval:v1`: the effect manifest two Human approvers bind), Post
+# (extension 24 `fa:case-posted:v1`: the entries the case posted, each
+# carrying extension 23 `fa:case-member:v1`), Disclose (extension 25
+# `fa:case-disclosure:v1`: the reviewed Disclosure document) and Close. The
+# narrative, authority and disclosure documents, the disclosure's
+# attestation, and the rehearsal's certificate and scenario vertices are
+# the records' proof refs.
+[[class]]
+tag = 30
+name = "CaseControl"
+kind = "control"
+supersession = "none"
+
 # ---- Control kinds (fa-g23) ---------------------------------------------------
 # `EntryOrigin::Control.control_kind`: the act that minted a control record. It
 # is durable in every control record's origin, so it is registered here rather
@@ -337,3 +358,14 @@ id = 15
 name = "statement_issuance"
 class = "IssuanceControl"
 minted_by = "fa-journal issuance::issue_statements"
+
+[[reserved_control_kind]]
+id = 16
+name = "engagement_transition"
+holder = "fa-zgn (EngagementControl, in flight); its row replaces this reservation"
+
+[[control_kind]]
+id = 17
+name = "case_transition"
+class = "CaseControl"
+minted_by = "fa-journal case::open_case, case::determine_case"

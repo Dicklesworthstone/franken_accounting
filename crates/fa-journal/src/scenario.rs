@@ -90,7 +90,7 @@ impl ScenarioState {
         CanonicalScalar::Int(i64::from(self.tag()))
     }
 
-    fn from_scalar(v: Option<&CanonicalScalar>) -> Option<Self> {
+    pub(crate) fn from_scalar(v: Option<&CanonicalScalar>) -> Option<Self> {
         match v {
             Some(CanonicalScalar::Int(1)) => Some(Self::Open),
             Some(CanonicalScalar::Int(2)) => Some(Self::Discarded),

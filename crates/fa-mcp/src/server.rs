@@ -898,6 +898,7 @@ impl Adapter {
             "resource://fa/drafts/{book}" => {
                 Ok((json_mime, self.read(&["draft", "list"])?.render()))
             }
+            "resource://fa/cases/{book}" => Ok((json_mime, self.read(&["case", "list"])?.render())),
             "resource://fa/certificates/{id}" => {
                 let id = params
                     .get("id")
@@ -1819,7 +1820,7 @@ mod tests {
     fn macros_and_book_resources_enforce_forbidden_arguments_paths_and_read_capability_before_opening_the_book()
      {
         let adapter = Adapter::new(config()).expect("adapter");
-        assert_eq!(RESOURCES.len(), 11);
+        assert_eq!(RESOURCES.len(), 12);
         assert_eq!(MACROS.len(), 4);
         for mac in MACROS {
             let tool = MacroTool::new(Arc::new(Adapter::new(config()).unwrap()), mac);
@@ -1912,6 +1913,10 @@ mod tests {
             ),
             (
                 "resource://fa/drafts/{book}",
+                HashMap::from([("book".into(), "default".into())]),
+            ),
+            (
+                "resource://fa/cases/{book}",
                 HashMap::from([("book".into(), "default".into())]),
             ),
             (

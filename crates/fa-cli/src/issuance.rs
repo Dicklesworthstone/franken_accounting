@@ -46,7 +46,7 @@ pub(crate) const ISSUE_ONLY: [&str; 8] = [
 ];
 /// The statement verb's report flags and switches: `issue` and `issuances`
 /// refuse each, never ignore it.
-const REPORT_ONLY: [&str; 16] = [
+const REPORT_ONLY: [&str; 18] = [
     "--compare",
     "--definition",
     "--before",
@@ -63,7 +63,99 @@ const REPORT_ONLY: [&str; 16] = [
     "--as-originally-reported",
     "--render",
     "--out",
+    "--as-issued-to",
+    "--as-reported-in",
 ];
+/// The restatement views that fix a read's known-at themselves (plan §7.4).
+pub(crate) const VIEW_FLAGS: [&str; 3] = [
+    "--as-originally-reported",
+    "--as-issued-to",
+    "--as-reported-in",
+];
+
+/// A restatement view (plan §7.4): where it pins a period's reads.
+pub(crate) enum ReportedView {
+    /// The period's first issuance, else its first Lock.
+    Originally,
+    /// The period's first issuance to this audience.
+    IssuedTo(IssuedTo),
+    /// The known-at of this retained statement certificate.
+    ReportedIn([u8; 32]),
+}
+
+/// The first restatement view flag on the command line, if any.
+pub(crate) fn view_flag(args: &Args) -> Option<&'static str> {
+    VIEW_FLAGS.into_iter().find(|flag| present(args, flag))
+}
+
+/// The restatement view this read selects: at most one, and never beside a
+/// known-at selector, since it fixes the coordinate itself.
+pub(crate) fn reported_view(args: &Args, example: &str) -> Result<Option<ReportedView>, Fail> {
+    let given: Vec<&str> = VIEW_FLAGS
+        .into_iter()
+        .filter(|flag| present(args, flag))
+        .collect();
+    let flag = match given.as_slice() {
+        [] => return Ok(None),
+        [flag] => *flag,
+        _ => {
+            return Err(usage(
+                format!(
+                    "{} each fix the known-at coordinate; select one",
+                    given.join(" and ")
+                ),
+                example,
+            ));
+        }
+    };
+    if present(args, "--as-known-at") || present(args, "--known-at") {
+        return Err(usage(
+            format!(
+                "{flag} fixes the known-at coordinate itself; it cannot be combined with --as-known-at or --known-at"
+            ),
+            example,
+        ));
+    }
+    Ok(Some(match flag {
+        "--as-originally-reported" => ReportedView::Originally,
+        "--as-issued-to" => {
+            let names = IssuedTo::ALL.map(IssuedTo::name).join("|");
+            let text = one_flag(args, flag, example)?.unwrap_or_default();
+            ReportedView::IssuedTo(IssuedTo::parse(text).ok_or_else(|| {
+                usage(
+                    format!("--as-issued-to `{text}` is not a registered audience"),
+                    format!("--as-issued-to {names}"),
+                )
+            })?)
+        }
+        _ => {
+            let text = one_flag(args, flag, example)?.unwrap_or_default();
+            ReportedView::ReportedIn(hex32(
+                text.strip_prefix("C:").unwrap_or(text),
+                flag,
+                "name a retained statement certificate: --as-reported-in C:<64-hex>",
+            )?)
+        }
+    }))
+}
+
+/// The known-at `view` pins a read of `period` at.
+pub(crate) fn reported_known_at(
+    book: &fa::Book,
+    capability: &fa::Capability,
+    view: &ReportedView,
+    period: &str,
+) -> Result<fgdb_types::CommitSeq, Fail> {
+    Ok(match view {
+        ReportedView::Originally => book.originally_reported(period)??.known_at,
+        ReportedView::IssuedTo(audience) => {
+            book.issued_to(period, *audience)??.issuance.certified_at
+        }
+        ReportedView::ReportedIn(certificate) => {
+            book.reported_in(capability, certificate, period)??
+        }
+    })
+}
 
 /// Whether `flag` (a value flag or a switch) is on the command line.
 pub(crate) fn present(args: &Args, flag: &str) -> bool {

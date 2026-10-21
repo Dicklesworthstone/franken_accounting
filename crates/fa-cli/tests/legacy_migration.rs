@@ -27,6 +27,9 @@ const LEGACY_CASH: &str = "Private legacy checking account";
 const LEGACY_EQUITY: &str = "Private legacy opening equity";
 const LEGACY_REVENUE: &str = "Private legacy revenue";
 const LEGACY_EXPENSE: &str = "Private legacy expense";
+const BEAN_CASH: &str = "Assets:Legacy:Checking";
+const BEAN_EQUITY: &str = "Equity:Legacy:Opening";
+const BEANCOUNT: &str = "option \"operating_currency\" \"USD\"\n2025-01-01 open Assets:Legacy:Checking USD\n2025-01-01 open Equity:Legacy:Opening USD\n\n2025-12-20 * \"Legacy bank\" \"Private retained opening deposit\" #migration\n  Assets:Legacy:Checking   100.00 USD ; private retained cash memo\n  Equity:Legacy:Opening\n\n2025-12-29 txn \"Private second deposit\"\n  Assets:Legacy:Checking    25.50 USD\n  Equity:Legacy:Opening    -25.50 USD\n\n2025-12-31 balance Assets:Legacy:Checking 125.50 USD\n";
 const QB: &str = "Transaction ID,Date,Account,Debit,Credit,Currency,Memo/Description,Created At,Created By\nprivate-source-entry-one,2025-12-20,Private legacy checking account,100.00,,USD,Private retained cash memo,2025-12-20T12:30:00Z,private-legacy-author\nprivate-source-entry-one,2025-12-20,Private legacy opening equity,,100.00,USD,Private retained equity memo,2025-12-20T12:30:00Z,private-legacy-author\nprivate-source-entry-two,2025-12-29,Private legacy checking account,25.50,,USD,Second cash memo,2025-12-29T09:00:00Z,private-legacy-author\nprivate-source-entry-two,2025-12-29,Private legacy opening equity,,25.50,USD,Second equity memo,2025-12-29T09:00:00Z,private-legacy-author\n";
 const COLUMNS: &str = "[columns]\nsource_system = \"legacy-csv\"\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\nrecorded_at_column = \"recorded\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\ndescription_column = \"description\"\nmemo_column = \"memo\"\nentered_by_column = \"entered\"\napproved_by_column = \"approved\"\n";
 const GENERIC: &str = "entry,date,recorded,account,amount,description,memo,entered,approved\nprivate-source-entry-one,2025-12-30,2025-12-30T15:20:00Z,Private legacy checking account,125.50,Private retained description,Private retained cash memo,legacy-preparer,legacy-reviewer\nprivate-source-entry-one,2025-12-30,2025-12-30T15:20:00Z,Private legacy opening equity,-125.50,Private retained description,Private retained equity memo,legacy-preparer,legacy-reviewer\n";
@@ -517,7 +520,12 @@ impl Fixture {
     }
 
     fn intent(&self) -> Json {
-        let mut mappings = vec![(LEGACY_CASH, s("1000")), (LEGACY_EQUITY, s("3000"))];
+        let (cash, equity) = if self.format == "beancount" {
+            (BEAN_CASH, BEAN_EQUITY)
+        } else {
+            (LEGACY_CASH, LEGACY_EQUITY)
+        };
+        let mut mappings = vec![(cash, s("1000")), (equity, s("3000"))];
         if self.opening_entries.is_some() || self.entry_periods.is_some() {
             mappings.extend([(LEGACY_REVENUE, s("4000")), (LEGACY_EXPENSE, s("6000"))]);
         }
@@ -2013,6 +2021,14 @@ fn all_five_legacy_exports_complete_the_approved_opening_workflow() {
     ] {
         Fixture::new(format, source, "USD", "Spreadsheet", "2026-07-01").complete();
     }
+}
+
+/// fa-waow: a Beancount v3 ledger is a legacy source like the five exports.
+/// Its full account names map through account_map, the posting without an
+/// amount takes the remainder, and the approved opening workflow completes.
+#[test]
+fn a_beancount_ledger_completes_the_approved_opening_workflow() {
+    Fixture::new("beancount", BEANCOUNT, "USD", "Other", "2026-07-01").complete();
 }
 
 #[test]

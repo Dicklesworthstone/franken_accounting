@@ -106,6 +106,30 @@ pub mod code {
     /// one that is not a statement certificate, or one that does not report
     /// the named period (plan §12.5, bead fa-wrrw).
     pub const NOT_ISSUABLE: &str = "FA-REF-172";
+    /// `AS ISSUED TO <audience>` names an audience the period was never
+    /// issued to (plan §7.4, bead fa-wrrw).
+    pub const NOT_ISSUED_TO: &str = "FA-REF-173";
+    /// `AS REPORTED IN <certificate>` names a certificate that is not a
+    /// retained trunk statement certificate reporting the period (plan §7.4,
+    /// bead fa-wrrw).
+    pub const NOT_REPORTED_IN: &str = "FA-REF-174";
+    /// The book has no restatement case with that number (plan §8.3, bead
+    /// fa-75j4).
+    pub const CASE_UNKNOWN: &str = "FA-REF-175";
+    /// A case transition is not admissible from the case's current state
+    /// (plan §8.3: Proposed → Determined → Rehearsed → Approved → Posted →
+    /// Disclosed → Closed).
+    pub const CASE_STATE: &str = "FA-REF-176";
+    /// A case's rehearsal does not cover the periods it affects, or its
+    /// scenario or retained diff certificate is not what the record names
+    /// (plan §8.3).
+    pub const CASE_REHEARSAL: &str = "FA-REF-177";
+    /// A case-bound entry is not the derivation of an Approved case's
+    /// manifest entry (plan §8.3, §8.4).
+    pub const CASE_MEMBERSHIP: &str = "FA-REF-178";
+    /// A case's disclosure is not a reviewed Disclosure document of this
+    /// book (plan §8.3, §9.3).
+    pub const CASE_DISCLOSURE: &str = "FA-REF-179";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.
@@ -149,6 +173,13 @@ pub mod code {
     pub const REVERSAL_PERIOD: &str = "FA-REF-053";
     /// Corrections require a nonzero reason registered for supersession.
     pub const SUPERSESSION_REASON: &str = "FA-REF-054";
+    /// A Reclassification does not move a positive part of its live target's
+    /// legs to another account or dimension within what earlier ones left
+    /// (plan §8.2 `Reclassifies`; bead fa-xvba).
+    pub const RECLASSIFICATION_SHAPE: &str = "FA-REF-185";
+    /// A post lost first-committer-wins because its period's state moved
+    /// after its basis: a close, lock or reopen won (plan §7.3).
+    pub const PERIOD_STATE_CHANGED: &str = "FA-REF-186";
     /// The named pending entry is missing, is not a `Pending`, or its handle digest mismatches.
     pub const RESOLUTION_TARGET: &str = "FA-REF-060";
     /// The posted sub-vector is not drawn leg-by-leg from the pending entry.

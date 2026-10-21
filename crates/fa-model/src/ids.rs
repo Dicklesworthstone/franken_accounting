@@ -237,6 +237,13 @@ pub fn statement_issuance_vid(book: Id128, period: &str, ordinal: u32) -> VId {
     )
 }
 
+/// `vid(RestatementCase) = H("fa:vid:case:v1" ‖ book ‖ u32 ordinal)` (plan
+/// §8.3, bead fa-75j4): a book's cases are numbered from 1 in commit order.
+#[must_use]
+pub fn restatement_case_vid(book: Id128, ordinal: u32) -> VId {
+    derive_vid(b"fa:vid:case:v1", &[&book.0, &ordinal.to_le_bytes()])
+}
+
 /// `vid(Entry) = H("fa:vid:migration-entry:v1" ‖ book_id ‖ run ‖
 /// idempotency_key)` for a `Migration` entry (plan §8.6): the run is part of
 /// the identity, so a retry run reuses the abandoned run's keys.

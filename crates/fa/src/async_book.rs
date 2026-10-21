@@ -998,32 +998,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })? {
             return Ok(Err(r));
         }
-        let artifact = match self
-            .read_report_artifact(cx, capability.holder(), capability, certificate)
-            .await?
-        {
-            Ok(artifact) => artifact,
-            Err(r) => return Ok(Err(r)),
-        };
+        let (certified_at, selection) =
+            match self.trunk_statement(cx, capability, certificate).await? {
+                Ok(Ok(found)) => found,
+                Ok(Err(why)) => return Ok(Err(not_issuable(why))),
+                Err(r) => return Ok(Err(r)),
+            };
         let digest = fa_journal::evidence::hex(certificate);
-        if artifact.family() != crate::ReportArtifactFamily::Native {
-            return Ok(Err(not_issuable(format!(
-                "certificate {digest} is a {} certificate; only a statement certificate is issued",
-                artifact.family().name()
-            ))));
-        }
-        let source = artifact.source_certificate();
-        let crate::ReportSelection::Statement(selection) = &source.selection else {
-            return Ok(Err(not_issuable(format!(
-                "certificate {digest} certifies a {} report, not a statement",
-                source.selection.output_format()
-            ))));
-        };
-        if source.book_id != self.context.book_id || source.branch_id != fa_model::Id128::TRUNK {
-            return Ok(Err(not_issuable(format!(
-                "certificate {digest} does not certify this book's trunk"
-            ))));
-        }
         let period = match (period, selection.periods.as_slice()) {
             (Some(p), periods) if periods.iter().any(|q| q == p) => p.to_string(),
             (Some(p), periods) => {
@@ -1052,10 +1033,96 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             definition_name: definition.name().to_string(),
             definition_version: definition.version(),
             certificate: *certificate,
-            certified_at: source.known_at,
+            certified_at,
             issued_to,
             document,
         }))
+    }
+
+    /// The retained trunk statement certificate `digest` of this book, read
+    /// under `capability`'s whole-book `read` (fa-wrrw): its known-at and
+    /// statement selection, or `Ok(Err(why))` saying what it is instead.
+    async fn trunk_statement(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        digest: &[u8; 32],
+    ) -> Outcome<Result<(CommitSeq, crate::StatementSelection), String>> {
+        let artifact = match self
+            .read_report_artifact(cx, capability.holder(), capability, digest)
+            .await?
+        {
+            Ok(artifact) => artifact,
+            Err(r) => return Ok(Err(r)),
+        };
+        let hex = fa_journal::evidence::hex(digest);
+        if artifact.family() != crate::ReportArtifactFamily::Native {
+            return Ok(Ok(Err(format!(
+                "certificate {hex} is a {} certificate, not a statement certificate",
+                artifact.family().name()
+            ))));
+        }
+        let source = artifact.source_certificate();
+        let crate::ReportSelection::Statement(selection) = &source.selection else {
+            return Ok(Ok(Err(format!(
+                "certificate {hex} certifies a {} report, not a statement",
+                source.selection.output_format()
+            ))));
+        };
+        if source.book_id != self.context.book_id || source.branch_id != fa_model::Id128::TRUNK {
+            return Ok(Ok(Err(format!(
+                "certificate {hex} does not certify this book's trunk"
+            ))));
+        }
+        Ok(Ok(Ok((source.known_at, (**selection).clone()))))
+    }
+
+    /// Where `AS ISSUED TO <audience>` pins `period`'s reads (plan §7.4,
+    /// bead fa-wrrw): the period's first issuance to `audience`, whose
+    /// `certified_at` is the coordinate.
+    pub fn issued_to(
+        &self,
+        cx: &PurposeContexts,
+        period: &str,
+        audience: fa_journal::IssuedTo,
+    ) -> Outcome<fa_journal::IssuanceRecord> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::first_issued_to(db, book, period, audience)?)
+        })
+    }
+
+    /// Where `AS REPORTED IN <certificate>` pins `period`'s reads (plan §7.4,
+    /// bead fa-wrrw): the known-at of the retained trunk statement
+    /// certificate `certificate`, which must report `period` in one of its
+    /// columns (current or comparative). Whole-book `read` is admitted
+    /// before the certificate is read.
+    pub async fn reported_in(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        certificate: &[u8; 32],
+        period: &str,
+    ) -> Outcome<CommitSeq> {
+        use fa_journal::issuance::not_reported_in;
+        let (known_at, selection) = match self.trunk_statement(cx, capability, certificate).await? {
+            Ok(Ok(found)) => found,
+            Ok(Err(why)) => return Ok(Err(not_reported_in(why))),
+            Err(r) => return Ok(Err(r)),
+        };
+        let columns: Vec<&str> = selection
+            .periods
+            .iter()
+            .chain(&selection.comparative)
+            .map(String::as_str)
+            .collect();
+        if !columns.contains(&period) {
+            return Ok(Err(not_reported_in(format!(
+                "certificate {} reports {}, not period `{period}`",
+                fa_journal::evidence::hex(certificate),
+                columns.join(", ")
+            ))));
+        }
+        Ok(Ok(known_at))
     }
 
     /// Plan the issuance of the retained statement certificate `certificate`
@@ -1162,6 +1229,242 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 None => fa_journal::list_issuances(db, book)?,
             })
         })
+    }
+
+    fn case_request(
+        &self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        effective_date: DateDay,
+        description: &str,
+        idempotency_key: &[u8],
+    ) -> Result<fa_journal::CaseRequest, BookError> {
+        Ok(fa_journal::CaseRequest {
+            capability,
+            effective_date,
+            description: self.seal_text(cx, description)?,
+            idempotency_key: idempotency_key.to_vec(),
+        })
+    }
+
+    /// Open a restatement case (plan §8.3, Appendix B `OpenRestatementCase`,
+    /// bead fa-75j4) over `periods`, numbered next among the book's cases.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        kind: fa_journal::CaseKind,
+        periods: Vec<String>,
+        narrative: Option<fa_model::Oid>,
+        determination: Option<fa_journal::Determination>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        // The kernel sorts and dedups the body's periods; the description
+        // names them the same way, so a retry that lists them in another
+        // order is the identical request (plan §4.9).
+        let mut periods = periods;
+        periods.sort();
+        periods.dedup();
+        let description = format!("open {} case over {}", kind.name(), periods.join(", "));
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        let body = fa_journal::CaseBody {
+            book_id: self.context.book_id,
+            ordinal: 0,
+            kind,
+            periods,
+            narrative,
+            determination,
+        };
+        Ok(fa_journal::open_case(&mut self.db, cx, &self.context, body, req).await?)
+    }
+
+    /// Record case `ordinal`'s determination: the day it was made and the
+    /// document recording its authority (plan §8.3, bead fa-75j4).
+    pub async fn determine_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        determination: fa_journal::Determination,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let description = format!("determine case {ordinal} on {}", determination.day.render());
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::determine_case(
+                &mut self.db,
+                cx,
+                &self.context,
+                ordinal,
+                determination,
+                req,
+            )
+            .await?,
+        )
+    }
+
+    /// Rehearse case `ordinal` (Determined → Rehearsed) with `rehearsal`.
+    /// Crate-private: [`crate::Book::rehearse_case`] derives the rehearsal
+    /// from a diff certificate it has replayed and retained, so no caller
+    /// names a scenario, fork or periods the certificate does not state.
+    pub(crate) async fn rehearse_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        rehearsal: fa_journal::Rehearsal,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let description = format!("rehearse case {ordinal} on scenario {}", rehearsal.scenario);
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::rehearse_case(&mut self.db, cx, &self.context, ordinal, rehearsal, req)
+                .await?,
+        )
+    }
+
+    /// The effect manifest case `ordinal`'s approvers approve.
+    pub fn case_manifest(
+        &self,
+        cx: &PurposeContexts,
+        ordinal: u32,
+    ) -> Outcome<fa_journal::CaseManifest> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::case_manifest(db, context, ordinal)?)
+        })
+    }
+
+    /// Approve case `ordinal` (Rehearsed → Approved) citing `approvals` of
+    /// its manifest ([`crate::Book::approve_case`] states the contract).
+    pub async fn approve_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        approvals: Vec<VId>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let description = format!("approve case {ordinal}");
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::approve_case(&mut self.db, cx, &self.context, ordinal, approvals, req)
+                .await?,
+        )
+    }
+
+    /// Post case `ordinal` (Approved → Posted): its manifest's entries in
+    /// one batch with its Post record ([`crate::Book::post_case`] states the
+    /// contract).
+    pub async fn post_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let description = format!("post case {ordinal}");
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::post_case(&mut self.db, cx, &self.context, ordinal, req).await?)
+    }
+
+    /// Disclose case `ordinal` (Posted → Disclosed) in `document`
+    /// ([`crate::Book::disclose_case`] states the contract).
+    pub async fn disclose_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        document: fa_model::Oid,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let description = format!("disclose case {ordinal}");
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::disclose_case(&mut self.db, cx, &self.context, ordinal, document, req)
+                .await?,
+        )
+    }
+
+    /// Close case `ordinal` (Disclosed → Closed).
+    pub async fn close_case(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let description = format!("close case {ordinal}");
+        let req = self.case_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::close_case(&mut self.db, cx, &self.context, ordinal, req).await?)
+    }
+
+    /// Restatement case `ordinal` as its records state it.
+    pub fn case(
+        &self,
+        cx: &PurposeContexts,
+        ordinal: u32,
+    ) -> Result<Option<fa_journal::CaseView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_case(db, context, ordinal)?)
+        })
+    }
+
+    /// Every restatement case of the book, by ordinal.
+    pub fn cases(&self, cx: &PurposeContexts) -> Result<Vec<fa_journal::CaseView>, BookError> {
+        self.query(cx, |db, context| Ok(fa_journal::list_cases(db, context)?))
     }
 
     fn production_request(
@@ -2314,6 +2617,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// `AttachEvidence` (plan §9.2): documents that support a committed
+    /// entry, recorded after it as one SupplementalEvidence.
+    pub async fn attach_evidence(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        supplement: &fa_journal::evidence::SupplementalEvidence,
+    ) -> Outcome<fa_journal::evidence::EvidenceAttached> {
+        Ok(fa_journal::evidence::attach_evidence(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            supplement,
+        )
+        .await?)
+    }
+
     pub fn erasure_cut(
         &self,
         cx: &PurposeContexts,
@@ -2435,14 +2756,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, _| Ok(fa_journal::genesis::list_accounts(db)?))
     }
 
-    /// Accounts from one recorded chart prefix, sorted by code. Authority
+    /// The journaled chart at one recorded prefix (plan §4.3). Authority
     /// remains current even when the chart observation is pinned to history.
-    pub fn accounts_at(
+    pub fn chart_at(
         &self,
         cx: &PurposeContexts,
         known_at: CommitSeq,
         capability: &fa_policy::Capability,
-    ) -> Outcome<Vec<AccountRow>> {
+    ) -> Outcome<fa_journal::chart::ChartSnapshot> {
         self.query(cx, |db, book| {
             if let Err(refusal) =
                 fa_journal::policy::admit_reads(db, book, capability.holder(), capability)?
@@ -2471,11 +2792,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "select an existing recorded sequence",
                 )));
             }
-            let chart = fa_journal::chart::read_at(db, book, known_at)?;
+            Ok(Ok(fa_journal::chart::read_at(db, book, known_at)?))
+        })
+    }
+
+    /// Accounts from one recorded chart prefix, sorted by code, under the
+    /// authority [`Self::chart_at`] judges.
+    pub fn accounts_at(
+        &self,
+        cx: &PurposeContexts,
+        known_at: CommitSeq,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Vec<AccountRow>> {
+        Ok(self.chart_at(cx, known_at, capability)?.map(|chart| {
             let mut accounts: Vec<_> = chart.accounts().values().cloned().collect();
             accounts.sort_by(|left, right| left.code.cmp(&right.code));
-            Ok(Ok(accounts))
-        })
+            accounts
+        }))
     }
 
     pub fn fold_period(&self, cx: &PurposeContexts, period: &str) -> Result<Fold, BookError> {
@@ -2584,6 +2917,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, book| {
             Ok(fa_notary::verify_accumulator(db, cx, book, &self.signer)?)
         })
+    }
+
+    /// Every journaled accumulator state, newest first, as `checkpoint`
+    /// recorded them ([`crate::Book::checkpoints`] states the contract).
+    pub fn checkpoints(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<Vec<fa_notary::StoredState>, BookError> {
+        self.query(cx, |db, _| Ok(fa_notary::chain(db)?))
     }
 
     /// The public key this book's transparency checkpoints are signed with

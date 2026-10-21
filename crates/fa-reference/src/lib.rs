@@ -54,6 +54,7 @@ pub const CONTROL_KINDS: &[(u16, &str, &str)] = &[
     (13, "period_creation", "SchemaControl"),
     (14, "production_transition", "ProductionControl"),
     (15, "statement_issuance", "IssuanceControl"),
+    (17, "case_transition", "CaseControl"),
 ];
 
 /// The control class a record of kind `id` must carry, per the oracle's copy.
@@ -537,6 +538,8 @@ pub mod code {
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
     pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
+    pub const CASE_MEMBERSHIP: &str = "FA-REF-178";
+    pub const RECLASSIFICATION_SHAPE: &str = "FA-REF-185";
     pub const RUN_NOT_OPEN: &str = "FA-REF-130";
     pub const TIE_OUT_MISMATCH: &str = "FA-REF-131";
     pub const MIGRATION_OUTSIDE_RUN: &str = "FA-REF-132";
@@ -965,6 +968,13 @@ pub struct Oracle {
     /// True only while the model mints its own scheduled reversal: the one
     /// path that may cite ScheduledAccrualReversal (fa-cvg).
     minting_scheduled: bool,
+    /// The target of the Reclassification [`Oracle::reclassify`] is posting
+    /// (plan §8.2 `Reclassifies`, fa-xvba); `None` on every other path.
+    reclassifying: Option<usize>,
+    /// Recorded reclassifications: target → its reclassifications, and each
+    /// reclassification's target.
+    reclassifications: BTreeMap<usize, Vec<usize>>,
+    reclassification_targets: BTreeMap<usize, usize>,
     /// Optional registered account type tag per account code (`registries/account_types.toml`,
     /// `fa-a57x`, `fa-xjlb`): defaults to monetary (`1`) when unset; `6` (`Memo`),
     /// `7` (`Statistical`), and `8` (`OffBalance`) sit outside the monetary balance law
@@ -1020,6 +1030,9 @@ impl Oracle {
             revoked: BTreeSet::new(),
             epoch: 0,
             minting_scheduled: false,
+            reclassifying: None,
+            reclassifications: BTreeMap::new(),
+            reclassification_targets: BTreeMap::new(),
             account_types: BTreeMap::new(),
             account_effectivity: BTreeMap::new(),
             account_parents: BTreeMap::new(),
@@ -2127,6 +2140,79 @@ impl Oracle {
         self.post_inner(intent, Some(leg), None, None, None, &PostClaims::default())
     }
 
+    /// Post a Reclassification of journal entry `target` (plan §8.2
+    /// `Reclassifies`, Appendix B Reclass; fa-xvba). `intent` has class
+    /// `Reclassification` and no `reverses`; it moves a positive part of the
+    /// target's legs, bucketed by (account, unit, side, entity), to at least
+    /// one other place, within what the target's earlier live
+    /// reclassifications left. A reversed target, an exceeding move and a
+    /// move back to where it came from are RECLASSIFICATION_SHAPE.
+    pub fn reclassify(&mut self, intent: &Intent, target: usize) -> Verdict {
+        self.reclassifying = Some(target);
+        let verdict = self.post_inner(intent, None, None, None, None, &PostClaims::default());
+        self.reclassifying = None;
+        verdict
+    }
+
+    /// Whether `intent` fits the Reclassifies law against `target`.
+    fn reclassification_fits(&self, intent: &Intent, target: usize) -> bool {
+        let Some(original) = self.journal.get(target) else {
+            return false;
+        };
+        let reclassifiable = matches!(
+            original.class.as_str(),
+            "Original" | "Adjusting" | "Reversal" | "Reclassification"
+        ) || (original.class == "Resolution" && !original.legs.is_empty());
+        if !reclassifiable || !self.is_live(target) {
+            return false;
+        }
+        let opposite = |side: Side| match side {
+            Side::Debit => Side::Credit,
+            Side::Credit => Side::Debit,
+        };
+        let bucket = |l: &Leg, side: Side| {
+            (
+                l.account.clone(),
+                l.unit,
+                side == Side::Debit,
+                l.entity.clone(),
+            )
+        };
+        let mut left: BTreeMap<(String, u32, bool, Option<String>), Int> = BTreeMap::new();
+        for l in &original.legs {
+            let slot = left.entry(bucket(l, l.side)).or_insert_with(Int::zero);
+            *slot = slot.add(&Int::from_i128(l.mantissa));
+        }
+        for &prior in self.reclassifications.get(&target).into_iter().flatten() {
+            if !self.is_live(prior) {
+                continue;
+            }
+            for l in &self.journal[prior].legs {
+                if let Some(slot) = left.get_mut(&bucket(l, opposite(l.side))) {
+                    *slot = slot.sub(&Int::from_i128(l.mantissa));
+                }
+            }
+        }
+        let mut moved: BTreeMap<(String, u32, bool, Option<String>), Int> = BTreeMap::new();
+        let mut sources = BTreeSet::new();
+        let mut destinations = BTreeSet::new();
+        for l in &intent.legs {
+            let key = bucket(l, opposite(l.side));
+            let place = (l.account.clone(), l.unit, l.entity.clone());
+            if let Some(remaining) = left.get(&key) {
+                let slot = moved.entry(key).or_insert_with(Int::zero);
+                *slot = slot.add(&Int::from_i128(l.mantissa));
+                if remaining.sub(slot).is_negative() {
+                    return false;
+                }
+                sources.insert(place);
+            } else {
+                destinations.insert(place);
+            }
+        }
+        !sources.is_empty() && !destinations.is_empty() && destinations.is_disjoint(&sources)
+    }
+
     fn post_inner(
         &mut self,
         intent: &Intent,
@@ -2185,11 +2271,37 @@ impl Oracle {
                 code: code::REPLACEMENT_UNPAIRED,
             };
         }
+        // 1b''. A PriorPeriodAdjustment posts only as an Approved restatement
+        //       case's entry, in the case's own Post batch (plan §8.3, bead
+        //       fa-75j4); this entry point posts one entry outside any case.
+        if intent.class == "PriorPeriodAdjustment" {
+            return Verdict::Refused {
+                code: code::CASE_MEMBERSHIP,
+            };
+        }
+        // 1b'''. A Reclassification names its target (plan §8.2): posted only
+        //        through Oracle::reclassify, which names nothing else.
+        let reclass_target = self.reclassifying;
+        if (intent.class == "Reclassification") != reclass_target.is_some() {
+            return Verdict::Refused {
+                code: if intent.class == "Reclassification" {
+                    code::RECLASSIFICATION_SHAPE
+                } else {
+                    code::CLASS_NOT_IMPLEMENTED
+                },
+            };
+        }
         // The supported subset, and a Reversal's target presence.
         let is_reversal = intent.class == "Reversal";
         if !matches!(
             intent.class.as_str(),
-            "Original" | "Adjusting" | "Reversal" | "Pending" | "Resolution" | "Migration"
+            "Original"
+                | "Adjusting"
+                | "Reversal"
+                | "Pending"
+                | "Resolution"
+                | "Migration"
+                | "Reclassification"
         ) {
             return Verdict::Refused {
                 code: code::CLASS_NOT_IMPLEMENTED,
@@ -2397,7 +2509,9 @@ impl Oracle {
             },
         };
         if let Some((index, recorded)) = existing {
-            return if *recorded == content {
+            // A Reclassification's identity also binds its target.
+            let same_target = self.reclassification_targets.get(index).copied() == reclass_target;
+            return if *recorded == content && same_target {
                 Verdict::Recorded { index: *index }
             } else if is_reversal {
                 Verdict::Refused {
@@ -2413,7 +2527,7 @@ impl Oracle {
                 }
             };
         }
-        if is_reversal {
+        if is_reversal || reclass_target.is_some() {
             let reasons =
                 fa_registry::reason_codes::ReasonCodes::embedded().expect("reason registry");
             let reserved = intent.supersession_reason
@@ -2428,6 +2542,15 @@ impl Oracle {
                     code: code::SUPERSESSION_REASON,
                 };
             }
+        }
+        // 4''. A Reclassification (plan §8.2 Reclassifies; fa-xvba): within
+        //      what its live target's earlier live reclassifications left.
+        if let Some(target) = reclass_target
+            && !self.reclassification_fits(intent, target)
+        {
+            return Verdict::Refused {
+                code: code::RECLASSIFICATION_SHAPE,
+            };
         }
         // 4'. The run: known, Open, and the chunk on its opening date.
         if let Some(r) = run {
@@ -2670,7 +2793,7 @@ impl Oracle {
             // release posted nothing; a Resolution(Posts) did.
             let reversible = matches!(
                 original.class.as_str(),
-                "Original" | "Adjusting" | "Reversal"
+                "Original" | "Adjusting" | "Reversal" | "Reclassification"
             ) || (original.class == "Resolution" && !original.legs.is_empty());
             if !reversible {
                 return Verdict::Refused {
@@ -2991,6 +3114,13 @@ impl Oracle {
         });
         if let Some(r) = run {
             self.runs[r].chunks.push(index);
+        }
+        if let Some(target) = reclass_target {
+            self.reclassifications
+                .entry(target)
+                .or_default()
+                .push(index);
+            self.reclassification_targets.insert(index, target);
         }
         if let Some(d) = deadline {
             self.deadlines.insert(index, d);

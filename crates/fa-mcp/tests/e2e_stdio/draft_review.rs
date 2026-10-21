@@ -250,16 +250,24 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
     }
     let resource_authority = wire(draft_resource["contents"][1]["text"].as_str().unwrap());
     assert_eq!(resource_authority["authority"]["ops"], json!(["read"]));
-    for uri in [
-        "resource://fa/cases/default",
-        "resource://fa/bundles/unknown",
-    ] {
-        let response = reader.request("resources/read", json!({"uri": uri}));
-        assert!(
-            response.get("error").is_some(),
-            "unavailable {uri}: {response}"
-        );
-    }
+    // fa-shw2: the read-only session reads the journaled cases (none
+    // here); a bundle identifier still resolves to nothing.
+    let cases = reader.result(
+        "resources/read",
+        json!({"uri": "resource://fa/cases/default"}),
+    );
+    assert_eq!(
+        wire(cases["contents"][0]["text"].as_str().unwrap()),
+        json!({"cases": []})
+    );
+    let response = reader.request(
+        "resources/read",
+        json!({"uri": "resource://fa/bundles/unknown"}),
+    );
+    assert!(
+        response.get("error").is_some(),
+        "unavailable bundles: {response}"
+    );
     let listed = reader.result("tools/list", json!({}));
     let tool = listed["tools"]
         .as_array()

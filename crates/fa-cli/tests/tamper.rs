@@ -49,11 +49,23 @@ fn run(book: &Path, args: &[&str]) -> (i32, String, String) {
     let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
     if args.contains(&"--json") {
         let lines: Vec<_> = stdout.lines().collect();
-        assert_eq!(lines.len(), 1, "args={args:?}: {stdout}\n{stderr}");
-        registry()
-            .expect("verb registry")
-            .check_line(lines[0])
-            .unwrap_or_else(|error| panic!("args={args:?}: {error}\n{stdout}"));
+        // `verify book` emits each passing target's event, its verdict and,
+        // when red, one error; every other command here emits one line.
+        if args.starts_with(&["verify", "book"]) {
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("\"event\":\"book_verification\"")),
+                "args={args:?}: {stdout}\n{stderr}"
+            );
+        } else {
+            assert_eq!(lines.len(), 1, "args={args:?}: {stdout}\n{stderr}");
+        }
+        let reg = registry().expect("verb registry");
+        for line in &lines {
+            reg.check_line(line)
+                .unwrap_or_else(|error| panic!("args={args:?}: {error}\n{stdout}"));
+        }
     }
     (code, stdout, stderr)
 }
@@ -316,6 +328,7 @@ impl GoldenBook {
             &["verify", "availability", "--json"][..],
             &["verify", "open-items", "--json"][..],
             &["verify", "periods", "--json"][..],
+            &["verify", "book", "--json"][..],
             &["document", "read", &inline_doc_oid, "--json"][..],
             &["document", "read", &external_doc_oid, "--json"][..],
         ] {
@@ -424,6 +437,28 @@ fn tamper_evidence_red_team_matrix() {
             &["verify", "registers", "--period", "FY2026-P03", "--json"],
         );
         assert_eq!(reg_code, 8);
+        // fa-waow: the one-call book verification fails on the same tamper,
+        // after every target ran, and names the accumulator.
+        let (book_code, book_out, book_err) = run(&book, &["verify", "book", "--json"]);
+        assert_eq!(book_code, 8, "{book_out}\n{book_err}");
+        let verdict = book_out
+            .lines()
+            .find(|l| l.contains("\"event\":\"book_verification\""))
+            .map(parsed)
+            .expect("book_verification event");
+        let data = get(&verdict, "data").expect("data");
+        assert_eq!(get(data, "green"), Some(&Json::Bool(false)), "{book_out}");
+        let targets = match get(data, "targets") {
+            Some(Json::Arr(targets)) => targets.clone(),
+            other => panic!("targets: {other:?}"),
+        };
+        assert_eq!(targets.len(), 10, "{book_out}");
+        assert!(
+            targets
+                .iter()
+                .any(|t| text(t, "target") == "accumulator" && text(t, "verdict") == "fail"),
+            "{book_out}"
+        );
         rows.push(MatrixRow {
             id: "T01",
             attack: "Rewrite `Entry._fa_payload` without recomputing `_fa_digest`",

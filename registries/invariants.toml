@@ -656,11 +656,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-07"
 id = "originally-reported"
-status = "dormant"
+status = "live"
 statement = "AS ORIGINALLY REPORTED resolves to the first StatementIssuance (else the first Lock) and AS REPORTED IN to a certificate's closure."
 evidence_class = "invariant"
+checker_strength = "unit"
 first_gate = "G3"
-activating = ["fa-wrrw"]
+owner = "fa-wrrw"
+checkers = ["fa::tests/statements.rs::the_first_statement_issuance_pins_as_originally_reported_to_its_certificate", "fa-cli::tests/cli.rs::statement_issue_pins_as_originally_reported_to_the_issued_certificate", "fa-cli::tests/cli.rs::tb_as_originally_reported_pins_the_first_lock_never_the_close"]
+negatives = ["fa::tests/statements.rs::a_restatement_view_never_answers_from_an_unreported_coordinate"]
 waiver = "forbidden"
 
 [[clause]]

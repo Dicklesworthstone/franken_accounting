@@ -224,6 +224,14 @@ cite = "FG-LAW-FCW-01 (first committer wins)"
 fix = "re-plan and retry; if a close won, the period law refusal will say so"
 
 [[refusal]]
+code = "FA-REF-186"
+name = "PERIOD_STATE_CHANGED"
+owners = ["fa-journal"]
+exit = "conflict"
+cite = "plan §7.3 (a period's state is a point witness of every post into it: a post racing a close, lock or reopen loses first-committer-wins and is told the state it was planned under, the state now, and the control entry that moved it; bead fa-7uhr)"
+fix = "read the period with fa explain period <code> --json; if its state still admits the class, re-plan and retry; otherwise post with the class and capability the period law names, never under another effective date"
+
+[[refusal]]
 code = "FA-REF-031"
 name = "PERIOD_MOVED"
 owners = ["fa-journal"]
@@ -1020,6 +1028,70 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §12.5 (a StatementIssuance names the retained statement certificate it issued, for the period it reports; bead fa-wrrw)"
 fix = "certify the statement first with fa statement balance-sheet|income-statement --for <period> --certify, then issue its C:<oid> for that period"
+
+[[refusal]]
+code = "FA-REF-173"
+name = "NOT_ISSUED_TO"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §7.4 (AS ISSUED TO <audience> selects a specific issuance; bead fa-wrrw)"
+fix = "list the period's issuances with fa statement issuances --for <period>, or read it as originally reported with --as-originally-reported"
+
+[[refusal]]
+code = "FA-REF-174"
+name = "NOT_REPORTED_IN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §7.4 (AS REPORTED IN <statement certificate> pins exactly the closure a published statement used; bead fa-wrrw)"
+fix = "name the C:<oid> of a retained statement certificate that reports the period, or read it as originally reported with --as-originally-reported"
+
+[[refusal]]
+code = "FA-REF-175"
+name = "CASE_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.3 (a RestatementCase is opened with OpenRestatementCase; bead fa-75j4)"
+fix = "list the book's cases with fa case list, or open one with fa case open --kind Restatement --periods <code>"
+
+[[refusal]]
+code = "FA-REF-176"
+name = "CASE_STATE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.3 (Proposed → Determined → Rehearsed → Approved → Posted → Disclosed → Closed; bead fa-75j4)"
+fix = "inspect the case with fa case show <case>; each transition is journaled once, in order"
+
+[[refusal]]
+code = "FA-REF-177"
+name = "CASE_REHEARSAL"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.3 (Rehearsed: on a branch, with the as-reported-vs-as-restated diff certificate attached; bead fa-75j4)"
+fix = "certify the scenario's diff over every period the case affects (fa scenario diff <name> --period <code>... --certify --certificate-out <file>) while the scenario is open, then rehearse with that certificate"
+
+[[refusal]]
+code = "FA-REF-178"
+name = "CASE_MEMBERSHIP"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.3, §8.4 (a case-bound entry is admissible only inside an Approved RestatementCase; bead fa-75j4)"
+fix = "post a case's entries with fa case post <case> after two Human approvals of its manifest; an entry of a case-bound class is never posted on its own"
+
+[[refusal]]
+code = "FA-REF-185"
+name = "RECLASSIFICATION_SHAPE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.2 (Reclassifies: a positive part of the target's legs moves to another account or dimension in the same unit; net effect is target plus the reclassification delta; bead fa-xvba)"
+fix = "name one live committed target with kind Reclassifies and a registered reason, move out of its legs at most what earlier reclassifications left, to at least one other account or dimension: fa reclass <target> --from <account> --to <account> --amount \"<amount>\" --reason <name>"
+
+[[refusal]]
+code = "FA-REF-179"
+name = "CASE_DISCLOSURE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.3 (Disclosed: the disclosure document is attested), §9.3 (a Reviewed attestation by a principal other than the uploader; bead fa-75j4)"
+fix = "record the disclosure with fa document add <file> --kind Disclosure, have a principal other than its uploader attest it with fa attest review <oid>, then fa case disclose <case> --document <oid>"
 
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]

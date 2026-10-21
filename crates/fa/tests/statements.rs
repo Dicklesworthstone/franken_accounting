@@ -1144,3 +1144,127 @@ fn the_first_statement_issuance_pins_as_originally_reported_to_its_certificate()
         "a later issuance never moves AS ORIGINALLY REPORTED"
     );
 }
+
+/// fa-wrrw (plan §7.4): a restatement view never answers from a coordinate
+/// nothing reported. A period with no issuance to an audience refuses `AS
+/// ISSUED TO`; `AS REPORTED IN` names a retained trunk statement certificate
+/// that reports the period in a current or comparative column, and refuses
+/// any other certificate or period.
+#[test]
+fn a_restatement_view_never_answers_from_an_unreported_coordinate() {
+    use fa_journal::IssuedTo;
+    use fa_journal::refusal::code;
+
+    let mut fixture = Fixture::new(0x9b);
+    let usd = fixture.usd;
+    fixture.transfer(day(2026, 1, 10), b"jan-sale", usd, ("1000", "4000"), 300);
+    fixture.transfer(day(2026, 2, 10), b"feb-sale", usd, ("1000", "4000"), 500);
+    let reader = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    assert_eq!(
+        fixture
+            .book
+            .originally_reported(FEBRUARY)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::NOT_ORIGINALLY_REPORTED
+    );
+    for audience in IssuedTo::ALL {
+        assert_eq!(
+            fixture
+                .book
+                .issued_to(FEBRUARY, audience)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            code::NOT_ISSUED_TO,
+            "{audience:?}"
+        );
+    }
+    assert_eq!(
+        fixture
+            .book
+            .issued_to("FY2099-P01", IssuedTo::Auditor)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::PERIOD_UNKNOWN
+    );
+
+    let chosen = selection("income-statement", FEBRUARY, JANUARY);
+    let certified = fixture
+        .book
+        .certify_statement(chosen, None)
+        .unwrap()
+        .unwrap();
+    let retained = fixture
+        .book
+        .retain_certificate(&certified.certificate)
+        .unwrap()
+        .unwrap();
+    // A later posting moves HEAD but never the reported coordinate.
+    fixture.transfer(day(2026, 2, 20), b"feb-late", usd, ("1000", "4000"), 25);
+    for period in [FEBRUARY, JANUARY] {
+        assert_eq!(
+            fixture
+                .book
+                .reported_in(&reader, &retained.digest, period)
+                .unwrap()
+                .unwrap(),
+            certified.certificate.known_at,
+            "{period}: the current and the comparative column are both reported"
+        );
+    }
+    assert_eq!(
+        fixture
+            .book
+            .reported_in(&reader, &retained.digest, MARCH)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::NOT_REPORTED_IN,
+        "a period the certificate does not report"
+    );
+    let tb = fixture
+        .book
+        .certify_report(
+            fa::TrialBalanceSelection::Periods(vec![FEBRUARY.into()]).into(),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    let tb = fixture
+        .book
+        .retain_certificate(&tb.certificate)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fixture
+            .book
+            .reported_in(&reader, &tb.digest, FEBRUARY)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::NOT_REPORTED_IN,
+        "a trial balance certificate is not a statement certificate"
+    );
+    assert!(
+        fixture
+            .book
+            .reported_in(&reader, &[0x5a; 32], FEBRUARY)
+            .unwrap()
+            .is_err(),
+        "a certificate this book does not retain"
+    );
+    let no_read = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    assert_eq!(
+        fixture
+            .book
+            .reported_in(&no_read, &retained.digest, FEBRUARY)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::CAPABILITY,
+        "the certificate is read only under read authority"
+    );
+}

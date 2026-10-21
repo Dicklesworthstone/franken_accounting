@@ -123,6 +123,42 @@ pub const STATEMENT_ISSUANCE_EXTENSION: u16 = 15;
 /// Extension tag 16, the complete source and route basis for intrinsic
 /// period-end FX revaluation. New native admissions reproduce this basis.
 pub const FX_REVALUATION_EXTENSION: u16 = 16;
+/// Extension tag 19, `fa:restatement-case:v1` (plan §8.3, Appendix A
+/// `RestatementCase`, bead fa-75j4): a case's immutable body on its
+/// `CaseControl` Open record — `u16 version ‖ book_id[16] ‖ u32 ordinal ‖
+/// u8 kind ‖ list(str period) ‖ opt oid narrative ‖ opt (i32 day ‖ oid
+/// authority)`.
+pub const RESTATEMENT_CASE_EXTENSION: u16 = 19;
+/// Extension tag 20, `fa:case-determination:v1` (bead fa-75j4): the
+/// determination a `CaseControl` Determine record journals — `u16 version
+/// ‖ i32 day ‖ oid authority`.
+pub const CASE_DETERMINATION_EXTENSION: u16 = 20;
+/// Extension tag 21, `fa:case-rehearsal:v1` (bead fa-75j4): the rehearsal a
+/// `CaseControl` Rehearse record journals — `u16 version ‖ str scenario ‖
+/// [32] certificate ‖ u64 fork_at ‖ list(str period) ‖ list(u128 plan)`:
+/// the scenario the correction was rehearsed on, the digest of its retained
+/// diff certificate, the trunk sequence it forked at, the periods the diff
+/// covers and the scenario's Plan records it covers, in planning order.
+pub const CASE_REHEARSAL_EXTENSION: u16 = 21;
+/// Extension tag 22, `fa:case-approval:v1` (bead fa-75j4): the effect
+/// manifest a `CaseControl` Approve record's approvals bind — `u16 version
+/// ‖ u128 case ‖ [32] body digest ‖ [32] rehearsal digest ‖ list(u128 plan ‖
+/// [32] intent digest ‖ u128 planner)`.
+pub const CASE_APPROVAL_EXTENSION: u16 = 22;
+/// Extension tag 23, `fa:case-member:v1` (bead fa-75j4): on a posting entry
+/// a restatement case posts, the case and the Plan record it derives from —
+/// `u16 version ‖ u32 case ordinal ‖ u128 plan record`. Only the kernel's
+/// derivation of an Approved case's manifest entry carries it.
+pub const CASE_MEMBER_EXTENSION: u16 = 23;
+/// Extension tag 24, `fa:case-posted:v1` (bead fa-75j4): the entries a
+/// `CaseControl` Post record names — `u16 version ‖ list(u128 plan ‖ u128
+/// entry ‖ [32] entry digest)`, in manifest order.
+pub const CASE_POSTED_EXTENSION: u16 = 24;
+/// Extension tag 25, `fa:case-disclosure:v1` (bead fa-75j4): on a
+/// `CaseControl` Disclose record, the Disclosure document the case is
+/// disclosed in and the Reviewed attestation over it — `u16 version ‖
+/// [32] document oid ‖ u128 attestation`.
+pub const CASE_DISCLOSURE_EXTENSION: u16 = 25;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -142,6 +178,13 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     PRODUCTION_BATES_EXTENSION,
     STATEMENT_ISSUANCE_EXTENSION,
     FX_REVALUATION_EXTENSION,
+    RESTATEMENT_CASE_EXTENSION,
+    CASE_DETERMINATION_EXTENSION,
+    CASE_REHEARSAL_EXTENSION,
+    CASE_APPROVAL_EXTENSION,
+    CASE_MEMBER_EXTENSION,
+    CASE_POSTED_EXTENSION,
+    CASE_DISCLOSURE_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -196,6 +239,10 @@ impl EntryClass {
     /// is never withdrawn, and the first one per period is what `AS
     /// ORIGINALLY REPORTED` reads.
     pub const ISSUANCE_CONTROL: Self = Self(28);
+    /// A `RestatementCase`'s life cycle (plan §8.3, bead fa-75j4): Open,
+    /// Determine, and the later Rehearse, Approve, Post, Disclose, Close.
+    /// Book-scoped, undated; the case makes a material correction legal.
+    pub const CASE_CONTROL: Self = Self(30);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -227,6 +274,7 @@ impl EntryClass {
         (26, "ScenarioControl", true),
         (27, "ProductionControl", true),
         (28, "IssuanceControl", true),
+        (30, "CaseControl", true),
     ];
 
     #[must_use]
@@ -301,6 +349,7 @@ impl ControlKind {
     pub const PERIOD_CREATION: Self = Self(13);
     pub const PRODUCTION_TRANSITION: Self = Self(14);
     pub const STATEMENT_ISSUANCE: Self = Self(15);
+    pub const CASE_TRANSITION: Self = Self(17);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -366,6 +415,11 @@ impl ControlKind {
             Self::STATEMENT_ISSUANCE,
             "statement_issuance",
             EntryClass::ISSUANCE_CONTROL,
+        ),
+        (
+            Self::CASE_TRANSITION,
+            "case_transition",
+            EntryClass::CASE_CONTROL,
         ),
     ];
 
@@ -2347,7 +2401,7 @@ mod tests {
             );
         }
         // Keep the negative probes beyond every registered control kind.
-        for id in [0, 16, 17, u16::MAX] {
+        for id in [0, 16, 18, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"

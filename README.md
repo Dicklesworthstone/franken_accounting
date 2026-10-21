@@ -13,7 +13,7 @@
 
 </div>
 
-> **Status (2026-10-15): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and verification (`registers`, `projections`, `open-items`, `availability`, `schedules`, `accumulator`), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, leaf-account balance explanations, statements and open-items reports support retained certificates that replay their exact historical results through native certified reads. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period` and `register`. Every published checkpoint is signed by the book's key; `fa proof` exports the signed checkpoint and portable inclusion, consistency, prefix and (migration-aware) balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. The first Lantern forensic procedures (journal-entry tests, duplicates, Benford, sequence gaps, cutoff, aging, round trips, structuring and four tracing laws) run as `fa procedure`. `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. An explicitly configured daemon records clock evidence and processes timed holds and scheduled reversals. The full Genesis acceptance criteria remain open; agent authority on the CLI and daemon is still self-asserted (only the MCP server is launch-bound), drafts (`fa-s7x`) and scenarios (`fa-k07b`: fork, run and an exact trial-balance diff over a scratch replay) have first slices; the close engine (`fa-4o0`) and the broader target-state workflows below remain design targets.
+> **Status (2026-10-21): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and a PriorPeriodAdjustment case posts its entries (Revision and Restatement posting is still open, `fa-75j4`). Year-end close and closing routes run as `fa close`; the CloseRun task DAG (`fa-4o0`) is still a design target. Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); the ordinary CLI and daemon remain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open.
 
 > **A note on tense.** The sections above `## TL;DR` document **what runs today** (and [`crates/fa-cli/tests/readme.rs`](./crates/fa-cli/tests/readme.rs) executes `### Try it today` and validates every present-tense `fa` command above `## TL;DR`). Starting at `## TL;DR`, the README describes the **1.0 target state** from [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md), with target-only capabilities annotated with the bead (`fa-…`) that delivers them.
 
@@ -59,6 +59,11 @@ fa verify registers --period FY2026-P03 --book acme --json
 fa verify projections --book acme --json
 fa checkpoint create --grant witness --book acme --json
 fa verify accumulator --book acme --json
+# Every book-level verify target (entities and registers over every period), then one verdict.
+fa verify book --book acme --json
+# The registered rounding, allocation, FX, conversion, lot and tracing laws, and the unit versions.
+fa law list --json
+fa unit list --json
 ```
 
 `fa chart templates` lists the charts (`us-gaap-smb`, `ifrs-sme`, `us-bank-call-report`); they are starting points, not GAAP, IFRS or regulatory advice. `--grade HumanUpload` declares that a human supplied the document; an agent's own upload is `AgentUpload`. Bare `fa`, `fa --help` and `fa robot-docs guide` orient an agent. Bare `fa` also names the book it would use (`--book`, `FA_BOOK`, or the working directory when it is a book) and whether a `fad` serves it, without opening the book. `fa triage` reports periods, pending cells, register watermark lag, drafts awaiting promotion and open findings by severity. `fa next` ranks the next steps for the caller's capability, and an Agent token is never offered a step that writes the book.
@@ -666,7 +671,7 @@ foundation revision are recorded with the implementation landing.
 |---|---|
 | Truth | The journal. There are no balance rows; registers, trial balances, statements, agings, and findings are derived folds, never authoritative, always verifiable by recomputation (`fa verify registers` — available now). |
 | Immutability | Append-only. Corrections are `Reverse` and one-step `Replace` (`fa reverse --replace-with`) entries with `SUPERSEDES` lineage (available now); a typed `fa reclass` verb is target (`fa-i7e`), and restatement cases are target (`fa-75j4`). Period close, reopen, and lock are journaled, approved control entries — never a flag (available now). |
-| Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied (available now). Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence (available now). GQL selectors `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03` (`fa-5c1`), `AS ORIGINALLY REPORTED`, `AS CURRENTLY STATED` and `AS REPORTED IN <certificate>` (`fa-wrrw`) are target selectors, not backups; `--as-originally-reported` on `fa tb`, `fa statement` and `fa explain balance` already reads one period as first reported: at the certificate its first journaled `StatementIssuance` (`fa statement issue`) issued, else at its first Lock. |
+| Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied (available now). Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence (available now). GQL selectors `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03` (`fa-5c1`), `AS ORIGINALLY REPORTED`, `AS ISSUED TO <audience>`, `AS REPORTED IN <certificate>` and `AS CURRENTLY STATED` (`fa-wrrw`) are target GQL selectors, not backups. On `fa tb`, `fa statement` and `fa explain balance` the first three are available now as flags reading one period: `--as-originally-reported` at the certificate its first journaled `StatementIssuance` (`fa statement issue`) issued, else at its first Lock; `--as-issued-to <audience>` at its first issuance to that audience; `--as-reported-in C:<oid>` at that retained statement certificate's known-at. |
 | Exactness | `Amount { unit, mantissa: i128 }` at the unit's registered scale; every rounding, allocation, and FX conversion names a registered law and exact error bound (available now). Native residual postings are explicit where the law requires them; base-valuation residuals are recorded and absorbed under plan §5.2 (`fa-s3c`). No float ever touches an amount. No tolerance. No auto-balancing. |
 | Evidence | Nothing posts without a why: documents, attestations, supplements, REA events (`fa event record`), and `fa explain evidence <entry-vid>` are available now; posting-rule versions (`fa-c34`) complete the target content-addressed provenance closure. |
 | Proofs | A journal-level Merkle accumulator with signed `TransparencyCheckpoint`s, `.fab` evidence bundles with signed production receipts, and `fa-verify`, a dependency-free static verifier a regulator runs on an air-gapped laptop (available now; an external witness quorum is target, `fa-qtfd`). |
@@ -712,8 +717,10 @@ fa statement balance-sheet --for FY2025-P12 --compare FY2024-P12 --as-originally
 fa reverse <vid> --reason WrongAccount --book acme.fabook --json
 # One-step correction: the reversal and the corrected entry commit together, both or neither (available today).
 fa reverse <vid> --reason WrongAmount --replace-with corrected.json --book acme.fabook --json
-# Target (fa-75j4): `fa case` for restatement cases.
-fa case open --kind Restatement --periods FY2024-Q4 --narrative restatement-memo.pdf
+# Restatement cases (fa-75j4): open one over the periods a correction affects and journal its
+# determination (available today); rehearsal, approval, posting and disclosure are next.
+fa case open --kind Restatement --periods FY2024-P12 --narrative <memo-oid> --book acme.fabook --json
+fa case determine 1 --on 2025-03-03 --authority <minutes-oid> --book acme.fabook --json
 
 # Rehearse the close on a draft, diff it, let a human promote it (drafts available today; close dry-run and diff are target fa-4o0 / fa-s7x).
 fa draft new close-2026-03 --book acme.fabook --json
@@ -875,9 +882,20 @@ A period's issuances are numbered in commit order, and the approved plan
 names its number. The first issuance is what `--as-originally-reported` reads
 from then on: the known-at of the certificate it issued, ahead of the period's
 Lock. A later issuance of restated statements is recorded beside it and never
-moves that coordinate. An issuance is never withdrawn. `AS REPORTED IN
-<certificate>`, `AS ISSUED TO <audience>` and `AS CURRENTLY STATED` remain
-target selectors (`fa-wrrw`).
+moves that coordinate. An issuance is never withdrawn.
+
+Two more restatement views read a period at a reported coordinate. On `fa tb`,
+`fa statement` and `fa explain balance`:
+
+- `--as-issued-to <audience>` reads the period as issued to that audience: at
+  the certificate of its first issuance to it (FA-REF-173 when it never was);
+- `--as-reported-in C:<oid>` reads it as reported in that retained trunk
+  statement certificate, which must report the period in a current or
+  comparative column (FA-REF-174 otherwise).
+
+Only one restatement view applies at a time, and none combines with a known-at
+selector. `AS CURRENTLY STATED` with supersession netting remains a target
+(`fa-wrrw`, after `fa-oz3`).
 
 ## The six bets
 
