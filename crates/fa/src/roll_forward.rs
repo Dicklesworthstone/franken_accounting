@@ -19,10 +19,13 @@ use asupersync::fs::Vfs;
 use fa_journal::rows::{AccountRow, bytes};
 use fa_journal::{KernelError, Refusal, exit};
 use fa_model::symbols::{label, property};
-use fa_model::{Entry, EntryClass, EntryOrigin, Id128};
+use fa_model::{AccountType, Entry, EntryClass, EntryOrigin, Id128};
 use fa_money::{Side, UnitId};
 use fa_policy::Capability;
 use fa_registers::{RegisterError, TrialBalance};
+use fa_statements::cash_flow::{
+    EquityActivityKind, EquityMovement, EquityRollForward, EquityRollForwardInput,
+};
 use fa_statements::roll_forward::{Bucket, Movement, RollForwardInput};
 use fa_statements::{Account, AccountBalance};
 use fa_time::DateDay;
@@ -344,6 +347,267 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(result)
         })
     }
+
+    /// The Statement of Changes in Equity (plan §12.1, `EquityRollForward`)
+    /// over the lead schedule of every equity, revenue and expense leaf at
+    /// one recorded prefix, under the same CURRENT whole-book read authority
+    /// as [`Self::roll_forward`], which supplies its stocks and movements.
+    /// Net income is revenue and expense activity outside `Closing` entries;
+    /// a `Closing` entry's legs are the closing transfer, which must move
+    /// nothing in total. Opening equity plus net income, issuances,
+    /// distributions and other equity movements ties to closing equity per
+    /// unit, or the statement is refused. Units are never converted, and no
+    /// account's role is inferred: the request names the issuance and
+    /// distribution leaves.
+    pub fn equity_roll_forward(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &EquityRollForwardRequest,
+    ) -> Outcome<EquityRollForwardReport> {
+        // Authorization precedes the chart read that selects the leaves;
+        // roll_forward repeats both checks at the same prefix.
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context().book_id)
+            .and_then(|()| {
+                fa_policy::reach(
+                    capability,
+                    &fa_policy::Reach {
+                        observes: request
+                            .known_at
+                            .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                        ..fa_policy::Reach::whole_book(true)
+                    },
+                    None,
+                )
+            })
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        let selected = query.with_restriction(|| -> Outcome<(CommitSeq, Vec<VId>)> {
+            let head = self.db.frontier().map_err(KernelError::from)?;
+            if let Err(denial) = fa_policy::current(capability, head) {
+                return Ok(Err(fa_journal::policy::refusal(&denial)));
+            }
+            if let Err(refusal) =
+                fa_journal::policy::capability_admitted(&self.db, self.context(), capability)?
+            {
+                return Ok(Err(refusal));
+            }
+            let at = request.known_at.unwrap_or(head);
+            if at > head {
+                return Ok(Err(invalid_equity(
+                    "equity roll-forward known-at is beyond the book head",
+                )));
+            }
+            crate::certificate::context_at(&self.db, self.context(), at)?;
+            let chart = fa_journal::chart::read_at(&self.db, self.context(), at)?;
+            let mut named = BTreeSet::new();
+            for (role, ids) in [
+                ("issuance", &request.issuance_accounts),
+                ("distribution", &request.distribution_accounts),
+            ] {
+                for id in ids {
+                    let Some(account) = chart.accounts().get(id) else {
+                        return Ok(Err(invalid_equity(format!(
+                            "{role} account {:032x} is absent from the chart at the selected prefix",
+                            id.0
+                        ))));
+                    };
+                    if !account.is_leaf || account.account_type != AccountType::EQUITY.0 {
+                        return Ok(Err(invalid_equity(format!(
+                            "{role} account `{}` is not an equity posting leaf",
+                            account.code
+                        ))));
+                    }
+                    if !named.insert(*id) {
+                        return Ok(Err(invalid_equity(format!(
+                            "equity account `{}` is named more than once",
+                            account.code
+                        ))));
+                    }
+                }
+            }
+            let accounts = chart
+                .accounts()
+                .values()
+                .filter(|a| {
+                    a.is_leaf
+                        && [
+                            AccountType::EQUITY,
+                            AccountType::REVENUE,
+                            AccountType::EXPENSE,
+                        ]
+                        .contains(&AccountType(a.account_type))
+                })
+                .map(|a| a.vid)
+                .collect();
+            Ok(Ok((at, accounts)))
+        })?;
+        let (at, accounts) = match selected {
+            Ok(selected) => selected,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let source = match self.roll_forward(
+            cx,
+            principal,
+            capability,
+            &RollForwardRequest {
+                accounts,
+                units: request.units.clone(),
+                label: request.label.clone(),
+                effective_from: request.effective_from,
+                effective_through: request.effective_through,
+                known_at: Some(at),
+            },
+        )? {
+            Ok(source) => source,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(equity_from_lead_schedule(source, request))
+    }
+}
+
+/// The Statement of Changes in Equity's question (plan §12.1,
+/// `EquityRollForward`): native units, an inclusive effective window, one
+/// recorded prefix, and which equity leaves carry owner issuances and which
+/// distributions. Every other posted leg on an equity leaf is another equity
+/// movement, and a `Closing` entry's legs are the closing transfer; no
+/// account's role is inferred from its name or code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EquityRollForwardRequest {
+    pub units: Vec<u32>,
+    pub label: String,
+    pub effective_from: DateDay,
+    pub effective_through: DateDay,
+    /// None resolves the current head exactly once, before any source reads.
+    pub known_at: Option<CommitSeq>,
+    pub issuance_accounts: Vec<VId>,
+    pub distribution_accounts: Vec<VId>,
+}
+
+/// A reconciled Statement of Changes in Equity with its exact inputs: the
+/// equity, revenue and expense leaves at the prefix, and every classified
+/// equity leg (direct movements and closing transfers) it folded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EquityRollForwardReport {
+    pub statement: EquityRollForward,
+    pub accounts: Vec<Account>,
+    pub movements: Vec<EquityMovement>,
+}
+
+/// Classify the lead schedule's legs and fold the statement. Stocks are
+/// the schedule's own opening and closing (debit minus credit, as one
+/// positive side); nothing is read again.
+fn equity_from_lead_schedule(
+    source: RollForward,
+    request: &EquityRollForwardRequest,
+) -> Result<EquityRollForwardReport, Refusal> {
+    let types: BTreeMap<u128, u8> = source
+        .accounts
+        .iter()
+        .map(|a| (a.id, a.account_type))
+        .collect();
+    let issuance: BTreeSet<u128> = request.issuance_accounts.iter().map(|v| v.0).collect();
+    let distribution: BTreeSet<u128> = request.distribution_accounts.iter().map(|v| v.0).collect();
+    let overflow = || invalid_equity("equity roll-forward net income overflows");
+    let mut net_income: BTreeMap<u32, i128> = source.units.iter().map(|u| (*u, 0)).collect();
+    let mut movements = Vec::new();
+    for m in &source.movements {
+        let Some(&account_type) = types.get(&m.account_id) else {
+            return Err(invalid_equity(
+                "a lead-schedule movement names an account outside its selection",
+            ));
+        };
+        let kind = if m.bucket.class == EntryClass::CLOSING {
+            EquityActivityKind::ClosingTransfer
+        } else if account_type == AccountType::EQUITY.0 {
+            if issuance.contains(&m.account_id) {
+                EquityActivityKind::Issuance
+            } else if distribution.contains(&m.account_id) {
+                EquityActivityKind::Distribution
+            } else {
+                EquityActivityKind::OtherEquity
+            }
+        } else {
+            let slot = net_income.get_mut(&m.unit_id).ok_or_else(|| {
+                invalid_equity("a lead-schedule movement names a unit outside its selection")
+            })?;
+            *slot = slot
+                .checked_add(m.credits)
+                .and_then(|v| v.checked_sub(m.debits))
+                .ok_or_else(overflow)?;
+            continue;
+        };
+        movements.push(EquityMovement {
+            entry_digest: m.entry_digest,
+            leg_index: m.leg_index,
+            recorded_seq: m.recorded_seq,
+            effective_day: m.effective_day,
+            class: m.bucket.class,
+            kind,
+            account_id: m.account_id,
+            unit_id: m.unit_id,
+            debits: m.debits,
+            credits: m.credits,
+        });
+    }
+    let stock = |account_id: u128, unit_id: u32, net: i128| -> Result<AccountBalance, Refusal> {
+        let (debits, credits) = if net >= 0 {
+            (net, 0)
+        } else {
+            (
+                0,
+                net.checked_neg()
+                    .ok_or_else(|| invalid_equity("an equity stock overflows"))?,
+            )
+        };
+        Ok(AccountBalance {
+            account_id,
+            unit_id,
+            debits,
+            credits,
+        })
+    };
+    let mut opening_balances = Vec::with_capacity(source.rows.len());
+    let mut closing_balances = Vec::with_capacity(source.rows.len());
+    for row in &source.rows {
+        opening_balances.push(stock(row.account_id, row.unit_id, row.opening)?);
+        closing_balances.push(stock(row.account_id, row.unit_id, row.closing)?);
+    }
+    let input = EquityRollForwardInput {
+        book_id: source.book_id,
+        branch_id: source.branch_id,
+        known_at: source.known_at,
+        label: source.label.clone(),
+        effective_from: source.effective_from,
+        effective_through: source.effective_through,
+        accounts: source.accounts.clone(),
+        units: source.units.clone(),
+        opening_balances,
+        closing_balances,
+        net_income_by_unit: net_income,
+        equity_movements: movements.clone(),
+    };
+    let statement = fa_statements::cash_flow::evaluate_equity_roll_forward(&input)
+        .map_err(|error| invalid_equity(error.to_string()))?;
+    Ok(EquityRollForwardReport {
+        statement,
+        accounts: source.accounts,
+        movements,
+    })
+}
+
+fn invalid_equity(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        fa_journal::refusal::code::STRUCTURE,
+        exit::USAGE,
+        message,
+        "plan §12.1 (EquityRollForward: opening equity + net income + issuances + distributions + other equity movements = closing equity, at one coordinate)",
+        "name each issuance and distribution account once, as an equity posting leaf of the chart at the selected known-at; select native units and ordered inclusive dates; do not add a balancing entry",
+    )
 }
 
 fn as_account(account: &AccountRow) -> Account {
