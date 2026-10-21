@@ -67,10 +67,11 @@ suffix coverage and the new index root before opening the bundle. The two index
 modes are mutually exclusive. Incremental index mode also refuses
 --recorded-prefix because the exact suffix already proves that same boundary;
 silently reading or ignoring a second witness is forbidden. Legacy v1 envelopes
-refuse in either mode. Only
---expect-scope account admits index witnesses. Whole-prefix/baseline/suffix
-disclosure grants no export authority. Reconstruction remains bounded to 65536
-leaves, 4096 appended records per advance and 1048576 expanded index tuples.
+refuse in either mode. Only --expect-scope account admits index witnesses.
+Whole-prefix/baseline/suffix disclosure reveals every record, including
+excluded records; it grants no export authority. Reconstruction remains
+bounded to 65536 leaves, 4096 appended records per advance and 1048576
+expanded index tuples.
 To demand exact stock cells, repeat --expect-balance ACCOUNT32:UNIT:DAY|none
 or ACCOUNT32:UNIT:DAY|none:DEBITS:CREDITS for optional exact gross mantissas.
 ACCOUNT32 is 32 hex digits; UNIT is decimal u32; DAY is signed decimal i32.
@@ -252,8 +253,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             ));
         }
     };
-    let has_incremental_index =
-        index_baseline_prefix.is_some() || !index_delta_records.is_empty();
+    let has_incremental_index = index_baseline_prefix.is_some() || !index_delta_records.is_empty();
     if (index_prefix.is_some() || has_incremental_index)
         && !matches!(&scope, BundleScope::Account(_))
     {

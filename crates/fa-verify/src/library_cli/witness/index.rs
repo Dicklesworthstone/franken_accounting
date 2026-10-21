@@ -197,11 +197,7 @@ pub(super) fn authenticate_for_composition(
         .as_ref()
         .ok_or_else(|| Failure::usage("incremental index requires retained checkpoint options"))?;
     let start = *remaining;
-    let bytes = read(
-        &advance.previous,
-        MAX_WITNESSED_CHECKPOINT_BYTES,
-        remaining,
-    )?;
+    let bytes = read(&advance.previous, MAX_WITNESSED_CHECKPOINT_BYTES, remaining)?;
     let previous = verify_witnessed_checkpoint(&bytes, &anchor.policy)
         .map_err(|error| Failure::verification(error.to_string()))?;
     if previous.signed_checkpoint().body_digest != advance.expected_body {
@@ -217,16 +213,8 @@ pub(super) fn authenticate_for_composition(
         .map_err(|error| Failure::verification(error.to_string()))?;
     drop(bytes);
 
-    let candidate = read(
-        &anchor.path,
-        MAX_WITNESSED_CHECKPOINT_BYTES,
-        remaining,
-    )?;
-    let consistency = read(
-        &advance.proof,
-        MAX_WITNESS_CONSISTENCY_BYTES,
-        remaining,
-    )?;
+    let candidate = read(&anchor.path, MAX_WITNESSED_CHECKPOINT_BYTES, remaining)?;
+    let consistency = read(&advance.proof, MAX_WITNESS_CONSISTENCY_BYTES, remaining)?;
     let mut records = Vec::new();
     records
         .try_reserve_exact(record_paths.len())

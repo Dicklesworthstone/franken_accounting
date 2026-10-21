@@ -291,9 +291,9 @@ fn authenticate(request: &Request) -> Result<(WitnessedCheckpoint, Option<Contin
             .checked_add(candidate.len())
             .and_then(|total| total.checked_add(proof.len()))
             .filter(|total| *total <= fa_verify::proof::production::MAX_PRODUCTION_BYTES)
-            .ok_or_else(|| Failure::verification(
-                "continuity inputs exceed the shared 64 MiB budget",
-            ))?;
+            .ok_or_else(|| {
+                Failure::verification("continuity inputs exceed the shared 64 MiB budget")
+            })?;
         let continuity = Continuity {
             status: verified.status(),
             previous_body: advance.expected_body,

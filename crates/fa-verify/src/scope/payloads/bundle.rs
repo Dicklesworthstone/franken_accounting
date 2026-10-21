@@ -93,7 +93,6 @@ pub fn verify_witnessed_indexed_bundle_for(
     Ok(report)
 }
 
-
 /// Verify an account bundle against a retained payload-derived index that was
 /// advanced from an independently verified baseline with a complete suffix.
 ///
