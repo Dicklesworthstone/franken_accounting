@@ -546,7 +546,9 @@ fn a_receivership_fork_holds_the_pre_appointment_trunk_and_opens_the_estate_bran
         Some(appointment.to_string().as_str()),
         "{out}"
     );
-    assert_eq!(field(&out, "branch"), Some("receivership"), "{out}");
+    // The envelope's coordinate also names a `branch` (trunk): match the
+    // event's own field exactly.
+    assert!(out.contains(r#""branch":"receivership""#), "{out}");
     assert_eq!(field(&out, "already_recorded"), Some("false"), "{out}");
     let hold = field(&out, "hold_vid").expect("hold_vid").to_string();
     let out = ok(&book, &["document", "hold", "show", &hold, "--json"]);
