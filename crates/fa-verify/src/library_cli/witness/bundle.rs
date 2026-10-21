@@ -64,7 +64,10 @@ requires every newly appended record at the candidate checkpoint. The latter
 requires the ordinary --previous/--expect-previous-body/--consistency options
 and verifies publisher/witness continuity, the retained recorded boundary, exact
 suffix coverage and the new index root before opening the bundle. The two index
-modes are mutually exclusive. Legacy v1 envelopes refuse in either mode. Only
+modes are mutually exclusive. Incremental index mode also refuses
+--recorded-prefix because the exact suffix already proves that same boundary;
+silently reading or ignoring a second witness is forbidden. Legacy v1 envelopes
+refuse in either mode. Only
 --expect-scope account admits index witnesses. Whole-prefix/baseline/suffix
 disclosure grants no export authority. Reconstruction remains bounded to 65536
 leaves, 4096 appended records per advance and 1048576 expanded index tuples.
@@ -300,6 +303,16 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     if index_baseline_prefix.is_some() && anchor.advance.is_none() {
         return Err(Failure::usage(
             "--index-baseline-prefix requires --previous, --expect-previous-body and --consistency",
+        ));
+    }
+    if index_baseline_prefix.is_some()
+        && anchor
+            .advance
+            .as_ref()
+            .is_some_and(|advance| advance.recorded_prefix.is_some())
+    {
+        return Err(Failure::usage(
+            "--recorded-prefix cannot be combined with incremental index mode; the exact suffix already verifies the recorded boundary",
         ));
     }
     Ok(Request {
