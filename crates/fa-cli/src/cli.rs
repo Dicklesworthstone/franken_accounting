@@ -2417,6 +2417,15 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         }
     }
     let sub = args.positional.get(1).map(String::as_str);
+    // A custom calendar's period list (`fa case` uses --periods for period
+    // codes, so only book create reads it as a file).
+    if verb == "book"
+        && sub == Some("create")
+        && let Some(value) = args.flag("--periods")
+        && value != "-"
+    {
+        paths.push(("--periods", value, HostPath::Content));
+    }
     if verb == "document"
         && sub == Some("import")
         && args.positional.get(2).map(String::as_str) == Some("run")
@@ -3599,6 +3608,55 @@ fn parse_cli_calendar(
     calendar.map_err(|e| usage(format!("calendar: {e}"), FIX))
 }
 
+const CUSTOM_CALENDAR_EXAMPLE: &str = "fa book create --name \"My Co\" --calendar custom --periods periods.json   (periods.json: {\"years\":[{\"fiscal_year\":2026,\"periods\":[{\"start\":\"2026-01-04\",\"end\":\"2026-01-31\"},...]}]})";
+
+/// A custom calendar (plan §7.2 `Custom`, fa-94qd) from `--periods`: each
+/// declared fiscal year's normal periods as inclusive `start`/`end` days,
+/// each period starting the day after the one before it ends.
+fn custom_calendar(path: &str, text: &str, adj: u8) -> Result<FiscalCalendar, Fail> {
+    let bad = |why: String| usage(format!("--periods {path}: {why}"), CUSTOM_CALENDAR_EXAMPLE);
+    let doc = parse_json(path, text)?;
+    let years = doc
+        .get("years")
+        .and_then(Json::as_arr)
+        .ok_or_else(|| bad("needs a `years` array".into()))?;
+    let mut declared = Vec::with_capacity(years.len());
+    for (i, year) in years.iter().enumerate() {
+        let fiscal_year = match year.get("fiscal_year") {
+            Some(Json::Int(n)) => i32::try_from(*n)
+                .map_err(|_| bad(format!("years[{i}].fiscal_year {n} is not a year")))?,
+            _ => return Err(bad(format!("years[{i}] needs an integer `fiscal_year`"))),
+        };
+        let periods = year
+            .get("periods")
+            .and_then(Json::as_arr)
+            .ok_or_else(|| bad(format!("fiscal year {fiscal_year} needs a `periods` array")))?;
+        let mut spans = Vec::with_capacity(periods.len());
+        for (p, period) in periods.iter().enumerate() {
+            let day = |field: &str| -> Result<DateDay, Fail> {
+                let text = period.get(field).and_then(Json::as_str).ok_or_else(|| {
+                    bad(format!(
+                        "fiscal year {fiscal_year} period {} needs `{field}` as YYYY-MM-DD",
+                        p + 1
+                    ))
+                })?;
+                DateDay::parse(text).map_err(|e| {
+                    bad(format!(
+                        "fiscal year {fiscal_year} period {} {field} `{text}`: {e:?}",
+                        p + 1
+                    ))
+                })
+            };
+            spans.push((day("start")?, day("end")?));
+        }
+        declared.push(
+            fa_time::CustomYear::from_periods(fiscal_year, &spans)
+                .map_err(|e| bad(e.to_string()))?,
+        );
+    }
+    FiscalCalendar::custom("custom", declared, adj).map_err(|e| bad(e.to_string()))
+}
+
 fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     if args.flag("--time-zone").is_some()
@@ -3720,7 +3778,24 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "--adjustment-periods 1",
                     )
                 })?;
-            let calendar = parse_cli_calendar(kind, args.flag("--year-start-month"), adj)?;
+            let calendar = if kind == "custom" {
+                if args.flag("--year-start-month").is_some() {
+                    return Err(usage(
+                        "a custom calendar's years and periods come from --periods; --year-start-month belongs to monthly calendars",
+                        CUSTOM_CALENDAR_EXAMPLE,
+                    ));
+                }
+                let path = args.require("--periods", "<periods.json> (or - for stdin)")?;
+                custom_calendar(path, &ctx.files.read_text(path)?, adj)?
+            } else {
+                if args.flag("--periods").is_some() {
+                    return Err(usage(
+                        "--periods lists a custom calendar's periods; pass it with --calendar custom",
+                        CUSTOM_CALENDAR_EXAMPLE,
+                    ));
+                }
+                parse_cli_calendar(kind, args.flag("--year-start-month"), adj)?
+            };
             let entropy = Entropy::production();
             let keys = BookKeys::generate(&entropy)?;
             let mut id = [0u8; 16];
@@ -4049,7 +4124,10 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
                 message: "--adjustment-periods must be 0..=4".to_string(),
                 fix: "--adjustment-periods 1".to_string(),
             })?;
-        parse_cli_calendar(kind, args.flag("--year-start-month"), adj).map_err(&to_usage)?;
+        // A custom calendar's syntax is its --periods file, read by book create.
+        if kind != "custom" {
+            parse_cli_calendar(kind, args.flag("--year-start-month"), adj).map_err(&to_usage)?;
+        }
     }
     if let Some(fy) = args.flag("--fiscal-year") {
         fy.parse::<i32>().map_err(|_| UsageError {
@@ -6164,6 +6242,14 @@ fn calendar_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             fa_time::CalendarKind::Week5253 { end_rule } => {
                 ("thirteen-period", None, None, Some(year_end_rule(end_rule)))
             }
+            fa_time::CalendarKind::Custom { .. } => ("custom", None, None, None),
+        };
+        // A custom calendar defines only the years it declares.
+        let declared: Option<Vec<i32>> = match &calendar.kind {
+            fa_time::CalendarKind::Custom { years } => {
+                Some(years.iter().map(|y| y.fiscal_year).collect())
+            }
+            _ => None,
         };
         ctx.out.event(
             "calendar",
@@ -6180,14 +6266,25 @@ fn calendar_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "adjustment_periods",
                     Json::Int(i128::from(calendar.adjustment_periods)),
                 ),
+                (
+                    "fiscal_years",
+                    declared.as_ref().map_or(Json::Null, |years| {
+                        Json::Arr(years.iter().map(|y| Json::Int(i128::from(*y))).collect())
+                    }),
+                ),
             ],
             &format!(
-                "calendar {} ({kind}{}{}), {} adjustment period(s)",
+                "calendar {} ({kind}{}{}{}), {} adjustment period(s)",
                 calendar.id,
                 year_start_month.map_or_else(String::new, |m| format!(
                     ", fiscal year starts in month {m}"
                 )),
                 end_rule.map_or_else(String::new, |r| format!(", year ends on the {r}")),
+                declared.as_ref().map_or_else(String::new, |years| format!(
+                    ", fiscal years {}..={}",
+                    years.first().copied().unwrap_or_default(),
+                    years.last().copied().unwrap_or_default()
+                )),
                 calendar.adjustment_periods
             ),
         );
