@@ -270,7 +270,7 @@ name = "TRANSITION"
 owners = ["fa-journal"]
 exit = "safety"
 cite = "plan §7.3 period state machine"
-fix = "pick a legal transition: Future→Open, Open→SoftClose, SoftClosed→Close|Reopen, Closed→Lock|Reopen"
+fix = "pick a legal transition: Future→Open, Open→SoftClose|Close, SoftClosed→Close|Reopen, Closed→Lock|Reopen, Locked→Reopen (the refusal names the commands its period admits)"
 
 [[refusal]]
 code = "FA-REF-041"

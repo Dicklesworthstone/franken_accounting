@@ -9,6 +9,8 @@
 //! - **command**: `fix.argv` runs against the book, then the refused request
 //!   is resubmitted;
 //! - **rerun**: the refused command runs again with `fix.rerun_with` added;
+//! - **alternative**: `alternatives[i]` runs against the book, then the
+//!   refused request is resubmitted;
 //! - **inform**: `fix.argv` is a read (its `[[bound]]` rule needs only `read`) that must
 //!   succeed; the refusal stands by design (the period law is never escaped
 //!   by re-dating), so nothing is resubmitted;
@@ -147,8 +149,15 @@ enum Apply {
     FieldChange,
     Command,
     Rerun,
+    Alternative(usize),
     Inform,
     Judgment(&'static str),
+}
+
+/// What a trigger can name: the vid of a committed base entry, when the
+/// case asks for one (a post's evidence is supplied when it runs).
+struct Given {
+    vid: Option<String>,
 }
 
 struct Case {
@@ -156,7 +165,9 @@ struct Case {
     entities: &'static [&'static str],
     /// Commands run on the fixture before the trigger.
     setup: &'static [&'static [&'static str]],
-    trigger: fn(&str) -> Request,
+    /// Post a balanced March entry first and give its vid to the trigger.
+    base_entry: bool,
+    trigger: fn(&Given) -> Request,
     /// Each expected refusal code and how its fix is applied, in order.
     steps: &'static [(&'static str, Apply)],
 }
@@ -269,7 +280,24 @@ fn execute(case: &Case) -> Vec<&'static str> {
         assert_eq!(code, 0, "{}: setup {step:?}: {}", case.name, line.render());
     }
     let reg = registry().expect("verbs.toml");
-    let mut req = (case.trigger)(&ev);
+    let vid = case.base_entry.then(|| {
+        let base = post(intent(
+            "base",
+            "2026-03-05",
+            vec![
+                leg("debit", "6000", "7.00 USD"),
+                leg("credit", "1000", "7.00 USD"),
+            ],
+        ));
+        let (code, line, _) = run(&dir, &book, &ev, &base, 0);
+        assert_eq!(code, 0, "{}: base entry: {}", case.name, line.render());
+        line.get("data")
+            .and_then(|d| d.get("vid"))
+            .and_then(Json::as_str)
+            .expect("base vid")
+            .to_string()
+    });
+    let mut req = (case.trigger)(&Given { vid });
     let mut seen = BTreeSet::new();
     let mut n = 0;
     for (want, apply) in case.steps {
@@ -316,10 +344,17 @@ fn execute(case: &Case) -> Vec<&'static str> {
                     .next()
                     .unwrap_or_else(|| panic!("{}: field change admits no value", case.name));
                 println!("{} step {n}: apply {field} = {value}", case.name);
-                let Request::Post { intent, .. } = &mut req else {
-                    panic!("{}: a field change applies to an intent", case.name);
-                };
-                set_field(intent, field, &value);
+                match &mut req {
+                    Request::Post { intent, .. } => set_field(intent, field, &value),
+                    // On a command line the field is its flag.
+                    Request::Argv(a) => {
+                        let flag = format!("--{}", field.replace('_', "-"));
+                        match a.iter().position(|w| *w == flag) {
+                            Some(i) if i + 1 < a.len() => a[i + 1] = value,
+                            _ => a.extend([flag, value]),
+                        }
+                    }
+                }
             }
             Apply::Command | Apply::Inform => {
                 assert!(!fix_argv.is_empty(), "{}: no fix command", case.name);
@@ -353,6 +388,38 @@ fn execute(case: &Case) -> Vec<&'static str> {
                 if matches!(apply, Apply::Inform) {
                     return case.steps.iter().map(|(c, _)| *c).collect();
                 }
+            }
+            Apply::Alternative(i) => {
+                let alternatives = strings(refusal.get("alternatives"));
+                let line = alternatives
+                    .get(*i)
+                    .unwrap_or_else(|| panic!("{}: no alternative {i}", case.name));
+                let mut command: Vec<String> = line
+                    .split_whitespace()
+                    .skip(1)
+                    .map(str::to_string)
+                    .collect();
+                assert!(
+                    fix_verb(reg, &command).is_some(),
+                    "{}: alternative names no verb: {line}",
+                    case.name
+                );
+                if !command.iter().any(|a| a == "--json") {
+                    command.push("--json".into());
+                }
+                let (code, out) = fa(&book, &command);
+                println!(
+                    "{} step {n}: apply alternative {command:?} -> exit {code} {}",
+                    case.name,
+                    out.get("event").map(Json::render).unwrap_or_default()
+                );
+                assert_eq!(
+                    code,
+                    0,
+                    "{}: alternative {command:?}: {}",
+                    case.name,
+                    out.render()
+                );
             }
             Apply::Rerun => {
                 assert!(!rerun.is_empty(), "{}: no rerun arguments", case.name);
@@ -396,6 +463,7 @@ const CASES: &[Case] = &[
         name: "summary-account",
         entities: &[],
         setup: &[],
+        base_entry: false,
         trigger: |_| {
             post(intent(
                 "summary",
@@ -412,6 +480,7 @@ const CASES: &[Case] = &[
         name: "unit-policy",
         entities: &[],
         setup: &[],
+        base_entry: false,
         trigger: |_| {
             post(intent(
                 "euros",
@@ -428,6 +497,7 @@ const CASES: &[Case] = &[
         name: "missing-entity",
         entities: &["US:US Co", "UK:UK Co"],
         setup: &[],
+        base_entry: false,
         trigger: |_| {
             post(intent(
                 "entityless",
@@ -448,6 +518,7 @@ const CASES: &[Case] = &[
         name: "period-never-created",
         entities: &[],
         setup: &[],
+        base_entry: false,
         trigger: |_| {
             post(intent(
                 "next-year",
@@ -468,6 +539,7 @@ const CASES: &[Case] = &[
         name: "softclosed-without-grant",
         entities: &[],
         setup: &[&["period", "soft-close", "FY2026-P04", "--json"]],
+        base_entry: false,
         trigger: |_| {
             post(intent(
                 "late-april",
@@ -484,6 +556,7 @@ const CASES: &[Case] = &[
         name: "close-unconfirmed",
         entities: &[],
         setup: &[&["period", "soft-close", "FY2026-P04", "--json"]],
+        base_entry: false,
         trigger: |_| {
             Request::Argv(argv(&[
                 "period",
@@ -500,6 +573,7 @@ const CASES: &[Case] = &[
         name: "unknown-account",
         entities: &[],
         setup: &[],
+        base_entry: false,
         trigger: |_| {
             post(intent(
                 "unknown",
@@ -515,6 +589,7 @@ const CASES: &[Case] = &[
     Case {
         name: "closed-period",
         entities: &[],
+        base_entry: false,
         setup: &[
             &["period", "soft-close", "FY2026-P03", "--json"],
             &[
@@ -543,6 +618,7 @@ const CASES: &[Case] = &[
         name: "unbalanced",
         entities: &[],
         setup: &[],
+        base_entry: false,
         trigger: |_| {
             post(intent(
                 "unbalanced",
@@ -562,10 +638,76 @@ const CASES: &[Case] = &[
     },
 ];
 
+const MORE_CASES: &[Case] = &[
+    Case {
+        name: "reversal-reason",
+        entities: &[],
+        setup: &[],
+        base_entry: true,
+        trigger: |g| {
+            Request::Argv(argv(&[
+                "reverse",
+                g.vid.as_deref().expect("base vid"),
+                "--reason",
+                "Duplicat",
+                "--json",
+            ]))
+        },
+        // The nearest registered spelling comes first.
+        steps: &[("FA-REF-054", Apply::FieldChange)],
+    },
+    Case {
+        name: "unknown-draft",
+        entities: &[],
+        setup: &[],
+        base_entry: false,
+        trigger: |_| Request::Post {
+            intent: intent(
+                "into-draft",
+                "2026-03-10",
+                vec![
+                    leg("debit", "6000", "5.00 USD"),
+                    leg("credit", "1000", "5.00 USD"),
+                ],
+            ),
+            extra: argv(&["--draft", "q3-accruals"]),
+        },
+        // `fa draft new q3-accruals`, then the same plan lands in it.
+        steps: &[("FA-REF-157", Apply::Alternative(0))],
+    },
+    Case {
+        name: "unknown-scenario",
+        entities: &[],
+        setup: &[],
+        base_entry: false,
+        trigger: |_| Request::Post {
+            intent: intent(
+                "into-scenario",
+                "2026-03-10",
+                vec![
+                    leg("debit", "6000", "5.00 USD"),
+                    leg("credit", "1000", "5.00 USD"),
+                ],
+            ),
+            extra: argv(&["--scenario", "what-if"]),
+        },
+        steps: &[("FA-REF-162", Apply::Alternative(0))],
+    },
+    Case {
+        name: "illegal-transition",
+        entities: &[],
+        setup: &[],
+        base_entry: false,
+        // May is Future: it opens before it can soft-close.
+        trigger: |_| Request::Argv(argv(&["period", "soft-close", "FY2026-P05", "--json"])),
+        steps: &[("FA-REF-040", Apply::Command)],
+    },
+];
+
 #[test]
 fn every_triggerable_fix_executes() {
     let mut covered = BTreeSet::new();
-    for case in CASES {
+    for case in CASES.iter().chain(MORE_CASES) {
         covered.extend(execute(case));
     }
     let catalog = fa_registry::refusal_catalog::RefusalCatalog::embedded().expect("catalog");
@@ -602,6 +744,7 @@ fn fix_naming_unknown_verb_fails() {
         name: "planted-same-refusal",
         entities: closed.entities,
         setup: closed.setup,
+        base_entry: false,
         trigger: closed.trigger,
         steps: &[
             ("FA-REF-010", Apply::Command),

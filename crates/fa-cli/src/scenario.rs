@@ -62,8 +62,12 @@ fn unknown(name: &str) -> Fail {
         exit::REFUSAL,
         format!("this book has no scenario named `{name}`"),
         "plan §15.2 (scenarios; bead fa-k07b)",
-        "list the book's scenarios with `fa scenario list --json`, or fork one with `fa scenario fork <name>`",
+        format!(
+            "list the book's scenarios with `fa scenario list --json`, or fork this one with `fa scenario fork {}`",
+            fa_journal::refusal::command_word(name)
+        ),
     )
+    .at("scenario", name)
     .into()
 }
 

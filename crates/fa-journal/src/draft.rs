@@ -439,8 +439,12 @@ fn unknown(name: &str) -> Refusal {
         exit::REFUSAL,
         format!("this book has no draft named `{name}`"),
         "plan §15.2 (drafts; bead fa-s7x)",
-        "list the book's drafts with `fa draft list --json`, or open one with `fa draft new <name>`",
+        format!(
+            "list the book's drafts with `fa draft list --json`, or open this one with `fa draft new {}`",
+            crate::refusal::command_word(name)
+        ),
     )
+    .at("draft", name)
 }
 
 fn not_open(body: &DraftBody, state: DraftState) -> Refusal {

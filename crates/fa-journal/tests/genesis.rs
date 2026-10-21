@@ -1308,7 +1308,7 @@ fn uncreated_periods_and_unregistered_units_are_refused_not_corrupt() {
     assert!(r.message.contains("FY2028-P02"), "{r}");
     assert_eq!(
         r.fix,
-        "fa period create --fiscal-year 2028, then open `FY2028-P02`"
+        "fa period create --fiscal-year 2028, then fa period open FY2028-P02"
     );
     assert_eq!(h.db.frontier().unwrap(), head);
 

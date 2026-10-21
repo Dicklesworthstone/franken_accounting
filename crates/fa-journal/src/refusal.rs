@@ -193,6 +193,21 @@ impl Refusal {
     }
 }
 
+/// `name` as one command-line word for a fix that names a command, or the
+/// `<name>` slot when the name would need quoting.
+#[must_use]
+pub fn command_word(name: &str) -> &str {
+    if !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+    {
+        name
+    } else {
+        "<name>"
+    }
+}
+
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

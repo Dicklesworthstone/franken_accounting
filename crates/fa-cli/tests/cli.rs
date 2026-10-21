@@ -563,7 +563,8 @@ fn posting_into_an_uncreated_fiscal_year_names_the_period_create_command() -> st
     assert!(
         out.contains("\"event\":\"error\"")
             && out.contains("\"refusal_id\":\"FA-REF-021\"")
-            && out.contains("fa period create --fiscal-year 2028, then open `FY2028-P02`"),
+            && out.contains("fa period create --fiscal-year 2028, then fa period open FY2028-P02")
+            && out.contains(r#""alternatives":["fa period open FY2028-P02"]"#),
         "{out}"
     );
     assert!(!out.contains("corrupt"), "{out}");

@@ -5805,8 +5805,12 @@ fn draft_unknown(name: &str) -> Fail {
         exit::REFUSAL,
         format!("this book has no draft named `{name}`"),
         "plan §15.2 (drafts; bead fa-s7x)",
-        "list the book's drafts with `fa draft list --json`, or open one with `fa draft new <name>`",
+        format!(
+            "list the book's drafts with `fa draft list --json`, or open this one with `fa draft new {}`",
+            fa_journal::refusal::command_word(name)
+        ),
     )
+    .at("draft", name)
     .into()
 }
 
@@ -6642,10 +6646,18 @@ fn reversal_reason(value: Option<&Json>) -> Result<Reason, Fail> {
         .filter(|r| r.scope == "supersession")
         .map(|r| r.name.as_str())
         .collect();
-    let suggestion = supplied
-        .and_then(|name| nearest(name, &names))
+    let nearest_name = supplied.and_then(|name| nearest(name, &names));
+    let suggestion = nearest_name
         .map(|name| format!("did you mean `{name}`? "))
         .unwrap_or_default();
+    // The registered names, the nearest spelling first.
+    let mut one_of: Vec<String> = nearest_name.map(str::to_string).into_iter().collect();
+    one_of.extend(
+        names
+            .iter()
+            .filter(|n| Some(**n) != nearest_name)
+            .map(|n| (*n).to_string()),
+    );
     Err(Refusal::new(
         fa_journal::refusal::code::SUPERSESSION_REASON,
         exit::REFUSAL,
@@ -6659,6 +6671,7 @@ fn reversal_reason(value: Option<&Json>) -> Result<Reason, Fail> {
             reasons.listing("supersession")
         ),
     )
+    .or_field_change("reason", one_of)
     .into())
 }
 

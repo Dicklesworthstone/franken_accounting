@@ -409,8 +409,12 @@ fn unknown(name: &str) -> Refusal {
         exit::REFUSAL,
         format!("this book has no scenario named `{name}`"),
         "plan §15.2 (scenarios; bead fa-k07b)",
-        "list the book's scenarios with `fa scenario list --json`, or fork one with `fa scenario fork <name>`",
+        format!(
+            "list the book's scenarios with `fa scenario list --json`, or fork this one with `fa scenario fork {}`",
+            crate::refusal::command_word(name)
+        ),
     )
+    .at("scenario", name)
 }
 
 fn not_open(body: &ScenarioBody, state: ScenarioState) -> Refusal {

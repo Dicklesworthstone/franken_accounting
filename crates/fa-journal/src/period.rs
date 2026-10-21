@@ -244,6 +244,15 @@ fn reason_refusal(t: PeriodTransition, reason_code: u16) -> Result<Option<Refusa
         ),
         "plan §7.3 (every transition is journaled with its principal and reason); reason_codes.toml",
         format!("give a registered reason: {}", reasons.listing(scope)),
+    )
+    .or_field_change(
+        "reason",
+        reasons
+            .rows
+            .iter()
+            .filter(|r| r.scope == scope)
+            .map(|r| r.name.clone())
+            .collect(),
     )))
 }
 
@@ -616,6 +625,44 @@ fn kind_refusal(
 }
 
 fn illegal_transition(period_code: &str, from: PeriodState, t: PeriodTransition) -> Refusal {
+    // The transitions this state admits (probed against the one transition
+    // table, fa_time::transition), as the commands that take them. Open and
+    // soft-close default their reason; the others keep a `<reason>` slot,
+    // since the reason is a fact the caller states, never one chosen for it.
+    let candidates = [
+        (PeriodTransition::Open, "open", ""),
+        (PeriodTransition::SoftClose, "soft-close", ""),
+        (PeriodTransition::Close, "close", " --reason <reason>"),
+        (PeriodTransition::Lock, "lock", " --reason <reason>"),
+        (
+            PeriodTransition::Reopen {
+                to: PeriodState::Open,
+            },
+            "reopen",
+            " --to open --reason <reason>",
+        ),
+        (
+            PeriodTransition::Reopen {
+                to: PeriodState::SoftClosed,
+            },
+            "reopen",
+            " --to soft-closed --reason <reason>",
+        ),
+    ];
+    let legal: Vec<String> = candidates
+        .iter()
+        .filter(|(c, ..)| transition(from, *c).is_ok())
+        .map(|(_, verb, rest)| format!("`fa period {verb} {period_code}{rest}`"))
+        .collect();
+    let fix = if legal.is_empty() {
+        format!("a {} period takes no further transition", from.name())
+    } else {
+        format!(
+            "from {} the legal transitions are {}",
+            from.name(),
+            legal.join(" or ")
+        )
+    };
     Refusal::new(
         code::TRANSITION,
         exit::SAFETY,
@@ -624,8 +671,10 @@ fn illegal_transition(period_code: &str, from: PeriodState, t: PeriodTransition)
             from.name()
         ),
         "plan §7.3 period state machine",
-        "pick a legal transition: Future→Open, Open→SoftClose, SoftClosed→Close|Reopen, Closed→Lock|Reopen",
+        fix,
     )
+    .at("period", period_code)
+    .at("state", from.name())
 }
 
 /// A planned transition (R4): the inputs [`transition_period`] rebuilds its
