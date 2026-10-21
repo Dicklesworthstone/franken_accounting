@@ -1496,6 +1496,38 @@ impl Book {
         )))
     }
 
+    /// File `document` in `engagement`'s workpaper index, once.
+    pub fn file_workpaper(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        document: fa_model::Oid,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::WorkpaperFiled> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.file_workpaper(
+            &purposes, capability, engagement, document, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Journal `engagement`'s documentation completion, once (AS 1215.15).
+    pub fn complete_documentation(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        report_release: Option<DateDay>,
+        completion_day: DateDay,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::DocumentationCompleted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.complete_documentation(
+            &purposes, capability, engagement, report_release, completion_day, effective_date,
+            idempotency_key,
+        )))
+    }
+
     /// The engagement `engagement` and every proposal it journaled.
     pub fn engagement(
         &self,

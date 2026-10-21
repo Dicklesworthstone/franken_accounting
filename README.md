@@ -650,6 +650,12 @@ An audit's mechanics are journaled; the judgments stay the auditor's.
   the registered definitions by default, or the classified presets with
   `--definition us_gaap_small_company_income_statement` and
   `--definition us_gaap_small_company_balance_sheet`.
+- **File and complete.** `fa engagement file` puts a document the book holds
+  in the engagement's workpaper index, once. `fa engagement complete`
+  journals the documentation completion once, at most 45 days after the
+  report release date (AS 1215.15). Nothing is withdrawn afterwards: every
+  workpaper, proposal and decision journaled after it is marked
+  `added_after_completion` in `fa engagement show`.
 
 ```bash
 fa engagement open FY26-audit --kind audit --period FY2026-P12 --overall "50000.00 USD" --performance "37500.00 USD" --clearly-trivial "2500.00 USD" --book ./books/acme --json
@@ -658,6 +664,8 @@ fa adjustment book --engagement FY26-audit --proposal 1 --entry E:<vid> --json
 fa adjustment pass --engagement FY26-audit --proposal 2 --reason ClearlyTrivial --json
 fa engagement sud FY26-audit --json
 fa engagement sud FY26-audit --definition us_gaap_small_company_balance_sheet --json
+fa engagement file FY26-audit --document <oid> --json
+fa engagement complete FY26-audit --report-release 2027-02-15 --completion-date 2027-03-20 --json
 ```
 
 Writes need `produce`, which the Auditor profile holds, and an
@@ -672,8 +680,7 @@ What the summary does not do yet:
 - **No foreign-currency conversion.** Legs in other units are listed, never
   converted.
 
-Documentation completion, representations and confirmations are not wired
-yet (`fa-zgn`).
+Representations and confirmations are not wired yet (`fa-zgn`).
 
 ### Exact arithmetic available now
 

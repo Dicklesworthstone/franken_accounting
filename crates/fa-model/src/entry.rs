@@ -172,6 +172,11 @@ pub const CASE_POSTED_EXTENSION: u16 = 24;
 /// disclosed in and the Reviewed attestation over it — `u16 version ‖
 /// [32] document oid ‖ u128 attestation`.
 pub const CASE_DISCLOSURE_EXTENSION: u16 = 25;
+/// Extension tag 26, `fa:documentation-completion:v1` (plan §11.12, AS
+/// 1215.15, bead fa-zgn): on an `EngagementControl` Complete record, the
+/// report release date and the documentation completion date — `u16
+/// version ‖ i32 report_release_day ‖ i32 completion_day`.
+pub const DOCUMENTATION_COMPLETION_EXTENSION: u16 = 26;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -200,6 +205,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     CASE_MEMBER_EXTENSION,
     CASE_POSTED_EXTENSION,
     CASE_DISCLOSURE_EXTENSION,
+    DOCUMENTATION_COMPLETION_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------

@@ -556,12 +556,12 @@ example = "fa sample uniform --account 1200 --seed 20260115 --size 25 --book ./b
 name = "engagement"
 summary = "Audit engagements (plan §11.12, §0.4 decision 3): open an engagement (its kind, scope periods and the materiality parameters the auditor states, journaled once by an EngagementControl record under produce authority), list the book's engagements, or show one with every proposed adjustment and its decision."
 writes = true
-subcommands = ["open", "list", "show", "sud"]
-flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date", "--grant", "--definition"]
+subcommands = ["open", "list", "show", "sud", "file", "complete"]
+flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date", "--grant", "--definition", "--document", "--completion-date"]
 switches = []
-events = ["engagement_opened", "engagements", "engagement_detail", "engagement_sud"]
+events = ["engagement_opened", "engagements", "engagement_detail", "engagement_sud", "engagement_workpaper_filed", "engagement_documentation_completed"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["engagement open <id> --kind audit|review|examination|investigation|litigation --period <code>... --overall \"<amount> <UNIT>\" --performance \"<amount> <UNIT>\" --clearly-trivial \"<amount> <UNIT>\" [--report-release YYYY-MM-DD] [--key K] [--date YYYY-MM-DD]   (journals the engagement once, under produce authority; the parameters are in the book's base unit with 0 <= clearly trivial <= performance <= overall, and are stated, never judged; every scope period must exist)", "engagement list   (every engagement of the book, under read authority)", "engagement show <id>   (the engagement and each proposed adjustment: its legs, its state proposed|booked|passed, and its decision)", "engagement sud <id> [--definition <income statement>] [--definition <balance sheet>]   (plan §11.12 audit.sud, the summary of uncorrected misstatements: every passed proposal's effect had it been booked, on income, assets, liabilities and equity in the engagement's unit, legs in other units listed and never converted; the rollover (period income) and iron-curtain (period-end balance sheet) totals, which sum the same items while no prior-period engagement is carried forward; per statement line, rollover_lines over an income statement definition and iron_curtain_lines over a balance sheet definition, each one a name fa statement lint takes (income-statement and balance-sheet by default, us_gaap_small_company_* for the classified presets), refused when an account maps to no line or to several; and mechanical comparisons with the stated clearly trivial, performance and overall parameters. Materiality is the auditor's judgment, not this report's)"]
+usage = ["engagement open <id> --kind audit|review|examination|investigation|litigation --period <code>... --overall \"<amount> <UNIT>\" --performance \"<amount> <UNIT>\" --clearly-trivial \"<amount> <UNIT>\" [--report-release YYYY-MM-DD] [--key K] [--date YYYY-MM-DD]   (journals the engagement once, under produce authority; the parameters are in the book's base unit with 0 <= clearly trivial <= performance <= overall, and are stated, never judged; every scope period must exist)", "engagement list   (every engagement of the book, under read authority)", "engagement show <id>   (the engagement and each proposed adjustment: its legs, its state proposed|booked|passed, and its decision)", "engagement sud <id> [--definition <income statement>] [--definition <balance sheet>]   (plan §11.12 audit.sud, the summary of uncorrected misstatements: every passed proposal's effect had it been booked, on income, assets, liabilities and equity in the engagement's unit, legs in other units listed and never converted; the rollover (period income) and iron-curtain (period-end balance sheet) totals, which sum the same items while no prior-period engagement is carried forward; per statement line, rollover_lines over an income statement definition and iron_curtain_lines over a balance sheet definition, each one a name fa statement lint takes (income-statement and balance-sheet by default, us_gaap_small_company_* for the classified presets), refused when an account maps to no line or to several; and mechanical comparisons with the stated clearly trivial, performance and overall parameters. Materiality is the auditor's judgment, not this report's)", "engagement file <id> --document <oid> [--key K]   (plan §11.12: puts a document the book holds in the engagement's workpaper index, once per document, journaled by an EngagementControl File record under produce; after the documentation completion the filing is marked added_after_completion, and nothing filed is withdrawn)", "engagement complete <id> --completion-date YYYY-MM-DD [--report-release YYYY-MM-DD] [--key K]   (AS 1215.15: journals the documentation completion once, at most 45 days after the report release date; the release date is the engagement's own when it was opened with one, else --report-release names it (FA-REF-190 otherwise, or when the date is outside the window or the completion is already journaled). Every proposal, decision and workpaper journaled after it is marked added_after_completion in engagement show)"]
 example = "fa engagement open FY2026-audit --kind audit --period FY2026-P01 --period FY2026-P02 --overall \"50000.00 USD\" --performance \"37500.00 USD\" --clearly-trivial \"2500.00 USD\" --book ./books/myco --json"
 
 [[verb]]
@@ -2341,8 +2341,20 @@ fields = ["engagements:[engagement_summary]"]
 [[event]]
 name = "engagement_detail"
 book = true
-doc = "One engagement and every proposed adjustment it journaled, by number, each with its legs, state and decision."
-fields = ["engagement:engagement_summary", "proposals:[proposal_row]"]
+doc = "One engagement and every proposed adjustment it journaled, by number, each with its legs, state and decision; its workpaper index in filing order; and its documentation completion (null until journaled). Every proposal, decision and workpaper journaled after the completion is marked added_after_completion (AS 1215.16)."
+fields = ["engagement:engagement_summary", "proposals:[proposal_row]", "workpapers:[engagement_workpaper]", "documentation:documentation_completion?"]
+
+[[event]]
+name = "engagement_workpaper_filed"
+book = true
+doc = "A document the book holds was filed in the engagement's workpaper index by an EngagementControl File record (or the same filing was already recorded: then nothing was written). A document is filed once; after the documentation completion the filing is an addition after completion and says so."
+fields = ["engagement:string", "document:hex", "control_entry:hex", "recorded_at:seq", "added_after_completion:bool", "already_recorded:bool"]
+
+[[event]]
+name = "engagement_documentation_completed"
+book = true
+doc = "The engagement's documentation completion was journaled by an EngagementControl Complete record, once, within 45 days after the report release date (AS 1215.15), or the identical completion was already recorded. Every later record of the engagement is an addition after completion."
+fields = ["engagement:string", "documentation:documentation_completion", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
 name = "engagement_sud"
@@ -2406,12 +2418,22 @@ fields = ["side:string", "account:string?", "account_vid:hex", "amount:amount"]
 [[shape]]
 name = "proposal_decision"
 doc = "How a proposal was decided: book (the committed entry that made the correction) or pass (the registered reason it was left uncorrected), with the record, its sequence and who decided. superseded_by names the entry that has since reversed or replaced a booked entry: the decision stays on the record, and the proposal is uncorrected again."
-fields = ["kind:string", "entry:hex?", "reason:string?", "record:hex", "recorded_at:seq", "decided_by:hex", "superseded_by:hex?"]
+fields = ["kind:string", "entry:hex?", "reason:string?", "record:hex", "recorded_at:seq", "decided_by:hex", "superseded_by:hex?", "added_after_completion:bool"]
 
 [[shape]]
 name = "proposal_row"
 doc = "One proposed adjustment: its engagement and number, vertex, the effective date and legs of the draft correcting entry (which never posts), the Propose record, its sequence and principal, its state (proposed, booked or passed), and its decision."
-fields = ["engagement:string", "number:int", "vid:hex", "effective_date:date", "legs:[proposal_leg]", "record:hex", "proposed_at:seq", "proposed_by:hex", "state:string", "decision:proposal_decision?"]
+fields = ["engagement:string", "number:int", "vid:hex", "effective_date:date", "legs:[proposal_leg]", "record:hex", "proposed_at:seq", "proposed_by:hex", "state:string", "decision:proposal_decision?", "added_after_completion:bool"]
+
+[[shape]]
+name = "engagement_workpaper"
+doc = "One document in an engagement's workpaper index: its oid, the File record, its sequence and principal, and whether it was filed after the documentation completion (AS 1215.16)."
+fields = ["document:hex", "record:hex", "filed_at:seq", "filed_by:hex", "added_after_completion:bool"]
+
+[[shape]]
+name = "documentation_completion"
+doc = "An engagement's journaled documentation completion (AS 1215.15): the report release date, the completion date at most 45 days after it, and its Complete record, sequence and principal."
+fields = ["report_release:date", "completion_date:date", "record:hex", "recorded_at:seq", "completed_by:hex"]
 
 [[shape]]
 name = "sample_excluded"
@@ -4509,10 +4531,10 @@ mistakes = ["Passing --interval as a bare number: it is an amount with its unit,
 cluster = "fa.audit"
 name = "engagement"
 verb = "engagement"
-subcommands = ["open", "list", "show", "sud"]
+subcommands = ["open", "list", "show", "sud", "file", "complete"]
 selector = "action"
 positionals = ["engagement?"]
-flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date", "--definition"]
+flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date", "--definition", "--document", "--completion-date"]
 switches = []
 required = []
 dont = ["Opening an engagement needs produce and a Human launch profile: an Agent-profile session journals no trunk record (FA-REF-013). Reads need read.", "Don't treat the materiality parameters as conclusions: overall, performance and clearly trivial are the auditor's stated parameters; the system compares against them mechanically and never judges materiality.", "Don't reopen an engagement to change its parameters: its profile is immutable; open a new engagement under another id."]
@@ -5071,7 +5093,7 @@ ops = ["read", "produce"]
 # An engagement's records are the auditor's work product (fa-zgn).
 [[bound]]
 verbs = ["engagement"]
-subcommands = ["open"]
+subcommands = ["open", "file", "complete"]
 ops = ["produce"]
 
 [[bound]]

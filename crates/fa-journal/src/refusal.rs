@@ -293,6 +293,10 @@ pub mod code {
     pub const ADJUSTMENT_OUT_OF_SCOPE: &str = "FA-REF-183";
     /// No proposal with this number in the engagement.
     pub const ADJUSTMENT_UNKNOWN: &str = "FA-REF-184";
+    /// An engagement's documentation completion is not admissible: already
+    /// journaled, no report release date, or a completion date outside the
+    /// 45 days after it (AS 1215.15; bead fa-zgn).
+    pub const DOCUMENTATION_COMPLETION: &str = "FA-REF-190";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

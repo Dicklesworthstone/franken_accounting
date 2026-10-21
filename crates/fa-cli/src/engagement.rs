@@ -22,7 +22,7 @@ use fa_time::DateDay;
 use fgdb_types::VId;
 
 use crate::args::Args;
-use crate::cli::{Ctx, Fail, Out, control_date, registered_unit_code, render_amount, usage};
+use crate::cli::{Ctx, Fail, Out, control_date, hex, registered_unit_code, render_amount, usage};
 use crate::json::{Json, obj, s};
 
 const OPEN_EXAMPLE: &str = "fa engagement open <id> --kind audit|review|examination|investigation|litigation --period <code>... --overall \"<amount> <UNIT>\" --performance \"<amount> <UNIT>\" --clearly-trivial \"<amount> <UNIT>\" [--report-release YYYY-MM-DD] --json";
@@ -36,11 +36,165 @@ pub(crate) fn engagement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
         Some("list") => list(ctx, args),
         Some("show") => show(ctx, args),
         Some("sud") => sud(ctx, args),
+        Some("file") => file(ctx, args),
+        Some("complete") => complete(ctx, args),
         _ => Err(usage(
-            "engagement has the subcommands open, list, show and sud",
+            "engagement has the subcommands open, list, show, sud, file and complete",
             OPEN_EXAMPLE,
         )),
     }
+}
+
+const FILE_EXAMPLE: &str = "fa engagement file <id> --document <oid> [--key K] --json";
+const COMPLETE_EXAMPLE: &str = "fa engagement complete <id> --completion-date YYYY-MM-DD [--report-release YYYY-MM-DD] [--key K] --json";
+
+/// The one engagement id a file or complete takes.
+fn engagement_arg(args: &Args, sub: &str, example: &str) -> Result<String, Fail> {
+    match args.positional.as_slice() {
+        [_, _, id] => Ok(id.clone()),
+        _ => Err(usage(
+            format!("engagement {sub} takes exactly one engagement id"),
+            example,
+        )),
+    }
+}
+
+/// `fa engagement file <id> --document <oid>`: put a document the book
+/// holds in the engagement's workpaper index, once. After the
+/// documentation completion it is an addition after completion, and the
+/// event says so (AS 1215.16).
+fn file(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let engagement = engagement_arg(args, "file", FILE_EXAMPLE)?;
+    let text = require_one(args, "--document", FILE_EXAMPLE)?;
+    let document = crate::document::hex32(text, "--document").map(fa_model::Oid)?;
+    let key = one_flag(args, "--key", FILE_EXAMPLE)?
+        .unwrap_or("file")
+        .to_string();
+    let capability = ctx.capability(args, &["produce"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        admit_writer(book, &capability, "filing an engagement workpaper")
+    })?;
+    let date = control_date(args, &book)?;
+    let filed = book.file_workpaper(capability, &engagement, document, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    let human = format!(
+        "engagement {engagement}: workpaper {} {}{}",
+        hex(&document.0),
+        if filed.already_recorded {
+            "already filed"
+        } else {
+            "filed"
+        },
+        if filed.added_after_completion {
+            ", added after documentation completion"
+        } else {
+            ""
+        }
+    );
+    ctx.out.event(
+        "engagement_workpaper_filed",
+        vec![
+            ("engagement", s(&engagement)),
+            ("document", s(hex(&document.0))),
+            ("control_entry", vid_hex(filed.control_entry)),
+            ("recorded_at", seq(filed.recorded_at)),
+            (
+                "added_after_completion",
+                Json::Bool(filed.added_after_completion),
+            ),
+            ("already_recorded", Json::Bool(filed.already_recorded)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+/// `fa engagement complete <id> --completion-date D`: journal the
+/// engagement's documentation completion, once, within 45 days after the
+/// report release date (AS 1215.15).
+fn complete(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let engagement = engagement_arg(args, "complete", COMPLETE_EXAMPLE)?;
+    let day = |flag: &str, text: &str| {
+        DateDay::parse(text).map_err(|e| usage(format!("{flag} `{text}`: {e}"), COMPLETE_EXAMPLE))
+    };
+    let completion_day = day(
+        "--completion-date",
+        require_one(args, "--completion-date", COMPLETE_EXAMPLE)?,
+    )?;
+    let report_release = one_flag(args, "--report-release", COMPLETE_EXAMPLE)?
+        .map(|text| day("--report-release", text))
+        .transpose()?;
+    let key = one_flag(args, "--key", COMPLETE_EXAMPLE)?
+        .unwrap_or("complete")
+        .to_string();
+    let capability = ctx.capability(args, &["produce"])?;
+    let completed_by = capability.holder();
+    let mut book = ctx.books.open_admitted(args, |book| {
+        admit_writer(
+            book,
+            &capability,
+            "completing an engagement's documentation",
+        )
+    })?;
+    let date = control_date(args, &book)?;
+    let completed = book.complete_documentation(
+        capability,
+        &engagement,
+        report_release,
+        completion_day,
+        date,
+        key.as_bytes(),
+    )??;
+    ctx.out.at_book(&book)?;
+    let c = completed.completion;
+    let human = format!(
+        "engagement {engagement}: documentation complete on {} ({} days after the report release on {}){}",
+        c.completion_day.render(),
+        c.completion_day.0 - c.report_release_day.0,
+        c.report_release_day.render(),
+        if completed.already_recorded {
+            ", already recorded"
+        } else {
+            ""
+        }
+    );
+    ctx.out.event(
+        "engagement_documentation_completed",
+        vec![
+            ("engagement", s(&engagement)),
+            (
+                "documentation",
+                completion_json(
+                    &c,
+                    completed.control_entry,
+                    completed.recorded_at,
+                    completed_by,
+                ),
+            ),
+            ("control_entry", vid_hex(completed.control_entry)),
+            ("recorded_at", seq(completed.recorded_at)),
+            ("already_recorded", Json::Bool(completed.already_recorded)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+/// A journaled documentation completion: its dates, and its Complete record,
+/// sequence and principal (shape `documentation_completion`).
+fn completion_json(
+    c: &fa_journal::DocumentationCompletion,
+    record: VId,
+    recorded_at: fgdb_types::CommitSeq,
+    completed_by: VId,
+) -> Json {
+    obj(vec![
+        ("report_release", s(c.report_release_day.render())),
+        ("completion_date", s(c.completion_day.render())),
+        ("record", vid_hex(record)),
+        ("recorded_at", seq(recorded_at)),
+        ("completed_by", vid_hex(completed_by)),
+    ])
 }
 
 pub(crate) fn adjustment_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -177,6 +331,10 @@ fn proposal_json(
                 ("recorded_at", seq(d.recorded_at)),
                 ("decided_by", vid_hex(d.decided_by)),
                 ("superseded_by", d.superseded_by.map_or(Json::Null, vid_hex)),
+                (
+                    "added_after_completion",
+                    Json::Bool(d.added_after_completion),
+                ),
             ])
         }
     };
@@ -191,6 +349,10 @@ fn proposal_json(
         ("proposed_by", vid_hex(p.proposed_by)),
         ("state", s(p.state.name())),
         ("decision", decision),
+        (
+            "added_after_completion",
+            Json::Bool(p.added_after_completion),
+        ),
     ]))
 }
 
@@ -407,16 +569,55 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             p.state.name()
         ));
     }
+    for w in &view.workpapers {
+        human.push(format!(
+            "  workpaper {}{}",
+            hex(&w.document.0),
+            if w.added_after_completion {
+                " (added after documentation completion)"
+            } else {
+                ""
+            }
+        ));
+    }
+    if let Some(c) = &view.documentation {
+        human.push(format!(
+            "  documentation complete on {} (report released {})",
+            c.completion.completion_day.render(),
+            c.completion.report_release_day.render()
+        ));
+    }
     let proposals = view
         .proposals
         .iter()
         .map(|p| proposal_json(p, &codes, &units))
         .collect::<Result<Vec<_>, Fail>>()?;
+    let workpapers = view
+        .workpapers
+        .iter()
+        .map(|w| {
+            obj(vec![
+                ("document", s(hex(&w.document.0))),
+                ("record", vid_hex(w.record)),
+                ("filed_at", seq(w.filed_at)),
+                ("filed_by", vid_hex(w.filed_by)),
+                (
+                    "added_after_completion",
+                    Json::Bool(w.added_after_completion),
+                ),
+            ])
+        })
+        .collect();
+    let documentation = view.documentation.as_ref().map_or(Json::Null, |c| {
+        completion_json(&c.completion, c.record, c.recorded_at, c.completed_by)
+    });
     ctx.out.event(
         "engagement_detail",
         vec![
             ("engagement", summary_json(&view, &units)?),
             ("proposals", Json::Arr(proposals)),
+            ("workpapers", Json::Arr(workpapers)),
+            ("documentation", documentation),
         ],
         &human.join("\n"),
     );
