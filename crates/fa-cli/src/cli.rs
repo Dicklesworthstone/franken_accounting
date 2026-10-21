@@ -16788,13 +16788,47 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ])
         })
         .collect();
+    // Every supplement with all its documents: an attachment usually
+    // cites a document the entry itself does not (plan §9.2).
+    let supplements: Vec<Json> = ex
+        .supplements
+        .iter()
+        .map(|sup| {
+            let documents = sup
+                .documents
+                .iter()
+                .map(|d| {
+                    obj(vec![
+                        ("document_oid", s(hex(&d.document_oid.0))),
+                        ("doc_commit", s(hex(&d.doc_commit))),
+                        (
+                            "role",
+                            s(policy
+                                .roles
+                                .iter()
+                                .find(|r| r.tag == d.role)
+                                .map_or_else(|| d.role.to_string(), |r| r.name.clone())),
+                        ),
+                    ])
+                })
+                .collect();
+            obj(vec![
+                ("supplement_vid", s(format!("{:032x}", sup.vid.0))),
+                ("attached_by", s(format!("{:032x}", sup.attached_by.0))),
+                ("body_digest", s(hex(&sup.body_digest))),
+                ("recorded_at", Json::Int(i128::from(sup.recorded_at.0))),
+                ("documents", Json::Arr(documents)),
+            ])
+        })
+        .collect();
     let human = format!(
-        "evidence of entry {:032x} ({}) · minimum {} document(s) · satisfied={} · {} cited document(s)",
+        "evidence of entry {:032x} ({}) · minimum {} document(s) · satisfied={} · {} cited document(s) · {} supplement(s)",
         ex.entry_vid.0,
         ex.class,
         ex.min_documents,
         ex.minimum_satisfied,
-        ex.documents.len()
+        ex.documents.len(),
+        ex.supplements.len()
     );
     out.event(
         "evidence_explained",
@@ -16813,6 +16847,7 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ),
             ("satisfied", Json::Bool(ex.minimum_satisfied)),
             ("documents", Json::Arr(docs_json)),
+            ("supplements", Json::Arr(supplements)),
             ("manual_assertions", Json::Arr(manual_assertions)),
         ],
         &human,

@@ -385,14 +385,14 @@ example = "fa settle --intent settle.json --book ./books/myco --json"
 
 [[verb]]
 name = "document"
-summary = "Record a source document, list the documents the book holds, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, or record legal holds and attestations."
+summary = "Record a source document, list the documents the book holds, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, record legal holds and attestations, or attach documents that support a committed entry."
 writes = true
-subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "import", "list"]
+subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "import", "list"]
 flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant"]
 switches = ["--dry-run"]
-events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "legal_holds", "attestation_recorded", "import_recorded", "import_receipt", "documents"]
+events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "legal_holds", "attestation_recorded", "evidence_attached", "import_recorded", "import_receipt", "documents"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> --subject <vid|oid>... [--effective YYYY-MM-DD] [--description <text>] [--key K]", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)"]
+usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> --subject <vid|oid>... [--effective YYYY-MM-DD] [--description <text>] [--key K]", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document attach <entry-vid|E:vid> --evidence <oid>[:role]...   (AttachEvidence, plan §9.2: documents that support a committed entry, recorded after it; the entry never changes, fa explain evidence lists the supplement, and the same attachment again is the recorded one)", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)"]
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
 
 [[verb]]
@@ -1979,7 +1979,7 @@ fields = ["vid:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", 
 name = "evidence_explained"
 book = true
 doc = "An entry's complete evidence closure (`fa explain evidence <entry-vid>`): the class's registered evidence policy minimum (`evidence_policy.toml`), every cited document with its commitment, intake grade, self-sourced status, Reviewed attestations, and SupplementalEvidence links, plus any ManualAssertion attestations over the entry's proposal digest, and whether the closure satisfies the class minimum."
-fields = ["entry:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "recorded_at:seq", "min_documents:int", "accepted_kinds:[string]", "accepts_self_sourced:bool", "accepts_manual_assertion:bool", "satisfied:bool", "documents:[explained_document]", "manual_assertions:[explained_manual_assertion]"]
+fields = ["entry:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "recorded_at:seq", "min_documents:int", "accepted_kinds:[string]", "accepts_self_sourced:bool", "accepts_manual_assertion:bool", "satisfied:bool", "documents:[explained_document]", "supplements:[evidence_supplement]", "manual_assertions:[explained_manual_assertion]"]
 
 [[event]]
 name = "refusal_explained"
@@ -2083,6 +2083,12 @@ name = "attestation_recorded"
 book = true
 doc = "A journaled attestation vertex (`Reviewed`, `ManualAssertion`, or `RegisterEquals`, plan §9.3–§9.4) or its live holds evaluation."
 fields = ["attestation_vid:hex", "claim:string", "subject:hex", "signed_digest:hex?", "recorded_at:seq", "already_recorded:bool", "holds:bool?"]
+
+[[event]]
+name = "evidence_attached"
+book = true
+doc = "A journaled SupplementalEvidence (plan §9.2 AttachEvidence): documents that support a committed entry, recorded after it with SUPPLEMENTS and EVIDENCED_BY edges. The entry and its own evidence list are unchanged; `fa explain evidence` lists the supplement. already_recorded marks the same attachment recorded before."
+fields = ["supplement_vid:hex", "entry:hex", "entry_digest:hex", "documents:[evidence_ref]", "body_digest:hex", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
 name = "import_recorded"
@@ -2857,6 +2863,11 @@ fields = ["attestation_vid:hex", "reviewer:hex", "against:[hex]", "recorded_at:s
 name = "explained_supplement"
 doc = "A SupplementalEvidence link recorded against an entry."
 fields = ["supplement_vid:hex", "document_oid:hex", "role:int", "role_name:string?", "recorded_at:seq"]
+
+[[shape]]
+name = "evidence_supplement"
+doc = "One SupplementalEvidence recorded against an entry (`fa document attach`), with every document it cites."
+fields = ["supplement_vid:hex", "attached_by:hex", "body_digest:hex", "recorded_at:seq", "documents:[evidence_ref]"]
 
 [[shape]]
 name = "explained_manual_assertion"
@@ -4207,7 +4218,7 @@ mistakes = ["Passing a host path as `file`: supply the document inline as `text`
 cluster = "fa.evidence"
 name = "steward"
 verb = "document"
-subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest", "import", "list"]
+subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "import", "list"]
 selector = "action"
 positionals = ["target?", "arg?"]
 flags = ["--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--run", "--kind"]
@@ -4903,6 +4914,11 @@ verbs = ["document"]
 subcommands = ["attest"]
 args = ["manual"]
 ops = ["post"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["attach"]
+ops = ["read", "post"]
 
 [[bound]]
 verbs = ["document"]

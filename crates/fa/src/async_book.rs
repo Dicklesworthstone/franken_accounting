@@ -2617,6 +2617,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// `AttachEvidence` (plan §9.2): documents that support a committed
+    /// entry, recorded after it as one SupplementalEvidence.
+    pub async fn attach_evidence(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        supplement: &fa_journal::evidence::SupplementalEvidence,
+    ) -> Outcome<fa_journal::evidence::EvidenceAttached> {
+        Ok(fa_journal::evidence::attach_evidence(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            supplement,
+        )
+        .await?)
+    }
+
     pub fn erasure_cut(
         &self,
         cx: &PurposeContexts,

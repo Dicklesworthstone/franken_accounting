@@ -8327,6 +8327,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     run2(&["settle", "--intent", &settle_ev, "--review-only"]);
     run2(&["explain", "entry", &fee_vid]);
     run2(&["explain", "lineage", &fee_vid]);
+    run2(&["document", "attach", &fee_vid, "--evidence", &bank_oid]);
     run2(&["explain", "evidence", &fee_vid]);
     run2(&["explain", "period", "FY2026-P03"]);
     run2(&["explain", "refusal", "FA-REF-001"]);

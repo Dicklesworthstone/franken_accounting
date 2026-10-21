@@ -2371,6 +2371,20 @@ impl Book {
         )))
     }
 
+    /// `AttachEvidence` (plan §9.2; bead fa-81lu): record `supplement`
+    /// against its committed entry, which never changes. The kernel admits
+    /// `post` before any read and witnesses the entry's digest.
+    pub fn attach_evidence(
+        &mut self,
+        capability: &fa_journal::Capability,
+        supplement: &fa_journal::evidence::SupplementalEvidence,
+    ) -> Outcome<fa_journal::evidence::EvidenceAttached> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.attach_evidence(
+            &purposes, capability, supplement,
+        )))
+    }
+
     /// Evaluate a lawful erasure request for `subject` (plan §8.5): admits
     /// `erase` before any read, checks capability currency and revocation,
     /// refuses active legal holds (`FA-REF-117`), and otherwise returns the
