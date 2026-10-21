@@ -385,16 +385,19 @@ fn empty_genesis<V: Vfs + Clone>(db: &Database<V>, row: &VertexRow) -> Result<bo
         .checked_sub(1)
         .map(CommitSeq)
         .ok_or_else(|| KernelError::Corrupt("genesis coverage has sequence zero".into()))?;
-    let _ = db.delta_since(before)?;
-    let Some(batch) = db.delta_index()?.get(row.created_at) else {
-        return Ok(false);
-    };
     // Birth ordinals are database-wide and the book root must be the first
     // birth: its frame is the database's first commit, and no birth in that
     // frame precedes it (fgdb numbers births from one, not zero).
     if before != CommitSeq(0) {
         return Ok(false);
     }
+    // A checkpoint-opened database (every reopened on-disk book) retains no
+    // delta batch before its frontier, so the frame may be unloaded. Then
+    // the snapshot at the genesis sequence is exactly what the first commit
+    // created, and is checked instead.
+    let Some(batch) = db.delta_index()?.get(row.created_at) else {
+        return genesis_snapshot(db, row);
+    };
     let mut found_book = false;
     let mut found_coverage = false;
     let mut book_ordinal = None;
@@ -447,6 +450,62 @@ fn empty_genesis<V: Vfs + Clone>(db: &Database<V>, row: &VertexRow) -> Result<bo
                 }
                 _ => return Ok(false),
             }
+        }
+    }
+    Ok(found_book && found_coverage && book_ordinal == Some(first_ordinal))
+}
+
+/// [`empty_genesis`] over the snapshot at the genesis sequence, for a frame
+/// the delta window no longer holds: every vertex visible there was born in
+/// the first commit, the book root first, and each is the book root, the
+/// coverage root or a whitelisted genesis row; every edge is a plain
+/// IN_BOOK or REPRESENTS edge. This scans the genesis snapshot once.
+fn genesis_snapshot<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+) -> Result<bool, KernelError> {
+    use fa_model::symbols::relation;
+
+    let at = row.created_at;
+    let mut found_book = false;
+    let mut found_coverage = false;
+    let mut book_ordinal = None;
+    let mut first_ordinal = u64::MAX;
+    for vertex in db.vertices_at(at)? {
+        if vertex.created_at != at {
+            return Ok(false);
+        }
+        first_ordinal = first_ordinal.min(vertex.birth_ordinal);
+        if vertex.vid == book_root() {
+            if vertex.labels.as_slice() != [label::BOOK] || found_book {
+                return Ok(false);
+            }
+            found_book = true;
+            book_ordinal = Some(vertex.birth_ordinal);
+        } else if vertex.vid == row.vid {
+            if vertex.labels.as_slice() != [label::INTENT_OUTCOME] || found_coverage {
+                return Ok(false);
+            }
+            found_coverage = true;
+        } else if ![
+            label::UNIT,
+            label::LEGAL_ENTITY,
+            label::DIMENSION,
+            label::DIMENSION_VALUE,
+        ]
+        .iter()
+        .any(|allowed| vertex.labels.as_slice() == [*allowed])
+        {
+            return Ok(false);
+        }
+    }
+    for edge in db.edges_at(at)? {
+        if edge.entry.created_at != at
+            || (edge.entry.relation != relation::IN_BOOK
+                && edge.entry.relation != relation::REPRESENTS)
+            || !edge.props.is_empty()
+        {
+            return Ok(false);
         }
     }
     Ok(found_book && found_coverage && book_ordinal == Some(first_ordinal))

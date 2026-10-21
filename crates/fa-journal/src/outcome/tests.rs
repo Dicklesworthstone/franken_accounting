@@ -255,3 +255,102 @@ fn genesis_coverage_cannot_share_its_birth_with_a_journal_entry() {
     assert_eq!(target.db.frontier().unwrap(), head);
     assert_eq!(target.db.vertices().unwrap(), before);
 }
+
+/// A reopened on-disk book retains no delta batch before its frontier, so
+/// its genesis frame is unloaded: coverage is then authenticated from the
+/// genesis snapshot. A genuine genesis still verifies; a frame that also
+/// births an Entry still refuses.
+#[test]
+fn genesis_coverage_verifies_after_reopen_when_its_frame_is_unloaded() {
+    let h = Harness::empty();
+    let cx = h.cx();
+    let keys = DatabaseKeys::new([116; 32], DatabaseSecurityNamespaceId([117; 32]), [118; 32]);
+    let spec = crate::genesis::BookSpec {
+        book_id: h.book.book_id,
+        name: "Reopened genesis".into(),
+        base_unit: h.book.units.lookup("USD").unwrap(),
+        calendar: h.book.calendar.clone(),
+        time_zone_policy: None,
+        entities: Vec::new(),
+        opening_date: None,
+    };
+    let reopened = |plant: bool| {
+        let vfs = cx.commit().with_restriction(MemVfs::new).unwrap();
+        let path = vfs.database_dir();
+        let mut db = h
+            .runtime
+            .block_on(Database::create_with_vfs(
+                &cx.commit(),
+                vfs.clone(),
+                &path,
+                keys.clone(),
+            ))
+            .unwrap();
+        if plant {
+            // The genuine genesis rows, transplanted with an extra Entry.
+            let mut source = Harness::empty();
+            let source_cx = source.cx();
+            source
+                .runtime
+                .block_on(crate::genesis::create_book(
+                    &mut source.db,
+                    &source_cx,
+                    &spec,
+                    &source.book.units,
+                    &source.book.symbols,
+                ))
+                .unwrap();
+            let mut planted = WriteBatch::new(relation::IN_BOOK);
+            let mut rows = source.db.vertices().unwrap();
+            rows.sort_by_key(|row| row.birth_ordinal);
+            for row in rows {
+                planted.create_vertex(row.vid, row.labels, row.props);
+            }
+            for edge in source.db.edges_at(source.db.frontier().unwrap()).unwrap() {
+                planted.add_edge(edge.entry.eid, edge.entry.src, edge.entry.dst, edge.props);
+            }
+            planted.create_vertex(VId(40_002), vec![label::ENTRY], Vec::new());
+            h.runtime.block_on(db.write(&cx.commit(), planted)).unwrap();
+        } else {
+            h.runtime
+                .block_on(crate::genesis::create_book(
+                    &mut db,
+                    &cx,
+                    &spec,
+                    &h.book.units,
+                    &h.book.symbols,
+                ))
+                .unwrap();
+        }
+        drop(db);
+        let db = h
+            .runtime
+            .block_on(Database::open_with_vfs(
+                &cx.commit(),
+                vfs,
+                &path,
+                keys.clone(),
+            ))
+            .unwrap();
+        assert!(
+            db.delta_index().unwrap().get(CommitSeq(1)).is_none(),
+            "the reopened database must not retain the genesis frame"
+        );
+        db
+    };
+
+    let genuine = reopened(false);
+    let row = genuine
+        .vertex(coverage_vid(h.book.book_id))
+        .unwrap()
+        .unwrap();
+    assert!(coverage_of(&genuine, &h.book, &row).is_ok());
+
+    let planted = reopened(true);
+    let row = planted
+        .vertex(coverage_vid(h.book.book_id))
+        .unwrap()
+        .unwrap();
+    let error = coverage_of(&planted, &h.book, &row).unwrap_err();
+    assert!(matches!(error, KernelError::Corrupt(_)), "{error}");
+}
