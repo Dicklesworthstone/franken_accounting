@@ -5225,12 +5225,17 @@ fn a_book_scope_hold_pins_everything_recorded_through_its_sequence() {
     // Refused before anything is written: sequence 0, a sequence the book
     // has not recorded, and a capability without hold.
     let head = h.db.frontier().unwrap();
-    let cases: Vec<(&str, &Capability, CommitSeq, &str)> = vec![
-        ("through sequence 0", &counsel, CommitSeq(0), "FA-REF-100"),
+    let cases: Vec<(&str, &Capability, fgdb_types::CommitSeq, &str)> = vec![
+        (
+            "through sequence 0",
+            &counsel,
+            fgdb_types::CommitSeq(0),
+            "FA-REF-100",
+        ),
         (
             "through an unrecorded sequence",
             &counsel,
-            CommitSeq(head.0 + 5),
+            fgdb_types::CommitSeq(head.0 + 5),
             "FA-REF-141",
         ),
         (
