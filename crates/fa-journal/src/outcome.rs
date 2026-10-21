@@ -389,8 +389,16 @@ fn empty_genesis<V: Vfs + Clone>(db: &Database<V>, row: &VertexRow) -> Result<bo
     let Some(batch) = db.delta_index()?.get(row.created_at) else {
         return Ok(false);
     };
+    // Birth ordinals are database-wide and the book root must be the first
+    // birth: its frame is the database's first commit, and no birth in that
+    // frame precedes it (fgdb numbers births from one, not zero).
+    if before != CommitSeq(0) {
+        return Ok(false);
+    }
     let mut found_book = false;
     let mut found_coverage = false;
+    let mut book_ordinal = None;
+    let mut first_ordinal = u64::MAX;
     for coordinate in batch.coordinate_entries() {
         if coordinate.relation != relation::IN_BOOK && coordinate.relation != relation::REPRESENTS {
             return Ok(false);
@@ -404,11 +412,13 @@ fn empty_genesis<V: Vfs + Clone>(db: &Database<V>, row: &VertexRow) -> Result<bo
                     valid_time,
                     ..
                 } if valid_time.is_none() => {
+                    first_ordinal = first_ordinal.min(*birth_ordinal);
                     if *vid == book_root() {
-                        if labels.as_slice() != [label::BOOK] || *birth_ordinal != 0 || found_book {
+                        if labels.as_slice() != [label::BOOK] || found_book {
                             return Ok(false);
                         }
                         found_book = true;
+                        book_ordinal = Some(*birth_ordinal);
                     } else if *vid == row.vid {
                         if labels.as_slice() != [label::INTENT_OUTCOME] || found_coverage {
                             return Ok(false);
@@ -430,13 +440,16 @@ fn empty_genesis<V: Vfs + Clone>(db: &Database<V>, row: &VertexRow) -> Result<bo
                     canonical_key,
                     valid_time,
                     props,
+                    birth_ordinal,
                     ..
-                } if canonical_key.is_none() && valid_time.is_none() && props.is_empty() => {}
+                } if canonical_key.is_none() && valid_time.is_none() && props.is_empty() => {
+                    first_ordinal = first_ordinal.min(*birth_ordinal);
+                }
                 _ => return Ok(false),
             }
         }
     }
-    Ok(found_book && found_coverage)
+    Ok(found_book && found_coverage && book_ordinal == Some(first_ordinal))
 }
 
 fn coverage_of<V: Vfs + Clone>(

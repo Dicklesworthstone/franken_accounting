@@ -243,15 +243,11 @@ fn genesis_coverage_cannot_share_its_birth_with_a_journal_entry() {
     target.write(planted);
     let transplanted = target.db.vertex(vid).unwrap().unwrap();
     assert!(original(&target.db, &transplanted).unwrap());
-    assert_eq!(
-        target
-            .db
-            .vertex(book_root())
-            .unwrap()
-            .unwrap()
-            .birth_ordinal,
-        0
-    );
+    // A faithful transplant: its root is the first birth, as the genuine
+    // root is, so only the planted Entry can make it refuse.
+    let first_birth =
+        |db: &fgdb::Database<MemVfs>| db.vertex(book_root()).unwrap().unwrap().birth_ordinal;
+    assert_eq!(first_birth(&target.db), first_birth(&source.db));
     let head = target.db.frontier().unwrap();
     let before = target.db.vertices().unwrap();
     let error = coverage_of(&target.db, &target.book, &transplanted).unwrap_err();

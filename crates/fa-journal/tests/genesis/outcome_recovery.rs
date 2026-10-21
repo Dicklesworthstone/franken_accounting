@@ -71,13 +71,18 @@ pub(super) fn write_legacy(h: &mut Harness, proposal: EntryPayload) -> EntryRef 
             vec![],
         );
     }
+    // fgdb refuses an empty batch: an entry without evidence or
+    // supersession writes neither relation.
+    let mut batches = vec![rows, accounts, units, periods];
+    if !entry.proposal.evidence.is_empty() {
+        batches.push(evidence);
+    }
+    if !entry.proposal.supersession.is_empty() {
+        batches.push(supersedes);
+    }
     let cx = h.ctx();
     let mut txn = h.db.begin(&cx.txn()).unwrap();
-    txn.write_ordered(
-        &mut h.db,
-        vec![rows, accounts, units, periods, evidence, supersedes],
-    )
-    .unwrap();
+    txn.write_ordered(&mut h.db, batches).unwrap();
     h.runtime
         .block_on(txn.commit(&mut h.db, &cx.commit()))
         .unwrap();

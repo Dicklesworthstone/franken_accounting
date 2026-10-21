@@ -2905,7 +2905,9 @@ fn ambiguous_dates_are_out_of_scope_until_the_period_mirror_exists() {
         (absent.unwrap_err(), NOWHERE.vid),
     );
     h.post_ok(h.voids(plain_hold, b"void", dec15), december);
-    h.post_ok(h.voids(p12_hold, b"void", dec15), controller());
+    // A committed key binds one intent per principal (plan §5.9), so the
+    // second release names its own key.
+    h.post_ok(h.voids(p12_hold, b"void-p12", dec15), controller());
 }
 
 #[test]
