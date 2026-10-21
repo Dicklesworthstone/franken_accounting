@@ -65,6 +65,9 @@ fn unavailable(error: InstantResolutionError) -> Refusal {
         cite,
         "select --as-known-at HEAD or an existing commit sequence; an instant before the first retained tick or before migration genesis cannot be reconstructed",
     )
+    // HEAD answers as of now, a different question than the instant asked;
+    // the caller chooses it knowingly.
+    .or_field_change("as_known_at", vec!["HEAD".to_string()])
 }
 
 /// Resolve an instant using only ticks visible at the fixed observed frontier.

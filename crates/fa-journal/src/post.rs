@@ -504,7 +504,12 @@ pub(crate) fn recorded_or_conflict(
     if stored_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded));
     }
-    let conflict = identity_conflict(identity, row.vid);
+    let mut conflict = identity_conflict(identity, row.vid);
+    if identity == Identity::Key
+        && let Some(key) = fresh_key(proposal)?
+    {
+        conflict = conflict.or_field_change("idempotency_key", vec![key]);
+    }
     if identity != Identity::Key && stored.proposal.principal_ref != proposal.principal_ref {
         return Ok(Err(conflict));
     }
@@ -541,8 +546,12 @@ fn identity_conflict(identity: Identity, vid: VId) -> Refusal {
             exit::CONFLICT,
             format!("the target is already reversed by entry {:032x}", vid.0),
             "plan §4.9 (one reversal per target, by identity)",
-            "cite the existing reversal instead of posting another",
-        ),
+            format!(
+                "cite the existing reversal instead of posting another (`fa entry show {:032x}`)",
+                vid.0
+            ),
+        )
+        .at("entry", format!("{:032x}", vid.0)),
         Identity::Resolution => Refusal::new(
             code::ALREADY_RESOLVED,
             exit::CONFLICT,
@@ -551,8 +560,12 @@ fn identity_conflict(identity: Identity, vid: VId) -> Refusal {
                 vid.0
             ),
             "plan §5.4 (one resolution per pending entry, by identity)",
-            "read the existing resolution with `fa entry show`; a pending entry is resolved exactly once",
-        ),
+            format!(
+                "read the existing resolution with `fa entry show {:032x}`; a pending entry is resolved exactly once",
+                vid.0
+            ),
+        )
+        .at("entry", format!("{:032x}", vid.0)),
         Identity::Replacement => Refusal::new(
             code::IDEMPOTENCY_CONFLICT,
             exit::CONFLICT,
@@ -571,9 +584,29 @@ fn identity_conflict(identity: Identity, vid: VId) -> Refusal {
                 vid.0
             ),
             "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
-            "resubmit the identical intent to get the recorded outcome, or use a new idempotency key for new content",
-        ),
+            format!(
+                "resubmit the identical intent to get the recorded outcome (`fa entry show {:032x}` shows it), or use a new idempotency key for new content",
+                vid.0
+            ),
+        )
+        .at("entry", format!("{:032x}", vid.0)),
     }
+}
+
+/// A fresh idempotency key for content that conflicts with a recorded key:
+/// the key and 8 hex digits of the new proposal's digest, so retrying the
+/// same new content with it is itself idempotent. `None` when the key is not
+/// printable text.
+fn fresh_key(proposal: &EntryPayload) -> Result<Option<String>, KernelError> {
+    let Ok(key) = core::str::from_utf8(&proposal.idempotency_key) else {
+        return Ok(None);
+    };
+    if key.is_empty() || key.chars().any(char::is_control) {
+        return Ok(None);
+    }
+    let digest = proposal.proposal_digest()?;
+    let hex: String = digest[..4].iter().map(|b| format!("{b:02x}")).collect();
+    Ok(Some(format!("{key}-{hex}")))
 }
 
 /// A reversal's target is absent — or, to a scoped token, not wholly in its
@@ -2834,7 +2867,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     for (i, leg) in proposal.legs.iter().enumerate() {
         let ordinal =
             u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
-        for s in &leg.settles {
+        for (j, s) in leg.settles.iter().enumerate() {
             let Some(row) = txn.vertex(db, s.target.vid)? else {
                 txn.abort();
                 return Ok(Err(no_settle_target(i, s.target.vid)));
@@ -3031,6 +3064,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                         "apply at most {}; the remainder is a new open item or an unapplied receipt",
                         shown(book, s.amount.unit, open)
                     ),
+                )
+                .at("leg", i)
+                .at("settles", j)
+                .at("entry", format!("{:032x}", s.target.vid.0))
+                .at("ordinal", u64::from(s.ordinal))
+                .at("open", shown(book, s.amount.unit, open))
+                .or_field_change(
+                    format!("legs[{i}].settles[{j}].amount"),
+                    vec![shown(book, s.amount.unit, open)],
                 )));
             }
             *delta = delta

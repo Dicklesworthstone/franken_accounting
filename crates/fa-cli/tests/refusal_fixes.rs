@@ -78,7 +78,7 @@ fn argv(words: &[&str]) -> Vec<String> {
 }
 
 /// A fixture book: a summary `100` over two cash leaves, a EUR cash leaf, a
-/// USD expense and an any-currency expense; FY2026 with March and April
+/// USD expense, an any-currency expense, receivables and revenue; FY2026 with March and April
 /// open; one source document. `entities` declares legal entities.
 fn book(name: &str, entities: &[&str]) -> (PathBuf, PathBuf, String) {
     let dir = tmp(name);
@@ -97,7 +97,9 @@ fn book(name: &str, entities: &[&str]) -> (PathBuf, PathBuf, String) {
             {"code":"1010","name":"Petty cash","type":"Asset","leaf":true,"unit":"USD","parent":"100"},
             {"code":"1300","name":"Euro cash","type":"Asset","leaf":true,"unit":"EUR"},
             {"code":"6000","name":"Rent","type":"Expense","unit":"USD"},
-            {"code":"6050","name":"Rent abroad","type":"Expense","unit":"any-currency"}]}"#,
+            {"code":"6050","name":"Rent abroad","type":"Expense","unit":"any-currency"},
+            {"code":"1200","name":"Receivables","type":"Asset","leaf":true,"unit":"USD"},
+            {"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
     )
     .expect("chart");
     let chart = chart.display().to_string();
@@ -165,8 +167,10 @@ struct Case {
     entities: &'static [&'static str],
     /// Commands run on the fixture before the trigger.
     setup: &'static [&'static [&'static str]],
-    /// Post a balanced March entry first and give its vid to the trigger.
-    base_entry: bool,
+    /// An entry posted first (its vid goes to the trigger), if any.
+    base: Option<fn() -> Json>,
+    /// A request run after the base that must succeed, if any.
+    prepare: Option<fn(&Given) -> Request>,
     trigger: fn(&Given) -> Request,
     /// Each expected refusal code and how its fix is applied, in order.
     steps: &'static [(&'static str, Apply)],
@@ -187,6 +191,30 @@ fn intent(key: &str, date: &str, legs: Vec<Json>) -> Json {
         ("description".into(), Json::Str(key.into())),
         ("legs".into(), Json::Arr(legs)),
     ])
+}
+
+/// A balanced March rent entry, key `base`.
+fn rent_base() -> Json {
+    intent(
+        "base",
+        "2026-03-05",
+        vec![
+            leg("debit", "6000", "7.00 USD"),
+            leg("credit", "1000", "7.00 USD"),
+        ],
+    )
+}
+
+/// A 100.00 USD March invoice: receivables against revenue, key `invoice`.
+fn invoice_base() -> Json {
+    intent(
+        "invoice",
+        "2026-03-05",
+        vec![
+            leg("debit", "1200", "100.00 USD"),
+            leg("credit", "4000", "100.00 USD"),
+        ],
+    )
 }
 
 fn post(intent: Json) -> Request {
@@ -230,36 +258,45 @@ fn strings(v: Option<&Json>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Write `value` into `field` (`legs[N].name` or a top-level name) of the
-/// intent.
+/// Write `value` into `field` of the intent: a dotted path whose segments
+/// may index arrays (`legs[1].settles[0].amount`, `idempotency_key`).
 fn set_field(intent: &mut Json, field: &str, value: &str) {
-    let Json::Obj(top) = intent else {
-        panic!("intent is not an object");
-    };
-    if let Some(rest) = field.strip_prefix("legs[") {
-        let (index, key) = rest.split_once("].").expect("legs[N].field");
-        let index: usize = index.parse().expect("leg index");
-        let legs = top
+    let parts: Vec<&str> = field.split('.').collect();
+    let mut at = intent;
+    for (k, part) in parts.iter().enumerate() {
+        let (name, index) = match part.split_once('[') {
+            Some((name, rest)) => (
+                name,
+                Some(rest.trim_end_matches(']').parse::<usize>().expect("index")),
+            ),
+            None => (*part, None),
+        };
+        let Json::Obj(fields) = at else {
+            panic!("`{field}`: `{name}`'s parent is not an object");
+        };
+        if k + 1 == parts.len() && index.is_none() {
+            match fields.iter_mut().find(|(f, _)| f == name) {
+                Some(slot) => slot.1 = Json::Str(value.into()),
+                None => fields.push((name.to_string(), Json::Str(value.into()))),
+            }
+            return;
+        }
+        let child = fields
             .iter_mut()
-            .find(|(k, _)| k == "legs")
+            .find(|(f, _)| f == name)
             .map(|(_, v)| v)
-            .expect("legs");
-        let Json::Arr(legs) = legs else {
-            panic!("legs is not an array");
+            .unwrap_or_else(|| panic!("`{field}`: no `{name}`"));
+        at = match index {
+            Some(i) => {
+                let Json::Arr(items) = child else {
+                    panic!("`{field}`: `{name}` is not an array");
+                };
+                &mut items[i]
+            }
+            None => child,
         };
-        let Json::Obj(leg) = &mut legs[index] else {
-            panic!("leg is not an object");
-        };
-        match leg.iter_mut().find(|(k, _)| k == key) {
-            Some(slot) => slot.1 = Json::Str(value.into()),
-            None => leg.push((key.to_string(), Json::Str(value.into()))),
-        }
-    } else {
-        match top.iter_mut().find(|(k, _)| k == field) {
-            Some(slot) => slot.1 = Json::Str(value.into()),
-            None => top.push((field.to_string(), Json::Str(value.into()))),
-        }
     }
+    panic!("`{field}` names no scalar");
 }
 
 /// The registry verb a fix's argv runs (through an alias when it is one).
@@ -280,16 +317,8 @@ fn execute(case: &Case) -> Vec<&'static str> {
         assert_eq!(code, 0, "{}: setup {step:?}: {}", case.name, line.render());
     }
     let reg = registry().expect("verbs.toml");
-    let vid = case.base_entry.then(|| {
-        let base = post(intent(
-            "base",
-            "2026-03-05",
-            vec![
-                leg("debit", "6000", "7.00 USD"),
-                leg("credit", "1000", "7.00 USD"),
-            ],
-        ));
-        let (code, line, _) = run(&dir, &book, &ev, &base, 0);
+    let vid = case.base.map(|base| {
+        let (code, line, _) = run(&dir, &book, &ev, &post(base()), 0);
         assert_eq!(code, 0, "{}: base entry: {}", case.name, line.render());
         line.get("data")
             .and_then(|d| d.get("vid"))
@@ -297,6 +326,16 @@ fn execute(case: &Case) -> Vec<&'static str> {
             .expect("base vid")
             .to_string()
     });
+    if let Some(prepare) = case.prepare {
+        let (code, line, args) = run(&dir, &book, &ev, &prepare(&Given { vid: vid.clone() }), 100);
+        assert_eq!(
+            code,
+            0,
+            "{}: prepare {args:?}: {}",
+            case.name,
+            line.render()
+        );
+    }
     let mut req = (case.trigger)(&Given { vid });
     let mut seen = BTreeSet::new();
     let mut n = 0;
@@ -463,7 +502,8 @@ const CASES: &[Case] = &[
         name: "summary-account",
         entities: &[],
         setup: &[],
-        base_entry: false,
+        base: None,
+        prepare: None,
         trigger: |_| {
             post(intent(
                 "summary",
@@ -480,7 +520,8 @@ const CASES: &[Case] = &[
         name: "unit-policy",
         entities: &[],
         setup: &[],
-        base_entry: false,
+        base: None,
+        prepare: None,
         trigger: |_| {
             post(intent(
                 "euros",
@@ -497,7 +538,8 @@ const CASES: &[Case] = &[
         name: "missing-entity",
         entities: &["US:US Co", "UK:UK Co"],
         setup: &[],
-        base_entry: false,
+        base: None,
+        prepare: None,
         trigger: |_| {
             post(intent(
                 "entityless",
@@ -518,7 +560,8 @@ const CASES: &[Case] = &[
         name: "period-never-created",
         entities: &[],
         setup: &[],
-        base_entry: false,
+        base: None,
+        prepare: None,
         trigger: |_| {
             post(intent(
                 "next-year",
@@ -539,7 +582,8 @@ const CASES: &[Case] = &[
         name: "softclosed-without-grant",
         entities: &[],
         setup: &[&["period", "soft-close", "FY2026-P04", "--json"]],
-        base_entry: false,
+        base: None,
+        prepare: None,
         trigger: |_| {
             post(intent(
                 "late-april",
@@ -556,7 +600,8 @@ const CASES: &[Case] = &[
         name: "close-unconfirmed",
         entities: &[],
         setup: &[&["period", "soft-close", "FY2026-P04", "--json"]],
-        base_entry: false,
+        base: None,
+        prepare: None,
         trigger: |_| {
             Request::Argv(argv(&[
                 "period",
@@ -573,7 +618,8 @@ const CASES: &[Case] = &[
         name: "unknown-account",
         entities: &[],
         setup: &[],
-        base_entry: false,
+        base: None,
+        prepare: None,
         trigger: |_| {
             post(intent(
                 "unknown",
@@ -589,7 +635,8 @@ const CASES: &[Case] = &[
     Case {
         name: "closed-period",
         entities: &[],
-        base_entry: false,
+        base: None,
+        prepare: None,
         setup: &[
             &["period", "soft-close", "FY2026-P03", "--json"],
             &[
@@ -618,7 +665,8 @@ const CASES: &[Case] = &[
         name: "unbalanced",
         entities: &[],
         setup: &[],
-        base_entry: false,
+        base: None,
+        prepare: None,
         trigger: |_| {
             post(intent(
                 "unbalanced",
@@ -643,7 +691,8 @@ const MORE_CASES: &[Case] = &[
         name: "reversal-reason",
         entities: &[],
         setup: &[],
-        base_entry: true,
+        base: Some(rent_base),
+        prepare: None,
         trigger: |g| {
             Request::Argv(argv(&[
                 "reverse",
@@ -660,7 +709,8 @@ const MORE_CASES: &[Case] = &[
         name: "unknown-draft",
         entities: &[],
         setup: &[],
-        base_entry: false,
+        base: None,
+        prepare: None,
         trigger: |_| Request::Post {
             intent: intent(
                 "into-draft",
@@ -679,7 +729,8 @@ const MORE_CASES: &[Case] = &[
         name: "unknown-scenario",
         entities: &[],
         setup: &[],
-        base_entry: false,
+        base: None,
+        prepare: None,
         trigger: |_| Request::Post {
             intent: intent(
                 "into-scenario",
@@ -697,10 +748,106 @@ const MORE_CASES: &[Case] = &[
         name: "illegal-transition",
         entities: &[],
         setup: &[],
-        base_entry: false,
+        base: None,
+        prepare: None,
         // May is Future: it opens before it can soft-close.
         trigger: |_| Request::Argv(argv(&["period", "soft-close", "FY2026-P05", "--json"])),
         steps: &[("FA-REF-040", Apply::Command)],
+    },
+    Case {
+        name: "idempotency-conflict",
+        entities: &[],
+        setup: &[],
+        base: Some(rent_base),
+        prepare: None,
+        // The same key with different content: the refusal suggests a key
+        // derived from the new content, and the new content posts under it.
+        trigger: |_| {
+            post(intent(
+                "base",
+                "2026-03-05",
+                vec![
+                    leg("debit", "6000", "8.00 USD"),
+                    leg("credit", "1000", "8.00 USD"),
+                ],
+            ))
+        },
+        steps: &[("FA-REF-032", Apply::FieldChange)],
+    },
+    Case {
+        name: "over-application",
+        entities: &[],
+        setup: &[],
+        base: Some(invoice_base),
+        prepare: None,
+        // A 150.00 USD receipt applies all of itself to a 100.00 USD
+        // invoice; the open amount is the field change.
+        trigger: |g| {
+            let vid = g.vid.clone().expect("invoice vid");
+            let mut settle = leg("credit", "1200", "150.00 USD");
+            if let Json::Obj(fields) = &mut settle {
+                fields.push((
+                    "settles".into(),
+                    Json::Arr(vec![Json::Obj(vec![
+                        ("entry".into(), Json::Str(vid)),
+                        ("ordinal".into(), Json::Int(0)),
+                        ("amount".into(), Json::Str("150.00 USD".into())),
+                    ])]),
+                ));
+            }
+            post(intent(
+                "receipt",
+                "2026-03-12",
+                vec![leg("debit", "1000", "150.00 USD"), settle],
+            ))
+        },
+        steps: &[("FA-REF-072", Apply::FieldChange)],
+    },
+    Case {
+        name: "instant-before-ticks",
+        entities: &[],
+        setup: &[],
+        base: None,
+        prepare: None,
+        trigger: |_| {
+            Request::Argv(argv(&[
+                "tb",
+                "--period",
+                "FY2026-P03",
+                "--as-known-at",
+                "2020-01-01T00:00:00Z",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-151", Apply::FieldChange)],
+    },
+    Case {
+        name: "already-reversed",
+        entities: &[],
+        setup: &[],
+        base: Some(rent_base),
+        prepare: Some(|g| {
+            Request::Argv(argv(&[
+                "reverse",
+                g.vid.as_deref().expect("base vid"),
+                "--reason",
+                "Duplicate",
+                "--json",
+            ]))
+        }),
+        trigger: |g| {
+            Request::Argv(argv(&[
+                "reverse",
+                g.vid.as_deref().expect("base vid"),
+                "--reason",
+                "WrongAccount",
+                "--json",
+            ]))
+        },
+        // A second reversal with another reason is new content for the same
+        // identity: the fix shows the existing reversal, and the second one
+        // stands refused.
+        steps: &[("FA-REF-052", Apply::Inform)],
     },
 ];
 
@@ -744,7 +891,8 @@ fn fix_naming_unknown_verb_fails() {
         name: "planted-same-refusal",
         entities: closed.entities,
         setup: closed.setup,
-        base_entry: false,
+        base: None,
+        prepare: None,
         trigger: closed.trigger,
         steps: &[
             ("FA-REF-010", Apply::Command),
