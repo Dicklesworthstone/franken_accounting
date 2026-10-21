@@ -9,7 +9,7 @@ use fa_notary::bundle::{
     BalanceRequest, BundleRequest, BundleScope, ProductionReceipt, ReceiptBody, assemble,
 };
 use fa_notary::checkpoint::{CheckpointBody, TransparencyCheckpoint};
-use fa_notary::{CheckpointSigner, Journal, ScopeIndex, SigningKey, StoredCheckpoint};
+use fa_notary::{Journal, ScopeIndex, SigningKey, StoredCheckpoint};
 use fa_time::DateDay;
 use fa_verify::checkpoint::witness::bundle::balances::verify_witnessed_bundle_balances_for;
 use fa_verify::checkpoint::witness::bundle::{BundleExpectation, verify_witnessed_bundle_for};

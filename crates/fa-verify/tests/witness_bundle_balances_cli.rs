@@ -335,6 +335,10 @@ fn help_and_human_reports_expose_exact_cell_requests_without_claiming_freshness(
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS filesystems refuse non-UTF-8 file names (EILSEQ); exercised on Linux hosts"
+)]
 fn non_utf8_paths_work_but_non_utf8_balance_scalars_are_not_lossy() {
     use std::os::unix::ffi::OsStringExt;
     let c = cell(10, 1, None);
