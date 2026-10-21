@@ -3934,6 +3934,33 @@ fn reclass_closed_period_requires_post_closed() -> std::io::Result<()> {
         "--json",
     ]);
     let target = field(&out, "vid").unwrap_or_default().to_string();
+    // The dry run previews the net effect: the target plus this delta.
+    let plan = doc(&ok(&[
+        "reclass",
+        &target,
+        "--from",
+        "6100",
+        "--to",
+        "6200",
+        "--amount",
+        "300.00 USD",
+        "--reason",
+        "WrongAccount",
+        "--dry-run",
+        "--json",
+    ]));
+    let net: Vec<(&str, &str)> = arr(&plan, "net_effect")
+        .iter()
+        .map(|cell| (text(cell, "account"), text(cell, "net")))
+        .collect();
+    assert_eq!(
+        net,
+        [
+            ("1000", "-1000.00 USD"),
+            ("6100", "700.00 USD"),
+            ("6200", "300.00 USD")
+        ]
+    );
     let out = ok(&[
         "reclass",
         &target,

@@ -7807,6 +7807,79 @@ pub(crate) fn write_post_plan(files: &Files, path: &str, bytes: &[u8]) -> Result
     write_new_output_file(files, path, bytes, "plan", "--plan-out")
 }
 
+/// A Reclassification's net effect for its plan: the target plus this
+/// entry's delta per (account, unit), the `Reclassifies` netting law
+/// (supersession_kinds.toml; bead fa-xvba), sorted by account code. Earlier
+/// reclassifications of the same target are not netted here: they may move
+/// amounts into accounts this caller does not reach, and `fa explain
+/// lineage` shows the whole component under read authority. `None` for
+/// every other class.
+fn reclass_net_effect(
+    book: &Book,
+    proposal: &EntryPayload,
+    accounts: &std::collections::BTreeMap<VId, fa_journal::AccountRow>,
+) -> Result<Option<(Json, Vec<String>)>, Fail> {
+    let target = match proposal.supersession.first() {
+        Some(link) if proposal.class == EntryClass::RECLASSIFICATION => link.target.vid,
+        _ => return Ok(None),
+    };
+    let Some((entry, _)) = book.read_entry(target)? else {
+        return Ok(None);
+    };
+    let overflow = || Fail::Internal("a reclassification's net effect overflows i128".into());
+    let mut cells: std::collections::BTreeMap<(VId, fa_money::UnitId), (i128, i128)> =
+        std::collections::BTreeMap::new();
+    for leg in entry.proposal.legs.iter().chain(&proposal.legs) {
+        let cell = cells
+            .entry((leg.account_ref, leg.amount.unit))
+            .or_insert((0, 0));
+        let total = if leg.side == Side::Debit {
+            &mut cell.0
+        } else {
+            &mut cell.1
+        };
+        *total = total
+            .checked_add(leg.amount.mantissa)
+            .ok_or_else(overflow)?;
+    }
+    let units = &book.context().units;
+    let mut rows = Vec::with_capacity(cells.len());
+    for ((account, unit), (debits, credits)) in cells {
+        let (code, name) = accounts
+            .get(&account)
+            .map_or(("?", "?"), |row| (row.code.as_str(), row.name.as_str()));
+        let net = render_amount(
+            Amount::new(unit, debits.checked_sub(credits).ok_or_else(overflow)?),
+            units,
+        )?;
+        rows.push((
+            (code.to_string(), unit),
+            obj(vec![
+                ("account", s(code)),
+                ("account_vid", s(format!("{:032x}", account.0))),
+                ("account_name", s(name)),
+                ("unit", s(registered_unit_code(unit, units)?)),
+                (
+                    "debits",
+                    s(render_amount(Amount::new(unit, debits), units)?),
+                ),
+                (
+                    "credits",
+                    s(render_amount(Amount::new(unit, credits), units)?),
+                ),
+                ("net", s(&net)),
+            ]),
+            format!("  {code} ({name}) net {net}"),
+        ));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let (json, human): (Vec<Json>, Vec<String>) = rows
+        .into_iter()
+        .map(|(_, json, human)| (json, human))
+        .unzip();
+    Ok(Some((Json::Arr(json), human)))
+}
+
 pub(crate) fn emit_post_plan(
     out: &Out,
     book: &Book,
@@ -7849,6 +7922,7 @@ pub(crate) fn emit_post_plan(
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
+    let net_effect = reclass_net_effect(book, proposal, &accounts)?;
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
     let resolves = proposal
@@ -7940,6 +8014,10 @@ pub(crate) fn emit_post_plan(
     );
     if let Some(disposition) = disposition {
         human.push_str(&format!("\nResolution disposition: {disposition}"));
+    }
+    if let Some((_, lines)) = &net_effect {
+        human.push_str("\nNet effect (the target plus this entry):\n");
+        human.push_str(&lines.join("\n"));
     }
     if let Some(target) = resolves {
         human.push_str(&format!("\nResolves hold {:032x}", target.vid.0));
@@ -8034,6 +8112,10 @@ pub(crate) fn emit_post_plan(
                         })
                         .collect(),
                 ),
+            ),
+            (
+                "net_effect",
+                net_effect.map_or(Json::Null, |(json, _)| json),
             ),
             ("approvals", Json::Int(plan.approvals().len() as i128)),
             ("bytes", s(encoded)),
