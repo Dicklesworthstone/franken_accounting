@@ -7375,6 +7375,27 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["party", "add", &bank]).0, 0);
     assert_eq!(run(true, &["party", "list"]).0, 0);
+    let holder = write(
+        &dir,
+        "holder-party.json",
+        r#"{"code":"H-1","kind":"BeneficialOwner","name":"Holder"}"#,
+    );
+    assert_eq!(run(true, &["party", "add", &holder]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &[
+                "party",
+                "ownership",
+                "H-1",
+                "BANK-1",
+                "--as-of",
+                "2026-03-31"
+            ]
+        )
+        .0,
+        0
+    );
     let account = write(
         &dir,
         "instrument.json",
@@ -15703,6 +15724,109 @@ fn legal_entities_and_external_id_bindings_are_recorded_from_the_cli() -> std::i
 /// fa-lzrn: a party's identifier set (its bank details) is replaced under a
 /// named change; the values are sealed and never echoed; an exact retry is
 /// the recorded change; the same change id with other values is a conflict.
+/// `fa party ownership` (plan §4.5): the effective stake is the exact sum
+/// over simple OWNS paths of the product of their stakes, from relationships
+/// valid on the day; --max-depth bounds the chains; nothing reaches before
+/// the first relationship starts.
+#[test]
+fn effective_ownership_sums_owns_paths_exactly_on_a_day() -> std::io::Result<()> {
+    let (book, _ev, dir) = envelope_book("rea-ownership")?;
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, _) = fa(Some(&book), args);
+        (code, out)
+    };
+    for (code, kind) in [
+        ("A", "BeneficialOwner"),
+        ("H", "RelatedEntity"),
+        ("S", "RelatedEntity"),
+    ] {
+        let path = write(
+            &dir,
+            &format!("{code}.json"),
+            &format!(r#"{{"code":"{code}","kind":"{kind}","name":"Party {code}"}}"#),
+        );
+        let (status, out) = run(&["party", "add", &path, "--json"]);
+        assert_eq!(status, 0, "{out}");
+    }
+    for (from, to, pct, basis, from_day) in [
+        ("A", "H", "60/100", "beneficial_ownership", "2026-01-01"),
+        ("H", "S", "50/100", "equity_voting", "2026-01-01"),
+        ("A", "S", "10/100", "beneficial_ownership", "2026-03-01"),
+    ] {
+        let (status, out) = run(&[
+            "party",
+            "relate",
+            from,
+            to,
+            "--kind",
+            "owns",
+            "--basis",
+            basis,
+            "--pct",
+            pct,
+            "--valid-from",
+            from_day,
+            "--json",
+        ]);
+        assert_eq!(status, 0, "{out}");
+    }
+    let stake = |extra: &[&str]| -> String {
+        let mut args = vec!["party", "ownership", "A", "S", "--json"];
+        args.extend_from_slice(extra);
+        let (status, out) = run(&args);
+        assert_eq!(status, 0, "{args:?}: {out}");
+        assert_eq!(field(&out, "event"), Some("effective_ownership"), "{out}");
+        field(&out, "stake").unwrap_or_default().to_string()
+    };
+    // Through H only: 6/10 x 5/10.
+    assert_eq!(stake(&["--as-of", "2026-02-15"]), "3/10");
+    // The direct tenth joins from March: 3/10 + 1/10.
+    assert_eq!(stake(&["--as-of", "2026-03-15"]), "2/5");
+    assert_eq!(
+        stake(&["--as-of", "2026-03-15", "--max-depth", "1"]),
+        "1/10"
+    );
+    assert_eq!(stake(&["--as-of", "2025-12-31"]), "0/1");
+    // Usage: no day, the same party twice, a depth out of range, an
+    // unknown party.
+    for bad in [
+        vec!["party", "ownership", "A", "S", "--json"],
+        vec![
+            "party",
+            "ownership",
+            "A",
+            "A",
+            "--as-of",
+            "2026-03-15",
+            "--json",
+        ],
+        vec![
+            "party",
+            "ownership",
+            "A",
+            "S",
+            "--as-of",
+            "2026-03-15",
+            "--max-depth",
+            "0",
+            "--json",
+        ],
+        vec![
+            "party",
+            "ownership",
+            "A",
+            "Z",
+            "--as-of",
+            "2026-03-15",
+            "--json",
+        ],
+    ] {
+        let (status, out) = run(&bad);
+        assert_eq!(status, 2, "{bad:?}: {out}");
+    }
+    Ok(())
+}
+
 #[test]
 fn party_identifiers_are_replaced_under_a_named_change_and_never_echoed() -> std::io::Result<()> {
     let dir = tmp("identifiers")?;

@@ -20,7 +20,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, Out, date_flag, parse_json, untrusted_text_json, usage};
 use crate::json::{Json, obj, s};
 
-const PARTY_EXAMPLE: &str = "fa party add <party.json|-> | fa party relate <from> <to> --kind owns|controls|related --basis <code> --valid-from YYYY-MM-DD [--valid-to YYYY-MM-DD] [--pct <num>/<den>] | fa party bind <code> --external-id <system>:<id> | fa party list";
+const PARTY_EXAMPLE: &str = "fa party add <party.json|-> | fa party relate <from> <to> --kind owns|controls|related --basis <code> --valid-from YYYY-MM-DD [--valid-to YYYY-MM-DD] [--pct <num>/<den>] | fa party bind <code> --external-id <system>:<id> | fa party ownership <owner> <target> --as-of YYYY-MM-DD | fa party list";
 const INSTRUMENT_EXAMPLE: &str = "fa instrument add <instrument.json|-> | fa instrument list";
 const ENTITY_EXAMPLE: &str = "fa entity add <entity.json|-> | fa entity list";
 
@@ -30,9 +30,10 @@ pub(crate) fn party_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("relate") => party_relate(ctx, args),
         Some("bind") => party_bind(ctx, args),
         Some("identifiers") => party_identifiers(ctx, args),
+        Some("ownership") => party_ownership(ctx, args),
         Some("list") => party_list(ctx, args),
         _ => Err(usage(
-            "party has the subcommands add, relate, bind, identifiers and list",
+            "party has the subcommands add, relate, bind, identifiers, ownership and list",
             PARTY_EXAMPLE,
         )),
     }
@@ -465,6 +466,88 @@ fn party_relate(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         &format!("{from}->{to}"),
         &recorded,
     )
+}
+
+/// The longest OWNS chain `fa party ownership` follows unless asked.
+const OWNERSHIP_DEPTH: usize = 8;
+
+/// `fa party ownership <owner> <target> --as-of YYYY-MM-DD [--max-depth N]`
+/// (plan §4.5, §11.4 related-party exposure): the owner's effective stake in
+/// the target on that day, the exact sum over simple OWNS paths of at most N
+/// edges of the product of their stakes, from relationships whose valid time
+/// covers the day. A read of the journaled REA graph; no date defaults to
+/// today, and the stake is an exact ratio.
+fn party_ownership(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str =
+        "fa party ownership <owner> <target> --as-of YYYY-MM-DD [--max-depth 1..=16] --json";
+    let [_, _, owner_raw, target_raw] = args.positional.as_slice() else {
+        return Err(usage("party ownership needs <owner> and <target>", EXAMPLE));
+    };
+    for flag in ["--as-of", "--max-depth"] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("party ownership takes only one {flag}"),
+                EXAMPLE,
+            ));
+        }
+    }
+    let as_of_text = args.flag("--as-of").ok_or_else(|| {
+        usage(
+            "party ownership needs --as-of YYYY-MM-DD (no date defaults to today)",
+            EXAMPLE,
+        )
+    })?;
+    let as_of = DateDay::parse(as_of_text)
+        .map_err(|e| usage(format!("--as-of `{as_of_text}`: {e:?}"), "YYYY-MM-DD"))?;
+    let max_depth = match args.flag("--max-depth") {
+        None => OWNERSHIP_DEPTH,
+        Some(text) => text
+            .parse::<usize>()
+            .ok()
+            .filter(|depth| (1..=16).contains(depth))
+            .ok_or_else(|| usage(format!("--max-depth `{text}` is not 1..=16"), EXAMPLE))?,
+    };
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| admit_read(book, who, &cap))?;
+    let owner = party_ref(&book, owner_raw)?;
+    let target = party_ref(&book, target_raw)?;
+    if owner == target {
+        return Err(usage(
+            "the owner and the target are the same party",
+            "name two different parties or legal entities",
+        ));
+    }
+    let rea = book.rea_snapshot(None)?;
+    let stake = rea
+        .effective_ownership_as_of(owner, target, as_of, max_depth)
+        .ok_or_else(|| {
+            usage(
+                format!(
+                    "the exact stake over OWNS chains of up to {max_depth} edges overflows a 128-bit ratio"
+                ),
+                "lower --max-depth",
+            )
+        })?;
+    let ratio = format!("{}/{}", stake.num(), stake.den());
+    ctx.out.at_book(&book)?;
+    ctx.out.event(
+        "effective_ownership",
+        vec![
+            ("owner_vid", s(format!("{:032x}", owner.0))),
+            ("target_vid", s(format!("{:032x}", target.0))),
+            ("as_of", s(as_of.to_string())),
+            ("max_depth", Json::Int(max_depth as i128)),
+            ("stake", s(&ratio)),
+            ("known_at", Json::Int(i128::from(rea.known_at.0))),
+        ],
+        &format!(
+            "{owner_raw} holds {ratio} of {target_raw} on {as_of} (OWNS chains of up to {max_depth} edges)"
+        ),
+    );
+    Ok(())
 }
 
 fn party_list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
