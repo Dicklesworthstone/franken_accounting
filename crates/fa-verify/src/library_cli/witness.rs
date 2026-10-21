@@ -2,6 +2,7 @@
 //! from the signed file, and no fallback to the any-trusted-signer command.
 
 mod bundle;
+mod recorded;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -44,6 +45,20 @@ inferred from a valid extension. The report's body_digest is the next pin;
 storing it securely and retaining the recipient policy remain YOUR responsibility.
 The command never overwrites either input or installs a new pin.
 
+To ALSO preserve the retained recorded-time boundary, add --recorded-prefix FILE.
+This option REQUIRES all three continuity options. FILE must be a native v2
+payload-complete prefix or v3 balance export for the candidate checkpoint.
+Every payload must verify, and exactly the retained leaf count must fall at
+or before its retained sequence. New records at old recorded sequences fail;
+legitimate later-recorded entries with earlier EFFECTIVE dates remain valid.
+Envelope-only or missing/corrupt witnesses refuse without a weaker fallback.
+The witness discloses the ENTIRE prefix and grants no disclosure authority.
+Previous/candidate checkpoints, consistency proof and recorded prefix share
+one 64 MiB budget; in bundle mode this also includes bundle, receipt and any
+separate index witness. Repeated inputs count each time. No payload is printed.
+Without --recorded-prefix, continuity proves tree extension only and the
+recorded boundary is explicitly not_checked. Index correctness remains separate.
+
 All syntax and policy checks precede file I/O. File size is bounded by the
 signed-checkpoint decoder's maximum frame, including unknown signatures.
 Non-UTF-8 file paths are supported; identifiers and keys must be ASCII hex.
@@ -67,12 +82,14 @@ struct AdvanceRequest {
     previous: PathBuf,
     expected_body: [u8; 32],
     proof: PathBuf,
+    recorded_prefix: Option<PathBuf>,
 }
 
 struct Continuity {
     status: AdvanceStatus,
     previous_body: [u8; 32],
     previous_seq: u64,
+    recorded: Option<recorded::Facts>,
 }
 
 impl Continuity {
@@ -126,6 +143,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     let (mut path, mut book, mut branch, mut policy, mut publisher, mut threshold) =
         (None, None, None, None, None, None);
     let (mut previous, mut previous_body, mut consistency) = (None, None, None);
+    let mut recorded_prefix = None;
     let mut witnesses = Vec::new();
     let mut json = false;
     let mut index = 1;
@@ -153,6 +171,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
                 | "--previous"
                 | "--expect-previous-body"
                 | "--consistency"
+                | "--recorded-prefix"
         ) {
             return Err(Failure::usage(
                 "unknown witness option; run fa-verify witness --help",
@@ -181,6 +200,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
                 "--previous" => &mut previous,
                 "--expect-previous-body" => &mut previous_body,
                 "--consistency" => &mut consistency,
+                "--recorded-prefix" => &mut recorded_prefix,
                 _ => &mut threshold,
             };
             if slot.replace(value).is_some() {
@@ -189,16 +209,17 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         }
         index += 2;
     }
-    let advance = match (previous, previous_body, consistency) {
-        (None, None, None) => None,
-        (Some(previous), Some(body), Some(proof)) => Some(AdvanceRequest {
+    let advance = match (previous, previous_body, consistency, recorded_prefix) {
+        (None, None, None, None) => None,
+        (Some(previous), Some(body), Some(proof), recorded_prefix) => Some(AdvanceRequest {
             previous: PathBuf::from(previous),
             expected_body: fixed::<32>(body, "--expect-previous-body")?,
             proof: PathBuf::from(proof),
+            recorded_prefix: recorded_prefix.map(PathBuf::from),
         }),
         _ => {
             return Err(Failure::usage(
-                "--previous, --expect-previous-body and --consistency are required together",
+                "--previous, --expect-previous-body and --consistency are required together; --recorded-prefix requires all three",
             ));
         }
     };
@@ -241,17 +262,32 @@ fn authenticate(request: &Request) -> Result<(WitnessedCheckpoint, Option<Contin
                 "previous checkpoint does not match the independently retained body digest",
             ));
         }
+        let previous_bytes = bytes.len();
+        drop(bytes);
         // Bind the previous file BEFORE observing the candidate or proof.
         // Neither a valid older artifact nor a different signed history may
         // replace the recipient's retained baseline by changing a file path.
         let candidate = read_bounded(&request.path, MAX_WITNESSED_CHECKPOINT_BYTES)?;
         let proof = read_bounded(&advance.proof, MAX_WITNESS_CONSISTENCY_BYTES)?;
+        if let Some(path) = &advance.recorded_prefix {
+            let (verified, facts) = recorded::authenticate(
+                &previous, &candidate, &proof, path, previous_bytes,
+            )?;
+            let continuity = Continuity {
+                status: verified.status(),
+                previous_body: advance.expected_body,
+                previous_seq: previous.signed_checkpoint().checkpoint.through_seq,
+                recorded: Some(facts),
+            };
+            return Ok((verified.into_checkpoint(), Some(continuity)));
+        }
         let verified = verify_checkpoint_advance(&previous, &candidate, &proof)
             .map_err(|error| Failure::verification(error.to_string()))?;
         let continuity = Continuity {
             status: verified.status(),
             previous_body: advance.expected_body,
             previous_seq: previous.signed_checkpoint().checkpoint.through_seq,
+            recorded: None,
         };
         return Ok((verified.into_checkpoint(), Some(continuity)));
     }
@@ -293,13 +329,15 @@ fn render(
     let signed = report.signed_checkpoint();
     let checkpoint = &signed.checkpoint;
     if !json {
-        let history = continuity.map_or_else(
+        let mut history = continuity.map_or_else(
             || "Continuity and freshness were not checked.".into(),
             |pin| format!(
                 "Continuity: {} (scope: consistency) from body {} at sequence {}. Global freshness was not checked.",
                 pin.name(), hex(&pin.previous_body), pin.previous_seq,
             ),
         );
+        history.push(' ');
+        history.push_str(&recorded::human(continuity.and_then(|pin| pin.recorded.as_ref())));
         return format!(
             "Verified checkpoint signatures: publisher and {} distinct witnesses ({} required of {} configured).\nBook {} branch {} at sequence {}, {} leaves.\nSigned body digest: {}.\nArtifact digest: {}.\n{} unknown signatures were not judged. {history}\nPolicy ID binding does not verify policy registration, witness authority, key validity/rotation, organizational independence, index construction or accounting truth. No pin was written.",
             report.witnesses().len(),
@@ -329,6 +367,9 @@ fn render(
             "append_only_consistency",
             "same_sequence_body_identity",
         ]);
+    }
+    if continuity.is_some_and(|pin| pin.recorded.is_some()) {
+        checks.extend(["complete_candidate_payloads", "retained_recorded_boundary"]);
     }
     object([
         ("event", quote("proof_verified")),
@@ -398,6 +439,10 @@ fn render(
                     ])
                 },
             ),
+        ),
+        (
+            "recorded_boundary",
+            recorded::json(continuity.and_then(|pin| pin.recorded.as_ref())),
         ),
         ("pin_written", "false".into()),
         (
