@@ -110,11 +110,7 @@ impl Unit {
 
 pub(crate) fn pow10(scale: u8) -> i128 {
     assert!(scale <= 38, "scale {scale} exceeds i128 capacity");
-    let mut v: i128 = 1;
-    for _ in 0..scale {
-        v *= 10;
-    }
-    v
+    10i128.pow(u32::from(scale))
 }
 
 /// The unit table a book binds. Built-in defaults cover the common currencies

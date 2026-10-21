@@ -78,7 +78,7 @@ impl RoundingLaw {
         if d == 0 || r >= d {
             return None;
         }
-        self.apply_fraction(q, r != 0, r.cmp(&(d - r)), negative)
+        self.apply_fraction(q, r != 0, r.cmp(&d.checked_sub(r)?), negative)
     }
 
     /// Apply the law after an exact division. Comparing r with d-r allows

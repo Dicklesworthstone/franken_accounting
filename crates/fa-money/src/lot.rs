@@ -293,7 +293,10 @@ pub fn mul_div_round_i128(
         i128::try_from(r_u).map_err(|_| LotError::Overflow)?
     } else {
         let diff = d_u.checked_sub(r_u).ok_or(LotError::Overflow)?;
-        -i128::try_from(diff).map_err(|_| LotError::Overflow)?
+        i128::try_from(diff)
+            .ok()
+            .and_then(i128::checked_neg)
+            .ok_or(LotError::Overflow)?
     };
     Ok((rounded, residual_numerator))
 }
@@ -510,10 +513,11 @@ pub fn relieve_lots(
                 .map_or(0, |(lot, _)| lot.open_cost);
 
             let mut slices = Vec::new();
+            let rem_for_partial = total_relieved_cost.checked_sub(exhausted_cost_sum);
             if exhausted_cost_sum <= total_relieved_cost
-                && total_relieved_cost - exhausted_cost_sum <= partial_lot_cap
+                && rem_for_partial.is_some_and(|rem| rem <= partial_lot_cap)
             {
-                let rem_for_partial = total_relieved_cost - exhausted_cost_sum;
+                let rem_for_partial = rem_for_partial.ok_or(LotError::Overflow)?;
                 for (lot, relieved_qty) in qty_relieved_per_lot {
                     if relieved_qty == 0 {
                         continue;
@@ -530,9 +534,15 @@ pub fn relieve_lots(
                         relieved_quantity: relieved_qty,
                         relieved_cost,
                         open_quantity_before: lot.open_quantity,
-                        open_quantity_after: lot.open_quantity - relieved_qty,
+                        open_quantity_after: lot
+                            .open_quantity
+                            .checked_sub(relieved_qty)
+                            .ok_or(LotError::Overflow)?,
                         open_cost_before: lot.open_cost,
-                        open_cost_after: lot.open_cost - relieved_cost,
+                        open_cost_after: lot
+                            .open_cost
+                            .checked_sub(relieved_cost)
+                            .ok_or(LotError::Overflow)?,
                     });
                 }
             } else {
@@ -553,9 +563,15 @@ pub fn relieve_lots(
                             relieved_quantity: relieved_qty,
                             relieved_cost,
                             open_quantity_before: lot.open_quantity,
-                            open_quantity_after: lot.open_quantity - relieved_qty,
+                            open_quantity_after: lot
+                                .open_quantity
+                                .checked_sub(relieved_qty)
+                                .ok_or(LotError::Overflow)?,
                             open_cost_before: lot.open_cost,
-                            open_cost_after: lot.open_cost - relieved_cost,
+                            open_cost_after: lot
+                                .open_cost
+                                .checked_sub(relieved_cost)
+                                .ok_or(LotError::Overflow)?,
                         });
                     }
                 }

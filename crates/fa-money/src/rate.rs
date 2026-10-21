@@ -354,7 +354,7 @@ impl Rate {
                 break;
             }
             floors[idx] = floors[idx].checked_add(1).ok_or(RateError::Overflow)?;
-            residual -= 1;
+            residual = residual.checked_sub(1).ok_or(RateError::Overflow)?;
         }
         if residual != 0 {
             return Err(RateError::Overflow);

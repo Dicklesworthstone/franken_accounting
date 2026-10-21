@@ -242,6 +242,7 @@ mod tests {
 
     // Independent small-rational oracle: choose between the signed floor
     // and ceiling using exact distances, not the production magnitude path.
+    #[allow(clippy::arithmetic_side_effects)] // a test oracle over small fixtures
     fn round_small(numerator: i128, denominator: i128, law: RoundingLaw) -> i128 {
         let lower = numerator.div_euclid(denominator);
         let remainder = numerator.rem_euclid(denominator);

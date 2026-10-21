@@ -35,6 +35,7 @@ impl U256 {
 
     /// The integer square root: the largest `r` with `r * r <= self`. Every
     /// 256-bit value has its root below `2^128`.
+    #[allow(clippy::arithmetic_side_effects)] // limb arithmetic bounded as each comment states
     pub fn isqrt(self) -> u128 {
         let (mut low, mut high) = (0u128, u128::MAX);
         while low < high {
@@ -69,6 +70,7 @@ impl U256 {
     }
 
     /// `self - o`, or `None` if `o > self`.
+    #[allow(clippy::arithmetic_side_effects)] // limb arithmetic bounded as each comment states
     pub fn checked_sub(self, o: Self) -> Option<Self> {
         if self < o {
             return None;
@@ -79,6 +81,7 @@ impl U256 {
     }
 
     /// Exact `(quotient, remainder)` of `self / d`, or `None` for zero `d`.
+    #[allow(clippy::arithmetic_side_effects)] // limb arithmetic bounded as each comment states
     pub fn checked_div_rem(self, d: Self) -> Option<(Self, Self)> {
         if d.is_zero() {
             return None;
@@ -113,6 +116,7 @@ impl U256 {
         if self.hi == 0 { Some(self.lo) } else { None }
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // limb arithmetic bounded as each comment states
     fn bit(self, i: u32) -> u128 {
         if i >= 128 {
             (self.hi >> (i - 128)) & 1
@@ -121,6 +125,7 @@ impl U256 {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // limb arithmetic bounded as each comment states
     fn set_bit(&mut self, i: u32) {
         if i >= 128 {
             self.hi |= 1u128 << (i - 128);
@@ -142,7 +147,9 @@ impl Ord for U256 {
     }
 }
 
-/// Full 128×128 → 256 product as `(lo, hi)`.
+/// Full 128×128 → 256 product as `(lo, hi)`. Each partial product of 64-bit
+/// halves fits 128 bits, and the high word of a 256-bit product cannot carry.
+#[allow(clippy::arithmetic_side_effects)] // limb arithmetic bounded as each comment states
 fn mul_u128(a: u128, b: u128) -> (u128, u128) {
     const MASK: u128 = u64::MAX as u128;
     let (a0, a1) = (a & MASK, a >> 64);

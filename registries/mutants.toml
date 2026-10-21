@@ -98,8 +98,8 @@ description = "Break largest-remainder fractional ties toward highest index inst
 [[mutant]]
 id = "MUT-009"
 file = "crates/fa-money/src/allocation.rs"
-find = "shares[i] += 1;"
-replace = "shares[i] += 0;"
+find = "shares[i] = shares[i].checked_add(1).ok_or(AmountError::Overflow)?;"
+replace = "shares[i] = shares[i].checked_add(0).ok_or(AmountError::Overflow)?;"
 law = "FA-INV-06.core"
 killed_by = ["fa-money::lib::allocation::tests::conserves_total_on_a_grid"]
 description = "Drop residual unit distribution in largest_remainder, violating total conservation."

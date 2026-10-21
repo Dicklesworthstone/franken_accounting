@@ -50,7 +50,11 @@ pub fn largest_remainder(total: Amount, weights: &[u128]) -> Result<Vec<Amount>,
         remainders.push((r, i));
         allocated = allocated.checked_add(q).ok_or(AmountError::Overflow)?;
     }
-    let mut residual = mag - allocated; // < weights.len() by construction
+    let mut residual = mag
+        .checked_sub(allocated)
+        .ok_or(AmountError::InvariantViolation(
+            "allocation exceeded its total",
+        ))?; // < weights.len() by construction
     // Largest remainder first; ties by lowest index.
     remainders.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     for (r, i) in remainders {
@@ -62,8 +66,8 @@ pub fn largest_remainder(total: Amount, weights: &[u128]) -> Result<Vec<Amount>,
             // but keep the loop total rather than trusting the arithmetic.
             break;
         }
-        shares[i] += 1;
-        residual -= 1;
+        shares[i] = shares[i].checked_add(1).ok_or(AmountError::Overflow)?;
+        residual = residual.checked_sub(1).ok_or(AmountError::Overflow)?;
     }
     if residual != 0 {
         return Err(AmountError::InvariantViolation(

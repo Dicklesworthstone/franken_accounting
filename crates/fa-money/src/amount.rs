@@ -295,7 +295,10 @@ impl Amount {
         let one = unit.one();
         let neg = self.mantissa < 0;
         let mag = self.mantissa.unsigned_abs();
-        let (int, frac) = (mag / one.unsigned_abs(), mag % one.unsigned_abs());
+        let (int, frac) = mag
+            .checked_div(one.unsigned_abs())
+            .zip(mag.checked_rem(one.unsigned_abs()))
+            .ok_or(AmountError::Overflow)?;
         let mut s = String::new();
         if neg {
             s.push('-');
@@ -398,7 +401,11 @@ pub(crate) fn signed_magnitude(magnitude: u128, negative: bool) -> Result<i128, 
         return Ok(i128::MIN);
     }
     let signed = i128::try_from(magnitude).map_err(|_| AmountError::Overflow)?;
-    Ok(if negative { -signed } else { signed })
+    if negative {
+        signed.checked_neg().ok_or(AmountError::Overflow)
+    } else {
+        Ok(signed)
+    }
 }
 
 impl fmt::Display for Amount {

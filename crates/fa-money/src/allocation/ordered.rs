@@ -24,8 +24,8 @@ pub fn equal_split_residual_first(
     }
     let count = u128::try_from(target_count).map_err(|_| AmountError::Overflow)?;
     let magnitude = total.mantissa.unsigned_abs();
-    let quotient = magnitude / count;
-    let remainder = magnitude % count;
+    let quotient = magnitude.checked_div(count).ok_or(AmountError::Overflow)?;
+    let remainder = magnitude.checked_rem(count).ok_or(AmountError::Overflow)?;
     let negative = total.mantissa < 0;
     let ordinary = Amount::new(total.unit, signed_magnitude(quotient, negative)?);
     let first = quotient
@@ -56,9 +56,11 @@ pub fn waterfall(total: Amount, caps: &[u128]) -> Result<Vec<Amount>, AmountErro
         ));
     }
     let magnitude = total.mantissa.unsigned_abs();
-    let uncovered = caps
-        .iter()
-        .fold(magnitude, |remaining, cap| remaining.saturating_sub(*cap));
+    // What the caps leave uncovered, floored at zero without forming their sum.
+    #[allow(clippy::manual_saturating_arithmetic)]
+    let uncovered = caps.iter().fold(magnitude, |remaining, cap| {
+        remaining.checked_sub(*cap).unwrap_or(0)
+    });
     if uncovered != 0 {
         return Err(AmountError::Malformed(format!(
             "waterfall capacity is short by {uncovered} native mantissa units"
@@ -72,7 +74,7 @@ pub fn waterfall(total: Amount, caps: &[u128]) -> Result<Vec<Amount>, AmountErro
         .map_err(|_| AmountError::Overflow)?;
     for cap in caps {
         let share = remaining.min(*cap);
-        remaining -= share;
+        remaining = remaining.checked_sub(share).ok_or(AmountError::Overflow)?;
         shares.push(Amount::new(total.unit, signed_magnitude(share, negative)?));
     }
     Ok(shares)
