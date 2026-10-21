@@ -588,32 +588,6 @@ fn no_reversal_target(vid: VId) -> Refusal {
     )
 }
 
-/// The registered Reverses target-class row for `class` (plan §8.2,
-/// supersession_kinds.toml): the table is total over the entry classes, so
-/// a class without a row is a corrupt build, never a default.
-pub(crate) fn reversal_target_row(
-    class: &str,
-) -> Result<&'static fa_registry::g0::ReversalTargetClassRow, KernelError> {
-    static TABLE: std::sync::OnceLock<Result<fa_registry::g0::SupersessionKinds, String>> =
-        std::sync::OnceLock::new();
-    let table = TABLE
-        .get_or_init(|| {
-            let classes = fa_registry::EntryClasses::embedded().map_err(|e| e.to_string())?;
-            fa_registry::g0::SupersessionKinds::embedded(&classes).map_err(|e| e.to_string())
-        })
-        .as_ref()
-        .map_err(|e| KernelError::Corrupt(format!("supersession_kinds.toml: {e}")))?;
-    table
-        .target_classes
-        .iter()
-        .find(|row| row.class == class)
-        .ok_or_else(|| {
-            KernelError::Corrupt(format!(
-                "supersession_kinds.toml has no target_class row for `{class}`"
-            ))
-        })
-}
-
 /// A resolution's hold is absent, or not wholly in a scoped token's scope.
 fn no_resolution_target(vid: VId) -> Refusal {
     Refusal::new(
@@ -3011,41 +2985,28 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
         // Only a class the registered target table admits is reversible
         // (plan §8.2, supersession_kinds.toml): it admits or refuses every
-        // class explicitly, so nothing here falls through to a default.
-        let class_name = original.proposal.class.name().ok_or_else(|| {
-            KernelError::Corrupt(format!(
-                "entry {:032x} has unregistered class {}",
-                target.vid.0, original.proposal.class.0
-            ))
-        })?;
-        let row = reversal_target_row(class_name)?;
-        let reversible = match row.reversible.as_str() {
-            "yes" => true,
-            // A hold's release posted nothing and is final; only a
-            // Resolution(Posts) posted legs.
-            "posts_only" => matches!(
-                original.proposal.pending,
-                Some(Pending {
-                    disposition: Some(Disposition::Posts { .. }),
-                    ..
-                })
-            ),
-            "no" => false,
-            other => {
-                return Err(KernelError::Corrupt(format!(
-                    "supersession_kinds.toml: `{class_name}` has reversible `{other}`"
+        // class explicitly, and Palimpsest's check is its one reading.
+        match fa_palimpsest::check_target_reversible(&original.proposal) {
+            Ok(()) => {}
+            Err(fa_palimpsest::PalimpsestError::TargetClassNotReversible {
+                class,
+                why,
+                corrective_route,
+            }) => {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::REVERSAL_TARGET,
+                    exit::REFUSAL,
+                    format!("entry {:032x} is a {class}: {why}", target.vid.0),
+                    "plan §8.2 (a reversal negates posted legs; supersession_kinds.toml target_class)",
+                    corrective_route,
                 )));
             }
-        };
-        if !reversible {
-            txn.abort();
-            return Ok(Err(Refusal::new(
-                code::REVERSAL_TARGET,
-                exit::REFUSAL,
-                format!("entry {:032x} is a {class_name}: {}", target.vid.0, row.why),
-                "plan §8.2 (a reversal negates posted legs; supersession_kinds.toml target_class)",
-                row.corrective_route.clone(),
-            )));
+            Err(error) => {
+                return Err(KernelError::Corrupt(format!(
+                    "supersession_kinds.toml: {error}"
+                )));
+            }
         }
         let target_fy = book
             .calendar

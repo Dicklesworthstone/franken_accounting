@@ -320,11 +320,19 @@ impl std::fmt::Display for PalimpsestError {
 impl std::error::Error for PalimpsestError {}
 
 /// Check whether `target` is reversible under `supersession_kinds.toml`.
+///
+/// The kernel's Reverses admission and lineage validation both judge here,
+/// so the table has one reading (fa-s3wz).
 pub fn check_target_reversible(target: &EntryPayload) -> Result<(), PalimpsestError> {
-    let classes = EntryClasses::embedded()
-        .map_err(|e| PalimpsestError::InvalidReplacementPair(e.to_string()))?;
-    let sup = SupersessionKinds::embedded(&classes)
-        .map_err(|e| PalimpsestError::InvalidReplacementPair(e.to_string()))?;
+    static TABLE: std::sync::OnceLock<Result<SupersessionKinds, String>> =
+        std::sync::OnceLock::new();
+    let sup = TABLE
+        .get_or_init(|| {
+            let classes = EntryClasses::embedded().map_err(|e| e.to_string())?;
+            SupersessionKinds::embedded(&classes).map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| PalimpsestError::InvalidReplacementPair(e.clone()))?;
     let class_name = target.class.name().unwrap_or("?");
     let Some(row) = sup.target_class(class_name) else {
         return Err(PalimpsestError::TargetClassNotReversible {
@@ -1301,6 +1309,72 @@ mod tests {
         assert_eq!(by_acct.get(&VId(6000)), Some(&0));
         assert_eq!(by_acct.get(&VId(6100)), Some(&60));
         assert_eq!(by_acct.get(&VId(6200)), Some(&40));
+        // No entry in this chain reverses a reversal.
+        assert!(report.entries.iter().all(|e| !e.reverses_reversal));
+    }
+
+    /// Plan §8.2: reversing a Reversal revives the original by parity, and
+    /// the lineage flags exactly that entry (fa-s3wz).
+    #[test]
+    fn lineage_flags_reverse_of_reverse() {
+        let usd = UnitId(1);
+        let rent = vec![
+            LegPayload::simple(Side::Debit, VId(6000), Amount::new(usd, 100)),
+            LegPayload::simple(Side::Credit, VId(1000), Amount::new(usd, 100)),
+        ];
+        let swapped = vec![
+            LegPayload::simple(Side::Credit, VId(6000), Amount::new(usd, 100)),
+            LegPayload::simple(Side::Debit, VId(1000), Amount::new(usd, 100)),
+        ];
+        let original = sample_payload(EntryClass::ORIGINAL, rent.clone(), Vec::new())
+            .seal(Vec::new(), None)
+            .unwrap();
+        let reverses = |target, legs| {
+            sample_payload(
+                EntryClass::REVERSAL,
+                legs,
+                vec![Supersession {
+                    kind: SupersessionKind::Reverses,
+                    target,
+                    reason_code: 2,
+                }],
+            )
+            .seal(Vec::new(), None)
+            .unwrap()
+        };
+        let reversal = reverses(original.entry_ref(VId(10)), swapped);
+        let revival = reverses(reversal.entry_ref(VId(11)), rent);
+        // The Reversal itself is a registered reversible target.
+        check_target_reversible(&reversal.proposal).expect("a Reversal is reversible");
+        let entries = vec![
+            (VId(10), original, CommitSeq(1)),
+            (VId(11), reversal, CommitSeq(2)),
+            (VId(12), revival, CommitSeq(3)),
+        ];
+        let report = explain_lineage(&entries, VId(12), None)
+            .expect("lineage ok")
+            .expect("found");
+        let flags: Vec<_> = report
+            .entries
+            .iter()
+            .map(|e| (e.vid, e.live, e.reverses_reversal))
+            .collect();
+        assert_eq!(
+            flags,
+            [
+                (VId(10), true, false),
+                (VId(11), false, false),
+                (VId(12), true, true),
+            ]
+        );
+        assert!(!report.fully_reversed, "the original is live again");
+        let net: BTreeMap<VId, i128> = report
+            .net_positions
+            .iter()
+            .map(|p| (p.account_ref, p.net_debit))
+            .collect();
+        assert_eq!(net.get(&VId(6000)), Some(&100));
+        assert_eq!(net.get(&VId(1000)), Some(&-100));
     }
 
     #[test]
