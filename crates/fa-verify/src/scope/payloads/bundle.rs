@@ -4,12 +4,11 @@ use super::PayloadIndex;
 use crate::BalanceExpectation;
 use crate::bundle::{BundleCheck, BundleReport, BundleScope, Grade};
 use crate::checkpoint::witness::WitnessedCheckpoint;
-use crate::checkpoint::witness::bundle::{
-    BundleExpectation, MAX_WITNESSED_BUNDLE_BYTES, WitnessBundleError,
-    verify_witnessed_bundle_for,
-};
 use crate::checkpoint::witness::bundle::balances::{
     validate_balance_expectations, verify_witnessed_bundle_balances_for,
+};
+use crate::checkpoint::witness::bundle::{
+    BundleExpectation, MAX_WITNESSED_BUNDLE_BYTES, WitnessBundleError, verify_witnessed_bundle_for,
 };
 
 /// Require the account bundle's index to have been independently reconstructed
@@ -49,7 +48,9 @@ pub fn verify_witnessed_indexed_bundle_for(
             "payload-derived index does not match the witnessed checkpoint and scope root",
         ));
     }
-    if bytes.len().checked_add(receipt.map_or(0, <[u8]>::len))
+    if bytes
+        .len()
+        .checked_add(receipt.map_or(0, <[u8]>::len))
         .and_then(|total| total.checked_add(index.encoded_bytes()))
         .is_none_or(|total| total > MAX_WITNESSED_BUNDLE_BYTES)
     {
@@ -58,7 +59,9 @@ pub fn verify_witnessed_indexed_bundle_for(
         ));
     }
     let mut report = match balances {
-        Some(cells) => verify_witnessed_bundle_balances_for(bytes, anchor, expected, cells, receipt),
+        Some(cells) => {
+            verify_witnessed_bundle_balances_for(bytes, anchor, expected, cells, receipt)
+        }
         None => verify_witnessed_bundle_for(bytes, anchor, expected, receipt),
     }?;
     let grade = if report.verified() {
@@ -67,7 +70,9 @@ pub fn verify_witnessed_indexed_bundle_for(
         // grade, to avoid claiming signatures are what established derivation.
         for check in &mut report.checks {
             if check.check == "completeness" {
-                check.subject = "the exact account interval in the independently payload-derived scope index".into();
+                check.subject =
+                    "the exact account interval in the independently payload-derived scope index"
+                        .into();
             }
         }
         Grade::Pass
@@ -79,7 +84,8 @@ pub fn verify_witnessed_indexed_bundle_for(
         scope: "recomputation",
         subject: format!(
             "all {} prefix record selectors and {} account/day/leaf tuples independently checked",
-            index.checkpoint().leaf_count, index.tuple_count(),
+            index.checkpoint().leaf_count,
+            index.tuple_count(),
         ),
         grade,
     });

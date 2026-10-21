@@ -73,7 +73,10 @@ fn journal() -> Journal {
     .unwrap()
 }
 
-fn checkpoint(journal: &Journal, root: [u8; 32]) -> (WitnessedCheckpoint, fa_notary::StoredCheckpoint) {
+fn checkpoint(
+    journal: &Journal,
+    root: [u8; 32],
+) -> (WitnessedCheckpoint, fa_notary::StoredCheckpoint) {
     let publisher = SigningKey::from_seed(&[0x11; 32]);
     let a = SigningKey::from_seed(&[0x12; 32]);
     let b = SigningKey::from_seed(&[0x13; 32]);
@@ -192,38 +195,82 @@ fn using_a_native_balance_as_index_evidence_does_not_skip_its_fold_verification(
 
 use fa_notary::bundle::{BalanceRequest, BundleRequest, BundleScope, assemble};
 use fa_notary::scope::ScopeRequest;
-use fa_verify::checkpoint::witness::bundle::{BundleExpectation, MAX_WITNESSED_BUNDLE_BYTES, WitnessBundleError};
+use fa_verify::checkpoint::witness::bundle::{
+    BundleExpectation, MAX_WITNESSED_BUNDLE_BYTES, WitnessBundleError,
+};
 use fa_verify::scope::payloads::bundle::verify_witnessed_indexed_bundle_for;
 
 fn expected() -> BundleExpectation {
     BundleExpectation {
-        scope: fa_verify::BundleScope::Account(ScopeClaim { account: 10, from: 0, to: 100 }),
-        inline_documents: true, publisher_receipt: false,
+        scope: fa_verify::BundleScope::Account(ScopeClaim {
+            account: 10,
+            from: 0,
+            to: 100,
+        }),
+        inline_documents: true,
+        publisher_receipt: false,
     }
 }
 
-fn bundle(journal: &Journal, stored: &fa_notary::StoredCheckpoint, balances: Vec<BalanceRequest>) -> Vec<u8> {
-    assemble(journal, stored, &BundleRequest {
-        scope: BundleScope::Index(ScopeRequest::Account { account: VId(10), from: 0, to: 100 }),
-        balances, inline_documents: true,
-    }, &std::collections::BTreeMap::new()).unwrap().unwrap().bytes
+fn bundle(
+    journal: &Journal,
+    stored: &fa_notary::StoredCheckpoint,
+    balances: Vec<BalanceRequest>,
+) -> Vec<u8> {
+    assemble(
+        journal,
+        stored,
+        &BundleRequest {
+            scope: BundleScope::Index(ScopeRequest::Account {
+                account: VId(10),
+                from: 0,
+                to: 100,
+            }),
+            balances,
+            inline_documents: true,
+        },
+        &std::collections::BTreeMap::new(),
+    )
+    .unwrap()
+    .unwrap()
+    .bytes
 }
 
 #[test]
 fn produced_account_bundle_retains_range_checks_and_replaces_only_the_signed_index_premise() {
     let journal = journal();
     let (pin, stored) = checkpoint(&journal, ScopeIndex::of(&journal).root());
-    let prefix = journal.balance_proof_complete(VId(10), 1, None, &[]).unwrap().unwrap();
+    let prefix = journal
+        .balance_proof_complete(VId(10), 1, None, &[])
+        .unwrap()
+        .unwrap();
     let index = verify_payload_index(&prefix, pin.signed_checkpoint()).unwrap();
     let retained = index.clone();
-    let report = verify_witnessed_indexed_bundle_for(&bundle(&journal, &stored, vec![]),
-        &pin, &expected(), None, &index, Some(&[])).unwrap();
+    let report = verify_witnessed_indexed_bundle_for(
+        &bundle(&journal, &stored, vec![]),
+        &pin,
+        &expected(),
+        None,
+        &index,
+        Some(&[]),
+    )
+    .unwrap();
     assert!(report.verified(), "{:?}", report.checks);
     assert_eq!(report.summary.entries, 1); // late-effective excluded record still checked
-    assert!(report.checks.iter().any(|check| check.check == "payload_scope_index_derivation"
-        && matches!(check.grade, fa_verify::Grade::Pass)));
-    assert!(report.checks.iter().any(|check| check.check == "completeness"
-        && check.subject.contains("independently payload-derived")));
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|check| check.check == "payload_scope_index_derivation"
+                && matches!(check.grade, fa_verify::Grade::Pass))
+    );
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|check| check.check == "completeness"
+                && check.subject.contains("independently payload-derived"))
+    );
     assert_eq!(index, retained);
 }
 
@@ -231,66 +278,148 @@ fn produced_account_bundle_retains_range_checks_and_replaces_only_the_signed_ind
 fn independently_derived_index_never_rescues_wrong_scope_missing_receipt_or_balance_requests() {
     let journal = journal();
     let (pin, stored) = checkpoint(&journal, ScopeIndex::of(&journal).root());
-    let prefix = journal.balance_proof_complete(VId(10), 1, None, &[]).unwrap().unwrap();
+    let prefix = journal
+        .balance_proof_complete(VId(10), 1, None, &[])
+        .unwrap()
+        .unwrap();
     let index = verify_payload_index(&prefix, pin.signed_checkpoint()).unwrap();
     let bytes = bundle(&journal, &stored, vec![]);
     {
         let mut request = expected();
         request.publisher_receipt = true;
-        let report = verify_witnessed_indexed_bundle_for(&bytes, &pin, &request, None, &index, None).unwrap();
+        let report =
+            verify_witnessed_indexed_bundle_for(&bytes, &pin, &request, None, &index, None)
+                .unwrap();
         assert!(!report.verified());
-        assert!(report.checks.iter().any(|check| check.check == "payload_scope_index_derivation"
-            && matches!(check.grade, fa_verify::Grade::Unrun(_))));
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.check == "payload_scope_index_derivation"
+                    && matches!(check.grade, fa_verify::Grade::Unrun(_)))
+        );
         request.publisher_receipt = false;
-        request.scope = fa_verify::BundleScope::Account(ScopeClaim { account: 20, from: 0, to: 100 });
-        assert!(!verify_witnessed_indexed_bundle_for(&bytes, &pin, &request, None, &index, None).unwrap().verified());
+        request.scope = fa_verify::BundleScope::Account(ScopeClaim {
+            account: 20,
+            from: 0,
+            to: 100,
+        });
+        assert!(
+            !verify_witnessed_indexed_bundle_for(&bytes, &pin, &request, None, &index, None)
+                .unwrap()
+                .verified()
+        );
     }
     let wanted = [fa_verify::BalanceExpectation {
-        scope: fa_verify::BalanceScope { account: 10, unit: 1, effective_through: None },
+        scope: fa_verify::BalanceScope {
+            account: 10,
+            unit: 1,
+            effective_through: None,
+        },
         amounts: None,
     }];
-    assert!(!verify_witnessed_indexed_bundle_for(&bytes, &pin, &expected(), None, &index, Some(&wanted))
-        .unwrap().verified());
+    assert!(
+        !verify_witnessed_indexed_bundle_for(
+            &bytes,
+            &pin,
+            &expected(),
+            None,
+            &index,
+            Some(&wanted)
+        )
+        .unwrap()
+        .verified()
+    );
 }
 
 #[test]
 fn index_reuse_cannot_cross_known_at_coordinates_or_bypass_aggregate_input_limits() {
     let journal = journal();
     let (pin, _) = checkpoint(&journal, ScopeIndex::of(&journal).root());
-    let prefix = journal.balance_proof_complete(VId(10), 1, None, &[]).unwrap().unwrap();
+    let prefix = journal
+        .balance_proof_complete(VId(10), 1, None, &[])
+        .unwrap()
+        .unwrap();
     let index = verify_payload_index(&prefix, pin.signed_checkpoint()).unwrap();
     let mut later = journal.clone();
     later.through_seq = CommitSeq(31);
     let later_pin = anchor(&later, ScopeIndex::of(&later).root());
-    let later_prefix = later.balance_proof_complete(VId(10), 1, None, &[]).unwrap().unwrap();
+    let later_prefix = later
+        .balance_proof_complete(VId(10), 1, None, &[])
+        .unwrap()
+        .unwrap();
     let later_index = verify_payload_index(&later_prefix, later_pin.signed_checkpoint()).unwrap();
-    assert!(matches!(verify_witnessed_indexed_bundle_for(b"bad", &pin, &expected(), None, &later_index, None),
-        Err(WitnessBundleError::Request(_))));
+    assert!(matches!(
+        verify_witnessed_indexed_bundle_for(b"bad", &pin, &expected(), None, &later_index, None),
+        Err(WitnessBundleError::Request(_))
+    ));
     let oversized_total = vec![0; MAX_WITNESSED_BUNDLE_BYTES];
-    assert!(matches!(verify_witnessed_indexed_bundle_for(&oversized_total, &pin, &expected(), None, &index, None),
-        Err(WitnessBundleError::InputLimit(_))));
+    assert!(matches!(
+        verify_witnessed_indexed_bundle_for(
+            &oversized_total,
+            &pin,
+            &expected(),
+            None,
+            &index,
+            None
+        ),
+        Err(WitnessBundleError::InputLimit(_))
+    ));
     let mut wrong_scope = expected();
     wrong_scope.scope = fa_verify::BundleScope::Prefix;
-    assert!(matches!(verify_witnessed_indexed_bundle_for(b"bad", &pin, &wrong_scope, None, &index, None),
-        Err(WitnessBundleError::Request(_))));
+    assert!(matches!(
+        verify_witnessed_indexed_bundle_for(b"bad", &pin, &wrong_scope, None, &index, None),
+        Err(WitnessBundleError::Request(_))
+    ));
 }
 
 #[test]
 fn derived_index_and_exact_nonzero_stock_amounts_are_independent_obligations() {
     let journal = journal();
     let (pin, stored) = checkpoint(&journal, ScopeIndex::of(&journal).root());
-    let prefix = journal.balance_proof_complete(VId(10), 1, None, &[]).unwrap().unwrap();
+    let prefix = journal
+        .balance_proof_complete(VId(10), 1, None, &[])
+        .unwrap()
+        .unwrap();
     let index = verify_payload_index(&prefix, pin.signed_checkpoint()).unwrap();
-    let bytes = bundle(&journal, &stored, vec![BalanceRequest { account: VId(10), unit: 1, effective_through: None }]);
+    let bytes = bundle(
+        &journal,
+        &stored,
+        vec![BalanceRequest {
+            account: VId(10),
+            unit: 1,
+            effective_through: None,
+        }],
+    );
     let mut wanted = [fa_verify::BalanceExpectation {
-        scope: fa_verify::BalanceScope { account: 10, unit: 1, effective_through: None },
-        amounts: Some(fa_verify::BalanceAmounts { debits: 246, credits: 0 }),
+        scope: fa_verify::BalanceScope {
+            account: 10,
+            unit: 1,
+            effective_through: None,
+        },
+        amounts: Some(fa_verify::BalanceAmounts {
+            debits: 246,
+            credits: 0,
+        }),
     }];
-    assert!(verify_witnessed_indexed_bundle_for(&bytes, &pin, &expected(), None, &index, Some(&wanted))
-        .unwrap().verified());
-    wanted[0].amounts = Some(fa_verify::BalanceAmounts { debits: 247, credits: 1 });
-    let report = verify_witnessed_indexed_bundle_for(&bytes, &pin, &expected(), None, &index, Some(&wanted)).unwrap();
+    assert!(
+        verify_witnessed_indexed_bundle_for(&bytes, &pin, &expected(), None, &index, Some(&wanted))
+            .unwrap()
+            .verified()
+    );
+    wanted[0].amounts = Some(fa_verify::BalanceAmounts {
+        debits: 247,
+        credits: 1,
+    });
+    let report =
+        verify_witnessed_indexed_bundle_for(&bytes, &pin, &expected(), None, &index, Some(&wanted))
+            .unwrap();
     assert!(!report.verified());
-    assert!(report.checks.iter().any(|check| check.check == "requested_balance_amounts"
-        && matches!(check.grade, fa_verify::Grade::Fail(_))));
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|check| check.check == "requested_balance_amounts"
+                && matches!(check.grade, fa_verify::Grade::Fail(_)))
+    );
 }

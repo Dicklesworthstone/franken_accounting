@@ -219,7 +219,9 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         }
     };
     if index_prefix.is_some() && !matches!(&scope, BundleScope::Account(_)) {
-        return Err(Failure::usage("--index-prefix requires --expect-scope account"));
+        return Err(Failure::usage(
+            "--index-prefix requires --expect-scope account",
+        ));
     }
     let inline_documents = match text(documents, "--expect-documents")? {
         "inline" => true,
@@ -277,23 +279,35 @@ fn verify(args: &[OsString], json: bool) -> Result<(String, bool), Failure> {
         remaining -= bytes.len();
         // Bind and verify the entire witness before reading the bundle. Its
         // payload buffer is released here; only sealed metadata is retained.
-        Some(verify_payload_index(&bytes, pin.signed_checkpoint())
-            .map_err(|error| Failure::verification(error.to_string()))?)
+        Some(
+            verify_payload_index(&bytes, pin.signed_checkpoint())
+                .map_err(|error| Failure::verification(error.to_string()))?,
+        )
     } else {
         None
     };
     let bytes = read_bounded(&request.bundle, remaining)?;
     let report = if let Some(index) = &derived {
         verify_witnessed_indexed_bundle_for(
-            &bytes, &pin, &request.expected, receipt.as_deref(), index,
+            &bytes,
+            &pin,
+            &request.expected,
+            receipt.as_deref(),
+            index,
             request.balances.as_deref(),
         )
     } else {
         match &request.balances {
             Some(expected) => verify_witnessed_bundle_balances_for(
-                &bytes, &pin, &request.expected, expected, receipt.as_deref(),
+                &bytes,
+                &pin,
+                &request.expected,
+                expected,
+                receipt.as_deref(),
             ),
-            None => verify_witnessed_bundle_for(&bytes, &pin, &request.expected, receipt.as_deref()),
+            None => {
+                verify_witnessed_bundle_for(&bytes, &pin, &request.expected, receipt.as_deref())
+            }
         }
     }
     .map_err(|error| Failure::verification(error.to_string()))?;
@@ -417,9 +431,13 @@ fn render(
         if request.index_prefix.is_none() {
             text.push_str("A signed account index is not independently recomputed. ");
         } else if index_derivation == "payload_recomputed" {
-            text.push_str("The account index and every prefix selector were independently recomputed. ");
+            text.push_str(
+                "The account index and every prefix selector were independently recomputed. ",
+            );
         } else {
-            text.push_str("Payload-derived account-index assurance did not pass all required checks. ");
+            text.push_str(
+                "Payload-derived account-index assurance did not pass all required checks. ",
+            );
         }
         text.push_str("Global freshness, full provenance, policy registration, authorization and accounting truth are not established. No pin or payload bytes were written.");
         return text;
