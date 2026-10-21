@@ -33,12 +33,17 @@ impl BundleExpectation {
     /// Syntax/count validation that needs neither a checkpoint nor input I/O.
     pub fn validate(&self) -> Result<(), WitnessBundleError> {
         match &self.scope {
-            BundleScope::Account(claim) if claim.from > claim.to =>
-                Err(WitnessBundleError::Request("account day interval is reversed")),
-            BundleScope::Entries(leaves) if leaves.len() > MAX_REQUESTED_BUNDLE_LEAVES =>
-                Err(WitnessBundleError::Request("too many requested leaves")),
-            BundleScope::Entries(leaves) if leaves.windows(2).any(|pair| pair[0] >= pair[1]) =>
-                Err(WitnessBundleError::Request("requested leaves must be strictly ascending")),
+            BundleScope::Account(claim) if claim.from > claim.to => Err(
+                WitnessBundleError::Request("account day interval is reversed"),
+            ),
+            BundleScope::Entries(leaves) if leaves.len() > MAX_REQUESTED_BUNDLE_LEAVES => {
+                Err(WitnessBundleError::Request("too many requested leaves"))
+            }
+            BundleScope::Entries(leaves) if leaves.windows(2).any(|pair| pair[0] >= pair[1]) => {
+                Err(WitnessBundleError::Request(
+                    "requested leaves must be strictly ascending",
+                ))
+            }
             _ => Ok(()),
         }
     }
@@ -63,7 +68,10 @@ impl fmt::Display for WitnessBundleError {
 
 impl std::error::Error for WitnessBundleError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self { Self::Bundle(error) => Some(error), _ => None }
+        match self {
+            Self::Bundle(error) => Some(error),
+            _ => None,
+        }
     }
 }
 
@@ -88,26 +96,36 @@ pub fn verify_witnessed_bundle_for(
     receipt: Option<&[u8]>,
 ) -> Result<BundleReport, WitnessBundleError> {
     expected.validate()?;
-    if let BundleScope::Entries(leaves) = &expected.scope {
-        if leaves.last().is_some_and(|index| *index >= anchor.signed.checkpoint.leaf_count) {
-            return Err(WitnessBundleError::Request("a requested leaf is outside the pinned prefix"));
-        }
+    if let BundleScope::Entries(leaves) = &expected.scope
+        && leaves
+            .last()
+            .is_some_and(|index| *index >= anchor.signed.checkpoint.leaf_count)
+    {
+        return Err(WitnessBundleError::Request(
+            "a requested leaf is outside the pinned prefix",
+        ));
     }
     let receipt_length = receipt.map_or(0, <[u8]>::len);
     if receipt_length > MAX_WITNESSED_RECEIPT_BYTES {
         return Err(WitnessBundleError::InputLimit("receipt bytes"));
     }
-    if bytes.len().checked_add(receipt_length)
+    if bytes
+        .len()
+        .checked_add(receipt_length)
         .is_none_or(|total| total > MAX_WITNESSED_BUNDLE_BYTES)
     {
-        return Err(WitnessBundleError::InputLimit("aggregate bundle and receipt bytes"));
+        return Err(WitnessBundleError::InputLimit(
+            "aggregate bundle and receipt bytes",
+        ));
     }
     // RecipientWitnessPolicy's private constructor always stores publisher first.
     // Reuse all existing independent bundle checks; do not duplicate the codec,
     // signature verification, stock fold, document hashing or receipt transcript.
     let mut report = verify_bundle(bytes, &anchor.policy.trusted_keys[..1], receipt)
         .map_err(WitnessBundleError::Bundle)?;
-    let manifest_valid = report.checks.iter()
+    let manifest_valid = report
+        .checks
+        .iter()
         .any(|check| check.check == "manifest" && matches!(check.grade, Grade::Pass));
     let cp = &anchor.signed.checkpoint;
     let m = &report.manifest;
@@ -119,34 +137,78 @@ pub fn verify_witnessed_bundle_for(
     } else if exact_anchor {
         Grade::Pass
     } else {
-        Grade::Fail("the bundle does not name the exact recipient-quorum checkpoint artifact".into())
+        Grade::Fail(
+            "the bundle does not name the exact recipient-quorum checkpoint artifact".into(),
+        )
     };
     let bound = matches!(&binding, Grade::Pass);
     let additional = [
-        ("witnessed_checkpoint_binding", "signature", "the independently verified publisher/witness checkpoint", binding),
-        ("requested_bundle_scope", "request", "the recipient's exact manifest scope",
-            requirement(bound, m.scope == expected.scope, "bundle scope differs from the recipient's request")),
-        ("requested_document_disclosure", "document", if expected.inline_documents {
-            "all cited document bytes must be supplied; authenticity is graded separately"
-        } else { "commitment-only documents are permitted; omitted bytes are not checked" },
-            requirement(bound, !expected.inline_documents || report.summary.documents == report.summary.inline,
-                "a cited document was not supplied inline")),
-        ("requested_publisher_receipt", "production", if expected.publisher_receipt {
-            "a detached receipt signed by the publisher is required"
-        } else { "no detached receipt is required; any supplied receipt must still verify" },
-            requirement(bound, !expected.publisher_receipt || report.receipt.is_some(),
-                "the required publisher-signed receipt is absent or invalid")),
+        (
+            "witnessed_checkpoint_binding",
+            "signature",
+            "the independently verified publisher/witness checkpoint",
+            binding,
+        ),
+        (
+            "requested_bundle_scope",
+            "request",
+            "the recipient's exact manifest scope",
+            requirement(
+                bound,
+                m.scope == expected.scope,
+                "bundle scope differs from the recipient's request",
+            ),
+        ),
+        (
+            "requested_document_disclosure",
+            "document",
+            if expected.inline_documents {
+                "all cited document bytes must be supplied; authenticity is graded separately"
+            } else {
+                "commitment-only documents are permitted; omitted bytes are not checked"
+            },
+            requirement(
+                bound,
+                !expected.inline_documents || report.summary.documents == report.summary.inline,
+                "a cited document was not supplied inline",
+            ),
+        ),
+        (
+            "requested_publisher_receipt",
+            "production",
+            if expected.publisher_receipt {
+                "a detached receipt signed by the publisher is required"
+            } else {
+                "no detached receipt is required; any supplied receipt must still verify"
+            },
+            requirement(
+                bound,
+                !expected.publisher_receipt || report.receipt.is_some(),
+                "the required publisher-signed receipt is absent or invalid",
+            ),
+        ),
     ];
-    report.checks.extend(additional.into_iter().map(|(check, scope, subject, grade)| BundleCheck {
-        check, scope, subject: subject.into(), grade,
-    }));
+    report.checks.extend(
+        additional
+            .into_iter()
+            .map(|(check, scope, subject, grade)| BundleCheck {
+                check,
+                scope,
+                subject: subject.into(),
+                grade,
+            }),
+    );
     Ok(report)
 }
 
 fn requirement(bound: bool, passes: bool, why: &str) -> Grade {
     if !bound {
         Grade::Unrun("the bundle is not bound to the recipient's witnessed checkpoint".into())
-    } else if passes { Grade::Pass } else { Grade::Fail(why.into()) }
+    } else if passes {
+        Grade::Pass
+    } else {
+        Grade::Fail(why.into())
+    }
 }
 
 #[cfg(test)]

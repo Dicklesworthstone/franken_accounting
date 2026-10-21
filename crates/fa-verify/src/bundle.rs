@@ -917,8 +917,12 @@ pub fn verify_bundle(
     // the entry leaves, since evidence records carry no entry to fold.
     let mut full_prefix_payloads = matches!(&p.manifest.scope, BundleScope::Prefix)
         && matches!(&entry_set, Grade::Pass)
-        && signed.is_some()
-        && scoped.is_some();
+        && signed
+            .as_ref()
+            .zip(scoped.as_ref())
+            .is_some_and(|(signed, scope)| {
+                u64::try_from(scope.len()).ok() == Some(signed.checkpoint.leaf_count)
+            });
     checks.push(check(
         "entries",
         scope_label,
