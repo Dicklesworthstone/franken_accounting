@@ -25,7 +25,10 @@ pub const PRESENTED_STATEMENT_FORMAT: &[u8] = b"fa:presented-statement:v1";
 const MAX_EXPR_DEPTH: usize = 8;
 const MAX_EXPR_ITEMS: usize = 1024;
 const MAX_CUSTOM_LINES: usize = 128;
-const MAX_SCALE_REDUCTION: u8 = 18;
+/// The largest power of ten an i128 divisor holds (10^38): enough for a unit
+/// with an 18-digit scale presented in millions (10^24). The rounding is
+/// exact at any divisor (U256 intermediates, checked conversions).
+const MAX_SCALE_REDUCTION: u8 = 38;
 
 /// Closed account-set expression for mapping leaf accounts to statement lines (plan §12.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2070,6 +2073,30 @@ mod tests {
                 assert!(err.unsigned_abs() * 2 <= 100);
             }
         }
+
+        // The widest reduction an i128 divisor holds (10^38; a unit with an
+        // 18-digit scale presented in millions needs 10^24) presents every
+        // line exactly as zero with its whole amount as the rounding error;
+        // one digit more is refused.
+        let widest = PresentationRoundingSpec {
+            scale_reduction_digits: 38,
+            ..rounding_spec.clone()
+        };
+        let presented = apply_presentation_rounding(&stmt, &def, &widest).unwrap();
+        assert_eq!(presented.divisor, 10i128.pow(38));
+        for line in &presented.lines {
+            assert!(!line.is_residual_line);
+            assert_eq!(line.presented_amounts, vec![0]);
+            assert_eq!(
+                line.rounding_errors,
+                line.exact_amounts.iter().map(|e| -e).collect::<Vec<_>>()
+            );
+        }
+        let too_wide = PresentationRoundingSpec {
+            scale_reduction_digits: 39,
+            ..rounding_spec
+        };
+        assert!(apply_presentation_rounding(&stmt, &def, &too_wide).is_err());
     }
 
     #[test]

@@ -10852,6 +10852,7 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     const RENDER_EXAMPLE: &str =
         "fa statement balance-sheet --for FY2026-P03 --render pdf --out balance-sheet.pdf";
     let render = render_request(args, RENDER_EXAMPLE)?;
+    let presentation = presentation_request(args)?;
     let from_certificates = ["--before-certificate", "--after-certificate", "--from-diff"]
         .iter()
         .any(|flag| args.flag(flag).is_some());
@@ -10861,6 +10862,16 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage(
             "--render renders one statement; a diff or trace is not rendered",
             RENDER_EXAMPLE,
+        ));
+    }
+    if presentation.is_some()
+        && (from_certificates
+            || render.is_some()
+            || matches!(args.positional[1].as_str(), "diff" | "trace"))
+    {
+        return Err(usage(
+            "--present-in presents one statement report; a diff, trace, certificate comparison or --render is not presented",
+            PRESENT_EXAMPLE,
         ));
     }
     if from_certificates {
@@ -11045,6 +11056,9 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // Render every amount, column and mapping before retaining a certificate
     // or emitting a success. Missing units never become printable fallbacks.
     let rendered = statement_presentation(&statement, &book.context().units)?;
+    let presented = presentation
+        .map(|request| present_statement(&statement, &book.context().units, request))
+        .transpose()?;
     // A requested document is rendered (a missing clock tick refused) and
     // written before a certificate is retained or the report emitted.
     let rendering = match (render.as_ref(), render_definition.as_ref()) {
@@ -11071,6 +11085,9 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .as_ref()
         .map(|certificate| hex(&certificate.digest));
     emit_statement(&ctx.out, &statement, rendered, digest.as_deref());
+    if let Some((fields, human)) = presented {
+        ctx.out.event("statement_presented", fields, &human);
+    }
     if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
         notary::emit_report_certificate(&ctx.out, args, certificate, &bytes, &retained);
     }
@@ -11750,6 +11767,161 @@ fn statement_presentation(
         ],
         human,
     ))
+}
+
+const PRESENT_EXAMPLE: &str = "fa statement balance-sheet --for FY2026-P03 --present-in thousands [--rounding HalfEven] --json";
+
+/// A statement presented in whole units, thousands or millions (plan §12.1
+/// presentation rounding): how many decimal places of the unit to drop
+/// beyond its scale, and the registered rounding law.
+#[derive(Clone, Copy, Debug)]
+struct PresentationRequest {
+    name: &'static str,
+    extra_digits: u8,
+    law: fa_money::RoundingLaw,
+}
+
+/// `--present-in units|thousands|millions [--rounding <law>]`, checked
+/// before the book is read. `--rounding` alone is refused.
+fn presentation_request(args: &Args) -> Result<Option<PresentationRequest>, Fail> {
+    let law = match args.flag("--rounding") {
+        None => None,
+        Some(name) => Some(fa_money::RoundingLaw::from_name(name).ok_or_else(|| {
+            usage(
+                format!("--rounding `{name}` is not a registered rounding law"),
+                "--rounding HalfUp|HalfDown|HalfEven|HalfAwayFromZero|HalfTowardZero|Ceiling|Floor|TowardZero|AwayFromZero (registries/rounding_laws.toml)",
+            )
+        })?),
+    };
+    let Some(present_in) = args.flag("--present-in") else {
+        return match law {
+            Some(_) => Err(usage(
+                "--rounding applies only with --present-in",
+                PRESENT_EXAMPLE,
+            )),
+            None => Ok(None),
+        };
+    };
+    let (name, extra_digits) = match present_in {
+        "units" => ("units", 0),
+        "thousands" => ("thousands", 3),
+        "millions" => ("millions", 6),
+        other => {
+            return Err(usage(
+                format!("--present-in `{other}` is not a presentation scale"),
+                "--present-in units|thousands|millions",
+            ));
+        }
+    };
+    Ok(Some(PresentationRequest {
+        name,
+        extra_digits,
+        law: law.unwrap_or(fa_money::RoundingLaw::HalfEven),
+    }))
+}
+
+/// The statement presented per unit under the request: every line divided
+/// by 10^(unit scale + extra digits) under the rounding law, with an explicit
+/// residual line before any total whose rounded operands do not sum to its
+/// rounded value (fa_statements::custom::apply_presentation_rounding), so the
+/// presented statement foots. The exact statement is unchanged; its
+/// certificate (when retained) binds the exact amounts.
+fn present_statement(
+    statement: &Statement,
+    units: &fa_money::UnitRegistry,
+    request: PresentationRequest,
+) -> Result<StatementPresentation, Fail> {
+    let definition = fa::CustomStatementDefinition::from_builtin(
+        &StatementDefinition::embedded(&statement.definition_name)
+            .map_err(|e| Fail::Internal(format!("statement definition: {e}")))?,
+    );
+    let mut unit_ids: Vec<u32> = statement.lines.iter().map(|l| l.unit_id).collect();
+    unit_ids.sort_unstable();
+    unit_ids.dedup();
+    let mut blocks = Vec::new();
+    let mut human = format!(
+        "{} presented in {} ({:?})",
+        statement.definition_name, request.name, request.law
+    );
+    for unit_id in unit_ids {
+        let unit = units.get(fa_money::UnitId(unit_id)).ok_or_else(|| {
+            amount_corruption(fa_money::AmountError::UnknownUnit(unit_id.to_string()))
+        })?;
+        let digits = unit
+            .scale
+            .checked_add(request.extra_digits)
+            .ok_or_else(|| {
+                usage(
+                    format!("{} cannot be presented in {}", unit.code, request.name),
+                    "--present-in units",
+                )
+            })?;
+        let mut single = statement.clone();
+        single.lines.retain(|l| l.unit_id == unit_id);
+        let presented = fa::apply_presentation_rounding(
+            &single,
+            &definition,
+            &fa::PresentationRoundingSpec {
+                rounding_law: request.law,
+                scale_reduction_digits: digits,
+                residual_line_code: "presentation_rounding".into(),
+                residual_line_label: "Presentation rounding".into(),
+            },
+        )
+        .map_err(|e| usage(format!("presentation: {e}"), PRESENT_EXAMPLE))?;
+        let digest = presented
+            .digest()
+            .map_err(|e| Fail::Internal(format!("presented statement digest: {e}")))?;
+        let mut lines = Vec::with_capacity(presented.lines.len());
+        for line in &presented.lines {
+            let errors = line
+                .rounding_errors
+                .iter()
+                .map(|e| render_amount(Amount::new(fa_money::UnitId(unit_id), *e), units).map(s))
+                .collect::<Result<Vec<_>, _>>()?;
+            human.push_str(&format!(
+                "\n  {:<52} {}",
+                line.label,
+                line.presented_amounts
+                    .iter()
+                    .map(i128::to_string)
+                    .collect::<Vec<_>>()
+                    .join("  ")
+            ));
+            lines.push(obj(vec![
+                ("code", s(&line.code)),
+                ("label", s(&line.label)),
+                (
+                    "presented",
+                    Json::Arr(
+                        line.presented_amounts
+                            .iter()
+                            .map(|a| Json::Int(*a))
+                            .collect(),
+                    ),
+                ),
+                ("rounding_error", Json::Arr(errors)),
+                ("residual", Json::Bool(line.is_residual_line)),
+            ]));
+        }
+        blocks.push(obj(vec![
+            ("unit", s(&unit.code)),
+            ("divisor", Json::Int(presented.divisor)),
+            ("digest", s(hex(&digest.0))),
+            ("lines", Json::Arr(lines)),
+        ]));
+    }
+    let fields = vec![
+        ("definition", s(&statement.definition_name)),
+        ("present_in", s(request.name)),
+        ("rounding_law", s(format!("{:?}", request.law))),
+        (
+            "columns",
+            Json::Arr(statement.columns.iter().map(|c| s(&c.label)).collect()),
+        ),
+        ("units", Json::Arr(blocks)),
+    ];
+    Ok((fields, human))
 }
 
 fn emit_statement(

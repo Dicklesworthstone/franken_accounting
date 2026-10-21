@@ -1275,3 +1275,129 @@ fn statement_lint_reports_the_mapping_partition_of_the_chart() {
     let (exit, _, _) = run(&book, &["statement", "lint"]);
     assert_eq!(exit, 2);
 }
+
+/// Plan §12.1 presentation rounding on the CLI: `--present-in units` adds a
+/// statement_presented event after the exact statement. Unclosed revenue
+/// 190.60 USD and expenses 35.40 USD present as 191 and 35 (HalfEven), while
+/// their difference, 155.20 USD, presents as 155: an explicit -1
+/// Presentation rounding line sits right before unclosed earnings, so the
+/// presented column foots. Under Floor the parts sum to the total and no
+/// residual line appears. JPY (scale 0) presents unchanged.
+#[test]
+fn statement_presented_in_units_foots_with_an_explicit_residual_line() {
+    let f = Fixture::new();
+    f.post("cents-sale", "2026-03-12", "1000", "4000", "0.60 USD");
+    f.post("cents-rent", "2026-03-13", "6000", "1000", "0.40 USD");
+    let present = |extra: &[&str]| -> (Json, Json) {
+        let mut argv = vec!["statement", "balance-sheet", "--for", "FY2026-P03"];
+        argv.extend_from_slice(extra);
+        let events = ok(&f.book, &argv);
+        let names: Vec<&str> = events.iter().map(|e| text(e, "event")).collect();
+        assert_eq!(names, ["statement", "statement_presented"], "{events:?}");
+        (events[0].clone(), data(&events[1]).clone())
+    };
+    let block = |presented: &Json, unit: &str| -> Json {
+        array(presented, "units")
+            .iter()
+            .find(|u| text(u, "unit") == unit)
+            .unwrap_or_else(|| panic!("no {unit} block"))
+            .clone()
+    };
+    let ints = |line: &Json| -> Vec<i128> {
+        array(line, "presented")
+            .iter()
+            .map(|v| match v {
+                Json::Int(n) => *n,
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    };
+    let int = |value: &Json, key: &str| match value.get(key) {
+        Some(Json::Int(n)) => *n,
+        other => panic!("{key}: {other:?}"),
+    };
+
+    let (exact, presented) = present(&["--present-in", "units"]);
+    assert_eq!(text(&presented, "present_in"), "units");
+    assert_eq!(text(&presented, "rounding_law"), "HalfEven");
+    assert_eq!(text(&presented, "definition"), "balance-sheet");
+    let usd = block(&presented, "USD");
+    assert_eq!(int(&usd, "divisor"), 100);
+    let lines = array(&usd, "lines");
+    let at = |code: &str| {
+        lines
+            .iter()
+            .position(|l| text(l, "code") == code)
+            .unwrap_or_else(|| panic!("no line {code}"))
+    };
+    let revenue = &lines[at("unclosed_revenue")];
+    let expense = &lines[at("unclosed_expense")];
+    let earnings = at("unclosed_earnings");
+    let residual = at("unclosed_earnings_presentation_rounding");
+    assert_eq!(ints(revenue), [191]);
+    assert_eq!(ints(expense), [35]);
+    assert_eq!(ints(&lines[earnings]), [155]);
+    assert_eq!(
+        residual + 1,
+        earnings,
+        "the residual line precedes its total"
+    );
+    assert_eq!(lines[residual].get("residual"), Some(&Json::Bool(true)));
+    assert_eq!(ints(&lines[residual]), [-1]);
+    assert_eq!(
+        ints(revenue)[0] - ints(expense)[0] + ints(&lines[residual])[0],
+        ints(&lines[earnings])[0],
+        "the presented column foots"
+    );
+    assert_eq!(
+        array(revenue, "rounding_error")[0].as_str(),
+        Some("0.40 USD"),
+        "191 presented against 190.60 exact"
+    );
+    assert!(
+        lines
+            .iter()
+            .filter(|l| l.get("residual") == Some(&Json::Bool(true)))
+            .count()
+            == 1,
+        "only the one total whose parts disagree gets a residual line"
+    );
+    let jpy = block(&presented, "JPY");
+    assert_eq!(int(&jpy, "divisor"), 1);
+    assert!(
+        array(&jpy, "lines")
+            .iter()
+            .all(|l| l.get("residual") == Some(&Json::Bool(false)))
+    );
+    // The exact statement is the same with or without the presentation.
+    let plain = ok(
+        &f.book,
+        &["statement", "balance-sheet", "--for", "FY2026-P03"],
+    );
+    assert_eq!(plain.len(), 1, "no presentation unless asked: {plain:?}");
+    assert_eq!(data(&plain[0]), data(&exact));
+
+    // Floor presents 190 and 35, whose difference is the presented 155.
+    let (_, floor) = present(&["--present-in", "units", "--rounding", "Floor"]);
+    assert_eq!(text(&floor, "rounding_law"), "Floor");
+    assert!(
+        array(&block(&floor, "USD"), "lines")
+            .iter()
+            .all(|l| l.get("residual") == Some(&Json::Bool(false)))
+    );
+
+    // Planted refusals publish nothing: usage, exit 2.
+    for planted in [
+        vec!["--rounding", "Floor"],
+        vec!["--present-in", "dozens"],
+        vec!["--present-in", "units", "--rounding", "Sideways"],
+        vec!["--present-in", "units", "--render", "md"],
+    ] {
+        let mut argv = vec!["statement", "balance-sheet", "--for", "FY2026-P03"];
+        argv.extend_from_slice(&planted);
+        let (code, events, _) = run(&f.book, &argv);
+        assert_eq!(code, 2, "{planted:?}: {events:?}");
+        assert_eq!(events.len(), 1, "{planted:?}: {events:?}");
+        assert_eq!(text(&events[0], "event"), "error");
+    }
+}
