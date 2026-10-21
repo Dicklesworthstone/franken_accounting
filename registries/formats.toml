@@ -19,7 +19,7 @@ oracle_tool = "bean-check"
 round_trip_identity = false
 certified_coordinate = true
 plan_ref = "§16.3"
-summary = "Beancount v3 plain-text double-entry journal (open directives, dated transactions, multi-unit postings, balance assertions), intended for the external balance differential with bean-check; today only fa-formats reads it back (fa-sa4w)."
+summary = "Beancount v3 plain-text double-entry journal (open directives, dated transactions, multi-unit postings, balance assertions), intended for the external balance differential with bean-check (fa-sa4w). `fa migrate import` reads a Beancount v3 ledger as a legacy source: single-unit transactions, one elided posting, full account names through account_map; costs, prices, pad, include and plugin are refused (fa-waow)."
 
 [[format]]
 id = 2

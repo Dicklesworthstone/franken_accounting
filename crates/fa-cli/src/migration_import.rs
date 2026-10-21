@@ -278,6 +278,7 @@ fn format_name(format: LegacyFormat) -> &'static str {
         LegacyFormat::XeroCsv => "xero-csv",
         LegacyFormat::NetSuiteCsv => "netsuite-csv",
         LegacyFormat::GenericCsv => "csv",
+        LegacyFormat::Beancount => "beancount",
     }
 }
 
@@ -313,10 +314,11 @@ impl ImportRequest {
             "xero-csv" => LegacyFormat::XeroCsv,
             "netsuite-csv" => LegacyFormat::NetSuiteCsv,
             "csv" => LegacyFormat::GenericCsv,
+            "beancount" => LegacyFormat::Beancount,
             _ => {
                 return Err(usage(
                     "unsupported legacy source format",
-                    "format: quickbooks-iif | quickbooks-csv | xero-csv | netsuite-csv | csv",
+                    "format: quickbooks-iif | quickbooks-csv | xero-csv | netsuite-csv | csv | beancount",
                 ));
             }
         };
@@ -830,6 +832,9 @@ fn parse_source(
             // fallback must not silently reinterpret a non-USD book.
             columns.default_unit = default_unit;
             legacy::parse_generic_csv(source_text, &columns, &units, &account_map)?
+        }
+        LegacyFormat::Beancount => {
+            legacy::parse_beancount_ledger(source_text, &units, &account_map)?
         }
     };
     if batch.chunks.len() > MAX_CHUNKS {
