@@ -69,7 +69,9 @@ pub const DATE_BASIS_EXTENSION: u16 = 3;
 /// Extension tag 4, `fa:legal-hold-scope:v1` (plan §8.5; fa-txf): a
 /// `HoldControl` entry's scope beside its `HoldEvent`, which carries only the
 /// scope's digest. On a Place: `0u8 ‖ list(u128 subject)`, strictly
-/// ascending. On a Release: `1u8 ‖ u128 hold`, the Place it releases.
+/// ascending, or, for a book-scope Place, `2u8 ‖ u64 through` (every entry,
+/// document and party recorded at or before `through`; fa-k07b). On a
+/// Release: `1u8 ‖ u128 hold`, the Place it releases.
 pub const LEGAL_HOLD_SCOPE_EXTENSION: u16 = 4;
 /// Extension tag 6, `fa:event-ref:v1` (plan §4.1 `Event`, §4.5, FA-INV-05,
 /// bead `fa-f3bo`): binds an `EntryProposal` to a committed REA `Event`
