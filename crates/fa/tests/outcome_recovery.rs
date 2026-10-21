@@ -37,16 +37,20 @@ fn authority() -> Capability {
 fn covered_recovery_still_requires_complete_current_authority() {
     let mut book = book(198);
     let head = book.head().unwrap();
-    for denied in [
-        Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
-        Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+    // An Agent can never hold the recovery authority: the capability itself
+    // is refused before any book is asked.
+    assert!(
         Capability::new(
             PRINCIPAL,
             Profile::Agent,
             &[Op::Read, Op::SchemaChange],
             PRINCIPAL,
         )
-        .unwrap(),
+        .is_err()
+    );
+    for denied in [
+        Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+        Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
         authority().expiring_at(head),
         authority().known_at_most(head),
         authority().for_accounts(&["1000"]).unwrap(),
