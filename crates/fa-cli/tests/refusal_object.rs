@@ -55,8 +55,9 @@ fn write(dir: &Path, name: &str, text: &str) -> String {
     p.display().to_string()
 }
 
-/// A book with a summary `100` over three cash-like leaves and an expense,
-/// FY2026 created, March open, and one source document to cite.
+/// A book with a summary `100` over three cash-like leaves, a EUR cash
+/// leaf, a USD expense and an any-currency expense, FY2026 created, March
+/// open, and one source document to cite.
 fn book(name: &str) -> (PathBuf, PathBuf, String) {
     let dir = tmp(name);
     let book = dir.join("book");
@@ -69,7 +70,9 @@ fn book(name: &str) -> (PathBuf, PathBuf, String) {
             {"code":"1100","name":"Money market fund","type":"Asset","leaf":true,"unit":"USD","parent":"100"},
             {"code":"1010","name":"Petty cash","type":"Asset","leaf":true,"unit":"USD","parent":"100"},
             {"code":"1000","name":"Operating cash","type":"Asset","leaf":true,"unit":"USD","parent":"100"},
-            {"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+            {"code":"1300","name":"Euro cash","type":"Asset","leaf":true,"unit":"EUR"},
+            {"code":"6000","name":"Rent","type":"Expense","unit":"USD"},
+            {"code":"6050","name":"Rent abroad","type":"Expense","unit":"any-currency"}]}"#,
     );
     assert_eq!(fa(&book, &["chart", "import", &chart]).0, 0);
     assert_eq!(
@@ -329,7 +332,7 @@ fn a_unit_the_account_refuses_names_the_admitted_unit() {
         &ev,
         "in-euros",
         "2026-03-10",
-        r#"[{"side":"debit","account":"6000","amount":"5.00 EUR"},{"side":"credit","account":"1000","amount":"5.00 EUR"}]"#,
+        r#"[{"side":"debit","account":"6000","amount":"5.00 EUR"},{"side":"credit","account":"1300","amount":"5.00 EUR"}]"#,
     );
     assert_eq!(code, 3);
     let refusal = data.get("refusal").expect("refusal");
@@ -343,13 +346,16 @@ fn a_unit_the_account_refuses_names_the_admitted_unit() {
     assert_eq!(text(refusal, &["where", "account"]), "6000");
     assert_eq!(text(refusal, &["where", "unit"]), "EUR");
     assert_eq!(text(refusal, &["why", "law"]), "FA-INV-01.unit-policy");
+    // Changing one leg's unit would unbalance the entry: the field to change
+    // is the account, and the leaves that admit EUR are named, the refused
+    // account's type (Expense) first.
     assert_eq!(
         text(refusal, &["fix", "or_field_change", "field"]),
-        "legs[0].amount.unit"
+        "legs[0].account"
     );
     assert_eq!(
         strings(refusal, &["fix", "or_field_change", "one_of"]),
-        ["USD"]
+        ["6050", "1300"]
     );
     assert!(
         text(refusal, &["fix", "text"]).contains("post in the account's unit (USD)"),

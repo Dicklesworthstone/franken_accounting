@@ -1036,6 +1036,68 @@ fn leaf_suggestions<V: asupersync::fs::Vfs + Clone>(
 /// How many leaves a NOT_A_LEAF refusal names.
 const LEAF_SUGGESTIONS: usize = 20;
 
+/// Whether an account's unit policy admits `unit` (plan §4.3).
+fn admits_unit(book: &BookContext, policy: UnitPolicy, unit: fa_money::UnitId) -> bool {
+    match policy {
+        UnitPolicy::Single(u) => u == unit,
+        UnitPolicy::AnyCurrency => book
+            .units
+            .get(unit)
+            .is_some_and(|u| matches!(u.kind, fa_money::UnitKind::Currency { .. })),
+        UnitPolicy::AnyUnit => true,
+    }
+}
+
+/// The open leaves whose unit policy admits `unit`, for a UNIT_POLICY
+/// refusal: the refused account's type first, then most name words shared
+/// with it, then code order; at most [`LEAF_SUGGESTIONS`]. Read from the
+/// chart at the head (a suggestion; the post that uses one is admitted on
+/// its own).
+fn unit_account_suggestions<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    refused: &AccountRow,
+    unit: fa_money::UnitId,
+    on: fa_time::DateDay,
+) -> Result<Vec<String>, KernelError> {
+    let words = |name: &str| -> BTreeSet<String> {
+        name.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let near = words(&refused.name);
+    let mut found: Vec<(bool, usize, String)> = Vec::new();
+    for vid in db.in_neighbours(crate::rows::book_root(), relation::IN_BOOK)? {
+        let Some(row) = db.vertex(vid)? else {
+            continue;
+        };
+        if !row.labels.contains(&label::ACCOUNT) || row.retired_at.is_some() {
+            continue;
+        }
+        let account = AccountRow::decode(&row)?;
+        if !account.is_leaf
+            || !admits_unit(book, account.unit_policy, unit)
+            || !crate::chart::AccountEffectivity::decode_from_row(&row)?.is_effective_at(on)
+        {
+            continue;
+        }
+        let same_type = account.account_type == refused.account_type;
+        let shared = words(&account.name).intersection(&near).count();
+        found.push((same_type, shared, account.code));
+    }
+    found.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(b.1.cmp(&a.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    Ok(found
+        .into_iter()
+        .take(LEAF_SUGGESTIONS)
+        .map(|(_, _, code)| code)
+        .collect())
+}
+
 /// A reconciled account's cutoff protects every later leg at or before that
 /// date. The account endpoint is a real native absence witness: publishing a
 /// new attestation's mandatory ATTESTS edge conflicts with a prepared posting.
@@ -2573,27 +2635,28 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             )
             .at("leg", i)));
         }
-        let unit_ok = match account.unit_policy {
-            UnitPolicy::Single(u) => u == leg.amount.unit,
-            UnitPolicy::AnyCurrency => book
-                .units
-                .get(leg.amount.unit)
-                .is_some_and(|u| matches!(u.kind, fa_money::UnitKind::Currency { .. })),
-            UnitPolicy::AnyUnit => true,
-        };
-        if !unit_ok {
+        if !admits_unit(book, account.unit_policy, leg.amount.unit) {
             txn.abort();
             let unit_code = |u: fa_money::UnitId| {
                 book.units
                     .get(u)
                     .map_or_else(|| u.0.to_string(), |unit| unit.code.clone())
             };
-            let (admits, admitted) = match account.unit_policy {
-                UnitPolicy::Single(u) => (unit_code(u), vec![unit_code(u)]),
-                UnitPolicy::AnyCurrency => ("any currency".to_string(), Vec::new()),
-                UnitPolicy::AnyUnit => ("any unit".to_string(), Vec::new()),
+            let admits = match account.unit_policy {
+                UnitPolicy::Single(u) => unit_code(u),
+                UnitPolicy::AnyCurrency => "any currency".to_string(),
+                UnitPolicy::AnyUnit => "any unit".to_string(),
             };
-            let refusal = Refusal::new(
+            // Changing one leg's unit would unbalance the entry; the
+            // field that fixes it is the leg's account.
+            let accounts = unit_account_suggestions(
+                db,
+                book,
+                &account,
+                leg.amount.unit,
+                proposal.effective_date,
+            )?;
+            return Ok(Err(Refusal::new(
                 code::UNIT_POLICY,
                 exit::REFUSAL,
                 format!(
@@ -2603,18 +2666,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 ),
                 "plan §4.3 unit_policy",
                 format!(
-                    "post in the account's unit ({admits}) or choose an account whose policy admits it"
+                    "post in the account's unit ({admits}) or choose an account whose policy admits {}",
+                    unit_code(leg.amount.unit)
                 ),
             )
             .at("leg", i)
             .at("account", account.code.clone())
             .at("unit", unit_code(leg.amount.unit))
-            .because(Why::Law("FA-INV-01.unit-policy".to_string()));
-            return Ok(Err(if admitted.is_empty() {
-                refusal
-            } else {
-                refusal.or_field_change(format!("legs[{i}].amount.unit"), admitted)
-            }));
+            .because(Why::Law("FA-INV-01.unit-policy".to_string()))
+            .or_field_change(format!("legs[{i}].account"), accounts)));
         }
         for (dim_id, dim_val_vid) in &leg.dimension_set {
             if *dim_id == fa_model::PARTY_DIMENSION {
