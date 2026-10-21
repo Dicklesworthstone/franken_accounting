@@ -4,7 +4,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use fa_verify::checkpoint::witness::{
-    MAX_WITNESS_CONSISTENCY_BYTES, MAX_WITNESSED_CHECKPOINT_BYTES, verify_witnessed_checkpoint,
+    MAX_WITNESS_CONSISTENCY_BYTES, MAX_WITNESSED_CHECKPOINT_BYTES, WitnessedCheckpoint,
+    verify_witnessed_checkpoint,
 };
 use fa_verify::cli::Output;
 use fa_verify::proof::production::{MAX_PRODUCTION_BYTES, MAX_PRODUCTION_RECORDS};
@@ -178,61 +179,99 @@ fn read(path: &Path, bound: usize, remaining: &mut usize) -> Result<Vec<u8>, Fai
     Ok(bytes)
 }
 
-fn verify(args: &[OsString], json: bool) -> Result<String, Failure> {
-    if args.len() == 2 && matches!(args[1].to_str(), Some("--help" | "-h" | "help")) {
-        return Ok(HELP.into());
-    }
-    let request = parse(args)?;
-    let advance = request
-        .anchor
+pub(super) struct AdvancedIndex {
+    pub(super) current: IncrementalPayloadIndex,
+    pub(super) previous: WitnessedCheckpoint,
+    pub(super) input_bytes: usize,
+    pub(super) appended_records: u64,
+}
+
+pub(super) fn authenticate_for_composition(
+    anchor: &super::Request,
+    baseline_path: &Path,
+    record_paths: &[PathBuf],
+    remaining: &mut usize,
+) -> Result<AdvancedIndex, Failure> {
+    let advance = anchor
         .advance
         .as_ref()
-        .ok_or_else(|| Failure::usage("missing retained checkpoint options"))?;
-    let mut remaining = MAX_PRODUCTION_BYTES;
+        .ok_or_else(|| Failure::usage("incremental index requires retained checkpoint options"))?;
+    let start = *remaining;
     let bytes = read(
         &advance.previous,
         MAX_WITNESSED_CHECKPOINT_BYTES,
-        &mut remaining,
+        remaining,
     )?;
-    let previous = verify_witnessed_checkpoint(&bytes, &request.anchor.policy)
-        .map_err(|e| Failure::verification(e.to_string()))?;
+    let previous = verify_witnessed_checkpoint(&bytes, &anchor.policy)
+        .map_err(|error| Failure::verification(error.to_string()))?;
     if previous.signed_checkpoint().body_digest != advance.expected_body {
         return Err(Failure::verification(
             "previous checkpoint does not match the independently retained body digest",
         ));
     }
     drop(bytes);
-    // An authentic previous pin and complete baseline are required before any
-    // candidate/delta is observed. Do not learn a baseline from a candidate.
-    let bytes = read(&request.baseline, MAX_PRODUCTION_BYTES, &mut remaining)?;
+
+    // Establish the retained state before observing the candidate or suffix.
+    let bytes = read(baseline_path, MAX_PRODUCTION_BYTES, remaining)?;
     let baseline = IncrementalPayloadIndex::verify(&bytes, &previous)
-        .map_err(|e| Failure::verification(e.to_string()))?;
+        .map_err(|error| Failure::verification(error.to_string()))?;
     drop(bytes);
+
     let candidate = read(
-        &request.anchor.path,
+        &anchor.path,
         MAX_WITNESSED_CHECKPOINT_BYTES,
-        &mut remaining,
+        remaining,
     )?;
     let consistency = read(
         &advance.proof,
         MAX_WITNESS_CONSISTENCY_BYTES,
-        &mut remaining,
+        remaining,
     )?;
     let mut records = Vec::new();
     records
-        .try_reserve_exact(request.records.len())
+        .try_reserve_exact(record_paths.len())
         .map_err(|_| Failure::verification("delta allocation failed"))?;
-    for path in &request.records {
-        records.push(read(path, MAX_PRODUCTION_BYTES, &mut remaining)?);
+    for path in record_paths {
+        records.push(read(path, MAX_PRODUCTION_BYTES, remaining)?);
     }
     let slices: Vec<_> = records.iter().map(Vec::as_slice).collect();
     let current = baseline
         .advance(&candidate, &consistency, &slices)
-        .map_err(|e| Failure::verification(e.to_string()))?;
+        .map_err(|error| Failure::verification(error.to_string()))?;
+    let appended_records = current
+        .checkpoint()
+        .signed_checkpoint()
+        .checkpoint
+        .leaf_count
+        .checked_sub(previous.signed_checkpoint().checkpoint.leaf_count)
+        .ok_or_else(|| Failure::verification("candidate leaf count rolled back"))?;
     drop(slices);
     drop(records);
     drop(candidate);
     drop(consistency);
+
+    Ok(AdvancedIndex {
+        current,
+        previous,
+        input_bytes: start - *remaining,
+        appended_records,
+    })
+}
+
+fn verify(args: &[OsString], json: bool) -> Result<String, Failure> {
+    if args.len() == 2 && matches!(args[1].to_str(), Some("--help" | "-h" | "help")) {
+        return Ok(HELP.into());
+    }
+    let request = parse(args)?;
+    let mut remaining = MAX_PRODUCTION_BYTES;
+    let advanced = authenticate_for_composition(
+        &request.anchor,
+        &request.baseline,
+        &request.records,
+        &mut remaining,
+    )?;
+    let current = advanced.current;
+    let previous = advanced.previous;
     let range = request
         .range
         .as_ref()
