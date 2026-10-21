@@ -34,6 +34,7 @@ fn run_in(cwd: &Path, envs: &[(&str, &str)], args: &[&str]) -> (i32, Json) {
         .args(["--via", "direct", "--json", "--no-color"])
         .args(args)
         .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
         .envs(envs.iter().copied())
         .output()
         .unwrap();

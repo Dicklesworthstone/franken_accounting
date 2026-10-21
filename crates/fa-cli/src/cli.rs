@@ -2531,10 +2531,11 @@ struct Here {
 
 fn here(args: &Args, cwd: Option<&Path>, reg: &Registry) -> Here {
     use crate::lease::Lease;
-    let book = named_book(args, cwd).or_else(|| {
-        cwd.filter(|dir| Lease::is_book_dir(dir))
-            .map(Path::to_path_buf)
-    });
+    // `cwd` is the client's directory over fad; `None` is this process's.
+    let here_dir = cwd
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok());
+    let book = named_book(args, cwd).or_else(|| here_dir.filter(|dir| Lease::is_book_dir(dir)));
     let daemon = book
         .as_deref()
         .filter(|dir| Lease::is_book_dir(dir))
