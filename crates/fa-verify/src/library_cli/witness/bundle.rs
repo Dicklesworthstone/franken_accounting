@@ -252,8 +252,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             ));
         }
     };
-    let has_incremental_index =
-        index_baseline_prefix.is_some() || !index_delta_records.is_empty();
+    let has_incremental_index = index_baseline_prefix.is_some() || !index_delta_records.is_empty();
     if (index_prefix.is_some() || has_incremental_index)
         && !matches!(&scope, BundleScope::Account(_))
     {

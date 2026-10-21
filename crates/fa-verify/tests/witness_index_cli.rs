@@ -272,7 +272,6 @@ fn non_utf8_index_filenames_are_not_lossily_rewritten() {
     result(run(&input), 0);
 }
 
-
 fn incremental_args() -> (Vec<OsString>, PathBuf) {
     let (mut input, dir) = args();
     remove(&mut input, "--index-prefix");
@@ -293,10 +292,8 @@ fn incremental_args() -> (Vec<OsString>, PathBuf) {
 fn incremental_state_can_verify_the_same_account_bundle_without_resending_current_history() {
     use fa_verify::BundleScope;
     use fa_verify::ScopeClaim;
-    use fa_verify::checkpoint::witness::{
-        RecipientWitnessPolicy, verify_witnessed_checkpoint,
-    };
     use fa_verify::checkpoint::witness::bundle::BundleExpectation;
+    use fa_verify::checkpoint::witness::{RecipientWitnessPolicy, verify_witnessed_checkpoint};
     use fa_verify::scope::payloads::bundle::verify_witnessed_incremental_indexed_bundle_for;
     use fa_verify::scope::payloads::incremental::IncrementalPayloadIndex;
 
@@ -351,10 +348,7 @@ fn incremental_bundle_mode_is_explicit_mutually_exclusive_and_pin_first() {
     assert!(text.contains(""continuity":"unchanged""));
 
     let mut mixed = input.clone();
-    mixed.extend([
-        "--index-prefix".into(),
-        dir.join("index").into_os_string(),
-    ]);
+    mixed.extend(["--index-prefix".into(), dir.join("index").into_os_string()]);
     result(run(&mixed), 2);
 
     let mut redundant_recorded = input.clone();
