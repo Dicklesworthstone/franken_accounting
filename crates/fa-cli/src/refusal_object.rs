@@ -41,7 +41,8 @@ pub(crate) struct Issued<'a> {
 /// The Appendix D object for `r`.
 pub(crate) fn render(reg: &Registry, r: &Refusal, issued: &Issued<'_>) -> Json {
     let place = Json::Obj(
-        r.at.iter()
+        r.location()
+            .iter()
             .map(|(k, v)| {
                 let value = match v {
                     Locus::Text(t) => Json::Str(t.clone()),
@@ -63,7 +64,7 @@ pub(crate) fn render(reg: &Registry, r: &Refusal, issued: &Issued<'_>) -> Json {
     }
     let mut commands = commands.into_iter();
     let first = commands.next();
-    let field_change = r.field_change.as_ref().map_or(Json::Null, |c| {
+    let field_change = r.field_change().map_or(Json::Null, |c| {
         Json::Obj(vec![
             ("field".into(), Json::Str(c.field.clone())),
             (
@@ -116,7 +117,7 @@ pub(crate) fn render(reg: &Registry, r: &Refusal, issued: &Issued<'_>) -> Json {
 /// `FA-REF-nnn:` and 16 hex digits binding the instance to its coordinate.
 fn instance_id(r: &Refusal, issued: &Issued<'_>) -> String {
     let mut place = Vec::new();
-    for (k, v) in &r.at {
+    for (k, v) in r.location() {
         place.extend_from_slice(k.as_bytes());
         place.push(0);
         match v {
@@ -160,7 +161,7 @@ pub(crate) fn code_of(refusal_id: &str) -> &str {
 
 fn why(r: &Refusal) -> Json {
     let one = |k: &str, v: Json| Json::Obj(vec![(k.to_string(), v)]);
-    match &r.why {
+    match r.why() {
         Some(Why::Law(law)) => one("law", Json::Str(law.clone())),
         Some(Why::Policy(policy)) => one("policy", Json::Str(policy.clone())),
         Some(Why::Matrix { state, class }) => one(

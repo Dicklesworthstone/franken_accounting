@@ -35,15 +35,22 @@ pub struct Refusal {
     pub cite: String,
     /// The exact next step, copy-pasteable where possible.
     pub fix: String,
-    /// Where it failed (plan Appendix D `where`): `leg`, `account`,
-    /// `period`, `unit`, `member` …, in the order the refusal names them.
-    /// Empty when the refusing site gives no structured location.
+    /// The Appendix D structure the refusing site gave, if any. Boxed so a
+    /// `Result<_, Refusal>` stays small on the paths that never refuse.
+    pub detail: Option<Box<RefusalDetail>>,
+}
+
+/// A refusal's structured parts (plan Appendix D).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RefusalDetail {
+    /// Where it failed (`where`): `leg`, `account`, `period`, `unit`,
+    /// `member` …, in the order the refusal names them.
     pub at: Vec<(&'static str, Locus)>,
-    /// The structured citation (Appendix D `why`) when the site knows it;
-    /// `cite` stays the prose.
+    /// The structured citation (`why`) when the site knows it; `cite` stays
+    /// the prose.
     pub why: Option<Why>,
-    /// The field to change and the values it admits (Appendix D
-    /// `fix.or_field_change`).
+    /// The field to change and the values it admits
+    /// (`fix.or_field_change`).
     pub field_change: Option<FieldChange>,
 }
 
@@ -111,10 +118,12 @@ impl Refusal {
             message: message.into(),
             cite: cite.into(),
             fix: fix.into(),
-            at: Vec::new(),
-            why: None,
-            field_change: None,
+            detail: None,
         }
+    }
+
+    fn detail_mut(&mut self) -> &mut RefusalDetail {
+        self.detail.get_or_insert_with(Box::default)
     }
 
     /// Add one coordinate to `where`; a later value for the same key
@@ -122,9 +131,10 @@ impl Refusal {
     #[must_use]
     pub fn at(mut self, key: &'static str, value: impl Into<Locus>) -> Self {
         let value = value.into();
-        match self.at.iter_mut().find(|(k, _)| *k == key) {
+        let at = &mut self.detail_mut().at;
+        match at.iter_mut().find(|(k, _)| *k == key) {
             Some(slot) => slot.1 = value,
-            None => self.at.push((key, value)),
+            None => at.push((key, value)),
         }
         self
     }
@@ -132,18 +142,36 @@ impl Refusal {
     /// Set the structured citation.
     #[must_use]
     pub fn because(mut self, why: Why) -> Self {
-        self.why = Some(why);
+        self.detail_mut().why = Some(why);
         self
     }
 
     /// Name the field to change and the values it admits.
     #[must_use]
     pub fn or_field_change(mut self, field: impl Into<String>, one_of: Vec<String>) -> Self {
-        self.field_change = Some(FieldChange {
+        self.detail_mut().field_change = Some(FieldChange {
             field: field.into(),
             one_of,
         });
         self
+    }
+
+    /// The `where` coordinates, in order (empty when none were given).
+    #[must_use]
+    pub fn location(&self) -> &[(&'static str, Locus)] {
+        self.detail.as_ref().map_or(&[], |d| d.at.as_slice())
+    }
+
+    /// The structured citation, when the site gave one.
+    #[must_use]
+    pub fn why(&self) -> Option<&Why> {
+        self.detail.as_ref().and_then(|d| d.why.as_ref())
+    }
+
+    /// The field change, when the site gave one.
+    #[must_use]
+    pub fn field_change(&self) -> Option<&FieldChange> {
+        self.detail.as_ref().and_then(|d| d.field_change.as_ref())
     }
 }
 
