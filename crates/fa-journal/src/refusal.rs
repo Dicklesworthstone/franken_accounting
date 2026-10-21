@@ -52,6 +52,9 @@ pub struct RefusalDetail {
     /// The field to change and the values it admits
     /// (`fix.or_field_change`).
     pub field_change: Option<FieldChange>,
+    /// Arguments that, added to the refused command, make it admissible in
+    /// the embedded posture (`--yes`, `--grant <op>`); empty when none do.
+    pub rerun_with: Vec<String>,
 }
 
 /// One coordinate of a refusal's `where`.
@@ -154,6 +157,21 @@ impl Refusal {
             one_of,
         });
         self
+    }
+
+    /// Name the arguments that, added to the same command, are the fix.
+    #[must_use]
+    pub fn rerun_with(mut self, args: Vec<String>) -> Self {
+        self.detail_mut().rerun_with = args;
+        self
+    }
+
+    /// The arguments to add to the same command (empty when none).
+    #[must_use]
+    pub fn rerun_args(&self) -> &[String] {
+        self.detail
+            .as_ref()
+            .map_or(&[], |d| d.rerun_with.as_slice())
     }
 
     /// The `where` coordinates, in order (empty when none were given).

@@ -68,7 +68,16 @@ use crate::rows::{book_root, prop, scalar_bytes};
 /// fix exactly as fa-policy decided them.
 #[must_use]
 pub fn refusal(d: &Denial) -> Refusal {
-    Refusal::new(d.code(), d.exit(), d.message(), d.cite(), d.fix())
+    let r = Refusal::new(d.code(), d.exit(), d.message(), d.cite(), d.fix());
+    match d {
+        Denial::MissingOp { op, .. } => {
+            r.rerun_with(vec!["--grant".to_string(), op.name().to_string()])
+        }
+        Denial::CeilingExceeded { leg, .. } | Denial::UnboundedUnit { leg, .. } => {
+            r.at("leg", *leg)
+        }
+        _ => r,
+    }
 }
 
 /// The embedded policy, parsed and cross-checked once per process.

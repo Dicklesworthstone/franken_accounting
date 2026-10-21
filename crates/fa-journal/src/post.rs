@@ -2116,7 +2116,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             ),
             "plan §7.3 (periods are created per fiscal year)",
             format!(
-                "fa period create --fiscal-year {}, then open `{}`",
+                "fa period create --fiscal-year {}, then fa period open {}",
                 period.fiscal_year, period.code
             ),
         )
@@ -2253,7 +2253,13 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     format!(
                         "keep the entry's true effective date and obtain `{op}` from the book's steward (embedded posture: `--grant {op}`); never re-date an entry to escape the period law"
                     ),
-                )));
+                )
+                .at("period", period.code.clone())
+                .because(Why::Matrix {
+                    state: state.name().to_string(),
+                    class: class_name.to_string(),
+                })
+                .rerun_with(vec!["--grant".to_string(), op.to_string()])));
             }
             approvals
         }

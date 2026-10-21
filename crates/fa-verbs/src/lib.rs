@@ -1639,11 +1639,11 @@ mod tests {
             r.check_line(&line("error", usage, "null", "null")),
             Ok("error")
         );
-        let refusal = r#"{"class":"safety","cite":"Appendix D FA-REF-007","detail":null,"exit":7,"fix":"fa period soft-close FY2026-P03","message":"not confirmed","refusal":{"alternatives":[],"code":"FA-REF-007","docs":"fa explain refusal FA-REF-007","exit":7,"fix":{"argv":["period","soft-close","FY2026-P03"],"command":"fa period soft-close FY2026-P03","or_field_change":null,"text":"fa period soft-close FY2026-P03"},"id":"FA-REF-007:00112233445566ff","what_failed":"not confirmed","where":{},"why":{"cite":"Appendix D FA-REF-007"}},"refusal_id":"FA-REF-007"}"#;
+        let refusal = r#"{"class":"safety","cite":"Appendix D FA-REF-007","detail":null,"exit":7,"fix":"fa period soft-close FY2026-P03","message":"not confirmed","refusal":{"alternatives":[],"code":"FA-REF-007","docs":"fa explain refusal FA-REF-007","exit":7,"fix":{"argv":["period","soft-close","FY2026-P03"],"command":"fa period soft-close FY2026-P03","or_field_change":null,"rerun_with":["--yes"],"text":"fa period soft-close FY2026-P03"},"id":"FA-REF-007:00112233445566ff","what_failed":"not confirmed","where":{},"why":{"cite":"Appendix D FA-REF-007"}},"refusal_id":"FA-REF-007"}"#;
         assert_eq!(r.check_line(&booked("error", refusal)), Ok("error"));
         // The Appendix D object is checked against its shape: a refusal
         // object without its structured fix is not an error event.
-        let fixless = refusal.replace(r#""fix":{"argv":["period","soft-close","FY2026-P03"],"command":"fa period soft-close FY2026-P03","or_field_change":null,"text":"fa period soft-close FY2026-P03"},"id""#, r#""id""#);
+        let fixless = refusal.replace(r#""fix":{"argv":["period","soft-close","FY2026-P03"],"command":"fa period soft-close FY2026-P03","or_field_change":null,"rerun_with":["--yes"],"text":"fa period soft-close FY2026-P03"},"id""#, r#""id""#);
         assert!(
             r.check_line(&booked("error", &fixless)).is_err(),
             "{fixless}"

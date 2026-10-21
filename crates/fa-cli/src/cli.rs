@@ -1647,6 +1647,10 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             if out.is_bound() && r.fix.contains("--grant") {
                 r.fix = "identity and authority are fixed when the server starts; ask the operator to start a server with the profile and operations you need".to_string();
             }
+            // A launch-bound session cannot add --yes or --grant.
+            if out.is_bound() && !r.rerun_args().is_empty() {
+                r = r.rerun_with(Vec::new());
+            }
             Failure {
                 exit: r.exit,
                 refusal_id: Some(r.code),
@@ -2479,7 +2483,20 @@ fn command_name(verb: &str, subcommand: Option<&str>) -> String {
 
 /// The FA-REF-007 refusal for an unconfirmed dangerous operation: what it
 /// is, that nothing was written, and its safe alternative (verbs.toml).
-fn unconfirmed(d: &Dangerous) -> Fail {
+/// A dangerous row's safe-alternative template with this command's target
+/// in place of `<code>` / `<name>` (the period, draft or register named on
+/// the command line), so the refusal names a command that can be run.
+fn safe_for(template: &str, args: &Args) -> String {
+    let target = args
+        .flag("--period")
+        .or_else(|| args.positional.get(2).map(String::as_str));
+    match target {
+        Some(t) => template.replace("<code>", t).replace("<name>", t),
+        None => template.to_string(),
+    }
+}
+
+fn unconfirmed(d: &Dangerous, args: &Args) -> Fail {
     let when = match &d.condition {
         Condition::Always => String::new(),
         Condition::Grant(op) => format!(" with --grant {op}"),
@@ -2496,21 +2513,25 @@ fn unconfirmed(d: &Dangerous) -> Fail {
         "plan §15.3 (dangerous operations are gated and name a safe alternative) · Appendix D FA-REF-007",
         format!(
             "{}; or, when this is intended, rerun the same command with --yes",
-            d.safe
+            safe_for(&d.safe, args)
         ),
-    ))
+    )
+    .rerun_with(vec!["--yes".to_string()]))
 }
 
-fn unconfirmed_bound(d: &Dangerous) -> Fail {
+fn unconfirmed_bound(d: &Dangerous, args: &Args) -> Fail {
     let alternative = if d.verb == "period"
         && matches!(d.subcommand.as_deref(), Some("lock" | "reopen" | "close"))
     {
-        format!(
-            "prepare the operation with `fa period {} <code> --dry-run`; an independent operator must review and commit it",
-            d.subcommand.as_deref().unwrap_or("lock")
+        safe_for(
+            &format!(
+                "prepare the operation with `fa period {} <code> --dry-run`; an independent operator must review and commit it",
+                d.subcommand.as_deref().unwrap_or("lock")
+            ),
+            args,
         )
     } else {
-        d.safe.clone()
+        safe_for(&d.safe, args)
     };
     Refusal::new(
         CONFIRMATION_REQUIRED,
@@ -2569,9 +2590,9 @@ fn gate_from_argv(
         };
         if applies {
             return Err(if authority.is_some() {
-                unconfirmed_bound(d)
+                unconfirmed_bound(d, args)
             } else {
-                unconfirmed(d)
+                unconfirmed(d, args)
             });
         }
     }
@@ -2598,9 +2619,9 @@ pub(crate) fn gate(
         .find(|d| d.condition == *condition)
     {
         Some(d) => Err(if out.is_bound() {
-            unconfirmed_bound(d)
+            unconfirmed_bound(d, args)
         } else {
-            unconfirmed(d)
+            unconfirmed(d, args)
         }),
         None => Err(Fail::Internal(format!(
             "`{}` gates `{}`, which verbs.toml [[dangerous]] does not list",

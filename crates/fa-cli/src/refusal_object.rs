@@ -3,7 +3,7 @@
 //! in a tool error's `data.refusal`):
 //!
 //! `{id, code, exit, what_failed, where, why, fix: {text, command, argv,
-//! or_field_change}, alternatives, docs}`
+//! or_field_change, rerun_with}, alternatives, docs}`
 //!
 //! - `id` (Appendix D's `refusal_id`; renamed so a text search for the
 //!   event's flat `refusal_id`, which stays the catalog code, never lands
@@ -22,6 +22,9 @@
 //!   when the fix names none, and `fix.text` (the prose) is the next step.
 //!   Parsing is not success: the command may still need values the book
 //!   decides.
+//! - `fix.rerun_with` are the arguments that, added to the refused command,
+//!   make it admissible (`--yes`, `--grant <op>`); null when none do, and
+//!   always null in a launch-bound session, which cannot add them.
 //! - `alternatives` are the other such commands the instance fix and its
 //!   catalog row's fix name.
 //! - `docs` is the command that expands the code from the catalog.
@@ -97,6 +100,14 @@ pub(crate) fn render(reg: &Registry, r: &Refusal, issued: &Issued<'_>) -> Json {
                     }),
                 ),
                 ("or_field_change".into(), field_change),
+                (
+                    "rerun_with".into(),
+                    if r.rerun_args().is_empty() {
+                        Json::Null
+                    } else {
+                        Json::Arr(r.rerun_args().iter().cloned().map(Json::Str).collect())
+                    },
+                ),
             ]),
         ),
         (
