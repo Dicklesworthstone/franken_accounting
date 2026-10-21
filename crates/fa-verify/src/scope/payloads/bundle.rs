@@ -1,6 +1,7 @@
 //! Account bundles with an independently payload-derived index premise.
 
 use super::PayloadIndex;
+use super::incremental::IncrementalPayloadIndex;
 use crate::BalanceExpectation;
 use crate::bundle::{BundleCheck, BundleReport, BundleScope, Grade};
 use crate::checkpoint::witness::WitnessedCheckpoint;
@@ -90,4 +91,36 @@ pub fn verify_witnessed_indexed_bundle_for(
         grade,
     });
     Ok(report)
+}
+
+
+/// Verify an account bundle against a retained payload-derived index that was
+/// advanced from an independently verified baseline with a complete suffix.
+///
+/// This is the plan §13.2 "verified state + complete delta" path. The sealed
+/// incremental state supplies BOTH the current witnessed checkpoint and the
+/// independently reconstructed scope-index root, so callers cannot accidentally
+/// pair a current bundle with a stale index or a different signature policy.
+///
+/// The state's cumulative encoded-byte accounting is preserved by delegating to
+/// verify_witnessed_indexed_bundle_for: baseline, every accepted candidate,
+/// every consistency proof and every appended record remain charged against the
+/// same 64 MiB composition budget as the bundle and optional receipt. This API
+/// does not persist the state, authorize its underlying disclosures, or claim
+/// global freshness, provenance, accounting truth, or logarithmic verification.
+pub fn verify_witnessed_incremental_indexed_bundle_for(
+    bytes: &[u8],
+    expected: &BundleExpectation,
+    receipt: Option<&[u8]>,
+    state: &IncrementalPayloadIndex,
+    balances: Option<&[BalanceExpectation]>,
+) -> Result<BundleReport, WitnessBundleError> {
+    verify_witnessed_indexed_bundle_for(
+        bytes,
+        state.checkpoint(),
+        expected,
+        receipt,
+        state.index(),
+        balances,
+    )
 }
