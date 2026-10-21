@@ -1250,6 +1250,103 @@ fn resolve_output_format(args: &Args) -> Result<OutputFormat, Fail> {
     }
 }
 
+/// The command line with each registered flag alias (`--robot`,
+/// `--for-period`, …) spelled as its flag, before anything parses it.
+fn apply_flag_aliases(argv: &[String], reg: &Registry) -> Vec<String> {
+    let mut out = Vec::with_capacity(argv.len());
+    let mut rest = argv.iter();
+    for a in rest.by_ref() {
+        if a == "--" {
+            out.push(a.clone());
+            break;
+        }
+        let (name, inline) = match a.split_once('=') {
+            Some((n, v)) if a.starts_with("--") => (n, Some(v)),
+            _ => (a.as_str(), None),
+        };
+        match reg.flag_alias(name) {
+            Some(flag) => {
+                out.push(inline.map_or_else(|| flag.to_string(), |v| format!("{flag}={v}")))
+            }
+            None => out.push(a.clone()),
+        }
+    }
+    out.extend(rest.cloned());
+    out
+}
+
+/// Plan §15.3 intent inference: a flag within the correction distance of a
+/// registered one is corrected when the command only reads (its bound route
+/// needs nothing but read or verify), and the run carries a warning naming
+/// the correction. A writing command is never corrected: it fails as usage,
+/// naming the fix.
+fn correct_read_flags(argv: &[String], reg: &Registry) -> (Vec<String>, Vec<String>) {
+    let known: Vec<&str> = reg
+        .value_flags()
+        .into_iter()
+        .chain(reg.switches())
+        .collect();
+    let mut corrected = Vec::with_capacity(argv.len());
+    let mut warnings = Vec::new();
+    let mut rest = argv.iter();
+    for a in rest.by_ref() {
+        if a == "--" {
+            corrected.push(a.clone());
+            break;
+        }
+        let Some(body) = a.strip_prefix("--") else {
+            corrected.push(a.clone());
+            continue;
+        };
+        let (name, inline) = match body.split_once('=') {
+            Some((n, v)) => (format!("--{n}"), Some(v)),
+            None => (a.clone(), None),
+        };
+        match (known.contains(&name.as_str()), nearest(&name, &known)) {
+            (false, Some(fix)) => {
+                warnings.push(format!("`{name}` is not a flag; ran as `{fix}`"));
+                corrected.push(inline.map_or_else(|| fix.to_string(), |v| format!("{fix}={v}")));
+            }
+            _ => corrected.push(a.clone()),
+        }
+    }
+    corrected.extend(rest.cloned());
+    if warnings.is_empty() {
+        return (corrected, warnings);
+    }
+    // Read-class is what the command's bound route requires: nothing but
+    // read or verify (a certifying `tb --certificate-out` needs produce).
+    let reads = args::parse(&corrected, &reg.value_flags(), &reg.switches())
+        .ok()
+        .and_then(|mut parsed| {
+            if let Some(alias) = parsed.positional.first().and_then(|w| reg.alias(w)) {
+                parsed.positional = alias
+                    .expands
+                    .iter()
+                    .chain(parsed.positional.iter().skip(1))
+                    .cloned()
+                    .collect();
+            }
+            let verb = reg.verb(parsed.positional.first()?)?;
+            if let Some(default) = &verb.default_subcommand
+                && parsed.positional.len() == 1
+            {
+                parsed.positional.push(default.clone());
+            }
+            let (ops, _) = bound_command_rule(&verb.name, &parsed)?;
+            Some(
+                ops.iter()
+                    .all(|op| matches!(op, fa_policy::Op::Read | fa_policy::Op::Verify)),
+            )
+        })
+        .unwrap_or(false);
+    if reads {
+        (corrected, warnings)
+    } else {
+        (argv.to_vec(), Vec::new())
+    }
+}
+
 fn run_scoped(
     argv: &[String],
     books: Books<'_>,
@@ -1258,16 +1355,20 @@ fn run_scoped(
     daemon_files: Option<DaemonFiles>,
     capture: bool,
 ) -> (u8, Captured) {
-    let raw_format = output_format_from_raw_argv(argv);
     let reg = match registry() {
         Ok(r) => r,
         Err(fail) => {
             return finish_into(
-                Out::new_format(raw_format, capture).with_authority(authority),
+                Out::new_format(output_format_from_raw_argv(argv), capture)
+                    .with_authority(authority),
                 Err(fail),
             );
         }
     };
+    let aliased = apply_flag_aliases(argv, reg);
+    let (argv, corrections) = correct_read_flags(&aliased, reg);
+    let argv = argv.as_slice();
+    let raw_format = output_format_from_raw_argv(argv);
     let mut args = match args::parse(argv, &reg.value_flags(), &reg.switches()) {
         Ok(a) => a,
         Err(e) => {
@@ -1326,6 +1427,9 @@ fn run_scoped(
         |name| std::env::var(name).ok(),
     );
     let out = Out::styled_format(format, capture, style).with_authority(authority);
+    for correction in corrections {
+        out.warn(correction);
+    }
     if authority.is_none() {
         if daemon_files.is_some() && (args.flags.contains_key("--as") || args.switch("--as")) {
             return finish_into(
@@ -1744,6 +1848,18 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
                 None => "run `fa --help`".to_string(),
             },
         ));
+    };
+    // A bare verb with a registered default subcommand runs it (plan §15.3:
+    // `fa gl` is `fa gl detail`).
+    let defaulted;
+    let args = match &verb.default_subcommand {
+        Some(default) if args.positional.len() == 1 && !args.switch("--help") => {
+            let mut a = args.clone();
+            a.positional.push(default.clone());
+            defaulted = a;
+            &defaulted
+        }
+        _ => args,
     };
     check_flags(reg, Some(verb), args)?;
     if args.flag("--issuer-token").is_some()
@@ -3685,7 +3801,8 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
         message: format!("the embedded verb registry: {e}"),
         fix: "run `fa --help`".to_string(),
     })?;
-    let mut args = args::parse(argv, &reg.value_flags(), &reg.switches())?;
+    let aliased = apply_flag_aliases(argv, reg);
+    let mut args = args::parse(&aliased, &reg.value_flags(), &reg.switches())?;
     if args.switch("--version") {
         return Ok(args);
     }
@@ -3725,6 +3842,12 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
             },
         });
     };
+    if let Some(default) = &verb.default_subcommand
+        && args.positional.len() == 1
+        && !args.switch("--help")
+    {
+        args.positional.push(default.clone());
+    }
     check_flags(reg, Some(verb), &args).map_err(to_usage)?;
     if args.switch("--help") {
         return Ok(args);

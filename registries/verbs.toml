@@ -43,7 +43,11 @@ events = ["version", "triage", "help", "error"]
 # A mistyped verb, subcommand or flag within this edit distance gets a
 # "did you mean"; correction only ever suggests, it never runs the guess.
 correction_distance = 1
-usage = "--book <dir> (or FA_BOOK) · --keys <file> (default <dir>/book.keys) · --json · --format json|toon|text · --as <principal> (default operator) · --token <file> (act as the holder of an issued capability token instead of --as/--grant: the session is bound to its journaled capability, directly or through the book's fad) · --via fad|direct (default: through the book's fad when one holds its writer lease) · --yes (confirm an operation that cannot be undone; `fa capabilities --json` lists them) · --no-color (also NO_COLOR, CI, TERM=dumb, or stdout not a terminal) · --help (also `fa <verb> --help`)"
+# The spellings agents try first for registered flags (plan §15.3: `--robot`
+# anywhere, `--for-period`, `--effective-at`), rewritten to the flag before
+# parsing: registered synonyms, never guessed corrections.
+flag_aliases = ["--robot=--json", "--for-period=--period", "--effective-at=--as-of"]
+usage = "--book <dir> (or FA_BOOK) · --keys <file> (default <dir>/book.keys) · --json · --format json|toon|text · --as <principal> (default operator) · --token <file> (act as the holder of an issued capability token instead of --as/--grant: the session is bound to its journaled capability, directly or through the book's fad) · --via fad|direct (default: through the book's fad when one holds its writer lease) · --yes (confirm an operation that cannot be undone; `fa capabilities --json` lists them) · --no-color (also NO_COLOR, CI, TERM=dumb, or stdout not a terminal) · --help (also `fa <verb> --help`) · aliases: --robot = --json, --for-period = --period, --effective-at = --as-of · a one-edit flag typo on a read-only command runs corrected with a warning; on a writing command it is a usage error naming the correction"
 
 # The fad daemon (plan §15.3, Appendix D, bead fa-i8j). One fad per book
 # directory holds the book's writer lease (an OS lock on <dir>/<lease>, so a
@@ -465,6 +469,7 @@ example = "fa open-items --account 1200 --book ./books/myco --json"
 
 [[verb]]
 name = "gl"
+default_subcommand = "detail"
 summary = "General-ledger detail, account roll-forward lead schedules, effective-date open-item aging and control reconciliation, cost-basis lot schedules and relief planning, and direct/indirect cash-flow workpapers over one recorded snapshot."
 writes = true
 subcommands = ["detail", "roll-forward", "aging", "cash-flow", "lots"]

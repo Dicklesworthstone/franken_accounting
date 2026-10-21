@@ -148,9 +148,10 @@ mod tests {
         assert_eq!(reply.lines[0].event, "capabilities");
         assert!(reply.lines[0].data.get("verbs").is_some());
         assert!(reply.error().is_none());
-        // A usage error: exactly one error line, last, with the exit's class.
+        // A usage error: exactly one error line, last, with the exit's class
+        // (a writing command: a read's one-edit flag typo runs corrected).
         let bad = Invocation {
-            argv: vec!["tb".into(), "--jsno".into(), "--json".into()],
+            argv: vec!["post".into(), "--jsno".into(), "--json".into()],
             stdin: None,
         };
         let reply = run(reg, &bad, &authority).expect("ran");

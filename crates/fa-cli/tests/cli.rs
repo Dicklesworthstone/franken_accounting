@@ -1062,7 +1062,9 @@ fn bare_fa_prints_triage_and_exits_zero_without_a_tui() {
 
 #[test]
 fn typos_are_usage_errors_with_a_suggestion_and_exit_2_never_1() {
-    let (code, out, err) = fa(None, &["tb", "--jsno"]);
+    // A writing command's flag typo is never run (a read's runs corrected
+    // with a warning: polish_bar.rs first_try_spellings_matrix).
+    let (code, out, err) = fa(None, &["post", "--jsno"]);
     assert_eq!(code, 2);
     assert!(
         out.is_empty(),
@@ -9976,7 +9978,7 @@ fn corrections_span_exactly_one_edit() {
         text(&doc(&out), "fix").contains("did you mean `fa post`"),
         "{out}"
     );
-    let (code, out, _) = fa(None, &["tb", "--jsno"]);
+    let (code, out, _) = fa(None, &["post", "--jsno"]);
     assert_eq!(code, 2, "{out}");
     let (code, out, _) = fa(None, &["pzzt", "--json"]);
     assert_eq!(code, 2, "{out}");

@@ -140,6 +140,9 @@ pub struct Verb {
     pub exits: Vec<u8>,
     pub usage: Vec<String>,
     pub example: String,
+    /// The subcommand a bare `fa <verb>` runs (plan §15.3: `fa gl` is `fa gl
+    /// detail`); `None` when the verb needs one named.
+    pub default_subcommand: Option<String>,
 }
 
 impl Verb {
@@ -202,6 +205,10 @@ pub struct Global {
     /// The largest edit distance a "did you mean" correction spans.
     pub correction_distance: usize,
     pub usage: String,
+    /// `(alias, flag)`: the spellings agents try first for a registered
+    /// flag or switch (plan §15.3), rewritten before parsing. A registered
+    /// synonym, never a guessed correction.
+    pub flag_aliases: Vec<(String, String)>,
 }
 
 /// When a dangerous operation needs confirmation (closed vocabulary).
@@ -487,6 +494,19 @@ impl Registry {
                 .and_then(|d| usize::try_from(d).ok())
                 .ok_or("verbs.toml: global: missing integer `correction_distance`")?,
             usage: get_str(g, "usage", "global")?.to_string(),
+            flag_aliases: match g.get("flag_aliases") {
+                None => Vec::new(),
+                Some(_) => get_strs(g, "flag_aliases", "global")?
+                    .iter()
+                    .map(|pair| {
+                        pair.split_once('=')
+                            .map(|(a, f)| (a.to_string(), f.to_string()))
+                            .ok_or_else(|| {
+                                format!("verbs.toml: global: flag alias `{pair}` is not `--alias=--flag`")
+                            })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+            },
         };
         let mut verbs: Vec<Verb> = Vec::new();
         for t in doc
@@ -518,6 +538,16 @@ impl Registry {
                 exits,
                 usage: get_strs(t, "usage", &what)?,
                 example: get_str(t, "example", &what)?.to_string(),
+                default_subcommand: match t.get("default_subcommand") {
+                    None => None,
+                    Some(v) => Some(
+                        v.as_str()
+                            .ok_or_else(|| {
+                                format!("verbs.toml: {what}: `default_subcommand` must be a string")
+                            })?
+                            .to_string(),
+                    ),
+                },
                 name,
             });
         }
@@ -932,6 +962,39 @@ impl Registry {
         if self.global.correction_distance > 2 {
             return Err("verbs.toml: global: correction_distance is at most 2".into());
         }
+        // A flag alias is a new spelling of a registered flag or switch: it
+        // names no flag itself, starts with `--`, and appears once.
+        let registered: BTreeSet<&str> = self
+            .value_flags()
+            .into_iter()
+            .chain(self.switches())
+            .collect();
+        let mut seen_aliases = BTreeSet::new();
+        for (alias, flag) in &self.global.flag_aliases {
+            if !alias.starts_with("--") || registered.contains(alias.as_str()) {
+                return Err(format!(
+                    "verbs.toml: global: flag alias `{alias}` must be a new `--` spelling, not a registered flag"
+                ));
+            }
+            if !registered.contains(flag.as_str()) {
+                return Err(format!(
+                    "verbs.toml: global: flag alias `{alias}` names unregistered flag `{flag}`"
+                ));
+            }
+            if !seen_aliases.insert(alias.as_str()) {
+                return Err(format!("verbs.toml: global: flag alias `{alias}` repeats"));
+            }
+        }
+        for v in &self.verbs {
+            if let Some(default) = &v.default_subcommand
+                && !v.subcommands.contains(default)
+            {
+                return Err(format!(
+                    "verbs.toml: verb {}: default_subcommand `{default}` is not one of its subcommands",
+                    v.name
+                ));
+            }
+        }
         // A dangerous operation is a real verb (and one of its subcommands
         // exactly when it has them) that can exit 7, with a safe
         // alternative; one row per (verb, subcommand, condition).
@@ -1096,6 +1159,16 @@ impl Registry {
     #[must_use]
     pub fn alias(&self, name: &str) -> Option<&Alias> {
         self.aliases.iter().find(|a| a.name == name)
+    }
+
+    /// The registered flag a flag alias stands for.
+    #[must_use]
+    pub fn flag_alias(&self, name: &str) -> Option<&str> {
+        self.global
+            .flag_aliases
+            .iter()
+            .find(|(alias, _)| alias == name)
+            .map(|(_, flag)| flag.as_str())
     }
 
     #[must_use]
@@ -1433,6 +1506,27 @@ mod tests {
             (
                 "a dangerous row naming an unknown verb",
                 with(|s| s.replace("verb = \"resolve\"", "verb = \"resolv\"")),
+            ),
+            (
+                "a flag alias naming an unregistered flag",
+                with(|s| s.replace("\"--robot=--json\"", "\"--robot=--jsonn\"")),
+            ),
+            (
+                "a flag alias that is itself a registered flag",
+                with(|s| s.replace("\"--robot=--json\"", "\"--period=--json\"")),
+            ),
+            (
+                "a flag alias that is not `--alias=--flag`",
+                with(|s| s.replace("\"--robot=--json\"", "\"--robot\"")),
+            ),
+            (
+                "a default subcommand the verb does not have",
+                with(|s| {
+                    s.replace(
+                        "default_subcommand = \"detail\"",
+                        "default_subcommand = \"summary\"",
+                    )
+                }),
             ),
             (
                 "a dangerous verb that cannot exit 7",
