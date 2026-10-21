@@ -163,6 +163,152 @@ pub(crate) fn lint(
     linted.map_err(|error| invalid(error.to_string()))
 }
 
+/// One line of a statement definition's share of an engagement's
+/// uncorrected misstatements (plan §11.12, `audit.sud` per statement line):
+/// the line's amount had every uncorrected proposal been booked, under the
+/// line's own sign, in the engagement's unit. A formula line is computed
+/// from the lines it names, exactly as the statement computes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UncorrectedLine {
+    pub code: String,
+    pub label: String,
+    pub amount: i128,
+}
+
+/// The uncorrected misstatements over one definition's lines: the income
+/// statement's under the rollover method, the balance sheet's under the iron
+/// curtain method (SAB 108). Mechanics only; materiality stays the
+/// auditor's judgment (plan §0.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UncorrectedStatement {
+    pub definition: String,
+    pub title: String,
+    pub kind: fa_statements::StatementKind,
+    pub lines: Vec<UncorrectedLine>,
+}
+
+/// The kind of the definition `name` names, when it is one `fa statement
+/// lint` takes.
+#[must_use]
+pub fn statement_definition_kind(name: &str) -> Option<fa_statements::StatementKind> {
+    mapping_definition(name)
+        .ok()
+        .map(|definition| definition.kind)
+}
+
+/// A definition by a name `fa statement lint` takes, as its line mappings.
+pub(crate) fn mapping_definition(
+    name: &str,
+) -> Result<fa_statements::custom::CustomStatementDefinition, Refusal> {
+    use fa_statements::custom::CustomStatementDefinition;
+    match name {
+        "us_gaap_small_company_balance_sheet" => {
+            Ok(CustomStatementDefinition::us_gaap_small_company_balance_sheet())
+        }
+        "us_gaap_small_company_income_statement" => {
+            Ok(CustomStatementDefinition::us_gaap_small_company_income_statement())
+        }
+        _ => StatementDefinition::embedded(name)
+            .map(|definition| CustomStatementDefinition::from_builtin(&definition))
+            .map_err(|_| {
+                invalid(format!(
+                    "unknown statement definition `{name}`; one of {}",
+                    LINTABLE_DEFINITIONS.join(", ")
+                ))
+            }),
+    }
+}
+
+/// Attribute legs `(account, side, mantissa)` to `definition`'s lines. A leg
+/// whose account type the definition does not cover is not on it (an asset
+/// leg is not on an income statement); a covered account must map to
+/// exactly one line, which is what `fa statement lint` checks.
+pub(crate) fn uncorrected_statement(
+    definition: &fa_statements::custom::CustomStatementDefinition,
+    accounts: &std::collections::BTreeMap<u128, Account>,
+    legs: &[(u128, fa_money::Side, i128)],
+) -> Result<UncorrectedStatement, Refusal> {
+    use fa_money::Side;
+    use fa_statements::Sign;
+    use fa_statements::custom::CustomLineSource;
+    let overflow = || invalid("the uncorrected misstatements overflow a statement line");
+    let covered = definition.kind.covered_types();
+    let mut mapped_totals: std::collections::BTreeMap<&str, i128> =
+        std::collections::BTreeMap::new();
+    for &(account_id, side, mantissa) in legs {
+        let account = accounts.get(&account_id).ok_or_else(|| {
+            invalid(format!(
+                "an uncorrected proposal names account {account_id:032x}, which the chart does not have"
+            ))
+        })?;
+        if !covered.contains(&account.account_type) {
+            continue;
+        }
+        let mut mapping = definition
+            .lines
+            .iter()
+            .filter_map(|line| match &line.source {
+                CustomLineSource::AccountSet { expr, sign } if expr.matches(account) => {
+                    Some((line.code.as_str(), *sign))
+                }
+                _ => None,
+            });
+        let (Some((code, sign)), None) = (mapping.next(), mapping.next()) else {
+            return Err(invalid(format!(
+                "account `{}` does not map to exactly one line of `{}`; fa statement lint --definition {} names the gap",
+                account.code, definition.name, definition.name
+            )));
+        };
+        let signed = match (side, sign) {
+            (Side::Debit, Sign::Debit) | (Side::Credit, Sign::Credit) => mantissa,
+            _ => mantissa.checked_neg().ok_or_else(overflow)?,
+        };
+        let total = mapped_totals.entry(code).or_insert(0);
+        *total = total.checked_add(signed).ok_or_else(overflow)?;
+    }
+    let mut values: std::collections::BTreeMap<&str, i128> = std::collections::BTreeMap::new();
+    let mut lines = Vec::with_capacity(definition.lines.len());
+    for line in &definition.lines {
+        let amount = match &line.source {
+            CustomLineSource::AccountSet { .. } => {
+                mapped_totals.get(line.code.as_str()).copied().unwrap_or(0)
+            }
+            CustomLineSource::Formula { add, subtract } => {
+                let mut amount = 0i128;
+                for (names, negate) in [(add, false), (subtract, true)] {
+                    for name in names {
+                        let value = *values.get(name.as_str()).ok_or_else(|| {
+                            invalid(format!(
+                                "formula line `{}` of `{}` names `{name}`, which is not an earlier line",
+                                line.code, definition.name
+                            ))
+                        })?;
+                        amount = if negate {
+                            amount.checked_sub(value)
+                        } else {
+                            amount.checked_add(value)
+                        }
+                        .ok_or_else(overflow)?;
+                    }
+                }
+                amount
+            }
+        };
+        values.insert(line.code.as_str(), amount);
+        lines.push(UncorrectedLine {
+            code: line.code.clone(),
+            label: line.label.clone(),
+            amount,
+        });
+    }
+    Ok(UncorrectedStatement {
+        definition: definition.name.clone(),
+        title: definition.title.clone(),
+        kind: definition.kind,
+        lines,
+    })
+}
+
 pub(crate) fn read<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,
