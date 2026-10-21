@@ -187,6 +187,30 @@ agent_prepared_human_approvers = 2
 exclusions = ["preparer", "duplicate", "case_preparer"]
 cite = "plan §14.3, Appendix C W(restate, 2)"
 
+# A Revision posts only as its Approved Revision case's entry; its row's
+# approvals are the case's (plan §8.3, Appendix C W(restate, 1|2)).
+[[rule]]
+name = "revision-closed"
+class = "Revision"
+state = "Closed"
+approvers = 1
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 1
+exclusions = ["preparer", "duplicate", "case_preparer"]
+cite = "Appendix C W(restate, 1) inside a Revision case (plan §8.3)"
+
+[[rule]]
+name = "revision-locked"
+class = "Revision"
+state = "Locked"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate", "case_preparer"]
+cite = "Appendix C W(restate, 2) inside a Revision case (plan §8.3)"
+
 # ---- Migration --------------------------------------------------------------
 [[rule]]
 name = "migration-locked"

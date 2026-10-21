@@ -793,6 +793,14 @@ pub(crate) enum Admission {
     /// check of [`Admission::Commit`], and only a case's entry is admitted
     /// this way (a case's entry is admitted no other way).
     Case(crate::case::Posting),
+    /// One Plan record of a scenario, posted into the scenario's owned,
+    /// freshly replayed memory book (plan §15.2). Only
+    /// [`crate::scenario::materialize_into`] makes the token. A
+    /// case-bound class is rehearsed there without its case: the period
+    /// law, the planner's authority and every other posting law hold,
+    /// and the case's approvals bind its entries only at the case's own
+    /// Post. No source book is published.
+    ScratchScenario(crate::scenario::Rehearsing),
 }
 
 pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
@@ -815,9 +823,10 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     // authority (§15.2). An owned scratch draft publishes only a rehearsal.
     // Every other admission check still runs with the unchanged capability.
     let admit_base = match admission {
-        Admission::Commit | Admission::VerifiedBatch(_) | Admission::Case(_) => {
-            fa_policy::admit_base
-        }
+        Admission::Commit
+        | Admission::VerifiedBatch(_)
+        | Admission::Case(_)
+        | Admission::ScratchScenario(_) => fa_policy::admit_base,
         Admission::Plan | Admission::Promote(_) | Admission::ScratchDraft(_) => {
             fa_policy::admit_base_for_plan
         }
@@ -923,7 +932,19 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<Posted> {
-    if let Err(refusal) = authorize_request(db, book, &req, Admission::Commit)? {
+    post_admitted(db, ctx, book, req, Admission::Commit).await
+}
+
+/// [`post`] under `admission`; only fa-journal makes the tokens other
+/// than [`Admission::Commit`].
+pub(crate) async fn post_admitted<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: PostRequest,
+    admission: Admission,
+) -> Outcome<Posted> {
+    if let Err(refusal) = authorize_request(db, book, &req, admission)? {
         return Ok(Err(refusal));
     }
     // Reconciliation protection, like daily usage, derives from immutable
@@ -934,7 +955,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    match prepare_post(db, ctx, book, req)? {
+    match prepare_post_in(db, ctx, book, req, None, admission, None)? {
         Err(refusal) => Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => Ok(Ok(posted)),
         Ok(PostPreparation::Ready(prepared)) => prepared.commit(db, ctx).await,
@@ -942,12 +963,14 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// The classes the posting pipeline admits (step 1b). Replacement is
-/// admitted only by its private, atomic pair context, and
-/// PriorPeriodAdjustment only as a restatement case's entry in its case's
-/// own Post batch (fa-75j4).
-const POSTED_CLASSES: [EntryClass; 11] = [
+/// admitted only by its private, atomic pair context, and the case-bound
+/// PriorPeriodAdjustment and Revision only as a restatement case's
+/// entries in their case's own Post batch, or rehearsed in a scenario's
+/// scratch replay (fa-75j4).
+const POSTED_CLASSES: [EntryClass; 12] = [
     EntryClass::RECLASSIFICATION,
     EntryClass::PRIOR_PERIOD_ADJUSTMENT,
+    EntryClass::REVISION,
     EntryClass::ORIGINAL,
     EntryClass::ADJUSTING,
     EntryClass::REVERSAL,
@@ -1299,6 +1322,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     let is_reversal = proposal.class == EntryClass::REVERSAL;
     let is_replacement = proposal.class == EntryClass::REPLACEMENT;
     let is_reclass = proposal.class == EntryClass::RECLASSIFICATION;
+    let is_revision = proposal.class == EntryClass::REVISION;
     if !POSTED_CLASSES.contains(&proposal.class) && !is_replacement {
         return Ok(Err(not_implemented(class_name)));
     }
@@ -1308,6 +1332,11 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         Ok(member) => member,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    // A case-bound class rehearsed in a scenario's scratch replay carries
+    // no approvals: its case's approvals bind its entries at the case's
+    // own Post.
+    let scratch_case = matches!(admission, Admission::ScratchScenario(_))
+        && crate::case::case_bound(proposal.class);
     // Closing is an intrinsic, source-bound computation, not a generic
     // balanced posting class. Current Read/Close and whole-book scope are
     // required before its aggregate or routing map can be observed.
@@ -1608,7 +1637,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             }
         }
     } else {
-        if !is_replacement && !is_reclass && !proposal.supersession.is_empty() {
+        if !is_replacement && !is_reclass && !is_revision && !proposal.supersession.is_empty() {
             return Ok(Err(not_implemented("supersession on a non-Reversal class")));
         }
         None
@@ -1619,6 +1648,18 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             _ => {
                 return Ok(Err(reclassification_shape(
                     "a Reclassification names exactly one target with kind Reclassifies in `supersession`",
+                )));
+            }
+        }
+    } else {
+        None
+    };
+    let revision_target = if is_revision {
+        match proposal.supersession.as_slice() {
+            [s] if s.kind == SupersessionKind::Revises => Some(s.target),
+            _ => {
+                return Ok(Err(revision_shape(
+                    "a Revision names exactly one target with kind Revises in `supersession`",
                 )));
             }
         }
@@ -1836,7 +1877,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             book,
             &req,
             scope.as_ref(),
-            reversal_target.or(replacement_target).or(reclass_target),
+            reversal_target
+                .or(replacement_target)
+                .or(reclass_target)
+                .or(revision_target),
             resolution.as_ref(),
         )?
     {
@@ -1967,7 +2011,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // A fresh correction names a registered reason. Outcome recognition
     // stays first: an identical retry never rewrites or reinterprets an old
     // immutable entry, including a reversal recorded before this law.
-    if is_reversal || is_replacement || is_reclass {
+    if is_reversal || is_replacement || is_reclass || is_revision {
         let reasons = fa_registry::reason_codes::ReasonCodes::embedded()
             .map_err(|e| KernelError::Corrupt(e.to_string()))?;
         let reason = proposal.supersession[0].reason_code;
@@ -2039,6 +2083,18 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     //      commit), and it moves no more out of any target leg than they left.
     if let Some(target) = reclass_target
         && let Err(refusal) = reclassification_admissible(&txn, db, book, target, proposal)?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+
+    // 3''''. A Revision (plan §8.2, `Revises`; fa-75j4): its target is a
+    //        standing committed posting of this book read with its
+    //        digest. The net effect is the target plus the revision's
+    //        delta legs, so no amount bounds them; its case decides the
+    //        period it posts in.
+    if let Some(target) = revision_target
+        && let Err(refusal) = revision_admissible(&txn, db, book, target, proposal)?
     {
         txn.abort();
         return Ok(Err(refusal));
@@ -2427,7 +2483,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 "post the case with `fa case post <case>`",
             )));
         }
-        let gate = match crate::case::admit_member(&txn, db, book, proposal, member)? {
+        let gate = match crate::case::admit_member(&txn, db, book, proposal, member, &period.code)?
+        {
             Ok(gate) => gate,
             Err(refusal) => {
                 txn.abort();
@@ -2450,6 +2507,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(r));
         }
     } else if !balancing
+        && !scratch_case
         && let Err(r) = policy::authorize_approvals(
             &txn,
             db,
@@ -3581,7 +3639,11 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         );
         batches.push(in_run);
     }
-    if let Some(target) = reversal_target.or(replacement_target).or(reclass_target) {
+    if let Some(target) = reversal_target
+        .or(replacement_target)
+        .or(reclass_target)
+        .or(revision_target)
+    {
         let mut supersedes = WriteBatch::new(relation::SUPERSEDES);
         supersedes.add_edge(
             edge_id(relation::SUPERSEDES, evid, target.vid),
@@ -4325,6 +4387,58 @@ fn reclassification_admissible<V: asupersync::fs::Vfs + Clone>(
         Ok(()) => Ok(Ok(())),
         Err(e) => Ok(Err(reclassification_shape(e.to_string()))),
     }
+}
+
+fn revision_shape(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::REVISION_SHAPE,
+        exit::REFUSAL,
+        message.into(),
+        "plan §8.2 (Revises: an immaterial prior-period correction inside an Approved Revision case; net effect is the target plus the revision's delta legs)",
+        "plan the revision in the case's scenario with class Revision and supersession = [{ target: <EntryRef of a standing posting>, kind: Revises, reason_code }], then rehearse, approve and post the case: `fa case post <case>`",
+    )
+}
+
+/// A Revision's target (plan §8.2, `Revises`): a committed entry of this
+/// book and branch with the cited digest, a posting (legs, no control
+/// payload), and standing (no standing Reversal supersedes it).
+fn revision_admissible<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    target: EntryRef,
+    proposal: &EntryPayload,
+) -> Outcome<()> {
+    let at = format!("{:032x}", target.vid.0);
+    let Some(row) = txn.vertex(db, target.vid)? else {
+        return Ok(Err(revision_shape(format!(
+            "the Revision's target {at} is not a committed entry of this book"
+        ))
+        .at("target", at)));
+    };
+    let (original, _) = checked_entry_staged(txn, db, &row)?;
+    if original.entry_digest != target.entry_digest
+        || original.proposal.book_id != book.book_id
+        || original.proposal.branch_id != proposal.branch_id
+    {
+        return Ok(Err(revision_shape(format!(
+            "the Revision's target {at} does not carry the cited digest on this book and branch; cite the committed entry's EntryRef"
+        ))
+        .at("target", at)));
+    }
+    if original.proposal.legs.is_empty() || original.proposal.control.is_some() {
+        return Ok(Err(revision_shape(format!(
+            "the Revision's target {at} is a control record, not a posting: a revision corrects posted amounts"
+        ))
+        .at("target", at)));
+    }
+    if !entry_stands(txn, db, target.vid, &mut BTreeSet::new())? {
+        return Ok(Err(revision_shape(format!(
+            "the Revision's target {at} is reversed: a reversed entry has nothing left to revise"
+        ))
+        .at("target", at)));
+    }
+    Ok(Ok(()))
 }
 
 fn replacement_shape() -> Refusal {

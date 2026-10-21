@@ -224,6 +224,14 @@ cite = "FG-LAW-FCW-01 (first committer wins)"
 fix = "re-plan and retry; if a close won, the period law refusal will say so"
 
 [[refusal]]
+code = "FA-REF-187"
+name = "REVISION_SHAPE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.2 (Revises: an immaterial prior-period correction inside an Approved Revision case; net effect is the target plus the revision's delta legs; bead fa-75j4)"
+fix = "plan the revision in the case's scenario with class Revision, revises <vid> naming one standing committed posting, a registered reason and the delta legs; rehearse, approve and post the case with fa case post <case>"
+
+[[refusal]]
 code = "FA-REF-186"
 name = "PERIOD_STATE_CHANGED"
 owners = ["fa-journal"]

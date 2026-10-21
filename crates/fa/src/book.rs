@@ -562,6 +562,10 @@ impl From<EntropyError> for BookError {
 /// The facade's result shape: a failure, or a lawful refusal, or the outcome.
 pub type Outcome<T> = Result<Result<T, Refusal>, BookError>;
 
+/// A materialized scenario: the scratch book, its sequence map from the
+/// source, and the entries its requests posted, in order.
+pub(crate) type ScenarioScratch = (Book, fa_journal::SeqMap, Vec<VId>);
+
 enum Store {
     Memory(AsyncBook<MemVfs>),
     Dir(AsyncBook<UnixVfs>),
@@ -1760,23 +1764,6 @@ impl Book {
         )
     }
 
-    /// Reconstruct only a retained v1 scenario certificate's original
-    /// compressed coordinates. The caller must compare its exact map, head
-    /// and output; new materializations always use the public protected path.
-    pub(crate) fn replay_into_scratch_legacy_scenario_v1(
-        &mut self,
-        prefix: Option<CommitSeq>,
-        keys: BookKeys,
-        entropy: Entropy,
-    ) -> Outcome<(Book, fa_journal::SeqMap)> {
-        self.replay_into_scratch_with_mode(
-            prefix,
-            keys,
-            entropy,
-            ScratchReplayMode::LegacyScenarioV1,
-        )
-    }
-
     fn replay_into_scratch_with_mode(
         &mut self,
         prefix: Option<CommitSeq>,
@@ -1925,6 +1912,74 @@ impl Book {
                 owner_token,
             },
             rehearsal,
+        )))
+    }
+
+    /// A scenario's materialization in a fresh memory book with its own keys
+    /// and runtime, as a draft rehearsal is: the native factory replays this
+    /// book at `fork_at` and posts `requests` in order (plan §15.2).
+    pub(crate) fn materialize_scenario_scratch(
+        &mut self,
+        fork_at: CommitSeq,
+        coordinates: fa_journal::scenario::Coordinates,
+        requests: Vec<fa_journal::PostRequest>,
+    ) -> Result<Result<ScenarioScratch, fa_journal::scenario::MaterializeRefusal>, BookError> {
+        let keys = BookKeys::generate(&Entropy::production())?;
+        let owner_token = keys.owner_token();
+        let (scratch_runtime, scratch_root) = Self::runtime_and_root()?;
+        let scratch_purposes = PurposeContexts::narrow_runtime_root(&scratch_root);
+        let target = scratch_runtime.block_on(async {
+            Database::open_memory(&scratch_purposes.commit(), keys.inner.clone()).await
+        })?;
+        let entropy = Entropy::production();
+        let materialized = match &mut self.store {
+            Store::Memory(core) => scratch_runtime
+                .block_on(core.materialize_scenario_into(
+                    &scratch_purposes,
+                    target,
+                    &keys,
+                    fork_at,
+                    coordinates,
+                    requests,
+                    entropy,
+                ))?
+                .map(|(copy, map, entries)| (Store::Memory(copy), map, entries)),
+            Store::Dir(core) => scratch_runtime
+                .block_on(core.materialize_scenario_into(
+                    &scratch_purposes,
+                    target,
+                    &keys,
+                    fork_at,
+                    coordinates,
+                    requests,
+                    entropy,
+                ))?
+                .map(|(copy, map, entries)| (Store::ScratchDir(copy), map, entries)),
+            Store::ScratchDir(core) => scratch_runtime
+                .block_on(core.materialize_scenario_into(
+                    &scratch_purposes,
+                    target,
+                    &keys,
+                    fork_at,
+                    coordinates,
+                    requests,
+                    entropy,
+                ))?
+                .map(|(copy, map, entries)| (Store::ScratchDir(copy), map, entries)),
+        };
+        let (store, map, entries) = match materialized {
+            Ok(materialized) => materialized,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok((
+            Book {
+                runtime: scratch_runtime,
+                root: scratch_root,
+                store,
+                owner_token,
+            },
+            map,
+            entries,
         )))
     }
 

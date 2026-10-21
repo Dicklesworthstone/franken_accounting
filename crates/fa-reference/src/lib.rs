@@ -2271,10 +2271,11 @@ impl Oracle {
                 code: code::REPLACEMENT_UNPAIRED,
             };
         }
-        // 1b''. A PriorPeriodAdjustment posts only as an Approved restatement
-        //       case's entry, in the case's own Post batch (plan §8.3, bead
-        //       fa-75j4); this entry point posts one entry outside any case.
-        if intent.class == "PriorPeriodAdjustment" {
+        // 1b''. A PriorPeriodAdjustment or Revision posts only as an Approved
+        //       restatement case's entry, in the case's own Post batch (plan
+        //       §8.3, bead fa-75j4); this entry point posts one entry outside
+        //       any case.
+        if matches!(intent.class.as_str(), "PriorPeriodAdjustment" | "Revision") {
             return Verdict::Refused {
                 code: code::CASE_MEMBERSHIP,
             };

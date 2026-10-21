@@ -825,13 +825,15 @@ fn check_plan<V: asupersync::fs::Vfs + Clone>(
     {
         return Ok(Err(r));
     }
-    if !crate::batch::batchable(p.class) {
+    // A Revision is rehearsed in a scenario for its Revision case (plan
+    // §8.3); it reaches trunk only in that case's own Post.
+    if !crate::batch::batchable(p.class) && p.class != fa_model::EntryClass::REVISION {
         return Ok(Err(usage(
             format!(
                 "a {} entry cannot join a scenario",
                 p.class.name().unwrap_or("?")
             ),
-            "plan Original, Adjusting, Reversal, Pending or Resolution entries",
+            "plan Original, Adjusting, Reversal, Pending or Resolution entries, or a Revision case's Revision entries",
         )));
     }
     let Some(view) = read_scenario(db, book, name)? else {
@@ -913,6 +915,90 @@ fn check_plan<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     Ok(Ok(Checked::Admitted(view)))
+}
+
+/// The token only [`materialize_into`] makes: one Plan record of a
+/// scenario, posted into the scenario's own scratch replay.
+#[derive(Clone, Copy, Debug)]
+pub struct Rehearsing(());
+
+/// How [`materialize_into`] numbers the replayed prefix: the protected
+/// native coordinates every new materialization uses, or an older v1
+/// scenario certificate's compressed ones (that certificate's replay
+/// only).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Coordinates {
+    Protected,
+    LegacyV1,
+}
+
+/// Why [`materialize_into`] stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MaterializeRefusal {
+    /// The replay of the trunk prefix was refused.
+    Replay(Refusal),
+    /// The request at this index (from 0) was refused.
+    Intent(usize, Refusal),
+}
+
+/// A materialized scenario: the target, the replay's map, and the entry
+/// each request posted, in order.
+pub type Materialized = (Database<fgdb::MemVfs>, crate::scratch::SeqMap, Vec<VId>);
+
+/// A scenario's materialization (plan §15.2): `target`, an empty memory
+/// database, receives the source's accounting objects as known at
+/// `fork_at`, then each of `requests` in order through every posting law.
+/// A case-bound class (PriorPeriodAdjustment, Revision) is rehearsed
+/// under [`Rehearsing`], which only this function makes: the period law
+/// and the planner's authority hold, the class's case and that case's
+/// approvals are not required, and nothing reaches the source.
+pub async fn materialize_into<V: asupersync::fs::Vfs + Clone>(
+    source: &mut Database<V>,
+    mut target: Database<fgdb::MemVfs>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    fork_at: CommitSeq,
+    coordinates: Coordinates,
+    requests: Vec<crate::post::PostRequest>,
+) -> Result<Result<Materialized, MaterializeRefusal>, KernelError> {
+    if target.frontier()? != CommitSeq(0) || !target.vertices_at(CommitSeq(0))?.is_empty() {
+        return Ok(Err(MaterializeRefusal::Replay(usage(
+            "a scenario materializes into an empty memory database at sequence zero",
+            "create a fresh open_memory database for the materialization",
+        ))));
+    }
+    let replayed = match coordinates {
+        Coordinates::Protected => {
+            crate::scratch::replay_into(source, &mut target, ctx, book, Some(fork_at)).await?
+        }
+        Coordinates::LegacyV1 => {
+            crate::scratch::replay_into_legacy_scenario_v1(
+                source,
+                &mut target,
+                ctx,
+                book,
+                Some(fork_at),
+            )
+            .await?
+        }
+    };
+    let map = match replayed {
+        Ok(map) => map,
+        Err(refusal) => return Ok(Err(MaterializeRefusal::Replay(refusal))),
+    };
+    let mut entries = Vec::with_capacity(requests.len());
+    for (i, req) in requests.into_iter().enumerate() {
+        let admission = if crate::case::case_bound(req.proposal.class) {
+            crate::post::Admission::ScratchScenario(Rehearsing(()))
+        } else {
+            crate::post::Admission::Commit
+        };
+        match crate::post::post_admitted(&mut target, ctx, book, req, admission).await? {
+            Ok(posted) => entries.push(posted.entry_ref().vid),
+            Err(refusal) => return Ok(Err(MaterializeRefusal::Intent(i, refusal))),
+        }
+    }
+    Ok(Ok((target, map, entries)))
 }
 
 /// Admit `intent` into the scenario `name` before anything is rehearsed for

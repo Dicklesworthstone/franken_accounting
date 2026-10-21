@@ -500,7 +500,7 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
         // (plan §8.3); the posting law checks each is the case's.
         !batchable(m.proposal().class)
             && !(matches!(admission, Admission::Case(_))
-                && m.proposal().class == fa_model::EntryClass::PRIOR_PERIOD_ADJUSTMENT)
+                && crate::case::case_bound(m.proposal().class))
     }) {
         return Ok(Err(Refusal::new(
             code::STRUCTURE,

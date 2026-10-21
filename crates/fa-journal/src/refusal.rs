@@ -333,6 +333,9 @@ pub mod code {
     /// A post lost first-committer-wins because its period's state moved
     /// after its basis: a close, lock or reopen won (plan §7.3).
     pub const PERIOD_STATE_CHANGED: &str = "FA-REF-186";
+    /// A Revision names exactly one Revises target, a standing committed
+    /// posting of this book read with its digest (plan §8.2; fa-75j4).
+    pub const REVISION_SHAPE: &str = "FA-REF-187";
     /// The named pending entry is missing, is not a `Pending`, or its handle digest mismatches.
     pub const RESOLUTION_TARGET: &str = "FA-REF-060";
     /// The posted sub-vector is not drawn leg-by-leg from the pending entry.

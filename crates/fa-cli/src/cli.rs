@@ -3349,7 +3349,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability, an unconfirmed dangerous operation), 8 verification failure. 1 is never emitted.\n\
 3. Every non-zero exit is exactly one `error` line: data {class, exit, refusal_id, message, cite, fix, detail, refusal}. `refusal_id` (FA-REF-nnn) is the refusal catalog code when one applies, and `refusal` is then its Appendix D object: `where` (leg, account, period …), `why` (law, policy or matrix cell), `fix.argv` (a command that parses against the registry, when the fix names one), `fix.or_field_change` (the field and the values it admits). Do the `fix`; do not invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: its fix names the safe alternative; add --yes only when the operation is intended (`fa capabilities --json` lists them under `dangerous`).\n\
 4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\
-5. Corrections are new entries that cite the original; nothing is edited in place. Reversal is live. A corrected Replacement posts only as a pair with its Reversal (`fa reverse <vid> --reason <name> --replace-with <file>`); a standalone Replacement is FA-REF-160. A Reclassification moves part of an entry to another account (`fa reclass <vid> --from <account> --to <account> --amount \"<amount>\" --reason <name>`; FA-REF-185 when it moves more than the target's legs have left). Revision and Restatement remain refused with FA-REF-102; a PriorPeriodAdjustment posts only as an approved restatement case's entry (`fa case post <case>`), FA-REF-178 otherwise.\n\
+5. Corrections are new entries that cite the original; nothing is edited in place. Reversal is live. A corrected Replacement posts only as a pair with its Reversal (`fa reverse <vid> --reason <name> --replace-with <file>`); a standalone Replacement is FA-REF-160. A Reclassification moves part of an entry to another account (`fa reclass <vid> --from <account> --to <account> --amount \"<amount>\" --reason <name>`; FA-REF-185 when it moves more than the target's legs have left). Restatement remains refused with FA-REF-102. A PriorPeriodAdjustment or a Revision posts only as an approved restatement case's entry (`fa case post <case>`), FA-REF-178 otherwise; a Revision case plans each Revision in its scenario with `revises` naming the posting it corrects and the delta legs.\n\
 6. Idempotency: every intent carries idempotency_key; resubmitting returns the recorded outcome (event \"recorded\"), never a duplicate.\n\
 7. Posting into a non-Open period is decided by the admissibility matrix; the refusal cites the (class, state) cell and names the admissible class or capability.\n\
 8. Two-phase: `fa reserve` posts a Pending (amounts in the pending columns, never posted); `fa resolve` names it with `resolves` and either posts a sub-vector (`legs`, each drawn from one hold leg — same account and side, at most the reserved amount; add `source_ordinal` when the hold has several such legs) or voids it (`disposition: \"voids\"`). The rest of the hold is released either way. One resolution per hold: a second is exit 6 (FA-REF-062); resolving a non-hold is FA-REF-060.\n\
@@ -6996,6 +6996,7 @@ fn post_timing(
         "event",
         "reverses",
         "reclassifies",
+        "revises",
         "moves",
         "reason",
         "resolves",
@@ -7176,7 +7177,14 @@ fn build_post_request_with_prior(
             "set class: \"Reclassification\" (or use fa reclass), or remove `reclassifies`",
         ));
     }
-    let dated_by_target = typed_reversal || class == EntryClass::RECLASSIFICATION;
+    if doc.get("revises").is_some() && class != EntryClass::REVISION {
+        return Err(usage(
+            "`revises` names the target of a Revision only",
+            "set class: \"Revision\" and plan it in its Revision case's scenario, or remove `revises`",
+        ));
+    }
+    let dated_by_target =
+        typed_reversal || class == EntryClass::RECLASSIFICATION || class == EntryClass::REVISION;
     let supplied_date = if dated_by_target && doc.get("effective_date").is_none() {
         None
     } else {
@@ -7321,6 +7329,61 @@ fn build_post_request_with_prior(
                 ));
             }
         }
+    } else if class == EntryClass::REVISION {
+        // A Revision names the posting it revises and carries delta legs
+        // (plan §8.2 Revises, §8.3; bead fa-75j4). It is planned in its
+        // Revision case's scenario and reaches trunk only in the case's own
+        // Post. The date, period and evidence default to the target's.
+        const FIX: &str = "an intent with class \"Revision\", \"revises\": \"<vid>\", \"reason\": \"<name>\" and the delta \"legs\", run in the case's scenario: fa scenario run <name> --intent <file>";
+        if doc.get("reverses").is_some()
+            || doc.get("resolves").is_some()
+            || doc.get("moves").is_some()
+        {
+            return Err(usage(
+                "a Revision names its target with `revises` and carries explicit delta `legs`",
+                FIX,
+            ));
+        }
+        let target_s = doc.get("revises").and_then(Json::as_str).ok_or_else(|| {
+            usage(
+                "a Revision names the posting it revises: `revises` (vid)",
+                FIX,
+            )
+        })?;
+        let reason = reversal_reason(doc.get("reason"))?;
+        if reason.name == "Other" && description.trim().is_empty() {
+            return Err(Refusal::new(
+                fa_journal::refusal::code::SUPERSESSION_REASON,
+                exit::REFUSAL,
+                "the revision reason Other requires a description",
+                "plan §8.2 (Other(text)); registries/reason_codes.toml",
+                "state the reason in the intent's description",
+            )
+            .into());
+        }
+        let vid = parse_vid(target_s, "revises")?;
+        let Some(target) = batch_plan::target_entry(book, earlier, vid)? else {
+            return Err(usage(
+                format!("revises: no entry {target_s} in this book"),
+                "fa entry show <vid> to check the identity",
+            ));
+        };
+        supersession.push(fa_model::Supersession {
+            target: target.entry_ref(vid),
+            kind: fa_model::SupersessionKind::Revises,
+            reason_code: reason.code,
+        });
+        target_date = Some(target.proposal.effective_date);
+        target_period = target.proposal.effective_period.clone();
+        target_evidence.clone_from(&target.proposal.evidence);
+        let parsed = parse_legs(doc, &ctx, book, earlier)?;
+        if let Some(i) = parsed.iter().position(|(_, o)| o.is_some()) {
+            return Err(usage(
+                format!("legs[{i}]: `source_ordinal` belongs to a Resolution(Posts) only"),
+                "remove it",
+            ));
+        }
+        parsed.into_iter().map(|(l, _)| l).collect()
     } else if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
         if doc.get("fx").is_some() {
             return Err(usage(
@@ -7539,7 +7602,7 @@ fn build_post_request_with_prior(
         .map_err(BookError::Kernel)?;
     let effective_date = supplied_date.or(target_date).ok_or_else(|| {
         usage(
-            "a reversal or reclassification needs its target's effective date",
+            "a reversal, reclassification or revision needs its target's effective date",
             "fa entry show <vid> --json",
         )
     })?;

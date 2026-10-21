@@ -38,9 +38,11 @@
 //!   poster, with extension 23 `fa:case-member:v1`. The posting law admits
 //!   a case-bound class only as such a derivation of an Approved case, and
 //!   decides its row's approvals over the case's approvals ([`admit_member`]).
-//!   This build posts PriorPeriodAdjustment cases; Revision and Restatement
-//!   entries supersede a target with delta legs, which the posting kernel
-//!   does not implement yet.
+//!   This build posts PriorPeriodAdjustment and Revision cases. A Revision
+//!   case's entries are Revision entries that each revise one standing
+//!   posting (`Revises`, net effect target plus delta) in a period the
+//!   case affects. Restatement entries wait for their SoD rule's session
+//!   lineage (fa-651f).
 //! - **Disclose** (`Posted → Disclosed`) journals extension 25
 //!   `fa:case-disclosure:v1`: the Disclosure document the case is disclosed
 //!   in and the Reviewed attestation over it, which a principal other than
@@ -1641,16 +1643,26 @@ fn decode_posted(bytes: &[u8]) -> Result<Vec<PostedEntry>, KernelError> {
     Ok(entries)
 }
 
-/// The class a case of `kind` posts its entries as in this build. Revision
-/// and Restatement entries supersede a target with delta legs, which the
-/// posting kernel does not implement yet; PolicyChangeRetrospective posts
-/// Restatement entries.
+/// The class a case of `kind` posts its entries as in this build.
+/// Restatement entries wait for their SoD rule's session lineage
+/// (fa-651f); PolicyChangeRetrospective posts Restatement entries.
 #[must_use]
 pub fn posting_class(kind: CaseKind) -> Option<EntryClass> {
     match kind {
         CaseKind::PriorPeriodAdjustment => Some(EntryClass::PRIOR_PERIOD_ADJUSTMENT),
-        CaseKind::Revision | CaseKind::Restatement | CaseKind::PolicyChangeRetrospective => None,
+        CaseKind::Revision => Some(EntryClass::REVISION),
+        CaseKind::Restatement | CaseKind::PolicyChangeRetrospective => None,
     }
+}
+
+/// The classes only a restatement case posts (plan §8.3): on trunk each
+/// is admitted only as its Approved case's entry, in the case's own Post.
+#[must_use]
+pub(crate) fn case_bound(class: EntryClass) -> bool {
+    matches!(
+        class,
+        EntryClass::PRIOR_PERIOD_ADJUSTMENT | EntryClass::REVISION
+    )
 }
 
 /// The trunk entry case `ordinal` (of `kind`) posts for its manifest entry
@@ -1672,7 +1684,20 @@ pub fn derive_member(
             kind.name()
         ))));
     };
-    if !matches!(planned.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
+    // A Revision case's Plan record is a Revision that revises one target;
+    // any other case plans plain postings that post as its class.
+    if class == EntryClass::REVISION {
+        let revises = matches!(
+            planned.supersession.as_slice(),
+            [s] if s.kind == fa_model::SupersessionKind::Revises
+        );
+        if planned.class != EntryClass::REVISION || !revises || planned.pending.is_some() {
+            return Ok(Err(membership(format!(
+                "a Revision case posts Revision entries that each revise one target (supersession Revises), and this Plan record is a {}",
+                planned.class.name().unwrap_or("?")
+            ))));
+        }
+    } else if !matches!(planned.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
         || !planned.supersession.is_empty()
         || planned.pending.is_some()
     {
@@ -1735,10 +1760,13 @@ pub(crate) fn member_of(
         .extensions
         .iter()
         .find(|(tag, _)| *tag == fa_model::entry::CASE_MEMBER_EXTENSION);
-    let case_bound = proposal.class == EntryClass::PRIOR_PERIOD_ADJUSTMENT;
+    let case_bound = case_bound(proposal.class);
     let posting = matches!(admission, crate::post::Admission::Case(_));
+    let rehearsing = matches!(admission, crate::post::Admission::ScratchScenario(_));
     match (claim, case_bound, posting) {
         (Some((_, bytes)), true, true) => Ok(Ok(Some(CaseMember::decode(bytes)?))),
+        // A scenario's scratch replay rehearses the class without its case.
+        (None, true, false) if rehearsing => Ok(Ok(None)),
         (_, true, false) => Ok(Err(membership(format!(
             "a {} entry belongs to a restatement case: it is posted only in its case's batch, with the case's Post record",
             proposal.class.name().unwrap_or("?")
@@ -1766,13 +1794,16 @@ pub(crate) struct MemberGate {
 /// Admit `proposal` as `member` of its case inside `txn`: the case is
 /// Approved (a point witness of its state), the claimed Plan record is in
 /// its approved manifest with the same intent digest, and `proposal` is
-/// exactly the kernel's derivation of that entry for its principal.
+/// exactly the kernel's derivation of that entry for its principal. A
+/// Revision case's entry posts in a period the case affects (`period`,
+/// the one the posting law resolved).
 pub(crate) fn admit_member<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     book: &BookContext,
     proposal: &EntryPayload,
     member: CaseMember,
+    period: &str,
 ) -> Outcome<MemberGate> {
     let vid = restatement_case_vid(book.book_id, member.ordinal);
     let Some(row) = txn.vertex(db, vid)? else {
@@ -1787,6 +1818,14 @@ pub(crate) fn admit_member<V: asupersync::fs::Vfs + Clone>(
     let Some(view) = read_case(db, book, member.ordinal)? else {
         return Ok(Err(unknown(member.ordinal)));
     };
+    if view.body.kind == CaseKind::Revision && !view.body.periods.iter().any(|p| p == period) {
+        return Ok(Err(membership(format!(
+            "a Revision posts in a period its case affects, and case {} affects {}, not {period}",
+            member.ordinal,
+            view.body.periods.join(", ")
+        ))
+        .at("period", period)));
+    }
     let (Some(approval), Some(rehearsal)) = (view.approval.as_ref(), view.rehearsal.as_ref())
     else {
         return Err(KernelError::Corrupt(format!(

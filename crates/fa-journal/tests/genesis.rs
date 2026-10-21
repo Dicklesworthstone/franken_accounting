@@ -1467,8 +1467,11 @@ fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind(
     stray.schema_minor = fa_model::entry::SCHEMA_MINOR;
     stray.extensions = vec![(fa_model::entry::CASE_MEMBER_EXTENSION, claim)];
     let alone = h.proposal(h.rent_legs(1), b"ppa", EntryClass::PRIOR_PERIOD_ADJUSTMENT);
+    // A Revision, too, posts only as its Revision case's entry (slice 4b).
+    let revision = h.proposal(h.rent_legs(1), b"revision", EntryClass::REVISION);
     for (proposal, says) in [
         (alone, "posted only in its case's batch"),
+        (revision, "posted only in its case's batch"),
         (claimed, "posted only in its case's batch"),
         (stray, "only a case-bound entry names a case"),
     ] {
