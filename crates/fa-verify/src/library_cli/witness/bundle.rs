@@ -12,7 +12,10 @@ use fa_verify::checkpoint::witness::bundle::{
     MAX_WITNESSED_RECEIPT_BYTES, verify_witnessed_bundle_for,
 };
 use fa_verify::cli::Output;
-use fa_verify::scope::payloads::bundle::verify_witnessed_indexed_bundle_for;
+use fa_verify::proof::production::MAX_PRODUCTION_RECORDS;
+use fa_verify::scope::payloads::bundle::{
+    verify_witnessed_incremental_indexed_bundle_for, verify_witnessed_indexed_bundle_for,
+};
 use fa_verify::scope::payloads::verify_payload_index;
 use fa_verify::{BundleReport, BundleScope, Grade, ScopeClaim};
 
@@ -53,13 +56,18 @@ The bundle must name the EXACT selected signed-checkpoint artifact, not just
 a matching tree or body. Stripped or alternate signature sets require their
 own independently verified anchor. Every bundle predicate retains its own
 pass/fail/unrun grade; a matching quorum never repairs an incomplete balance.
-Without --index-prefix FILE, account completeness retains the signed-index
-premise. With that option, require an independently reconstructed index from
-every authenticated prefix payload. FILE is a native v2 complete prefix or
-an existing v3 balance export for the SAME checkpoint. Legacy v1 envelopes
-alone refuse. Only --expect-scope account admits this option. This discloses
-the entire prefix, including excluded records; it grants no export authority.
-Reconstruction is bounded to 65536 records and 1048576 expanded index tuples.
+Without an index witness, account completeness retains the signed-index
+premise. --index-prefix FILE independently reconstructs the index from every
+payload at the CURRENT checkpoint. Alternatively, --index-baseline-prefix FILE
+plus repeated --index-delta-record FILE reuses a verified retained baseline and
+requires every newly appended record at the candidate checkpoint. The latter
+requires the ordinary --previous/--expect-previous-body/--consistency options
+and verifies publisher/witness continuity, the retained recorded boundary, exact
+suffix coverage and the new index root before opening the bundle. The two index
+modes are mutually exclusive. Legacy v1 envelopes refuse in either mode. Only
+--expect-scope account admits index witnesses. Whole-prefix/baseline/suffix
+disclosure grants no export authority. Reconstruction remains bounded to 65536
+leaves, 4096 appended records per advance and 1048576 expanded index tuples.
 To demand exact stock cells, repeat --expect-balance ACCOUNT32:UNIT:DAY|none
 or ACCOUNT32:UNIT:DAY|none:DEBITS:CREDITS for optional exact gross mantissas.
 ACCOUNT32 is 32 hex digits; UNIT is decimal u32; DAY is signed decimal i32.
@@ -85,6 +93,8 @@ struct Request {
     bundle: PathBuf,
     receipt: Option<PathBuf>,
     index_prefix: Option<PathBuf>,
+    index_baseline_prefix: Option<PathBuf>,
+    index_delta_records: Vec<PathBuf>,
     expected: BundleExpectation,
     balances: Option<Vec<fa_verify::BalanceExpectation>>,
 }
@@ -140,6 +150,8 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         (None, None, None, None, None);
     let (mut account, mut days, mut indexes) = (None, None, None);
     let mut index_prefix = None;
+    let mut index_baseline_prefix = None;
+    let mut index_delta_records = Vec::new();
     let mut balance_args = balances::BalanceArgs::default();
     let mut index = 1;
     while let Some(argument) = args.get(index) {
@@ -163,10 +175,21 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
                 "{name} requires a value; use ./ for paths starting with --"
             )));
         }
+        if name == "--index-delta-record" {
+            if index_delta_records.len() == MAX_PRODUCTION_RECORDS {
+                return Err(Failure::usage(
+                    "at most 4096 --index-delta-record options are permitted",
+                ));
+            }
+            index_delta_records.push(PathBuf::from(value));
+            index += 2;
+            continue;
+        }
         let slot = match name {
             "--bundle" => Some(&mut bundle),
             "--receipt" => Some(&mut receipt),
             "--index-prefix" => Some(&mut index_prefix),
+            "--index-baseline-prefix" => Some(&mut index_baseline_prefix),
             "--expect-scope" => Some(&mut scope),
             "--expect-documents" => Some(&mut documents),
             "--expect-receipt" => Some(&mut receipt_mode),
@@ -226,9 +249,23 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             ));
         }
     };
-    if index_prefix.is_some() && !matches!(&scope, BundleScope::Account(_)) {
+    let has_incremental_index =
+        index_baseline_prefix.is_some() || !index_delta_records.is_empty();
+    if (index_prefix.is_some() || has_incremental_index)
+        && !matches!(&scope, BundleScope::Account(_))
+    {
         return Err(Failure::usage(
-            "--index-prefix requires --expect-scope account",
+            "index witnesses require --expect-scope account",
+        ));
+    }
+    if index_prefix.is_some() && has_incremental_index {
+        return Err(Failure::usage(
+            "--index-prefix cannot be combined with incremental index options",
+        ));
+    }
+    if index_baseline_prefix.is_none() && !index_delta_records.is_empty() {
+        return Err(Failure::usage(
+            "--index-delta-record requires --index-baseline-prefix",
         ));
     }
     let inline_documents = match text(documents, "--expect-documents")? {
@@ -260,11 +297,18 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     let bundle = PathBuf::from(super::required(bundle, "--bundle")?);
     // The shared parser admits keys and all continuity options before any I/O.
     let anchor = super::parse(&anchor)?;
+    if index_baseline_prefix.is_some() && anchor.advance.is_none() {
+        return Err(Failure::usage(
+            "--index-baseline-prefix requires --previous, --expect-previous-body and --consistency",
+        ));
+    }
     Ok(Request {
         anchor,
         bundle,
         receipt: receipt.map(PathBuf::from),
         index_prefix: index_prefix.map(PathBuf::from),
+        index_baseline_prefix: index_baseline_prefix.map(PathBuf::from),
+        index_delta_records,
         expected,
         balances,
     })
@@ -275,16 +319,46 @@ fn verify(args: &[OsString], json: bool) -> Result<(String, bool), Failure> {
         return Ok((HELP.into(), true));
     }
     let request = parse(args)?;
-    let (pin, continuity) = super::authenticate(&request.anchor)?;
-    let recorded_bytes = continuity
-        .as_ref()
-        .and_then(|pin| pin.recorded.as_ref())
-        .map_or(0, |facts| facts.input_bytes);
-    let mut remaining = MAX_WITNESSED_BUNDLE_BYTES
-        .checked_sub(recorded_bytes)
-        .ok_or_else(|| {
-            Failure::verification("recorded-continuity inputs exceed the shared bundle budget")
+    let mut remaining = MAX_WITNESSED_BUNDLE_BYTES;
+    let mut incremental = None;
+    let (pin, continuity) = if let Some(baseline) = &request.index_baseline_prefix {
+        let advanced = super::index::authenticate_for_composition(
+            &request.anchor,
+            baseline,
+            &request.index_delta_records,
+            &mut remaining,
+        )?;
+        let previous_signed = advanced.previous.signed_checkpoint();
+        let current_signed = advanced.current.checkpoint().signed_checkpoint();
+        let status = if current_signed.body_digest == previous_signed.body_digest {
+            fa_verify::checkpoint::witness::AdvanceStatus::Unchanged
+        } else {
+            fa_verify::checkpoint::witness::AdvanceStatus::Advanced
+        };
+        let advance = request.anchor.advance.as_ref().ok_or_else(|| {
+            Failure::usage("incremental index requires retained checkpoint options")
         })?;
+        let continuity = super::Continuity {
+            status,
+            previous_body: advance.expected_body,
+            previous_seq: previous_signed.checkpoint.through_seq,
+            input_bytes: advanced.input_bytes,
+            recorded: Some(super::recorded::from_incremental(
+                advanced.appended_records,
+                advanced.input_bytes,
+            )),
+        };
+        let pin = advanced.current.checkpoint().clone();
+        incremental = Some(advanced.current);
+        (pin, Some(continuity))
+    } else {
+        let (pin, continuity) = super::authenticate(&request.anchor)?;
+        let used = continuity.as_ref().map_or(0, |facts| facts.input_bytes);
+        remaining = remaining.checked_sub(used).ok_or_else(|| {
+            Failure::verification("continuity inputs exceed the shared bundle budget")
+        })?;
+        (pin, continuity)
+    };
     let receipt = request
         .receipt
         .as_ref()
@@ -294,8 +368,6 @@ fn verify(args: &[OsString], json: bool) -> Result<(String, bool), Failure> {
     let derived = if let Some(path) = &request.index_prefix {
         let bytes = read_bounded(path, remaining)?;
         remaining -= bytes.len();
-        // Bind and verify the entire witness before reading the bundle. Its
-        // payload buffer is released here; only sealed metadata is retained.
         Some(
             verify_payload_index(&bytes, pin.signed_checkpoint())
                 .map_err(|error| Failure::verification(error.to_string()))?,
@@ -304,7 +376,15 @@ fn verify(args: &[OsString], json: bool) -> Result<(String, bool), Failure> {
         None
     };
     let bytes = read_bounded(&request.bundle, remaining)?;
-    let report = if let Some(index) = &derived {
+    let report = if let Some(state) = &incremental {
+        verify_witnessed_incremental_indexed_bundle_for(
+            &bytes,
+            &request.expected,
+            receipt.as_deref(),
+            state,
+            request.balances.as_deref(),
+        )
+    } else if let Some(index) = &derived {
         verify_witnessed_indexed_bundle_for(
             &bytes,
             &pin,
@@ -449,7 +529,7 @@ fn render(
                 why.map_or_else(String::new, |why| format!(": {why}"))
             ));
         }
-        if request.index_prefix.is_none() {
+        if request.index_prefix.is_none() && request.index_baseline_prefix.is_none() {
             text.push_str("A signed account index is not independently recomputed. ");
         } else if index_derivation == "payload_recomputed" {
             text.push_str(
