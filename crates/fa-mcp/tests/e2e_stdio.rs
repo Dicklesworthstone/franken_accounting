@@ -4759,7 +4759,7 @@ fn error_shape_matches_appendix_d() {
         data["refusal"], cli_refusal,
         "the CLI's object, byte for byte: {e}"
     );
-    assert_eq!(data["refusal_id"], cli_refusal["refusal_id"], "{e}");
+    assert_eq!(data["refusal_id"], cli_refusal["id"], "{e}");
     assert_eq!(
         e["refusal_id"],
         json!("FA-REF-001"),

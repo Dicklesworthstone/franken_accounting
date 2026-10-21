@@ -16899,7 +16899,7 @@ fn explain_refusal_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     {
         return Err(usage(
             format!("`{id}` is neither a refusal code nor a refusal instance id"),
-            "pass FA-REF-nnn, or an error's refusal.refusal_id (FA-REF-nnn:<16 hex digits>)",
+            "pass FA-REF-nnn, or an error's refusal.id (FA-REF-nnn:<16 hex digits>)",
         ));
     }
     let catalog = fa_registry::refusal_catalog::RefusalCatalog::embedded()

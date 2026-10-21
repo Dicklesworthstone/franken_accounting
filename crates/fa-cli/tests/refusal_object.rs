@@ -158,7 +158,7 @@ fn strings(v: &Json, path: &[&str]) -> Vec<String> {
 
 /// The instance id is the code, `:`, and 16 lowercase hex digits.
 fn assert_instance(refusal: &Json, code: &str) -> String {
-    let id = text(refusal, &["refusal_id"]);
+    let id = text(refusal, &["id"]);
     let hex = id
         .strip_prefix(&format!("{code}:"))
         .unwrap_or_else(|| panic!("{id} does not carry {code}"));

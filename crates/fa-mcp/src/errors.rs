@@ -270,7 +270,7 @@ impl StructuredError {
             "fix_hint": self.fix_hint,
             "suggested_tool_calls": v["suggested_tool_calls"].clone(),
             "available_options": options,
-            "refusal_id": self.refusal.get("refusal_id").cloned().unwrap_or(json!(self.refusal_id)),
+            "refusal_id": self.refusal.get("id").cloned().unwrap_or(json!(self.refusal_id)),
             "refusal": self.refusal,
         });
         // Both launch-binding refusals name the offending argument where a

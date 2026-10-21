@@ -2,10 +2,12 @@
 //! into the `error` event's `refusal` field (fa-mcp carries the same object
 //! in a tool error's `data.refusal`):
 //!
-//! `{refusal_id, code, exit, what_failed, where, why, fix: {text, command,
-//! argv, or_field_change}, alternatives, docs}`
+//! `{id, code, exit, what_failed, where, why, fix: {text, command, argv,
+//! or_field_change}, alternatives, docs}`
 //!
-//! - `refusal_id` names this instance: the catalog code, `:`, and 16 hex
+//! - `id` (Appendix D's `refusal_id`; renamed so a text search for the
+//!   event's flat `refusal_id`, which stays the catalog code, never lands
+//!   in this object) names this instance: the catalog code, `:`, and 16 hex
 //!   digits of a domain digest over the code, message, structured `where`
 //!   and the coordinate (book, known_at). It is a citation, not a lookup
 //!   key: `fa explain refusal` accepts it and expands its code.
@@ -71,7 +73,7 @@ pub(crate) fn render(reg: &Registry, r: &Refusal, issued: &Issued<'_>) -> Json {
         ])
     });
     Json::Obj(vec![
-        ("refusal_id".into(), Json::Str(instance_id(r, issued))),
+        ("id".into(), Json::Str(instance_id(r, issued))),
         ("code".into(), Json::Str(r.code.to_string())),
         ("exit".into(), Json::Int(i128::from(r.exit))),
         ("what_failed".into(), Json::Str(r.message.clone())),
