@@ -4442,8 +4442,9 @@ fn raw_reversal_retries_preserve_legacy_zero_reasons_without_admitting_new_ones(
     }
 
     // Retain the canonical form emitted by the previous CLI: reason_code 0.
-    // Append it once through the substrate, including its mirrors and edges;
-    // no existing journal object is rewritten and the new law is not relaxed.
+    // Append it once through the substrate, including its mirrors, edges and
+    // the outcome claim every covered posting carries (fa-nl7); no existing
+    // journal object is rewritten and the new law is not relaxed.
     let handle = Book::open_dir(&book, keys.clone(), Entropy::deterministic(0x76)).unwrap();
     let context = handle.context().clone();
     let target_vid = VId(u128::from_str_radix(&targets[0], 16).unwrap());
@@ -4502,6 +4503,12 @@ fn raw_reversal_retries_preserve_legacy_zero_reasons_without_admitting_new_ones(
         vid,
         vec![label::ENTRY],
         fa_model::entry_mirrors(&legacy).unwrap(),
+    );
+    assert!(
+        fa_journal::outcome::stage_entry(&mut has_leg, &legacy, vid)
+            .unwrap()
+            .is_some(),
+        "a Reversal is a covered class"
     );
     for (i, leg) in legacy.proposal.legs.iter().enumerate() {
         let ordinal = u16::try_from(i).unwrap();

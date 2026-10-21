@@ -581,7 +581,11 @@ pub(crate) fn require_unused_legacy_key<V: Vfs + Clone>(
     Ok(Ok(()))
 }
 
-pub(crate) fn stage_entry(
+/// Stage the outcome claim a covered posting writes beside `entry` at `vid`,
+/// in the same commit; `None` for a class outside the outcome protocol. A
+/// substrate-level append of a historical entry (a fixture reproducing an
+/// older CLI's canonical bytes) stages it so the covered book can verify it.
+pub fn stage_entry(
     batch: &mut WriteBatch,
     entry: &Entry,
     vid: VId,
