@@ -19,6 +19,10 @@
 //!    4-4-5, 4-5-4, and 5-4-4 calendars (`>= 8` seeds).
 //! 8. Planted breaks for every relation proving the harness catches violations
 //!    and formats the failing seed and replay command.
+//! 9. `Draft Promotion == Trunk Post` (fa-eid6): a history planned into a
+//!    draft and promoted by an independent approver equals the same history
+//!    posted to trunk, in folds, trial balances and statements (30 seeds of
+//!    24 entries; its planted break drops one intent).
 
 #![forbid(unsafe_code)]
 
@@ -260,6 +264,10 @@ struct SpecEntry {
 }
 
 fn generate_entries(seed: u64, usd: UnitId, eur: UnitId) -> Vec<SpecEntry> {
+    generate_n_entries(seed, usd, eur, 6)
+}
+
+fn generate_n_entries(seed: u64, usd: UnitId, eur: UnitId, count: u8) -> Vec<SpecEntry> {
     let mut rng = SplitMix64::new(seed);
     let pairs: [(&str, &str); 5] = [
         ("1000", "3000"),
@@ -268,8 +276,8 @@ fn generate_entries(seed: u64, usd: UnitId, eur: UnitId) -> Vec<SpecEntry> {
         ("6000", "1000"),
         ("6000", "2000"),
     ];
-    let mut out = Vec::with_capacity(6);
-    for idx in 0..6u8 {
+    let mut out = Vec::with_capacity(usize::from(count));
+    for idx in 0..count {
         let (debit_code, credit_code) = pairs[(rng.next_u64() as usize) % pairs.len()];
         let unit = if rng.next_u64().is_multiple_of(3) {
             eur
@@ -1168,6 +1176,187 @@ fn metamorphic_fiscal_calendar_matches_day_walker() {
 /// Planted breaks (`fa-hlvs`): verify that each metamorphic relation's
 /// checker rejects a perturbed fold/report and includes the seed + replay
 /// command in the diagnostic.
+/// Open the draft `metamorphic` as the fixture's preparer, plan `entries`
+/// into it, and promote it as `approver`, an independent principal holding
+/// only `approve` (plan §15.2: an agent works on a draft; trunk changes only
+/// when someone else promotes it).
+fn promote_through_draft(
+    f: &mut FixtureBook,
+    entries: &[SpecEntry],
+    approver: VId,
+) -> fa_journal::DraftPromoted {
+    let owner = Capability::embedded(f.principal, &["post"]).expect("post cap");
+    f.book
+        .open_draft(owner.clone(), "metamorphic", f.day, "metamorphic draft")
+        .expect("open_draft io")
+        .expect("open_draft ok");
+    for spec in entries {
+        let intent = PostIntent::new(build_proposal(f, spec), Vec::new()).expect("PostIntent::new");
+        f.book
+            .plan_into_draft(owner.clone(), "metamorphic", intent)
+            .expect("plan_into_draft io")
+            .expect("plan_into_draft ok");
+    }
+    let approve = Capability::embedded(approver, &["approve"]).expect("approve cap");
+    f.book
+        .promote_draft(approve, "metamorphic", f.day, "metamorphic promotion")
+        .expect("promote_draft io")
+        .expect("promote_draft ok")
+}
+
+/// Every report of the period at the head: its fold, stock trial balance,
+/// balance sheet and income statement.
+fn period_reports(f: &FixtureBook) -> (Fold, TrialBalance, Statement, Statement) {
+    let fold = f.book.fold_period(&f.march).expect("fold");
+    let tb = f
+        .book
+        .trial_balance(std::slice::from_ref(&f.march))
+        .expect("trial balance");
+    let selection = |name: &str| StatementSelection {
+        definition: StatementDefinition::embedded(name).expect("embedded definition"),
+        periods: vec![f.march.clone()],
+        comparative: Vec::new(),
+    };
+    let bs = f
+        .book
+        .statement(selection("balance-sheet"), None)
+        .expect("balance sheet io")
+        .expect("balance sheet ok");
+    let is = f
+        .book
+        .statement(selection("income-statement"), None)
+        .expect("income statement io")
+        .expect("income statement ok");
+    (fold, tb, bs, is)
+}
+
+/// The relation `draft promotion == trunk post` over the accounting content:
+/// a draft's open, plan and promotion records are extra commits, so the
+/// sequence-bound fields (the fold's watermark and history digests, the
+/// reports' `known_at`) are not part of it.
+fn check_draft_promotion_equivalence(
+    seed: u64,
+    promoted: &(Fold, TrialBalance, Statement, Statement),
+    posted: &(Fold, TrialBalance, Statement, Statement),
+) -> Result<(), String> {
+    let fail = |what: String| {
+        Err(replay_diagnostic(
+            "metamorphic_draft_promote_equals_trunk_post",
+            seed,
+            what,
+        ))
+    };
+    let (fold_a, tb_a, bs_a, is_a) = promoted;
+    let (fold_b, tb_b, bs_b, is_b) = posted;
+    if fold_a.period != fold_b.period
+        || fold_a.cells != fold_b.cells
+        || fold_a.pending != fold_b.pending
+        || fold_a.entries != fold_b.entries
+    {
+        return fail(format!(
+            "period fold mismatch: {:?} != {:?}",
+            fold_a.cells, fold_b.cells
+        ));
+    }
+    let tb_at_b = TrialBalance {
+        known_at: tb_b.known_at,
+        ..tb_a.clone()
+    };
+    if &tb_at_b != tb_b {
+        return fail("trial balance mismatch".into());
+    }
+    for (a, b, what) in [
+        (bs_a, bs_b, "balance sheet"),
+        (is_a, is_b, "income statement"),
+    ] {
+        let a_at_b = Statement {
+            known_at: b.known_at,
+            ..a.clone()
+        };
+        if &a_at_b != b {
+            return fail(format!("{what} mismatch"));
+        }
+    }
+    Ok(())
+}
+
+/// fa-eid6 (plan §16.6): a history planned into a draft and promoted to trunk
+/// in one batch by an independent approver equals the same history posted to
+/// trunk directly, in registers and statements, over 30 seeds of 24 entries.
+/// Planted negative: a promotion missing one intent breaks the relation.
+#[test]
+fn metamorphic_draft_promote_equals_trunk_post() {
+    let seeds: Vec<u64> = (0..30u64)
+        .map(|i| 0x2002_0000_0000_0000 ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+        .collect();
+    let approver = VId(2);
+    for &seed in &seeds {
+        let mut f_draft = setup_book(seed, 0x47);
+        let mut f_trunk = setup_book(seed, 0x47);
+        let entries = generate_n_entries(seed, f_draft.usd, f_draft.eur, 24);
+
+        let promoted = promote_through_draft(&mut f_draft, &entries, approver);
+        assert_eq!(
+            promoted.entries.len(),
+            entries.len(),
+            "seed {seed:#018x}: every planned intent posts"
+        );
+        let post_cap = Capability::embedded(f_trunk.principal, &["post"]).expect("post cap");
+        for spec in &entries {
+            let proposal = build_proposal(&f_trunk, spec);
+            f_trunk
+                .book
+                .post(PostRequest {
+                    proposal,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: post_cap.clone(),
+                })
+                .expect("post io")
+                .expect("post ok");
+        }
+        check_draft_promotion_equivalence(
+            seed,
+            &period_reports(&f_draft),
+            &period_reports(&f_trunk),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    // Planted negative: the same history with one intent left out of the
+    // draft is caught, naming the seed and the replay command.
+    let seed = seeds[0];
+    let mut f_short = setup_book(seed, 0x48);
+    let mut f_trunk = setup_book(seed, 0x48);
+    let entries = generate_n_entries(seed, f_short.usd, f_short.eur, 24);
+    promote_through_draft(&mut f_short, &entries[1..], approver);
+    let post_cap = Capability::embedded(f_trunk.principal, &["post"]).expect("post cap");
+    for spec in &entries {
+        let proposal = build_proposal(&f_trunk, spec);
+        f_trunk
+            .book
+            .post(PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: post_cap.clone(),
+            })
+            .expect("post io")
+            .expect("post ok");
+    }
+    let caught = check_draft_promotion_equivalence(
+        seed,
+        &period_reports(&f_short),
+        &period_reports(&f_trunk),
+    )
+    .expect_err("a promotion that drops one intent breaks the relation");
+    assert!(
+        caught.contains("metamorphic_draft_promote_equals_trunk_post")
+            && caught.contains("replay:"),
+        "{caught}"
+    );
+}
+
 #[test]
 fn planted_breaks_are_caught_for_every_metamorphic_relation() {
     let seed = SEEDS[0];
