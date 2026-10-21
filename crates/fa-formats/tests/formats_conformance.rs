@@ -788,3 +788,38 @@ fn conformance_matrices_match_published_docs_and_refuse_undocumented_divergence(
         "docs/conformance/ads_saft_xbrl.md drifted from matrix"
     );
 }
+
+/// fa-kkxl: a binary that answers `--version` and evaluates nothing is only
+/// `Present`; the probe has no status that claims a journal was checked. A
+/// missing binary, or one whose `--version` fails, is `Unrun`.
+#[cfg(unix)]
+#[test]
+fn a_version_only_oracle_binary_is_present_never_verified() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("fa-oracle-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = |name: &str, body: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.display().to_string()
+    };
+    let fake = script("hledger", "echo 'hledger 1.99, fake'");
+    assert_eq!(
+        probe_external_oracle_binary(&fake),
+        SubprocessOracleStatus::Present {
+            binary: fake.clone(),
+            version: "hledger 1.99, fake".into(),
+        }
+    );
+    let failing = script("bean-check", "exit 3");
+    assert!(matches!(
+        probe_external_oracle_binary(&failing),
+        SubprocessOracleStatus::Unrun { .. }
+    ));
+    let missing = dir.join("absent").display().to_string();
+    assert!(matches!(
+        probe_external_oracle_binary(&missing),
+        SubprocessOracleStatus::Unrun { .. }
+    ));
+}
