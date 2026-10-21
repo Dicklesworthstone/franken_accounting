@@ -1,7 +1,7 @@
 //! `fa access log` (plan §9.7, §14.5; bead fa-7dw): who read what. Every
-//! command a read-only bound session runs (a capability whose ops stay within
-//! read, produce and verify) commits an AccessEvent before it observes the
-//! book; this lists them. Reading the log under such a session records that
+//! command a read-only Human bound session runs (a capability whose ops stay
+//! within read, produce and verify) commits an AccessEvent before it observes
+//! the book; this lists them. Reading the log under such a session records that
 //! read too.
 
 use fa_model::principal_vid;

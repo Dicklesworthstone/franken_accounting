@@ -986,16 +986,7 @@ fn retained_statement_certificates_bridge_and_trace_without_reselecting_head() {
     let (code, captured) = bound(&[&pair[..], &["--certify"][..]].concat());
     assert_eq!(code, 7, "{}{}", captured.stdout, captured.stderr);
     assert!(captured.stdout.contains("produce"), "{}", captured.stdout);
-    // The read-only bound session's commands since `at` wrote only their
-    // AccessEvents (fa-7dw); nothing was retained.
-    let at_seq: u64 = at.parse().unwrap();
-    let log = ok(&fixture.book, &["access", "log", "--since", &at]);
-    let accessed = match data(&log[0]).get("count") {
-        Some(Json::Int(n)) => u64::try_from(*n).unwrap(),
-        other => panic!("{other:?}"),
-    };
-    assert!(accessed >= 1);
-    assert_eq!(head().parse::<u64>().unwrap(), at_seq + accessed);
+    assert_eq!(head(), at);
 }
 
 #[test]

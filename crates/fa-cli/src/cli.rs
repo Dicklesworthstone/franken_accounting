@@ -1620,23 +1620,25 @@ fn exit_class(exit: u8) -> String {
         .unwrap_or_else(|| format!("exit-{exit}"))
 }
 
-/// The AccessEvent a bound session's command owes, when its capability is
-/// read-only: every op within read, produce and verify, as the Auditor,
-/// Regulator, Investigator and Production templates are (plan §9.7, §14.4;
-/// fa-7dw). The request digest covers the command's positional words, flags
-/// and switches, never the host's book or key paths. A session that cannot
-/// state its record is refused, never served unrecorded.
+/// The AccessEvent a bound session's command owes, when its capability is a
+/// read-only Human one: every op within read, produce and verify, as the
+/// Auditor, Regulator, Investigator and Production templates are (plan §9.7,
+/// §14.4; fa-7dw). Agent sessions are internal readers, left to the plan's
+/// sampled policy. The request digest covers the command's positional words,
+/// flags and switches, never the host's book or key paths. A session that
+/// cannot state its record is refused, never served unrecorded.
 fn access_record(
     authority: &LaunchAuthority,
     args: &Args,
 ) -> Result<Option<fa::access_log::AccessRecord>, Fail> {
     let capability = authority.capability();
-    let read_only = capability.ops().iter().all(|op| {
-        matches!(
-            op,
-            fa_policy::Op::Read | fa_policy::Op::Produce | fa_policy::Op::Verify
-        )
-    });
+    let read_only = capability.profile() == fa_policy::Profile::Human
+        && capability.ops().iter().all(|op| {
+            matches!(
+                op,
+                fa_policy::Op::Read | fa_policy::Op::Produce | fa_policy::Op::Verify
+            )
+        });
     let Some(verb) = args.positional.first() else {
         return Ok(None);
     };

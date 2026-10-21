@@ -465,9 +465,11 @@ impl Fixture {
                 std::fs::read(self.dir.join(output)).unwrap(),
                 saved.artifact.output()
             );
+            // The reader's replay writes only its AccessEvent (fa-7dw).
+            assert_eq!(self.accessed_since(before), 1);
             assert_eq!(
                 self.head(),
-                before,
+                CommitSeq(before.0 + 1),
                 "cold replay publishes no metadata or entries"
             );
         }
@@ -517,7 +519,9 @@ fn checkpointed_prefix_books_certify_and_replay_native_reports_with_only_issued_
             fixture.compact();
             let before = fixture.head();
             let original = fixture.ok(&args);
-            assert_eq!(fixture.head(), before);
+            // The reader's read writes only its AccessEvent (fa-7dw).
+            assert_eq!(fixture.accessed_since(before), 1);
+            assert_eq!(fixture.head(), CommitSeq(before.0 + 1));
             Some(original[0].clone())
         } else {
             None
@@ -674,7 +678,9 @@ fn checkpointed_prefix_statement_bridges_read_and_certify_every_retained_frontie
         assert_eq!(refused.len(), 1);
         assert_eq!(refused[0].get("book"), Some(&Json::Null));
         assert_eq!(refused[0].get("coordinate"), Some(&Json::Null));
-        assert_eq!(fixture.head(), frontier);
+        // Refused before the book is opened: no AccessEvent, nothing written
+        // after the plain read's record.
+        assert_eq!(fixture.head(), CommitSeq(frontier.0 + 1));
         let mut producer = base;
         producer.extend(["--token", PRODUCER]);
         let certificate = fixture.certify(mode, &producer, after, &format!("statement-{mode}"));

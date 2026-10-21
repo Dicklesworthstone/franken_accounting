@@ -1,8 +1,8 @@
 //! AccessEvent: who read what (plan §9.7, §14.5, Appendix G; bead fa-7dw).
 //!
-//! A read served to a read-only bound session (a capability whose ops stay
-//! within read, produce and verify: the Auditor, Regulator, Investigator and
-//! Production templates) is recorded as one immutable AccessEvent vertex,
+//! A read served to a read-only Human bound session (a capability whose ops
+//! stay within read, produce and verify: the Auditor, Regulator, Investigator
+//! and Production templates) is recorded as one immutable AccessEvent vertex,
 //! committed in its own transaction before the command observes the book. A
 //! delivered answer therefore always has its record; a command that then
 //! fails leaves a record with nothing delivered (over-recording, never

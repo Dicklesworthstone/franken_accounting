@@ -192,14 +192,6 @@ impl Fixture {
         self.open().head().expect("book frontier").0
     }
 
-    /// AccessEvents recorded after `since` (fa-7dw).
-    fn accessed_since(&self, since: u64) -> u64 {
-        self.open()
-            .access_log(fgdb_types::CommitSeq(since))
-            .expect("access log")
-            .len() as u64
-    }
-
     fn checkpoint(&self) -> Json {
         ok(&self.book, &["checkpoint", "create", "--grant", "witness"])
     }
@@ -876,7 +868,7 @@ fn a_bound_agent_needs_explicit_read_and_produce_and_cannot_select_a_host_file()
     assert_eq!(code, 2, "{}", refusal.render());
     assert_eq!(text(&refusal, "class"), "usage");
     assert!(!destination.exists());
-    assert_eq!(f.head(), before + f.accessed_since(before));
+    assert_eq!(f.head(), before);
 }
 
 #[test]

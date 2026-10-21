@@ -104,14 +104,14 @@ example = "fa chart import chart.json --book ./books/myco --json"
 
 [[verb]]
 name = "access"
-summary = "Who read what (plan §9.7, §14.5): every command a read-only bound session runs (a capability whose ops stay within read, produce and verify, as the Auditor, Regulator, Investigator and Production templates are) commits an AccessEvent before it observes the book; access log lists them."
+summary = "Who read what (plan §9.7, §14.5): every command a read-only Human bound session runs (a capability whose ops stay within read, produce and verify, as the Auditor, Regulator, Investigator and Production templates are) commits an AccessEvent before it observes the book; access log lists them. Agent sessions are not recorded."
 writes = false
 subcommands = ["log"]
 flags = ["--since", "--reader"]
 switches = []
 events = ["access_log"]
 exits = [0, 2, 3, 4, 5, 7]
-usage = ["access log [--since <seq>] [--reader <principal name>]   (the AccessEvents recorded after --since, in recording order: principal, capability commitment and ops, the command, the digest of its arguments, the head it observed and the sequence it was recorded at)", "A record is committed before the read it describes observes the book, so a delivered answer always has one; a command that then fails leaves a record with nothing delivered. Reading the log under a read-only session records that read too. Embedded-owner and writing sessions are not recorded by this slice."]
+usage = ["access log [--since <seq>] [--reader <principal name>]   (the AccessEvents recorded after --since, in recording order: principal, capability commitment and ops, the command, the digest of its arguments, the head it observed and the sequence it was recorded at)", "A record is committed before the read it describes observes the book, so a delivered answer always has one; a command that then fails leaves a record with nothing delivered. Reading the log under such a session records that read too. Embedded-owner, Agent and writing sessions are not recorded by this slice."]
 example = "fa access log --since 0 --json"
 
 [[verb]]
@@ -3643,7 +3643,7 @@ flags = ["--since", "--reader"]
 switches = []
 required = []
 dont = ["Read who read what: each event names the principal, its capability commitment and ops, the command and the head it observed. Under a read-only launch this read is itself recorded."]
-mistakes = ["Expecting embedded-owner or writing sessions in the log: this slice records read-only bound sessions only."]
+mistakes = ["Expecting embedded-owner, Agent or writing sessions in the log: this slice records read-only Human bound sessions only."]
 
 [[mcp.tool]]
 cluster = "fa.findings"
