@@ -68,7 +68,7 @@ use crate::genesis::{BookContext, UnitPolicy};
 use crate::limit;
 use crate::migration;
 use crate::policy;
-use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
+use crate::refusal::{KernelError, Outcome, Refusal, Why, code, exit};
 use crate::rows::{
     AccountRow, applied_witness, edge_id, leg_vid, mantissa_scalar, prop, replacement_vid,
     resolution_vid, reversal_vid, state_from_scalar,
@@ -1010,6 +1010,57 @@ fn shown(book: &BookContext, unit: fa_money::UnitId, mantissa: i128) -> String {
         .try_render(&book.units)
         .unwrap_or_else(|_| mantissa.to_string())
 }
+
+/// The open posting leaves below a summary account, nearest by name first,
+/// for a NOT_A_LEAF refusal's fix (plan §15.3 "errors that teach"). Read from
+/// `CHILD_OF` edges at the head: a suggestion only, since the post that uses
+/// one is admitted on its own. Nearest means most name words shared with the
+/// summary, then code order; at most [`LEAF_SUGGESTIONS`] are named.
+fn leaf_suggestions<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    summary: &AccountRow,
+    on: fa_time::DateDay,
+) -> Result<Vec<String>, KernelError> {
+    let words = |name: &str| -> BTreeSet<String> {
+        name.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let near = words(&summary.name);
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![summary.vid];
+    let mut leaves: Vec<(usize, String)> = Vec::new();
+    while let Some(vid) = pending.pop() {
+        if !seen.insert(vid) {
+            continue;
+        }
+        let Some(row) = db.vertex(vid)? else {
+            continue;
+        };
+        if !row.labels.contains(&label::ACCOUNT) || row.retired_at.is_some() {
+            continue;
+        }
+        let account = AccountRow::decode(&row)?;
+        if !account.is_leaf {
+            pending.extend(db.in_neighbours(vid, relation::CHILD_OF)?);
+            continue;
+        }
+        if crate::chart::AccountEffectivity::decode_from_row(&row)?.is_effective_at(on) {
+            let shared = words(&account.name).intersection(&near).count();
+            leaves.push((shared, account.code));
+        }
+    }
+    leaves.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    Ok(leaves
+        .into_iter()
+        .take(LEAF_SUGGESTIONS)
+        .map(|(_, code)| code)
+        .collect())
+}
+
+/// How many leaves a NOT_A_LEAF refusal names.
+const LEAF_SUGGESTIONS: usize = 20;
 
 /// A reconciled account's cutoff protects every later leg at or before that
 /// date. The account endpoint is a real native absence witness: publishing a
@@ -2054,7 +2105,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 "plan §7.2, Appendix C (admissibility.toml kind {born:?}: Historical periods admit only Migration)"
             ),
             "keep the entry's true effective date; history dated before the book's opening date enters only through a MigrationRun (plan §8.6), never by re-dating it into a live period",
-        )));
+        )
+            .at("period", period.code.clone())
+            .because(Why::Matrix {
+                state: format!("{born:?}"),
+                class: class_name.to_string(),
+            })));
     }
     // 5''. A special period before the book's opening date (the registered
     //      pre_opening rule, ruling 3685) admits only its classes, whatever
@@ -2082,7 +2138,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             ),
             rule.cite.clone(),
             "keep the entry's true effective date; history dated before the book's opening date enters only through a MigrationRun (plan §8.6), never by re-dating it into a live period",
-        )));
+        )
+            .at("period", period.code.clone())
+            .because(Why::Matrix {
+                state: format!("{born:?}"),
+                class: class_name.to_string(),
+            })));
     }
     if let Some(rule) = matrix.special_period_rule(born)
         && !rule.admits(class_name)
@@ -2106,7 +2167,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 "post `{class_name}` in a Normal period; this special period admits only {}",
                 rule.admits.join(", ")
             ),
-        )));
+        )
+        .at("period", period.code.clone())
+        .because(Why::Matrix {
+            state: format!("{born:?}"),
+            class: class_name.to_string(),
+        })));
     }
     let family = match &resolution {
         Some((_, Disposition::Posts { .. })) => "(Posts)",
@@ -2231,7 +2297,13 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 ),
                 cell,
                 fix,
-            )));
+            )
+            .at("period", period.code.clone())
+            .at("effective_date", proposal.effective_date.to_string())
+            .because(Why::Matrix {
+                state: state.name().to_string(),
+                class: class_name.to_string(),
+            })));
         }
     };
     // 5''. Segregation of duties (plan §14.3, FA-INV-10 `sod`): every cited
@@ -2457,13 +2529,28 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         let account = AccountRow::decode(&row)?;
         if !account.is_leaf {
             txn.abort();
+            let leaves = leaf_suggestions(db, &account, proposal.effective_date)?;
+            let fix = match leaves.first() {
+                Some(nearest) => format!(
+                    "post to a leaf under `{}`: `{nearest}` is the nearest by name (fa chart list --json lists them all)",
+                    account.code
+                ),
+                None => format!(
+                    "post to a leaf under `{}`; none is open on {} (fa chart list --json)",
+                    account.code, proposal.effective_date
+                ),
+            };
             return Ok(Err(Refusal::new(
                 code::NOT_A_LEAF,
                 exit::REFUSAL,
                 format!("leg {i} posts to `{}`, a summary account", account.code),
                 "plan §4.3 (only leaves accept legs)",
-                format!("post to a leaf under `{}`", account.code),
-            )));
+                fix,
+            )
+            .at("leg", i)
+            .at("account", account.code.clone())
+            .because(Why::Law("FA-INV-01.leaf-only".to_string()))
+            .or_field_change(format!("legs[{i}].account"), leaves)));
         }
         let effectivity = crate::chart::AccountEffectivity::decode_from_row(&row)?;
         if !effectivity.is_effective_at(proposal.effective_date) {
@@ -2613,17 +2700,42 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     .units
                     .get(unit)
                     .map_or_else(|| format!("unit {}", unit.0), |u| u.code.clone());
+                let render = |mantissa: i128| shown(book, unit, mantissa);
+                // The short side and the gap a leg on it would close; the
+                // kernel names it and never posts it (doctrine 4).
+                let (short, gap) = if debits > credits {
+                    ("credit", debits.checked_sub(credits))
+                } else {
+                    ("debit", credits.checked_sub(debits))
+                };
+                let gap = gap.map_or_else(|| "more than i128 can hold".to_string(), render);
                 return Ok(Err(Refusal::new(
                     code::UNBALANCED,
                     exit::REFUSAL,
                     format!(
-                        "{label_kind} legs are unbalanced in {u}: debits {debits} != credits {credits} (memo, off-balance, and statistical accounts sit outside the monetary balance law and never balance monetary legs)"
+                        "{label_kind} legs are unbalanced in {u}: debits {} != credits {} (memo, off-balance, and statistical accounts sit outside the monetary balance law and never balance monetary legs)",
+                        render(debits),
+                        render(credits)
                     ),
                     "FA-INV-01 (`memo`: memo/off-balance accounts balance within their partition; statistical accounts admit single-sided legs only in registered statistical quantity units; plan §4.2)",
                     format!(
-                        "balance {label_kind} debits and credits in {u} within the {label_kind} partition; only Statistical accounts admit single-sided legs in statistical quantity units (EACH, HOUR)"
+                        "add a {short} leg of {gap} to the {label_kind} account that explains it, or correct the legs that are wrong; the kernel never invents one. Only Statistical accounts admit single-sided legs in statistical quantity units (EACH, HOUR)"
                     ),
-                )));
+                )
+                .at("partition", label_kind)
+                .at("unit", u.clone())
+                .at("debits", render(debits))
+                .at("credits", render(credits))
+                .at("short_side", short)
+                .at("gap", gap)
+                .because(Why::Law(
+                    if label_kind == "monetary" {
+                        "FA-INV-01.per-unit"
+                    } else {
+                        "FA-INV-01.memo"
+                    }
+                    .to_string(),
+                ))));
             }
             if let Some(r) = entity::per_entity_refusal(subset_legs, subset_entities, &book.units)?
             {

@@ -35,6 +35,66 @@ pub struct Refusal {
     pub cite: String,
     /// The exact next step, copy-pasteable where possible.
     pub fix: String,
+    /// Where it failed (plan Appendix D `where`): `leg`, `account`,
+    /// `period`, `unit`, `member` …, in the order the refusal names them.
+    /// Empty when the refusing site gives no structured location.
+    pub at: Vec<(&'static str, Locus)>,
+    /// The structured citation (Appendix D `why`) when the site knows it;
+    /// `cite` stays the prose.
+    pub why: Option<Why>,
+    /// The field to change and the values it admits (Appendix D
+    /// `fix.or_field_change`).
+    pub field_change: Option<FieldChange>,
+}
+
+/// One coordinate of a refusal's `where`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Locus {
+    Text(String),
+    Index(u64),
+}
+
+impl From<&str> for Locus {
+    fn from(s: &str) -> Self {
+        Self::Text(s.to_string())
+    }
+}
+
+impl From<String> for Locus {
+    fn from(s: String) -> Self {
+        Self::Text(s)
+    }
+}
+
+impl From<usize> for Locus {
+    fn from(i: usize) -> Self {
+        Self::Index(u64::try_from(i).unwrap_or(u64::MAX))
+    }
+}
+
+impl From<u64> for Locus {
+    fn from(i: u64) -> Self {
+        Self::Index(i)
+    }
+}
+
+/// A refusal's structured citation (plan Appendix D `why`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// An invariant clause, e.g. `FA-INV-01.per-unit`.
+    Law(String),
+    /// A policy row, e.g. `sod_policy#restate`.
+    Policy(String),
+    /// An admissibility cell: the period's state (or kind) × the entry class.
+    Matrix { state: String, class: String },
+}
+
+/// A field change that satisfies the refused law: the field, and the values
+/// it admits, best match first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldChange {
+    pub field: String,
+    pub one_of: Vec<String>,
 }
 
 impl Refusal {
@@ -51,7 +111,39 @@ impl Refusal {
             message: message.into(),
             cite: cite.into(),
             fix: fix.into(),
+            at: Vec::new(),
+            why: None,
+            field_change: None,
         }
+    }
+
+    /// Add one coordinate to `where`; a later value for the same key
+    /// replaces the earlier one.
+    #[must_use]
+    pub fn at(mut self, key: &'static str, value: impl Into<Locus>) -> Self {
+        let value = value.into();
+        match self.at.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = value,
+            None => self.at.push((key, value)),
+        }
+        self
+    }
+
+    /// Set the structured citation.
+    #[must_use]
+    pub fn because(mut self, why: Why) -> Self {
+        self.why = Some(why);
+        self
+    }
+
+    /// Name the field to change and the values it admits.
+    #[must_use]
+    pub fn or_field_change(mut self, field: impl Into<String>, one_of: Vec<String>) -> Self {
+        self.field_change = Some(FieldChange {
+            field: field.into(),
+            one_of,
+        });
+        self
     }
 }
 

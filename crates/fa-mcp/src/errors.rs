@@ -13,7 +13,13 @@
 //!   refusal, environment, conflict and safety; false for a foundation
 //!   failure and a verification failure, which need an operator;
 //! - `never`, on a period-law refusal, states what no fix ever means:
-//!   re-dating the entry.
+//!   re-dating the entry;
+//! - `data` is plan Appendix D's error data: `{fix_hint,
+//!   suggested_tool_calls, available_options, refusal_id, refusal}`, where
+//!   `refusal` is the CLI's Appendix D refusal object (null for a failure
+//!   that is not a catalog refusal), `refusal_id` that object's instance id
+//!   (the flat field keeps the catalog code), and `available_options` the
+//!   values its `fix.or_field_change` admits.
 //!
 //! The mistake detectors produce the same shape with `detector` set and the
 //! usage class (exit 2), so an agent handles both alike.
@@ -58,6 +64,8 @@ pub struct StructuredError {
     pub never: Option<String>,
     /// The trusted launch binding under which this refusal was produced.
     pub authority: Option<JsonValue>,
+    /// The CLI's Appendix D refusal object, for a catalog refusal.
+    pub refusal: JsonValue,
 }
 
 impl StructuredError {
@@ -105,6 +113,7 @@ impl StructuredError {
             detector: None,
             never,
             authority: None,
+            refusal: data.get("refusal").map_or(JsonValue::Null, to_wire),
         }
     }
 
@@ -129,6 +138,7 @@ impl StructuredError {
             detector: Some(detector.to_string()),
             never: None,
             authority: None,
+            refusal: JsonValue::Null,
         }
     }
 
@@ -154,6 +164,7 @@ impl StructuredError {
             detector: None,
             never: None,
             authority: None,
+            refusal: JsonValue::Null,
         }
     }
 
@@ -175,6 +186,7 @@ impl StructuredError {
             detector: None,
             never: None,
             authority: None,
+            refusal: JsonValue::Null,
         }
     }
 
@@ -194,6 +206,7 @@ impl StructuredError {
             detector: None,
             never: None,
             authority: None,
+            refusal: JsonValue::Null,
         }
     }
 
@@ -233,14 +246,27 @@ impl StructuredError {
         if let Some(authority) = &self.authority {
             v["authority"] = authority.clone();
         }
+        let options = self
+            .refusal
+            .pointer("/fix/or_field_change/one_of")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        v["data"] = json!({
+            "fix_hint": self.fix_hint,
+            "suggested_tool_calls": v["suggested_tool_calls"].clone(),
+            "available_options": options,
+            "refusal_id": self.refusal.get("refusal_id").cloned().unwrap_or(json!(self.refusal_id)),
+            "refusal": self.refusal,
+        });
         // Both launch-binding refusals name the offending argument where a
         // client reads structured error data, before any detector or book
         // observation: the fixed launch argument and the host-path argument.
         if self.kind == "forbidden_argument" || self.kind == "forbidden_path" {
-            v["data"] = json!({
-                "fix_hint": self.fix_hint,
-                "argument": self.detail.get("argument"),
-            });
+            v["data"]["argument"] = self
+                .detail
+                .get("argument")
+                .cloned()
+                .unwrap_or(JsonValue::Null);
         }
         v
     }

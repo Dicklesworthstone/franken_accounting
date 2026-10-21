@@ -501,7 +501,7 @@ flags = ["--period", "--unit", "--as-known-at", "--certificate-out", "--branch",
 switches = ["--certify", "--as-originally-reported"]
 events = ["balance_explained", "entry_explained", "evidence_explained", "refusal_explained", "period_explained", "register_explained", "lineage_explained", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "explain balance <account code> --period <code> --as-originally-reported [--certify | --certificate-out <new-file>]   (plan §7.4: the balance as its period was first reported, as fa tb --as-originally-reported: at the certificate of the period's first StatementIssuance, else its first Lock; FA-REF-161 when the period was never reported; cannot be combined with --as-known-at)", "explain balance <account code> --period <code> (--as-issued-to <audience> | --as-reported-in C:<oid>) [--certify | --certificate-out <new-file>]   (the balance as its period was issued to that audience or reported in that retained statement certificate, as on fa tb)","explain entry <vid|E:vid>", "explain lineage <vid|E:vid> [--as-known-at HEAD|<seq>]", "explain evidence <entry-vid|E:vid>", "explain refusal <FA-REF-nnn>", "explain period <period-code>", "explain register <account-code> --period <code> [--unit <CODE>] [--as-known-at HEAD|<seq>]", "Without certification this is a pure read; `explain refusal` requires no book. --certify, --certificate-out and the restatement views (--as-originally-reported, --as-issued-to, --as-reported-in) apply only to `explain balance`; the other subcommands refuse them (exit 2). --certify (on `explain balance`) retains the exact explanation and native read closure in the book; --certificate-out also creates a new external copy. The certificate binds historical account metadata, contributing entries, evidence references, lineage, cell history, and the whole-period fold."]
+usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "explain balance <account code> --period <code> --as-originally-reported [--certify | --certificate-out <new-file>]   (plan §7.4: the balance as its period was first reported, as fa tb --as-originally-reported: at the certificate of the period's first StatementIssuance, else its first Lock; FA-REF-161 when the period was never reported; cannot be combined with --as-known-at)", "explain balance <account code> --period <code> (--as-issued-to <audience> | --as-reported-in C:<oid>) [--certify | --certificate-out <new-file>]   (the balance as its period was issued to that audience or reported in that retained statement certificate, as on fa tb)","explain entry <vid|E:vid>", "explain lineage <vid|E:vid> [--as-known-at HEAD|<seq>]", "explain evidence <entry-vid|E:vid>", "explain refusal <FA-REF-nnn | refusal_id>", "explain period <period-code>", "explain register <account-code> --period <code> [--unit <CODE>] [--as-known-at HEAD|<seq>]", "Without certification this is a pure read; `explain refusal` requires no book. --certify, --certificate-out and the restatement views (--as-originally-reported, --as-issued-to, --as-reported-in) apply only to `explain balance`; the other subcommands refuse them (exit 2). --certify (on `explain balance`) retains the exact explanation and native read closure in the book; --certificate-out also creates a new external copy. The certificate binds historical account metadata, contributing entries, evidence references, lineage, cell history, and the whole-period fold."]
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -1259,8 +1259,8 @@ fields = ["verb:string?", "text:text"]
 
 [[event]]
 name = "error"
-doc = "Every non-zero exit emits exactly one (plan Appendix D). `class` names the exit (exit_codes.toml): usage (2: a bad flag, verb, argument or intent document), refusal (3: an accounting-law refusal), environment (4: no book, a bad key file), foundation (5: a foundation or I-O failure), conflict (6), safety (7: period law, capability, SoD, an unconfirmed dangerous operation), verification (8: derived state differs from the journal's refold). `refusal_id` is the refusal catalog code (FA-REF-nnn) when the failure is a catalog refusal, else null; `cite` is the law, matrix cell or policy row it cites (null otherwise); `fix` is the exact next step (null when none applies): do it, and never invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: `fix` names the safe alternative; rerun with --yes only when the operation is intended. `detail` is a verification failure's payload (the per-period checks for registers, the leg drift for open items), null otherwise."
-fields = ["class:string", "exit:int", "refusal_id:string?", "message:string", "cite:string?", "fix:string?", "detail:any"]
+doc = "Every non-zero exit emits exactly one (plan Appendix D). `class` names the exit (exit_codes.toml): usage (2: a bad flag, verb, argument or intent document), refusal (3: an accounting-law refusal), environment (4: no book, a bad key file), foundation (5: a foundation or I-O failure), conflict (6), safety (7: period law, capability, SoD, an unconfirmed dangerous operation), verification (8: derived state differs from the journal's refold). `refusal_id` is the refusal catalog code (FA-REF-nnn) when the failure is a catalog refusal, else null; `cite` is the law, matrix cell or policy row it cites (null otherwise); `fix` is the exact next step (null when none applies): do it, and never invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: `fix` names the safe alternative; rerun with --yes only when the operation is intended. `detail` is a verification failure's payload (the per-period checks for registers, the leg drift for open items), null otherwise. `refusal` is the Appendix D refusal object for a catalog refusal, null otherwise: its `refusal_id` names this instance (the code, `:`, 16 hex digits binding message, location and coordinate; `fa explain refusal` accepts it), `where` the structured location the refusing site gives (leg, account, period, unit, member …; {} when none), `why` {law}, {policy}, {matrix: {state, class}} or the prose {cite}, `fix.command`/`fix.argv` the first `fa …` command the fix names that parses against this registry (null when none), `fix.or_field_change` the field to change and the values it admits, `alternatives` the other such commands, `docs` the command that expands the code."
+fields = ["class:string", "exit:int", "refusal_id:string?", "message:string", "cite:string?", "fix:string?", "detail:any", "refusal:refusal_object?"]
 
 [[event]]
 name = "capabilities"
@@ -1990,8 +1990,8 @@ fields = ["entry:hex", "entry_digest:hex", "proposal_digest:hex", "class:string"
 [[event]]
 name = "refusal_explained"
 book = false
-doc = "A refusal code from the embedded catalog (`refusal_catalog.toml`, `fa explain refusal <FA-REF-nnn>`): its exit code and class, law citation, message, remediation fix, and any cross-referenced admissibility matrix cells or SoD policy rows."
-fields = ["id:string", "exit:int", "class:string", "cite:string", "message:string", "fix:string", "admissibility_cells:[explained_admissibility_cell]", "sod_rules:[explained_sod_rule]"]
+doc = "A refusal code from the embedded catalog (`refusal_catalog.toml`, `fa explain refusal <FA-REF-nnn>`): its exit code and class, law citation, message, remediation fix, and any cross-referenced admissibility matrix cells or SoD policy rows. Given an error's `refusal.refusal_id`, it expands that instance's code and echoes the id as `instance` (null for a bare code); the id is a citation, not a stored record."
+fields = ["id:string", "instance:string?", "exit:int", "class:string", "cite:string", "message:string", "fix:string", "admissibility_cells:[explained_admissibility_cell]", "sod_rules:[explained_sod_rule]"]
 
 [[event]]
 name = "period_explained"
@@ -4528,6 +4528,21 @@ fields = ["from:string?", "to:string", "control_entry:hex", "recorded_at:seq", "
 name = "statement_issuance"
 doc = "One statement issuance: its vertex, period and ordinal, the statement definition, the retained certificate it issued with that certificate's known-at (certified_at), the audience and the optional transmittal document. control_entry, recorded_at, principal and approvals are those of its IssuanceControl record, null in a plan."
 fields = ["issuance:hex", "period:string", "ordinal:int", "definition:string", "definition_version:int", "definition_digest:hex", "certificate:hex", "certified_at:seq", "issued_to:string", "document:hex?", "control_entry:hex?", "recorded_at:seq?", "principal:hex?", "approvals:int?"]
+
+[[shape]]
+name = "refusal_object"
+doc = "Plan Appendix D refusal object: the instance id, catalog code, exit, what failed, where, why, the structured fix, alternative commands and the docs command."
+fields = ["refusal_id:string", "code:string", "exit:int", "what_failed:string", "where:object", "why:object", "fix:refusal_fix", "alternatives:[string]", "docs:string"]
+
+[[shape]]
+name = "refusal_fix"
+doc = "A refusal's fix: the prose, the first parseable `fa` command it names (whole line and argv after `fa`), and the field change that satisfies the law."
+fields = ["text:string", "command:string?", "argv:[string]?", "or_field_change:refusal_field_change?"]
+
+[[shape]]
+name = "refusal_field_change"
+doc = "The field to change and the values it admits, best match first."
+fields = ["field:string", "one_of:[string]"]
 
 [[shape]]
 name = "statement_lint_overlap"

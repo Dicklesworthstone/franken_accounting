@@ -1615,7 +1615,22 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
         fix: Option<String>,
         detail: Json,
         diag: String,
+        /// The Appendix D refusal object, for a catalog refusal.
+        refusal: Json,
     }
+    // A catalog refusal's Appendix D object, bound to the coordinate the
+    // command reached (null before a book opened).
+    let appendix_d = |r: &Refusal| -> Json {
+        let Ok(reg) = registry() else {
+            return Json::Null;
+        };
+        let said = out.said.borrow();
+        let issued = crate::refusal_object::Issued {
+            book: said.at.as_ref().map(|a| a.book.as_str()),
+            known_at: said.at.as_ref().map(|a| a.known_at.0),
+        };
+        crate::refusal_object::render(reg, r, &issued)
+    };
     let failure = match result {
         Ok(()) => return exit::SUCCESS,
         Err(Fail::Usage(e)) => Failure {
@@ -1626,6 +1641,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             cite: None,
             fix: Some(e.fix),
             detail: Json::Null,
+            refusal: Json::Null,
         },
         Err(Fail::Refusal(mut r)) => {
             if out.is_bound() && r.fix.contains("--grant") {
@@ -1635,6 +1651,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
                 exit: r.exit,
                 refusal_id: Some(r.code),
                 diag: format!("refused {r}"),
+                refusal: appendix_d(&r),
                 message: r.message,
                 cite: Some(r.cite),
                 fix: Some(r.fix),
@@ -1647,6 +1664,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
                     exit: r.exit,
                     refusal_id: Some(r.code),
                     diag: format!("refused {r}"),
+                    refusal: appendix_d(&r),
                     message: r.message,
                     cite: Some(r.cite),
                     fix: Some(r.fix),
@@ -1666,6 +1684,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
                     cite: None,
                     fix,
                     detail: Json::Null,
+                    refusal: Json::Null,
                 }
             }
         }
@@ -1687,6 +1706,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             cite,
             fix,
             detail,
+            refusal: Json::Null,
         },
         Err(Fail::Internal(message) | Fail::Io(message)) => Failure {
             exit: exit::FOUNDATION,
@@ -1696,6 +1716,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             cite: None,
             fix: None,
             detail: Json::Null,
+            refusal: Json::Null,
         },
         Err(Fail::Environment(message)) => Failure {
             exit: exit::ENVIRONMENT,
@@ -1705,6 +1726,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             cite: None,
             fix: None,
             detail: Json::Null,
+            refusal: Json::Null,
         },
     };
     out.event(
@@ -1717,6 +1739,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             ("cite", failure.cite.map_or(Json::Null, s)),
             ("fix", failure.fix.map_or(Json::Null, s)),
             ("detail", failure.detail),
+            ("refusal", failure.refusal),
         ],
         "",
     );
@@ -3210,7 +3233,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 \n\
 1. Every command accepts --json (or --format json|toon|text). Parse --json stdout line by line; each line is one JSON object {v, event, book, coordinate, data, certificate, authority, warnings, next_actions}: `event` names the schema of `data`; `book` and `coordinate` say which book and (branch, known_at, effective) the line describes; `authority` declares the actual execution binding; `next_actions` are the commands usually run next (add the same --book in the owner's CLI). Prefer `--format toon` on tabular read verbs (`tb`, `open-items`, `gl`, `chart list`, `period list`, `explain balance`, `statement`) when feeding large register, open-item, or trial-balance tables into an agent context window: TOON v3.0 encodes uniform object arrays as compact `rows[N]{f1,f2,...}:` tables while keeping every amount an exact string with its unit.\n\
 2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability, an unconfirmed dangerous operation), 8 verification failure. 1 is never emitted.\n\
-3. Every non-zero exit is exactly one `error` line: data {class, exit, refusal_id, message, cite, fix, detail}. `refusal_id` (FA-REF-nnn) is the refusal catalog code when one applies. Do the `fix`; do not invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: its fix names the safe alternative; add --yes only when the operation is intended (`fa capabilities --json` lists them under `dangerous`).\n\
+3. Every non-zero exit is exactly one `error` line: data {class, exit, refusal_id, message, cite, fix, detail, refusal}. `refusal_id` (FA-REF-nnn) is the refusal catalog code when one applies, and `refusal` is then its Appendix D object: `where` (leg, account, period …), `why` (law, policy or matrix cell), `fix.argv` (a command that parses against the registry, when the fix names one), `fix.or_field_change` (the field and the values it admits). Do the `fix`; do not invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: its fix names the safe alternative; add --yes only when the operation is intended (`fa capabilities --json` lists them under `dangerous`).\n\
 4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\
 5. Corrections are new entries that cite the original; nothing is edited in place. Reversal is live. A corrected Replacement posts only as a pair with its Reversal (`fa reverse <vid> --reason <name> --replace-with <file>`); a standalone Replacement is FA-REF-160. A Reclassification moves part of an entry to another account (`fa reclass <vid> --from <account> --to <account> --amount \"<amount>\" --reason <name>`; FA-REF-185 when it moves more than the target's legs have left). Revision and Restatement remain refused with FA-REF-102; a PriorPeriodAdjustment posts only as an approved restatement case's entry (`fa case post <case>`), FA-REF-178 otherwise.\n\
 6. Idempotency: every intent carries idempotency_key; resubmitting returns the recorded outcome (event \"recorded\"), never a duplicate.\n\
@@ -6652,10 +6675,13 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
 fn batch_member_fail(index: usize, fail: Fail) -> Fail {
     match fail {
         Fail::Usage(e) => usage(format!("batch member {index}: {}", e.message), e.fix),
-        Fail::Refusal(r) => Fail::Refusal(Refusal {
-            message: format!("batch member {index}: {}", r.message),
-            ..r
-        }),
+        Fail::Refusal(r) => Fail::Refusal(
+            Refusal {
+                message: format!("batch member {index}: {}", r.message),
+                ..r
+            }
+            .at("member", index),
+        ),
         other => other,
     }
 }
@@ -16858,13 +16884,16 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 fn explain_refusal_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let example = "fa explain refusal FA-REF-001 [--json]";
-    let target = args
+    let given = args
         .positional
         .get(2)
         .ok_or_else(|| usage("explain refusal needs a refusal code (FA-REF-nnn)", example))?;
     if let Some(extra) = args.positional.get(3) {
         return Err(usage(format!("unexpected argument `{extra}`"), example));
     }
+    // An error's instance id (`FA-REF-nnn:<16 hex>`) expands its code.
+    let target = crate::refusal_object::code_of(given);
+    let instance = (target != given.as_str()).then(|| given.clone());
     let catalog = fa_registry::refusal_catalog::RefusalCatalog::embedded()
         .map_err(|e| Fail::Internal(format!("refusal_catalog.toml: {e}")))?;
     let row = catalog
@@ -16955,6 +16984,7 @@ fn explain_refusal_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "refusal_explained",
         vec![
             ("id", s(&row.code)),
+            ("instance", instance.map_or(Json::Null, s)),
             ("exit", Json::Int(i128::from(row.exit))),
             ("class", s(&row.exit_name)),
             ("cite", s(&row.cite)),

@@ -169,7 +169,7 @@ pub use redaction::{
     DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,
     read_document_for_with, redacted_view_vid,
 };
-pub use refusal::{KernelError, Refusal, exit};
+pub use refusal::{FieldChange, KernelError, Locus, Refusal, Why, exit};
 pub use revaluation::{FxRevaluationRequest, PreparedFxRevaluation, prepare_fx_revaluation};
 pub use rows::{AccountRow, PeriodRow};
 pub use scenario::{

@@ -39,6 +39,7 @@ pub mod panic;
 mod production;
 mod proof;
 mod rea;
+mod refusal_object;
 mod sample;
 mod scenario;
 mod templates;

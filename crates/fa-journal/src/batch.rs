@@ -257,6 +257,7 @@ fn member_refusal(index: usize, refusal: Refusal) -> Refusal {
         ),
         ..refusal
     }
+    .at("member", index)
 }
 
 fn outcome_conflict(outcome: VId) -> Refusal {
