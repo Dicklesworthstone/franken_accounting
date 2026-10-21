@@ -396,6 +396,11 @@ pub fn summary_account(
         } else {
             format!("the leaves under `{code}`")
         };
+        let options = leaves
+            .iter()
+            .filter_map(|l| l.split(" (").next())
+            .map(str::to_string)
+            .collect();
         return Some(StructuredError::detected(
             "summary_account",
             format!(
@@ -414,7 +419,8 @@ pub fn summary_account(
                 arguments: json!({"action": "list"}),
                 command: "fa chart list --json".into(),
             }],
-        ));
+        )
+        .with_options(options));
     }
     None
 }

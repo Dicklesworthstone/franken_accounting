@@ -4678,3 +4678,124 @@ fn the_audit_cluster_draws_and_evaluates_the_clis_sample() {
     );
     assert_eq!(mcp.finish(), 0);
 }
+
+/// fa-6his, plan Appendix D: a tool error carries `data: {fix_hint,
+/// suggested_tool_calls, available_options, refusal_id, refusal}`. For a
+/// kernel refusal the object is the one the CLI emits for the same failing
+/// request on the same book head, instance id included; a detector that
+/// knows the admissible values names them in `available_options`.
+#[test]
+fn error_shape_matches_appendix_d() {
+    let dir = tmp("appendix-d");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Appendix D Co",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"100","name":"Cash and equivalents","type":"Asset","leaf":false,"unit":"USD"},{"code":"1010","name":"Petty cash","type":"Asset","leaf":true,"unit":"USD","parent":"100"},{"code":"1100","name":"Money market fund","type":"Asset","leaf":true,"unit":"USD","parent":"100"},{"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    )
+    .unwrap();
+    let chart = chart.display().to_string();
+    cli_data(&["chart", "import", &chart, "--book", &b, "--json"]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let unbalanced = json!({
+        "idempotency_key": "unbalanced",
+        "effective_date": "2026-03-15",
+        "legs": [
+            {"side": "debit", "account": "6000", "amount": "5.00 USD"},
+            {"side": "credit", "account": "1010", "amount": "4.00 USD"}
+        ]
+    });
+    let file = dir.join("unbalanced.json");
+    std::fs::write(&file, unbalanced.to_string()).unwrap();
+    let file = file.display().to_string();
+    let (code, stdout) = cli(&[
+        "post",
+        "--intent",
+        &file,
+        "--evidence",
+        &oid,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 3, "{stdout}");
+    let cli_line: JsonValue =
+        fastmcp_rust::serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+    let cli_refusal = cli_line["data"]["refusal"].clone();
+    assert_eq!(cli_refusal["code"], json!("FA-REF-001"), "{stdout}");
+
+    let mut mcp = Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
+    mcp.discover();
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": unbalanced, "evidence": [oid]}),
+    );
+    assert!(is_error, "an unbalanced entry is refused: {text}");
+    let e = structured_error(&text);
+    log(format!("appendix D refusal: {e}"));
+    let data = &e["data"];
+    assert_eq!(
+        data["refusal"], cli_refusal,
+        "the CLI's object, byte for byte: {e}"
+    );
+    assert_eq!(data["refusal_id"], cli_refusal["refusal_id"], "{e}");
+    assert_eq!(
+        e["refusal_id"],
+        json!("FA-REF-001"),
+        "the flat code stays: {e}"
+    );
+    assert_eq!(data["fix_hint"], e["fix_hint"], "{e}");
+    assert_eq!(
+        data["suggested_tool_calls"], e["suggested_tool_calls"],
+        "{e}"
+    );
+    assert_eq!(data["available_options"], json!([]), "{e}");
+    assert_eq!(data["refusal"]["where"]["gap"], json!("1.00 USD"), "{e}");
+    assert_eq!(
+        data["refusal"]["why"]["law"],
+        json!("FA-INV-01.per-unit"),
+        "{e}"
+    );
+
+    // The summary-account detector refuses before dispatch, naming the
+    // leaves it would accept; a detector carries no refusal object.
+    let mut summary = unbalanced.clone();
+    summary["idempotency_key"] = json!("to-summary");
+    summary["legs"][1] = json!({"side": "credit", "account": "100", "amount": "5.00 USD"});
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": summary, "evidence": [oid]}),
+    );
+    assert!(is_error, "{text}");
+    let e = structured_error(&text);
+    assert_eq!(e["detector"], json!("summary_account"), "{e}");
+    assert_eq!(e["data"]["refusal"], JsonValue::Null, "{e}");
+    assert_eq!(
+        e["data"]["available_options"],
+        json!(["1010", "1100"]),
+        "{e}"
+    );
+    log("Appendix D: MCP error data carries the CLI's refusal object and the detector's options");
+}

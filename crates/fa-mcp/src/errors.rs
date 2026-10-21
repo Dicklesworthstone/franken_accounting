@@ -66,6 +66,9 @@ pub struct StructuredError {
     pub authority: Option<JsonValue>,
     /// The CLI's Appendix D refusal object, for a catalog refusal.
     pub refusal: JsonValue,
+    /// The values a detector knows the offending field admits (a refusal
+    /// object's `fix.or_field_change.one_of` takes precedence).
+    pub options: Vec<String>,
 }
 
 impl StructuredError {
@@ -114,6 +117,7 @@ impl StructuredError {
             never,
             authority: None,
             refusal: data.get("refusal").map_or(JsonValue::Null, to_wire),
+            options: Vec::new(),
         }
     }
 
@@ -139,6 +143,7 @@ impl StructuredError {
             never: None,
             authority: None,
             refusal: JsonValue::Null,
+            options: Vec::new(),
         }
     }
 
@@ -165,6 +170,7 @@ impl StructuredError {
             never: None,
             authority: None,
             refusal: JsonValue::Null,
+            options: Vec::new(),
         }
     }
 
@@ -187,6 +193,7 @@ impl StructuredError {
             never: None,
             authority: None,
             refusal: JsonValue::Null,
+            options: Vec::new(),
         }
     }
 
@@ -207,6 +214,7 @@ impl StructuredError {
             never: None,
             authority: None,
             refusal: JsonValue::Null,
+            options: Vec::new(),
         }
     }
 
@@ -214,6 +222,13 @@ impl StructuredError {
     #[must_use]
     pub fn with_authority(mut self, authority: JsonValue) -> Self {
         self.authority = Some(authority);
+        self
+    }
+
+    /// Name the values the offending field admits.
+    #[must_use]
+    pub fn with_options(mut self, options: Vec<String>) -> Self {
+        self.options = options;
         self
     }
 
@@ -250,7 +265,7 @@ impl StructuredError {
             .refusal
             .pointer("/fix/or_field_change/one_of")
             .cloned()
-            .unwrap_or_else(|| json!([]));
+            .unwrap_or_else(|| json!(self.options));
         v["data"] = json!({
             "fix_hint": self.fix_hint,
             "suggested_tool_calls": v["suggested_tool_calls"].clone(),
