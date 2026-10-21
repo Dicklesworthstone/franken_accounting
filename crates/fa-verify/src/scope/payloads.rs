@@ -7,6 +7,7 @@
 //! existing signed-index and envelope-index APIs retain their behavior.
 
 pub mod bundle;
+pub mod incremental;
 
 use core::fmt;
 
@@ -19,6 +20,8 @@ use crate::tree::{Digest, root_of_with};
 /// Bound account expansion separately from the prefix's byte and leaf limits.
 /// At most 1,048,576 account/day/leaf tuples are retained during reconstruction.
 pub const MAX_PAYLOAD_INDEX_TUPLES: usize = 1 << 20;
+
+type IndexTuple = (u128, i32, u64);
 
 /// A reusable, immutable derivation result. Public report structs are not
 /// accepted in its place: only successful record and root verification builds
@@ -48,6 +51,8 @@ impl PayloadIndex {
     }
 
     /// The verified witness size, retained for composed aggregate input limits.
+    /// Incremental results conservatively count the entire accepted chain,
+    /// not only the most recently supplied suffix.
     #[must_use]
     pub fn encoded_bytes(&self) -> usize {
         self.encoded_bytes
@@ -115,6 +120,15 @@ pub fn verify_payload_index(
     complete_prefix: &[u8],
     signed: &SignedCheckpoint,
 ) -> Result<PayloadIndex, PayloadIndexError> {
+    derive_with_tuples(complete_prefix, signed).map(|(index, _)| index)
+}
+
+// Retaining verified tuples is opt-in; ordinary callers still receive only
+// metadata. Both paths authenticate the same record-complete witness once.
+fn derive_with_tuples(
+    complete_prefix: &[u8],
+    signed: &SignedCheckpoint,
+) -> Result<(PayloadIndex, Vec<IndexTuple>), PayloadIndexError> {
     let prefix = verify_prefix_with_records(complete_prefix, &signed.checkpoint)?;
     let count = prefix
         .envelopes
@@ -144,27 +158,31 @@ pub fn verify_payload_index(
         }
     }
     tuples.sort_unstable();
-    let mut leaves = Vec::new();
-    leaves
-        .try_reserve_exact(count)
-        .map_err(|_| PayloadIndexError::Limit("hash allocation"))?;
-    leaves.extend(
-        tuples
-            .iter()
-            .map(|(account, day, index)| tuple_leaf(&signed.checkpoint, *account, *day, *index)),
-    );
-    // Reuse the parent module's exact transcript and tree law; this does not
-    // introduce a new index domain, encoding, or alternate producer algorithm.
-    let root = scope_root(count as u64, &root_of_with(scope_node, &leaves));
+    let root = root_from_tuples(&tuples, &signed.checkpoint)?;
     if root != signed.scope_index_root {
         return Err(PayloadIndexError::Root);
     }
-    Ok(PayloadIndex {
+    Ok((PayloadIndex {
         checkpoint: prefix.checkpoint,
         root,
         tuples: count,
         encoded_bytes: complete_prefix.len(),
-    })
+    }, tuples))
+}
+
+fn root_from_tuples(
+    tuples: &[IndexTuple],
+    checkpoint: &Checkpoint,
+) -> Result<Digest, PayloadIndexError> {
+    let mut leaves = Vec::new();
+    leaves
+        .try_reserve_exact(tuples.len())
+        .map_err(|_| PayloadIndexError::Limit("hash allocation"))?;
+    leaves.extend(tuples.iter().map(|(account, day, index)| {
+        tuple_leaf(checkpoint, *account, *day, *index)
+    }));
+    // The full and incremental paths share the original index transcript.
+    Ok(scope_root(tuples.len() as u64, &root_of_with(scope_node, &leaves)))
 }
 
 /// Reuse a checked derivation across range proofs at the SAME checkpoint.
