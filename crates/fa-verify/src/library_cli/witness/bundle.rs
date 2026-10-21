@@ -12,6 +12,8 @@ use fa_verify::checkpoint::witness::bundle::{
     MAX_WITNESSED_RECEIPT_BYTES, verify_witnessed_bundle_for,
 };
 use fa_verify::cli::Output;
+use fa_verify::scope::payloads::bundle::verify_witnessed_indexed_bundle_for;
+use fa_verify::scope::payloads::verify_payload_index;
 use fa_verify::{BundleReport, BundleScope, Grade, ScopeClaim};
 
 use crate::{Failure, array, hex, object, quote, read_bounded};
@@ -46,7 +48,13 @@ The bundle must name the EXACT selected signed-checkpoint artifact, not just
 a matching tree or body. Stripped or alternate signature sets require their
 own independently verified anchor. Every bundle predicate retains its own
 pass/fail/unrun grade; a matching quorum never repairs an incomplete balance.
-Account completeness retains the signed-index (not recomputed) premise.
+Without --index-prefix FILE, account completeness retains the signed-index
+premise. With that option, require an independently reconstructed index from
+every authenticated prefix payload. FILE is a native v2 complete prefix or
+an existing v3 balance export for the SAME checkpoint. Legacy v1 envelopes
+alone refuse. Only --expect-scope account admits this option. This discloses
+the entire prefix, including excluded records; it grants no export authority.
+Reconstruction is bounded to 65536 records and 1048576 expanded index tuples.
 To demand exact stock cells, repeat --expect-balance ACCOUNT32:UNIT:DAY|none
 or ACCOUNT32:UNIT:DAY|none:DEBITS:CREDITS for optional exact gross mantissas.
 ACCOUNT32 is 32 hex digits; UNIT is decimal u32; DAY is signed decimal i32.
@@ -58,8 +66,8 @@ Use --expect-no-balances to require zero claims. It cannot be combined with
 --expect-balance. With neither flag no specific balance set is requested.
 Every balance must still satisfy its full recomputation obligations.
 
-Input is canonical raw bytes, never hex text. Bundle plus receipt share a
-64 MiB budget; a receipt is at most 4096 bytes. Paths may be non-UTF-8.
+Input is canonical raw bytes, never hex text. Index witness, bundle and receipt
+share one 64 MiB budget; a receipt is at most 4096 bytes. Paths may be non-UTF-8.
 Output contains public metadata only. No files or pins are written. Global
 freshness, custody, policy registration, key rotation, authorization, full
 provenance and accounting truth are not established by this operation.
@@ -69,6 +77,7 @@ struct Request {
     anchor: super::Request,
     bundle: PathBuf,
     receipt: Option<PathBuf>,
+    index_prefix: Option<PathBuf>,
     expected: BundleExpectation,
     balances: Option<Vec<fa_verify::BalanceExpectation>>,
 }
@@ -123,6 +132,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     let (mut bundle, mut receipt, mut scope, mut documents, mut receipt_mode) =
         (None, None, None, None, None);
     let (mut account, mut days, mut indexes) = (None, None, None);
+    let mut index_prefix = None;
     let mut balance_args = balances::BalanceArgs::default();
     let mut index = 1;
     while let Some(argument) = args.get(index) {
@@ -149,6 +159,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         let slot = match name {
             "--bundle" => Some(&mut bundle),
             "--receipt" => Some(&mut receipt),
+            "--index-prefix" => Some(&mut index_prefix),
             "--expect-scope" => Some(&mut scope),
             "--expect-documents" => Some(&mut documents),
             "--expect-receipt" => Some(&mut receipt_mode),
@@ -207,6 +218,9 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             ));
         }
     };
+    if index_prefix.is_some() && !matches!(&scope, BundleScope::Account(_)) {
+        return Err(Failure::usage("--index-prefix requires --expect-scope account"));
+    }
     let inline_documents = match text(documents, "--expect-documents")? {
         "inline" => true,
         "commitments" => false,
@@ -240,6 +254,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         anchor,
         bundle,
         receipt: receipt.map(PathBuf::from),
+        index_prefix: index_prefix.map(PathBuf::from),
         expected,
         balances,
     })
@@ -256,17 +271,30 @@ fn verify(args: &[OsString], json: bool) -> Result<(String, bool), Failure> {
         .as_ref()
         .map(|path| read_bounded(path, MAX_WITNESSED_RECEIPT_BYTES))
         .transpose()?;
-    let remaining = MAX_WITNESSED_BUNDLE_BYTES - receipt.as_ref().map_or(0, Vec::len);
+    let mut remaining = MAX_WITNESSED_BUNDLE_BYTES - receipt.as_ref().map_or(0, Vec::len);
+    let derived = if let Some(path) = &request.index_prefix {
+        let bytes = read_bounded(path, remaining)?;
+        remaining -= bytes.len();
+        // Bind and verify the entire witness before reading the bundle. Its
+        // payload buffer is released here; only sealed metadata is retained.
+        Some(verify_payload_index(&bytes, pin.signed_checkpoint())
+            .map_err(|error| Failure::verification(error.to_string()))?)
+    } else {
+        None
+    };
     let bytes = read_bounded(&request.bundle, remaining)?;
-    let report = match &request.balances {
-        Some(expected) => verify_witnessed_bundle_balances_for(
-            &bytes,
-            &pin,
-            &request.expected,
-            expected,
-            receipt.as_deref(),
-        ),
-        None => verify_witnessed_bundle_for(&bytes, &pin, &request.expected, receipt.as_deref()),
+    let report = if let Some(index) = &derived {
+        verify_witnessed_indexed_bundle_for(
+            &bytes, &pin, &request.expected, receipt.as_deref(), index,
+            request.balances.as_deref(),
+        )
+    } else {
+        match &request.balances {
+            Some(expected) => verify_witnessed_bundle_balances_for(
+                &bytes, &pin, &request.expected, expected, receipt.as_deref(),
+            ),
+            None => verify_witnessed_bundle_for(&bytes, &pin, &request.expected, receipt.as_deref()),
+        }
     }
     .map_err(|error| Failure::verification(error.to_string()))?;
     let passed = report.verified();
@@ -339,6 +367,17 @@ fn render(
 ) -> String {
     let signed = pin.signed_checkpoint();
     let cp = &signed.checkpoint;
+    let index_derivation = if !matches!(&request.expected.scope, BundleScope::Account(_)) {
+        "not_applicable"
+    } else if !report.verified() {
+        "not_verified"
+    } else if report.checks.iter().any(|check| {
+        check.check == "payload_scope_index_derivation" && matches!(&check.grade, Grade::Pass)
+    }) {
+        "payload_recomputed"
+    } else {
+        "signed"
+    };
     if !json {
         let mut text = format!(
             "Witness-bound bundle: {}. Publisher plus {} witnesses verified ({} required).\nCheckpoint body {} at sequence {}; continuity {}.\nBundle {}. Requested {:?}; actual {:?}; completeness {}.\n",
@@ -375,7 +414,14 @@ fn render(
                 why.map_or_else(String::new, |why| format!(": {why}"))
             ));
         }
-        text.push_str("A signed account index is not independently recomputed. Global freshness, full provenance, policy registration, authorization and accounting truth are not established. No pin or payload bytes were written.");
+        if request.index_prefix.is_none() {
+            text.push_str("A signed account index is not independently recomputed. ");
+        } else if index_derivation == "payload_recomputed" {
+            text.push_str("The account index and every prefix selector were independently recomputed. ");
+        } else {
+            text.push_str("Payload-derived account-index assurance did not pass all required checks. ");
+        }
+        text.push_str("Global freshness, full provenance, policy registration, authorization and accounting truth are not established. No pin or payload bytes were written.");
         return text;
     }
     object([
@@ -429,6 +475,7 @@ fn render(
             balances::json(request.balances.as_deref()),
         ),
         ("completeness", quote(report.manifest.completeness.label())),
+        ("scope_index_derivation", quote(index_derivation)),
         (
             "requirements",
             object([
