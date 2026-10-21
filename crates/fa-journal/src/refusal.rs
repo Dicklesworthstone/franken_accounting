@@ -177,6 +177,9 @@ pub mod code {
     /// legs to another account or dimension within what earlier ones left
     /// (plan §8.2 `Reclassifies`; bead fa-xvba).
     pub const RECLASSIFICATION_SHAPE: &str = "FA-REF-185";
+    /// A post lost first-committer-wins because its period's state moved
+    /// after its basis: a close, lock or reopen won (plan §7.3).
+    pub const PERIOD_STATE_CHANGED: &str = "FA-REF-186";
     /// The named pending entry is missing, is not a `Pending`, or its handle digest mismatches.
     pub const RESOLUTION_TARGET: &str = "FA-REF-060";
     /// The posted sub-vector is not drawn leg-by-leg from the pending entry.

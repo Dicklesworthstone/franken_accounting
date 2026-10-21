@@ -201,6 +201,9 @@ pub struct PreparedPost {
     entry: Entry,
     entry_ref: EntryRef,
     period: String,
+    /// The period's vertex, whose state the preparation witnessed: a
+    /// lost commit reads it again to say whether that state moved.
+    period_vertex: VId,
     security_policy_epoch: u64,
     effects_digest: [u8; 32],
     identity: Identity,
@@ -342,6 +345,7 @@ impl PreparedPost {
             entry: _,
             entry_ref,
             period,
+            period_vertex,
             security_policy_epoch: _,
             effects_digest: _,
             identity,
@@ -382,6 +386,7 @@ impl PreparedPost {
                 return Ok(Err(crate::revaluation::frontier_changed(basis, frontier)));
             }
         }
+        let prepared_at = txn.basis();
         match txn.commit(db, &commit).await {
             Ok(seq) => Ok(Ok(Posted::Committed {
                 entry_ref,
@@ -389,6 +394,11 @@ impl PreparedPost {
                 period,
             })),
             Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+                if let Some(changed) =
+                    period_state_changed(db, period_vertex, &period, prepared_at)?
+                {
+                    return Ok(Err(changed));
+                }
                 Ok(Err(Refusal::new(
                     code::CONFLICT,
                     exit::CONFLICT,
@@ -3562,6 +3572,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         request: req,
         entry_ref: entry.entry_ref(evid),
         entry,
+        period_vertex: period_vid(&book.calendar.id, &period.code),
         period: period.code,
         security_policy_epoch: epoch,
         effects_digest,
@@ -3570,6 +3581,68 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         paired_reversal,
         planning,
     }))))
+}
+
+/// Plan §7.3: a post whose commit lost first-committer-wins because its
+/// period's state moved after `basis` (a close, lock or reopen won) is
+/// told so, read after the loss: the state it was planned under, the
+/// state now, and the PeriodControl entry that moved it. `None` when the
+/// state did not move: another witness lost, and the generic conflict
+/// stands.
+fn period_state_changed<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    period_vertex: VId,
+    period: &str,
+    basis: CommitSeq,
+) -> Result<Option<Refusal>, KernelError> {
+    let was = db
+        .vertex_at(period_vertex, basis)?
+        .and_then(|row| state_from_scalar(prop(&row, property::STATE)));
+    let now = db
+        .vertex(period_vertex)?
+        .and_then(|row| state_from_scalar(prop(&row, property::STATE)));
+    let (Some(was), Some(now)) = (was, now) else {
+        return Ok(None);
+    };
+    if was == now {
+        return Ok(None);
+    }
+    // The control entry that moved it: the latest PeriodControl entry in
+    // the period recorded after the basis.
+    let mut control: Option<(CommitSeq, VId)> = None;
+    for vid in db.in_neighbours(period_vertex, relation::IN_PERIOD)? {
+        let Some(row) = db.vertex(vid)? else {
+            continue;
+        };
+        if row.created_at <= basis || !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
+        let (recorded, at) = checked_entry(db, &row)?;
+        if recorded.proposal.class == EntryClass::PERIOD_CONTROL
+            && control.is_none_or(|(latest, _)| at > latest)
+        {
+            control = Some((at, vid));
+        }
+    }
+    let control = control.map_or_else(
+        || "not found".to_string(),
+        |(_, vid)| format!("{:032x}", vid.0),
+    );
+    Ok(Some(Refusal::new(
+        code::PERIOD_STATE_CHANGED,
+        exit::CONFLICT,
+        format!(
+            "PeriodStateChanged: period {period} was {} when this post was planned at {} and is now {}; control entry {control} moved it",
+            was.name(),
+            basis.0,
+            now.name()
+        ),
+        "plan §7.3 (the period's state is a point witness; a post racing a close, lock or reopen loses first-committer-wins)",
+        format!(
+            "read the period with `fa explain period {period} --json`; if {} still admits this class, re-plan and retry; otherwise post with the class and capability the period law names",
+            now.name()
+        ),
+    )))
 }
 
 /// Read a committed entry back by its derived identity.

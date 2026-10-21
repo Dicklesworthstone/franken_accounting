@@ -224,6 +224,14 @@ cite = "FG-LAW-FCW-01 (first committer wins)"
 fix = "re-plan and retry; if a close won, the period law refusal will say so"
 
 [[refusal]]
+code = "FA-REF-186"
+name = "PERIOD_STATE_CHANGED"
+owners = ["fa-journal"]
+exit = "conflict"
+cite = "plan §7.3 (a period's state is a point witness of every post into it: a post racing a close, lock or reopen loses first-committer-wins and is told the state it was planned under, the state now, and the control entry that moved it; bead fa-7uhr)"
+fix = "read the period with fa explain period <code> --json; if its state still admits the class, re-plan and retry; otherwise post with the class and capability the period law names, never under another effective date"
+
+[[refusal]]
 code = "FA-REF-031"
 name = "PERIOD_MOVED"
 owners = ["fa-journal"]

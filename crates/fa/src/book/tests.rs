@@ -704,7 +704,12 @@ fn prepared_post_close_race(runtime: &mut LabRuntime) -> bool {
         }
         (Err(refusal), Ok(closed)) => {
             assert_eq!(closed.recorded_at, CommitSeq(basis.0 + 1));
-            assert_eq!((refusal.code, refusal.exit), ("FA-REF-030", 6));
+            // The soft close moved March under the post (plan §7.3).
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-186", 6));
+            assert!(
+                refusal.message.contains("was Open") && refusal.message.contains("now SoftClosed"),
+                "{refusal}"
+            );
             Some(false)
         }
         _ => None,
