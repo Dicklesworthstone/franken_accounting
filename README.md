@@ -760,6 +760,10 @@ fa replay C:<oid> --book acme.fabook --json
 fa certificate status C:<oid> --book acme.fabook --json
 fa statement income-statement --for FY2025-P12 --branch scenario:but-for-breach --book acme.fabook --json
 
+# The receiver takes over: on the appointing order, a book-scope legal hold pins everything the book recorded through the appointment, and the estate's branch forks there (available today; the branch is the `receivership` scenario until substrate branches land, so the estate posts with --scenario receivership and reads take --branch scenario:receivership). fa document hold place --through <seq> places a book-scope hold on its own.
+fa book fork receivership --authority <order_oid> --at <appointment_seq> --book acme.fabook --json
+fa post --intent estate-rent.json --scenario receivership --book acme.fabook --json
+
 # Who and what the events name: parties, a relationship, an instrument mirrored by a GL leaf, and a new account (available today).
 fa party add vendor.json --book acme.fabook --json
 fa party relate O-1 ACME --kind owns --basis equity_voting --valid-from 2025-01-01 --pct 51/100 --book acme.fabook --json

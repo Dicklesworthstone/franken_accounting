@@ -458,3 +458,247 @@ fn attach_creates_supplemental_evidence() -> std::io::Result<()> {
     assert!(out.contains("--evidence"), "{out}");
     Ok(())
 }
+
+/// The receiver takes over (plan §15.6, scoreboard WF-TRT-02, fa-k07b): `fa book
+/// fork receivership` on the appointing order holds everything recorded
+/// through the appointment and opens the estate's branch there; a document
+/// recorded after it is not held, and the fork is one per book.
+#[test]
+fn a_receivership_fork_holds_the_pre_appointment_trunk_and_opens_the_estate_branch()
+-> std::io::Result<()> {
+    let dir = tmp("receivership")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Estate Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&book, &["chart", "import", &chart, "--json"]);
+    ok(
+        &book,
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    ok(&book, &["period", "open", "FY2026-P03", "--json"]);
+    let add = |name: &str, bytes: &[u8], kind: &str| -> (String, i64) {
+        let path = write(&dir, name, bytes);
+        let out = ok(
+            &book,
+            &[
+                "document",
+                "add",
+                &path,
+                "--kind",
+                kind,
+                "--grade",
+                "HumanUpload",
+                "--json",
+            ],
+        );
+        let oid = field(&out, "oid").expect("oid").to_string();
+        let at = field(&out, "recorded_at").expect("recorded_at");
+        (oid, at.parse().expect("a sequence"))
+    };
+    let (invoice, _) = add("invoice.txt", b"INVOICE 7001 March rent", "Invoice");
+    let rent = write(
+        &dir,
+        "rent.json",
+        format!(r#"{{"idempotency_key":"rent-pre",{RENT}}}"#).as_bytes(),
+    );
+    ok(
+        &book,
+        &["post", "--intent", &rent, "--evidence", &invoice, "--json"],
+    );
+    let (order, appointment) = add(
+        "order.txt",
+        b"ORDER APPOINTING RECEIVER, Case 26-cv-0042",
+        "CourtOrder",
+    );
+
+    // Usage: the branch is `receivership`, and it rests on an order.
+    let (code, out, _) = fa(&book, &["book", "fork", "receivership", "--json"]);
+    assert_eq!(code, 2, "no --authority: {out}");
+    assert!(out.contains("--authority"), "{out}");
+    let (code, out, _) = fa(
+        &book,
+        &["book", "fork", "estate", "--authority", &order, "--json"],
+    );
+    assert_eq!(code, 2, "not a receivership: {out}");
+    assert!(out.contains("fa scenario fork"), "{out}");
+
+    // The fork at the head: the hold pins everything through the order's
+    // own recording, and the branch forks there on the order.
+    let out = ok(
+        &book,
+        &[
+            "book",
+            "fork",
+            "receivership",
+            "--authority",
+            &order,
+            "--json",
+        ],
+    );
+    eprintln!("k07b receivership: {out}");
+    assert_eq!(field(&out, "event"), Some("receivership_forked"), "{out}");
+    assert_eq!(
+        field(&out, "appointment"),
+        Some(appointment.to_string().as_str()),
+        "{out}"
+    );
+    assert_eq!(field(&out, "branch"), Some("receivership"), "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("false"), "{out}");
+    let hold = field(&out, "hold_vid").expect("hold_vid").to_string();
+    let out = ok(&book, &["document", "hold", "show", &hold, "--json"]);
+    assert_eq!(
+        field(&out, "through"),
+        Some(appointment.to_string().as_str()),
+        "{out}"
+    );
+    assert_eq!(field(&out, "active"), Some("true"), "{out}");
+    for held in [&invoice, &order] {
+        let out = ok(
+            &book,
+            &["document", "hold", "list", "--subject", held, "--json"],
+        );
+        assert!(out.contains(&hold), "{held} is held: {out}");
+    }
+    let out = refused(
+        &book,
+        &["document", "erase", &invoice, "--grant", "erase", "--json"],
+        "FA-REF-117",
+        7,
+    );
+    assert!(out.contains(&hold), "{out}");
+
+    // The same fork again is its recorded outcome; another appointment is
+    // refused (one receivership per book).
+    let out = ok(
+        &book,
+        &[
+            "book",
+            "fork",
+            "receivership",
+            "--authority",
+            &order,
+            "--json",
+        ],
+    );
+    assert_eq!(field(&out, "already_recorded"), Some("true"), "{out}");
+    assert_eq!(field(&out, "hold_vid"), Some(hold.as_str()), "{out}");
+    let other = (appointment - 1).to_string();
+    let out = refused(
+        &book,
+        &[
+            "book",
+            "fork",
+            "receivership",
+            "--authority",
+            &order,
+            "--at",
+            &other,
+            "--json",
+        ],
+        "FA-REF-032",
+        6,
+    );
+    assert!(out.contains("fa scenario show receivership"), "{out}");
+
+    // After the appointment: the estate posts on its branch, and what trunk
+    // records now is not under the hold.
+    let estate = write(
+        &dir,
+        "estate.json",
+        format!(r#"{{"idempotency_key":"estate-rent",{RENT}}}"#).as_bytes(),
+    );
+    let out = ok(
+        &book,
+        &[
+            "post",
+            "--intent",
+            &estate,
+            "--evidence",
+            &invoice,
+            "--scenario",
+            "receivership",
+            "--json",
+        ],
+    );
+    assert_eq!(field(&out, "ordinal"), Some("1"), "{out}");
+    let out = ok(&book, &["scenario", "show", "receivership", "--json"]);
+    assert_eq!(
+        field(&out, "fork_at"),
+        Some(appointment.to_string().as_str()),
+        "{out}"
+    );
+    assert!(out.contains(&order), "the order is its assumption: {out}");
+    let (later, _) = add("later.txt", b"INVOICE 7002 April rent", "Invoice");
+    let out = ok(
+        &book,
+        &["document", "hold", "list", "--subject", &later, "--json"],
+    );
+    assert!(!out.contains(&hold), "{out}");
+    refused(
+        &book,
+        &["document", "erase", &later, "--grant", "erase", "--json"],
+        "FA-REF-088",
+        3,
+    );
+
+    // A book-scope hold by itself: --through names the sequence, and it
+    // cannot also name subjects.
+    let out = ok(
+        &book,
+        &[
+            "document",
+            "hold",
+            "place",
+            "--authority",
+            &order,
+            "--through",
+            "HEAD",
+            "--json",
+        ],
+    );
+    assert_eq!(field(&out, "event"), Some("legal_hold_placed"), "{out}");
+    assert_eq!(field(&out, "subjects"), Some("[]"), "{out}");
+    let through: i64 = field(&out, "through")
+        .expect("through")
+        .parse()
+        .expect("a sequence");
+    assert!(through > appointment, "{out}");
+    let (code, out, _) = fa(
+        &book,
+        &[
+            "document",
+            "hold",
+            "place",
+            "--authority",
+            &order,
+            "--through",
+            "HEAD",
+            "--subject",
+            &invoice,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    refused(
+        &book,
+        &[
+            "document",
+            "hold",
+            "place",
+            "--authority",
+            &order,
+            "--through",
+            "0",
+            "--key",
+            "zero",
+            "--json",
+        ],
+        "FA-REF-100",
+        2,
+    );
+    Ok(())
+}

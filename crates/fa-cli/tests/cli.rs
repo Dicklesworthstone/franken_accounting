@@ -8438,6 +8438,9 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         .to_string();
     run2(&["hold", "show", &hold_vid]);
     run2(&["hold", "list", "--subject", &bank_oid]);
+    // fa-k07b: the receiver's fork on the order (a book-scope hold and the
+    // receivership branch).
+    run2(&["book", "fork", "receivership", "--authority", &order_oid]);
     let rel_plan = dir.join("rel_ev.plan").display().to_string();
     let (_, rel_planned) = run2(&[
         "hold",

@@ -193,6 +193,97 @@ fn fork(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+const RECEIVERSHIP_EXAMPLE: &str =
+    "fa book fork receivership --authority <order-oid> [--at HEAD|<seq>] --json";
+
+/// `fa book fork receivership --authority <order> [--at HEAD|<seq>]` (plan
+/// §15.6, "The trustee or receiver takes over"; fa-k07b): a book-scope legal
+/// hold over everything recorded through the appointment sequence, on the
+/// order's authority, then the `receivership` scenario forked at that
+/// sequence with the order as its assumption document. The estate posts in
+/// it with `--scenario receivership` until substrate branches land.
+pub(crate) fn fork_receivership(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(2).map(String::as_str) {
+        Some(fa_journal::RECEIVERSHIP) if args.positional.len() == 3 => {}
+        _ => {
+            return Err(usage(
+                "book fork takes the branch `receivership` (plan §15.6); a counterfactual is `fa scenario fork <name>`",
+                RECEIVERSHIP_EXAMPLE,
+            ));
+        }
+    }
+    let authority = match args.flag_all("--authority").as_slice() {
+        [one] => Oid(crate::document::hex32(one, "--authority")?),
+        [] => {
+            return Err(usage(
+                "a receivership rests on the appointing order: record it with `fa document add <order> --kind <Kind>` and pass its oid as --authority",
+                RECEIVERSHIP_EXAMPLE,
+            ));
+        }
+        _ => {
+            return Err(usage(
+                "book fork receivership takes one --authority",
+                RECEIVERSHIP_EXAMPLE,
+            ));
+        }
+    };
+    let at = match args.flag_all("--at").as_slice() {
+        [] | ["HEAD"] => None,
+        [seq] => Some(CommitSeq(seq.parse::<u64>().map_err(|_| {
+            usage(
+                format!("--at `{seq}` is neither HEAD nor a commit sequence"),
+                RECEIVERSHIP_EXAMPLE,
+            )
+        })?)),
+        _ => {
+            return Err(usage(
+                "book fork receivership takes one --at",
+                RECEIVERSHIP_EXAMPLE,
+            ));
+        }
+    };
+    let capability = ctx.capability(args, &["receivership", "hold", "post"])?;
+    let mut book = ctx.books.open(args)?;
+    let date = control_date(args, &book)?;
+    let description = args
+        .flag("--description")
+        .unwrap_or(fa_journal::RECEIVERSHIP);
+    let forked = book.fork_receivership(capability, authority, at, date, description)??;
+    ctx.out.at_book(&book)?;
+    let already = forked.hold.already_recorded && forked.branch.already_recorded;
+    ctx.out.event(
+        "receivership_forked",
+        vec![
+            ("appointment", Json::Int(i128::from(forked.appointment.0))),
+            ("authority", s(hex(&authority.0))),
+            ("hold_vid", vid_hex(forked.hold.hold)),
+            (
+                "hold_recorded_at",
+                Json::Int(i128::from(forked.hold.recorded_at.0)),
+            ),
+            ("scenario", vid_hex(forked.branch.scenario)),
+            ("branch", s(fa_journal::RECEIVERSHIP)),
+            ("control_entry", vid_hex(forked.branch.control_entry)),
+            (
+                "recorded_at",
+                Json::Int(i128::from(forked.branch.recorded_at.0)),
+            ),
+            ("already_recorded", Json::Bool(already)),
+        ],
+        &format!(
+            "receivership {} at appointment sequence {}: legal hold {:032x} pins everything recorded through it; the estate posts with --scenario receivership and reads with --branch scenario:receivership",
+            if already {
+                "was already forked"
+            } else {
+                "forked"
+            },
+            forked.appointment.0,
+            forked.hold.hold.0
+        ),
+    );
+    Ok(())
+}
+
 fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
         return Err(usage(

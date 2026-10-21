@@ -4772,10 +4772,20 @@ impl Harness {
         authority: Oid,
         key: &[u8],
     ) -> Result<LegalHoldPlaced, Refusal> {
+        self.place_reach(cap, HoldReach::Subjects(subjects), authority, key)
+    }
+
+    fn place_reach(
+        &mut self,
+        cap: &Capability,
+        reach: HoldReach,
+        authority: Oid,
+        key: &[u8],
+    ) -> Result<LegalHoldPlaced, Refusal> {
         let ctx = self.ctx();
         let req = LegalHoldRequest {
             principal: cap.holder(),
-            subjects,
+            reach,
             authority,
             effective_date: DateDay::from_ymd(2026, 3, 20).unwrap(),
             idempotency_key: key.to_vec(),
@@ -5179,6 +5189,203 @@ fn a_legal_hold_pins_its_subjects_until_a_second_human_approves_its_release() {
         );
     }
     assert_eq!(h.erase(&eraser, entry).code, "FA-REF-117");
+}
+
+/// A book-scope hold (plan §15.6, the receiver's pre-appointment trunk; fa-k07b)
+/// pins every entry, document and party recorded at or before its sequence
+/// and nothing recorded after it, through one book-level cell.
+#[test]
+fn a_book_scope_hold_pins_everything_recorded_through_its_sequence() {
+    let mut h = harness();
+    let order = h.document(INVOICE, HUMAN_UPLOAD, b"RECEIVERSHIP ORDER 2026-21");
+    h.add_document(&order).expect("admitted");
+    let invoice = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 2101 (pre-appointment)");
+    h.add_document(&invoice).expect("admitted");
+    let held_doc = document_vid(&invoice.oid());
+    let held_entry = h
+        .post(h.request(
+            h.proposal(h.rent_legs(31), b"pre-appointment", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("posted")
+        .entry_ref()
+        .vid;
+    let appointment = h.db.frontier().unwrap();
+    let later_entry = h
+        .post(h.request(
+            h.proposal(h.rent_legs(32), b"post-appointment", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("posted")
+        .entry_ref()
+        .vid;
+    let later = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 2102 (post-appointment)");
+    h.add_document(&later).expect("admitted");
+    let later_doc = document_vid(&later.oid());
+    let counsel = Capability::embedded(PRINCIPAL, &["hold"]).expect("hold");
+    let eraser = Capability::embedded(PRINCIPAL, &["erase"]).expect("erase");
+
+    // Refused before anything is written: sequence 0, a sequence the book
+    // has not recorded, and a capability without hold.
+    let head = h.db.frontier().unwrap();
+    let cases: Vec<(&str, &Capability, CommitSeq, &str)> = vec![
+        ("through sequence 0", &counsel, CommitSeq(0), "FA-REF-100"),
+        (
+            "through an unrecorded sequence",
+            &counsel,
+            CommitSeq(head.0 + 5),
+            "FA-REF-141",
+        ),
+        (
+            "a capability without hold",
+            &eraser,
+            appointment,
+            "FA-REF-011",
+        ),
+    ];
+    for (i, (what, cap, through, want)) in cases.into_iter().enumerate() {
+        let key = format!("book-refused-{i}");
+        let r = h
+            .place_reach(
+                cap,
+                HoldReach::Through(through),
+                order.oid(),
+                key.as_bytes(),
+            )
+            .unwrap_err();
+        eprintln!("k07b book hold: {what} -> {} {}", r.code, r.message);
+        assert_eq!(r.code, want, "{what}: {r}");
+        assert_eq!(h.db.frontier().unwrap(), head, "{what}: nothing written");
+    }
+
+    let placed = h
+        .place_reach(
+            &counsel,
+            HoldReach::Through(appointment),
+            order.oid(),
+            b"book-hold",
+        )
+        .expect("placed");
+    eprintln!(
+        "k07b book hold: placed {:032x} through seq {} at seq {}",
+        placed.hold.0, appointment.0, placed.recorded_at.0
+    );
+    assert_eq!(
+        (placed.subjects.clone(), placed.through),
+        (Vec::new(), Some(appointment))
+    );
+    assert!(
+        h.db.edge(edge_id(relation::HOLDS, placed.hold, book_root()))
+            .unwrap()
+            .is_some(),
+        "the hold points at the book root"
+    );
+    // Everything recorded at or before the appointment is held, the
+    // authority document included; nothing recorded after it is.
+    for (what, subject) in [
+        ("the pre-appointment entry", held_entry),
+        ("the pre-appointment document", held_doc),
+        ("the order", document_vid(&order.oid())),
+    ] {
+        assert_eq!(h.holds_on(subject), vec![placed.hold], "{what}");
+    }
+    for (what, subject) in [
+        ("the post-appointment entry", later_entry),
+        ("the post-appointment document", later_doc),
+        ("the hold's own placement", placed.hold),
+        ("the book root", book_root()),
+    ] {
+        assert_eq!(h.holds_on(subject), Vec::<VId>::new(), "{what}");
+    }
+    let r = h.erase(&eraser, held_entry);
+    assert_eq!((r.code, r.exit), ("FA-REF-117", exit::SAFETY), "{r}");
+    assert!(
+        r.message.contains(&format!("{:032x}", placed.hold.0)),
+        "{r}"
+    );
+    assert_eq!(h.erase(&eraser, held_doc).code, "FA-REF-117");
+    assert_eq!(h.erase(&eraser, later_doc).code, "FA-REF-088");
+    let read = read_legal_hold(&h.db, h.book.book_id, placed.hold)
+        .unwrap()
+        .expect("a placed hold");
+    assert_eq!(
+        (
+            read.authority,
+            read.through,
+            read.subjects.len(),
+            read.released
+        ),
+        (order.oid(), Some(appointment), 0, None)
+    );
+
+    // The same placement again is its recorded outcome.
+    let again = h
+        .place_reach(
+            &counsel,
+            HoldReach::Through(appointment),
+            order.oid(),
+            b"book-hold",
+        )
+        .expect("recorded");
+    assert!(again.already_recorded);
+    assert_eq!(
+        (again.hold, again.through),
+        (placed.hold, Some(appointment))
+    );
+
+    // Through the head: the head when placed, and the same request again is
+    // that recorded hold however far the head has moved.
+    let head = h.db.frontier().unwrap();
+    let at_head = h
+        .place_reach(&counsel, HoldReach::ThroughHead, order.oid(), b"head-hold")
+        .expect("placed");
+    assert_eq!(at_head.through, Some(head));
+    assert_eq!(h.holds_on(later_doc), vec![at_head.hold]);
+    let retried = h
+        .place_reach(&counsel, HoldReach::ThroughHead, order.oid(), b"head-hold")
+        .expect("recorded");
+    assert!(retried.already_recorded);
+    assert_eq!((retried.hold, retried.through), (at_head.hold, Some(head)));
+    let mut covering = vec![placed.hold, at_head.hold];
+    covering.sort_by_key(|v| v.0);
+    assert_eq!(h.holds_on(held_doc), covering);
+    let plan = h
+        .plan_hold_release(at_head.hold, b"head-release")
+        .expect("planned");
+    let digest = plan.proposal_digest(&h.book).unwrap();
+    let approval = h
+        .approve_digest(RELEASE_APPROVER, digest)
+        .expect("recorded");
+    h.release_hold(&plan, &[approval]).expect("released");
+    assert_eq!(h.holds_on(later_doc), Vec::<VId>::new());
+    assert_eq!(h.holds_on(held_doc), vec![placed.hold]);
+
+    // A subject hold on a covered entry stands beside the book hold.
+    let named = h
+        .place_hold(&counsel, vec![held_entry], order.oid(), b"named-hold")
+        .expect("placed");
+    let mut both = vec![placed.hold, named.hold];
+    both.sort_by_key(|v| v.0);
+    assert_eq!(h.holds_on(held_entry), both);
+
+    // Releasing the book hold, approved by a second Human, unpins what only
+    // it held.
+    let plan = h
+        .plan_hold_release(placed.hold, b"book-release")
+        .expect("planned");
+    let digest = plan.proposal_digest(&h.book).unwrap();
+    let approval = h
+        .approve_digest(RELEASE_APPROVER, digest)
+        .expect("recorded");
+    let released = h.release_hold(&plan, &[approval]).expect("released");
+    eprintln!(
+        "k07b book hold: released {:032x} at seq {}",
+        released.hold.0, released.recorded_at.0
+    );
+    assert_eq!(h.holds_on(held_doc), Vec::<VId>::new());
+    assert_eq!(h.holds_on(held_entry), vec![named.hold]);
+    assert_eq!(h.erase(&eraser, held_doc).code, "FA-REF-088");
+    assert_eq!(h.erase(&eraser, held_entry).code, "FA-REF-117");
 }
 
 /// Ruling 3251: a hold pins the record, never the reservation. A Pending

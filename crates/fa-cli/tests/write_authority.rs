@@ -586,6 +586,11 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(
+            &["book", "fork", "receivership", "--authority", document],
+            &[Op::Receivership, Op::Hold, Op::Post],
+            Reaches,
+        ),
+        row(
             &[
                 "scenario",
                 "run",

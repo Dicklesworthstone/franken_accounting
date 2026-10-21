@@ -3820,6 +3820,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             );
             Ok(())
         }
+        Some("fork") => crate::scenario::fork_receivership(ctx, args),
         other => Err(unhandled("book", other)),
     }
 }

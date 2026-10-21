@@ -1510,7 +1510,7 @@ fn async_book_honors_caller_cancellation_before_reads_and_writes() {
             .place_legal_hold(
                 &cx,
                 &counsel,
-                vec![statement.vid],
+                fa_journal::HoldReach::Subjects(vec![statement.vid]),
                 &order.oid,
                 b"lab-hold",
                 day,
@@ -1586,7 +1586,7 @@ fn async_book_honors_caller_cancellation_before_reads_and_writes() {
             book.place_legal_hold(
                 &cx,
                 &counsel,
-                vec![statement.vid],
+                fa_journal::HoldReach::Subjects(vec![statement.vid]),
                 &order.oid,
                 b"cancelled-hold",
                 day,
@@ -5369,7 +5369,7 @@ fn a_legal_hold_through_the_facade_lifts_only_with_a_second_humans_approval() {
     let placed = book
         .place_legal_hold(
             &holder,
-            vec![ledger.vid],
+            fa_journal::HoldReach::Subjects(vec![ledger.vid]),
             &order.oid,
             b"hold",
             day,
@@ -5408,6 +5408,107 @@ fn a_legal_hold_through_the_facade_lifts_only_with_a_second_humans_approval() {
             .released,
         Some((released.release, released.recorded_at))
     );
+}
+
+/// The receiver's fork (plan §15.6, fa-k07b): refused before anything is
+/// written unless the capability holds receivership, hold and post; then a
+/// book-scope hold through the appointment and the `receivership` scenario
+/// forked there on the order. Repeating it is its recorded outcome, and a
+/// book has one receivership.
+#[test]
+fn the_receivership_fork_needs_its_authority_and_is_one_per_book() {
+    let book_id = Id128([0x4a; 16]);
+    let (spec, _) = spec(book_id);
+    let mut book = Book::create_memory(
+        BookKeys::for_development(0x4a),
+        spec,
+        Entropy::deterministic(0x4a),
+    )
+    .expect("create");
+    let receiver = VId(1);
+    let day = DateDay::from_ymd(2026, 3, 20).unwrap();
+    let doc = |bytes: &[u8]| fa_journal::Document {
+        book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: receiver,
+        bytes: bytes.to_vec(),
+    };
+    let ledger = book
+        .add_document(&doc(b"GENERAL LEDGER EXPORT (pre-appointment)"))
+        .expect("kernel")
+        .expect("admitted");
+    let order = book
+        .add_document(&doc(b"ORDER APPOINTING RECEIVER (facade fixture)"))
+        .expect("kernel")
+        .expect("admitted");
+    let appointment = book.head().expect("head");
+
+    for (what, ops) in [
+        ("without receivership", &["hold", "post"][..]),
+        ("without hold", &["receivership", "post"][..]),
+        ("without post", &["receivership", "hold"][..]),
+    ] {
+        let cap = Capability::embedded(receiver, ops).expect("capability");
+        let r = book
+            .fork_receivership(cap, order.oid, None, day, "receivership")
+            .expect("kernel")
+            .unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-011", 7), "{what}: {r}");
+        assert_eq!(
+            book.head().expect("head"),
+            appointment,
+            "{what}: nothing written"
+        );
+    }
+
+    let cap = Capability::embedded(receiver, &["receivership", "hold", "post"]).expect("receiver");
+    let forked = book
+        .fork_receivership(cap.clone(), order.oid, None, day, "receivership")
+        .expect("kernel")
+        .expect("forked");
+    assert_eq!(forked.appointment, appointment);
+    assert_eq!(forked.hold.through, Some(appointment));
+    assert!(!forked.hold.already_recorded && !forked.branch.already_recorded);
+    assert_eq!(
+        book.legal_holds_on(ledger.vid).unwrap(),
+        vec![forked.hold.hold],
+        "the pre-appointment document is held"
+    );
+    let branch = book
+        .scenario(fa_journal::RECEIVERSHIP)
+        .unwrap()
+        .expect("the receivership branch");
+    assert_eq!(branch.body.fork_at, appointment);
+    assert_eq!(branch.assumptions, vec![order.oid]);
+
+    // The same fork again, without --at or naming the appointment, is the
+    // recorded outcome; another appointment is refused.
+    for at in [None, Some(appointment)] {
+        let again = book
+            .fork_receivership(cap.clone(), order.oid, at, day, "receivership")
+            .expect("kernel")
+            .expect("recorded");
+        assert!(again.hold.already_recorded && again.branch.already_recorded);
+        assert_eq!(
+            (again.appointment, again.hold.hold),
+            (appointment, forked.hold.hold)
+        );
+    }
+    let head = book.head().expect("head");
+    let r = book
+        .fork_receivership(
+            cap,
+            order.oid,
+            Some(CommitSeq(appointment.0 - 1)),
+            day,
+            "receivership",
+        )
+        .expect("kernel")
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-032", 6), "{r}");
+    assert_eq!(book.head().expect("head"), head, "nothing written");
 }
 
 #[test]
