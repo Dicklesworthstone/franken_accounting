@@ -151,6 +151,13 @@ fn head(book: &Path) -> i128 {
     integer(output.get("coordinate").unwrap(), "known_at")
 }
 
+/// AccessEvents recorded after `since` (fa-7dw): a read-only token's command
+/// records one before it observes the book, refused or not.
+fn access_events_since(book: &Path, since: i128) -> i128 {
+    let log = ok(book, &["access", "log", "--since", &since.to_string()]);
+    integer(log.get("data").unwrap(), "count")
+}
+
 struct Fixture {
     dir: PathBuf,
     book: PathBuf,
@@ -1509,7 +1516,11 @@ fn bank_drift_admission_precedes_open_and_read_only_procedures_keep_their_author
     );
     let observed = json::parse(output.stdout.lines().last().unwrap()).unwrap();
     assert_eq!(integer(data(&observed), "finding_count"), 0);
-    assert_eq!(head(&f.book), before);
+    assert_eq!(
+        head(&f.book),
+        before + access_events_since(&f.book, before),
+        "only the token session's AccessEvents were written"
+    );
 }
 
 #[test]

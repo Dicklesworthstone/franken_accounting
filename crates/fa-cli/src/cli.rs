@@ -76,8 +76,8 @@ type Handler = fn(&mut Ctx<'_>, &Args) -> Result<(), Fail>;
 const HANDLERS: &[(&str, Handler)] = &[
     ("book", book_cmd),
     ("chart", chart_cmd),
-    ("law", crate::laws::law_cmd),
     ("access", crate::access::access_cmd),
+    ("law", crate::laws::law_cmd),
     ("unit", crate::laws::unit_cmd),
     ("period", period_cmd),
     ("calendar", calendar_cmd),

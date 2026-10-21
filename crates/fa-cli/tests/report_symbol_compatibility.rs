@@ -332,6 +332,19 @@ impl Fixture {
         .unwrap()
     }
 
+    /// AccessEvents recorded after `since` (fa-7dw).
+    fn accessed_since(&self, since: CommitSeq) -> u64 {
+        Book::open_dir(
+            &self.book,
+            BookKeys::for_development(SEED),
+            Entropy::deterministic(183),
+        )
+        .unwrap()
+        .access_log(since)
+        .unwrap()
+        .len() as u64
+    }
+
     fn compact(&self) {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
@@ -425,7 +438,11 @@ impl Fixture {
         assert_eq!(data(&retried[0]), data(&saved.original));
         assert_eq!(text(data(&retried[1]), "oid"), saved.oid);
         assert_eq!(number(data(&retried[1]), "recorded_at"), saved.recorded_at);
-        assert_eq!(self.head(), before, "retained retry writes nothing");
+        assert_eq!(
+            self.head(),
+            CommitSeq(before.0 + self.accessed_since(before)),
+            "a retained retry writes nothing but the reader's AccessEvents"
+        );
     }
 
     fn replay(&self, saved: &Saved) {
@@ -645,7 +662,12 @@ fn checkpointed_prefix_statement_bridges_read_and_certify_every_retained_frontie
         reader.extend(["--token", READER]);
         let plain = fixture.ok(&reader);
         assert_eq!(plain.len(), 1);
-        assert_eq!(fixture.head(), frontier);
+        assert_eq!(
+            fixture.accessed_since(frontier),
+            1,
+            "the reader's read is recorded"
+        );
+        assert_eq!(fixture.head(), CommitSeq(frontier.0 + 1));
         reader.push("--certify");
         let (status, refused) = fixture.run(&reader);
         assert_eq!(status, 7, "{refused:?}");

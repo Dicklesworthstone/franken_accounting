@@ -261,7 +261,16 @@ fn draft_review_requires_current_read_and_certification_requires_produce() {
     let (code, output) = bound(&f, &["read"], &dry_run());
     assert_eq!(code, 0, "{output:?}");
     assert_eq!(text(&output[0], "event"), "draft_diff");
-    assert_eq!(head(&f.book), before);
+    // A read-only bound review writes only its AccessEvent (fa-7dw).
+    let accessed = integer(
+        get(
+            &ok(&f.book, &["access", "log", "--since", &before.to_string()]),
+            "data",
+        ),
+        "count",
+    );
+    assert_eq!(accessed, 1);
+    assert_eq!(head(&f.book), before + accessed);
 
     let mut certify = dry_run().to_vec();
     certify.push("--certify");
