@@ -117,9 +117,12 @@ impl LanternError {
                 "fa procedure list --json shows each procedure's registered parameters and inputs"
                     .into(),
             ),
-            Self::Overflow(_) => {
-                Some("narrow the coordinate with --effective-through YYYY-MM-DD".into())
-            }
+            // Every procedure reads its snapshot at --known-at; only the
+            // historical folds also honor --effective-through.
+            Self::Overflow(_) => Some(
+                "narrow the snapshot with --known-at <an earlier seq> (--effective-through YYYY-MM-DD narrows only the historical folds)"
+                    .into(),
+            ),
             Self::BudgetExhausted { fix, .. } => Some(fix.clone()),
             _ => None,
         }
@@ -810,7 +813,7 @@ pub fn run_over_with_budget(
             procedure: row.id,
             used: work.total(),
             budget: limit,
-            fix: "narrow the coordinate with --effective-through YYYY-MM-DD or increase the work budget".into(),
+            fix: "narrow the snapshot with --known-at <an earlier seq> (--effective-through YYYY-MM-DD narrows only the historical folds) or increase the work budget".into(),
         });
     }
     for f in &findings {

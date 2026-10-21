@@ -1280,3 +1280,83 @@ fn a_later_entry_into_an_attested_month_is_one_assertion_drift_finding() {
     );
     assert_eq!(text(data(&again), "run_vid"), text(recorded, "run_vid"));
 }
+
+/// A procedure whose total leaves the 128-bit range refuses through the real
+/// binary with exit 3 and the accumulator named, never a wrapped, clamped or
+/// panicking number (FA-INV-06; fa-4aym). Each posting is within range: only
+/// the concentration procedure's unit volume overflows.
+#[test]
+fn a_procedure_total_beyond_i128_is_a_typed_refusal() {
+    let root = temporary();
+    let book = root.join("book");
+    ok(&book, &["book", "create", "--name", "Wide totals"]);
+    let chart = root.join("chart.json");
+    std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1010","name":"Bank","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#).unwrap();
+    ok(&book, &["chart", "import", chart.to_str().unwrap()]);
+    ok(&book, &["period", "create", "--fiscal-year", "2026"]);
+    ok(&book, &["period", "open", "FY2026-P01"]);
+    let source = root.join("source.txt");
+    std::fs::write(&source, "Supporting document for the wide-total entries.").unwrap();
+    let document = ok(
+        &book,
+        &[
+            "document",
+            "add",
+            source.to_str().unwrap(),
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let evidence = text(data(&document), "oid").to_string();
+    // i128::MAX cents, then one more cent on other accounts.
+    let mut known_at = Vec::new();
+    for (key, day, debit, credit, amount) in [
+        (
+            "max",
+            "2026-01-05",
+            "1010",
+            "1000",
+            "1701411834604692317316873037158841057.27 USD",
+        ),
+        ("cent", "2026-01-06", "6000", "4000", "0.01 USD"),
+    ] {
+        let path = root.join(format!("{key}.json"));
+        std::fs::write(&path, format!(r#"{{"idempotency_key":"{key}","effective_date":"{day}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount}"}},{{"side":"credit","account":"{credit}","amount":"{amount}"}}]}}"#)).unwrap();
+        let posted = ok(
+            &book,
+            &[
+                "post",
+                "--intent",
+                path.to_str().unwrap(),
+                "--evidence",
+                &evidence,
+            ],
+        );
+        known_at.push(number(posted.get("coordinate").unwrap(), "known_at"));
+    }
+    let (exit, events) = call(&book, &["procedure", "run", "graph.concentration"], None);
+    assert_eq!(exit, 3, "{events:?}");
+    let error = data(&events[0]);
+    assert_eq!(text(error, "class"), "refusal");
+    assert!(
+        text(error, "message").contains("graph.concentration unit volume"),
+        "{error:?}"
+    );
+    // The fix names the narrowing every procedure honors: at the sequence
+    // that recorded only the first entry, the same procedure runs.
+    assert!(text(error, "fix").contains("--known-at"), "{error:?}");
+    let first = known_at[0].to_string();
+    let narrowed = ok(
+        &book,
+        &[
+            "procedure",
+            "run",
+            "graph.concentration",
+            "--known-at",
+            &first,
+        ],
+    );
+    assert_eq!(text(&narrowed, "event"), "procedure_run");
+}
