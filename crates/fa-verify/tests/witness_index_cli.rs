@@ -271,3 +271,133 @@ fn non_utf8_index_filenames_are_not_lossily_rewritten() {
     set(&mut input, "--index-prefix", path.into_os_string());
     result(run(&input), 0);
 }
+
+
+fn incremental_args() -> (Vec<OsString>, PathBuf) {
+    let (mut input, dir) = args();
+    remove(&mut input, "--index-prefix");
+    input.extend([
+        "--previous".into(),
+        dir.join("checkpoint").into_os_string(),
+        "--expect-previous-body".into(),
+        vector::BODY.into(),
+        "--consistency".into(),
+        dir.join("consistency").into_os_string(),
+        "--index-baseline-prefix".into(),
+        dir.join("index").into_os_string(),
+    ]);
+    (input, dir)
+}
+
+#[test]
+fn incremental_state_can_verify_the_same_account_bundle_without_resending_current_history() {
+    use fa_verify::BundleScope;
+    use fa_verify::ScopeClaim;
+    use fa_verify::checkpoint::witness::{
+        RecipientWitnessPolicy, verify_witnessed_checkpoint,
+    };
+    use fa_verify::checkpoint::witness::bundle::BundleExpectation;
+    use fa_verify::scope::payloads::bundle::verify_witnessed_incremental_indexed_bundle_for;
+    use fa_verify::scope::payloads::incremental::IncrementalPayloadIndex;
+
+    let policy = RecipientWitnessPolicy::new(
+        [0x42; 16],
+        [0; 16],
+        [0x55; 32],
+        decode(vector::PUBLISHER).try_into().unwrap(),
+        &[
+            decode(vector::WITNESS_A).try_into().unwrap(),
+            decode(vector::WITNESS_B).try_into().unwrap(),
+        ],
+        2,
+    )
+    .unwrap();
+    let checkpoint = decode(vector::CHECKPOINT);
+    let pin = verify_witnessed_checkpoint(&checkpoint, &policy).unwrap();
+    let state = IncrementalPayloadIndex::verify(&decode(vector::PREFIX), &pin).unwrap();
+    let current = state
+        .advance(&checkpoint, &decode(vector::CONSISTENCY), &[])
+        .unwrap();
+    let expected = BundleExpectation {
+        scope: BundleScope::Account(ScopeClaim {
+            account: 99,
+            from: 0,
+            to: 1,
+        }),
+        inline_documents: true,
+        publisher_receipt: false,
+    };
+    let report = verify_witnessed_incremental_indexed_bundle_for(
+        &decode(vector::BUNDLE),
+        &expected,
+        None,
+        &current,
+        None,
+    )
+    .unwrap();
+    assert!(report.verified());
+    assert!(report.checks.iter().any(|check| {
+        check.check == "payload_scope_index_derivation"
+            && matches!(&check.grade, fa_verify::Grade::Pass)
+    }));
+}
+
+#[test]
+fn incremental_bundle_mode_is_explicit_mutually_exclusive_and_pin_first() {
+    let (input, dir) = incremental_args();
+    let text = result(run(&input), 0);
+    assert!(text.contains(""scope_index_derivation":"payload_recomputed""));
+    assert!(text.contains(""recorded_boundary":{"status":"verified""));
+    assert!(text.contains(""continuity":"unchanged""));
+
+    let mut mixed = input.clone();
+    mixed.extend([
+        "--index-prefix".into(),
+        dir.join("index").into_os_string(),
+    ]);
+    result(run(&mixed), 2);
+
+    let mut missing_baseline = input.clone();
+    remove(&mut missing_baseline, "--index-baseline-prefix");
+    result(run(&missing_baseline), 2);
+
+    let (mut no_continuity, _) = args();
+    remove(&mut no_continuity, "--index-prefix");
+    no_continuity.extend([
+        "--index-baseline-prefix".into(),
+        dir.join("index").into_os_string(),
+    ]);
+    result(run(&no_continuity), 2);
+
+    let mut wrong_pin = input;
+    set(&mut wrong_pin, "--expect-previous-body", "ff".repeat(32));
+    set(
+        &mut wrong_pin,
+        "--bundle",
+        dir.join("missing-bundle").into_os_string(),
+    );
+    let error = result(run(&wrong_pin), 8);
+    assert!(error.contains("retained body digest"));
+}
+
+#[test]
+fn delta_record_requires_a_baseline_and_tree_continuity_consumes_bundle_budget() {
+    let (mut bad, dir) = args();
+    bad.extend([
+        "--index-delta-record".into(),
+        dir.join("missing-record").into_os_string(),
+    ]);
+    result(run(&bad), 2);
+
+    let (input, dir) = incremental_args();
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("bundle"))
+        .unwrap();
+    // Continuity and baseline bytes have already consumed part of the one
+    // 64 MiB budget, so a nominally max-sized bundle must refuse at the read.
+    file.set_len(fa_verify::checkpoint::witness::bundle::MAX_WITNESSED_BUNDLE_BYTES as u64)
+        .unwrap();
+    let error = result(run(&input), 8);
+    assert!(error.contains("byte bound"));
+}
