@@ -258,7 +258,10 @@ pub use statement_trace::{
     MAX_STATEMENT_TRACE_PUBLICATIONS, StatementEntryEvent, StatementEntryLink,
     StatementPublication, StatementTrace, StatementTraceCertificate, StatementTraceRequest,
 };
-pub use statements::{CertifiedStatement, StatementSelection};
+pub use statements::{
+    CertifiedStatement, StatementSelection, UncorrectedLine, UncorrectedStatement,
+    statement_definition_kind,
+};
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};
 pub use summary_certificate::{
     CertifiedSummaryTrialBalance, MAX_SUMMARY_CERTIFICATE_BYTES, SummaryCertificate,
