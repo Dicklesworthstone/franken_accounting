@@ -162,12 +162,15 @@ fn derive_with_tuples(
     if root != signed.scope_index_root {
         return Err(PayloadIndexError::Root);
     }
-    Ok((PayloadIndex {
-        checkpoint: prefix.checkpoint,
-        root,
-        tuples: count,
-        encoded_bytes: complete_prefix.len(),
-    }, tuples))
+    Ok((
+        PayloadIndex {
+            checkpoint: prefix.checkpoint,
+            root,
+            tuples: count,
+            encoded_bytes: complete_prefix.len(),
+        },
+        tuples,
+    ))
 }
 
 fn root_from_tuples(
@@ -178,11 +181,16 @@ fn root_from_tuples(
     leaves
         .try_reserve_exact(tuples.len())
         .map_err(|_| PayloadIndexError::Limit("hash allocation"))?;
-    leaves.extend(tuples.iter().map(|(account, day, index)| {
-        tuple_leaf(checkpoint, *account, *day, *index)
-    }));
+    leaves.extend(
+        tuples
+            .iter()
+            .map(|(account, day, index)| tuple_leaf(checkpoint, *account, *day, *index)),
+    );
     // The full and incremental paths share the original index transcript.
-    Ok(scope_root(tuples.len() as u64, &root_of_with(scope_node, &leaves)))
+    Ok(scope_root(
+        tuples.len() as u64,
+        &root_of_with(scope_node, &leaves),
+    ))
 }
 
 /// Reuse a checked derivation across range proofs at the SAME checkpoint.

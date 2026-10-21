@@ -9,8 +9,8 @@
 use core::fmt;
 
 use super::{
-    IndexTuple, MAX_PAYLOAD_INDEX_TUPLES, PayloadIndex, PayloadIndexError,
-    derive_with_tuples, root_from_tuples,
+    IndexTuple, MAX_PAYLOAD_INDEX_TUPLES, PayloadIndex, PayloadIndexError, derive_with_tuples,
+    root_from_tuples,
 };
 use crate::checkpoint::SignedCheckpoint;
 use crate::checkpoint::witness::{AdvanceError, WitnessedCheckpoint, verify_checkpoint_advance};
@@ -58,16 +58,22 @@ impl fmt::Display for IndexAdvanceError {
             Self::Continuity(error) => write!(f, "{error}"),
             Self::Derivation(error) => write!(f, "{error}"),
             Self::Limit(what) => write!(f, "incremental index exceeds the {what} bound"),
-            Self::RecordCount { expected, actual } => write!(f,
-                "the checkpoint appends {expected} leaves; supplied {actual} records"),
-            Self::Record { leaf_index, error } => write!(f,
-                "appended leaf {leaf_index}: {error}"),
-            Self::Position { expected, actual } => write!(f,
-                "the next appended leaf must be {expected}, not {actual}"),
-            Self::PayloadRequired { leaf_index } => write!(f,
-                "appended leaf {leaf_index} requires its payload, not just membership"),
-            Self::RecordedOrder { leaf_index } => write!(f,
-                "appended leaf {leaf_index} is not in journal order after the retained frontier"),
+            Self::RecordCount { expected, actual } => write!(
+                f,
+                "the checkpoint appends {expected} leaves; supplied {actual} records"
+            ),
+            Self::Record { leaf_index, error } => write!(f, "appended leaf {leaf_index}: {error}"),
+            Self::Position { expected, actual } => {
+                write!(f, "the next appended leaf must be {expected}, not {actual}")
+            }
+            Self::PayloadRequired { leaf_index } => write!(
+                f,
+                "appended leaf {leaf_index} requires its payload, not just membership"
+            ),
+            Self::RecordedOrder { leaf_index } => write!(
+                f,
+                "appended leaf {leaf_index} is not in journal order after the retained frontier"
+            ),
         }
     }
 }
@@ -97,10 +103,12 @@ impl IncrementalPayloadIndex {
         complete_prefix: &[u8],
         checkpoint: &WitnessedCheckpoint,
     ) -> Result<Self, PayloadIndexError> {
-        let (index, tuples) = derive_with_tuples(
-            complete_prefix, checkpoint.signed_checkpoint(),
-        )?;
-        Ok(Self { checkpoint: checkpoint.clone(), index, tuples })
+        let (index, tuples) = derive_with_tuples(complete_prefix, checkpoint.signed_checkpoint())?;
+        Ok(Self {
+            checkpoint: checkpoint.clone(),
+            index,
+            tuples,
+        })
     }
 
     #[must_use]
@@ -141,15 +149,26 @@ impl IncrementalPayloadIndex {
         records: &[&[u8]],
     ) -> Result<Self, IndexAdvanceError> {
         let encoded_bytes = witness_budget(
-            self.index.encoded_bytes, candidate.len(), consistency.len(), records,
+            self.index.encoded_bytes,
+            candidate.len(),
+            consistency.len(),
+            records,
         )?;
         let advance = verify_checkpoint_advance(&self.checkpoint, candidate, consistency)
             .map_err(IndexAdvanceError::Continuity)?;
         let checkpoint = advance.into_checkpoint();
         let (index, tuples) = extend(
-            &self.index, &self.tuples, checkpoint.signed_checkpoint(), records, encoded_bytes,
+            &self.index,
+            &self.tuples,
+            checkpoint.signed_checkpoint(),
+            records,
+            encoded_bytes,
         )?;
-        Ok(Self { checkpoint, index, tuples })
+        Ok(Self {
+            checkpoint,
+            index,
+            tuples,
+        })
     }
 }
 
@@ -162,9 +181,13 @@ fn witness_budget(
     if records.len() > MAX_PRODUCTION_RECORDS {
         return Err(IndexAdvanceError::Limit("delta record count"));
     }
-    [candidate, consistency].into_iter().chain(records.iter().map(|bytes| bytes.len()))
+    [candidate, consistency]
+        .into_iter()
+        .chain(records.iter().map(|bytes| bytes.len()))
         .try_fold(previous, |total, size| {
-            total.checked_add(size).filter(|sum| *sum <= MAX_PRODUCTION_BYTES)
+            total
+                .checked_add(size)
+                .filter(|sum| *sum <= MAX_PRODUCTION_BYTES)
                 .ok_or(IndexAdvanceError::Limit("cumulative witness bytes"))
         })
 }
@@ -183,10 +206,15 @@ fn extend(
     if cp.leaf_count > MAX_PRODUCTION_LEAVES as u64 {
         return Err(IndexAdvanceError::Limit("retained leaf count"));
     }
-    let count = cp.leaf_count.checked_sub(old.checkpoint.leaf_count)
+    let count = cp
+        .leaf_count
+        .checked_sub(old.checkpoint.leaf_count)
         .ok_or(PayloadIndexError::Anchor)?;
     if count != records.len() as u64 {
-        return Err(IndexAdvanceError::RecordCount { expected: count, actual: records.len() });
+        return Err(IndexAdvanceError::RecordCount {
+            expected: count,
+            actual: records.len(),
+        });
     }
     let mut appended = Vec::new();
     let mut previous_position = None;
@@ -197,7 +225,8 @@ fn extend(
             .map_err(|error| IndexAdvanceError::Record { leaf_index, error })?;
         if record.leaf_index != leaf_index {
             return Err(IndexAdvanceError::Position {
-                expected: leaf_index, actual: record.leaf_index,
+                expected: leaf_index,
+                actual: record.leaf_index,
             });
         }
         if record.record != RecordCheck::Recomputed {
@@ -211,19 +240,28 @@ fn extend(
         }
         previous_position = Some(envelope.position());
         if let Some(day) = envelope.effective_day {
-            let length = retained.len().checked_add(appended.len())
+            let length = retained
+                .len()
+                .checked_add(appended.len())
                 .and_then(|n| n.checked_add(envelope.account_vids.len()));
             if length.is_none_or(|n| n > MAX_PAYLOAD_INDEX_TUPLES) {
                 return Err(IndexAdvanceError::Limit("expanded tuple count"));
             }
-            appended.try_reserve(envelope.account_vids.len())
+            appended
+                .try_reserve(envelope.account_vids.len())
                 .map_err(|_| IndexAdvanceError::Limit("delta tuple allocation"))?;
-            appended.extend(envelope.account_vids.iter().map(|account| (*account, day, leaf_index)));
+            appended.extend(
+                envelope
+                    .account_vids
+                    .iter()
+                    .map(|account| (*account, day, leaf_index)),
+            );
         }
     }
     appended.sort_unstable();
     let mut tuples = Vec::new();
-    tuples.try_reserve_exact(retained.len() + appended.len())
+    tuples
+        .try_reserve_exact(retained.len() + appended.len())
         .map_err(|_| IndexAdvanceError::Limit("merged tuple allocation"))?;
     // Late-effective tuples may precede old tuples; append-only journal order
     // is NOT append-only account/day order. Merge without re-sorting history.
@@ -243,12 +281,15 @@ fn extend(
     if root != next.scope_index_root {
         return Err(PayloadIndexError::Root.into());
     }
-    Ok((PayloadIndex {
-        checkpoint: *cp,
-        root,
-        tuples: tuples.len(),
-        encoded_bytes,
-    }, tuples))
+    Ok((
+        PayloadIndex {
+            checkpoint: *cp,
+            root,
+            tuples: tuples.len(),
+            encoded_bytes,
+        },
+        tuples,
+    ))
 }
 
 #[cfg(test)]
