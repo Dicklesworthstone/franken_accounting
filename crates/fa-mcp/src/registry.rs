@@ -83,6 +83,10 @@ pub const RESOURCES: &[(&str, &str)] = &[
         "the launch-bound book's recorded drafts, including owners, states, intent counts and promotion outcomes (`fa draft list`); `{book}` as above",
     ),
     (
+        "resource://fa/cases/{book}",
+        "the launch-bound book's journaled restatement cases: kind, affected periods, state, determination, rehearsal, approved manifest and every transition (`fa case list`); `{book}` as above",
+    ),
+    (
         "resource://fa/certificates/{id}",
         "the status of retained report certificate `{id}` (`fa certificate status`); `{id}` is `C:<oid>`, a 64-hex digest, or complete canonical hex bytes",
     ),
@@ -95,16 +99,10 @@ pub const RESOURCES: &[(&str, &str)] = &[
 /// Unimplemented resources are not advertised as successful empty inventories.
 /// Keep the reason beside the live resource registry so discovery and direct
 /// adapter calls give the same account of the available functionality.
-pub const UNAVAILABLE_RESOURCES: &[(&str, &str)] = &[
-    (
-        "resource://fa/cases/{book}",
-        "Restatement cases are not implemented (fa-75j4); period state is available through resource://fa/periods/{book}, but is not a case inventory.",
-    ),
-    (
-        "resource://fa/bundles/{id}",
-        "Bundles are returned inline by fa_notary_bundle and are not retained in a searchable bundle inventory; an identifier cannot be resolved by this build. Use the returned bytes, receipt and checkpoint public key with fa-verify.",
-    ),
-];
+pub const UNAVAILABLE_RESOURCES: &[(&str, &str)] = &[(
+    "resource://fa/bundles/{id}",
+    "Bundles are returned inline by fa_notary_bundle and are not retained in a searchable bundle inventory; an identifier cannot be resolved by this build. Use the returned bytes, receipt and checkpoint public key with fa-verify.",
+)];
 
 /// A deterministic multi-step workflow macro (plan §15.4) composed from
 /// existing dispatcher invocations with step-by-step provenance.

@@ -1654,11 +1654,15 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert!(findings_res["procedures"]["procedures"].is_array());
     assert_eq!(findings_res["findings"]["evidence"], json!("FA-EVID-L01"));
     assert_eq!(findings_res["findings"]["claim"], json!("statistical"));
-    let cases = mcp.request(
+    let read = mcp.result(
         "resources/read",
         json!({"uri": "resource://fa/cases/default"}),
     );
-    assert!(cases.get("error").is_some(), "unimplemented cases: {cases}");
+    assert_eq!(
+        read["contents"][0]["text"].as_str().unwrap(),
+        cli_data(&["case", "list", "--book", &b, "--json"]),
+        "case resource must read the journaled cases",
+    );
     let read = mcp.result(
         "resources/read",
         json!({"uri": "resource://fa/drafts/default"}),
