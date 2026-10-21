@@ -19,7 +19,7 @@ use fa_model::{LEGAL_ENTITY_DIMENSION, LegPayload};
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 
 use crate::genesis::BookSpec;
-use crate::refusal::{KernelError, Refusal, code, exit};
+use crate::refusal::{KernelError, Refusal, Why, code, exit};
 
 /// Why a leg's entity is not admissible.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,5 +176,7 @@ pub(crate) fn per_entity_refusal(
             "balance each entity on its own through its intercompany due-to/due-from accounts between {}; the kernel never invents a leg across entities",
             named.join(" and ")
         ),
-    )))
+    )
+    .at("entities", named.join(", "))
+    .because(Why::Law("FA-INV-01.per-entity".to_string()))))
 }

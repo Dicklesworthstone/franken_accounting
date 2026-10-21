@@ -1637,7 +1637,18 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     "add a {side} leg of {} to the account that explains it; the kernel never invents one",
                     show(gap)
                 ),
-            )));
+            )
+            .at(
+                "unit",
+                book.units
+                    .get(unit)
+                    .map_or_else(|| format!("unit {}", t.unit_id), |u| u.code.clone()),
+            )
+            .at("debits", show(t.debits))
+            .at("credits", show(t.credits))
+            .at("short_side", side)
+            .at("gap", show(gap))
+            .because(Why::Law("FA-INV-01.per-unit".to_string()))));
         }
     }
     // 2'. Per legal entity (FA-INV-01 `per-entity`): the same law per

@@ -226,7 +226,10 @@ pub(crate) fn commands_in(reg: &Registry, text: &str) -> Vec<Vec<String>> {
         rest = &after[end + 1..];
     }
     prose.push_str(rest);
-    let words: Vec<&str> = prose.split_whitespace().collect();
+    let words: Vec<&str> = prose
+        .split_whitespace()
+        .map(|w| w.trim_start_matches(['(', '"']))
+        .collect();
     for (i, w) in words.iter().enumerate() {
         if *w != "fa" {
             continue;
@@ -383,6 +386,13 @@ mod tests {
                 vec!["chart".to_string(), "list".into(), "--json".into()],
                 vec!["chart".to_string(), "import".into()],
             ]
+        );
+        assert_eq!(
+            commands_in(
+                reg(),
+                "a leaf under `100` (fa chart list --json lists them all)"
+            ),
+            vec![vec!["chart".to_string(), "list".into(), "--json".into()]]
         );
         let found = commands_in(
             reg(),
