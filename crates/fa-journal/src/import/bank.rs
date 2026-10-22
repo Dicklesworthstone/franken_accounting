@@ -18,7 +18,7 @@ use fgdb::{Database, VertexRow, WriteBatch, WriteTxn};
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use super::{ImportRecorded, RunReceipt, receipt_of, stored_entry, verify_receipt_in};
-use crate::evidence::{Document, doc_commit, document_oid, document_vid, verify_row};
+use crate::evidence::{Document, Storage, doc_commit, document_oid, document_vid, verify_row};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{edge_id, prop, scalar_bytes};
 
@@ -27,6 +27,10 @@ const IMPORT_MINOR: u16 = 0;
 const PARSER_REVISION: u16 = 1;
 const LINK_MAGIC: &[u8; 12] = b"FA-BANK-LINK";
 const LINK_DOMAIN: &[u8] = b"fa:bank-statement-link:v1";
+const COMPACT_LINK_DOMAIN: &[u8] = b"fa:bank-statement-link:v2";
+/// Fixed v2 binding size, independent of the statement's lines and CSV layout.
+/// The complete manifest remains in its content-addressed Document/blob.
+pub const BANK_STATEMENT_LINK_PAYLOAD_BYTES: usize = 192;
 pub const BANK_MANIFEST_MIME: &str = "application/vnd.frankenaccounting.bank-import";
 pub const BANK_LINE_MIME: &str = "application/vnd.frankenaccounting.bank-line";
 /// A source and manifest take the other two slots in one atomic import.
@@ -72,16 +76,16 @@ fn continuity(message: impl Into<String>) -> Refusal {
     )
 }
 
-fn fork(existing: &BankStatementLink) -> Refusal {
+fn fork(manifest_oid: Oid) -> Refusal {
     Refusal::new(
         code::IDEMPOTENCY_CONFLICT,
         exit::CONFLICT,
         format!(
-            "this account's statement already has predecessor linkage in manifest {}",
-            crate::evidence::hex(&existing.manifest_oid.0),
+            "this account's statement already has an immutable interpretation in manifest {}",
+            crate::evidence::hex(&manifest_oid.0),
         ),
-        "plan §4.9; §9.5 (one immutable predecessor choice per book, account and source statement)",
-        "repeat the original statement, account, parser and --previous-import exactly; a new idempotency key or uploader cannot replace a recorded link",
+        "plan §4.9; §9.5 (one immutable native interpretation per book, account and source statement)",
+        "repeat the original statement, account, parser, layout and --previous-import exactly; a new idempotency key or uploader cannot replace a recorded binding",
     )
 }
 
@@ -173,7 +177,10 @@ pub struct BankImportManifest {
     pub closing_balance: i128,
     /// Document OIDs in statement order, distinct from BankStatementLine::oid.
     pub line_oids: Vec<Oid>,
-    /// Authenticated prior import; absence deliberately remains unlinked v1.
+    /// Declared CSV interpretation, authenticated alongside the original bytes.
+    /// Its presence selects manifest v3; v1/v2 bytes remain unchanged.
+    pub csv_layout: Option<fa_model::bank_csv::BankCsvLayout>,
+    /// Authenticated prior import; absence deliberately remains unlinked.
     pub predecessor: Option<BankImportPredecessor>,
 }
 
@@ -181,7 +188,13 @@ impl BankImportManifest {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
         let mut w = Writer::new();
         w.fixed(IMPORT_MAGIC)
-            .u16(if self.predecessor.is_some() { 2 } else { 1 })
+            .u16(if self.csv_layout.is_some() {
+                3
+            } else if self.predecessor.is_some() {
+                2
+            } else {
+                1
+            })
             .u16(IMPORT_MINOR)
             .fixed(&self.book_id.0)
             .u128(self.account.0)
@@ -197,6 +210,10 @@ impl BankImportManifest {
             .list(&self.line_oids, |w, oid| {
                 w.fixed(&oid.0);
             });
+        if let Some(layout) = &self.csv_layout {
+            w.bytes(&layout.canonical_bytes()?)
+                .bool(self.predecessor.is_some());
+        }
         if let Some(predecessor) = &self.predecessor {
             predecessor.encode(&mut w);
         }
@@ -209,7 +226,7 @@ impl BankImportManifest {
             return Err(r.invalid("bank_import.version"));
         }
         let major = r.u16("bank_import.major")?;
-        if !matches!(major, 1 | 2) || r.u16("bank_import.minor")? != IMPORT_MINOR {
+        if !matches!(major, 1 | 2 | 3) || r.u16("bank_import.minor")? != IMPORT_MINOR {
             return Err(r.invalid("bank_import.version"));
         }
         let book_id = Id128(r.fixed("bank_import.book")?);
@@ -233,7 +250,18 @@ impl BankImportManifest {
             line_oids: r.list(MAX_BANK_LINES, "bank_import.lines", |r| {
                 r.fixed("bank_import.line_oid").map(Oid)
             })?,
-            predecessor: if major == 2 {
+            csv_layout: if major == 3 {
+                if format != BankFormat::Csv {
+                    return Err(r.invalid("bank_import.csv_layout_parser"));
+                }
+                Some(fa_model::bank_csv::BankCsvLayout::decode(r.bytes(
+                    fa_model::bank_csv::MAX_LAYOUT_BYTES,
+                    "bank_import.csv_layout",
+                )?)?)
+            } else {
+                None
+            },
+            predecessor: if major == 2 || (major == 3 && r.bool("bank_import.predecessor")?) {
                 Some(BankImportPredecessor::decode(&mut r)?)
             } else {
                 None
@@ -246,6 +274,12 @@ impl BankImportManifest {
                 || previous.closing_balance != result.opening_balance)
         {
             return Err(r.invalid("bank_import.predecessor_continuity"));
+        }
+        if result.csv_layout.as_ref().is_some_and(|layout| {
+            layout.sequence_number != result.sequence_number
+                || layout.statement_date != result.statement_date
+        }) {
+            return Err(r.invalid("bank_import.csv_layout_metadata"));
         }
         if result.line_oids.iter().collect::<BTreeSet<_>>().len() != result.line_oids.len() {
             return Err(r.invalid("bank_import.duplicate_line"));
@@ -358,8 +392,9 @@ impl BankImportManifest {
     }
 }
 
-/// A current native publication; its canonical payload binds the complete
-/// manifest and run. recorded_at is read from the original ImportRun row.
+/// A current native publication. Its fixed-size v2 payload commits to the
+/// retained manifest and run; v1 payloads embedded the complete manifest.
+/// recorded_at is read from the original ImportRun row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BankStatementLink {
     pub manifest_oid: Oid,
@@ -369,19 +404,127 @@ pub struct BankStatementLink {
 
 impl BankStatementLink {
     pub(crate) fn payload(&self) -> Result<Vec<u8>, KernelError> {
+        self.payload_version(2)
+    }
+
+    fn payload_version(&self, major: u16) -> Result<Vec<u8>, KernelError> {
         let manifest = self
             .manifest
             .canonical_bytes()
             .map_err(|error| KernelError::Model(error.into()))?;
+        let commit = doc_commit(kind(&policy()?, "Workpaper")?, &manifest);
+        if self.manifest_oid != document_oid(self.manifest.book_id, &commit) {
+            return Err(KernelError::Corrupt(
+                "bank binding's manifest identity differs from its canonical bytes".into(),
+            ));
+        }
         let mut w = Writer::new();
-        w.fixed(LINK_MAGIC)
-            .u16(1)
-            .u16(0)
-            .bytes(&manifest)
-            .u128(self.receipt.run.0)
-            .fixed(&self.receipt.receipt_hash);
+        w.fixed(LINK_MAGIC).u16(major).u16(0);
+        match major {
+            1 => {
+                w.bytes(&manifest);
+            }
+            2 => {
+                w.fixed(&self.manifest.book_id.0)
+                    .u128(self.manifest.account.0)
+                    .fixed(&self.manifest.statement_oid.0)
+                    .fixed(&self.manifest_oid.0)
+                    .fixed(&commit);
+            }
+            _ => {
+                return Err(KernelError::Corrupt(
+                    "unsupported bank binding payload version".into(),
+                ));
+            }
+        }
+        w.u128(self.receipt.run.0).fixed(&self.receipt.receipt_hash);
         w.finish().map_err(|error| KernelError::Model(error.into()))
     }
+
+    /// Historical verification accepts exactly the original v1 or compact v2
+    /// encoding. It never rewrites an old binding or its digest domain.
+    pub(crate) fn matches_row(&self, row: &VertexRow) -> Result<bool, KernelError> {
+        let actual = payload(row)?;
+        let mut reader = Reader::new(actual);
+        let major = match link_version(&mut reader) {
+            Ok(major) => major,
+            Err(_) => return Ok(false),
+        };
+        let expected = self.payload_version(major)?;
+        Ok(row.labels.as_slice() == [label::BANK_STATEMENT_LINK]
+            && row.props == link_properties(self.manifest.book_id, major, expected)?)
+    }
+}
+
+fn link_version(r: &mut Reader<'_>) -> Result<u16, fa_model::DecodeError> {
+    if r.fixed::<12>("bank_link.magic")? != *LINK_MAGIC {
+        return Err(r.invalid("bank_link.version"));
+    }
+    let major = r.u16("bank_link.major")?;
+    if !matches!(major, 1 | 2) || r.u16("bank_link.minor")? != 0 {
+        return Err(r.invalid("bank_link.version"));
+    }
+    Ok(major)
+}
+
+fn link_domain(major: u16) -> &'static [u8] {
+    if major == 2 {
+        COMPACT_LINK_DOMAIN
+    } else {
+        LINK_DOMAIN
+    }
+}
+
+fn link_properties(
+    book: Id128,
+    major: u16,
+    bytes: Vec<u8>,
+) -> Result<Vec<(fgdb_delta_types::PropertyKeyId, CanonicalScalar)>, KernelError> {
+    let digest = domain_digest(link_domain(major), &[&bytes]);
+    let mut props = vec![
+        (property::FA_PAYLOAD, scalar_bytes("_fa_payload", bytes)?),
+        (
+            property::FA_DIGEST,
+            scalar_bytes("_fa_digest", digest.to_vec())?,
+        ),
+        (property::BOOK_ID, scalar_bytes("book_id", book.0.to_vec())?),
+    ];
+    props.sort_by_key(|(key, _)| key.0);
+    Ok(props)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LinkManifest {
+    Legacy(Box<BankImportManifest>),
+    Retained {
+        book_id: Id128,
+        account: VId,
+        statement_oid: Oid,
+        manifest_oid: Oid,
+        manifest_commit: [u8; 32],
+    },
+}
+
+fn decode_link(bytes: &[u8]) -> Result<(u16, LinkManifest, VId, [u8; 32]), fa_model::DecodeError> {
+    let mut r = Reader::new(bytes);
+    let major = link_version(&mut r)?;
+    let manifest = if major == 1 {
+        LinkManifest::Legacy(Box::new(BankImportManifest::decode(
+            r.bytes(fa_model::limits::MAX_ENTRY_BYTES, "bank_link.manifest")?,
+        )?))
+    } else {
+        LinkManifest::Retained {
+            book_id: Id128(r.fixed("bank_link.book")?),
+            account: VId(r.u128("bank_link.account")?),
+            statement_oid: Oid(r.fixed("bank_link.statement")?),
+            manifest_oid: Oid(r.fixed("bank_link.manifest_oid")?),
+            manifest_commit: r.fixed("bank_link.manifest_commit")?,
+        }
+    };
+    let run = VId(r.u128("bank_link.run")?);
+    let hash = r.fixed::<32>("bank_link.receipt")?;
+    r.finish()?;
+    Ok((major, manifest, run, hash))
 }
 
 /// A single point identity, independent of the uploader and import key.
@@ -432,38 +575,66 @@ fn link_from_row<V: Vfs + Clone>(
     db: &Database<V>,
     book: Id128,
     row: &VertexRow,
+    supplied_manifest: Option<&BankImportManifest>,
 ) -> Outcome<BankStatementLink> {
     let bytes = payload(row)?;
-    let mut r = Reader::new(bytes);
-    let decoded = (|| -> Result<_, fa_model::DecodeError> {
-        if r.fixed::<12>("bank_link.magic")? != *LINK_MAGIC
-            || r.u16("bank_link.major")? != 1
-            || r.u16("bank_link.minor")? != 0
-        {
-            return Err(r.invalid("bank_link.version"));
-        }
-        let manifest = BankImportManifest::decode(
-            r.bytes(fa_model::limits::MAX_ENTRY_BYTES, "bank_link.manifest")?,
-        )?;
-        let run = VId(r.u128("bank_link.run")?);
-        let hash = r.fixed::<32>("bank_link.receipt")?;
-        r.finish()?;
-        Ok((manifest, run, hash))
-    })();
-    let (manifest, run, hash) = match decoded {
+    let (major, binding, run, hash) = match decode_link(bytes) {
         Ok(value) => value,
         Err(error) => return Ok(Err(drift(format!("invalid native link: {error}")))),
     };
-    let digest = domain_digest(LINK_DOMAIN, &[bytes]);
+    let (bound_book, account, statement, manifest_oid, manifest_commit) = match &binding {
+        LinkManifest::Legacy(manifest) => (
+            manifest.book_id,
+            manifest.account,
+            manifest.statement_oid,
+            manifest.document_oid()?,
+            manifest.document_commit()?,
+        ),
+        LinkManifest::Retained {
+            book_id,
+            account,
+            statement_oid,
+            manifest_oid,
+            manifest_commit,
+        } => (
+            *book_id,
+            *account,
+            *statement_oid,
+            *manifest_oid,
+            *manifest_commit,
+        ),
+    };
+    let digest = domain_digest(link_domain(major), &[bytes]);
     if !row.labels.contains(&label::BANK_STATEMENT_LINK)
-        || manifest.book_id != book
-        || manifest.predecessor.is_none()
-        || row.vid != bank_statement_link_vid(book, manifest.account, manifest.statement_oid)
+        || bound_book != book
+        || row.vid != bank_statement_link_vid(book, account, statement)
+        || document_oid(book, &manifest_commit) != manifest_oid
         || !matches!(prop(row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == digest.as_slice())
         || !matches!(prop(row, property::BOOK_ID), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == book.0.as_slice())
     {
         return Ok(Err(drift(
             "native link identity, label or payload mirrors differ",
+        )));
+    }
+    // Authenticate the retained document's identity and commitment before
+    // using caller-supplied bytes or reporting an interpretation conflict.
+    // External manifests need no blob access on this synchronous path.
+    let Some(document_row) = db.vertex(document_vid(&manifest_oid))? else {
+        return Ok(Err(drift("native link's retained manifest is absent")));
+    };
+    let policy = policy()?;
+    let document = match verify_row(&document_row, &policy) {
+        Ok(document) => document,
+        Err(error) => return Ok(Err(drift(error))),
+    };
+    if document.book_id != book
+        || document.oid() != manifest_oid
+        || document.kind != kind(&policy, "Workpaper")?
+        || document.mime != BANK_MANIFEST_MIME
+        || document.doc_commit != manifest_commit
+    {
+        return Ok(Err(drift(
+            "native link differs from its retained manifest document",
         )));
     }
     let Some(run_row) = db.vertex(run)? else {
@@ -481,7 +652,49 @@ fn link_from_row<V: Vfs + Clone>(
     if let Err(refusal) = verify_run_row(&run_row, book, &receipt)? {
         return Ok(Err(refusal));
     }
-    let manifest_oid = manifest.document_oid()?;
+    if let Some(supplied) = supplied_manifest
+        && supplied.document_oid()? != manifest_oid
+    {
+        return Ok(Err(fork(manifest_oid)));
+    }
+    let manifest = match binding {
+        LinkManifest::Legacy(manifest) => *manifest,
+        LinkManifest::Retained { .. } => match supplied_manifest {
+            Some(manifest) => manifest.clone(),
+            None => match &document.storage {
+                Storage::Inline(bytes) => match BankImportManifest::decode(bytes) {
+                    Ok(manifest) => manifest,
+                    Err(error) => {
+                        return Ok(Err(drift(format!("invalid retained manifest: {error}"))));
+                    }
+                },
+                Storage::External { .. } => {
+                    return Ok(Err(Refusal::new(
+                        code::BLOB_MISSING,
+                        exit::FOUNDATION,
+                        "this bank binding refers to an external manifest; its canonical bytes are required to verify the complete import closure",
+                        "FA-INV-04; FA-INV-05 (the retained manifest authenticates the statement interpretation)",
+                        "fetch the retained manifest under the caller's document authority and use read_bank_statement_link_with_manifest; exact import retries may supply the manifest reconstructed from their own original bytes",
+                    )));
+                }
+            },
+        },
+    };
+    let canonical = manifest
+        .canonical_bytes()
+        .map_err(|error| KernelError::Model(error.into()))?;
+    if manifest.book_id != book
+        || manifest.account != account
+        || manifest.statement_oid != statement
+        || document_oid(book, &manifest.statement_commit) != statement
+        || (manifest.predecessor.is_none() && manifest.csv_layout.is_none())
+        || !matches!(BankImportManifest::decode(&canonical), Ok(decoded) if decoded == manifest)
+        || document.with_bytes(canonical).is_none()
+    {
+        return Ok(Err(drift(
+            "native link's interpretation does not reproduce the retained manifest",
+        )));
+    }
     if let Err(refusal) = verify_receipt_in(db, book, &receipt, &manifest.closure(manifest_oid))? {
         return Ok(Err(refusal));
     }
@@ -492,8 +705,11 @@ fn link_from_row<V: Vfs + Clone>(
     }))
 }
 
-/// Read an authenticated native link. Callers must admit source/metadata
-/// observation first, as for the other raw kernel import readers.
+/// Read an authenticated native link whose manifest is inline, or carried in
+/// a legacy v1 binding. For an external v2 binding, use
+/// [`read_bank_statement_link_with_manifest`] with authenticated retained or
+/// caller-reconstructed bytes. Callers must admit source/metadata observation
+/// first, as for the other raw kernel import readers.
 pub fn read_bank_statement_link<V: Vfs + Clone>(
     db: &Database<V>,
     book: Id128,
@@ -503,7 +719,27 @@ pub fn read_bank_statement_link<V: Vfs + Clone>(
     let Some(row) = db.vertex(bank_statement_link_vid(book, account, statement))? else {
         return Ok(Ok(None));
     };
-    Ok(link_from_row(db, book, &row)?.map(Some))
+    Ok(link_from_row(db, book, &row, None)?.map(Some))
+}
+
+/// Resolve a binding using the exact canonical interpretation supplied by the
+/// caller. Its bytes must reproduce the retained document commitment, and its
+/// complete closure must verify against the original native import receipt.
+/// No blob is fetched and no source-disclosure authority is substituted.
+pub fn read_bank_statement_link_with_manifest<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: Id128,
+    manifest: &BankImportManifest,
+) -> Outcome<Option<BankStatementLink>> {
+    let Some(row) = db.vertex(bank_statement_link_vid(
+        book,
+        manifest.account,
+        manifest.statement_oid,
+    ))?
+    else {
+        return Ok(Ok(None));
+    };
+    Ok(link_from_row(db, book, &row, Some(manifest))?.map(Some))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -623,12 +859,16 @@ impl BankImportWitness {
                 "the native import byte count differs from its actual document closure",
             )));
         }
-        let link = if let Some(previous) = &manifest.predecessor {
-            if previous.recorded_at >= receipt.recorded_at {
-                return Ok(Err(drift(
-                    "a predecessor must have been published before the linked import",
-                )));
-            }
+        if manifest
+            .predecessor
+            .as_ref()
+            .is_some_and(|previous| previous.recorded_at >= receipt.recorded_at)
+        {
+            return Ok(Err(drift(
+                "a predecessor must have been published before the linked import",
+            )));
+        }
+        let link = if manifest.predecessor.is_some() || manifest.csv_layout.is_some() {
             let Some(row) = db.vertex(bank_statement_link_vid(
                 book,
                 manifest.account,
@@ -639,7 +879,7 @@ impl BankImportWitness {
                     "a linked manifest has no atomic native predecessor record",
                 )));
             };
-            let recorded = match link_from_row(db, book, &row)? {
+            let recorded = match link_from_row(db, book, &row, Some(&manifest))? {
                 Ok(recorded) => recorded,
                 Err(refusal) => return Ok(Err(refusal)),
             };
@@ -741,7 +981,7 @@ impl BankImportWitness {
                     "a predecessor's native continuity record changed",
                 )));
             }
-            if link_from_row(db, book, &row)?.is_err() {
+            if link_from_row(db, book, &row, Some(&self.manifest))?.is_err() {
                 return Ok(Err(conflict(
                     "a predecessor's native continuity record no longer verifies",
                 )));
@@ -808,12 +1048,12 @@ pub(super) fn bind_statement<V: Vfs + Clone>(
     }
     let vid = bank_statement_link_vid(book, manifest.account, manifest.statement_oid);
     if let Some(row) = txn.vertex(db, vid)? {
-        let existing = match link_from_row(db, book, &row)? {
+        let existing = match link_from_row(db, book, &row, Some(manifest))? {
             Ok(existing) => existing,
             Err(refusal) => return Ok(Err(refusal)),
         };
         if existing.manifest != *manifest || existing.manifest_oid != manifest_oid {
-            return Ok(Err(fork(&existing)));
+            return Ok(Err(fork(existing.manifest_oid)));
         }
         return Ok(Ok(Some(ImportRecorded {
             receipt: existing.receipt,
@@ -822,7 +1062,7 @@ pub(super) fn bind_statement<V: Vfs + Clone>(
             already_recorded: true,
         })));
     }
-    if manifest.predecessor.is_none() {
+    if manifest.predecessor.is_none() && manifest.csv_layout.is_none() {
         return Ok(Ok(None));
     }
     let link = BankStatementLink {
@@ -831,16 +1071,7 @@ pub(super) fn bind_statement<V: Vfs + Clone>(
         receipt,
     };
     let bytes = link.payload()?;
-    let digest = domain_digest(LINK_DOMAIN, &[&bytes]);
-    let mut props = vec![
-        (property::FA_PAYLOAD, scalar_bytes("_fa_payload", bytes)?),
-        (
-            property::FA_DIGEST,
-            scalar_bytes("_fa_digest", digest.to_vec())?,
-        ),
-        (property::BOOK_ID, scalar_bytes("book_id", book.0.to_vec())?),
-    ];
-    props.sort_by_key(|(key, _)| key.0);
+    let props = link_properties(book, 2, bytes)?;
     let mut batch = WriteBatch::new(relation::DERIVED_FROM);
     batch.create_vertex(vid, vec![label::BANK_STATEMENT_LINK], props);
     batch.add_edge(
@@ -873,4 +1104,156 @@ pub(super) fn bind_statement<V: Vfs + Clone>(
     }
     txn.write_ordered(db, vec![batch])?;
     Ok(Ok(None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fa_model::IntakeSource;
+    use fa_model::bank_csv::{BankCsvAmounts, BankCsvDateFormat, BankCsvLayout};
+
+    fn binding(line_count: usize, declared_layout: bool) -> BankStatementLink {
+        let book_id = Id128([11; 16]);
+        let statement_commit = [12; 32];
+        let date = DateDay::from_ymd(2026, 3, 31).unwrap();
+        let manifest = BankImportManifest {
+            book_id,
+            account: VId(13),
+            format: BankFormat::Csv,
+            statement_oid: document_oid(book_id, &statement_commit),
+            statement_commit,
+            unit: UnitId(1),
+            sequence_number: 2,
+            statement_date: date,
+            opening_balance: 0,
+            closing_balance: 0,
+            line_oids: (0..line_count)
+                .map(|index| {
+                    Oid(domain_digest(
+                        b"bank-link-test-line",
+                        &[&index.to_le_bytes()],
+                    ))
+                })
+                .collect(),
+            csv_layout: declared_layout.then(|| BankCsvLayout {
+                name: "binding-test".into(),
+                headers: vec!["Date".into(), "Amount".into()],
+                delimiter: b',',
+                decimal_separator: b'.',
+                date_format: BankCsvDateFormat::Iso,
+                booking_date: "Date".into(),
+                value_date: None,
+                counterparty: None,
+                reference: None,
+                amounts: BankCsvAmounts::Signed {
+                    column: "Amount".into(),
+                    positive_is_credit: true,
+                },
+                instrument_id: "BANK-TEST".into(),
+                sequence_number: 2,
+                currency: "USD".into(),
+                statement_date: date,
+                opening_balance: "0.00".into(),
+                closing_balance: "0.00".into(),
+            }),
+            predecessor: Some(BankImportPredecessor {
+                manifest_oid: Oid([14; 32]),
+                manifest_commit: [15; 32],
+                statement_oid: Oid([16; 32]),
+                statement_commit: [17; 32],
+                import_run: VId(18),
+                receipt_hash: [19; 32],
+                recorded_at: CommitSeq(20),
+                sequence_number: 1,
+                statement_date: date,
+                closing_balance: 0,
+            }),
+        };
+        BankStatementLink {
+            manifest_oid: manifest.document_oid().unwrap(),
+            manifest,
+            receipt: RunReceipt {
+                run: VId(21),
+                source: IntakeSource::Upload { principal: VId(22) },
+                document_count: u32::try_from(line_count + 2).unwrap(),
+                byte_count: 0,
+                oids_root: [23; 32],
+                receipt_hash: [24; 32],
+                recorded_at: CommitSeq(25),
+            },
+        }
+    }
+
+    #[test]
+    fn legacy_v1_binding_decodes_the_original_v2_manifest_without_reencoding_it() {
+        let link = binding(2, false);
+        let original_manifest = link.manifest.canonical_bytes().unwrap();
+        assert_eq!(&original_manifest[14..18], &[2, 0, 0, 0]);
+        // The pre-compact wire contract, assembled independently of the new
+        // writer: full manifest bytes, then native run and receipt hash.
+        let mut old = Writer::new();
+        old.fixed(b"FA-BANK-LINK")
+            .u16(1)
+            .u16(0)
+            .bytes(&original_manifest)
+            .u128(link.receipt.run.0)
+            .fixed(&link.receipt.receipt_hash);
+        let bytes = old.finish().unwrap();
+        assert_eq!(
+            decode_link(&bytes).unwrap(),
+            (
+                1,
+                LinkManifest::Legacy(Box::new(link.manifest.clone())),
+                link.receipt.run,
+                link.receipt.receipt_hash,
+            )
+        );
+        assert_eq!(link.payload_version(1).unwrap(), bytes);
+        assert_eq!(link_domain(1), b"fa:bank-statement-link:v1");
+        for length in 0..bytes.len() {
+            assert!(decode_link(&bytes[..length]).is_err());
+        }
+    }
+
+    #[test]
+    fn compact_binding_stays_192_bytes_at_the_full_statement_limit() {
+        for (line_count, declared_layout) in
+            [(0, false), (MAX_BANK_LINES, false), (MAX_BANK_LINES, true)]
+        {
+            let link = binding(line_count, declared_layout);
+            let bytes = link.payload().unwrap();
+            assert_eq!(bytes.len(), BANK_STATEMENT_LINK_PAYLOAD_BYTES);
+            assert_eq!(bytes.len(), 192);
+            if line_count == MAX_BANK_LINES {
+                assert!(link.manifest.canonical_bytes().unwrap().len() > 16 * 1024);
+            }
+            assert_eq!(
+                decode_link(&bytes).unwrap(),
+                (
+                    2,
+                    LinkManifest::Retained {
+                        book_id: link.manifest.book_id,
+                        account: link.manifest.account,
+                        statement_oid: link.manifest.statement_oid,
+                        manifest_oid: link.manifest_oid,
+                        manifest_commit: link.manifest.document_commit().unwrap(),
+                    },
+                    link.receipt.run,
+                    link.receipt.receipt_hash,
+                )
+            );
+            assert_eq!(link_domain(2), b"fa:bank-statement-link:v2");
+            for length in 0..bytes.len() {
+                assert!(decode_link(&bytes[..length]).is_err());
+            }
+            let mut trailing = bytes.clone();
+            trailing.push(0);
+            assert!(decode_link(&trailing).is_err());
+            for (offset, value) in [(0, b'X'), (12, 0), (12, 3), (14, 1)] {
+                let mut invalid = bytes.clone();
+                invalid[offset] = value;
+                assert!(decode_link(&invalid).is_err());
+            }
+        }
+    }
 }

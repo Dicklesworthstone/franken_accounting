@@ -21,7 +21,9 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, known_at_flag, untrusted_text_json, usage};
 use crate::json::{Json, obj, s};
 
-const IMPORT_EXAMPLE: &str = "fa bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code> [--previous-import <manifest_oid> --grant privileged] --json";
+mod layout;
+
+const IMPORT_EXAMPLE: &str = "fa bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code> [--layout <JSON-file|inline-JSON>] [--previous-import <manifest_oid> --grant privileged] --json";
 const MATCH_EXAMPLE: &str = "fa bank match --import <manifest_oid> --grant privileged [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>] --json (embedded-owner CLI with explicit full-source authority)";
 const CONFIRM_EXAMPLE: &str = "fa bank confirm --import <manifest_oid> --line-ordinal <ordinal> --proposal-digest <hex64> --source-known-at <seq> --proposer <hex32> --date-window <days> --grant privileged --json (use the exact confirmation_command printed by bank match)";
 const STATUS_EXAMPLE: &str = "fa bank status --import <manifest_oid> --grant privileged [--as-known-at HEAD|<seq>|<RFC3339>] --json";
@@ -34,7 +36,12 @@ const RECONCILIATION_EXAMPLE: &str =
 pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let sub = args.positional.get(1).map(String::as_str);
     let allowed: &[&str] = match sub {
-        Some("import") => &["--bank-format", "--account", "--previous-import"],
+        Some("import") => &[
+            "--bank-format",
+            "--account",
+            "--previous-import",
+            "--layout",
+        ],
         Some("match") => &["--import", "--date-window", "--as-known-at"],
         Some("confirm") => &[
             "--import",
@@ -55,6 +62,7 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--bank-format",
         "--account",
         "--previous-import",
+        "--layout",
         "--import",
         "--date-window",
         "--as-known-at",
@@ -236,6 +244,16 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )
     })?;
     let account_code = required(args, "--account", IMPORT_EXAMPLE)?;
+    let layout_input = one_flag(args, "--layout", IMPORT_EXAMPLE)?;
+    if layout_input.is_some() && format != BankFormat::Csv {
+        return Err(usage("--layout requires --bank-format csv", IMPORT_EXAMPLE));
+    }
+    if layout_input == Some("-") {
+        return Err(usage(
+            "--layout takes an inline JSON object or a JSON file; stdin belongs to the statement",
+            IMPORT_EXAMPLE,
+        ));
+    }
     let previous_manifest = one_flag(args, "--previous-import", IMPORT_EXAMPLE)?
         .map(|value| crate::document::hex32(value, "--previous-import").map(Oid))
         .transpose()?;
@@ -247,20 +265,38 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         book.preflight_intake(&capability, fa::IntakeAction::BankImport)??;
         Ok(())
     })?;
+    let csv_layout = layout_input
+        .map(|input| {
+            if input.trim_start().starts_with('{') {
+                layout::parse(input)
+            } else {
+                let bytes = crate::intake::read_document_with_limit(
+                    &ctx.files,
+                    input,
+                    fa_model::bank_csv::MAX_LAYOUT_BYTES as u64,
+                )?;
+                let text = core::str::from_utf8(&bytes)
+                    .map_err(|_| usage("bank CSV layout must be UTF-8 JSON", IMPORT_EXAMPLE))?;
+                layout::parse(text)
+            }
+        })
+        .transpose()?;
     let max_statement_bytes = fa_registry::evidence_policy::EvidencePolicy::embedded()
         .map_err(|error| Fail::Internal(format!("the embedded evidence policy: {error}")))?
         .max_document_bytes;
     let bytes = crate::intake::read_document_with_limit(&ctx.files, path, max_statement_bytes)?;
     let account = account_vid(book.context().book_id, account_code);
-    let recorded = book.import_bank_statement(
-        &capability,
-        BankImportRequest {
-            account,
-            format,
-            bytes,
-            previous_manifest,
-        },
-    )??;
+    let request = BankImportRequest {
+        account,
+        format,
+        bytes,
+        previous_manifest,
+    };
+    let recorded = if let Some(layout) = csv_layout {
+        book.import_bank_statement_with_layout(&capability, request, layout)
+    } else {
+        book.import_bank_statement(&capability, request)
+    }??;
     let manifest = &recorded.manifest;
     let unit = book
         .context()
@@ -278,6 +314,11 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("statement_commit", s(hex(&manifest.statement_commit))),
         ("bank_format", s(manifest.format.name())),
         ("parser_revision", Json::Int(1)),
+        ("layout_name", manifest.csv_layout.as_ref().map_or(Json::Null, |layout| s(&layout.name))),
+        ("layout_digest", manifest.csv_layout.as_ref().map(|layout| {
+            layout.digest().map(|digest| s(hex(&digest.0)))
+                .map_err(|error| Fail::Internal(format!("bank CSV layout digest: {error}")))
+        }).transpose()?.unwrap_or(Json::Null)),
         ("account", s(account_code)),
         ("account_ref", s(format!("{:032x}", manifest.account.0))),
         ("unit", s(unit_code)),

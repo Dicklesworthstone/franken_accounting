@@ -293,3 +293,16 @@ round_trip_identity = false
 certified_coordinate = false
 plan_ref = "§9.5"
 summary = "The fixed twelve-column bank statement CSV (sequence_number, instrument_id, currency, statement_date, opening and closing balance, booking and value date, CRDT/DBIT side, amount, counterparty, reference) with opening/closing continuity validated."
+
+[[format]]
+id = 23
+name = "bank_csv_layout_v1"
+kind = "bank_statement"
+direction = "import"
+mime = "text/csv"
+extension = "csv"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§9.5, §15.3"
+summary = "Bank CSV with an explicit retained JSON layout: exact ordered headers, column mappings, ISO/MDY/DMY dates, declared delimiter and decimal separator, signed or separate debit/credit amounts, registered currency and statement balances. Manifest v3 binds the layout and original bytes; matching reparses the retained interpretation, and opening plus activity must equal closing exactly."

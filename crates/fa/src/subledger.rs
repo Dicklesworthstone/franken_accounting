@@ -217,7 +217,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             else {
                 return Ok(Err(Refusal::new(
                     fa_journal::refusal::code::STRUCTURE,
-                    exit::REFUSAL,
+                    exit::USAGE,
                     format!(
                         "native subledger '{code}' does not exist at known-at {}",
                         at.0

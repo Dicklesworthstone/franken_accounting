@@ -32,6 +32,7 @@ use crate::{AsyncBook, BookError, IntakeAction, Outcome};
 use fa_journal::import::BankImportWitness;
 use fa_journal::import::bank::{BANK_LINE_MIME as LINE_MIME, BANK_MANIFEST_MIME as MANIFEST_MIME};
 pub use fa_journal::import::{BankFormat, BankImportManifest, BankImportPredecessor};
+pub use fa_model::bank_csv::{BankCsvAmounts, BankCsvDateFormat, BankCsvLayout};
 
 mod confirmation;
 mod reconciliation;
@@ -294,7 +295,11 @@ fn policy_kind(policy: &EvidencePolicy, name: &str) -> Result<u8, BookError> {
         .ok_or_else(|| corrupt(format!("missing registered document kind {name}")))
 }
 
-fn parsed(format: BankFormat, bytes: &[u8]) -> Result<BankStatementExtract, Refusal> {
+fn parsed(
+    format: BankFormat,
+    bytes: &[u8],
+    layout: Option<&BankCsvLayout>,
+) -> Result<BankStatementExtract, Refusal> {
     let text = core::str::from_utf8(bytes)
         .map_err(|_| intake_error("the bank statement must be valid UTF-8"))?;
     let units = fa_formats::UnitCatalog::embedded().map_err(|e| intake_error(e.to_string()))?;
@@ -306,7 +311,26 @@ fn parsed(format: BankFormat, bytes: &[u8]) -> Result<BankStatementExtract, Refu
         BankFormat::Mt940 => fa_formats::bank::parse_mt940,
         BankFormat::Csv => fa_formats::bank::parse_bank_csv,
     };
-    let extract = parse(text, &units).map_err(|e| intake_error(e.to_string()))?;
+    let extract = if let Some(layout) = layout {
+        if format != BankFormat::Csv {
+            return Err(intake_error(
+                "a declared CSV layout applies only to the csv bank format",
+            ));
+        }
+        layout.validate().map_err(intake_error)?;
+        let bytes = layout
+            .canonical_bytes()
+            .map_err(|error| intake_error(error.to_string()))?;
+        if !matches!(BankCsvLayout::decode(&bytes), Ok(decoded) if decoded == *layout) {
+            return Err(intake_error(
+                "the declared CSV layout violates its bounded canonical contract",
+            ));
+        }
+        fa_formats::bank::parse_bank_csv_with_layout(text, &units, layout)
+    } else {
+        parse(text, &units)
+    }
+    .map_err(|e| intake_error(e.to_string()))?;
     if extract.lines.len() > MAX_BANK_LINES {
         return Err(intake_error(format!(
             "this statement has {} lines; max_import_documents={} permits at most {MAX_BANK_LINES} lines plus the source and manifest in one atomic import; request a smaller statement from the source",
@@ -455,6 +479,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: BankImportRequest,
     ) -> Outcome<BankImportRecorded> {
+        self.import_bank_statement_inner(cx, capability, request, None)
+            .await
+    }
+
+    /// Import original CSV bytes under an explicit retained layout. The source
+    /// and account acquire one immutable interpretation at atomic publication.
+    pub async fn import_bank_statement_with_layout(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        request: BankImportRequest,
+        layout: BankCsvLayout,
+    ) -> Outcome<BankImportRecorded> {
+        self.import_bank_statement_inner(cx, capability, request, Some(layout))
+            .await
+    }
+
+    async fn import_bank_statement_inner(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        request: BankImportRequest,
+        csv_layout: Option<BankCsvLayout>,
+    ) -> Outcome<BankImportRecorded> {
         if let Err(refusal) = self.preflight_intake(cx, capability, IntakeAction::BankImport)? {
             return Ok(Err(refusal));
         }
@@ -466,7 +514,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 policy.max_document_bytes,
             ))));
         }
-        let extract = match parsed(request.format, &request.bytes) {
+        let extract = match parsed(request.format, &request.bytes, csv_layout.as_ref()) {
             Ok(extract) => extract,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -557,6 +605,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             opening_balance: extract.opening_balance,
             closing_balance: extract.closing_balance,
             line_oids,
+            csv_layout,
             predecessor: predecessors.first().map(BankImportWitness::predecessor),
         };
         if let Some(previous) = predecessors.first()
@@ -587,7 +636,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         // linkage stays an exact repeat: it returns its original receipt. Only
         // a new unlinked manifest meets the recorded link below.
         let linked_receipt_recorded = match previous_receipt {
-            Some(receipt) if manifest.predecessor.is_none() => {
+            Some(receipt) if manifest.predecessor.is_none() && manifest.csv_layout.is_none() => {
                 return Ok(Ok(BankImportRecorded {
                     manifest_oid,
                     manifest: manifest.clone(),
@@ -603,11 +652,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             other => other.is_some(),
         };
         let existing_link = match self.query(cx, |db, book| {
-            Ok(fa_journal::import::read_bank_statement_link(
+            Ok(fa_journal::import::read_bank_statement_link_with_manifest(
                 db,
                 book.book_id,
-                manifest.account,
-                manifest.statement_oid,
+                &manifest,
             )?)
         })? {
             Ok(link) => link,
@@ -619,12 +667,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     code::IDEMPOTENCY_CONFLICT,
                     exit::CONFLICT,
                     format!(
-                        "this account's statement already has predecessor linkage in manifest {}",
+                        "this account's statement already has an immutable interpretation in manifest {}",
                         fa_journal::evidence::hex(&existing.manifest_oid.0),
                     ),
-                    "plan §4.9; §9.5 (one immutable predecessor choice per account/source statement)",
-                    "repeat the original statement, parser, account and --previous-import; another uploader or import key cannot replace the recorded link",
+                    "plan §4.9; §9.5 (one immutable declared interpretation per account/source statement)",
+                    "repeat the original statement, parser, account, layout and --previous-import; another uploader or import key cannot replace the recorded interpretation",
                 )));
+            }
+            // The caller supplied and parsed these exact bytes and layout.
+            // An unlinked retry verifies the immutable native receipt without
+            // requesting disclosure of a governed stored BankStatement.
+            if manifest.predecessor.is_none() {
+                return Ok(Ok(BankImportRecorded {
+                    manifest_oid,
+                    receipt: ImportRecorded {
+                        receipt: existing.receipt,
+                        recorded: Vec::new(),
+                        already_held: manifest.closure(manifest_oid),
+                        already_recorded: true,
+                    },
+                    manifest,
+                    verified_predecessors: 0,
+                }));
             }
             let retry_at = self.head(cx)?;
             let verified = match self
@@ -648,7 +712,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         if linked_receipt_recorded {
             return Ok(Err(closure_drift(
-                "a linked manifest was imported without its atomic native predecessor record",
+                "a bound manifest was imported without its atomic native interpretation record",
             )));
         }
         let key = fa_journal::evidence::hex(&manifest_oid.0);
@@ -723,6 +787,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 .await?
             {
                 return Ok(Err(refusal));
+            }
+        }
+        if receipt.already_recorded
+            && manifest.csv_layout.is_some()
+            && manifest.predecessor.is_none()
+        {
+            let link = match self.query(cx, |db, book| {
+                Ok(fa_journal::import::read_bank_statement_link_with_manifest(
+                    db,
+                    book.book_id,
+                    &manifest,
+                )?)
+            })? {
+                Ok(link) => link,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if !link.is_some_and(|link| {
+                link.manifest == manifest
+                    && link.manifest_oid == manifest_oid
+                    && link.receipt == receipt.receipt
+            }) {
+                return Ok(Err(closure_drift(
+                    "the repeated CSV import lacks its exact native interpretation binding",
+                )));
             }
         }
         Ok(Ok(BankImportRecorded {
@@ -865,7 +953,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "manifest source commitment or document kind differs",
             )));
         }
-        let extract = match parsed(manifest.format, &source.bytes) {
+        let extract = match parsed(manifest.format, &source.bytes, manifest.csv_layout.as_ref()) {
             Ok(extract) => extract,
             Err(error) => return Ok(Err(closure_drift(error.to_string()))),
         };
@@ -1295,6 +1383,7 @@ mod tests {
             opening_balance: 100,
             closing_balance: 125,
             line_oids: vec![Oid([7; 32])],
+            csv_layout: None,
             predecessor: None,
         }
     }

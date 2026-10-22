@@ -239,7 +239,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
 #[test]
 fn embedded_formats_registry_matches_fa_formats_surface() {
     let formats = Formats::embedded().expect("registries/formats.toml must parse");
-    assert_eq!(formats.rows.len(), 22);
+    assert_eq!(formats.rows.len(), 23);
     assert!(
         formats
             .by_name("aicpa_ads_gl_v2")
@@ -265,6 +265,7 @@ fn embedded_formats_registry_matches_fa_formats_surface() {
         "ofx_qbo_v2",
         "swift_mt940",
         "bank_csv_v1",
+        "bank_csv_layout_v1",
     ] {
         let row = formats
             .by_name(name)

@@ -141,6 +141,7 @@ pub(super) fn statement(
         opening_balance,
         closing_balance: opening_balance + amounts.iter().sum::<i128>(),
         line_oids: lines.iter().map(Document::oid).collect(),
+        csv_layout: None,
         predecessor: None,
     };
     let document = Document {

@@ -21,6 +21,7 @@
 #![forbid(unsafe_code)]
 
 pub mod account;
+pub mod bank_csv;
 pub mod canon;
 pub mod closing;
 pub mod entry;

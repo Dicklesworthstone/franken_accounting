@@ -397,7 +397,7 @@ fn verify_import_at<V: Vfs + Clone>(
     {
         return Ok(Err(drift(refusal.message)));
     }
-    if manifest.predecessor.is_some() {
+    if manifest.predecessor.is_some() || manifest.csv_layout.is_some() {
         let vid = bank_statement_link_vid(book.book_id, manifest.account, manifest.statement_oid);
         let Some(row) = db.vertex_at(vid, at)?.map(|row| row.seen_at(at)) else {
             return Ok(Err(drift(
@@ -409,27 +409,7 @@ fn verify_import_at<V: Vfs + Clone>(
             manifest: manifest.clone(),
             receipt,
         };
-        let bytes = expected.payload()?;
-        let digest = domain_digest(b"fa:bank-statement-link:v1", &[&bytes]);
-        let mut props = vec![
-            (
-                property::FA_PAYLOAD,
-                scalar_bytes("reconciled.link", bytes)?,
-            ),
-            (
-                property::FA_DIGEST,
-                scalar_bytes("reconciled.link.digest", digest.to_vec())?,
-            ),
-            (
-                property::BOOK_ID,
-                scalar_bytes("reconciled.link.book", book.book_id.0.to_vec())?,
-            ),
-        ];
-        props.sort_by_key(|(key, _)| key.0);
-        if row.created_at != import_at
-            || row.labels.as_slice() != [label::BANK_STATEMENT_LINK]
-            || row.props != props
-        {
+        if row.created_at != import_at || !expected.matches_row(&row)? {
             return Ok(Err(drift(
                 "a reconciled predecessor link differs from its actual source import",
             )));
@@ -538,7 +518,7 @@ fn strong_edges(recorded: &BankReconciliationRecorded) -> Vec<(RelationId, VId)>
         edges.insert((relation::CITES, matched.vid));
     }
     let mut manifest = &claim.manifest;
-    if manifest.predecessor.is_some() {
+    if manifest.predecessor.is_some() || manifest.csv_layout.is_some() {
         edges.insert((
             relation::CITES,
             bank_statement_link_vid(manifest.book_id, manifest.account, manifest.statement_oid),
@@ -550,7 +530,7 @@ fn strong_edges(recorded: &BankReconciliationRecorded) -> Vec<(RelationId, VId)>
             edges.insert((relation::CITES, document_vid(&binding.statement_oid)));
             edges.insert((relation::CITES, binding.import_run));
         }
-        if previous.predecessor.is_some() {
+        if previous.predecessor.is_some() || previous.csv_layout.is_some() {
             edges.insert((
                 relation::CITES,
                 bank_statement_link_vid(previous.book_id, previous.account, previous.statement_oid),
