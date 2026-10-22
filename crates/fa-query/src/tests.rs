@@ -206,6 +206,28 @@ fn names_that_spell_a_selector_word_stay_names() {
 #[test]
 fn branches_procedures_and_certificates() {
     native("MATCH (a:Account) AT BRANCH trunk RETURN a.code");
+    // EXPLAIN (CERTIFICATE) leads the statement and certifies its result;
+    // the native read is the same statement's.
+    let (explained, n) = native(
+        "EXPLAIN (CERTIFICATE) MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code, COUNT(*) AS legs AS KNOWN AT 7",
+    );
+    assert!(explained.certify);
+    assert_eq!(explained.known_at, KnownAt::Seq(7));
+    assert_eq!(
+        n.statement(7),
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) FOR SYSTEM_TIME AS OF SEQ 7 RETURN a.code, COUNT(*) AS legs"
+    );
+    assert!(!native("MATCH (a:Account) RETURN a.code").0.certify);
+    assert!(
+        rewrite("EXPLAIN (CERTIFICATE) CALL fa.trial_balance FOR PERIOD 'FY2026-P03'")
+            .expect("a certified trial balance")
+            .certify
+    );
+    assert!(
+        refused("EXPLAIN (CERTIFICATE)")
+            .message
+            .contains("only selectors")
+    );
     assert!(
         refused("MATCH (a:Account) AT BRANCH 'what-if' RETURN a.code")
             .fix
@@ -231,9 +253,10 @@ fn branches_procedures_and_certificates() {
             "MATCH (l:Leg) CALL fa.open_amount(l) RETURN l",
             "CALL stands alone",
         ),
+        ("EXPLAIN MATCH (a:Account) RETURN a", "EXPLAIN takes"),
         (
-            "EXPLAIN (CERTIFICATE) MATCH (a:Account) RETURN a",
-            "EXPLAIN",
+            "MATCH (a:Account) EXPLAIN (CERTIFICATE) RETURN a",
+            "leads the statement",
         ),
         (
             "MATCH (a:Account) RETURN a AS ORIGINALLY REPORTED",

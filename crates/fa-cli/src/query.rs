@@ -7,8 +7,9 @@
 //! before anything is observed: a token carrying any scope caveat is
 //! refused, never filtered.
 //!
-//! `--certify` (or `--certificate-out <new-file>`) also retains the result's
-//! certificate, which needs produce as well: `fa replay C:<oid>` reproduces
+//! `--certify`, `--certificate-out <new-file>` or a leading `EXPLAIN
+//! (CERTIFICATE)` also retains the result's certificate, which needs
+//! produce as well: `fa replay C:<oid>` reproduces
 //! the rows byte for byte and `fa certificate status` says whether the same
 //! statement still answers the same at the head.
 
@@ -40,6 +41,9 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             // same admission, rows and certificate options as `fa tb`.
             let mut tb = args.clone();
             tb.positional = vec!["tb".to_string()];
+            if profiled.certify && !tb.switch("--certify") {
+                tb.switches.push("--certify".to_string());
+            }
             if let Some(code) = &profiled.period {
                 tb.flags.insert("--period".to_string(), vec![code.clone()]);
             }
@@ -58,7 +62,8 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         QuerySelection::Native(native) => native,
     };
-    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let certify =
+        profiled.certify || args.switch("--certify") || args.flag("--certificate-out").is_some();
     if args.flag_all("--certificate-out").len() > 1 {
         return Err(usage(
             "--certificate-out may be supplied only once",

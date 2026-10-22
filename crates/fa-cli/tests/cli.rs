@@ -18589,6 +18589,23 @@ fn a_certified_query_replays_its_rows_byte_for_byte() -> std::io::Result<()> {
     ]);
     assert_eq!(exit, 0, "{out}");
     assert!(out.contains("\"event\":\"report_certificate\""), "{out}");
+    // EXPLAIN (CERTIFICATE) is --certify written in the statement.
+    let explained = ok(&[
+        "query",
+        &format!("EXPLAIN (CERTIFICATE) {statement}"),
+        "--json",
+    ]);
+    let lines: Vec<&str> = explained.lines().collect();
+    assert_eq!(lines.len(), 2, "{explained}");
+    assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+    let explained_oid = text(&doc(lines[1]), "oid").to_string();
+    assert_ne!(explained_oid, oid, "a later sequence, another certificate");
+    let replayed = doc(&ok(&["replay", &format!("C:{explained_oid}"), "--json"]));
+    assert_eq!(replayed.render(), doc(lines[0]).render());
+    assert_eq!(
+        Json::Arr(arr(&replayed, "rows").to_vec()).render(),
+        r#"[["USD",0,"1250"],["USD",1,"1250"]]"#
+    );
     Ok(())
 }
 

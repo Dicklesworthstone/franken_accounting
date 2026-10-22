@@ -13,10 +13,12 @@
 //!   the normal period that shares its day;
 //! - `EFFECTIVE BETWEEN <date> AND <date>` into the leg's effective day;
 //! - `AT BRANCH trunk`, the only branch a query reads in this build;
-//! - `CALL fa.trial_balance`, which is the registered trial balance itself.
+//! - `CALL fa.trial_balance`, which is the registered trial balance itself;
+//! - `EXPLAIN (CERTIFICATE)` leading the statement: the caller certifies the
+//!   result, as `fa query --certify` does.
 //!
-//! Every other selector, `EXPLAIN (CERTIFICATE)`, parameters and writes are
-//! refused with the admissible form, never ignored. So is a statement that
+//! Every other selector, parameters and writes are refused with the
+//! admissible form, never ignored. So is a statement that
 //! breaks the amount law ([`law`]).
 
 #![forbid(unsafe_code)]
@@ -84,6 +86,9 @@ pub struct Profiled {
     /// selected sequence.
     pub period: Option<String>,
     pub selection: Selection,
+    /// `EXPLAIN (CERTIFICATE)`: the caller certifies the result and retains
+    /// its certificate, exactly as for `fa query --certify`.
+    pub certify: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -171,6 +176,7 @@ pub fn rewrite(text: &str) -> Result<Profiled, Refusal> {
         known_at: selectors.known_at.unwrap_or(KnownAt::Head),
         period: selectors.period,
         selection,
+        certify: selectors.certify,
     })
 }
 
@@ -181,6 +187,7 @@ struct Selectors {
     known_at: Option<KnownAt>,
     period: Option<String>,
     effective: Option<(DateDay, DateDay)>,
+    certify: bool,
 }
 
 fn selectors(lexed: &Lexed<'_>) -> Result<Selectors, Refusal> {
@@ -200,11 +207,18 @@ fn selectors(lexed: &Lexed<'_>) -> Result<Selectors, Refusal> {
             continue;
         }
         if lexed.word(i, "EXPLAIN") {
+            if i == 0 && lexed.punct(1, '(') && lexed.word(2, "CERTIFICATE") && lexed.punct(3, ')')
+            {
+                found.spans.push((start, lexed.tokens[3].end));
+                found.certify = true;
+                i = 4;
+                continue;
+            }
             return Err(Refusal::new(
                 Law::Profile,
                 start,
-                "EXPLAIN (CERTIFICATE) is not in this build: a query result is not yet retained as a certificate",
-                "run the query without EXPLAIN; a certified report: fa tb --period <code> --certify (bead fa-5c1 adds query certificates)",
+                "EXPLAIN takes (CERTIFICATE) and leads the statement; it certifies the result",
+                "EXPLAIN (CERTIFICATE) MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code, COUNT(*) AS legs AS KNOWN AT 12",
             ));
         }
         let (end, known_at) = if lexed.word(i, "AS")
