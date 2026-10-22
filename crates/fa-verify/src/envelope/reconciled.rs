@@ -66,7 +66,7 @@ fn manifest(bytes: &[u8]) -> Result<Manifest, DecodeError> {
         return Err(r.error("bank_import.magic", Reason::BadTag(0)));
     }
     let major = r.u16("bank_import.major")?;
-    if !matches!(major, 1 | 2 | 3) || r.u16("bank_import.minor")? != 0 {
+    if !matches!(major, 1..=3) || r.u16("bank_import.minor")? != 0 {
         return Err(r.error("bank_import.version", Reason::BadTag(0)));
     }
     let book = r.fixed("bank_import.book")?;
