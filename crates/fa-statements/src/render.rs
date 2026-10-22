@@ -56,6 +56,9 @@ impl StatementRenderFormat {
 
 /// Convert Unix epoch seconds into `(year, month, day, hour, minute, second)`
 /// using Howard Hinnant's pure-integer civil-from-days algorithm (never reading wall clock).
+// Each narrowing is bounded by the algorithm: the second of the day is below
+// 86 400 and the day of the era is in [0, 146 096] (annotated inline).
+#[allow(clippy::cast_possible_truncation)]
 pub const fn civil_utc_from_epoch_secs(epoch_secs: u64) -> (i64, u32, u32, u32, u32, u32) {
     let days = (epoch_secs / 86_400) as i64;
     let rem = (epoch_secs % 86_400) as u32;

@@ -250,7 +250,9 @@ impl Procedure for InventoryAging {
                             _ => eff,
                         });
                         if pos.debit_legs.len() < MAX_CITES - 1 {
-                            pos.debit_legs.push((e.vid, ordinal as u16));
+                            let ordinal = u16::try_from(ordinal)
+                                .map_err(|_| LanternError::Overflow("inventory leg ordinal"))?;
+                            pos.debit_legs.push((e.vid, ordinal));
                         }
                     }
                     Side::Credit => {

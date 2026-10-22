@@ -298,7 +298,7 @@ impl UnitRegistry {
                 continue;
             }
             match version {
-                Some(v) if u.version == v => return Some(UnitId(i as u32)),
+                Some(v) if u.version == v => return u32::try_from(i).ok().map(UnitId),
                 Some(_) => {}
                 None => {
                     if best.is_none_or(|(bv, _)| u.version > bv) {
@@ -307,7 +307,7 @@ impl UnitRegistry {
                 }
             }
         }
-        best.map(|(_, i)| UnitId(i as u32))
+        best.and_then(|(_, i)| u32::try_from(i).ok()).map(UnitId)
     }
 
     pub fn len(&self) -> usize {
