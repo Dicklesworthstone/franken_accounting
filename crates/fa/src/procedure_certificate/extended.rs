@@ -44,7 +44,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("aging.inventory", 1),
     ("reversal.patterns", 1),
     ("confirm.coverage", 1),
-    ("solvency.balance_sheet_test", 1),
+    ("solvency.balance_sheet_test", 2),
     ("solvency.cash_flow_test", 1),
     ("lookback.preferences", 1),
     ("lookback.fraudulent_transfer", 1),

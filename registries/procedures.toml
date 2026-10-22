@@ -1355,20 +1355,20 @@ meaning = "Minimum corroborated balance coverage in basis points (8000 = 80.00%)
 
 [[procedure]]
 id = "solvency.balance_sheet_test"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L52"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Balance-sheet solvency test (11 U.S.C. 101(32)): compares fair-value-adjusted total assets (honoring RegisterEquals valuation attestations and fair_value_haircut_bps) against total liabilities per unit through the coordinate's effective date, reporting any insolvency deficit."
+summary = "Signed native balance-sheet screen: net assets include credit contra-assets and net liabilities include debit contra-liabilities; apply the declared haircut once to each unit's positive net asset basis, preserving negative bases. RegisterEquals assertions never override balances. Reports an exact deficit with complete citations; documented fair-value adjustments and legal conclusions are unsupported."
 effective_through = "optional"
 
 [[parameter]]
 procedure = "solvency.balance_sheet_test"
 name = "fair_value_haircut_bps"
 default = 0
-meaning = "Haircut in basis points applied to unattested asset balances (0..=10000; 0 = book value unless overridden by a RegisterEquals fair-value attestation)."
+meaning = "Haircut in basis points applied after contra-account netting to each unit's positive net asset basis (0..=10000), truncated toward zero in exact wide arithmetic. Zero preserves the signed book basis; negative net assets are never clamped or improved. This explicit input is not an attested fair value."
 
 [[procedure]]
 id = "solvency.cash_flow_test"

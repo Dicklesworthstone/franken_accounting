@@ -4582,6 +4582,103 @@ fn statistical_audit_lane_oracles_numpy_sampling_and_propcheck_suites() {
 }
 
 #[test]
+fn solvency_balance_sheet_preserves_signed_basis_and_ignores_register_assertions() {
+    use fa_journal::attestation::{
+        Attestation, AttestationClaim, CapabilityBinding, RegisterEqualsClaim, StoredAttestation,
+        Subject,
+    };
+    use fa_lantern::cutoff::SolvencyBalanceSheetTest;
+    use fa_policy::Profile;
+
+    let mut h = harness();
+    let mut funding = Spec::simple(day(2026, 4, 1), "1000", "2000", 10_000);
+    funding.legs = vec![
+        ("1000", Side::Debit, 10_000),
+        ("2000", Side::Credit, 5_000),
+        ("4000", Side::Credit, 5_000),
+    ];
+    h.post(&funding);
+    let before_deduction = h.db.frontier().unwrap();
+    let deduction = h.post(&Spec::simple(
+        day(2026, 4, 20),
+        "6000",
+        "1010",
+        8_000,
+    ));
+    let procedure = SolvencyBalanceSheetTest::new().unwrap();
+    let mut snapshot = h.snapshot();
+    let actual = run_over(&snapshot, &h.book, &procedure).unwrap();
+    assert_eq!(actual.findings.len(), 1, "100 - 80 assets against 50 debt");
+    assert_eq!(actual.findings[0].statistic.value, 3_000);
+    assert!(actual.findings[0].cites.contains(&Cite::Entry(deduction)));
+    assert_eq!(
+        run(&h.db, &h.book, Some(before_deduction), Some(day(2026, 4, 30)), &procedure)
+            .unwrap()
+            .findings
+            .len(),
+        0,
+        "a later-recorded deduction cannot change the earlier snapshot"
+    );
+    snapshot.coordinate.effective_through = Some(day(2026, 4, 15));
+    assert!(run_over(&snapshot, &h.book, &procedure).unwrap().findings.is_empty());
+    snapshot.coordinate.effective_through = Some(day(2026, 4, 30));
+
+    // An ordinary reconciliation assertion is not a valuation instruction.
+    // Its valid historical balance must not replace the present signed fold.
+    for (account, mantissa) in [(h.account("1000"), 100_000), (h.account("2000"), 0)] {
+        let claim = RegisterEqualsClaim {
+            account,
+            unit_id: h.usd.0,
+            period: "FY2026-P04".into(),
+            entity: None,
+            mantissa,
+            as_of_effective: day(2026, 4, 1),
+            evaluated_known_at: before_deduction,
+            fold_digest: [0xAB; 32],
+        };
+        let subject = Subject::Cell(claim.cell_digest());
+        snapshot.attestations.insert(
+            VId(account.0 ^ 0xA551),
+            StoredAttestation {
+                attestation: Attestation {
+                    book_id: h.book.book_id,
+                    claim: AttestationClaim::RegisterEquals(claim),
+                    subject,
+                    principal: REVIEWER,
+                    evidence_refs: Vec::new(),
+                },
+                signed_digest: [0xCD; 32],
+                binding: CapabilityBinding {
+                    profile: Profile::Human,
+                    capability_commitment: [0xEF; 32],
+                },
+            },
+        );
+    }
+    assert_eq!(
+        run_over(&snapshot, &h.book, &procedure).unwrap().findings,
+        actual.findings,
+        "register assertions cannot change the solvency method"
+    );
+    let haircut = SolvencyBalanceSheetTest::with(
+        Params::defaults(SolvencyBalanceSheetTest::ID)
+            .unwrap()
+            .set("fair_value_haircut_bps", 5_000)
+            .unwrap(),
+    );
+    assert_eq!(
+        run_over(&snapshot, &h.book, &haircut).unwrap().findings[0].statistic.value,
+        4_000,
+        "a 50% haircut applies to the net asset basis of 20, leaving 10 against 50"
+    );
+    assert!(witness::determinism(&snapshot, &h.book, &procedure).unwrap().deterministic());
+
+    // A debit contra-liability reduces the same signed liability basis.
+    h.post(&Spec::simple(day(2026, 4, 21), "2000", "4000", 4_000));
+    assert!(h.run(&procedure).findings.is_empty(), "assets 20 exceed net debt 10");
+}
+
+#[test]
 fn fa_y4v_solvency_lookback_ponzi_distribution_and_damages_procedures() {
     use fa_journal::attestation::{
         Attestation, AttestationClaim, CapabilityBinding, RegisterEqualsClaim, StoredAttestation,

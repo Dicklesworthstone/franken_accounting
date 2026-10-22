@@ -1434,11 +1434,12 @@ fn is_liquid_cash_account(code: &str, name: &str, account_type: AccountType) -> 
 }
 
 /// `solvency.balance_sheet_test` (plan §11.6, `FA-EVID-L52`):
-/// Balance-sheet solvency test (11 U.S.C. §101(32)). Compares fair-value-adjusted
-/// total assets (honoring `RegisterEquals` valuation attestations and
-/// `fair_value_haircut_bps`) against total liabilities per unit through the
-/// coordinate's effective date, emitting a finding when liabilities exceed
-/// adjusted assets.
+/// A balance-sheet screen over the signed native asset and liability basis.
+/// Version 2 preserves contra-accounts and applies the declared haircut once
+/// to each unit's positive net asset basis, truncating toward zero. A negative
+/// asset basis remains negative. `RegisterEquals` records are reconciliation
+/// assertions, never valuation instructions. Explicit documented valuations
+/// remain unsupported; this screen makes no fair-value or legal conclusion.
 pub struct SolvencyBalanceSheetTest {
     params: Params,
 }
@@ -1449,7 +1450,7 @@ impl Procedure for SolvencyBalanceSheetTest {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1472,23 +1473,6 @@ impl Procedure for SolvencyBalanceSheetTest {
         let through = snapshot.coordinate.effective_through;
         let mut live = snapshot.live_postings_through(through)?;
         live.sort_by_key(|e| e.vid);
-
-        // Collect latest RegisterEquals fair-value/balance attestation per (account, unit_id)
-        let mut attested_values: BTreeMap<(VId, u32), (DateDay, VId, i128)> = BTreeMap::new();
-        for (att_vid, att) in &snapshot.attestations {
-            if let AttestationClaim::RegisterEquals(c) = &att.attestation.claim {
-                if through.is_some_and(|d| c.as_of_effective > d) {
-                    continue;
-                }
-                let key = (c.account, c.unit_id);
-                let replace = attested_values.get(&key).is_none_or(|(prev_d, prev_v, _)| {
-                    (c.as_of_effective, *att_vid) >= (*prev_d, *prev_v)
-                });
-                if replace {
-                    attested_values.insert(key, (c.as_of_effective, *att_vid, c.mantissa));
-                }
-            }
-        }
 
         // Accumulate posted net debit-minus-credit per (account_vid, unit_id)
         let mut acct_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
@@ -1521,12 +1505,9 @@ impl Procedure for SolvencyBalanceSheetTest {
             }
         }
 
-        // Ensure attested accounts are also represented in acct_net keys
-        for &(acct_vid, unit_id) in attested_values.keys() {
-            acct_net.entry((acct_vid, unit_id)).or_default();
-        }
-
-        // Aggregate per unit_id: (adjusted_assets, total_liabilities, cited_accounts)
+        // Aggregate signed bases before applying any haircut. Clamping one
+        // credit Asset or debit Liability would erase a contra-account.
+        // Per unit: (net assets, credit-minus-debit liabilities, citations).
         type UnitSolvency = (i128, i128, BTreeSet<VId>);
         let mut by_unit: BTreeMap<u32, UnitSolvency> = BTreeMap::new();
         for ((acct_vid, unit_id), posted_net) in acct_net {
@@ -1538,33 +1519,16 @@ impl Procedure for SolvencyBalanceSheetTest {
             let row = by_unit.entry(unit_id).or_default();
             match at {
                 AccountType::ASSET => {
-                    let adj_asset = if let Some(&(_, _, att_val)) =
-                        attested_values.get(&(acct_vid, unit_id))
-                    {
-                        att_val.max(0)
-                    } else {
-                        let kept_bps =
-                            amount_difference(10_000, haircut_bps, "solvency asset haircut")?;
-                        amount_scaled_bps(posted_net.max(0), kept_bps, "solvency asset haircut")?
-                    };
                     row.0 = row
                         .0
-                        .checked_add(adj_asset)
-                        .ok_or(LanternError::Overflow("solvency adjusted assets sum"))?;
+                        .checked_add(posted_net)
+                        .ok_or(LanternError::Overflow("solvency signed assets sum"))?;
                     row.2.insert(acct_vid);
                 }
                 AccountType::LIABILITY => {
-                    let liab =
-                        if let Some(&(_, _, att_val)) = attested_values.get(&(acct_vid, unit_id)) {
-                            amount_magnitude(att_val, "solvency attested liability")?
-                        } else if posted_net < 0 {
-                            amount_negated(posted_net, "solvency liability")?
-                        } else {
-                            0
-                        };
                     row.1 = row
                         .1
-                        .checked_add(liab)
+                        .checked_sub(posted_net)
                         .ok_or(LanternError::Overflow("solvency liabilities sum"))?;
                     row.2.insert(acct_vid);
                 }
@@ -1573,7 +1537,13 @@ impl Procedure for SolvencyBalanceSheetTest {
         }
 
         let mut out = Vec::new();
-        for (unit_id, (adjusted_assets, total_liabilities, accts)) in by_unit {
+        for (unit_id, (asset_basis, total_liabilities, accts)) in by_unit {
+            let adjusted_assets = if asset_basis > 0 {
+                let kept_bps = amount_difference(10_000, haircut_bps, "solvency asset haircut")?;
+                amount_scaled_bps(asset_basis, kept_bps, "solvency asset haircut")?
+            } else {
+                asset_basis
+            };
             if total_liabilities <= adjusted_assets {
                 continue;
             }
@@ -1582,11 +1552,16 @@ impl Procedure for SolvencyBalanceSheetTest {
                 .ok_or(LanternError::Overflow("solvency deficit"))?;
             let mut cites: Vec<Cite> = accts.into_iter().map(Cite::Account).collect();
             if let Some(entries) = unit_entries.get(&unit_id) {
-                for &evid in entries {
-                    if cites.len() < MAX_CITES {
-                        cites.push(Cite::Entry(evid));
-                    }
+                if cites.len() > MAX_CITES || entries.len() > MAX_CITES - cites.len() {
+                    return Err(LanternError::Parameter {
+                        procedure: Self::ID.into(),
+                        name: "scope".into(),
+                        message: format!(
+                            "the complete signed solvency basis exceeds {MAX_CITES} citations; narrow the recorded/effective scope; no contributing account or entry is omitted"
+                        ),
+                    });
                 }
+                cites.extend(entries.iter().copied().map(Cite::Entry));
             }
             let scale = crate::unit_scale(book, unit_id)?;
             out.push(finding(
@@ -1600,7 +1575,7 @@ impl Procedure for SolvencyBalanceSheetTest {
                 },
                 cites,
                 format!(
-                    "unit {unit_id} balance-sheet insolvent: adjusted_assets={adjusted_assets}, total_liabilities={total_liabilities}, insolvency_deficit={deficit} (haircut_bps={haircut_bps})"
+                    "unit {unit_id} signed balance-sheet deficit: asset_basis={asset_basis}, adjusted_assets={adjusted_assets}, total_liabilities={total_liabilities}, insolvency_deficit={deficit} (haircut_bps={haircut_bps}; declared book-basis screen, not a fair-value or legal conclusion)"
                 ),
             ));
         }
