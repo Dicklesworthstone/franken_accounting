@@ -95,6 +95,16 @@ calibration = "planted"
 summary = "Entries one of whose recorded approvals was made by the preparing principal, or migrated entries whose legacy source_approved_by matches source_entered_by. For a class sod_policy.toml covers a native hit proves a capability misconfiguration; for imported history or an uncovered class it is a control finding."
 
 [[procedure]]
+id = "jet.self_sourced_evidence"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L62"
+tie_break = "entry_vid"
+complexity = "O(entries + documents + attestations)"
+calibration = "planted"
+summary = "Entries whose only evidence, the documents they cite and every supplement known at the coordinate, carries a self-sourced grade (AgentUpload or Generated, evidence_policy.toml `self_sourced`; plan §9.3). High severity unless every such document carries a Reviewed attestation by a principal other than its uploader, then Medium: a review is what promotion needs, and the documents are still the book's own. Entries citing no document are outside the population."
+
+[[procedure]]
 id = "jet.thin_descriptions"
 version = 1
 claim = "statistical"

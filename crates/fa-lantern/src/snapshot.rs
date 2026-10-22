@@ -13,7 +13,7 @@ use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
 use fa_journal::rows::{AccountRow, PeriodRow, bytes, prop};
 use fa_model::symbols::{label, property};
-use fa_model::{ControlPayload, Entry, EntryClass, Writer};
+use fa_model::{ControlPayload, Entry, EntryClass, Oid, Writer};
 use fa_registers::open_items::history::{OpenItemSnapshot, open_items_as_of};
 use fa_registers::{entries_at, entry_period, resolve_known_at};
 use fa_time::{DateDay, PeriodState};
@@ -57,6 +57,17 @@ impl SnapshotEntry {
     }
 }
 
+/// One document the book holds at the coordinate (plan §9.3: provenance
+/// grades are shown to Lantern).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotDocument {
+    pub kind: u8,
+    /// Its provenance grade tag (registries/evidence_policy.toml `[[grade]]`).
+    pub grade: u8,
+    /// The principal that brought its bytes into the book.
+    pub uploader: VId,
+}
+
 /// One journaled period transition (a `PeriodControl` record).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Transition {
@@ -88,6 +99,12 @@ pub struct Snapshot {
     /// `Reconciled`)
     /// belonging to this book as known at `known_at`.
     pub attestations: BTreeMap<VId, fa_journal::attestation::StoredAttestation>,
+    /// This book's documents as known at `known_at`, each verified against
+    /// its own payload, by oid.
+    pub documents: BTreeMap<Oid, SnapshotDocument>,
+    /// Supplemental evidence attached after commit (plan §9.2) as known at
+    /// `known_at`, by the entry it supports, in recorded order.
+    pub supplements: BTreeMap<VId, Vec<fa_journal::evidence::SupplementalEvidence>>,
     /// Native-verified exact statement closes and their drift at this snapshot's
     /// recorded prefix. Populated by admitted bank-procedure orchestration only;
     /// `None` means the additional bank input closure has not been evaluated.
@@ -179,6 +196,9 @@ impl Snapshot {
         let mut periods = BTreeMap::new();
         let mut attestations = BTreeMap::new();
         checkpoint(cx)?;
+        let mut documents = BTreeMap::new();
+        let mut supplements: BTreeMap<VId, Vec<(CommitSeq, _)>> = BTreeMap::new();
+        let evidence_policy = fa_registry::evidence_policy::EvidencePolicy::embedded()?;
         for row in db.vertices_at(seq)? {
             checkpoint(cx)?;
             if row.labels.contains(&label::ACCOUNT) {
@@ -205,9 +225,39 @@ impl Snapshot {
                     let att = fa_journal::attestation::StoredAttestation::decode(&payload)?;
                     attestations.insert(row.vid, att);
                 }
+            } else if row.labels.contains(&label::DOCUMENT) {
+                let doc =
+                    fa_journal::evidence::verify_row(&row, &evidence_policy).map_err(|why| {
+                        KernelError::Corrupt(format!("document vertex {:032x}: {why}", row.vid.0))
+                    })?;
+                if doc.book_id == book.book_id {
+                    documents.insert(
+                        doc.oid(),
+                        SnapshotDocument {
+                            kind: doc.kind,
+                            grade: doc.grade,
+                            uploader: doc.retrieved_by,
+                        },
+                    );
+                }
+            } else if row.labels.contains(&label::SUPPLEMENTAL_EVIDENCE) {
+                let s = fa_journal::evidence::stored_supplement(&row, None)?;
+                if s.book_id == book.book_id {
+                    supplements
+                        .entry(s.entry_ref.vid)
+                        .or_default()
+                        .push((row.created_at, s));
+                }
             }
         }
         checkpoint(cx)?;
+        let supplements = supplements
+            .into_iter()
+            .map(|(entry, mut list)| {
+                list.sort_by(|(a, x), (b, y)| (a, &x.documents).cmp(&(b, &y.documents)));
+                (entry, list.into_iter().map(|(_, s)| s).collect())
+            })
+            .collect();
         let rea = match fa_journal::rea::read_rea_at(db, book, seq) {
             Ok(s) => s,
             Err(KernelError::Corrupt(msg)) if msg.contains("no book spec") => {
@@ -258,6 +308,8 @@ impl Snapshot {
             open_items_as_of,
             rea,
             attestations,
+            documents,
+            supplements,
             bank_reconciliations: None,
             inputs_digest,
         }
