@@ -1405,8 +1405,11 @@ fn checkpoint_list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    if args.positional.get(1).map(String::as_str) == Some("list") {
-        return checkpoint_list(ctx, args);
+    match args.positional.get(1).map(String::as_str) {
+        Some("list") => return checkpoint_list(ctx, args),
+        Some("witness") => return checkpoint_witness(ctx, args),
+        Some("witness-key") => return witness_key(ctx, args),
+        _ => {}
     }
     if args.positional.get(1).map(String::as_str) != Some("create") {
         return Err(unhandled(
@@ -1453,6 +1456,183 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
             state.leaf_count.saturating_sub(created.leaf_kinds.entries), state.through_seq.0,
             stored.recorded_at.0, hex(&state.root),
             hex(&created.checkpoint.oid.0), hex(&book.checkpoint_public_key()),
+        ),
+    );
+    Ok(())
+}
+
+/// `fa checkpoint witness-key --out <new file>` (plan §13.5, fa-qtfd): a
+/// new Ed25519 witness key from the operating system's entropy, its 32-byte
+/// seed written as 64 hex characters to a new 0600 file. No book is opened:
+/// the key is the witness's, never the book's.
+fn witness_key(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa checkpoint witness-key --out <new file> --json";
+    if args.positional.len() != 2 || args.flag_all("--out").len() != 1 {
+        return Err(usage(
+            "checkpoint witness-key takes exactly one --out and no other argument",
+            EXAMPLE,
+        ));
+    }
+    let out = args.require("--out", "a new file for the witness key")?;
+    if out.is_empty() || out == "-" {
+        return Err(usage(
+            "--out names a new key file; a secret is never written to stdout",
+            EXAMPLE,
+        ));
+    }
+    let mut seed = [0u8; 32];
+    fa::book::Entropy::production()
+        .fill(&mut seed)
+        .map_err(|e| Fail::Environment(format!("entropy for a witness key: {e:?}")))?;
+    let public = fa::SigningKey::from_seed(&seed).public_key();
+    crate::cli::write_new_output_file(
+        &ctx.files,
+        out,
+        format!("{}\n", hex(&seed)).as_bytes(),
+        "witness key",
+        "--out",
+    )?;
+    let key_id = fa::signer_key_id(&public);
+    ctx.out.event(
+        "witness_key_created",
+        vec![
+            ("public_key", s(hex(&public))),
+            ("signer_key_id", s(hex(&key_id))),
+            ("out", s(out)),
+        ],
+        &format!(
+            "Witness key written to {out} (0600). Public key {}: give it to whoever verifies your cosignatures (fa-verify checkpoint --witness <public key>).",
+            hex(&public)
+        ),
+    );
+    Ok(())
+}
+
+/// A witness key file: one line of 64 hex characters (the Ed25519 seed),
+/// mode at most 0600 and owned by the caller, checked before it is read.
+fn load_witness_key(files: &Files, path: &str) -> Result<fa::SigningKey, Fail> {
+    let resolved = files.resolve(path);
+    fa::book::BookKeys::check_permissions(&resolved)?;
+    let text = files.read_text(path)?;
+    let line = text.trim();
+    let seed: Option<[u8; 32]> = (line.len() == 64 && line.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| {
+            let mut seed = [0u8; 32];
+            for (i, byte) in seed.iter_mut().enumerate() {
+                *byte = u8::from_str_radix(&line[2 * i..2 * i + 2], 16).ok()?;
+            }
+            Some(seed)
+        })
+        .flatten();
+    seed.map(|seed| fa::SigningKey::from_seed(&seed))
+        .ok_or_else(|| {
+            usage(
+                format!("{path} is not a witness key file (one line of 64 hex characters)"),
+                "create one with fa checkpoint witness-key --out <new file>",
+            )
+        })
+}
+
+/// `fa checkpoint witness` (plan §13.5, fa-qtfd): cosign a recorded state's
+/// signed checkpoint with a witness key, after the book proves its history
+/// extends the statement the witness signed last (`--previous`). Nothing is
+/// written to the book; the cosigned checkpoint goes to a new `--out` file.
+fn checkpoint_witness(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa checkpoint witness --key <witness key file> [--state <oid>] [--previous <cosigned file>] [--onto <cosigned file>] --out <new file> --grant witness --book <dir> --json";
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "checkpoint witness takes no positional argument",
+            EXAMPLE,
+        ));
+    }
+    for flag in ["--key", "--state", "--previous", "--onto", "--out"] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("checkpoint witness takes only one {flag}"),
+                EXAMPLE,
+            ));
+        }
+    }
+    let key_path = args.require("--key", "the witness key file (fa checkpoint witness-key)")?;
+    let out = args.require("--out", "a new file for the cosigned checkpoint")?;
+    if out.is_empty() || out == "-" {
+        return Err(usage(
+            "--out names a new file; - is not an output file",
+            EXAMPLE,
+        ));
+    }
+    let state = args
+        .flag("--state")
+        .map(|text| crate::proof::fixed_hex(text, "--state").map(fa_model::Oid))
+        .transpose()?;
+    let witness = load_witness_key(&ctx.files, key_path)?;
+    let previous = args
+        .flag("--previous")
+        .map(|path| ctx.files.read_bytes(path))
+        .transpose()?;
+    let onto = args
+        .flag("--onto")
+        .map(|path| ctx.files.read_bytes(path))
+        .transpose()?;
+    let actor = ctx.principal(args);
+    let capability = ctx.capability(args, &["read"])?;
+    fa_policy::require(&capability, Op::Witness, "witnessing a checkpoint")
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    let book = ctx.books.open(args)?;
+    let witnessed = book.witness_checkpoint(
+        actor,
+        &capability,
+        &witness,
+        fa::WitnessRequest {
+            state,
+            previous: previous.as_deref(),
+            onto: onto.as_deref(),
+        },
+    )??;
+    crate::cli::write_new_output_file(
+        &ctx.files,
+        out,
+        &witnessed.cosigned,
+        "cosigned checkpoint",
+        "--out",
+    )?;
+    ctx.out.at_book(&book)?;
+    let state = &witnessed.checkpoint;
+    let statement = |remembered: &fa::AccumulatorStatement| {
+        obj(vec![
+            (
+                "through_seq",
+                Json::Int(i128::from(remembered.through_seq.0)),
+            ),
+            ("leaf_count", Json::Int(i128::from(remembered.leaf_count))),
+            ("root", s(hex(&remembered.root))),
+        ])
+    };
+    ctx.out.event(
+        "checkpoint_witnessed",
+        vec![
+            ("state_oid", s(hex(&state.oid.0))),
+            ("through_seq", Json::Int(i128::from(state.state.through_seq.0))),
+            ("leaf_count", Json::Int(i128::from(state.state.leaf_count))),
+            ("root", s(hex(&state.state.root))),
+            ("checkpoint_oid", s(hex(&witnessed.cosigned_oid.0))),
+            ("signer_key_id", s(hex(&witnessed.witness_key_id))),
+            ("witness_public_key", s(hex(&witness.public_key()))),
+            ("book_public_key", s(hex(&book.checkpoint_public_key()))),
+            ("extends", witnessed.extends.as_ref().map_or(Json::Null, statement)),
+            ("out", s(out)),
+            ("claim", s("witnessed_detection")),
+        ],
+        &format!(
+            "Cosigned checkpoint {} of state {} ({} leaves through sequence {}) written to {out}{}. A cosignature is detection, not prevention: checkpoints that later disagree expose a fork.",
+            hex(&witnessed.cosigned_oid.0),
+            hex(&state.oid.0),
+            state.state.leaf_count,
+            state.state.through_seq.0,
+            witnessed.extends.as_ref().map_or_else(String::new, |p| format!(
+                "; it extends the statement this key signed last ({} leaves through sequence {})",
+                p.leaf_count, p.through_seq.0
+            )),
         ),
     );
     Ok(())

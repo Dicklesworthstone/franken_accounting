@@ -335,7 +335,7 @@ fn expected_checkpoint<V: asupersync::fs::Vfs + Clone>(
         // Unreachable for a key derived from BookKeys (a clamped scalar
         // times the base point has order L); a foreign signer with an
         // untrustable key is a configuration fault, never a signature.
-        SignError::UntrustableKey { .. } => KernelError::Corrupt(e.to_string()),
+        SignError::UntrustableKey { .. } | SignError::Full => KernelError::Corrupt(e.to_string()),
     })
 }
 
@@ -989,18 +989,20 @@ pub fn prove_inclusion<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
-/// The consistency proof that the journaled state `new` extends `old`.
+/// The consistency proof that the journaled state `new` extends `old`: a
+/// journaled state's statement, or one a witness remembers signing (a
+/// statement this book's history does not extend has no proof).
 pub fn prove_consistency<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
-    old: &AccumulatorState,
+    old: &Statement,
     new: &AccumulatorState,
 ) -> Outcome<Vec<u8>> {
     let journal = match supported(db, book, new)? {
         Ok(j) => j,
         Err(r) => return Ok(Err(r)),
     };
-    match journal.consistency_proof(&old.statement())? {
+    match journal.consistency_proof(old)? {
         Some(proof) => Ok(Ok(proof)),
         None => Ok(Err(Refusal::new(
             code::NOT_EXTENDED,

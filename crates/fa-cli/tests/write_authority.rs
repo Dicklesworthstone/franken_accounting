@@ -79,6 +79,16 @@ fn row(argv: &[&str], ops: &[Op], admitted: Admitted) -> Row {
 const HOST_ONLY: &[(&str, Option<&str>, &str)] = &[
     ("book", Some("create"), "creates the book itself"),
     (
+        "checkpoint",
+        Some("witness"),
+        "a witness cosigns with its own key file on the host and writes nothing to the book; no launch profile holds witness (fa-qtfd)",
+    ),
+    (
+        "checkpoint",
+        Some("witness-key"),
+        "writes a new secret key file on the host and opens no book (fa-qtfd)",
+    ),
+    (
         "chart",
         Some("import"),
         "installs the chart (schema genesis)",

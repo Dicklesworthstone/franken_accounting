@@ -50,7 +50,7 @@
 use crate::ads::{AdsReport, verify_ads};
 use crate::blake3::hex;
 use crate::bundle::{BundleReport, BundleScope, Grade, verify_bundle};
-use crate::checkpoint::{SignedCheckpoint, verify_checkpoint};
+use crate::checkpoint::{CheckpointError, SignedCheckpoint, verify_checkpoint};
 use crate::document::doc_commit;
 use crate::envelope::LeafEnvelope;
 use crate::proof::{
@@ -88,6 +88,8 @@ usage: fa-verify <command> <file> [options] [--json] [--hex]
 commands:
   state        <state>                          an AccumulatorState's bytes on their own
   checkpoint   <checkpoint> --key K...          a TransparencyCheckpoint signed by a trusted key
+               [--witness W... [--quorum N]]    and cosigned by N of the named witnesses (default
+                                                all): witnessed detection, never prevention
   inclusion    <proof> --checkpoint C ANCHOR    an entry recorded within the checkpoint's prefix
   prefix       <proof> --checkpoint C ANCHOR    every leaf of the prefix (seq_range_complete)
   balance      <proof> --checkpoint C ANCHOR    a posted balance refolded (recomputation)
@@ -140,8 +142,10 @@ const COMMANDS: [&str; 10] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 13] = [
+const VALUE_FLAGS: [&str; 15] = [
     "--key",
+    "--witness",
+    "--quorum",
     "--proof",
     "--checkpoint",
     "--next-checkpoint",
@@ -161,7 +165,7 @@ const SWITCHES: [&str; 3] = ["--json", "--hex", "--unsigned-checkpoint"];
 /// is refused before a file is opened.
 fn admitted(command: &str) -> &'static [&'static str] {
     match command {
-        "checkpoint" => &["--key"],
+        "checkpoint" => &["--key", "--witness", "--quorum"],
         "inclusion" | "prefix" | "balance" => {
             &["--proof", "--checkpoint", "--key", "--unsigned-checkpoint"]
         }
@@ -599,10 +603,12 @@ fn parse(args: &[String]) -> Result<Args, Usage> {
                     format!("pass `{flag} <value>`"),
                 ));
             }
-            if flag != "--key" && values.iter().any(|(f, _)| *f == flag) {
+            if !matches!(flag.as_str(), "--key" | "--witness")
+                && values.iter().any(|(f, _)| *f == flag)
+            {
                 return Err(usage(
                     format!("`{flag}` may be supplied only once"),
-                    format!("pass one `{flag}`; only `--key` repeats"),
+                    format!("pass one `{flag}`; only `--key` and `--witness` repeat"),
                 ));
             }
             values.push((flag, value));
@@ -760,6 +766,55 @@ fn checkpoint_check(signed: &Result<SignedCheckpoint, VerifyError>) -> Check {
                 ),
             ],
         ),
+    }
+}
+
+/// The witnesses' cosignatures (plan §13.5, fa-qtfd): at least `quorum` of
+/// the `named` witness keys signed the checkpoint's body. The claim is
+/// witnessed detection (checkpoints that later disagree expose a fork),
+/// never prevention: no witness policy with intersecting quorums is judged.
+fn witness_check(
+    signed: &Result<SignedCheckpoint, VerifyError>,
+    named: usize,
+    quorum: usize,
+) -> Check {
+    let (signed_by, failure) = match signed {
+        Ok(c) => (c.signed_by.clone(), None),
+        Err(VerifyError::Checkpoint(CheckpointError::NoTrustedSignature)) => (Vec::new(), None),
+        Err(e) => (Vec::new(), Some(e.to_string())),
+    };
+    let detail = vec![
+        ("claim", s("witnessed_detection")),
+        ("quorum", n(u64::try_from(quorum).unwrap_or(u64::MAX))),
+        ("named", n(u64::try_from(named).unwrap_or(u64::MAX))),
+        (
+            "signed",
+            n(u64::try_from(signed_by.len()).unwrap_or(u64::MAX)),
+        ),
+        (
+            "signed_by",
+            Json::List(signed_by.iter().map(|k| h(k)).collect()),
+        ),
+    ];
+    match failure {
+        Some(why) => Check {
+            name: "witnesses",
+            scope: "quorum",
+            verdict: Verdict::Fail,
+            detail,
+            reason: Some(why),
+        },
+        None if signed_by.len() >= quorum => Check::pass("witnesses", "quorum", detail),
+        None => Check {
+            name: "witnesses",
+            scope: "quorum",
+            verdict: Verdict::Fail,
+            detail,
+            reason: Some(format!(
+                "{} of the {named} named witnesses signed; the quorum is {quorum}",
+                signed_by.len()
+            )),
+        },
     }
 }
 
@@ -944,8 +999,42 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 ));
             }
             let keys: Vec<[u8; 32]> = keys.into_iter().map(key).collect::<Result<_, _>>()?;
+            let witnesses: Vec<[u8; 32]> = args
+                .all("--witness")
+                .into_iter()
+                .map(key)
+                .collect::<Result<_, _>>()?;
+            let quorum = match args.one("--quorum") {
+                None => witnesses.len(),
+                Some(text) => text.parse::<usize>().map_err(|_| {
+                    usage(
+                        format!("--quorum {text} is not a count"),
+                        "pass how many named witnesses must have signed, e.g. --quorum 2",
+                    )
+                })?,
+            };
+            if args.one("--quorum").is_some() && (witnesses.is_empty() || quorum == 0) {
+                return Err(usage(
+                    "--quorum counts the --witness keys that signed: name at least one witness and a quorum of at least 1",
+                    "fa-verify checkpoint <file> --key <book key> --witness <key>... --quorum <n>",
+                ));
+            }
+            if witnesses.iter().any(|w| keys.contains(w)) {
+                return Err(usage(
+                    "a witness key is also a --key: a witness must be independent of the key it cosigns",
+                    "name the book's key with --key and each witness's own key with --witness",
+                ));
+            }
             let bytes = load(read, file, args.hex)?;
-            Ok(vec![checkpoint_check(&verify_checkpoint(&bytes, &keys))])
+            let mut checks = vec![checkpoint_check(&verify_checkpoint(&bytes, &keys))];
+            if !witnesses.is_empty() {
+                checks.push(witness_check(
+                    &verify_checkpoint(&bytes, &witnesses),
+                    witnesses.len(),
+                    quorum,
+                ));
+            }
+            Ok(checks)
         }
         "inclusion" | "prefix" | "balance" | "scope" => {
             let proof_path = subject(args, "a proof file")?;

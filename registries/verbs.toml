@@ -592,12 +592,12 @@ example = "fa adjustment propose --engagement FY2026-audit --intent accrual.json
 name = "checkpoint"
 summary = "Publish a recomputable accumulator state over the book's entry prefix and its TransparencyCheckpoint signed by the book's key."
 writes = true
-subcommands = ["create", "list"]
-flags = ["--grant"]
+subcommands = ["create", "list", "witness", "witness-key"]
+flags = ["--grant", "--key", "--state", "--previous", "--onto", "--out"]
 switches = []
-events = ["checkpoint_created", "checkpoints"]
+events = ["checkpoint_created", "checkpoints", "checkpoint_witnessed", "witness_key_created"]
 exits = [0, 2, 4, 5, 6, 7, 8]
-usage = ["checkpoint create --grant witness [--as <principal>]", "checkpoint list   (the journaled states, newest first; recomputes nothing: fa verify accumulator does)", "The state covers entries; its TransparencyCheckpoint is signed by the book's Ed25519 key (public_key) and is exported with `fa proof signed-checkpoint`. It is not an evidence bundle and covers no document receipts."]
+usage = ["checkpoint create --grant witness [--as <principal>]", "checkpoint list   (the journaled states, newest first; recomputes nothing: fa verify accumulator does)", "The state covers entries; its TransparencyCheckpoint is signed by the book's Ed25519 key (public_key) and is exported with `fa proof signed-checkpoint`. It is not an evidence bundle and covers no document receipts.", "checkpoint witness-key --out <new file>   (plan §13.5: a new Ed25519 witness key, its seed as 64 hex characters in a new 0600 file; the book is not opened, and the key is the witness's, never the book's)", "checkpoint witness --key <witness key file> [--state <oid>] [--previous <the cosigned checkpoint this key produced last>] [--onto <a checkpoint of the state other witnesses cosigned>] --out <new file> --grant witness   (plan §13.5, the witness's cosignature: the state's checkpoint signed by the book's key with the witness's Ed25519 signature added over the same body, an attestation that this root was observed and never a statement about the ledger's content. With --previous, the book must prove that its history extends the statement the witness signed last; a rollback or rewritten history is refused (FA-REF-124, exit 8) and nothing is signed. With --onto, the signature is added to a checkpoint other witnesses already cosigned, whose body must be exactly the one the book signed for that state, so one file can carry a quorum. The key file must be 0600 and owned by the caller. Nothing is written to the book: the cosigned checkpoint is the witness's to keep and distribute; `fa-verify checkpoint <file> --key <book key> --witness <witness key>... --quorum <n>` checks it offline. A cosignature is witnessed detection (a fork is detected when checkpoints meet), never prevention)"]
 example = "fa checkpoint create --grant witness --book ./books/myco --json"
 
 [[verb]]
@@ -1878,6 +1878,17 @@ doc = "Every journaled accumulator state, newest first, following prev_state_oid
 fields = ["checkpoints:[checkpoint_state]"]
 
 [[event]]
+name = "checkpoint_witnessed"
+book = true
+doc = "A recorded state's signed TransparencyCheckpoint cosigned by a witness key (plan §13.5, fa checkpoint witness), written to `out`: the same body with the witness's Ed25519 signature added, so checkpoint_oid names the cosigned object. state_oid, through_seq, leaf_count and root are the state's; signer_key_id and witness_public_key the witness's; book_public_key the book's checkpoint key. extends is the statement the witness signed last (from --previous), which the book proved this state extends before anything was signed, or null for a witness's first checkpoint. claim is witnessed_detection: a cosignature lets checkpoints that later disagree expose a fork; it never prevents one. Nothing is written to the book."
+fields = ["state_oid:hex", "through_seq:seq", "leaf_count:int", "root:hex", "checkpoint_oid:hex", "signer_key_id:hex", "witness_public_key:hex", "book_public_key:hex", "extends:witness_statement?", "out:string", "claim:string"]
+
+[[event]]
+name = "witness_key_created"
+doc = "A new Ed25519 witness key (plan §13.5, fa checkpoint witness-key): its 32-byte seed written as 64 hex characters to the new 0600 file `out`, its public key and the key id a checkpoint signature names it by. No book is read or written."
+fields = ["public_key:hex", "signer_key_id:hex", "out:string"]
+
+[[event]]
 name = "checkpoint_created"
 book = true
 doc = "An AccumulatorState over every entry in the named book/branch prefix through through_seq, and every journaled evidence record (attestation, import receipt, custody transfer, supplemental evidence) created after evidence_after_seq, recorded in a later commit. evidence_after_seq is null only for a state from before evidence records were accumulated; leaf_kinds counts leaf_count by record kind. It may be the unsigned raw statement, or its TransparencyCheckpoint (checkpoint_oid) signed by the book's Ed25519 key public_key; signatures is ed25519 for the signed checkpoint and unsigned for the raw statement. prev_state_oid links its predecessor. scope entry_prefix names this accumulator prefix in commit order; signatures and bundles are not leaves. `fa proof signed-checkpoint` exports the signed checkpoint for fa-verify --key."
@@ -2670,6 +2681,11 @@ doc = "One output file of an export: its name in the package, its length, its di
 fields = ["name:string", "bytes:int", "digest:hex", "content:string?"]
 
 [[shape]]
+name = "witness_statement"
+doc = "The accumulator statement a witness signed last (fa checkpoint witness --previous): its recorded sequence, leaf count and root."
+fields = ["through_seq:seq", "leaf_count:int", "root:hex"]
+
+[[shape]]
 name = "ads_proof"
 doc = "The proof written beside an ADS extract (fa export ads --with-proofs, plan §13.1): the complete-prefix bundle and its signed production receipt (file names in the package), the bundle's digest, the recorded accumulator state and the sequence it proves complete through (the extract's known_at), its completeness grade, and the checkpoint public key fa-verify ads checks them with."
 fields = ["bundle:string", "receipt:string", "bundle_digest:hex", "state:hex", "through_seq:seq", "completeness:string", "checkpoint_public_key:hex"]
@@ -3349,6 +3365,16 @@ on_demand = true
 doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements) and evidence bundles, checked independently without book keys (plan §15.4: discoverable on demand)."
 
 [[mcp.excluded]]
+verb = "checkpoint"
+subcommand = "witness"
+reason = "host-only: a witness cosigns with its own key file on the host (fa-qtfd); no launch template or issued-token ceiling holds witness"
+
+[[mcp.excluded]]
+verb = "checkpoint"
+subcommand = "witness-key"
+reason = "host-only: writes a new secret key file on the host for a witness; MCP output is inline only and never carries a secret"
+
+[[mcp.excluded]]
 verb = "bank"
 subcommand = "unmatch"
 reason = "host-only: an independently authorized Human explicitly releases one exact confirmation with --yes; launch-bound sessions may inspect native metadata history but cannot release claims"
@@ -3612,6 +3638,7 @@ name = "checkpoint"
 verb = "checkpoint"
 subcommands = ["create"]
 positionals = []
+flags = []
 required = []
 dont = ["Don't present the checkpoint as an evidence bundle or a document-receipt proof: it covers entries only, signed by the book's key (public_key)."]
 mistakes = ["Trying to self-issue witness permission: caller grants are forbidden, and Agent/Preparer launch profiles do not include witness."]

@@ -201,7 +201,8 @@ pub(crate) fn export<V: Vfs + Clone>(
                 Ok(state) => state,
                 Err(refusal) => return Ok(Err(refusal)),
             };
-            let proof = fa_notary::prove_consistency(db, book, &checkpoint.state, &next.state)?;
+            let proof =
+                fa_notary::prove_consistency(db, book, &checkpoint.state.statement(), &next.state)?;
             next_checkpoint = Some(next);
             proof
         }
@@ -269,4 +270,234 @@ pub(crate) fn export<V: Vfs + Clone>(
         next_checkpoint,
         bytes,
     }))
+}
+
+/// What a witness cosigns (plan §13.5, fa-qtfd).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WitnessRequest<'a> {
+    /// The recorded state (default: the latest, or the one `onto` names).
+    pub state: Option<Oid>,
+    /// The cosigned checkpoint this witness key produced last.
+    pub previous: Option<&'a [u8]>,
+    /// A checkpoint of the same state already cosigned by other witnesses,
+    /// to add this signature to (as a checkpoint circulates among its
+    /// witnesses); its body must be exactly the one the book signed.
+    pub onto: Option<&'a [u8]>,
+}
+
+/// A recorded state's signed checkpoint cosigned by a witness (plan §13.5,
+/// bead fa-qtfd), and what the witness checked first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Witnessed {
+    pub checkpoint: StoredState,
+    /// The book-signed checkpoint with the witness's signature added: the
+    /// same body, a new object.
+    pub cosigned: Vec<u8>,
+    pub cosigned_oid: Oid,
+    pub witness_key_id: [u8; 32],
+    /// The statement this witness last cosigned, which the book's history
+    /// was proved to extend before this one was signed; `None` for a
+    /// witness's first checkpoint.
+    pub extends: Option<fa_notary::Statement>,
+}
+
+/// Cosign the recorded state `state` (default: the latest) with `witness`
+/// (plan §13.5: "this root was observed", never a statement about content).
+/// The holder needs current read and witness authority, and the chain must
+/// recompute from the journal. A witness never signs a history that does not
+/// extend the one it signed last: given `previous` (its last cosigned
+/// checkpoint, carrying its own valid signature), the book must prove, and
+/// the independent verifier must accept, that this state extends that
+/// statement; a rollback or a rewritten history is refused
+/// (`NOT_EXTENDED`, exit 8) and nothing is signed. Nothing is written to
+/// the book: the cosignature is the witness's to keep and distribute.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn witness<V: Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &fgdb_types::context::PurposeContexts,
+    book: &BookContext,
+    signer: &dyn fa_notary::CheckpointSigner,
+    principal: VId,
+    capability: &Capability,
+    witness: &dyn fa_notary::CheckpointSigner,
+    request: WitnessRequest<'_>,
+) -> Outcome<Witnessed> {
+    if let Err(denial) = fa_policy::admit_read(capability, principal, book.book_id)
+        .and_then(|()| fa_policy::require(capability, Op::Witness, "witnessing a checkpoint"))
+    {
+        return Ok(Err(fa_journal::policy::refusal(&denial)));
+    }
+    let head = db.frontier().map_err(KernelError::from)?;
+    if let Err(denial) = fa_policy::current(capability, head) {
+        return Ok(Err(fa_journal::policy::refusal(&denial)));
+    }
+    if let Err(refusal) = fa_journal::policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    let witness_key_id = fa_notary::checkpoint::signer_key_id(&witness.public_key());
+    // What the witness signed last, judged before the book is read further.
+    let structure = |why: &str| {
+        Refusal::new(
+            fa_journal::refusal::code::STRUCTURE,
+            exit::USAGE,
+            why,
+            "plan §13.5 (witnesses cosign the exact body the book signed)",
+            "pass a TransparencyCheckpoint file this book's state produced (fa proof signed-checkpoint, or another witness's fa checkpoint witness --out)",
+        )
+    };
+    let onto = match request.onto {
+        None => None,
+        Some(bytes) => match fa_notary::TransparencyCheckpoint::decode(bytes) {
+            Ok(onto) => Some(onto),
+            Err(_) => {
+                return Ok(Err(structure(
+                    "--onto is not a canonical TransparencyCheckpoint",
+                )));
+            }
+        },
+    };
+    let state = match (request.state, &onto) {
+        (Some(named), Some(onto)) if named != onto.body.state_oid => {
+            return Ok(Err(structure(
+                "--onto cosigns another state than --state names",
+            )));
+        }
+        (named, onto) => named.or(onto.as_ref().map(|o| o.body.state_oid)),
+    };
+    let remembered = match request.previous {
+        None => None,
+        Some(bytes) => {
+            let not_ours = |why: String| {
+                Refusal::new(
+                    fa_journal::refusal::code::STRUCTURE,
+                    exit::USAGE,
+                    why,
+                    "plan §13.5 (a witness extends only the history it signed itself)",
+                    "pass as --previous the cosigned checkpoint this witness key produced last",
+                )
+            };
+            let Ok(prior) = fa_notary::TransparencyCheckpoint::decode(bytes) else {
+                return Ok(Err(not_ours(
+                    "--previous is not a canonical TransparencyCheckpoint".into(),
+                )));
+            };
+            // Ed25519 signing is deterministic (RFC 8032): this key's
+            // signature over that body is exactly the bytes it would produce
+            // now, and no other key produces them.
+            let message = prior
+                .body
+                .signed_message()
+                .map_err(|e| KernelError::Model(e.into()))?;
+            let ours = prior
+                .signatures
+                .iter()
+                .find(|s| (s.signer_key_id, s.scheme) == (witness_key_id, witness.scheme()));
+            if ours.is_none_or(|s| s.bytes.as_slice() != witness.sign(&message).as_slice()) {
+                return Ok(Err(not_ours(
+                    "--previous carries no signature by this witness key".into(),
+                )));
+            }
+            if prior.body.statement.book_id != book.book_id {
+                return Ok(Err(not_ours(
+                    "--previous is a checkpoint of another book".into(),
+                )));
+            }
+            Some(prior.body.statement)
+        }
+    };
+    let verified = fa_notary::verify_accumulator(db, ctx, book, signer)?;
+    if !verified.is_green() {
+        return Ok(Err(Refusal::new(
+            fa_notary::code::ACCUMULATOR_DRIFT,
+            exit::VERIFICATION,
+            "the recorded accumulator chain does not agree with the current journal",
+            "FA-INV-14 (every published state is supported by immutable journal history)",
+            "run fa verify accumulator --json and preserve its findings; nothing is witnessed over a damaged chain",
+        )));
+    }
+    let states = fa_notary::chain(db, None)?;
+    let checkpoint = match select(&states, state) {
+        Ok(state) => state,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if let Some(prior) = &remembered {
+        let diverged = || {
+            Refusal::new(
+                fa_notary::code::NOT_EXTENDED,
+                exit::VERIFICATION,
+                format!(
+                    "this book's history does not extend the checkpoint this witness signed last (through {}, {} leaves, root {}): a rollback or a rewritten history; nothing was signed",
+                    prior.through_seq.0,
+                    prior.leaf_count,
+                    hex(&prior.root)
+                ),
+                "plan §13.5 (a witness never signs a history that does not extend the one it signed); FA-INV-14",
+                "keep both checkpoints as evidence of the divergence and report it; do not cosign",
+            )
+        };
+        // A consistency proof exists only when the recomputed journal's
+        // prefix at the remembered size has the remembered root: that is the
+        // extension the witness requires. (An outsider re-checks it with
+        // fa-verify consistency; engine code never links the verifier.)
+        match fa_notary::prove_consistency(db, book, prior, &checkpoint.state)? {
+            Ok(_proof) => {}
+            Err(refusal) if refusal.code == fa_notary::code::NOT_EXTENDED => {
+                return Ok(Err(diverged()));
+            }
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+    }
+    let signed = match fa_notary::stored_checkpoint(db, ctx, book, &checkpoint, signer)? {
+        Ok(stored) => stored.bytes,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let decoded = fa_notary::TransparencyCheckpoint::decode(&signed)
+        .map_err(|e| KernelError::Corrupt(format!("stored checkpoint: {e:?}")))?;
+    let base = match onto {
+        None => decoded,
+        Some(onto) if onto.body == decoded.body => onto,
+        Some(_) => {
+            return Ok(Err(structure(
+                "--onto's body is not the one this book signed for that state",
+            )));
+        }
+    };
+    let cosigned = match base.cosign(witness) {
+        Ok(cosigned) => cosigned,
+        Err(fa_notary::checkpoint::SignError::UntrustableKey { .. }) => {
+            return Ok(Err(Refusal::new(
+                fa_journal::refusal::code::STRUCTURE,
+                exit::USAGE,
+                "the witness key is not a usable Ed25519 key",
+                "plan §13.2 (ruling 3392: a small-order or non-curve key signs nothing)",
+                "generate a witness key with fa checkpoint witness-key --out <new file>",
+            )));
+        }
+        Err(fa_notary::checkpoint::SignError::Full) => {
+            return Ok(Err(Refusal::new(
+                fa_journal::refusal::code::STRUCTURE,
+                exit::USAGE,
+                "this checkpoint already holds the most signatures a verifier decodes",
+                "plan §13.2 (bounded checkpoint signature lists)",
+                "cosign a later checkpoint",
+            )));
+        }
+        Err(fa_notary::checkpoint::SignError::Encode(e)) => {
+            return Err(KernelError::Model(e.into()).into());
+        }
+    };
+    let bytes = cosigned
+        .canonical_bytes()
+        .map_err(|e| KernelError::Model(e.into()))?;
+    Ok(Ok(Witnessed {
+        cosigned_oid: fa_notary::checkpoint::checkpoint_oid(&bytes),
+        checkpoint,
+        cosigned: bytes,
+        witness_key_id,
+        extends: remembered,
+    }))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
