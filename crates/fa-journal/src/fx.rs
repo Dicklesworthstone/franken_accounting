@@ -1280,8 +1280,7 @@ pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
         }
         let entry = crate::sweep::decode_entry(&row)?;
         let proposal = &entry.proposal;
-        if proposal.base_totals.is_none() && proposal.legs.iter().all(|l| l.base_amount.is_none())
-        {
+        if proposal.base_totals.is_none() && proposal.legs.iter().all(|l| l.base_amount.is_none()) {
             continue;
         }
         let law = proposal
@@ -1327,9 +1326,8 @@ fn verify_recorded<V: asupersync::fs::Vfs + Clone>(
         Ok(None) => return Ok(Err("base amounts without a registered FX claim".into())),
         Err(r) => return Ok(Err(r.message)),
     };
-    let mut read = |vid: VId| -> Result<Option<VertexRow>, crate::KernelError> {
-        Ok(db.vertex_at(vid, at)?)
-    };
+    let mut read =
+        |vid: VId| -> Result<Option<VertexRow>, crate::KernelError> { Ok(db.vertex_at(vid, at)?) };
     if proposal.class == EntryClass::REVERSAL
         && matches!(claim.law, FxLawId::SpotClose | FxLawId::PeriodAverage)
     {
