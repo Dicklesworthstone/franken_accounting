@@ -4180,6 +4180,19 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         &rehearsal,
         "--json",
     ]);
+    // fa-g8em: triage counts the rehearsed case among pending approvals and
+    // points at it.
+    let triage = ok(&["triage", "--json"]);
+    assert_eq!(
+        int(&doc(&triage), "cases_awaiting_approval"),
+        Some(1),
+        "{triage}"
+    );
+    assert!(
+        int(&doc(&triage), "pending_approvals").is_some_and(|n| n >= 1),
+        "{triage}"
+    );
+    assert!(triage.contains("fa case show 1 --json"), "{triage}");
     let digest = text(
         &doc(&ok(&["case", "approve", "1", "--dry-run", "--json"])),
         "digest",
@@ -4210,6 +4223,13 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         &auditor,
         "--json",
     ]);
+    // Approved, the case no longer awaits approval.
+    let triage = ok(&["triage", "--json"]);
+    assert_eq!(
+        int(&doc(&triage), "cases_awaiting_approval"),
+        Some(0),
+        "{triage}"
+    );
     let out = ok(&["case", "post", "1", "--json"]);
     let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
     assert_eq!(text(&case, "state"), "Posted", "{out}");
