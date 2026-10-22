@@ -875,14 +875,8 @@ impl McpRegistry {
         {
             return None;
         }
-        let word = parsed.positional.first()?;
-        let expanded: Vec<String> = match reg.alias(word) {
-            Some(a) => a.expands.clone(),
-            None => vec![word.clone()],
-        };
-        let mut positional: Vec<String> = expanded;
-        positional.extend(parsed.positional.iter().skip(1).cloned());
-        let verb = reg.verb(&positional[0])?;
+        let positional = reg.expand_alias(&parsed.positional);
+        let verb = reg.verb(positional.first()?)?;
         let (sub, rest_from) = if verb.subcommands.is_empty() {
             (None, 1)
         } else {
@@ -991,14 +985,7 @@ impl McpRegistry {
         let Ok(mut parsed) = args::parse(rest, &reg.value_flags(), &reg.switches()) else {
             return false;
         };
-        let Some(word) = parsed.positional.first().cloned() else {
-            return false;
-        };
-        if let Some(alias) = reg.alias(&word) {
-            let mut expanded = alias.expands.clone();
-            expanded.extend(parsed.positional.into_iter().skip(1));
-            parsed.positional = expanded;
-        }
+        parsed.positional = reg.expand_alias(&parsed.positional);
         let Some(verb) = parsed.positional.first().cloned() else {
             return false;
         };

@@ -423,15 +423,11 @@ fn parses(reg: &fa_cli::verbs::Registry, line: &str) -> Result<(), String> {
     let rest = &tokens[1..];
     let parsed =
         fa_cli::args::parse(rest, &reg.value_flags(), &reg.switches()).map_err(|e| e.message)?;
-    let word = parsed.positional.first().ok_or("no verb")?;
-    let mut positional = match reg.alias(word) {
-        Some(a) => a.expands.clone(),
-        None => vec![word.clone()],
-    };
-    positional.extend(parsed.positional.iter().skip(1).cloned());
+    let positional = reg.expand_alias(&parsed.positional);
+    let word = positional.first().ok_or("no verb")?;
     let verb = reg
-        .verb(&positional[0])
-        .ok_or_else(|| format!("unknown verb {}", positional[0]))?;
+        .verb(word)
+        .ok_or_else(|| format!("unknown verb {word}"))?;
     if !verb.subcommands.is_empty() {
         match positional.get(1) {
             Some(sub) if verb.subcommands.contains(sub) => {}

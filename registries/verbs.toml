@@ -989,6 +989,43 @@ expands = ["document", "import"]
 name = "lots"
 expands = ["gl", "lots"]
 
+# Plan §15.3's own spellings of verbs registered under longer names.
+[[alias]]
+name = "cap"
+expands = ["capability"]
+
+[[alias]]
+name = "doc"
+expands = ["document"]
+
+[[alias]]
+name = "revalue"
+expands = ["fx", "revalue"]
+
+[[alias]]
+name = "book verify"
+expands = ["verify", "book"]
+
+[[alias]]
+name = "book checkpoint"
+expands = ["checkpoint", "create"]
+
+[[alias]]
+name = "chart open-account"
+expands = ["chart", "open"]
+
+[[alias]]
+name = "chart close-account"
+expands = ["chart", "close"]
+
+[[alias]]
+name = "export csv"
+expands = ["export", "csv-gl"]
+
+[[alias]]
+name = "sample random"
+expands = ["sample", "uniform"]
+
 # Operations that cannot be undone in practice (plan §15.3, Appendix D
 # FA-REF-007). Without --yes, or a --plan file naming the exact proposal,
 # they are refused with exit 7 before anything is written, and the refusal's

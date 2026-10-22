@@ -6738,10 +6738,13 @@ fn verbs_toml_is_the_single_verb_registry_and_the_binary_agrees() -> std::io::Re
         nowhere.display()
     );
 
-    // Aliases expand to their registered verbs.
+    // Aliases expand to their registered verbs; a two-word alias (`book
+    // verify`) is two argv words.
     for alias in &reg.aliases {
-        let (code, out, _) = fa(None, &[&alias.name, "--help", "--json"]);
-        assert_eq!(code, 0, "{out}");
+        let mut argv: Vec<&str> = alias.name.split(' ').collect();
+        argv.extend(["--help", "--json"]);
+        let (code, out, _) = fa(None, &argv);
+        assert_eq!(code, 0, "{}: {out}", alias.name);
         assert_eq!(
             Some(text(&doc(&out), "verb")),
             alias.expands.first().map(String::as_str)

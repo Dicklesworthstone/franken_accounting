@@ -298,13 +298,8 @@ fn parse(reg: &Registry, line: &str) -> Option<Vec<String>> {
         return None;
     }
     let parsed = args::parse(rest, &reg.value_flags(), &reg.switches()).ok()?;
-    let word = parsed.positional.first()?;
-    let mut positional: Vec<String> = match reg.alias(word) {
-        Some(alias) => alias.expands.clone(),
-        None => vec![word.clone()],
-    };
-    positional.extend(parsed.positional.iter().skip(1).cloned());
-    let verb = reg.verb(&positional[0])?;
+    let positional = reg.expand_alias(&parsed.positional);
+    let verb = reg.verb(positional.first()?)?;
     if !verb.subcommands.is_empty() {
         match positional.get(1) {
             Some(sub) if verb.subcommands.contains(sub) => {}

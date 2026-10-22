@@ -1378,14 +1378,7 @@ fn correct_read_flags(argv: &[String], reg: &Registry) -> (Vec<String>, Vec<Stri
     let reads = args::parse(&corrected, &reg.value_flags(), &reg.switches())
         .ok()
         .and_then(|mut parsed| {
-            if let Some(alias) = parsed.positional.first().and_then(|w| reg.alias(w)) {
-                parsed.positional = alias
-                    .expands
-                    .iter()
-                    .chain(parsed.positional.iter().skip(1))
-                    .cloned()
-                    .collect();
-            }
+            parsed.positional = reg.expand_alias(&parsed.positional);
             let verb = reg.verb(parsed.positional.first()?)?;
             if let Some(default) = &verb.default_subcommand
                 && parsed.positional.len() == 1
@@ -1982,21 +1975,9 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
     }
     // An alias expands in the verb position (plan §15.3: the spellings agents
     // try first). It is a registered synonym, never a guessed correction.
-    let expanded;
-    let args = match args.positional.first().and_then(|w| reg.alias(w)) {
-        Some(alias) => {
-            let mut a = args.clone();
-            a.positional = alias
-                .expands
-                .iter()
-                .chain(args.positional.iter().skip(1))
-                .cloned()
-                .collect();
-            expanded = a;
-            &expanded
-        }
-        None => args,
-    };
+    let mut expanded = args.clone();
+    expanded.positional = reg.expand_alias(&args.positional);
+    let args = &expanded;
     let Some(word) = args.positional.first() else {
         check_flags(reg, None, args)?;
         if args.switch("--help") {
@@ -3027,10 +3008,8 @@ fn help_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1) {
         None => emit_help(out, reg, None),
         Some(word) => {
-            let name = reg
-                .alias(word)
-                .and_then(|a| a.expands.first())
-                .unwrap_or(word);
+            let words = reg.expand_alias(args.positional.get(1..).unwrap_or_default());
+            let name = words.first().unwrap_or(word);
             match reg.verb(name) {
                 Some(v) => emit_help(out, reg, Some(v)),
                 None => Err(usage(
@@ -4105,14 +4084,7 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
     if args.switch("--version") {
         return Ok(args);
     }
-    if let Some(alias) = args.positional.first().and_then(|w| reg.alias(w)) {
-        args.positional = alias
-            .expands
-            .iter()
-            .chain(args.positional.iter().skip(1))
-            .cloned()
-            .collect();
-    }
+    args.positional = reg.expand_alias(&args.positional);
     let to_usage = |f: Fail| match f {
         Fail::Usage(u) => u,
         other => UsageError {

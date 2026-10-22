@@ -331,14 +331,9 @@ fn present_tense_lines(readme: &str) -> Vec<String> {
 
 /// What the registry says is wrong with the command `line`, if anything.
 fn unregistered(reg: &Registry, line: &str) -> Option<String> {
-    let mut rest: Vec<String> = words(line).into_iter().skip(1).collect();
-    let first = rest.first()?.clone();
-    if reg.verb(&first).is_none()
-        && let Some(alias) = reg.alias(&first)
-    {
-        rest.splice(0..1, alias.expands.iter().cloned());
-    }
-    let Some(verb) = reg.verb(&rest[0]) else {
+    let argv: Vec<String> = words(line).into_iter().skip(1).collect();
+    let rest = reg.expand_alias(&argv);
+    let Some(verb) = reg.verb(rest.first()?) else {
         return Some(format!("`{line}`: `{}` is not a registered verb", rest[0]));
     };
     if !verb.subcommands.is_empty()

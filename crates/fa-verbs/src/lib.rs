@@ -851,11 +851,26 @@ impl Registry {
                 return Err(format!("verbs.toml: bad flag `{f}`"));
             }
         }
+        // An alias is one word in the verb position, or two words whose
+        // second stands in a subcommand slot the first word's verb leaves
+        // free (plan §15.3 spells `fa book verify` for `fa verify book`):
+        // never a verb, a subcommand, or a verb's positional argument.
         let mut alias_names = BTreeSet::new();
         for a in &self.aliases {
-            if names.contains(a.name.as_str()) || !alias_names.insert(a.name.as_str()) {
+            let words: Vec<&str> = a.name.split(' ').collect();
+            let shadows = match words.as_slice() {
+                [word] => names.contains(word),
+                [word, sub] => self.verb(word).is_some_and(|v| {
+                    v.subcommands.is_empty() || v.subcommands.iter().any(|s| s == sub)
+                }),
+                _ => true,
+            };
+            let ok_word =
+                |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase() || b == b'-');
+            if shadows || !words.iter().all(|w| ok_word(w)) || !alias_names.insert(a.name.as_str())
+            {
                 return Err(format!(
-                    "verbs.toml: alias `{}` shadows a verb or repeats",
+                    "verbs.toml: alias `{}` shadows a verb or subcommand, repeats, or is not one or two words",
                     a.name
                 ));
             }
@@ -1161,6 +1176,32 @@ impl Registry {
         self.aliases.iter().find(|a| a.name == name)
     }
 
+    /// The command words with a registered alias expanded in the verb
+    /// position (plan §15.3: the spellings agents try first). A two-word
+    /// alias (`book verify`) is matched before a one-word one; words without
+    /// an alias come back unchanged. It is a registered synonym, never a
+    /// guessed correction.
+    #[must_use]
+    pub fn expand_alias<S: AsRef<str>>(&self, words: &[S]) -> Vec<String> {
+        let two = match words {
+            [first, second, ..] => self.alias(&format!("{} {}", first.as_ref(), second.as_ref())),
+            _ => None,
+        };
+        let (alias, used) = match two {
+            Some(a) => (Some(a), 2),
+            None => (words.first().and_then(|w| self.alias(w.as_ref())), 1),
+        };
+        match alias {
+            Some(a) => a
+                .expands
+                .iter()
+                .cloned()
+                .chain(words.iter().skip(used).map(|w| w.as_ref().to_string()))
+                .collect(),
+            None => words.iter().map(|w| w.as_ref().to_string()).collect(),
+        }
+    }
+
     /// The registered flag a flag alias stands for.
     #[must_use]
     pub fn flag_alias(&self, name: &str) -> Option<&str> {
@@ -1431,6 +1472,23 @@ mod tests {
     }
 
     #[test]
+    fn an_alias_expands_in_the_verb_position_two_words_first() {
+        let r = registry().expect("verbs.toml");
+        let words = |line: &str| r.expand_alias(&line.split(' ').collect::<Vec<_>>());
+        assert_eq!(words("book verify --json"), ["verify", "book", "--json"]);
+        assert_eq!(words("cap list"), ["capability", "list"]);
+        assert_eq!(
+            words("revalue --period P"),
+            ["fx", "revalue", "--period", "P"]
+        );
+        // Not an alias: unchanged, including a registered verb whose second
+        // word is a real subcommand, and an alias name past the verb slot.
+        assert_eq!(words("book info"), ["book", "info"]);
+        assert_eq!(words("tb cap"), ["tb", "cap"]);
+        assert_eq!(r.expand_alias::<&str>(&[]), Vec::<String>::new());
+    }
+
+    #[test]
     fn registry_names_are_lowercase_words_with_digits_after_the_first_letter() {
         for good in ["gate_g1", "fad_request", "v", "next_actions"] {
             assert!(is_name(good), "{good}");
@@ -1446,6 +1504,22 @@ mod tests {
             (
                 "alias to a missing verb",
                 with(|s| s.replace("expands = [\"tb\"]", "expands = [\"tbx\"]")),
+            ),
+            (
+                "a two-word alias that shadows a subcommand",
+                with(|s| s.replace("name = \"book verify\"", "name = \"book info\"")),
+            ),
+            (
+                "a two-word alias over a verb's positional argument",
+                with(|s| s.replace("name = \"book verify\"", "name = \"tb verify\"")),
+            ),
+            (
+                "an alias of three words",
+                with(|s| s.replace("name = \"book verify\"", "name = \"book verify all\"")),
+            ),
+            (
+                "an alias with an empty word",
+                with(|s| s.replace("name = \"book verify\"", "name = \"book  verify\"")),
             ),
             (
                 "undeclared shape",
