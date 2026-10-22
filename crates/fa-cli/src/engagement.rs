@@ -46,7 +46,8 @@ pub(crate) fn engagement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
     }
 }
 
-const FILE_EXAMPLE: &str = "fa engagement file <id> --document <oid> [--key K] --json";
+const FILE_EXAMPLE: &str =
+    "fa engagement file <id> --document <oid> | --finding <vid> [--key K] --json";
 const COMPLETE_EXAMPLE: &str = "fa engagement complete <id> --completion-date YYYY-MM-DD [--report-release YYYY-MM-DD] [--key K] --json";
 const CARRY_FORWARD_EXAMPLE: &str = "fa engagement carry-forward <id> --from <prior engagement> [--turned-around <n>]... [--corrected <n>]... [--key K] --json";
 
@@ -169,9 +170,23 @@ fn engagement_arg(args: &Args, sub: &str, example: &str) -> Result<String, Fail>
 /// `fa engagement file <id> --document <oid>`: put a document the book
 /// holds in the engagement's workpaper index, once. After the
 /// documentation completion it is an addition after completion, and the
-/// event says so (AS 1215.16).
+/// event says so (AS 1215.16). `--finding <vid>` files a Lantern finding
+/// instead.
 fn file(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let engagement = engagement_arg(args, "file", FILE_EXAMPLE)?;
+    match (
+        one_flag(args, "--document", FILE_EXAMPLE)?,
+        one_flag(args, "--finding", FILE_EXAMPLE)?,
+    ) {
+        (None, Some(finding)) => return file_finding(ctx, args, &engagement, finding),
+        (Some(_), None) => {}
+        _ => {
+            return Err(usage(
+                "engagement file takes one --document <oid> or one --finding <vid>",
+                FILE_EXAMPLE,
+            ));
+        }
+    }
     let text = require_one(args, "--document", FILE_EXAMPLE)?;
     let document = crate::document::hex32(text, "--document").map(fa_model::Oid)?;
     let key = one_flag(args, "--key", FILE_EXAMPLE)?
@@ -203,6 +218,68 @@ fn file(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         vec![
             ("engagement", s(&engagement)),
             ("document", s(hex(&document.0))),
+            ("control_entry", vid_hex(filed.control_entry)),
+            ("recorded_at", seq(filed.recorded_at)),
+            (
+                "added_after_completion",
+                Json::Bool(filed.added_after_completion),
+            ),
+            ("already_recorded", Json::Bool(filed.already_recorded)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+/// `fa engagement file <id> --finding <vid>`: put a Lantern finding of the
+/// book in the engagement's index, once (plan §11.12); after the
+/// documentation completion it is marked an addition after completion.
+fn file_finding(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    engagement: &str,
+    finding: &str,
+) -> Result<(), Fail> {
+    let finding = finding.strip_prefix("F:").unwrap_or(finding);
+    let finding = u128::from_str_radix(finding, 16)
+        .ok()
+        .filter(|_| finding.len() == 32)
+        .map(VId)
+        .ok_or_else(|| {
+            usage(
+                format!("--finding `{finding}` is not a finding vid"),
+                "--finding <32-hex vid>, as fa finding list --json prints it",
+            )
+        })?;
+    let key = one_flag(args, "--key", FILE_EXAMPLE)?
+        .unwrap_or("file")
+        .to_string();
+    let capability = ctx.capability(args, &["produce"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        admit_writer(book, &capability, "filing an engagement finding")
+    })?;
+    let date = control_date(args, &book)?;
+    let filed = book.file_finding(capability, engagement, finding, date, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    let human = format!(
+        "engagement {engagement}: finding {:032x} {}{}",
+        finding.0,
+        if filed.already_recorded {
+            "already filed"
+        } else {
+            "filed"
+        },
+        if filed.added_after_completion {
+            ", added after documentation completion"
+        } else {
+            ""
+        }
+    );
+    ctx.out.event(
+        "engagement_finding_filed",
+        vec![
+            ("engagement", s(engagement)),
+            ("finding", vid_hex(finding)),
             ("control_entry", vid_hex(filed.control_entry)),
             ("recorded_at", seq(filed.recorded_at)),
             (
@@ -687,6 +764,33 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
         ));
     }
+    for f in &view.findings {
+        human.push(format!(
+            "  finding {:032x}{}",
+            f.finding.0,
+            if f.added_after_completion {
+                " (added after documentation completion)"
+            } else {
+                ""
+            }
+        ));
+    }
+    let findings = view
+        .findings
+        .iter()
+        .map(|f| {
+            obj(vec![
+                ("finding", vid_hex(f.finding)),
+                ("record", vid_hex(f.record)),
+                ("filed_at", seq(f.filed_at)),
+                ("filed_by", vid_hex(f.filed_by)),
+                (
+                    "added_after_completion",
+                    Json::Bool(f.added_after_completion),
+                ),
+            ])
+        })
+        .collect();
     if let Some(c) = &view.documentation {
         human.push(format!(
             "  documentation complete on {} (report released {})",
@@ -788,6 +892,7 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("workpapers", Json::Arr(workpapers)),
             ("documentation", documentation),
             ("carry_forwards", Json::Arr(carry_forwards)),
+            ("findings", Json::Arr(findings)),
         ],
         &human.join("\n"),
     );

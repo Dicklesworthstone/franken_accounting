@@ -1689,6 +1689,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )
     }
 
+    /// File the Lantern finding `finding` in `engagement`'s index, once;
+    /// after the documentation completion the filing is an addition after
+    /// completion.
+    pub async fn file_finding(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        finding: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::FindingFiled> {
+        let description = format!("file a finding in engagement {engagement}");
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::file_finding(&mut self.db, cx, &self.context, engagement, finding, req)
+                .await?,
+        )
+    }
+
     /// Journal `engagement`'s documentation completion, once (AS 1215.15).
     #[allow(clippy::too_many_arguments)]
     pub async fn complete_documentation(

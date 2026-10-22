@@ -716,6 +716,34 @@ pub struct EngagementView {
     pub documentation: Option<CompletionView>,
     /// Every carry-forward, in journal order; the last governs.
     pub carry_forwards: Vec<CarryForwardView>,
+    /// The findings filed in the engagement's index, in filing order.
+    pub findings: Vec<FindingInIndex>,
+}
+
+/// A Lantern finding filed in an engagement's index (plan §11.12: the
+/// engagement's workpapers and findings are append-only after the
+/// documentation completion).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FindingInIndex {
+    /// The finding's vertex.
+    pub finding: VId,
+    pub record: VId,
+    pub filed_at: CommitSeq,
+    pub filed_by: VId,
+    pub added_after_completion: bool,
+}
+
+/// A recorded File of a finding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FindingFiled {
+    pub engagement: VId,
+    pub finding: VId,
+    pub control_entry: VId,
+    pub recorded_at: CommitSeq,
+    /// Filed after the documentation completion (AS 1215.16).
+    pub added_after_completion: bool,
+    /// The same filing was already journaled: nothing written.
+    pub already_recorded: bool,
 }
 
 /// A recorded File: a document of the book in the engagement's workpaper
@@ -2257,6 +2285,167 @@ pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+/// File the Lantern finding `finding` in `engagement`'s index (plan §11.12:
+/// workpapers and findings are append-only after the documentation
+/// completion): one commit journaling a File record whose one proof ref is
+/// the finding's vertex, and its `IN_CASE` edge to the engagement. The
+/// finding must be one this book holds and not already in the index; its
+/// record's identity derives from the finding, so the same filing retried is
+/// the same record. Filed after the completion, it is marked
+/// `added_after_completion`.
+pub async fn file_finding<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    engagement: &str,
+    finding: VId,
+    req: EngagementRequest,
+) -> Outcome<FindingFiled> {
+    const FIX: &str = "fa engagement file <id> --finding <vid> (fa finding list --json names them)";
+    if let Err(why) = check_engagement(engagement) {
+        return Ok(Err(usage(why, FIX)));
+    }
+    if let Err(r) = admit(db, book, &req.capability, Kind::File)? {
+        return Ok(Err(r));
+    }
+    let vid = engagement_vid(book.book_id, engagement);
+    let key = record_key(Kind::File, vid, &finding.0.to_le_bytes());
+    let evid = entry_vid(book.book_id, &req.capability.holder().0.to_le_bytes(), &key);
+    let spec_digest = domain_digest(
+        WORKPAPER_DOMAIN,
+        &[&vid.0.to_le_bytes(), &finding.0.to_le_bytes()],
+    );
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if engagement_row(&txn, db, vid)?.is_none() {
+        txn.abort();
+        return Ok(Err(unknown(engagement)));
+    }
+    let read_state = txn.vertex_property(db, vid, property::STATE)?;
+    let Some(state) = EngagementState::from_scalar(read_state.as_ref()) else {
+        txn.abort();
+        return Err(KernelError::Corrupt(format!(
+            "engagement {:032x} state mirror",
+            vid.0
+        )));
+    };
+    let record_in = |state: EngagementState| {
+        record_proposal(
+            book,
+            Kind::File,
+            state,
+            vid,
+            spec_digest,
+            &req,
+            vec![TypedRef::Vertex(finding)],
+            0,
+            None,
+        )
+    };
+    if let Some(stored) = txn.vertex(db, evid)? {
+        txn.abort();
+        let (entry, _) = crate::post::entry_of(&stored)?;
+        let stored_state = match &entry.proposal.control {
+            Some(ControlPayload::LifecycleTransition { from, .. }) => {
+                EngagementState::from_tag(*from)
+            }
+            _ => None,
+        };
+        let Some(stored_state) = stored_state else {
+            return Ok(Err(conflict_with(&stored)));
+        };
+        return Ok(
+            recorded_or_conflict(book, &stored, &record_in(stored_state))?.map(|recorded_at| {
+                FindingFiled {
+                    engagement: vid,
+                    finding,
+                    control_entry: evid,
+                    recorded_at,
+                    added_after_completion: stored_state == EngagementState::DocumentationComplete,
+                    already_recorded: true,
+                }
+            }),
+        );
+    }
+    let is_finding = txn
+        .vertex(db, finding)?
+        .is_some_and(|row| row.labels.contains(&label::FINDING));
+    if !is_finding {
+        txn.abort();
+        return Ok(Err(usage(
+            format!("{:032x} is not a finding of this book", finding.0),
+            FIX,
+        )));
+    }
+    let seq = db.frontier()?;
+    for (record, entry, recorded_at, _, _) in records_into(db, vid, seq)? {
+        if let Some(ControlPayload::LifecycleTransition { proof_refs, .. }) =
+            &entry.proposal.control
+            && entry.proposal.extensions.is_empty()
+            && proof_refs.as_slice() == [TypedRef::Vertex(finding)]
+        {
+            txn.abort();
+            return Ok(Err(usage(
+                format!(
+                    "finding {:032x} is already in engagement `{engagement}`'s index (record {:032x}, at {})",
+                    finding.0, record.0, recorded_at.0
+                ),
+                "file each finding once; `fa engagement show <id> --json` lists the index",
+            )));
+        }
+    }
+    let record = record_in(state);
+    if record.validate().is_err() {
+        txn.abort();
+        return Ok(Err(usage(
+            "the File record is not a valid EngagementControl entry",
+            FIX,
+        )));
+    }
+    let entry = record.clone().seal(Vec::new(), None)?;
+    let mut batch = WriteBatch::new(relation::IN_CASE);
+    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
+    if let Err(e) = txn.write(db, batch) {
+        txn.abort();
+        return Err(e.into());
+    }
+    let added_after_completion = state == EngagementState::DocumentationComplete;
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(FindingFiled {
+            engagement: vid,
+            finding,
+            control_entry: evid,
+            recorded_at: seq,
+            added_after_completion,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(fcw(&detail)))
+        }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => match db.vertex(evid)? {
+            Some(stored) => Ok(
+                recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| FindingFiled {
+                    engagement: vid,
+                    finding,
+                    control_entry: evid,
+                    recorded_at,
+                    added_after_completion,
+                    already_recorded: true,
+                }),
+            ),
+            None => Ok(Err(fcw("the finding was filed concurrently"))),
+        },
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Journal `engagement`'s documentation completion (plan §11.12, AS
 /// 1215.15): one commit journaling the Complete record (extension 26: the
 /// report release date and the completion date, at most 45 days after it)
@@ -2766,6 +2955,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let mut proposals = Vec::new();
     let mut workpapers = Vec::new();
     let mut carry_forwards = Vec::new();
+    let mut findings = Vec::new();
     let mut documentation: Option<CompletionView> = None;
     for (record, entry, recorded_at, from, to) in records_into(db, vid, seq)? {
         let Some(ControlPayload::LifecycleTransition {
@@ -2810,11 +3000,24 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                     && (f == open || f == complete)
                     && entry.proposal.extensions.is_empty() =>
             {
-                let [TypedRef::Object(document)] = proof_refs.as_slice() else {
-                    return Err(KernelError::Corrupt(format!(
-                        "File record {:032x} does not name one document",
-                        record.0
-                    )));
+                let document = match proof_refs.as_slice() {
+                    [TypedRef::Object(document)] => document,
+                    [TypedRef::Vertex(finding)] => {
+                        findings.push(FindingInIndex {
+                            finding: *finding,
+                            record,
+                            filed_at: recorded_at,
+                            filed_by: entry.proposal.principal_ref,
+                            added_after_completion: f == complete,
+                        });
+                        continue;
+                    }
+                    _ => {
+                        return Err(KernelError::Corrupt(format!(
+                            "File record {:032x} names neither one document nor one finding",
+                            record.0
+                        )));
+                    }
                 };
                 workpapers.push(WorkpaperView {
                     document: *document,
@@ -2929,6 +3132,11 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                     .iter()
                     .map(|c: &CarryForwardView| (c.recorded_at, c.added_after_completion)),
             )
+            .chain(
+                findings
+                    .iter()
+                    .map(|f: &FindingInIndex| (f.filed_at, f.added_after_completion)),
+            )
             .any(|(at, after)| completed_at.is_some_and(|c| at > c) != after)
     {
         return Err(KernelError::Corrupt(format!(
@@ -2964,6 +3172,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         workpapers,
         documentation,
         carry_forwards,
+        findings,
     })
 }
 
@@ -3863,6 +4072,7 @@ mod tests {
             workpapers: Vec::new(),
             documentation: None,
             carry_forwards: Vec::new(),
+            findings: Vec::new(),
         }
     }
 
