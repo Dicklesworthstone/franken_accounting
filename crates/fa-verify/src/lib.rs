@@ -54,6 +54,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ads;
 pub mod balance;
 pub mod balance_request;
 pub mod blake3;

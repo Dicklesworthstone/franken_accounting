@@ -841,7 +841,21 @@ pub(crate) fn verify_bundle_inspecting_balances(
     bundle: &[u8],
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
+    observe: impl FnMut(usize, crate::BalanceClaim),
+) -> Result<BundleReport, BundleError> {
+    verify_bundle_observing(bundle, trusted_keys, receipt, observe, |_, _| {})
+}
+
+/// [`verify_bundle_inspecting_balances`], also observing each record whose
+/// inclusion verified: its authenticated envelope and the legs the record
+/// rebuilds (empty for evidence records). The same rule holds: callers use
+/// observations only when the whole report verified.
+pub(crate) fn verify_bundle_observing(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    receipt: Option<&[u8]>,
     mut observe: impl FnMut(usize, crate::BalanceClaim),
+    mut observe_record: impl FnMut(&LeafEnvelope, &[crate::envelope::Leg]),
 ) -> Result<BundleReport, BundleError> {
     for key in trusted_keys {
         ed25519::check_public_key(key).map_err(|reason| BundleError::TrustedKey {
@@ -948,10 +962,14 @@ pub(crate) fn verify_bundle_inspecting_balances(
                     "leaf {} has no authenticated envelope in this scope",
                     item.leaf_index
                 )),
-                Some(envelope) => graded(
-                    &check_record(envelope, item.record, item.proposal_len)
-                        .map_err(VerifyError::Record),
-                ),
+                Some(envelope) => {
+                    let checked = check_record(envelope, item.record, item.proposal_len)
+                        .map_err(VerifyError::Record);
+                    if let Ok(legs) = &checked {
+                        observe_record(envelope, legs);
+                    }
+                    graded(&checked)
+                }
             },
         };
         full_prefix_payloads &= matches!(&record, Grade::Pass);

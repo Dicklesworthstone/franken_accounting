@@ -14,7 +14,10 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, known_at_read_flag, usage, write_new_output_file};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
+const EXAMPLE: &str = "fa export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json, or fa export ads (--period <code> | --as-of YYYY-MM-DD) --out <new dir> --with-proofs [--state <oid|latest>] --json";
+/// The complete-prefix bundle and its receipt an ADS extract is proved with.
+const PROOF_BUNDLE: &str = "ADS_Proof.fab";
+const PROOF_RECEIPT: &str = "ADS_Proof.receipt";
 
 /// One output file of an export: its name in the package and its bytes.
 struct ExportFile {
@@ -38,6 +41,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--as-known-at",
         "--known-at",
         "--out",
+        "--state",
     ] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(format!("export takes only one {flag}"), EXAMPLE));
@@ -50,6 +54,31 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "omit --out to receive the complete export inline",
         ));
     }
+    // An ADS extract with its proofs (plan §13.1, fa-2q91): the complete
+    // prefix of a recorded accumulator state, and the extract selected at
+    // exactly that state's sequence, so fa-verify ads can check every row.
+    let with_proofs = args.switch("--with-proofs");
+    if with_proofs
+        && (format != "ads"
+            || output.is_none()
+            || args.flag("--as-known-at").is_some()
+            || args.flag("--known-at").is_some())
+    {
+        return Err(usage(
+            "--with-proofs proves an ADS package written with --out, at its proof state's own sequence: no --as-known-at",
+            "fa export ads --period <code> --out <new dir> --with-proofs [--state <oid|latest>] --json",
+        ));
+    }
+    if !with_proofs && args.flag("--state").is_some() {
+        return Err(usage(
+            "--state names the accumulator state an ADS extract is proved against; it goes with --with-proofs",
+            "add --with-proofs, or drop --state",
+        ));
+    }
+    let state = match args.flag("--state") {
+        None | Some("latest") => None,
+        Some(text) => Some(fa_model::Oid(crate::proof::fixed_hex(text, "--state")?)),
+    };
     // An export discloses the journal to an outsider, as a proof or a
     // bundle does: authority is checked before the book is read.
     let capability = ctx.capability(args, &["read", "produce"])?;
@@ -71,9 +100,45 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
     };
     let mut selected = None;
+    let mut proved = None;
     let book = ctx.books.open_admitted(args, |book| {
+        // The bundle is produced first (its own admission precedes every
+        // read of the journal); the read scope borrows the book after it.
+        let proved_at = if with_proofs {
+            let request = fa::BundleRequest {
+                scope: fa::BundleScope::Prefix,
+                balances: Vec::new(),
+                inline_documents: false,
+            };
+            let Some(produced) =
+                book.produce_bundle(capability.holder(), &capability, state, &request)??
+            else {
+                return Err(fa_journal::Refusal::new(
+                    fa::proof::code::PROOF_STATE_UNKNOWN,
+                    fa_journal::exit::USAGE,
+                    match state {
+                        Some(oid) => format!(
+                            "accumulator state {} is not on this book's recorded checkpoint chain",
+                            hex(&oid.0)
+                        ),
+                        None => "the book has no recorded accumulator checkpoint to prove the extract against".into(),
+                    },
+                    "plan §13.1 (fa export ads --with-proofs proves the extract against a journaled AccumulatorState)",
+                    "use fa verify accumulator --json to find a recorded state; the owner can publish one with fa checkpoint create --grant witness",
+                )
+                .into());
+            };
+            let through = produced.checkpoint.checkpoint.body.statement.through_seq;
+            proved = Some((produced, hex(&book.checkpoint_public_key())));
+            Some(through)
+        } else {
+            None
+        };
         let scope = book.read_scope(capability.holder(), &capability)??;
-        let (known_at, _) = known_at_read_flag(args, book, &ctx.out, &capability)?;
+        let known_at = match proved_at {
+            Some(through) => Some(through),
+            None => known_at_read_flag(args, book, &ctx.out, &capability)?.0,
+        };
         // An export is cumulative stock, even when --period names its
         // boundary. Admit that reach before reading any period or entry.
         let seq = scope.admit_report(&selection.clone().into(), known_at)??;
@@ -181,6 +246,16 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 )?;
                 paths.push(inner);
             }
+            if let Some((produced, _)) = &proved {
+                for (name, bytes) in [
+                    (PROOF_BUNDLE, produced.bundle.bytes.as_slice()),
+                    (PROOF_RECEIPT, produced.receipt.as_slice()),
+                ] {
+                    let inner = format!("{path}/{name}");
+                    write_new_output_file(&ctx.files, &inner, bytes, "export", "--out")?;
+                    paths.push(inner);
+                }
+            }
         } else {
             write_new_output_file(
                 &ctx.files,
@@ -235,6 +310,27 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("certificate_digest", s(hex(&coordinate.certificate_digest))),
             ("out", output.map_or(Json::Null, s)),
             ("files", Json::Arr(files_json)),
+            (
+                "proof",
+                proved.as_ref().map_or(Json::Null, |(produced, key)| {
+                    let statement = &produced.checkpoint.checkpoint.body.statement;
+                    obj(vec![
+                        ("bundle", s(PROOF_BUNDLE)),
+                        ("receipt", s(PROOF_RECEIPT)),
+                        ("bundle_digest", s(hex(&produced.bundle.digest))),
+                        (
+                            "state",
+                            s(hex(&produced.checkpoint.checkpoint.body.state_oid.0)),
+                        ),
+                        (
+                            "through_seq",
+                            Json::Int(i128::from(statement.through_seq.0)),
+                        ),
+                        ("completeness", s("seq_range_complete")),
+                        ("checkpoint_public_key", s(key.as_str())),
+                    ])
+                }),
+            ),
         ],
         &format!(
             "exported {} entries through {} at known-at {} as {format}{}",

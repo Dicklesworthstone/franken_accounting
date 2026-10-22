@@ -844,6 +844,9 @@ fa gl detail --account 1000 --from 2025-01-01 --to 2025-12-31 --certify --book a
 
 # The auditor's extract: the AICPA ADS GL package (also saft, csv-gl, beancount, hledger), what the trial balance folds, with its export coordinate certificate (available today).
 fa export ads --period FY2025-P12 --out ads-fy2025-12 --book acme.fabook --json
+# With proofs: the extract at exactly a recorded state's sequence, beside that state's complete-prefix bundle and receipt; fa-verify ads proves offline that GL_Detail holds exactly the proven entries the export selects, no more, no fewer (available today; the trial balance and chart files are not yet proven, fa-2q91).
+fa export ads --period FY2025-P12 --out ads-fy2025-12 --with-proofs --book acme.fabook --json
+fa-verify ads ads-fy2025-12 --key <checkpoint_public_key> --json
 
 # Reconcile the bank: retain the statement (camt.053/052, a bank's standard BAI2 file, OFX, SWIFT MT940, CSV) for its cash account, propose matches against cash-leg memos, confirm them one line at a time with `fa bank confirm`, and attest the statement close with `fa bank reconcile`; matching replays the complete statement, so the owner opts in with --grant privileged (available today).
 fa bank import stmt-2026-03.camt053.xml --bank-format camt053 --account 1010 --book acme.fabook --json
