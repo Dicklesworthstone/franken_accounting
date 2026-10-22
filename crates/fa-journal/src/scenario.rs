@@ -417,6 +417,25 @@ fn unknown(name: &str) -> Refusal {
     .at("scenario", name)
 }
 
+/// The first `<name>-<n>` (n in 2..=64) that names no scenario yet, within
+/// the name bound: the fresh scenario a closed scenario's fix runs in.
+fn fresh_name<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    name: &str,
+) -> Result<Option<String>, KernelError> {
+    for n in 2..=64u32 {
+        let candidate = format!("{name}-{n}");
+        if candidate.len() > MAX_SCENARIO_NAME_BYTES {
+            return Ok(None);
+        }
+        if db.vertex(scenario_vid(book.book_id, &candidate))?.is_none() {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
 fn not_open(body: &ScenarioBody, state: ScenarioState) -> Refusal {
     Refusal::new(
         code::SCENARIO_NOT_OPEN,
@@ -883,7 +902,17 @@ fn check_plan<V: asupersync::fs::Vfs + Clone>(
         })));
     }
     if view.state != ScenarioState::Open {
-        return Ok(Err(not_open(&view.body, view.state)));
+        // Running in a discarded scenario: the fix names a fresh scenario to
+        // run in instead (which `fa scenario fork` then opens).
+        let mut refusal = not_open(&view.body, view.state);
+        if let Some(fresh) = fresh_name(db, book, name)? {
+            refusal.fix = format!(
+                "open `fa scenario fork {}` and repeat this command with --scenario {fresh}",
+                crate::refusal::command_word(&fresh)
+            );
+            refusal = refusal.or_field_change("scenario", vec![fresh]);
+        }
+        return Ok(Err(refusal));
     }
     if let Some(from) = view.body.from
         && p.effective_date < from
@@ -897,7 +926,8 @@ fn check_plan<V: asupersync::fs::Vfs + Clone>(
             ),
             "plan §15.6.5 (a but-for scenario's counterfactual begins at its --from date)",
             "date the intent on or after the scenario's from date, or fork a scenario with an earlier --from",
-        )));
+        )
+        .or_field_change("effective_date", vec![from.to_string()])));
     }
     if db.vertex(evid)?.is_some() {
         return Err(KernelError::Corrupt(format!(

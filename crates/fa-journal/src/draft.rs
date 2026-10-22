@@ -447,6 +447,25 @@ fn unknown(name: &str) -> Refusal {
     .at("draft", name)
 }
 
+/// The first `<name>-<n>` (n in 2..=64) that names no draft yet, within the
+/// name bound: the fresh draft a closed draft's fix plans into.
+fn fresh_name<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    name: &str,
+) -> Result<Option<String>, KernelError> {
+    for n in 2..=64u32 {
+        let candidate = format!("{name}-{n}");
+        if candidate.len() > MAX_DRAFT_NAME_BYTES {
+            return Ok(None);
+        }
+        if db.vertex(draft_vid(book.book_id, &candidate))?.is_none() {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
 fn not_open(body: &DraftBody, state: DraftState) -> Refusal {
     Refusal::new(
         code::DRAFT_NOT_OPEN,
@@ -814,7 +833,17 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
         }));
     }
     if view.state != DraftState::Open {
-        return Ok(Err(not_open(&view.body, view.state)));
+        // Planning into a closed draft: the fix names a fresh draft to plan
+        // into instead (which `fa draft new` then opens).
+        let mut refusal = not_open(&view.body, view.state);
+        if let Some(fresh) = fresh_name(db, book, name)? {
+            refusal.fix = format!(
+                "open `fa draft new {}` and repeat this command with --draft {fresh}",
+                crate::refusal::command_word(&fresh)
+            );
+            refusal = refusal.or_field_change("draft", vec![fresh]);
+        }
+        return Ok(Err(refusal));
     }
     if db.vertex(evid)?.is_some() {
         return Err(KernelError::Corrupt(format!(

@@ -384,7 +384,16 @@ fn execute(case: &Case) -> Vec<&'static str> {
                     .unwrap_or_else(|| panic!("{}: field change admits no value", case.name));
                 println!("{} step {n}: apply {field} = {value}", case.name);
                 match &mut req {
-                    Request::Post { intent, .. } => set_field(intent, field, &value),
+                    // A field the post's command line carries as a flag
+                    // (draft, scenario) is that flag; any other is the
+                    // intent's.
+                    Request::Post { intent, extra } => {
+                        let flag = format!("--{}", field.replace('_', "-"));
+                        match extra.iter().position(|w| *w == flag) {
+                            Some(i) if i + 1 < extra.len() => extra[i + 1] = value,
+                            _ => set_field(intent, field, &value),
+                        }
+                    }
                     // On a command line the field is its flag.
                     Request::Argv(a) => {
                         let flag = format!("--{}", field.replace('_', "-"));
@@ -743,6 +752,147 @@ const MORE_CASES: &[Case] = &[
             extra: argv(&["--scenario", "what-if"]),
         },
         steps: &[("FA-REF-162", Apply::Alternative(0))],
+    },
+    Case {
+        name: "closed-draft",
+        entities: &[],
+        setup: &[
+            &["draft", "new", "q3-accruals", "--json"],
+            &[
+                "draft",
+                "discard",
+                "q3-accruals",
+                "--reason",
+                "superseded",
+                "--json",
+            ],
+        ],
+        base: None,
+        prepare: None,
+        // The fix names a fresh draft; planning into it meets FA-REF-157,
+        // whose alternative opens it, and the plan lands there.
+        trigger: |_| Request::Post {
+            intent: intent(
+                "into-closed-draft",
+                "2026-03-10",
+                vec![
+                    leg("debit", "6000", "5.00 USD"),
+                    leg("credit", "1000", "5.00 USD"),
+                ],
+            ),
+            extra: argv(&["--draft", "q3-accruals"]),
+        },
+        steps: &[
+            ("FA-REF-158", Apply::FieldChange),
+            ("FA-REF-157", Apply::Alternative(0)),
+        ],
+    },
+    Case {
+        name: "discarded-scenario",
+        entities: &[],
+        setup: &[
+            &["scenario", "fork", "what-if", "--json"],
+            &[
+                "scenario",
+                "discard",
+                "what-if",
+                "--reason",
+                "abandoned",
+                "--json",
+            ],
+        ],
+        base: None,
+        prepare: None,
+        // As for drafts: a fresh scenario, forked by FA-REF-162's alternative.
+        trigger: |_| Request::Post {
+            intent: intent(
+                "into-discarded-scenario",
+                "2026-03-10",
+                vec![
+                    leg("debit", "6000", "5.00 USD"),
+                    leg("credit", "1000", "5.00 USD"),
+                ],
+            ),
+            extra: argv(&["--scenario", "what-if"]),
+        },
+        steps: &[
+            ("FA-REF-163", Apply::FieldChange),
+            ("FA-REF-162", Apply::Alternative(0)),
+        ],
+    },
+    Case {
+        name: "scenario-before-start",
+        entities: &[],
+        setup: &[&[
+            "scenario",
+            "fork",
+            "but-for",
+            "--from",
+            "2026-03-15",
+            "--json",
+        ]],
+        base: None,
+        prepare: None,
+        // The counterfactual starts on the 15th: the fix redates the intent
+        // to that day and it runs in the scenario.
+        trigger: |_| Request::Post {
+            intent: intent(
+                "too-early",
+                "2026-03-10",
+                vec![
+                    leg("debit", "6000", "5.00 USD"),
+                    leg("credit", "1000", "5.00 USD"),
+                ],
+            ),
+            extra: argv(&["--scenario", "but-for"]),
+        },
+        steps: &[("FA-REF-164", Apply::FieldChange)],
+    },
+    Case {
+        name: "unknown-production",
+        entities: &[],
+        setup: &[],
+        base: None,
+        prepare: None,
+        // Inform: the matter list is a read; the refusal stands.
+        trigger: |_| Request::Argv(argv(&["production", "show", "no-such-matter", "--json"])),
+        steps: &[("FA-REF-170", Apply::Inform)],
+    },
+    Case {
+        name: "unknown-case",
+        entities: &[],
+        setup: &[],
+        base: None,
+        prepare: None,
+        // Inform: the case list is a read; the refusal stands.
+        trigger: |_| Request::Argv(argv(&["case", "show", "7", "--json"])),
+        steps: &[("FA-REF-175", Apply::Inform)],
+    },
+    Case {
+        name: "undeclared-entity",
+        entities: &["US:US Co", "UK:UK Co"],
+        setup: &[],
+        base: None,
+        prepare: None,
+        // Both legs name an entity the book never declared; each is moved to
+        // a declared one in turn.
+        trigger: |_| {
+            let mut entry = intent(
+                "foreign-entity",
+                "2026-03-10",
+                vec![
+                    leg("debit", "6000", "5.00 USD"),
+                    leg("credit", "1000", "5.00 USD"),
+                ],
+            );
+            set_field(&mut entry, "legs[0].entity", "FR");
+            set_field(&mut entry, "legs[1].entity", "FR");
+            post(entry)
+        },
+        steps: &[
+            ("FA-REF-104", Apply::FieldChange),
+            ("FA-REF-104", Apply::FieldChange),
+        ],
     },
     Case {
         name: "illegal-transition",
