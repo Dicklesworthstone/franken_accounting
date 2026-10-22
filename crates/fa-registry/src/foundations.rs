@@ -400,6 +400,7 @@ const EPOCH_REGISTRIES: &[(&str, &str)] = &[
         "invariants",
         include_str!("../../../registries/invariants.toml"),
     ),
+    ("intents", include_str!("../../../registries/intents.toml")),
     ("limits", include_str!("../../../registries/limits.toml")),
     (
         "procedures",
@@ -767,7 +768,19 @@ mod tests {
         assert!(summary.contains("franken_networkx@9d710b1c"), "{summary}");
         assert!(summary.contains("fastmcp-rust@=0.12.0"), "{summary}");
         assert!(summary.contains("frankensympy@bd1ad68a"), "{summary}");
-        assert_eq!(stack.registry_epochs.len(), 14);
+        assert_eq!(stack.registry_epochs.len(), 15);
+        let intents = stack
+            .registry_epochs
+            .iter()
+            .find(|e| e.name == "intents")
+            .unwrap();
+        assert_eq!(intents.schema_version, 1);
+        assert_eq!(
+            intents.canonical_bytes,
+            toml::parse(include_str!("../../../registries/intents.toml"))
+                .unwrap()
+                .canonical_bytes()
+        );
         for epoch in &stack.registry_epochs {
             assert_eq!(epoch.schema_version, 1, "{}", epoch.name);
             assert!(!epoch.canonical_bytes.is_empty(), "{}", epoch.name);

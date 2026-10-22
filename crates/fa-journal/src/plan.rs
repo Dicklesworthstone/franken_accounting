@@ -418,7 +418,7 @@ async fn recorded_plan<V: Vfs + Clone>(
     // current head. An aggregate outcome must have followed its own basis
     // directly; later publications do not invalidate an already recorded
     // lawful outcome, and older metadata-rebased outcomes gain no authority.
-    if crate::post::requires_aggregate_basis(plan.intent().proposal())
+    if crate::post::requires_aggregate_basis(plan.intent().proposal())?
         && let Err(refusal) = crate::post::check_aggregate_basis(
             plan.certificate().snapshot_seq,
             fgdb_types::CommitSeq(before_entry),
@@ -586,7 +586,7 @@ pub async fn commit_plan<V: Vfs + Clone>(
     // Metadata tolerance belongs to point-only plans. An aggregate artifact
     // retains its reviewed committing prefix even when a later publication
     // changes no point witness or accounting amount (plan §5.10).
-    if crate::post::requires_aggregate_basis(plan.intent().proposal())
+    if crate::post::requires_aggregate_basis(plan.intent().proposal())?
         && let Err(refusal) = crate::post::check_aggregate_basis(certificate.snapshot_seq, head)
     {
         return Ok(Err(refusal));

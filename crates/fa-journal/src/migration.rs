@@ -1557,7 +1557,21 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
     }
     batches.extend(crate::post::reconciliation_edges(evid, &reconciliation));
     txn.write_ordered(db, batches)?;
-    if let Err(refusal) = crate::post::check_aggregate_basis(basis, db.frontier()?) {
+    let dependency = fa_registry::IntentDependencies::embedded()
+        .and_then(|registry| {
+            registry.get(
+                if control_kind == kind::FINALIZE {
+                    "FinalizeMigration"
+                } else {
+                    "AbandonMigration"
+                },
+                None,
+            )
+        })
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    if dependency == fa_registry::DependencyClass::Aggregate
+        && let Err(refusal) = crate::post::check_aggregate_basis(basis, db.frontier()?)
+    {
         txn.abort();
         return Ok(Err(refusal));
     }

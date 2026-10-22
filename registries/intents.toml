@@ -1,0 +1,97 @@
+# intents.toml — dependency admission for the kernel's current plan protocols
+# (plan §5.10, fa-r19j). Consumer: PreparedPost, portable PostEntry plans and
+# MigrationRun transitions. Missing/unknown rows are errors, never point defaults.
+# PostEntry is refined by entry class because its typed body admits both kinds.
+# This does not enable a class or an unimplemented Appendix B intent. Composite
+# workflows must continue to replan each member under their existing protocols.
+
+schema_version = 1
+
+[[intent]]
+name = "PostEntry"
+entry_class = "Original"
+dependency_class = "point"
+
+[[intent]]
+name = "PostEntry"
+entry_class = "Pending"
+dependency_class = "point"
+
+[[intent]]
+name = "PostEntry"
+entry_class = "Resolution"
+dependency_class = "point"
+
+[[intent]]
+name = "PostEntry"
+entry_class = "Reversal"
+dependency_class = "point"
+
+[[intent]]
+name = "PostEntry"
+entry_class = "Replacement"
+dependency_class = "point"
+
+[[intent]]
+name = "PostEntry"
+entry_class = "Reclassification"
+dependency_class = "point"
+
+[[intent]]
+name = "PostEntry"
+entry_class = "Adjusting"
+dependency_class = "point"
+
+[[intent]]
+name = "PostEntry"
+entry_class = "Closing"
+dependency_class = "aggregate"
+
+# The admitted allocation names a literal source amount. AllOfPeriod is
+# unsupported; admitting it requires a separately classified aggregate intent.
+[[intent]]
+name = "PostEntry"
+entry_class = "Allocation"
+dependency_class = "point"
+
+[[intent]]
+name = "PostEntry"
+entry_class = "Revaluation"
+dependency_class = "aggregate"
+
+# Currently unsupported by the posting kernel; future admission still requires
+# the complete consolidation basis, independently of that class refusal.
+[[intent]]
+name = "PostEntry"
+entry_class = "Elimination"
+dependency_class = "aggregate"
+
+# A chunk's supplied legs are point-dependent; visibility changes only through
+# the separately guarded FinalizeMigration transition.
+[[intent]]
+name = "PostEntry"
+entry_class = "Migration"
+dependency_class = "point"
+
+[[intent]]
+name = "PostEntry"
+entry_class = "Revision"
+dependency_class = "point"
+
+[[intent]]
+name = "PostEntry"
+entry_class = "Restatement"
+dependency_class = "point"
+
+[[intent]]
+name = "PostEntry"
+entry_class = "PriorPeriodAdjustment"
+dependency_class = "point"
+
+[[intent]]
+name = "FinalizeMigration"
+dependency_class = "aggregate"
+
+[[intent]]
+name = "AbandonMigration"
+dependency_class = "aggregate"

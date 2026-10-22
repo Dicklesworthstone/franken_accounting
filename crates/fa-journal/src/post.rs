@@ -273,8 +273,14 @@ pub fn check_aggregate_basis(expected: CommitSeq, actual: CommitSeq) -> Result<(
 
 /// Fold-derived PostEntry families admitted by the current kernel. Other
 /// intents retain their own protocols; this does not enable a new family.
-pub(crate) fn requires_aggregate_basis(proposal: &EntryPayload) -> bool {
-    proposal.class == EntryClass::CLOSING || crate::revaluation::is_source_bound(proposal)
+pub(crate) fn requires_aggregate_basis(proposal: &EntryPayload) -> Result<bool, KernelError> {
+    let registry = fa_registry::IntentDependencies::embedded()
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let dependency = registry
+        .get("PostEntry", Some(proposal.class.0))
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    Ok(dependency == fa_registry::DependencyClass::Aggregate
+        || crate::revaluation::is_source_bound(proposal))
 }
 
 impl PreparedPost {
@@ -397,7 +403,7 @@ impl PreparedPost {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
         }
-        if requires_aggregate_basis(&request.proposal)
+        if requires_aggregate_basis(&request.proposal)?
             && let Err(refusal) = check_aggregate_basis(txn.basis(), db.frontier()?)
         {
             txn.abort();

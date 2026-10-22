@@ -46,6 +46,7 @@ use crate::toml::{Document, Table, TomlError, Value};
 
 const EXIT_CODES: &str = include_str!("../../../registries/exit_codes.toml");
 const ENTRY_CLASSES: &str = include_str!("../../../registries/entry_classes.toml");
+const INTENTS: &str = include_str!("../../../registries/intents.toml");
 const ADMISSIBILITY: &str = include_str!("../../../registries/admissibility.toml");
 const UNITS: &str = include_str!("../../../registries/units.toml");
 const ROUNDING_LAWS: &str = include_str!("../../../registries/rounding_laws.toml");
@@ -271,6 +272,95 @@ impl EntryClasses {
 
     pub fn posting(&self) -> impl Iterator<Item = &EntryClass> {
         self.rows.iter().filter(|r| r.kind == ClassKind::Posting)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Intent dependencies (plan §5.10)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DependencyClass {
+    Point,
+    Aggregate,
+}
+
+/// Dependency law for the current kernel plan protocols. A PostEntry's class
+/// refines its intent kind; an unregistered pair never inherits `Point`.
+#[derive(Clone, Debug)]
+pub struct IntentDependencies {
+    rows: BTreeMap<(String, Option<u16>), DependencyClass>,
+}
+
+impl IntentDependencies {
+    pub fn embedded() -> Result<Self, RegistryError> {
+        Self::parse(&EntryClasses::embedded()?, INTENTS)
+    }
+
+    pub fn parse(classes: &EntryClasses, text: &str) -> Result<Self, RegistryError> {
+        const R: &str = "intents.toml";
+        let doc = load(R, text)?;
+        if req_int(R, &doc.root, "schema_version")? != 1 {
+            return Err(invalid(R, "unsupported schema_version"));
+        }
+        let mut rows = BTreeMap::new();
+        for row in doc.arrays.get("intent").into_iter().flatten() {
+            let name = req_str(R, row, "name")?;
+            let class = match name {
+                "PostEntry" => {
+                    let class_name = req_str(R, row, "entry_class")?;
+                    let class = classes
+                        .by_name(class_name)
+                        .filter(|c| c.kind == ClassKind::Posting)
+                        .ok_or_else(|| {
+                            invalid(R, format!("unknown posting class `{class_name}`"))
+                        })?;
+                    Some(class.tag)
+                }
+                "FinalizeMigration" | "AbandonMigration" => {
+                    if row.contains_key("entry_class") {
+                        return Err(invalid(R, format!("`{name}` has no entry_class selector")));
+                    }
+                    None
+                }
+                other => return Err(invalid(R, format!("unknown intent `{other}`"))),
+            };
+            let dependency = match req_str(R, row, "dependency_class")? {
+                "point" => DependencyClass::Point,
+                "aggregate" => DependencyClass::Aggregate,
+                other => return Err(invalid(R, format!("unknown dependency_class `{other}`"))),
+            };
+            if rows.insert((name.to_string(), class), dependency).is_some() {
+                return Err(invalid(
+                    R,
+                    format!("duplicate intent selector `{name}`/{class:?}"),
+                ));
+            }
+        }
+        let registry = Self { rows };
+        for class in classes.posting() {
+            registry.get("PostEntry", Some(class.tag))?;
+        }
+        for intent in ["FinalizeMigration", "AbandonMigration"] {
+            registry.get(intent, None)?;
+        }
+        Ok(registry)
+    }
+
+    pub fn get(
+        &self,
+        intent: &str,
+        entry_class: Option<u16>,
+    ) -> Result<DependencyClass, RegistryError> {
+        self.rows
+            .get(&(intent.to_string(), entry_class))
+            .copied()
+            .ok_or_else(|| {
+                invalid(
+                    "intents.toml",
+                    format!("missing dependency_class for `{intent}`/{entry_class:?}"),
+                )
+            })
     }
 }
 
@@ -1224,6 +1314,7 @@ impl Symbols {
 pub struct Registries {
     pub exit_codes: ExitCodes,
     pub entry_classes: EntryClasses,
+    pub intent_dependencies: IntentDependencies,
     pub control_kinds: ControlKinds,
     pub admissibility: Admissibility,
     pub units: Vec<UnitRow>,
@@ -1234,11 +1325,13 @@ pub struct Registries {
 impl Registries {
     pub fn embedded() -> Result<Self, RegistryError> {
         let entry_classes = EntryClasses::embedded()?;
+        let intent_dependencies = IntentDependencies::parse(&entry_classes, INTENTS)?;
         let control_kinds = ControlKinds::embedded(&entry_classes)?;
         let admissibility = Admissibility::embedded(&entry_classes)?;
         Ok(Self {
             exit_codes: ExitCodes::embedded()?,
             entry_classes,
+            intent_dependencies,
             control_kinds,
             admissibility,
             units: units_embedded()?,
@@ -1251,6 +1344,99 @@ impl Registries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_intent_has_dependency_class() {
+        let classes = EntryClasses::embedded().unwrap();
+        let registry = IntentDependencies::embedded().unwrap();
+        for name in ["Closing", "Revaluation", "Elimination"] {
+            let tag = classes.by_name(name).unwrap().tag;
+            assert_eq!(
+                registry.get("PostEntry", Some(tag)).unwrap(),
+                DependencyClass::Aggregate
+            );
+        }
+        for name in [
+            "Original",
+            "Pending",
+            "Resolution",
+            "Reversal",
+            "Replacement",
+            "Reclassification",
+            "Adjusting",
+            "Allocation",
+            "Migration",
+            "Revision",
+            "Restatement",
+            "PriorPeriodAdjustment",
+        ] {
+            let tag = classes.by_name(name).unwrap().tag;
+            assert_eq!(
+                registry.get("PostEntry", Some(tag)).unwrap(),
+                DependencyClass::Point
+            );
+        }
+        for intent in ["FinalizeMigration", "AbandonMigration"] {
+            assert_eq!(
+                registry.get(intent, None).unwrap(),
+                DependencyClass::Aggregate
+            );
+        }
+        assert_eq!(registry.rows.len(), classes.posting().count() + 2);
+        // Unknown kinds/classes are errors even if a caller forgets to extend
+        // the registry. Neither a control nor a typo silently becomes point.
+        assert!(registry.get("PostEntry", Some(16)).is_err());
+        assert!(registry.get("PostEntry", Some(u16::MAX)).is_err());
+        assert!(registry.get("PostEntry", None).is_err());
+        assert!(registry.get("AllocateAllOfPeriod", None).is_err());
+
+        // Plant each omitted row independently. This exercises completeness,
+        // including visibility-only MigrationRun transitions, not just syntax.
+        let parts: Vec<_> = INTENTS.split("[[intent]]").collect();
+        for omitted in 1..parts.len() {
+            let mut missing = parts[0].to_string();
+            for (index, part) in parts.iter().enumerate().skip(1) {
+                if index != omitted {
+                    missing.push_str("[[intent]]");
+                    missing.push_str(part);
+                }
+            }
+            assert!(
+                IntentDependencies::parse(&classes, &missing).is_err(),
+                "omitted row {omitted}"
+            );
+        }
+    }
+
+    #[test]
+    fn intent_dependencies_refuse_ambiguous_or_unclassified_rows() {
+        let classes = EntryClasses::embedded().unwrap();
+        for planted in [
+            format!(
+                "{INTENTS}\n[[intent]]\nname = \"PostEntry\"\nentry_class = \"Original\"\ndependency_class = \"point\"\n"
+            ),
+            INTENTS.replacen(
+                "dependency_class = \"point\"",
+                "dependency_class = \"automatic\"",
+                1,
+            ),
+            INTENTS.replacen("dependency_class = \"point\"", "", 1),
+            INTENTS.replacen(
+                "entry_class = \"Original\"",
+                "entry_class = \"PeriodControl\"",
+                1,
+            ),
+            INTENTS.replacen("name = \"PostEntry\"", "name = \"FutureIntent\"", 1),
+            INTENTS.replacen("schema_version = 1", "schema_version = 2", 1),
+            INTENTS.replacen(
+                "name = \"FinalizeMigration\"",
+                "name = \"FinalizeMigration\"\nentry_class = \"Migration\"",
+                1,
+            ),
+        ] {
+            assert!(IntentDependencies::parse(&classes, &planted).is_err());
+        }
+    }
 
     /// fa-g23: the eight control kinds are registered (6 and 7 held for
     /// their classes), and the laws refuse a planted duplicate id, a gap, a

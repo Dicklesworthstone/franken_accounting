@@ -33,8 +33,8 @@ use fa_registry::threat_model::ThreatModel;
 use fa_registry::toml::{self, Table, Value};
 use fa_registry::topology::Topology;
 use fa_registry::{
-    Admissibility, CapabilityCaveats, ControlKinds, EntryClasses, ExitCodes, Symbols, parse_units,
-    rounding_laws_embedded,
+    Admissibility, CapabilityCaveats, ControlKinds, EntryClasses, ExitCodes, IntentDependencies,
+    Symbols, parse_units, rounding_laws_embedded,
 };
 
 /// Canonical durable `(code, name, exit_name)` tuples that may never be renumbered
@@ -107,6 +107,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "foundation_dependencies.toml",
     "fx_laws.toml",
     "intake_sources.toml",
+    "intents.toml",
     "invariants.toml",
     "limits.toml",
     "lot_laws.toml",
@@ -677,6 +678,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     // 1. Embedded fa-registry strongly-typed checks.
     let exits = ExitCodes::embedded().map_err(|e| e.to_string())?;
     let classes = EntryClasses::embedded().map_err(|e| e.to_string())?;
+    let _intents = IntentDependencies::embedded().map_err(|e| e.to_string())?;
     let _control_kinds = ControlKinds::embedded(&classes).map_err(|e| e.to_string())?;
     let _rounding = rounding_laws_embedded().map_err(|e| e.to_string())?;
     let _symbols = Symbols::embedded().map_err(|e| e.to_string())?;
@@ -703,6 +705,8 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         ));
     }
     let classes = EntryClasses::parse(&read("entry_classes.toml")?).map_err(|e| e.to_string())?;
+    let _intents =
+        IntentDependencies::parse(&classes, &read("intents.toml")?).map_err(|e| e.to_string())?;
     let matrix =
         Admissibility::parse(&classes, &read("admissibility.toml")?).map_err(|e| e.to_string())?;
     let _sod = SodPolicy::parse(&read("sod_policy.toml")?, &classes, &matrix)
