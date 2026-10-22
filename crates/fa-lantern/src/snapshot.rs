@@ -317,7 +317,7 @@ impl Snapshot {
         procedure: &str,
         role: &str,
     ) -> Result<BTreeSet<VId>, LanternError> {
-        if !Self::roles_of(procedure)?.iter().any(|r| *r == role) {
+        if !Self::roles_of(procedure)?.contains(&role) {
             return Err(LanternError::Parameter {
                 procedure: procedure.to_string(),
                 name: "role".into(),
