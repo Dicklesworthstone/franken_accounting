@@ -202,7 +202,7 @@ mod tests {
     fn edge(entry: u128, from: u128, to: u128, day: i32) -> Edge {
         Edge {
             day,
-            recorded: entry as u64,
+            recorded: u64::try_from(entry).unwrap(),
             entry,
             from,
             to,
