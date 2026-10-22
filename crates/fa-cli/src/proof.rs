@@ -9,10 +9,12 @@ use fa_time::DateDay;
 use fgdb_types::VId;
 
 use crate::args::Args;
-use crate::cli::{Ctx, Fail, hex, usage};
+use crate::cli::{Ctx, Fail, Files, Out, hex, usage};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa proof signed-checkpoint|checkpoint|inclusion|consistency|prefix|balance|evidence-disclosure --state <oid|latest> [--out <new-file>] --json";
+const EXAMPLE: &str = "fa proof signed-checkpoint|checkpoint|inclusion|consistency|suffix|prefix|balance|evidence-disclosure --state <oid|latest> [--out <new-file>] --json";
+
+const SUFFIX_EXAMPLE: &str = "fa proof suffix --state <retained-state-oid> [--next-state <oid|latest>] [--out <new-directory>] --json";
 
 pub(crate) fn fixed_hex<const N: usize>(text: &str, what: &str) -> Result<[u8; N], Fail> {
     if text.len() != N * 2 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -74,7 +76,7 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let applicable: &[&str] = match kind {
         "signed-checkpoint" | "checkpoint" | "prefix" => &[],
         "inclusion" => &["--entry"],
-        "consistency" => &["--next-state"],
+        "consistency" | "suffix" => &["--next-state"],
         "balance" => &["--account", "--unit", "--as-of"],
         "evidence-disclosure" => &["--entry", "--document", "--role", "--chunk"],
         _ => return Err(usage(format!("unknown proof kind {kind}"), EXAMPLE)),
@@ -113,13 +115,27 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
-    let next_state = if kind == "consistency" {
-        Some(Oid(fixed_hex(
+    let next_state = match kind {
+        "consistency" => Some(Oid(fixed_hex(
             required(args, "--next-state")?,
             "--next-state",
-        )?))
-    } else {
-        None
+        )?)),
+        "suffix" => match args.flag("--next-state") {
+            None | Some("latest") => None,
+            Some(text) => Some(Oid(fixed_hex(text, "--next-state")?)),
+        },
+        _ => None,
+    };
+    // A suffix extends the state the recipient retained: no default.
+    let retained = match (kind, state) {
+        ("suffix", None) => {
+            return Err(usage(
+                "proof suffix extends a retained state: --state names that state's 64-hex oid",
+                SUFFIX_EXAMPLE,
+            ));
+        }
+        ("suffix", Some(state)) => Some(fa::SuffixRequest { state, next_state }),
+        _ => None,
     };
     let account = if kind == "balance" {
         Some(required(args, "--account")?)
@@ -288,6 +304,17 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         );
         return Ok(());
     }
+    if let Some(request) = retained {
+        return export_suffix(
+            &mut ctx.out,
+            &ctx.files,
+            &book,
+            principal,
+            &capability,
+            request,
+            output,
+        );
+    }
     let proof_kind = match kind {
         "checkpoint" => ProofKind::Checkpoint,
         "signed-checkpoint" => ProofKind::SignedCheckpoint,
@@ -454,6 +481,158 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("byte_len", Json::Int(artifact.bytes.len() as i128)),
             ("bytes", encoded.as_ref().map_or(Json::Null, s)),
             ("file", output.map_or(Json::Null, s)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+/// `fa proof suffix` (plan §13.2): the complete record-bearing suffix from
+/// the recorded state a recipient retained to a later one. The output is the
+/// consistency proof and one record-bearing inclusion proof per appended
+/// leaf, controls and evidence records included, in the existing formats
+/// `fa-verify consistency` and `fa-verify inclusion` check against the two
+/// signed checkpoints. With `--out`, a new directory holds `consistency.bin`
+/// and one `record-<leaf>.bin` per leaf, zero-padded so that name order is
+/// leaf order; otherwise everything is inline hex.
+fn export_suffix(
+    out: &mut Out,
+    files: &Files,
+    book: &Book,
+    principal: VId,
+    capability: &fa_policy::Capability,
+    request: fa::SuffixRequest,
+    output: Option<&str>,
+) -> Result<(), Fail> {
+    let artifact = book.export_suffix(principal, capability, request)??;
+    let from = artifact.checkpoint.state.leaf_count;
+    let to = artifact.next_checkpoint.state.leaf_count;
+    let byte_len = artifact
+        .records
+        .iter()
+        .map(Vec::len)
+        .fold(artifact.consistency.len(), usize::saturating_add);
+    let max_inline = crate::verbs::registry()
+        .map_err(|e| Fail::Internal(e.into()))?
+        .daemon
+        .max_frame_bytes
+        .saturating_sub(32 * 1024)
+        / 2;
+    if output.is_none() && byte_len > max_inline {
+        return Err(fa_journal::Refusal::new(
+            fa::proof::code::PROOF_EXPORT_LIMIT,
+            fa_journal::exit::USAGE,
+            "the suffix is too large for the inline JSON transport",
+            "plan §13.1–§13.3 (complete proofs are never truncated)",
+            "the owner can export a new --out directory; a bound MCP caller must select a nearer --next-state",
+        )
+        .into());
+    }
+    let mut written = Vec::new();
+    if let Some(path) = output {
+        std::fs::create_dir(files.resolve(path)).map_err(|e| {
+            usage(
+                format!("cannot create the suffix directory {path}: {e}"),
+                "choose a new --out directory; an existing path is never reused",
+            )
+        })?;
+        let consistency = format!("{path}/consistency.bin");
+        write_new(
+            &files.resolve(&consistency),
+            &consistency,
+            &artifact.consistency,
+            "consistency proof",
+            "--out",
+        )?;
+        written.push(consistency);
+        for (leaf, record) in (from..).zip(&artifact.records) {
+            let file = format!("{path}/record-{leaf:06}.bin");
+            write_new(
+                &files.resolve(&file),
+                &file,
+                record,
+                "suffix record",
+                "--out",
+            )?;
+            written.push(file);
+        }
+    }
+    let public_key = hex(&book.checkpoint_public_key());
+    let old = &artifact.checkpoint;
+    let next = &artifact.next_checkpoint;
+    let verify = match output {
+        Some(path) => format!(
+            "fa-verify consistency --proof {path}/consistency.bin --checkpoint <retained signed checkpoint of {}> --next-checkpoint <signed checkpoint of {}> --key {public_key} --json, then fa-verify inclusion --proof <each record file, in name order> --checkpoint <signed checkpoint of {}> --key {public_key} --json; leaves {from}..{to}",
+            hex(&old.oid.0),
+            hex(&next.oid.0),
+            hex(&next.oid.0),
+        ),
+        None => format!(
+            "write consistency and each record to files, then fa-verify consistency --proof <file> --checkpoint <retained signed checkpoint of {}> --next-checkpoint <signed checkpoint of {}> --key {public_key} --json and fa-verify inclusion --proof <record file> --checkpoint <signed checkpoint of {}> --key {public_key} --json for leaves {from}..{to}",
+            hex(&old.oid.0),
+            hex(&next.oid.0),
+            hex(&next.oid.0),
+        ),
+    };
+    out.at_book(book)?;
+    out.known_at(next.state.through_seq);
+    let inline = output.is_none();
+    let human = format!(
+        "Exported the complete suffix from checkpoint {} (leaf {from}) to {} (leaf {to}, through sequence {}): a consistency proof and {} record(s), {byte_len} bytes{}. Every appended record is disclosed, controls and evidence records included.",
+        hex(&old.oid.0),
+        hex(&next.oid.0),
+        next.state.through_seq.0,
+        artifact.records.len(),
+        output.map_or_else(String::new, |path| format!(" in {path}")),
+    );
+    out.event(
+        "proof_suffix_exported",
+        vec![
+            ("state_oid", s(hex(&old.oid.0))),
+            ("next_state_oid", s(hex(&next.oid.0))),
+            ("from_leaf", Json::Int(i128::from(from))),
+            ("to_leaf", Json::Int(i128::from(to))),
+            (
+                "through_seq",
+                Json::Int(i128::from(next.state.through_seq.0)),
+            ),
+            (
+                "checkpoint_bytes",
+                s(hex(&fa::proof::checkpoint_bytes(old)?)),
+            ),
+            (
+                "next_checkpoint_bytes",
+                s(hex(&fa::proof::checkpoint_bytes(next)?)),
+            ),
+            ("checkpoint_public_key", s(&public_key)),
+            ("record_count", Json::Int(artifact.records.len() as i128)),
+            ("byte_len", Json::Int(byte_len as i128)),
+            (
+                "consistency",
+                if inline {
+                    s(hex(&artifact.consistency))
+                } else {
+                    Json::Null
+                },
+            ),
+            (
+                "records",
+                if inline {
+                    Json::Arr(artifact.records.iter().map(|r| s(hex(r))).collect())
+                } else {
+                    Json::Null
+                },
+            ),
+            ("directory", output.map_or(Json::Null, s)),
+            (
+                "files",
+                if inline {
+                    Json::Null
+                } else {
+                    Json::Arr(written.iter().map(|f| s(f.as_str())).collect())
+                },
+            ),
+            ("verify", s(verify)),
         ],
         &human,
     );
