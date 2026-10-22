@@ -251,6 +251,114 @@ fn a_witnessed_row_changed_after_staging_loses_first_committer_wins_at_commit() 
 }
 
 #[test]
+fn aggregate_guard_no_publication_between_compare_and_marker() {
+    const T: &str = "aggregate_guard_no_publication_between_compare_and_marker";
+    let h = Harness::new();
+    let ctx = h.ctx();
+    let txn_cx = ctx.txn();
+    let mut both_orders_hold = true;
+
+    for intervening_first in [false, true] {
+        let mut db = h.open();
+        h.write(&mut db, create(1, 0)).expect("aggregate input");
+        h.write(&mut db, create(2, 0)).expect("unrelated input");
+        let basis = db.frontier().expect("observed aggregate prefix");
+        let mut aggregate = db.begin(&txn_cx).expect("begin aggregate");
+        assert_eq!(aggregate.basis(), basis);
+        aggregate.vertex(&db, VId(1)).expect("point witness");
+        aggregate
+            .write(&mut db, create(3, 42))
+            .expect("stage aggregate result");
+        let mut unrelated = db.begin(&txn_cx).expect("begin unrelated writer");
+        unrelated
+            .write(&mut db, set(2, 9))
+            .expect("stage disjoint effect at the same prefix");
+
+        if intervening_first {
+            let published = h
+                .runtime
+                .block_on(async { unrelated.commit(&mut db, &ctx.commit()).await })
+                .expect("unrelated writer publishes first");
+            assert_eq!(published.0, basis.0 + 1);
+            let before = db.frontier().expect("frontier after intervention");
+            let checked = fa_journal::post::check_aggregate_basis(aggregate.basis(), before);
+            eprintln!(
+                "[conformance] {T}: unrelated-first basis={} frontier={} guard={checked:?}",
+                basis.0, before.0
+            );
+            let refused = matches!(
+                checked,
+                Err(ref refusal)
+                    if refusal.code == fa_journal::refusal::code::PLAN_INVALIDATED
+                        && refusal.exit == fa_journal::refusal::exit::CONFLICT
+            );
+            if refused {
+                aggregate.abort();
+            } else {
+                // If the production guard is removed or weakened, actually
+                // attempt the stale publication; do not merely compare flags.
+                let _ = h
+                    .runtime
+                    .block_on(async { aggregate.commit(&mut db, &ctx.commit()).await });
+            }
+            both_orders_hold &= refused
+                && db.frontier().expect("refusal frontier") == before
+                && db.vertex(VId(3)).expect("refused result").is_none();
+        } else {
+            fa_journal::post::check_aggregate_basis(
+                aggregate.basis(),
+                db.frontier().expect("guard frontier"),
+            )
+            .expect("unchanged prefix is admissible");
+            // The exact production protocol: this mutable handle stays
+            // exclusively borrowed across the asynchronous native commit.
+            let published = h
+                .runtime
+                .block_on(async { aggregate.commit(&mut db, &ctx.commit()).await })
+                .expect("aggregate publishes first");
+            both_orders_hold &= published.0 == basis.0 + 1
+                && db.frontier().expect("published frontier") == published
+                && db.vertex(VId(3)).expect("aggregate result").is_some();
+            let second = h
+                .runtime
+                .block_on(async { unrelated.commit(&mut db, &ctx.commit()).await })
+                .expect("ordinary disjoint point-only writer remains admissible");
+            both_orders_hold &= second.0 == published.0 + 1;
+            eprintln!(
+                "[conformance] {T}: aggregate-first basis={} aggregate={} unrelated={}",
+                basis.0, published.0, second.0
+            );
+        }
+    }
+
+    // Planted guard removal: point witnesses alone do not cover a whole
+    // prefix. The native validator permits this stale, disjoint effect.
+    let mut db = h.open();
+    h.write(&mut db, create(1, 0)).expect("aggregate input");
+    h.write(&mut db, create(2, 0)).expect("unrelated input");
+    let mut unguarded = db.begin(&txn_cx).expect("begin planted variant");
+    let stale_basis = unguarded.basis();
+    unguarded.vertex(&db, VId(1)).expect("point witness");
+    unguarded
+        .write(&mut db, create(3, 42))
+        .expect("stage before intervention");
+    h.write(&mut db, set(2, 9))
+        .expect("intervening publication");
+    let stale_publication = h
+        .runtime
+        .block_on(async { unguarded.commit(&mut db, &ctx.commit()).await })
+        .expect("without the guard, disjoint point witnesses permit publication");
+    assert_eq!(stale_publication.0, stale_basis.0 + 2);
+    assert!(db.vertex(VId(3)).expect("planted stale result").is_some());
+
+    relied_upon(
+        T,
+        both_orders_hold,
+        "the aggregate guard refuses an intervening prefix without mutation; an unchanged prefix publishes the next marker with no internal publication, while ordinary disjoint point-only commits still work",
+    );
+}
+
+#[test]
 fn delta_since_returns_every_committed_batch_in_commit_order() {
     const T: &str = "delta_since_returns_every_committed_batch_in_commit_order";
     let h = Harness::new();

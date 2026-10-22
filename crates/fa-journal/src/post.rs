@@ -250,6 +250,27 @@ impl ReplacementBasis {
     }
 }
 
+/// Admit an aggregate-derived effect only at the exact prefix it observed
+/// (plan §5.10). Call after current authorization, immediately before native
+/// publication while retaining the exclusive `&mut Database`; never refresh
+/// the prepared transaction to make an old fold appear current. Point-only
+/// effects do not acquire this conservative whole-prefix dependency.
+pub fn check_aggregate_basis(expected: CommitSeq, actual: CommitSeq) -> Result<(), Refusal> {
+    if expected == actual {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        code::PLAN_INVALIDATED,
+        exit::CONFLICT,
+        format!(
+            "the complete aggregate basis {} differs from the publication frontier {}",
+            expected.0, actual.0
+        ),
+        "plan §5.10 (aggregate dependencies require the exact observed committed prefix)",
+        "prepare and review the aggregate operation again at the current prefix; do not refresh its old witnesses or silently reuse changed approvals",
+    ))
+}
+
 impl PreparedPost {
     /// The committed prefix against which all laws and witnesses were read.
     #[must_use]
@@ -370,21 +391,12 @@ impl PreparedPost {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
         }
-        if request.proposal.class == EntryClass::CLOSING {
-            let frontier = db.frontier()?;
-            let basis = txn.basis();
-            if frontier != basis {
-                txn.abort();
-                return Ok(Err(crate::closing::frontier_changed(basis, frontier)));
-            }
-        }
-        if crate::revaluation::is_source_bound(&request.proposal) {
-            let frontier = db.frontier()?;
-            let basis = txn.basis();
-            if frontier != basis {
-                txn.abort();
-                return Ok(Err(crate::revaluation::frontier_changed(basis, frontier)));
-            }
+        if (request.proposal.class == EntryClass::CLOSING
+            || crate::revaluation::is_source_bound(&request.proposal))
+            && let Err(refusal) = check_aggregate_basis(txn.basis(), db.frontier()?)
+        {
+            txn.abort();
+            return Ok(Err(refusal));
         }
         let prepared_at = txn.basis();
         match txn.commit(db, &commit).await {

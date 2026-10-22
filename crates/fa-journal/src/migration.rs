@@ -1557,10 +1557,9 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
     }
     batches.extend(crate::post::reconciliation_edges(evid, &reconciliation));
     txn.write_ordered(db, batches)?;
-    if db.frontier()? != basis {
-        return Err(KernelError::Corrupt(
-            "the head moved under an exclusive handle between the run's fold and its commit".into(),
-        ));
+    if let Err(refusal) = crate::post::check_aggregate_basis(basis, db.frontier()?) {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     finish(
         db,

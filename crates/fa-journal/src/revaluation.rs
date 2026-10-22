@@ -999,13 +999,6 @@ pub(crate) fn unsupported_batch() -> Refusal {
     )
 }
 
-pub(crate) fn frontier_changed(expected: CommitSeq, actual: CommitSeq) -> Refusal {
-    changed(format!(
-        "the revaluation publication frontier changed from {} to {} after preparation",
-        expected.0, actual.0
-    ))
-}
-
 pub(crate) fn validate_post<V: Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,

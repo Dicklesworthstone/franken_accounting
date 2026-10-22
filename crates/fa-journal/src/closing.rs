@@ -839,13 +839,3 @@ fn verify_record<V: Vfs + Clone>(
         },
     )
 }
-
-/// Exact frontier equality is intentionally conservative. This guard is
-/// checked immediately before the one native commit, after ordinary policy
-/// admission; an appended entry or new routing version always invalidates it.
-pub(crate) fn frontier_changed(expected: CommitSeq, actual: CommitSeq) -> Refusal {
-    changed(format!(
-        "the prepared close's complete aggregate basis {} advanced to {} before publication",
-        expected.0, actual.0
-    ))
-}
