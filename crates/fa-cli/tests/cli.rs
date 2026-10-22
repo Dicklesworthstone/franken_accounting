@@ -3108,8 +3108,22 @@ fn verify_export_proves_every_format_against_the_book_at_its_coordinate() -> std
         assert_eq!(field(&out, "event"), Some("error"), "{what}: {out}");
         assert!(out.contains(says), "{what}: {out}");
     }
+    // An ADS package's tables are regular files: links to the real export's
+    // tables are refused before anything is read.
+    let linked = dir.join("linked-ads");
+    std::fs::create_dir(&linked)?;
+    for name in [
+        "Chart_of_Accounts.txt",
+        "GL_Detail.txt",
+        "Trial_Balance.txt",
+        "ADS_Coordinate_Certificate.toml",
+    ] {
+        std::os::unix::fs::symlink(dir.join("ads").join(name), linked.join(name))?;
+    }
+    let linked = linked.display().to_string();
     let path = exported[2].1.as_str();
     for args in [
+        vec!["verify", "export", "ads", linked.as_str(), "--json"],
         vec!["verify", "export", "pdf", path, "--json"],
         vec!["verify", "export", "ads", "-", "--json"],
         vec!["verify", "export", "csv-gl", "--json"],

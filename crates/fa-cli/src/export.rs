@@ -422,6 +422,19 @@ pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         ));
     }
     let contents = if format == "ads" {
+        // Host-path containment judged the package directory; its tables
+        // must be regular files in it, never links that lead elsewhere.
+        for name in ADS_FILES {
+            let inner = format!("{path}/{name}");
+            let regular = std::fs::symlink_metadata(ctx.files.resolve(&inner))
+                .is_ok_and(|meta| meta.file_type().is_file());
+            if !regular {
+                return Err(usage(
+                    format!("{inner} is not a regular file of an ads package"),
+                    "pass the directory fa export ads --out wrote, with its four tables",
+                ));
+            }
+        }
         ADS_FILES
             .iter()
             .map(|name| ctx.files.read_text(&format!("{path}/{name}")))
