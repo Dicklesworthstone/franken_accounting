@@ -47,6 +47,7 @@
 //! hexadecimal text instead (whitespace ignored), as the golden fixtures
 //! store them.
 
+use crate::ads::{AdsReport, verify_ads};
 use crate::blake3::hex;
 use crate::bundle::{BundleReport, BundleScope, Grade, verify_bundle};
 use crate::checkpoint::{SignedCheckpoint, verify_checkpoint};
@@ -97,6 +98,9 @@ commands:
   doc-commit   <document> --kind N [--expect H] a document's public commitment from its bytes
   bundle       <bundle> --key K... [--receipt R]
                                                 an evidence bundle (.fab), every predicate graded
+  ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
+                                                bundle graded, then GL_Detail exactly the entries it
+                                                proves through the certificate's cutoff
 
 ANCHOR — how you trust the checkpoint (exactly one; a proof never supplies its own):
   --key K...             C is a signed TransparencyCheckpoint; its signature by one of
@@ -121,7 +125,7 @@ expectations) and the document and redacted-view commands: fa-verify --help.
 exit codes: 0 verified · 2 usage · 5 file I/O · 8 verification failed
 ";
 
-const COMMANDS: [&str; 9] = [
+const COMMANDS: [&str; 10] = [
     "state",
     "checkpoint",
     "inclusion",
@@ -131,6 +135,7 @@ const COMMANDS: [&str; 9] = [
     "consistency",
     "doc-commit",
     "bundle",
+    "ads",
 ];
 
 /// Flags that take a value, and the switches.
@@ -181,7 +186,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--unsigned-checkpoint",
         ],
         "doc-commit" => &["--kind", "--expect"],
-        "bundle" => &["--key", "--receipt"],
+        "bundle" | "ads" => &["--key", "--receipt"],
         _ => &[],
     }
 }
@@ -1160,8 +1165,89 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 Ok(report) => bundle_checks(&report),
             })
         }
+        "ads" => {
+            let dir = subject(args, "an ADS package directory")?;
+            let keys = args.all("--key");
+            if keys.is_empty() {
+                return Err(usage(
+                    "no trusted key: an ADS extract is judged only against keys you name",
+                    "pass the book's checkpoint public key with `--key <64 hex>`",
+                ));
+            }
+            let keys: Vec<[u8; 32]> = keys.into_iter().map(key).collect::<Result<_, _>>()?;
+            let text = |name: &str| -> Result<String, Usage> {
+                let path = format!("{dir}/{name}");
+                String::from_utf8(load(read, &path, false)?).map_err(|_| {
+                    usage(
+                        format!("`{path}` is not UTF-8 text"),
+                        "name the directory `fa export ads --with-proofs --out <dir>` wrote",
+                    )
+                })
+            };
+            let certificate = text("ADS_Coordinate_Certificate.toml")?;
+            let gl_detail = text("GL_Detail.txt")?;
+            let bundle = load(read, &format!("{dir}/ADS_Proof.fab"), false)?;
+            let receipt = match args.one("--receipt") {
+                Some(p) => load(read, p, args.hex)?,
+                None => load(read, &format!("{dir}/ADS_Proof.receipt"), false)?,
+            };
+            Ok(
+                match verify_ads(&certificate, &gl_detail, &bundle, &keys, Some(&receipt)) {
+                    Err(e) => vec![Check {
+                        name: "bundle",
+                        scope: "format",
+                        verdict: Verdict::Fail,
+                        detail: Vec::new(),
+                        reason: Some(e.to_string()),
+                    }],
+                    Ok(report) => ads_checks(&report),
+                },
+            )
+        }
         _ => unreachable_command(cmd),
     }
+}
+
+/// The bundle's checks, then the extract's: exactly the proven selection.
+fn ads_checks(report: &AdsReport) -> Vec<Check> {
+    let mut checks = bundle_checks(&report.bundle);
+    let detail = vec![
+        ("effective_through", s(report.effective_through.as_str())),
+        ("known_at_seq", report.known_at_seq.map_or(Json::Null, n)),
+        ("entries", n(report.entries)),
+        ("rows", n(report.rows)),
+        (
+            "units",
+            Json::List(
+                report
+                    .units
+                    .iter()
+                    .map(|(code, id)| {
+                        Json::Obj(vec![
+                            ("code", s(code.as_str())),
+                            ("unit_id", Json::Int(i64::from(*id))),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ];
+    checks.push(if report.verified() {
+        Check::pass("ads_extract", "completeness", detail)
+    } else {
+        Check {
+            name: "ads_extract",
+            scope: "completeness",
+            verdict: if report.bundle.verified() {
+                Verdict::Fail
+            } else {
+                Verdict::Unrun
+            },
+            detail,
+            reason: Some(report.failures.join("; ")),
+        }
+    });
+    checks
 }
 
 /// The bundle's identity, then every graded predicate in report order.

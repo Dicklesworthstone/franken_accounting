@@ -949,3 +949,176 @@ fn facade_expiry_and_revocation_refuse_before_observing_requested_checkpoint() {
     assert_eq!(refusal.exit, 7);
     assert_eq!(book.head().unwrap(), after_revocation);
 }
+
+/// Plan §13.1 (fa-2q91): `fa export ads --with-proofs` writes the auditor's
+/// extract at exactly a recorded state's sequence, beside that state's
+/// complete-prefix bundle and receipt. `fa_verify::ads` proves offline that
+/// GL_Detail is exactly the proven entries the export selects; an entry
+/// taken out, an amount altered or a row added fails.
+#[test]
+fn an_ads_extract_with_proofs_is_exactly_its_proven_selection_offline() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    let export = |name: &str| -> (PathBuf, Vec<String>) {
+        let dir = f.dir.join(name);
+        let args = [
+            "export",
+            "ads",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            dir.to_str().unwrap(),
+            "--with-proofs",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        (dir, args)
+    };
+    fn strs(args: &[String]) -> Vec<&str> {
+        args.iter().map(String::as_str).collect()
+    }
+    let (_, early) = export("early");
+    let (code, refusal) = run(&f.book, &strs(&early));
+    assert_eq!(code, 2, "{}", refusal.render());
+    assert_eq!(text(&refusal, "refusal_id"), "FA-REF-145", "no state yet");
+    // --with-proofs proves an ADS package written to a directory, at the
+    // state's own sequence.
+    let (code, _) = run(
+        &f.book,
+        &["export", "saft", "--period", "FY2026-P03", "--with-proofs"],
+    );
+    assert_eq!(code, 2);
+
+    f.post("ads-1", "2026-03-10", "12.34", &evidence);
+    f.post("ads-2", "2026-03-20", "2.00", &evidence);
+    f.checkpoint();
+    // Recorded after the state: not in the extract.
+    f.post("ads-3", "2026-03-25", "5.00", &evidence);
+    let (dir, args) = export("ads");
+    let line = ok(&f.book, &strs(&args));
+    let proof = get(&line, "proof");
+    assert_eq!(integer(&line, "known_at"), integer(proof, "through_seq"));
+    assert_eq!(
+        integer(&line, "entries"),
+        2,
+        "the later posting is not in it"
+    );
+    assert_eq!(text(proof, "completeness"), "seq_range_complete");
+    let key: [u8; 32] = unhex(text(proof, "checkpoint_public_key"))
+        .try_into()
+        .expect("32-byte key");
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).expect(name);
+    let certificate = read("ADS_Coordinate_Certificate.toml");
+    let bundle = std::fs::read(dir.join("ADS_Proof.fab")).expect("bundle");
+    let receipt = std::fs::read(dir.join("ADS_Proof.receipt")).expect("receipt");
+    let verify = |gl: &str| {
+        fa_verify::ads::verify_ads(&certificate, gl, &bundle, &[key], Some(&receipt))
+            .expect("a well-formed bundle")
+    };
+    let gl = read("GL_Detail.txt");
+    let report = verify(&gl);
+    assert!(report.verified(), "{:?}", report.failures);
+    assert_eq!((report.entries, report.rows), (2, 4));
+    let usd = fa_money::UnitRegistry::embedded()
+        .unwrap()
+        .lookup("USD")
+        .unwrap();
+    assert_eq!(report.units, vec![("USD".to_string(), usd.0)]);
+    // The verifier derives account vids exactly as the book does.
+    assert_eq!(
+        fa_verify::ads::account_vid(&BOOK_ID.0, "1000"),
+        account_vid(BOOK_ID, "1000").0
+    );
+
+    // Planted: the first entry's rows taken out; an amount altered; a row
+    // added under another Journal_ID.
+    let rows: Vec<&str> = gl.lines().collect();
+    let first = rows[1].split('|').next().unwrap();
+    let without: String = rows
+        .iter()
+        .filter(|row| !row.starts_with(&format!("{first}|")))
+        .map(|row| format!("{row}\n"))
+        .collect();
+    let missing = verify(&without);
+    assert!(!missing.verified());
+    assert!(
+        missing
+            .failures
+            .iter()
+            .any(|f| f.contains("missing from GL_Detail")),
+        "{:?}",
+        missing.failures
+    );
+    // One row deleted: its entry keeps line 1 only, which no proven entry is.
+    assert!(rows[2].starts_with(&format!("{first}|2|")), "{gl}");
+    let one_row_less: String = rows
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != 2)
+        .map(|(_, row)| format!("{row}\n"))
+        .collect();
+    let short = verify(&one_row_less);
+    assert!(!short.verified());
+    assert!(
+        short
+            .failures
+            .iter()
+            .any(|f| f.contains("missing from GL_Detail")),
+        "{:?}",
+        short.failures
+    );
+    assert!(!verify(&gl.replacen("12.34", "12.35", 1)).verified());
+    let extra = format!(
+        "{gl}{}\n",
+        rows[1].replacen(first, "00000000000000000000000000000000", 1)
+    );
+    let added = verify(&extra);
+    assert!(!added.verified());
+    assert!(
+        added
+            .failures
+            .iter()
+            .any(|f| f.contains("is no proven entry")),
+        "{:?}",
+        added.failures
+    );
+
+    // `fa-verify ads <dir>` reads the package by its names: exit 0 on the
+    // export as written, 8 when GL_Detail is altered, 2 with no key.
+    let cli = |gl_detail: &str, with_key: bool| {
+        let mut args = vec![
+            "ads".to_string(),
+            dir.to_str().unwrap().to_string(),
+            "--json".to_string(),
+        ];
+        if with_key {
+            args.extend([
+                "--key".to_string(),
+                text(proof, "checkpoint_public_key").to_string(),
+            ]);
+        }
+        let read = |path: &str| {
+            if path.ends_with("/GL_Detail.txt") {
+                Ok(gl_detail.as_bytes().to_vec())
+            } else {
+                std::fs::read(path)
+            }
+        };
+        fa_verify::cli::run(&args, &read)
+    };
+    let verified = cli(&gl, true);
+    assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
+    let report = json::parse(verified.stdout.trim()).expect("one JSON report");
+    assert_eq!(text(&report, "verdict"), "verified");
+    let Json::Arr(checks) = get(&report, "checks") else {
+        panic!("checks: {}", verified.stdout);
+    };
+    let extract = checks
+        .iter()
+        .find(|check| text(check, "check") == "ads_extract")
+        .expect("the extract is a named check");
+    assert_eq!(text(extract, "result"), "pass");
+    assert_eq!(integer(get(extract, "detail"), "entries"), 2);
+    assert_eq!(cli(&without, true).exit, 8);
+    assert_eq!(cli(&gl, false).exit, 2);
+}
