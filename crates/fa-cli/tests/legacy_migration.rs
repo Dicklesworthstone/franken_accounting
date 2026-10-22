@@ -2767,7 +2767,25 @@ fn a_books_hledger_export_imports_as_history_with_identical_period_balances() {
     export_import_identity("hledger");
 }
 
-fn export_import_identity(format: &str) {
+/// The same identity through the book's csv-gl export, read by the generic
+/// CSV importer under a column map of csv-gl's own header: its D/C `side`
+/// beside an unsigned `amount` (fa-eid6: export→import identity beyond the
+/// plain-text ledgers).
+#[test]
+fn a_books_csv_gl_export_imports_as_history_with_identical_period_balances() {
+    export_import_identity("csv-gl");
+}
+
+/// csv-gl's header as a generic CSV column map.
+const CSV_GL_COLUMNS: &str = "[columns]\nsource_system = \"fa-csv-gl\"\nentry_id_column = \"entry_id\"\neffective_date_column = \"effective_date\"\naccount_column = \"account_code\"\nside_column = \"side\"\namount_column = \"amount\"\nunit_column = \"currency\"\ndescription_column = \"description\"\nmemo_column = \"memo\"\n";
+
+fn export_import_identity(export_format: &str) {
+    // csv-gl comes back through the generic CSV importer, the ledgers
+    // through their own readers.
+    let (format, column_map, source_system) = match export_format {
+        "csv-gl" => ("csv", Some(CSV_GL_COLUMNS), "fa-csv-gl"),
+        other => (other, None, other),
+    };
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let dir = loop {
         let path = std::env::temp_dir().join(format!(
@@ -2882,14 +2900,14 @@ fn export_import_identity(format: &str) {
         "the source's year-end balances"
     );
 
-    // Its Beancount export.
-    let exported = dir.join(format!("export.{format}"));
+    // Its export.
+    let exported = dir.join(format!("export.{export_format}"));
     let exported_path = exported.display().to_string();
     let written = ok(
         &source,
         &[
             "export",
-            format,
+            export_format,
             "--as-of",
             "2025-12-31",
             "--out",
@@ -2955,7 +2973,7 @@ fn export_import_identity(format: &str) {
     }
     let run_body = obj(vec![
         ("run_key", s("export-identity")),
-        ("source_system", s(format)),
+        ("source_system", s(source_system)),
         ("mode", s("FullDetail")),
         ("trial_balance", s(&opening)),
         ("opening_date", s("2026-01-01")),
@@ -2968,29 +2986,44 @@ fn export_import_identity(format: &str) {
     let opened = ok(&fixture.book, &["migrate", "open", "--intent", &run_path]);
     let run_vid = text(data(&opened), "run_vid").to_owned();
     let import = |source_oid: &str| {
-        obj(vec![
+        // The ledgers name accounts by type and code; csv-gl by code.
+        let names = if column_map.is_some() {
+            ["1000", "3000", "4000", "6000"]
+        } else {
+            [
+                "Assets:A1000",
+                "Equity:A3000",
+                "Income:A4000",
+                "Expenses:A6000",
+            ]
+        };
+        let mut fields = vec![
             ("run", s(format!("MR:{run_vid}"))),
             ("source", s(format!("D:{source_oid}"))),
             ("format", s(format)),
             (
                 "account_map",
-                obj(vec![
-                    ("Assets:A1000", s("1000")),
-                    ("Equity:A3000", s("3000")),
-                    ("Income:A4000", s("4000")),
-                    ("Expenses:A6000", s("6000")),
-                ]),
+                obj(names
+                    .iter()
+                    .zip(["1000", "3000", "4000", "6000"])
+                    .map(|(name, code)| (*name, s(code)))
+                    .collect()),
             ),
-        ])
+        ];
+        if let Some(columns) = column_map {
+            fields.push(("column_map", s(columns)));
+        }
+        obj(fields)
     };
 
     // Planted: the March sale moved by 1.00 on both legs still balances, but
     // no longer ties to March's trial balance; nothing is published.
     let tampered = ledger
         .replace("  250.00 USD\n", "  251.00 USD\n")
-        .replace("  -250.00 USD\n", "  -251.00 USD\n");
+        .replace("  -250.00 USD\n", "  -251.00 USD\n")
+        .replace(",250.00,", ",251.00,");
     assert_ne!(tampered, ledger, "the planted edit applies");
-    let tampered_oid = fixture.document(&format!("tampered.{format}"), &tampered, "Other");
+    let tampered_oid = fixture.document(&format!("tampered.{export_format}"), &tampered, "Other");
     let tampered_intent = fixture.file("tampered-import.json", &import(&tampered_oid).render());
     let before = head(&fixture.book);
     let (status, refused) = run(
@@ -3013,7 +3046,7 @@ fn export_import_identity(format: &str) {
     );
 
     // The true export imports and folds to the source in every period.
-    let source_oid = fixture.document(&format!("export.{format}"), &ledger, "Other");
+    let source_oid = fixture.document(&format!("export.{export_format}"), &ledger, "Other");
     let intent = fixture.file("import.json", &import(&source_oid).render());
     let prepared = ok(
         &fixture.book,
