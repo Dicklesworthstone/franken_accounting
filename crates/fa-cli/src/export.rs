@@ -164,54 +164,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Ok(())
     })?;
     let journal = selected.ok_or_else(|| Fail::Internal("export selection is missing".into()))?;
-    let written = |e: fa_formats::FormatError| Fail::Internal(format!("{format} writer: {e}"));
-    let files = match format {
-        "ads" => {
-            let package = fa_formats::ads::write_ads_package(&journal).map_err(written)?;
-            vec![
-                ExportFile {
-                    name: "Chart_of_Accounts.txt",
-                    content: package.chart_of_accounts,
-                },
-                ExportFile {
-                    name: "GL_Detail.txt",
-                    content: package.gl_detail,
-                },
-                ExportFile {
-                    name: "Trial_Balance.txt",
-                    content: package.trial_balance,
-                },
-                ExportFile {
-                    name: "ADS_Coordinate_Certificate.toml",
-                    content: package.certificate_toml,
-                },
-            ]
-        }
-        "saft" => vec![ExportFile {
-            name: "SAF-T.xml",
-            content: fa_formats::saft::write_saft_xml(&journal).map_err(written)?,
-        }],
-        "csv-gl" => vec![ExportFile {
-            name: "gl.csv",
-            content: fa_formats::csv_gl::write_csv_gl(&journal),
-        }],
-        "beancount" => vec![ExportFile {
-            name: "journal.beancount",
-            content: fa_formats::beancount::write_beancount(&journal),
-        }],
-        "ndjson" => vec![ExportFile {
-            name: "gl.ndjson",
-            content: fa_formats::csv_gl::write_ndjson_gl_stream(&journal).map_err(written)?,
-        }],
-        "xbrl" => vec![ExportFile {
-            name: "instance.xbrl",
-            content: fa_formats::xbrl::write_format_journal_xbrl_xml(&journal).map_err(written)?,
-        }],
-        _ => vec![ExportFile {
-            name: "journal.hledger",
-            content: fa_formats::beancount::write_hledger(&journal),
-        }],
-    };
+    let files = render(format, &journal)?;
     let total: usize = files.iter().map(|f| f.content.len()).sum();
     let max_inline = crate::verbs::registry()
         .map_err(|e| Fail::Internal(e.into()))?
@@ -271,30 +224,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     out.at_book(&book)?;
     let coordinate = &journal.coordinate;
     out.known_at(fgdb_types::CommitSeq(coordinate.known_at_seq));
-    let files_json: Vec<Json> = files
-        .iter()
-        .map(|file| {
-            obj(vec![
-                ("name", s(file.name)),
-                ("bytes", Json::Int(file.content.len() as i128)),
-                (
-                    "digest",
-                    s(hex(&fa_model::domain_digest(
-                        b"fa:export-file:v1",
-                        &[file.content.as_bytes()],
-                    ))),
-                ),
-                (
-                    "content",
-                    if output.is_some() {
-                        Json::Null
-                    } else {
-                        s(file.content.as_str())
-                    },
-                ),
-            ])
-        })
-        .collect();
+    let listed = files_json(&files, output.is_none());
     out.event(
         "journal_exported",
         vec![
@@ -309,7 +239,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("content_digest", s(hex(&coordinate.content_digest))),
             ("certificate_digest", s(hex(&coordinate.certificate_digest))),
             ("out", output.map_or(Json::Null, s)),
-            ("files", Json::Arr(files_json)),
+            ("files", Json::Arr(listed)),
             (
                 "proof",
                 proved.as_ref().map_or(Json::Null, |(produced, key)| {
@@ -345,4 +275,344 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ),
     );
     Ok(())
+}
+
+/// The four tables of an ADS package, in the order `fa export ads` writes
+/// them into its directory.
+const ADS_FILES: [&str; 4] = [
+    "Chart_of_Accounts.txt",
+    "GL_Detail.txt",
+    "Trial_Balance.txt",
+    "ADS_Coordinate_Certificate.toml",
+];
+
+/// The files `fa export <format>` writes for `journal`, in package order.
+fn render_files(
+    format: &str,
+    journal: &fa_formats::FormatJournal,
+) -> Result<Vec<ExportFile>, Fail> {
+    let written = |e: fa_formats::FormatError| Fail::Internal(format!("{format} writer: {e}"));
+    Ok(match format {
+        "ads" => {
+            let package = fa_formats::ads::write_ads_package(journal).map_err(written)?;
+            let [chart, detail, trial, certificate] = ADS_FILES;
+            vec![
+                ExportFile {
+                    name: chart,
+                    content: package.chart_of_accounts,
+                },
+                ExportFile {
+                    name: detail,
+                    content: package.gl_detail,
+                },
+                ExportFile {
+                    name: trial,
+                    content: package.trial_balance,
+                },
+                ExportFile {
+                    name: certificate,
+                    content: package.certificate_toml,
+                },
+            ]
+        }
+        "saft" => vec![ExportFile {
+            name: "SAF-T.xml",
+            content: fa_formats::saft::write_saft_xml(journal).map_err(written)?,
+        }],
+        "csv-gl" => vec![ExportFile {
+            name: "gl.csv",
+            content: fa_formats::csv_gl::write_csv_gl(journal),
+        }],
+        "beancount" => vec![ExportFile {
+            name: "journal.beancount",
+            content: fa_formats::beancount::write_beancount(journal),
+        }],
+        "ndjson" => vec![ExportFile {
+            name: "gl.ndjson",
+            content: fa_formats::csv_gl::write_ndjson_gl_stream(journal).map_err(written)?,
+        }],
+        "xbrl" => vec![ExportFile {
+            name: "instance.xbrl",
+            content: fa_formats::xbrl::write_format_journal_xbrl_xml(journal).map_err(written)?,
+        }],
+        _ => vec![ExportFile {
+            name: "journal.hledger",
+            content: fa_formats::beancount::write_hledger(journal),
+        }],
+    })
+}
+
+/// Each file's name, length and digest (fa:export-file:v1), with its
+/// content when it is returned inline.
+fn files_json(files: &[ExportFile], inline: bool) -> Vec<Json> {
+    files
+        .iter()
+        .map(|file| {
+            obj(vec![
+                ("name", s(file.name)),
+                ("bytes", Json::Int(file.content.len() as i128)),
+                (
+                    "digest",
+                    s(hex(&fa_model::domain_digest(
+                        b"fa:export-file:v1",
+                        &[file.content.as_bytes()],
+                    ))),
+                ),
+                (
+                    "content",
+                    if inline {
+                        s(file.content.as_str())
+                    } else {
+                        Json::Null
+                    },
+                ),
+            ])
+        })
+        .collect()
+}
+
+const VERIFY_EXAMPLE: &str = "fa verify export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl <the exported file, or the ads package directory> --json";
+const VERIFY_FIX: &str = "export again with fa export at the coordinate you need and verify that file; an edited export is not the book's";
+const VERIFY_CITE: &str = "plan §16 (export then import is the identity on folds) and the export's coordinate certificate (content_digest over the canonical journal, certificate_digest over its coordinate)";
+
+/// The coordinate an export claims: where to select the book's journal
+/// again, and the certificate digest its reader verified, when it verifies
+/// one.
+struct Claimed {
+    effective_through: DateDay,
+    known_at: u64,
+    certificate_digest: Option<String>,
+}
+
+/// `fa verify export <format> <path>` (plan §16: export then import is the
+/// identity on folds; bead fa-lzrn). The export is re-read with its
+/// format's reader, and the book's journal is selected again at the
+/// coordinate the export carries. What the re-read must match follows
+/// registries/formats.toml:
+/// - the audit standards and the CSV extract re-read to the identical
+///   journal under their verified coordinate certificate;
+/// - Beancount and hledger, balance-differential formats, refold to the
+///   same balances;
+/// - an XBRL instance re-reads its coordinate and calculation linkbase;
+/// - an NDJSON stream re-reads its framing and header.
+///
+/// In every format each file must then be byte for byte what `fa export`
+/// writes there. Nothing is written to the book.
+pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let [_, _, format, path] = args.positional.as_slice() else {
+        return Err(usage(
+            "verify export needs the format and the exported file (the package directory for ads)",
+            VERIFY_EXAMPLE,
+        ));
+    };
+    let (format, path) = (format.as_str(), path.as_str());
+    if !matches!(
+        format,
+        "ads" | "saft" | "csv-gl" | "beancount" | "hledger" | "ndjson" | "xbrl"
+    ) {
+        return Err(usage(
+            format!("unknown export format `{format}`"),
+            VERIFY_EXAMPLE,
+        ));
+    }
+    if format == "ads" && path == "-" {
+        return Err(usage(
+            "an ads export is a package directory, not stdin",
+            VERIFY_EXAMPLE,
+        ));
+    }
+    let contents = if format == "ads" {
+        ADS_FILES
+            .iter()
+            .map(|name| ctx.files.read_text(&format!("{path}/{name}")))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![ctx.files.read_text(path)?]
+    };
+    let failed = |message: String| Fail::Verification {
+        message,
+        detail: obj(vec![("format", s(format)), ("file", s(path))]),
+        cite: Some(VERIFY_CITE.into()),
+        fix: Some(VERIFY_FIX.into()),
+    };
+    let unread = |e: fa_formats::FormatError| {
+        failed(format!(
+            "the {format} export does not re-read as an fa export: {e}"
+        ))
+    };
+    let units = fa_formats::UnitCatalog::embedded()
+        .map_err(|e| Fail::Internal(format!("unit catalog: {e}")))?;
+    let first = contents.first().map_or("", String::as_str);
+    let parsed = match format {
+        "ads" => {
+            let [chart, detail, trial, certificate] = contents.as_slice() else {
+                return Err(Fail::Internal("an ads package has four files".into()));
+            };
+            let package = fa_formats::ads::AdsPackage {
+                chart_of_accounts: chart.clone(),
+                gl_detail: detail.clone(),
+                trial_balance: trial.clone(),
+                certificate_toml: certificate.clone(),
+            };
+            Some(fa_formats::ads::read_ads_package(&package, &units).map_err(unread)?)
+        }
+        "saft" => Some(fa_formats::saft::read_saft_xml(first, &units).map_err(unread)?),
+        "csv-gl" => Some(fa_formats::csv_gl::read_csv_gl(first, &units).map_err(unread)?),
+        "beancount" => Some(fa_formats::beancount::read_beancount(first, &units).map_err(unread)?),
+        "hledger" => Some(fa_formats::beancount::read_hledger(first, &units).map_err(unread)?),
+        _ => None,
+    };
+    let identity = matches!(format, "ads" | "saft" | "csv-gl");
+    let (claimed, reread) = match (&parsed, format) {
+        (Some(journal), _) => (
+            Claimed {
+                effective_through: journal.coordinate.effective_through,
+                known_at: journal.coordinate.known_at_seq,
+                certificate_digest: identity.then(|| hex(&journal.coordinate.certificate_digest)),
+            },
+            if identity { "journal" } else { "balances" },
+        ),
+        (None, "xbrl") => {
+            let (coordinate, _) =
+                fa_formats::xbrl::verify_format_journal_xbrl_xml(first).map_err(unread)?;
+            (
+                Claimed {
+                    effective_through: coordinate.effective_through,
+                    known_at: coordinate.known_at_seq,
+                    certificate_digest: Some(hex(&coordinate.certificate_digest)),
+                },
+                "coordinate",
+            )
+        }
+        (None, _) => {
+            fa_formats::csv_gl::verify_ndjson_gl_stream(first).map_err(unread)?;
+            (ndjson_coordinate(first).map_err(&failed)?, "framing")
+        }
+    };
+    let capability = ctx.capability(args, &["read", "verify"])?;
+    for op in [Op::Read, Op::Verify] {
+        fa_policy::require(&capability, op, "verifying an export against the journal")
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
+    let mut selected = None;
+    let book = ctx.books.open_admitted(args, |book| {
+        let scope = book.read_scope(capability.holder(), &capability)??;
+        let selection = fa::TrialBalanceSelection::AsOf(claimed.effective_through);
+        let seq = scope.admit_report(
+            &selection.into(),
+            Some(fgdb_types::CommitSeq(claimed.known_at)),
+        )??;
+        selected = Some(book.format_journal(claimed.effective_through, Some(seq))?);
+        Ok(())
+    })?;
+    let journal =
+        selected.ok_or_else(|| Fail::Internal("verify export selection is missing".into()))?;
+    let coordinate = &journal.coordinate;
+    let book_digest = hex(&coordinate.certificate_digest);
+    if let Some(claimed_digest) = &claimed.certificate_digest
+        && *claimed_digest != book_digest
+    {
+        return Err(failed(format!(
+            "the export's coordinate certificate {claimed_digest} is not this book's at effective_through {}, known-at {} ({book_digest}): another book's export, or an edited coordinate",
+            claimed.effective_through.render(),
+            claimed.known_at,
+        )));
+    }
+    match &parsed {
+        Some(again) if identity => {
+            fa_formats::verify_round_trip_identity(format, &journal, again).map_err(|e| {
+                failed(format!(
+                    "the {format} export re-reads to a different journal than the book's at its coordinate: {e}"
+                ))
+            })?;
+        }
+        Some(again) => {
+            let folded = |j: &fa_formats::FormatJournal| {
+                j.fold_balances()
+                    .map_err(|e| failed(format!("the {format} export does not refold: {e}")))
+            };
+            if folded(again)? != folded(&journal)? {
+                return Err(failed(format!(
+                    "the {format} export refolds to different balances than the book's at its coordinate"
+                )));
+            }
+        }
+        None => {}
+    }
+    let expected = render_files(format, &journal)?;
+    for (file, found) in expected.iter().zip(&contents) {
+        if file.content != *found {
+            let line = file
+                .content
+                .lines()
+                .zip(found.lines())
+                .position(|(a, b)| a != b)
+                .unwrap_or_else(|| file.content.lines().count().min(found.lines().count()));
+            return Err(failed(format!(
+                "{} differs from what fa export {format} writes at this coordinate, first at line {}",
+                file.name,
+                line + 1
+            )));
+        }
+    }
+    let legs: usize = journal.entries.iter().map(|e| e.legs.len()).sum();
+    let refold = journal
+        .refold_digest()
+        .map_err(|e| Fail::Internal(format!("refold digest: {e}")))?;
+    let out = &ctx.out;
+    out.at_book(&book)?;
+    out.known_at(fgdb_types::CommitSeq(coordinate.known_at_seq));
+    out.event(
+        "export_verified",
+        vec![
+            ("format", s(format)),
+            ("file", s(path)),
+            (
+                "effective_through",
+                s(coordinate.effective_through.render()),
+            ),
+            ("known_at", Json::Int(i128::from(coordinate.known_at_seq))),
+            ("entries", Json::Int(i128::from(coordinate.entry_count))),
+            ("legs", Json::Int(legs as i128)),
+            ("content_digest", s(hex(&coordinate.content_digest))),
+            ("certificate_digest", s(&book_digest)),
+            ("refold_digest", s(hex(&refold))),
+            ("reread", s(reread)),
+            ("files", Json::Arr(files_json(&expected, false))),
+        ],
+        &format!(
+            "verified the {format} export {path}: byte for byte what fa export writes through {} at known-at {} ({} entries, {legs} legs); re-read: {reread}",
+            coordinate.effective_through.render(),
+            coordinate.known_at_seq,
+            coordinate.entry_count,
+        ),
+    );
+    Ok(())
+}
+
+/// The coordinate an NDJSON GL stream's `gl_stream_header` line claims.
+fn ndjson_coordinate(stream: &str) -> Result<Claimed, String> {
+    let header = stream
+        .lines()
+        .next()
+        .and_then(|line| crate::json::parse(line).ok())
+        .ok_or("the ndjson export has no JSON header line")?;
+    let text = |key: &str| {
+        header
+            .get(key)
+            .and_then(Json::as_str)
+            .ok_or_else(|| format!("the ndjson header has no {key}"))
+    };
+    let effective_through = DateDay::parse(text("effective_through")?)
+        .map_err(|e| format!("the ndjson header's effective_through: {e}"))?;
+    let known_at = match header.get("known_at_seq") {
+        Some(Json::Int(seq)) => u64::try_from(*seq)
+            .map_err(|_| "the ndjson header's known_at_seq is not a sequence".to_string())?,
+        _ => return Err("the ndjson header has no known_at_seq".into()),
+    };
+    Ok(Claimed {
+        effective_through,
+        known_at,
+        certificate_digest: Some(text("certificate_digest")?.to_string()),
+    })
 }

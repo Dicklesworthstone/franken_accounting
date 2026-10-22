@@ -2965,6 +2965,170 @@ fn hex_of(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// fa-lzrn (plan §16, export then import is the identity): `fa verify
+/// export` re-reads every format with its reader, selects the book again at
+/// the export's own coordinate, and requires each file byte for byte. An
+/// export keeps verifying after the book moves on, because its coordinate is
+/// historical. Planted, each refused with exit 8:
+/// - a tampered amount;
+/// - a byte the reader tolerates (an appended blank line);
+/// - another book's export.
+/// Malformed calls are usage errors.
+#[test]
+fn verify_export_proves_every_format_against_the_book_at_its_coordinate() -> std::io::Result<()> {
+    let dir = tmp("verify-export")?;
+    let ok = |book: &Path, args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    let post = |book: &Path, ev: &str, key: &str, date: &str, legs: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","description":"{key}","idempotency_key":"{key}","legs":[{legs}]}}"#
+            ),
+        );
+        ok(
+            book,
+            &["post", "--intent", &intent, "--evidence", ev, "--json"],
+        );
+    };
+    let rent = r#"{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}"#;
+    let sale = r#"{"side":"debit","account":"1000","amount":"25.00 USD"},{"side":"credit","account":"4000","amount":"25.00 USD"}"#;
+    let open = |book: &Path, name: &str| -> String {
+        ok(book, &["book", "create", "--name", name, "--json"]);
+        ok(book, &["chart", "import", &chart, "--json"]);
+        ok(
+            book,
+            &["period", "create", "--fiscal-year", "2026", "--json"],
+        );
+        ok(book, &["period", "open", "FY2026-P03", "--json"]);
+        source_doc(&dir, book)
+    };
+    let book = dir.join("book");
+    let ev = open(&book, "Verify Co");
+    post(&book, &ev, "rent-1", "2026-03-15", rent);
+    post(&book, &ev, "sale-1", "2026-03-20", sale);
+
+    // Every format verifies at its coordinate, with what its reader re-reads.
+    let mut exported = Vec::new();
+    for (format, name, reread) in [
+        ("ads", "ads", "journal"),
+        ("saft", "export.saft.xml", "journal"),
+        ("csv-gl", "export.csv", "journal"),
+        ("beancount", "export.beancount", "balances"),
+        ("hledger", "export.hledger", "balances"),
+        ("ndjson", "export.ndjson", "framing"),
+        ("xbrl", "export.xbrl", "coordinate"),
+    ] {
+        let path = dir.join(name).display().to_string();
+        ok(
+            &book,
+            &[
+                "export",
+                format,
+                "--period",
+                "FY2026-P03",
+                "--out",
+                &path,
+                "--json",
+            ],
+        );
+        let out = ok(&book, &["verify", "export", format, &path, "--json"]);
+        assert_eq!(field(&out, "event"), Some("export_verified"), "{out}");
+        assert_eq!(field(&out, "format"), Some(format), "{out}");
+        assert_eq!(field(&out, "reread"), Some(reread), "{out}");
+        assert_eq!(field(&out, "entries"), Some("2"), "{out}");
+        assert_eq!(
+            field(&out, "effective_through"),
+            Some("2026-03-31"),
+            "{out}"
+        );
+        exported.push((format, path));
+    }
+
+    // The book moves on; each export still verifies at its own coordinate.
+    post(&book, &ev, "rent-2", "2026-03-25", rent);
+    for (format, path) in &exported {
+        let out = ok(&book, &["verify", "export", format, path, "--json"]);
+        assert_eq!(field(&out, "entries"), Some("2"), "{format}: {out}");
+    }
+
+    // Planted: a tampered amount, a byte the reader tolerates, and another
+    // book's export, each a verification failure naming what failed.
+    let csv = dir.join("export.csv");
+    let tampered = std::fs::read_to_string(&csv)?.replacen("25.00", "26.00", 1);
+    let tampered = write(&dir, "tampered.csv", &tampered);
+    let padded = format!(
+        "{}\n",
+        std::fs::read_to_string(dir.join("export.beancount"))?
+    );
+    let padded = write(&dir, "padded.beancount", &padded);
+    let other = dir.join("other");
+    let other_ev = open(&other, "Other Co");
+    post(&other, &other_ev, "rent-1", "2026-03-15", rent);
+    post(&other, &other_ev, "sale-1", "2026-03-20", sale);
+    let foreign = dir.join("foreign.csv").display().to_string();
+    ok(
+        &other,
+        &[
+            "export",
+            "csv-gl",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            &foreign,
+            "--json",
+        ],
+    );
+    for (what, format, path, says) in [
+        ("tampered amount", "csv-gl", tampered.as_str(), "re-read"),
+        (
+            "appended blank line",
+            "beancount",
+            padded.as_str(),
+            "differs",
+        ),
+        (
+            "another book",
+            "csv-gl",
+            foreign.as_str(),
+            "not this book's",
+        ),
+    ] {
+        let (code, out, err) = fa(Some(&book), &["verify", "export", format, path, "--json"]);
+        assert_eq!(code, 8, "{what}: {out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("error"), "{what}: {out}");
+        assert!(out.contains(says), "{what}: {out}");
+    }
+    let path = exported[2].1.as_str();
+    for args in [
+        vec!["verify", "export", "pdf", path, "--json"],
+        vec!["verify", "export", "ads", "-", "--json"],
+        vec!["verify", "export", "csv-gl", "--json"],
+        vec![
+            "verify",
+            "export",
+            "csv-gl",
+            path,
+            "--as-known-at",
+            "1",
+            "--json",
+        ],
+    ] {
+        let (code, out, _) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "{args:?}: {out}");
+    }
+    Ok(())
+}
+
 /// Plan §7.4 `AS ORIGINALLY REPORTED`: a period's reads pin to its first
 /// Lock (no StatementIssuance is journaled yet), never its first Close and
 /// never HEAD. A period with no Lock refuses (FA-REF-161) rather than
@@ -8062,6 +8226,16 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["export", "csv-gl", "--period", "FY2026-P03"]).0,
         0
     );
+    let gl = dir.join("events-gl.csv").display().to_string();
+    assert_eq!(
+        run(
+            true,
+            &["export", "csv-gl", "--period", "FY2026-P03", "--out", &gl]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["verify", "export", "csv-gl", &gl]).0, 0);
     let office = write(
         &dir,
         "office.json",

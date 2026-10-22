@@ -2407,7 +2407,8 @@ enum HostPath {
     /// An input file of `fa document import run`.
     ImportRun,
     /// An input file: a positional chart, account, party, instrument, entity,
-    /// statement, document or certificate, or a saved-certificate source flag
+    /// statement, document, certificate or export (a file, or an ADS package
+    /// directory), or a saved-certificate source flag
     /// (`--before-certificate`, `--after-certificate`, `--from-diff`,
     /// `--from-source`, `--aging-certificate`, `--control-certificate`).
     Input,
@@ -2503,6 +2504,8 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         | ("certificate", Some("status"))
         | ("finding", Some("replay")) => args.positional.get(2),
         ("replay", _) => args.positional.get(1),
+        // The exported file, or the ADS package directory.
+        ("verify", Some("export")) => args.positional.get(3),
         _ => None,
     };
     if let Some(input) = input {
@@ -13348,6 +13351,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     match target {
         Some("book") => verify_book(ctx, args),
+        Some("export") => crate::export::verify_export(ctx, args),
         Some("fx-conversion") => verify_fx_conversion(ctx, args),
         Some("accumulator") => notary::verify_accumulator(ctx, args),
         Some("close") => crate::closing::verify_close(ctx, args),
