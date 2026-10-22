@@ -1511,6 +1511,21 @@ impl Book {
         )))
     }
 
+    /// File the Lantern finding `finding` in `engagement`'s index, once.
+    pub fn file_finding(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        finding: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::FindingFiled> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.file_finding(
+            &purposes, capability, engagement, finding, effective_date, idempotency_key,
+        )))
+    }
+
     /// Journal `engagement`'s documentation completion, once (AS 1215.15).
     pub fn complete_documentation(
         &mut self,

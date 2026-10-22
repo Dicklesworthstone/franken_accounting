@@ -7654,6 +7654,14 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["finding", "show", &selected]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &["engagement", "file", "events-next", "--finding", &selected]
+        )
+        .0,
+        0
+    );
     let (code, out) = run(
         true,
         &[
