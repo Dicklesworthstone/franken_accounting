@@ -226,7 +226,7 @@ impl BankImportManifest {
             return Err(r.invalid("bank_import.version"));
         }
         let major = r.u16("bank_import.major")?;
-        if !matches!(major, 1 | 2 | 3) || r.u16("bank_import.minor")? != IMPORT_MINOR {
+        if !matches!(major, 1..=3) || r.u16("bank_import.minor")? != IMPORT_MINOR {
             return Err(r.invalid("bank_import.version"));
         }
         let book_id = Id128(r.fixed("bank_import.book")?);
