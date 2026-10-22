@@ -397,10 +397,13 @@ fn circular_flow_budget_refuses_inside_search_without_partial_output_or_head_cha
     bounded.push("11");
     let sufficient = ok(&path, &bounded);
     assert_eq!(
-        data(&sufficient[0]).get("findings_digest"),
-        result.get("findings_digest")
+        text(data(&sufficient[0]), "findings_digest"),
+        text(result, "findings_digest")
     );
-    assert_eq!(data(&sufficient[0]).get("work"), result.get("work"));
+    assert_eq!(
+        data(&sufficient[0]).get("work").unwrap(),
+        result.get("work").unwrap()
+    );
     assert_eq!(head(), before);
 }
 
