@@ -605,7 +605,7 @@ mod tests {
     fn sparse_inputs_cannot_request_an_unbounded_dense_output() {
         let mut source = source();
         source.accounts = (1..=500).map(account).collect();
-        source.units = (1..=MAX_UNITS as u32).collect();
+        source.units = (1..=u32::try_from(MAX_UNITS).unwrap()).collect();
         assert!(matches!(evaluate(&source), Err(StatementError::Input(_))));
     }
 }
