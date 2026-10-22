@@ -1535,7 +1535,7 @@ mod tests {
         Transfer {
             entry,
             day: 1,
-            recorded: entry as u64,
+            recorded: u64::try_from(entry).unwrap(),
             from,
             to,
             amount,
