@@ -11998,17 +11998,7 @@ fn solvency_contra_assets_have_a_certified_replayable_deficit() -> std::io::Resu
     );
     let deducted = ok(&["post", "--intent", &depreciation, "--evidence", &evidence]);
     let deduction_vid = field(&deducted, "vid").unwrap().to_owned();
-    let certified = ok(&[
-        "procedure",
-        "run",
-        "solvency.balance_sheet_test",
-        "--effective-through",
-        "2026-03-31",
-        "--certify",
-    ]);
-    let lines: Vec<_> = certified.lines().collect();
-    assert_eq!(lines.len(), 2, "{certified}");
-    let result = doc(lines[0]);
+    let result = doc(&ok(&procedure));
     assert_eq!(int(&result, "version"), Some(2));
     assert_eq!(int(&result, "finding_count"), Some(1));
     let finding = &arr(&result, "findings")[0];
@@ -12021,7 +12011,17 @@ fn solvency_contra_assets_have_a_certified_replayable_deficit() -> std::io::Resu
         })
     );
     assert!(text(finding, "narrative").contains("asset_basis=2000"));
-    let retained = text(&doc(lines[1]), "oid").to_owned();
+    let recorded = doc(&ok(&[
+        "finding",
+        "record",
+        "solvency.balance_sheet_test",
+        "--effective-through",
+        "2026-03-31",
+    ]));
+    let retained = text(&recorded, "certificate").to_owned();
+    assert_eq!(int(&recorded, "finding_count"), Some(1));
+    let saved = ok(&["replay", &format!("C:{retained}")]);
+    assert_eq!(doc(&saved), result);
 
     // A later transaction removes today's deficit, without changing the
     // historical method, coordinate, exact finding or certificate replay.
@@ -12033,7 +12033,7 @@ fn solvency_contra_assets_have_a_certified_replayable_deficit() -> std::io::Resu
     ok(&["post", "--intent", &recovery, "--evidence", &evidence]);
     assert_eq!(int(&doc(&ok(&procedure)), "finding_count"), Some(0));
     let replayed = ok(&["replay", &format!("C:{retained}")]);
-    assert_eq!(replayed.trim_end(), lines[0]);
+    assert_eq!(replayed, saved);
     Ok(())
 }
 
