@@ -2764,7 +2764,7 @@ mod tests {
         assert_eq!(fx_laws.application_difference_kinds.len(), 5);
 
         let formats = Formats::embedded().expect("formats.toml");
-        assert_eq!(formats.rows.len(), 19);
+        assert_eq!(formats.rows.len(), 22);
     }
 
     #[test]

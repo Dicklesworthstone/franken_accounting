@@ -255,4 +255,41 @@ certified_coordinate = true
 plan_ref = "§11.8, §13.2"
 summary = "EDRM XML v1.2 discovery load-file writer with Bates metadata, confidentiality designations, privilege/redaction tags, and BLAKE3 file hashes."
 
+[[format]]
+id = 20
+name = "iso20022_camt052"
+kind = "bank_statement"
+direction = "import"
+mime = "application/xml"
+extension = "xml"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§9.5"
+summary = "ISO 20022 camt.052 bank-to-customer account report (intraday) XML parser with the camt.053 reader's sequence and balance continuity checks."
 
+[[format]]
+id = 21
+name = "swift_mt940"
+kind = "bank_statement"
+direction = "import"
+mime = "text/plain"
+extension = "sta"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§9.5, §15.3"
+summary = "SWIFT MT940 customer statement parser (:20:/:21:/:25:/:28C:/:60F:/:61:/:86:/:62F:/:64:/:65:) with YYMMDD and MMDD entry dates and C/D/RC/RD marks, plus the original pipe-separated ISO-date profile; opening/closing continuity validated."
+
+[[format]]
+id = 22
+name = "bank_csv_v1"
+kind = "bank_statement"
+direction = "import"
+mime = "text/csv"
+extension = "csv"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§9.5"
+summary = "The fixed twelve-column bank statement CSV (sequence_number, instrument_id, currency, statement_date, opening and closing balance, booking and value date, CRDT/DBIT side, amount, counterparty, reference) with opening/closing continuity validated."

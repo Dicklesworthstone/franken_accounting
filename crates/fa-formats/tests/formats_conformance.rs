@@ -239,7 +239,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
 #[test]
 fn embedded_formats_registry_matches_fa_formats_surface() {
     let formats = Formats::embedded().expect("registries/formats.toml must parse");
-    assert_eq!(formats.rows.len(), 19);
+    assert_eq!(formats.rows.len(), 22);
     assert!(
         formats
             .by_name("aicpa_ads_gl_v2")
@@ -256,6 +256,22 @@ fn embedded_formats_registry_matches_fa_formats_surface() {
         formats.by_name("hledger_journal").unwrap().oracle_tool,
         "hledger"
     );
+    // Every bank statement reader `fa bank import --bank-format` reaches has
+    // its row (fa-d22b): the names are the readers' own format_name values.
+    for name in [
+        "iso20022_camt053",
+        "iso20022_camt052",
+        "bai2_v2",
+        "ofx_qbo_v2",
+        "swift_mt940",
+        "bank_csv_v1",
+    ] {
+        let row = formats
+            .by_name(name)
+            .unwrap_or_else(|| panic!("{name} has no formats.toml row"));
+        assert_eq!(row.kind, "bank_statement", "{name}");
+        assert_eq!(row.direction, "import", "{name}");
+    }
 }
 
 #[test]
