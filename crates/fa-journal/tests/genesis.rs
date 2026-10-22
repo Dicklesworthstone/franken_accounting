@@ -10752,6 +10752,71 @@ fn year_end_close_native_preparation_cannot_miss_an_appended_contribution() {
 }
 
 #[test]
+fn aggregate_plan_invalidated_by_intervening_metadata_without_rebasing() {
+    let (mut h, equity) = year_end_close_fixture();
+    h.post(h.request(h.invoice(20_000, b"aggregate-plan-income"), &["post"]))
+        .unwrap();
+    let calculation = year_end_close_prepare(&h);
+    let proposal = year_end_close_proposal(&h, &calculation, b"aggregate-exact-prefix");
+    let capability = Capability::embedded(PRINCIPAL, &["read", "post", "close"]).unwrap();
+    let plan = h
+        .post_plan(h.request(proposal.clone(), &["read", "post", "close"]))
+        .unwrap();
+    let basis = plan.certificate().snapshot_seq;
+    let entry = entry_vid(
+        h.book.book_id,
+        &PRINCIPAL.0.to_le_bytes(),
+        b"aggregate-exact-prefix",
+    );
+
+    // The same planted pure Certificate metadata as the point-only plan's
+    // positive control. It changes no accounting source or point witness.
+    let mut metadata = fgdb::WriteBatch::new(relation::IN_BOOK);
+    metadata.create_vertex(
+        VId(0xDEAD_BEEF_CAFE_0010),
+        vec![fa_model::symbols::label::CERTIFICATE],
+        vec![(
+            property::FA_DIGEST,
+            CanonicalScalar::bytes(vec![0xAC; 32]).unwrap(),
+        )],
+    );
+    h.write_raw(metadata);
+    let before = h.db.frontier().unwrap();
+    assert_eq!(before.0, basis.0 + 1);
+    let refusal = h.publish_plan(plan, &capability).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
+    assert!(refusal.message.contains(&basis.0.to_string()));
+    assert!(refusal.message.contains(&before.0.to_string()));
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert!(read_entry(&h.db, entry).unwrap().is_none());
+    assert_eq!(year_end_close_net(&h, h.revenue, before), -20_000);
+
+    // A fresh committing basis can reuse the unchanged, fully revalidated
+    // economic proposal. The stale artifact itself is never rebased.
+    let fresh = h
+        .post_plan(h.request(proposal, &["read", "post", "close"]))
+        .unwrap();
+    assert_eq!(fresh.certificate().snapshot_seq, before);
+    let posted = h.publish_plan(fresh.clone(), &capability).unwrap();
+    assert!(matches!(posted, Posted::Committed { .. }));
+    assert_eq!(posted.recorded_at().0, before.0 + 1);
+    assert_eq!(year_end_close_net(&h, h.revenue, posted.recorded_at()), 0);
+    assert_eq!(
+        year_end_close_net(&h, equity, posted.recorded_at()),
+        -20_000
+    );
+
+    h.post(h.request(h.invoice(100, b"after-aggregate-plan"), &["post"]))
+        .unwrap();
+    let retry_head = h.db.frontier().unwrap();
+    let retry = h.publish_plan(fresh, &capability).unwrap();
+    assert!(matches!(retry, Posted::AlreadyRecorded { .. }));
+    assert_eq!(retry.entry_ref(), posted.entry_ref());
+    assert_eq!(retry.recorded_at(), posted.recorded_at());
+    assert_eq!(h.db.frontier().unwrap(), retry_head);
+}
+
+#[test]
 fn year_end_close_closed_reclose_survives_review_then_exact_approval() {
     let (mut h, _) = year_end_close_fixture();
     h.post(h.request(h.invoice(20_000, b"closed-income"), &["post"]))
