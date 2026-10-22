@@ -1023,6 +1023,10 @@ name = "book checkpoint"
 expands = ["checkpoint", "create"]
 
 [[alias]]
+name = "checkpoint sign"
+expands = ["checkpoint", "create"]
+
+[[alias]]
 name = "chart open-account"
 expands = ["chart", "open"]
 
