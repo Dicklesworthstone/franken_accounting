@@ -82,6 +82,39 @@ fn all_additional_procedures_round_trip_with_complete_native_populations() {
 }
 
 #[test]
+fn signed_solvency_certifies_its_method_and_refuses_the_old_version() {
+    let mut f = Fixture::new(94);
+    let (source, _) = f.post(1, "1010", "6000", 20, false);
+    let before = f.head();
+    let certified = f.certify(&f.request("solvency.balance_sheet_test", source));
+    assert_eq!(certified.report.version, 2);
+    assert_eq!(certified.report.findings.len(), 1);
+    assert_eq!(certified.report.findings[0].statistic.value, 20);
+    let certificate =
+        ProcedureCertificate::decode(&certified.certificate.canonical_bytes().unwrap()).unwrap();
+    assert_eq!(
+        f.book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &certificate)
+            .unwrap()
+            .unwrap(),
+        certified.report
+    );
+    let mut old_method = certificate;
+    old_method.report.version = 1;
+    let refusal = old_method.request().unwrap_err();
+    assert!(
+        refusal
+            .message
+            .contains("no complete registered native certificate closure")
+    );
+    assert_eq!(
+        f.head(),
+        before,
+        "certification, replay and refusal never publish"
+    );
+}
+
+#[test]
 fn independent_attestations_change_results_but_not_the_saved_historical_run() {
     let mut f = Fixture::new(92);
     let (source, _) = f.post(1, "3000", "1000", 100, false);

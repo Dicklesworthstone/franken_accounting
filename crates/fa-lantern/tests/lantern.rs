@@ -4599,12 +4599,7 @@ fn solvency_balance_sheet_preserves_signed_basis_and_ignores_register_assertions
     ];
     h.post(&funding);
     let before_deduction = h.db.frontier().unwrap();
-    let deduction = h.post(&Spec::simple(
-        day(2026, 4, 20),
-        "6000",
-        "1010",
-        8_000,
-    ));
+    let deduction = h.post(&Spec::simple(day(2026, 4, 20), "6000", "1010", 8_000));
     let procedure = SolvencyBalanceSheetTest::new().unwrap();
     let mut snapshot = h.snapshot();
     let actual = run_over(&snapshot, &h.book, &procedure).unwrap();
@@ -4612,15 +4607,26 @@ fn solvency_balance_sheet_preserves_signed_basis_and_ignores_register_assertions
     assert_eq!(actual.findings[0].statistic.value, 3_000);
     assert!(actual.findings[0].cites.contains(&Cite::Entry(deduction)));
     assert_eq!(
-        run(&h.db, &h.book, Some(before_deduction), Some(day(2026, 4, 30)), &procedure)
-            .unwrap()
-            .findings
-            .len(),
+        run(
+            &h.db,
+            &h.book,
+            Some(before_deduction),
+            Some(day(2026, 4, 30)),
+            &procedure
+        )
+        .unwrap()
+        .findings
+        .len(),
         0,
         "a later-recorded deduction cannot change the earlier snapshot"
     );
     snapshot.coordinate.effective_through = Some(day(2026, 4, 15));
-    assert!(run_over(&snapshot, &h.book, &procedure).unwrap().findings.is_empty());
+    assert!(
+        run_over(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .findings
+            .is_empty()
+    );
     snapshot.coordinate.effective_through = Some(day(2026, 4, 30));
 
     // An ordinary reconciliation assertion is not a valuation instruction.
@@ -4667,15 +4673,157 @@ fn solvency_balance_sheet_preserves_signed_basis_and_ignores_register_assertions
             .unwrap(),
     );
     assert_eq!(
-        run_over(&snapshot, &h.book, &haircut).unwrap().findings[0].statistic.value,
+        run_over(&snapshot, &h.book, &haircut).unwrap().findings[0]
+            .statistic
+            .value,
         4_000,
         "a 50% haircut applies to the net asset basis of 20, leaving 10 against 50"
     );
-    assert!(witness::determinism(&snapshot, &h.book, &procedure).unwrap().deterministic());
+    assert!(
+        witness::determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
 
     // A debit contra-liability reduces the same signed liability basis.
     h.post(&Spec::simple(day(2026, 4, 21), "2000", "4000", 4_000));
-    assert!(h.run(&procedure).findings.is_empty(), "assets 20 exceed net debt 10");
+    assert!(
+        h.run(&procedure).findings.is_empty(),
+        "assets 20 exceed net debt 10"
+    );
+}
+
+#[test]
+fn solvency_signed_basis_keeps_units_separate_and_checks_amount_boundaries() {
+    use fa_lantern::cutoff::SolvencyBalanceSheetTest;
+
+    let mut h = harness();
+    let usd = h.usd;
+    let jpy = h.book.units.lookup("JPY").unwrap();
+    // These are isolated procedure-input controls, not kernel-admission claims.
+    let mut evaluate = |rows: Vec<Vec<(&str, Side, UnitId, i128)>>, haircut| {
+        let mut snapshot = h.snapshot();
+        snapshot.entries = rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, legs)| {
+                make_snapshot_entry(
+                    &mut h,
+                    VId(90_000 + i as u128),
+                    CommitSeq(100 + i as u64),
+                    day(2026, 4, 1),
+                    "FY2026-P04",
+                    EntryClass::ORIGINAL,
+                    legs,
+                    Vec::new(),
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                )
+            })
+            .collect();
+        let procedure = SolvencyBalanceSheetTest::with(
+            Params::defaults(SolvencyBalanceSheetTest::ID)
+                .unwrap()
+                .set("fair_value_haircut_bps", haircut)
+                .unwrap(),
+        );
+        run_over(&snapshot, &h.book, &procedure)
+    };
+    let separate = evaluate(
+        vec![
+            vec![
+                ("6000", Side::Debit, usd, 50),
+                ("2000", Side::Credit, usd, 50),
+            ],
+            vec![
+                ("1000", Side::Debit, jpy, 100),
+                ("4000", Side::Credit, jpy, 100),
+            ],
+        ],
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        separate.findings.len(),
+        1,
+        "JPY assets cannot settle USD debt"
+    );
+    assert_eq!(separate.findings[0].statistic.value, 50);
+    assert_eq!(separate.findings[0].statistic.scale, 2);
+    assert_eq!(separate.findings[0].statistic.population, 1);
+    let negative = vec![vec![
+        ("6000", Side::Debit, usd, 20),
+        ("1010", Side::Credit, usd, 20),
+    ]];
+    for haircut in [0, 5_000, 10_000] {
+        assert_eq!(
+            evaluate(negative.clone(), haircut).unwrap().findings[0]
+                .statistic
+                .value,
+            20,
+            "a haircut must never improve a negative asset basis"
+        );
+    }
+    let rounded = evaluate(
+        vec![vec![
+            ("1000", Side::Debit, usd, 3),
+            ("2000", Side::Credit, usd, 3),
+        ]],
+        3_333,
+    )
+    .unwrap();
+    assert_eq!(
+        rounded.findings[0].statistic.value, 1,
+        "3 * 6667 / 10000 truncates to 2"
+    );
+    let overflow = evaluate(
+        vec![
+            vec![
+                ("1000", Side::Debit, usd, i128::MAX),
+                ("4000", Side::Credit, usd, i128::MAX),
+            ],
+            vec![
+                ("1000", Side::Debit, usd, 1),
+                ("4000", Side::Credit, usd, 1),
+            ],
+        ],
+        0,
+    );
+    assert!(matches!(
+        overflow,
+        Err(LanternError::Overflow("solvency balance sheet fold"))
+    ));
+    let deficit_overflow = evaluate(
+        vec![
+            vec![
+                ("6000", Side::Debit, usd, i128::MAX),
+                ("1010", Side::Credit, usd, i128::MAX),
+            ],
+            vec![
+                ("6000", Side::Debit, usd, 1),
+                ("2000", Side::Credit, usd, 1),
+            ],
+        ],
+        0,
+    );
+    assert!(matches!(
+        deficit_overflow,
+        Err(LanternError::Overflow("solvency deficit"))
+    ));
+    let liability = vec![
+        ("6000", Side::Debit, usd, 1),
+        ("2000", Side::Credit, usd, 1),
+    ];
+    let at_cap = evaluate(vec![liability.clone(); fa_lantern::MAX_CITES - 1], 0).unwrap();
+    assert_eq!(at_cap.findings[0].cites.len(), fa_lantern::MAX_CITES);
+    assert_eq!(at_cap.findings[0].statistic.value, 4_095);
+    assert!(matches!(
+        evaluate(vec![liability; fa_lantern::MAX_CITES], 0),
+        Err(LanternError::Parameter { name, message, .. })
+            if name == "scope" && message.contains("no contributing account or entry is omitted")
+    ));
 }
 
 #[test]

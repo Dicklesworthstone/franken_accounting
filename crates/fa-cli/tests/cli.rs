@@ -11956,6 +11956,87 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
     Ok(())
 }
 
+#[test]
+fn solvency_contra_assets_have_a_certified_replayable_deficit() -> std::io::Result<()> {
+    let dir = tmp("solvency-contra-assets")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Synthetic signed solvency fixture",
+    ]);
+    ok(&["chart", "import", "--template", "us-gaap-smb"]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let evidence = source_doc(&dir, &book);
+    let funding = write(
+        &dir,
+        "funding.json",
+        r#"{"effective_date":"2026-03-01","idempotency_key":"funding","legs":[{"side":"debit","account":"1510","amount":"100.00 USD"},{"side":"credit","account":"2000","amount":"50.00 USD"},{"side":"credit","account":"3000","amount":"50.00 USD"}]}"#,
+    );
+    ok(&["post", "--intent", &funding, "--evidence", &evidence]);
+    let procedure = [
+        "procedure",
+        "run",
+        "solvency.balance_sheet_test",
+        "--effective-through",
+        "2026-03-31",
+    ];
+    assert_eq!(int(&doc(&ok(&procedure)), "finding_count"), Some(0));
+    let depreciation = write(
+        &dir,
+        "depreciation.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"depreciation","legs":[{"side":"debit","account":"6000","amount":"80.00 USD"},{"side":"credit","account":"1590","amount":"80.00 USD"}]}"#,
+    );
+    let deducted = ok(&["post", "--intent", &depreciation, "--evidence", &evidence]);
+    let deduction_vid = field(&deducted, "vid").unwrap().to_owned();
+    let certified = ok(&[
+        "procedure",
+        "run",
+        "solvency.balance_sheet_test",
+        "--effective-through",
+        "2026-03-31",
+        "--certify",
+    ]);
+    let lines: Vec<_> = certified.lines().collect();
+    assert_eq!(lines.len(), 2, "{certified}");
+    let result = doc(lines[0]);
+    assert_eq!(int(&result, "version"), Some(2));
+    assert_eq!(int(&result, "finding_count"), Some(1));
+    let finding = &arr(&result, "findings")[0];
+    let statistic = finding.get("statistic").unwrap();
+    assert_eq!(text(statistic, "name"), "insolvency_deficit");
+    assert_eq!(int(statistic, "value"), Some(3_000));
+    assert!(
+        arr(finding, "cites").iter().any(|cite| {
+            cite.get("entry").and_then(Json::as_str) == Some(deduction_vid.as_str())
+        })
+    );
+    assert!(text(finding, "narrative").contains("asset_basis=2000"));
+    let retained = text(&doc(lines[1]), "oid").to_owned();
+
+    // A later transaction removes today's deficit, without changing the
+    // historical method, coordinate, exact finding or certificate replay.
+    let recovery = write(
+        &dir,
+        "recovery.json",
+        r#"{"effective_date":"2026-03-20","idempotency_key":"recovery","legs":[{"side":"debit","account":"2200","amount":"40.00 USD"},{"side":"credit","account":"3000","amount":"40.00 USD"}]}"#,
+    );
+    ok(&["post", "--intent", &recovery, "--evidence", &evidence]);
+    assert_eq!(int(&doc(&ok(&procedure)), "finding_count"), Some(0));
+    let replayed = ok(&["replay", &format!("C:{retained}")]);
+    assert_eq!(replayed.trim_end(), lines[0]);
+    Ok(())
+}
+
 /// `fa procedure list|run`: Lantern over a persisted book through the CLI
 /// (plan §11, Appendix D). The planted round amount is found and cited by
 /// its posted vid; a parameter override changes the result; the registry
