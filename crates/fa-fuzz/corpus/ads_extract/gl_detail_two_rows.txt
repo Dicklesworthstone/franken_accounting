@@ -1,0 +1,3 @@
+Journal_ID|Journal_Entry_Line_Number|Effective_Date|Recorded_Seq|Entry_Class|GL_Account_Number|Debit_Credit_Indicator|Amount|Transaction_Currency|Unit_Scale|JE_Header_Description|Migrated_From|Line_Description
+00000000000000000000000000000001|1|2026-03-15|7|1|1000|D|15.00|USD|2|Seed||
+00000000000000000000000000000001|2|2026-03-15|7|1|4000|C|15.00|USD|2|Seed||
