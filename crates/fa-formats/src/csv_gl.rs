@@ -426,6 +426,36 @@ fn csv_clean(s: &str) -> String {
     s.replace([',', '\n', '\r'], " ")
 }
 
+/// A JSON string body (RFC 8259 §7): backslash, quote and every control
+/// character escaped, so one NDJSON record stays one line of valid JSON.
 fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_escape;
+
+    /// A control character in a streamed name never splits the record or
+    /// leaves invalid JSON; ordinary text is unchanged byte for byte.
+    #[test]
+    fn json_strings_escape_every_control_character() {
+        assert_eq!(json_escape("acme-fy2026-p03"), "acme-fy2026-p03");
+        assert_eq!(json_escape(r#"a"b\c"#), r#"a\"b\\c"#);
+        assert_eq!(json_escape("a\nb\rc\td"), r"a\nb\rc\td");
+        assert_eq!(json_escape("\u{1}\u{1f}"), r"\u0001\u001f");
+        assert!(!json_escape("x\ny\u{0}z").chars().any(char::is_control));
+    }
 }
