@@ -2936,6 +2936,7 @@ fn corpus_snapshot(corpus: &fa_gen::GeneratedCorpus) -> (BookContext, Snapshot, 
 fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
     use fa_gen::{GenConfig, ScenarioKind, generate};
 
+    let mut witnessed_anywhere = BTreeSet::new();
     for scenario in ScenarioKind::ALL {
         let corpus = generate(GenConfig::new(scenario, 7));
         let (book, snapshot, posted_vids) = corpus_snapshot(&corpus);
@@ -2987,14 +2988,31 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
         // §11.1, "complexity bound witness-locked"). A procedure this corpus
         // cannot run (a declared input it lacks, or native bank states only
         // the bank-aware entry point supplies) is refused before it reports
-        // and is listed here, never passed silently.
+        // and is listed here, never passed silently. The tracing procedures
+        // declare an account and a source entry by handle: the corpus
+        // supplies Operating Cash (1000) and the first entry debiting it.
+        let traced = account_vid(book.book_id, "1000");
+        let inputs = fa_lantern::catalog::Inputs {
+            account: Some(traced),
+            source: snapshot
+                .entries
+                .iter()
+                .find(|e| {
+                    e.entry
+                        .proposal
+                        .legs
+                        .iter()
+                        .any(|l| l.account_ref == traced && l.side == Side::Debit)
+                })
+                .map(|e| e.vid),
+        };
         let mut witnessed = Vec::new();
         let mut not_run = Vec::new();
         for row in fa_lantern::catalog::registered().unwrap() {
             let built = match fa_lantern::catalog::build(
                 &row.id,
                 Params::defaults(&row.id).unwrap(),
-                fa_lantern::catalog::Inputs::default(),
+                inputs,
             ) {
                 Ok(built) => built,
                 Err(LanternError::Parameter { name, .. }) => {
@@ -3017,7 +3035,7 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
                 Err(LanternError::Parameter { name, .. }) => {
                     not_run.push(format!("{}: {name}", row.id));
                 }
-                // fa-kxc4: the corpus declares no account roles, so a
+                // fa-kxc4: no account of this corpus holds the role, so the
                 // role-selected procedure is refused before it reports.
                 Err(LanternError::RoleUnassigned { role, .. }) => {
                     not_run.push(format!("{}: role {role}", row.id));
@@ -3034,7 +3052,47 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
             "{scenario}: only {} procedures witnessed; not run: {not_run:?}",
             witnessed.len()
         );
+        witnessed_anywhere.extend(witnessed);
     }
+
+    // fa-1tvm: every registered procedure is witnessed on some corpus,
+    // except exactly these, which no fa-gen corpus can run. A procedure that
+    // stops running (or a listed one that starts) fails here, so the list is
+    // the honest gap.
+    const UNWITNESSED: &[(&str, &str)] = &[
+        (
+            "jet.intercompany_unmatched",
+            "no fa-gen chart account holds the intercompany role",
+        ),
+        (
+            "jet.suspense_aging",
+            "no fa-gen chart account holds the suspense role",
+        ),
+        (
+            "recon.bank_statement_drift",
+            "reads native bank states, which only the bank-aware entry point supplies",
+        ),
+        (
+            "recon.intercompany",
+            "no fa-gen chart account holds the intercompany role",
+        ),
+    ];
+    let unwitnessed: Vec<String> = fa_lantern::catalog::registered()
+        .unwrap()
+        .into_iter()
+        .map(|row| row.id)
+        .filter(|id| !witnessed_anywhere.contains(id))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let expected: Vec<String> = UNWITNESSED
+        .iter()
+        .map(|(id, _)| (*id).to_string())
+        .collect();
+    assert_eq!(
+        unwitnessed, expected,
+        "procedures with no complexity witness"
+    );
 }
 
 /// fa-jt7p defects 4 & 7:
