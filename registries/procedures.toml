@@ -1204,14 +1204,14 @@ default = 10
 meaning = "Maximum civil days between overlapping counterparty receipts/applications in a lapping sequence."
 
 [[procedure]]
-id = "recon.book_to_book"
+id = "recon.attested_register_compare"
 version = 1
 claim = "invariant"
 evidence = "FA-EVID-L43"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Exact reconciliation between Instrument vertices that mirror GL accounts (and RegisterEquals attestations) and the journal fold at the snapshot coordinate: any divergence between a mirrored instrument/attested register cell and the posted account balance is an invariant violation."
+summary = "Exact reconciliation between Instrument vertices that mirror GL accounts (and RegisterEquals attestations) and the journal fold at the snapshot coordinate: any divergence between a mirrored instrument/attested register cell and the posted account balance is an invariant violation. One book against what was attested about it; plan §12.2's recon.book_to_book (book against book, every difference explained by rule version) waits for multi-book (fa-259c). Registered as recon.book_to_book before fa-kxc4."
 
 [[procedure]]
 id = "recon.bank_statement_drift"
@@ -1503,14 +1503,14 @@ default = 0
 meaning = "Explicit distributable cash pool in unit mantissa (0 = use the book's ending positive cash/asset balance in that unit)."
 
 [[procedure]]
-id = "damages.but_for"
+id = "damages.attested_baseline"
 version = 1
 claim = "statistical"
 evidence = "FA-EVID-L59"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "But-for damages schedule (plan §11.6): computes per-account and per-period damages deltas between actual live postings and counterfactual baseline expectations (RegisterEquals baseline attestations, superseded/restated original folds, or scenario scratch-book snapshots)."
+summary = "Per-account and per-period deltas between actual live postings and a baseline taken from RegisterEquals attestations or superseded/restated original folds. Plan §11.6's damages.but_for (the certified delta between a counterfactual scenario and trunk) is fa scenario diff --certify. Registered as damages.but_for before fa-kxc4."
 effective_through = "optional"
 
 

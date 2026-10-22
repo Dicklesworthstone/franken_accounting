@@ -14,11 +14,11 @@ use crate::aging::{InventoryAging, OpenItemsAging};
 use crate::assertion_drift::AssertionDrift;
 use crate::bank_reconciliation::BankStatementDrift;
 use crate::cutoff::{
-    ConfirmCoverage, DamagesButFor, DistributionProRata, DistributionRisingTide,
+    ConfirmCoverage, DamagesAttestedBaseline, DistributionProRata, DistributionRisingTide,
     ExpenseCapitalization, LookbackFraudulentTransfer, LookbackPreferences, PartyMasterChanges,
-    PayrollGhost, PeriodBoundary, PonziNetInvestment, ReconBookToBook, ReconIntercompany,
-    ReconLapping, ReversalPatterns, SolvencyBalanceSheetTest, SolvencyCashFlowTest,
-    SubsequentEvents, UnrecordedLiabilities,
+    PayrollGhost, PeriodBoundary, PonziNetInvestment, ReconAttestedRegisterCompare,
+    ReconIntercompany, ReconLapping, ReversalPatterns, SolvencyBalanceSheetTest,
+    SolvencyCashFlowTest, SubsequentEvents, UnrecordedLiabilities,
 };
 use crate::digits::{FirstDigit, FirstTwoDigits, SecondDigit};
 use crate::duplicates::{SameSameDifferent, SameSameSame};
@@ -80,7 +80,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         PeriodBoundary::ID => Box::new(PeriodBoundary::with(params)),
         ReconIntercompany::ID => Box::new(ReconIntercompany::with(params)),
         ReconLapping::ID => Box::new(ReconLapping::with(params)),
-        ReconBookToBook::ID => Box::new(ReconBookToBook::with(params)),
+        ReconAttestedRegisterCompare::ID => Box::new(ReconAttestedRegisterCompare::with(params)),
         BankStatementDrift::ID => Box::new(BankStatementDrift::with(params)),
         AssertionDrift::ID => Box::new(AssertionDrift::with(params)),
         UnrecordedLiabilities::ID => Box::new(UnrecordedLiabilities::with(params)),
@@ -97,7 +97,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         PonziNetInvestment::ID => Box::new(PonziNetInvestment::with(params)),
         DistributionRisingTide::ID => Box::new(DistributionRisingTide::with(params)),
         DistributionProRata::ID => Box::new(DistributionProRata::with(params)),
-        DamagesButFor::ID => Box::new(DamagesButFor::with(params)),
+        DamagesAttestedBaseline::ID => Box::new(DamagesAttestedBaseline::with(params)),
         FirstDigit::ID => Box::new(FirstDigit::with(params)),
         SecondDigit::ID => Box::new(SecondDigit::with(params)),
         FirstTwoDigits::ID => Box::new(FirstTwoDigits::with(params)),

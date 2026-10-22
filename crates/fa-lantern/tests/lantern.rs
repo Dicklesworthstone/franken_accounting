@@ -3940,8 +3940,9 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     };
     use fa_lantern::aging::InventoryAging;
     use fa_lantern::cutoff::{
-        ConfirmCoverage, ExpenseCapitalization, PartyMasterChanges, PayrollGhost, ReconBookToBook,
-        ReconIntercompany, ReconLapping, ReversalPatterns, SubsequentEvents, UnrecordedLiabilities,
+        ConfirmCoverage, ExpenseCapitalization, PartyMasterChanges, PayrollGhost,
+        ReconAttestedRegisterCompare, ReconIntercompany, ReconLapping, ReversalPatterns,
+        SubsequentEvents, UnrecordedLiabilities,
     };
 
     let mut h = harness();
@@ -4384,10 +4385,20 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     assert_eq!(r_lap.findings.len(), 1);
     witness::determinism(&snapshot, &h.book, &ReconLapping::new().unwrap()).unwrap();
 
-    let r_b2b = run_over(&snapshot, &h.book, &ReconBookToBook::new().unwrap()).unwrap();
+    let r_b2b = run_over(
+        &snapshot,
+        &h.book,
+        &ReconAttestedRegisterCompare::new().unwrap(),
+    )
+    .unwrap();
     assert_eq!(r_b2b.findings.len(), 1);
     assert_eq!(r_b2b.findings[0].severity, Severity::Critical);
-    witness::determinism(&snapshot, &h.book, &ReconBookToBook::new().unwrap()).unwrap();
+    witness::determinism(
+        &snapshot,
+        &h.book,
+        &ReconAttestedRegisterCompare::new().unwrap(),
+    )
+    .unwrap();
 
     let r_ul = run_over(&snapshot, &h.book, &UnrecordedLiabilities::new().unwrap()).unwrap();
     assert!(!r_ul.findings.is_empty());
@@ -5055,9 +5066,9 @@ fn fa_y4v_solvency_lookback_ponzi_distribution_and_damages_procedures() {
         Subject,
     };
     use fa_lantern::cutoff::{
-        DamagesButFor, DistributionProRata, DistributionRisingTide, LookbackFraudulentTransfer,
-        LookbackPreferences, PonziNetInvestment, SolvencyBalanceSheetTest, SolvencyCashFlowTest,
-        compute_scenario_but_for_damages,
+        DamagesAttestedBaseline, DistributionProRata, DistributionRisingTide,
+        LookbackFraudulentTransfer, LookbackPreferences, PonziNetInvestment,
+        SolvencyBalanceSheetTest, SolvencyCashFlowTest, compute_scenario_but_for_damages,
     };
     use fa_model::{AccountType, EntryClass, account_vid};
     use fa_policy::Profile;
@@ -5685,10 +5696,10 @@ fn fa_y4v_solvency_lookback_ponzi_distribution_and_damages_procedures() {
     }));
 
     // 7. But-for damages schedule (both single-snapshot and scenario scratch-book comparison)
-    let bf_proc = DamagesButFor::new().unwrap();
+    let bf_proc = DamagesAttestedBaseline::new().unwrap();
     let r_bf = run_over(&snapshot, &h.book, &bf_proc).unwrap();
     assert_eq!(r_bf.findings.len(), 1);
-    assert_eq!(r_bf.findings[0].statistic.name, "but_for_damages_delta");
+    assert_eq!(r_bf.findings[0].statistic.name, "attested_baseline_delta");
     assert_eq!(r_bf.findings[0].statistic.value, 125_000);
     assert!(
         witness::determinism(&snapshot, &h.book, &bf_proc)

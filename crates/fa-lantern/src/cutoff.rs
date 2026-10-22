@@ -333,15 +333,21 @@ impl Procedure for ReconLapping {
     }
 }
 
-/// `recon.book_to_book` (plan §11.4, `FA-EVID-L43`, `claim = "invariant"`):
+/// `recon.attested_register_compare` (`FA-EVID-L43`, `claim = "invariant"`):
 /// exact reconciliation between `RegisterEquals` attestations / mirrored
 /// `Instrument` vertices and the posted journal fold at the snapshot coordinate.
-pub struct ReconBookToBook {
+/// Not plan §12.2's `recon.book_to_book` (one book against another, every
+/// difference explained by rule version), which needs multi-book (fa-259c);
+/// this procedure compares one book with what was attested about it.
+pub struct ReconAttestedRegisterCompare {
     params: Params,
 }
-procedure_boilerplate!(ReconBookToBook, "recon.book_to_book");
+procedure_boilerplate!(
+    ReconAttestedRegisterCompare,
+    "recon.attested_register_compare"
+);
 
-impl Procedure for ReconBookToBook {
+impl Procedure for ReconAttestedRegisterCompare {
     fn id(&self) -> &'static str {
         Self::ID
     }
@@ -399,13 +405,14 @@ impl Procedure for ReconBookToBook {
                     let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                     fold_net = fold_net
                         .checked_add(signed)
-                        .ok_or(LanternError::Overflow("book_to_book fold sum"))?;
+                        .ok_or(LanternError::Overflow("attested_register fold sum"))?;
                     matching_entries.push(e.vid);
                 }
             }
             if fold_net != claim.mantissa {
-                let diff = reconciliation_arithmetic::discrepancy(fold_net, claim.mantissa)
-                    .ok_or(LanternError::Overflow("book_to_book discrepancy magnitude"))?;
+                let diff = reconciliation_arithmetic::discrepancy(fold_net, claim.mantissa).ok_or(
+                    LanternError::Overflow("attested_register discrepancy magnitude"),
+                )?;
                 let mut cites = vec![Cite::Account(claim.account)];
                 if snapshot.periods.contains_key(&claim.period) {
                     cites.push(Cite::Period(claim.period.clone()));
@@ -424,7 +431,7 @@ impl Procedure for ReconBookToBook {
                     Self::ID,
                     Severity::Critical,
                     Statistic {
-                        name: "book_to_book_discrepancy".into(),
+                        name: "attested_register_discrepancy".into(),
                         value: diff,
                         scale,
                         population: population.max(1),
@@ -2765,18 +2772,18 @@ impl Procedure for DistributionProRata {
     }
 }
 
-/// `damages.but_for` (plan §11.6, `FA-EVID-L59`):
-/// But-for damages schedule. Computes per-account and per-period damages deltas
-/// between the actual live posted fold and counterfactual baseline expectations
-/// (from `RegisterEquals` baseline attestations or pre-supersession / restated
-/// entry lineages). See also [`compute_scenario_but_for_damages`] for comparing
-/// a trunk snapshot directly against a counterfactual scenario scratch-book snapshot.
-pub struct DamagesButFor {
+/// `damages.attested_baseline` (`FA-EVID-L59`): per-account and per-period
+/// deltas between the actual live posted fold and a baseline taken from
+/// `RegisterEquals` attestations or pre-supersession / restated entry
+/// lineages. Not plan §11.6's `damages.but_for`, which is the certified delta
+/// between a counterfactual scenario and trunk: `fa scenario diff --certify`,
+/// and [`compute_scenario_but_for_damages`] over two snapshots.
+pub struct DamagesAttestedBaseline {
     params: Params,
 }
-procedure_boilerplate!(DamagesButFor, "damages.but_for");
+procedure_boilerplate!(DamagesAttestedBaseline, "damages.attested_baseline");
 
-impl Procedure for DamagesButFor {
+impl Procedure for DamagesAttestedBaseline {
     fn id(&self) -> &'static str {
         Self::ID
     }
@@ -2807,10 +2814,9 @@ impl Procedure for DamagesButFor {
                 let cell = actual_fold
                     .entry((leg.account_ref, e.period.clone(), leg.amount.unit.0))
                     .or_default();
-                cell.0 = cell
-                    .0
-                    .checked_add(signed)
-                    .ok_or(LanternError::Overflow("damages.but_for actual fold"))?;
+                cell.0 = cell.0.checked_add(signed).ok_or(LanternError::Overflow(
+                    "damages.attested_baseline actual fold",
+                ))?;
                 cell.1.insert(e.vid);
             }
         }
@@ -2847,10 +2853,9 @@ impl Procedure for DamagesButFor {
                     let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                     let key = (leg.account_ref, e.period.clone(), leg.amount.unit.0);
                     let cell = original_fold.entry(key.clone()).or_default();
-                    cell.0 = cell
-                        .0
-                        .checked_add(signed)
-                        .ok_or(LanternError::Overflow("damages.but_for original fold"))?;
+                    cell.0 = cell.0.checked_add(signed).ok_or(LanternError::Overflow(
+                        "damages.attested_baseline original fold",
+                    ))?;
                     cell.1.insert(e.vid);
                     if was_superseded {
                         has_superseded_cell.insert(key);
@@ -2880,7 +2885,7 @@ impl Procedure for DamagesButFor {
                 continue;
             }
             let delta = reconciliation_arithmetic::discrepancy(actual_net, but_for_net)
-                .ok_or(LanternError::Overflow("damages.but_for delta"))?;
+                .ok_or(LanternError::Overflow("damages.attested_baseline delta"))?;
             let mut cites = vec![Cite::Account(acct_vid)];
             if snapshot.periods.contains_key(&period) {
                 cites.push(Cite::Period(period.clone()));
@@ -2899,7 +2904,7 @@ impl Procedure for DamagesButFor {
                 Self::ID,
                 Severity::High,
                 Statistic {
-                    name: "but_for_damages_delta".into(),
+                    name: "attested_baseline_delta".into(),
                     value: delta,
                     scale,
                     population,
@@ -2914,7 +2919,13 @@ impl Procedure for DamagesButFor {
     }
 }
 
-/// Compute a certified `damages.but_for` schedule by comparing an actual trunk
+/// Plan §11.6's name for the damages schedule between a counterfactual
+/// scenario and trunk. It labels [`compute_scenario_but_for_damages`]'s
+/// findings; it is not a registered Lantern procedure, because `fa scenario
+/// diff --certify` is that schedule's certified surface.
+pub const SCENARIO_BUT_FOR: &str = "damages.but_for";
+
+/// Compute a `damages.but_for` schedule by comparing an actual trunk
 /// [`Snapshot`] directly against a counterfactual scenario scratch-book [`Snapshot`]
 /// (plan §11.6).
 pub fn compute_scenario_but_for_damages(
@@ -2980,7 +2991,7 @@ pub fn compute_scenario_but_for_damages(
             .map_or("?", |a| a.code.as_str());
         let scale = crate::unit_scale(book, *unit_id)?;
         out.push(finding(
-            DamagesButFor::ID,
+            SCENARIO_BUT_FOR,
             Severity::High,
             Statistic {
                 name: "but_for_damages_delta".into(),

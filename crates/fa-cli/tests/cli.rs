@@ -13073,7 +13073,7 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
         "jet.round_amounts",
         "solvency.balance_sheet_test",
         "ponzi.net_investment",
-        "damages.but_for",
+        "damages.attested_baseline",
         "recon.bank_statement_drift",
     ] {
         assert!(

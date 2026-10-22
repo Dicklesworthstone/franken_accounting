@@ -196,20 +196,20 @@ fn independent_attestations_change_results_but_not_the_saved_historical_run() {
         .unwrap()
         .unwrap();
     let c = f
-        .certify(&f.request("recon.book_to_book", source))
+        .certify(&f.request("recon.attested_register_compare", source))
         .certificate;
     assert!(
         c.report.findings.is_empty(),
         "the original declared balance matches"
     );
     f.post(1, "3000", "1000", 70, false);
-    let current = f.certify(&f.request("recon.book_to_book", source));
+    let current = f.certify(&f.request("recon.attested_register_compare", source));
     assert!(
         current
             .report
             .findings
             .iter()
-            .any(|f| f.statistic.name == "book_to_book_discrepancy" && f.statistic.value == 70)
+            .any(|f| f.statistic.name == "attested_register_discrepancy" && f.statistic.value == 70)
     );
     assert_eq!(
         f.book
@@ -383,7 +383,7 @@ fn a_discrepancy_beyond_signed_statistic_capacity_has_no_certificate_or_wrapped_
         .unwrap()
         .unwrap();
     f.post(1, "1000", "6000", i128::MAX, false);
-    let exact = f.certify(&f.request("recon.book_to_book", source));
+    let exact = f.certify(&f.request("recon.attested_register_compare", source));
     assert_eq!(exact.report.findings[0].statistic.value, i128::MAX);
     f.post(1, "1000", "3000", 1, false);
     let head = f.head();
@@ -392,10 +392,10 @@ fn a_discrepancy_beyond_signed_statistic_capacity_has_no_certificate_or_wrapped_
             &cx,
             PRINCIPAL,
             &cap(&["read", "produce"]),
-            &f.request("recon.book_to_book", source)
+            &f.request("recon.attested_register_compare", source)
         ),
         Err(crate::BookError::Lantern(
-            fa_lantern::LanternError::Overflow("book_to_book discrepancy magnitude")
+            fa_lantern::LanternError::Overflow("attested_register discrepancy magnitude")
         ))
     ));
     assert_eq!(f.head(), head);

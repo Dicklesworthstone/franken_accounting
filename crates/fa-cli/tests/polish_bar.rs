@@ -630,7 +630,7 @@ fn every_plan_leaf_present_or_registered() {
         ("fa jet", "fa-waow: today fa procedure run jet.*"),
         (
             "fa recon book-to-book",
-            "fa-259c: today fa procedure run recon.book_to_book",
+            "fa-259c: the multi-book bridge; fa-statements reconcile_book_to_book has no surface",
         ),
         ("fa rule backtest", "fa-c34"),
         ("fa rule propose", "fa-c34"),
