@@ -3554,6 +3554,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Cosign a recorded state's signed checkpoint with `witness` (plan
+    /// §13.5); [`crate::Book::witness_checkpoint`] states the contract.
+    pub fn witness_checkpoint(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        witness: &fa_notary::SigningKey,
+        request: crate::WitnessRequest<'_>,
+    ) -> Outcome<crate::Witnessed> {
+        self.query(cx, |db, book| {
+            crate::proof::witness(
+                db,
+                cx,
+                book,
+                &self.signer,
+                principal,
+                capability,
+                witness,
+                request,
+            )
+        })
+    }
+
     pub fn open_items(
         &self,
         cx: &PurposeContexts,

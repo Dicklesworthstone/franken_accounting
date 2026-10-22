@@ -3607,6 +3607,29 @@ impl Book {
         with_store!(&self.store, core => core.export_proof(&self.purposes(), principal, capability, request))
     }
 
+    /// Cosign the recorded state `state` (default: the latest) with a
+    /// witness's key (plan §13.5, fa-qtfd): the state's signed checkpoint
+    /// with the witness's signature added, an attestation that this root was
+    /// observed, never a statement about the ledger's content. The holder
+    /// needs current read and witness authority. Given `previous`, the
+    /// cosigned checkpoint this witness key produced last, the book must
+    /// prove (and the independent verifier accept) that this state extends
+    /// it; a rollback or rewritten history is refused (`NOT_EXTENDED`) and
+    /// nothing is signed. With `onto`, the signature is added to that
+    /// already-cosigned checkpoint of the same state. Nothing is written to
+    /// the book.
+    pub fn witness_checkpoint(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        witness: &fa_notary::SigningKey,
+        request: crate::WitnessRequest<'_>,
+    ) -> Outcome<crate::Witnessed> {
+        with_store!(&self.store, core => core.witness_checkpoint(
+            &self.purposes(), principal, capability, witness, request,
+        ))
+    }
+
     /// Produce an evidence bundle (plan §13.2) and its detached production
     /// receipt. The bundle is produced against the journaled state `state`
     /// (default: the latest), whose checkpoint is recomputed from the

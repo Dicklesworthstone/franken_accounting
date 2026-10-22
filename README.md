@@ -839,6 +839,11 @@ fa sample evaluate --account 1200 --seed 20260115 --interval "5000.00 USD" --as-
 fa bundle produce --account 1000 --from 2025-01-01 --to 2025-12-31 --inline-documents --out fy2025-cash.fab --receipt-out fy2025-cash.receipt --book acme.fabook --json
 fa-verify bundle fy2025-cash.fab --key <checkpoint_public_key> --receipt fy2025-cash.receipt --json
 
+# Witnesses (the CPA's year-end signature, plan §13.5): each witness cosigns a recorded checkpoint with its own key, only after the book proves its history extends what that witness signed last; a second witness adds its signature --onto the first's file, and fa-verify checks a quorum. Detection, not prevention: a rewritten history is refused a cosignature, and cosigned checkpoints that disagree expose it (available today; witness policies and key rotation journaled in the book are not yet, fa-qtfd).
+fa checkpoint witness-key --out cpa-witness.key --json
+fa checkpoint witness --key cpa-witness.key --previous fy2024-cpa.cp --out fy2025-cpa.cp --grant witness --book acme.fabook --json
+fa-verify checkpoint fy2025-cpa.cp --key <checkpoint_public_key> --witness <cpa witness public key> --json
+
 # A certified GL detail for the file; `fa replay C:<oid>` reproduces it after later postings (available today; also roll-forward and aging).
 fa gl detail --account 1000 --from 2025-01-01 --to 2025-12-31 --certify --book acme.fabook --json
 

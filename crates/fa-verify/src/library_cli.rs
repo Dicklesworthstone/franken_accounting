@@ -70,7 +70,9 @@ pub fn handles(args: &[OsString]) -> bool {
 }
 
 /// Flags of either grammar that take a value.
-const VALUE_FLAGS: [&str; 18] = [
+const VALUE_FLAGS: [&str; 20] = [
+    "--witness",
+    "--quorum",
     "--proof",
     "--checkpoint",
     "--next-checkpoint",

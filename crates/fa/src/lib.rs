@@ -163,9 +163,10 @@ pub use fa_model::{
 pub use fa_money::allocation::{
     AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
 };
+pub use fa_notary::checkpoint::signer_key_id;
 pub use fa_notary::{
     AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, LeafKinds,
-    ScopeRequest,
+    ScopeRequest, SigningKey, Statement as AccumulatorStatement,
 };
 pub use fa_policy::{
     BenefitInterval, Capability, DECISION_CARD_DOMAIN, DecisionCandidate, DecisionCard,
@@ -233,7 +234,9 @@ pub use production::{
     ProductionVolume,
 };
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
-pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
+pub use proof::{
+    MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest, WitnessRequest, Witnessed,
+};
 pub use query::{
     CertifiedQuery, MAX_QUERY_ROWS, QUERY_CERTIFICATE_FORMAT, QUERY_OUTPUT_FORMAT, QueryCell,
     QueryCertificate, QueryCertificateStatus, QueryRows, profile_refusal,

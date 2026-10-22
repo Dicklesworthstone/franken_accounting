@@ -7312,6 +7312,30 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let states = arr(&listed, "checkpoints");
     assert_eq!(states.len(), 1, "{out}");
     assert_eq!(states[0].get("prev_state_oid"), Some(&Json::Null), "{out}");
+    // fa-qtfd: a witness key, then that witness's cosignature of the state.
+    let witness_key = dir.join("witness.key").display().to_string();
+    assert_eq!(
+        run(false, &["checkpoint", "witness-key", "--out", &witness_key]).0,
+        0
+    );
+    let cosigned = dir.join("cosigned.cp").display().to_string();
+    assert_eq!(
+        run(
+            true,
+            &[
+                "checkpoint",
+                "witness",
+                "--grant",
+                "witness",
+                "--key",
+                &witness_key,
+                "--out",
+                &cosigned,
+            ],
+        )
+        .0,
+        0
+    );
     assert_eq!(
         run(true, &["checkpoint", "list", "--period", "FY2026-P03"]).0,
         2

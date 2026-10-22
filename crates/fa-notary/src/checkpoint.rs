@@ -181,6 +181,8 @@ pub enum SignError {
         signer_key_id: [u8; 32],
         reason: KeyError,
     },
+    /// The checkpoint already holds the most signatures a decoder admits.
+    Full,
 }
 
 impl From<EncodeError> for SignError {
@@ -196,6 +198,10 @@ impl core::fmt::Display for SignError {
             Self::UntrustableKey { reason, .. } => {
                 write!(f, "the checkpoint signer's key cannot be trusted: {reason}")
             }
+            Self::Full => write!(
+                f,
+                "the checkpoint already holds {MAX_SIGNATURES} signatures, the most a verifier decodes"
+            ),
         }
     }
 }
@@ -227,6 +233,39 @@ impl TransparencyCheckpoint {
         signatures.sort_by_key(|s| (s.signer_key_id, s.scheme));
         signatures.dedup_by_key(|s| (s.signer_key_id, s.scheme));
         Ok(Self { body, signatures })
+    }
+
+    /// This checkpoint with `witness`'s signature added beside the others
+    /// (plan §13.5): the same body, so a cosignature attests the root a
+    /// witness observed, never the ledger's content. A key that already
+    /// signed is not added twice. The result is a new object: its oid
+    /// covers the signatures, the body digest does not.
+    pub fn cosign(&self, witness: &dyn CheckpointSigner) -> Result<Self, SignError> {
+        let key = witness.public_key();
+        let id = signer_key_id(&key);
+        check_public_key(&key).map_err(|reason| SignError::UntrustableKey {
+            signer_key_id: id,
+            reason,
+        })?;
+        let mut signatures = self.signatures.clone();
+        if !signatures
+            .iter()
+            .any(|s| (s.signer_key_id, s.scheme) == (id, witness.scheme()))
+        {
+            if signatures.len() >= MAX_SIGNATURES {
+                return Err(SignError::Full);
+            }
+            signatures.push(CheckpointSignature {
+                signer_key_id: id,
+                scheme: witness.scheme(),
+                bytes: witness.sign(&self.body.signed_message()?).to_vec(),
+            });
+            signatures.sort_by_key(|s| (s.signer_key_id, s.scheme));
+        }
+        Ok(Self {
+            body: self.body.clone(),
+            signatures,
+        })
     }
 
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
@@ -323,6 +362,54 @@ mod tests {
         let mut swapped = cp.clone();
         swapped.signatures.reverse();
         assert!(TransparencyCheckpoint::decode(&swapped.canonical_bytes().unwrap()).is_err());
+    }
+
+    /// A witness cosigns the same body (fa-qtfd): the result keeps the
+    /// body, holds both signatures in order, is another object, verifies
+    /// under both keys with the independent verifier, and cosigning again
+    /// changes nothing; an untrustable witness key and a full signature
+    /// list are refused.
+    #[test]
+    fn a_witness_cosigns_the_same_body_as_a_new_object() {
+        let book = SigningKey::from_seed(&[7; 32]);
+        let witness = SigningKey::from_seed(&[9; 32]);
+        let signed = TransparencyCheckpoint::sign(body(), &[&book]).unwrap();
+        let cosigned = signed.cosign(&witness).unwrap();
+        assert_eq!(cosigned.body, signed.body);
+        assert_eq!(cosigned.signatures.len(), 2);
+        assert!(
+            cosigned
+                .signatures
+                .windows(2)
+                .all(|w| (w[0].signer_key_id, w[0].scheme) < (w[1].signer_key_id, w[1].scheme))
+        );
+        assert_ne!(cosigned.oid().unwrap(), signed.oid().unwrap());
+        assert_eq!(cosigned.cosign(&witness).unwrap(), cosigned, "once per key");
+        let bytes = cosigned.canonical_bytes().unwrap();
+        assert_eq!(TransparencyCheckpoint::decode(&bytes).unwrap(), cosigned);
+        let verified =
+            fa_verify::verify_checkpoint(&bytes, &[book.public_key(), witness.public_key()])
+                .unwrap();
+        assert_eq!(verified.signed_by.len(), 2);
+
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        let untrustable = Fixed {
+            public: identity,
+            sig: [0; 64],
+        };
+        assert!(matches!(
+            signed.cosign(&untrustable),
+            Err(SignError::UntrustableKey { .. })
+        ));
+        let keys: Vec<SigningKey> = (0..MAX_SIGNATURES)
+            .map(|i| SigningKey::from_seed(&[u8::try_from(i).unwrap() + 10; 32]))
+            .collect();
+        let signers: Vec<&dyn CheckpointSigner> =
+            keys.iter().map(|k| k as &dyn CheckpointSigner).collect();
+        let full = TransparencyCheckpoint::sign(body(), &signers).unwrap();
+        assert_eq!(full.signatures.len(), MAX_SIGNATURES);
+        assert!(matches!(full.cosign(&witness), Err(SignError::Full)));
     }
 
     /// A signer reporting `public` and signing every message with `sig`.
